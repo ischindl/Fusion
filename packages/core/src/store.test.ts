@@ -757,6 +757,115 @@ describe("TaskStore", () => {
     });
   });
 
+  describe("parseFileScopeFromPrompt", () => {
+    it("returns paths when File Scope is followed by another heading", async () => {
+      const task = await store.createTask({ description: "Mid-file scope" });
+      const dir = join(rootDir, ".kb", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Mid-file scope
+
+## File Scope
+
+- \`packages/core/src/store.ts\`
+- \`packages/core/src/store.test.ts\`
+
+## Steps
+
+### Step 0: Preflight
+- [ ] Check things
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "packages/core/src/store.ts",
+        "packages/core/src/store.test.ts",
+      ]);
+    });
+
+    it("returns all paths when File Scope is the last section", async () => {
+      const task = await store.createTask({
+        description: "End-of-file scope",
+      });
+      const dir = join(rootDir, ".kb", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: End-of-file scope
+
+## Steps
+
+### Step 0: Preflight
+- [ ] Check things
+
+## File Scope
+
+- \`packages/core/src/store.ts\`
+- \`packages/core/src/store.test.ts\`
+- \`packages/core/src/utils.ts\`
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "packages/core/src/store.ts",
+        "packages/core/src/store.test.ts",
+        "packages/core/src/utils.ts",
+      ]);
+    });
+
+    it("returns empty array when no File Scope section exists", async () => {
+      const task = await store.createTask({ description: "No scope" });
+      const dir = join(rootDir, ".kb", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: No scope
+
+## Steps
+
+### Step 0: Preflight
+- [ ] Check things
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([]);
+    });
+
+    it("returns empty array when PROMPT.md does not exist", async () => {
+      const task = await store.createTask({ description: "No prompt" });
+      const dir = join(rootDir, ".kb", "tasks", task.id);
+      const { unlink } = await import("node:fs/promises");
+      await unlink(join(dir, "PROMPT.md"));
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([]);
+    });
+
+    it("handles glob patterns in backtick-quoted paths", async () => {
+      const task = await store.createTask({ description: "Glob scope" });
+      const dir = join(rootDir, ".kb", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Glob scope
+
+## File Scope
+
+- \`packages/core/*\`
+- \`packages/cli/src/commands/dashboard.ts\`
+- \`packages/engine/src/**/*.ts\`
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "packages/core/*",
+        "packages/cli/src/commands/dashboard.ts",
+        "packages/engine/src/**/*.ts",
+      ]);
+    });
+  });
+
   describe("columnMovedAt", () => {
     it("createTask sets columnMovedAt", async () => {
       const before = new Date().toISOString();

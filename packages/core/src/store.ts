@@ -500,13 +500,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     const content = await readFile(promptPath, "utf-8");
 
-    // Find the ## File Scope section
-    const fileScopeMatch = content.match(
-      /^##\s+File\s+Scope\s*\n([\s\S]*?)(?=\n##\s|\n#\s|$)/m,
-    );
-    if (!fileScopeMatch) return [];
+    // Find the ## File Scope section.
+    // We locate the heading then slice to the next heading (or end of file)
+    // to avoid multiline `$` anchor issues with lazy quantifiers.
+    const headingMatch = content.match(/^##\s+File\s+Scope\s*$/m);
+    if (!headingMatch) return [];
 
-    const section = fileScopeMatch[1];
+    const startIdx = headingMatch.index! + headingMatch[0].length;
+    const rest = content.slice(startIdx);
+    const nextHeading = rest.search(/\n##?\s/);
+    const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
     const paths: string[] = [];
     const backtickRegex = /`([^`]+)`/g;
     let match;
