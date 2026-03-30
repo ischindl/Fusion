@@ -4459,6 +4459,14 @@ html .column.drag-over * {
   }
 }
 
+.file-browser-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+
+
 /* === File Browser === */
 .file-browser-modal {
   width: 90vw;
