@@ -146,7 +146,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   router.post("/tasks/:id/retry", async (req, res) => {
     try {
       const task = await store.getTask(req.params.id);
-      if (task.column !== "in-progress" || task.status !== "failed") {
+      if (task.status !== "failed") {
         res.status(400).json({ error: "Task is not in a failed state" });
         return;
       }
