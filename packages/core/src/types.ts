@@ -19,6 +19,7 @@ export const COLOR_THEMES = [
   "monochrome",
   "high-contrast",
   "solarized",
+  "factory",
   "ayu",
   "one-dark",
 ] as const;

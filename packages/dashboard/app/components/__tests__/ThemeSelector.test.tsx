@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { COLOR_THEMES } from "@kb/core";
 import { ThemeSelector } from "../ThemeSelector";
 
 describe("ThemeSelector", () => {
@@ -84,6 +85,7 @@ describe("ThemeSelector", () => {
     expect(screen.getByLabelText("Mono theme")).toBeDefined();
     expect(screen.getByLabelText("High Contrast theme")).toBeDefined();
     expect(screen.getByLabelText("Solarized theme")).toBeDefined();
+    expect(screen.getByLabelText("Factory theme")).toBeDefined();
     expect(screen.getByLabelText("Ayu theme")).toBeDefined();
     expect(screen.getByLabelText("One Dark theme")).toBeDefined();
   });
@@ -146,6 +148,19 @@ describe("ThemeSelector", () => {
     );
 
     expect(screen.getByText(/System \/ Solarized/)).toBeDefined();
+  });
+
+  it("displays Factory in preview when selected", () => {
+    render(
+      <ThemeSelector
+        themeMode="dark"
+        colorTheme="factory"
+        onThemeModeChange={vi.fn()}
+        onColorThemeChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/Dark \/ Factory/)).toBeDefined();
   });
 
   it("displays light theme in preview when light mode", () => {
@@ -247,7 +262,7 @@ describe("ThemeSelector", () => {
     const themeOptions = screen.getAllByRole("button").filter(
       (btn) => btn.className.includes("theme-option")
     );
-    expect(themeOptions.length).toBe(10);
+    expect(themeOptions.length).toBe(COLOR_THEMES.length);
 
     themeOptions.forEach((btn) => {
       const swatch = btn.querySelector(".theme-option-swatch");

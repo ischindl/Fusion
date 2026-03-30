@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { COLOR_THEMES } from "@kb/core";
 import { useTheme, getThemeInitScript } from "../useTheme";
 
 describe("useTheme", () => {
@@ -166,6 +168,32 @@ describe("useTheme", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 
+  it("applies factory theme attributes", () => {
+    localStorageMock["kb-dashboard-color-theme"] = "factory";
+
+    renderHook(() => useTheme());
+
+    expect(document.documentElement.getAttribute("data-color-theme")).toBe("factory");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("applies factory-specific design tokens from the stylesheet", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync("app/styles.css", "utf8");
+    document.head.appendChild(style);
+
+    localStorageMock["kb-dashboard-color-theme"] = "factory";
+
+    renderHook(() => useTheme());
+
+    const styles = getComputedStyle(document.documentElement);
+    expect(styles.getPropertyValue("--radius-md").trim()).toBe("4px");
+    expect(styles.getPropertyValue("--btn-padding").trim()).toBe("6px 12px");
+    expect(styles.getPropertyValue("--font-primary")).toContain("JetBrains Mono");
+
+    document.head.removeChild(style);
+  });
+
   it("supports all valid theme modes", () => {
     const { result } = renderHook(() => useTheme());
 
@@ -182,10 +210,8 @@ describe("useTheme", () => {
   it("supports all valid color themes", () => {
     const { result } = renderHook(() => useTheme());
 
-    const themes = ["default", "ocean", "forest", "sunset", "berry", "monochrome", "high-contrast", "solarized", "ayu", "one-dark"];
-
-    themes.forEach((theme) => {
-      act(() => result.current.setColorTheme(theme as typeof themes[number]));
+    COLOR_THEMES.forEach((theme) => {
+      act(() => result.current.setColorTheme(theme));
       expect(result.current.colorTheme).toBe(theme);
     });
   });
@@ -241,6 +267,25 @@ describe("getThemeInitScript", () => {
 
     expect(script).toContain("kb-dashboard-theme-mode");
     expect(script).toContain("kb-dashboard-color-theme");
+  });
+
+  it("includes every supported theme in the validated theme list", () => {
+    const script = getThemeInitScript();
+
+    COLOR_THEMES.forEach((theme) => {
+      expect(script).toContain(theme);
+    });
+    expect(script).toContain("validThemes");
+    expect(script).toContain("colorTheme = 'default'");
+  });
+
+  it("keeps index.html inline theme validation in sync with supported themes", () => {
+    const indexHtml = readFileSync("app/index.html", "utf8");
+
+    COLOR_THEMES.forEach((theme) => {
+      expect(indexHtml).toContain(`'${theme}'`);
+    });
+    expect(indexHtml).toContain("validThemes");
   });
 
   it("handles system theme in script", () => {

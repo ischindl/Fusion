@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useLayoutEffect } from "react";
-import type { ThemeMode, ColorTheme } from "@kb/core";
+import { COLOR_THEMES, type ThemeMode, type ColorTheme } from "@kb/core";
 
 const THEME_MODE_STORAGE_KEY = "kb-dashboard-theme-mode";
 const COLOR_THEME_STORAGE_KEY = "kb-dashboard-color-theme";
+const VALID_COLOR_THEMES = [...COLOR_THEMES] satisfies ColorTheme[];
 
 // Check if we're in a browser environment
 const isBrowser = typeof window !== "undefined";
@@ -63,19 +64,7 @@ export function useTheme(): UseThemeReturn {
     if (!isBrowser) return "default";
     try {
       const saved = localStorage.getItem(COLOR_THEME_STORAGE_KEY);
-      const validThemes: ColorTheme[] = [
-        "default",
-        "ocean",
-        "forest",
-        "sunset",
-        "berry",
-        "monochrome",
-        "high-contrast",
-        "solarized",
-        "ayu",
-        "one-dark",
-      ];
-      if (saved && validThemes.includes(saved as ColorTheme)) {
+      if (saved && VALID_COLOR_THEMES.includes(saved as ColorTheme)) {
         return saved as ColorTheme;
       }
     } catch {
@@ -155,6 +144,10 @@ export function getThemeInitScript(): string {
       try {
         var mode = localStorage.getItem('${THEME_MODE_STORAGE_KEY}') || 'dark';
         var colorTheme = localStorage.getItem('${COLOR_THEME_STORAGE_KEY}') || 'default';
+        var validThemes = ${JSON.stringify(VALID_COLOR_THEMES)};
+        if (!validThemes.includes(colorTheme)) {
+          colorTheme = 'default';
+        }
         var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         var effectiveMode = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
         document.documentElement.setAttribute('data-theme', effectiveMode);
