@@ -7,6 +7,7 @@ import type { Task } from "@kb/core";
 vi.mock("lucide-react", () => ({
   Link: () => null,
   Clock: () => null,
+  Pencil: () => null,
 }));
 
 // Mock the api module
