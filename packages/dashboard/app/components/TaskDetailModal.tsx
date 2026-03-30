@@ -706,6 +706,28 @@ export function TaskDetailModal({
             </div>
           ) : (
           <>
+          <div className="detail-section detail-step-progress">
+            <h4>Progress</h4>
+            {task.steps && task.steps.length > 0 ? (
+              <div className="step-progress-wrapper">
+                <div className="step-progress-bar">
+                  {task.steps.map((step, index) => (
+                    <div
+                      key={index}
+                      className={`step-progress-segment step-progress-segment--${step.status}`}
+                      data-tooltip={`${step.name} (${step.status})`}
+                      style={{ backgroundColor: getStepStatusColor(step.status) }}
+                    />
+                  ))}
+                </div>
+                <span className="step-progress-label">
+                  {task.steps.filter(s => s.status === "done").length}/{task.steps.length} steps
+                </span>
+              </div>
+            ) : (
+              <div className="step-progress-empty">(no steps defined)</div>
+            )}
+          </div>
           <div className="detail-section">
             {task.prompt ? (
               <div className="markdown-body">
@@ -883,28 +905,6 @@ export function TaskDetailModal({
                 );
               })()}
             </div>
-          </div>
-          <div className="detail-section detail-step-progress">
-            <h4>Progress</h4>
-            {task.steps && task.steps.length > 0 ? (
-              <div className="step-progress-wrapper">
-                <div className="step-progress-bar">
-                  {task.steps.map((step, index) => (
-                    <div
-                      key={index}
-                      className={`step-progress-segment step-progress-segment--${step.status}`}
-                      data-tooltip={`${step.name} (${step.status})`}
-                      style={{ backgroundColor: getStepStatusColor(step.status) }}
-                    />
-                  ))}
-                </div>
-                <span className="step-progress-label">
-                  {task.steps.filter(s => s.status === "done").length}/{task.steps.length} steps
-                </span>
-              </div>
-            ) : (
-              <div className="step-progress-empty">(no steps defined)</div>
-            )}
           </div>
           {/* PR Section - only for in-review tasks */}
           {task.column === "in-review" && (
