@@ -46,37 +46,39 @@ AI-guided interactive planning for creating well-specified tasks from high-level
 - **PR Management**: Create, monitor, and merge pull requests for in-review tasks
 
 ### Interactive Terminal
-Access a fully functional shell terminal directly from the dashboard. Click the terminal icon in the header to open the interactive terminal modal.
+Access a fully functional PTY (pseudo-terminal) shell directly from the dashboard. Click the terminal icon in the header to open the interactive terminal modal.
 
 **Features**:
-- Execute shell commands in the project's working directory
-- Real-time output streaming via Server-Sent Events (SSE)
-- Command history with Up/Down arrow navigation
-- Keyboard shortcuts:
-  - `↑` / `↓` - Navigate command history
-  - `Ctrl+C` - Kill running process
-  - `Ctrl+L` - Clear terminal screen
-  - `Escape` - Close terminal modal
+- **Real PTY Terminal**: Spawns a real shell (bash/zsh/powershell) using node-pty for authentic terminal behavior
+- **Bidirectional Communication**: WebSocket connection for instant input/output
+- **xterm.js Integration**: Full terminal emulation with proper ANSI support, colors, and cursor handling
+- **Auto-resizing**: Terminal automatically fits to container size
+- **Scrollback Buffer**: 50KB of scrollback history with replay on reconnect
+- **Reconnection Support**: Automatic reconnect with exponential backoff if connection drops
 
-**Supported Commands**:
-The terminal includes a curated allowlist of safe commands including: git, npm/pnpm/yarn, node, python, ls, cat, curl, make, ps, and many more. Dangerous commands (rm -rf /, disk writes, fork bombs, etc.) are automatically blocked for security.
+**Keyboard Shortcuts**:
+- `Ctrl+C` - Send SIGINT to process (copy if text selected)
+- `Ctrl+V` - Paste from clipboard
+- `Ctrl+L` - Clear terminal screen
+- `Ctrl++` / `Ctrl+-` - Zoom in/out
+- `Ctrl+0` - Reset zoom
+- `Escape` - Close terminal modal
+
+**Security**:
+- Working directory restricted to project root (path traversal protection)
+- Environment variable sanitization (PORT, DATA_DIR, GITHUB_TOKEN, etc. stripped)
+- Session ID validation (alphanumeric only)
+- Input sanitization (null bytes rejected)
+- Shell allowlist validation
 
 **Session Management**:
-- Each command creates a new session with 30-second timeout
-- Output streams in real-time as the command executes
-- Sessions automatically clean up after exit
-- Terminal state persists while modal is open (clears on close)
+- Sessions persist while modal is open
+- Maximum 10 concurrent sessions per user (configurable)
+- Sessions can be restarted when shell exits
+- Graceful shutdown with SIGTERM, then SIGKILL fallback
 
 ### Git Manager
 The Git Manager provides comprehensive repository visualization and management directly from the web UI. Access it via the Git Branch icon in the header.
-
-### Interactive Terminal
-The dashboard includes a fully interactive shell terminal for executing commands directly in the project's working directory. Access it via the Terminal icon in the header (always enabled, independent of task state).
-
-**Features**:
-- **Real-time Execution**: Commands execute with live output streaming via Server-Sent Events
-- **Command History**: Navigate previous commands with Up/Down arrows
-- **Local Commands**: Special handling for `cd`, `clear`, and `cls` commands
 - **Safety Validation**: Dangerous commands (rm -rf /, etc.) are automatically blocked
 - **Keyboard Shortcuts**:
   - `Enter` - Execute command
@@ -243,11 +245,15 @@ The dashboard server exposes a REST API at `/api`:
 - `POST /api/git/pull` - Pull current branch
 - `POST /api/git/push` - Push current branch
 
-### Interactive Terminal
-- `POST /api/terminal/exec` - Execute command (`{ command }`) → `{ sessionId }`
-- `GET /api/terminal/sessions/:id` - Get session status and output
-- `POST /api/terminal/sessions/:id/kill` - Kill running process (`{ signal? }`)
-- `GET /api/terminal/sessions/:id/stream` - SSE stream for real-time output
+### Interactive Terminal (PTY/WebSocket)
+- `POST /api/terminal/sessions` - Create PTY session (`{ cwd?, cols?, rows? }`) → `{ sessionId, shell, cwd }`
+- `GET /api/terminal/sessions` - List active sessions → `[{ id, cwd, shell, createdAt }]`
+- `DELETE /api/terminal/sessions/:id` - Kill session → `{ killed }`
+- `WS /api/terminal/ws?sessionId=xxx` - WebSocket for bidirectional I/O
+
+### Interactive Terminal (Legacy SSE - Deprecated)
+- `POST /api/terminal/exec` - Execute command (`{ command }`) → `{ sessionId }` (legacy)
+- `GET /api/terminal/sessions/:id/stream` - SSE stream (legacy)
 
 ### GitHub Integration
 - `GET /api/git/remotes` - List GitHub remotes
@@ -257,11 +263,11 @@ The dashboard server exposes a REST API at `/api`:
 - `GET /api/tasks/:id/pr/status` - Get PR status
 - `POST /api/tasks/:id/pr/refresh` - Refresh PR status
 
-### Terminal
-- `POST /api/terminal/exec` - Execute command (`{ command }`) - returns `{ sessionId }`
-- `GET /api/terminal/sessions/:id` - Get session status and output
-- `POST /api/terminal/sessions/:id/kill` - Kill running session
-- `GET /api/terminal/sessions/:id/stream` - SSE stream for real-time output
+### PTY Terminal (WebSocket-based)
+- `POST /api/terminal/sessions` - Create session
+- `GET /api/terminal/sessions` - List sessions
+- `DELETE /api/terminal/sessions/:id` - Kill session
+- `WS /api/terminal/ws` - WebSocket connection
 
 ### Configuration
 - `GET /api/config` - Server configuration
@@ -274,7 +280,8 @@ The dashboard server exposes a REST API at `/api`:
 
 ## Architecture
 
-- **Frontend**: React + Vite, TypeScript, CSS custom properties for theming
-- **Backend**: Express server with REST API and Server-Sent Events (SSE) for live updates
+- **Frontend**: React + Vite, TypeScript, xterm.js for terminal emulation, CSS custom properties for theming
+- **Backend**: Express server with REST API, WebSocket for terminal, and Server-Sent Events (SSE) for live updates
+- **Terminal**: node-pty for PTY spawning, WebSocket for bidirectional I/O
 - **State Management**: Custom hooks with EventSource for real-time task updates
 - **Git Integration**: Server-side git command execution with validation
