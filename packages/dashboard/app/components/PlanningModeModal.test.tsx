@@ -6,6 +6,8 @@ import type { Task, TaskDetail, PlanningQuestion, PlanningSummary, MergeResult }
 
 // Mock the API functions
 const mockStartPlanning = vi.fn();
+const mockStartPlanningStreaming = vi.fn();
+const mockConnectPlanningStream = vi.fn();
 const mockRespondToPlanning = vi.fn();
 const mockCancelPlanning = vi.fn();
 const mockCreateTaskFromPlanning = vi.fn();
@@ -22,6 +24,8 @@ const mockRefineTask = vi.fn();
 
 vi.mock("../api", () => ({
   startPlanning: (...args: any[]) => mockStartPlanning(...args),
+  startPlanningStreaming: (...args: any[]) => mockStartPlanningStreaming(...args),
+  connectPlanningStream: (...args: any[]) => mockConnectPlanningStream(...args),
   respondToPlanning: (...args: any[]) => mockRespondToPlanning(...args),
   cancelPlanning: (...args: any[]) => mockCancelPlanning(...args),
   createTaskFromPlanning: (...args: any[]) => mockCreateTaskFromPlanning(...args),
@@ -94,6 +98,21 @@ describe("PlanningModeModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(window, "confirm").mockReturnValue(true);
+    
+    // Default mock for streaming
+    mockStartPlanningStreaming.mockResolvedValue({ sessionId: "session-123" });
+    
+    // Default: simulate receiving a question after a brief delay
+    mockConnectPlanningStream.mockImplementation((sessionId: string, handlers: any) => {
+      setTimeout(() => {
+        handlers.onQuestion?.(mockQuestion);
+      }, 10);
+      
+      return {
+        close: vi.fn(),
+        isConnected: vi.fn().mockReturnValue(true),
+      };
+    });
   });
 
   describe("Initial view", () => {
@@ -160,12 +179,6 @@ describe("PlanningModeModal", () => {
     });
 
     it("auto-starts planning when initialPlan prop is provided", async () => {
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: mockQuestion,
-        summary: null,
-      });
-
       render(
         <PlanningModeModal
           isOpen={true}
@@ -176,9 +189,9 @@ describe("PlanningModeModal", () => {
         />
       );
 
-      // Wait for startPlanning to be called
+      // Wait for startPlanningStreaming to be called
       await waitFor(() => {
-        expect(mockStartPlanning).toHaveBeenCalledWith("Build a login system from new task dialog");
+        expect(mockStartPlanningStreaming).toHaveBeenCalledWith("Build a login system from new task dialog");
       });
 
       // Should transition to question view
@@ -188,12 +201,6 @@ describe("PlanningModeModal", () => {
     });
 
     it("sets initial plan text in textarea when initialPlan prop is provided", async () => {
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: mockQuestion,
-        summary: null,
-      });
-
       render(
         <PlanningModeModal
           isOpen={true}
@@ -206,19 +213,13 @@ describe("PlanningModeModal", () => {
 
       // The auto-start should happen with the initial plan
       await waitFor(() => {
-        expect(mockStartPlanning).toHaveBeenCalledWith("Pre-filled plan from new task");
+        expect(mockStartPlanningStreaming).toHaveBeenCalledWith("Pre-filled plan from new task");
       });
     });
   });
 
   describe("Planning flow", () => {
     it("starts planning and shows question view", async () => {
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: mockQuestion,
-        summary: null,
-      });
-
       render(
         <PlanningModeModal
           isOpen={true}
@@ -233,15 +234,29 @@ describe("PlanningModeModal", () => {
 
       fireEvent.click(screen.getByText("Start Planning"));
 
+      // Wait for streaming to be called
+      await waitFor(() => {
+        expect(mockStartPlanningStreaming).toHaveBeenCalledWith("Build auth system");
+      });
+
+      // Should transition to question view via streaming
       await waitFor(() => {
         expect(screen.getByText("What is the scope?")).toBeDefined();
       });
-
-      expect(mockStartPlanning).toHaveBeenCalledWith("Build auth system");
     });
 
     it("shows error message when planning fails", async () => {
-      mockStartPlanning.mockRejectedValue(new Error("Rate limit exceeded"));
+      // Override the default mock to simulate an error
+      mockConnectPlanningStream.mockImplementationOnce((sessionId: string, handlers: any) => {
+        setTimeout(() => {
+          handlers.onError?.("Rate limit exceeded");
+        }, 10);
+        
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
 
       render(
         <PlanningModeModal
@@ -274,12 +289,6 @@ describe("PlanningModeModal", () => {
         />
       );
 
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: mockQuestion,
-        summary: null,
-      });
-
       const textarea = screen.getByPlaceholderText(/e.g., Build a user authentication/);
       fireEvent.change(textarea, { target: { value: "Build auth system" } });
       fireEvent.click(screen.getByText("Start Planning"));
@@ -297,10 +306,16 @@ describe("PlanningModeModal", () => {
 
   describe("Summary view", () => {
     it("shows summary when planning is complete", async () => {
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: null,
-        summary: mockSummary,
+      // Override mock to return summary instead of question
+      mockConnectPlanningStream.mockImplementationOnce((sessionId: string, handlers: any) => {
+        setTimeout(() => {
+          handlers.onSummary?.(mockSummary);
+        }, 10);
+        
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
       });
 
       const { container } = render(
@@ -339,10 +354,16 @@ describe("PlanningModeModal", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
       };
 
-      mockStartPlanning.mockResolvedValue({
-        sessionId: "session-123",
-        currentQuestion: null,
-        summary: mockSummary,
+      // Override mock to return summary
+      mockConnectPlanningStream.mockImplementationOnce((sessionId: string, handlers: any) => {
+        setTimeout(() => {
+          handlers.onSummary?.(mockSummary);
+        }, 10);
+        
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
       });
 
       mockCreateTaskFromPlanning.mockResolvedValue(createdTask);
