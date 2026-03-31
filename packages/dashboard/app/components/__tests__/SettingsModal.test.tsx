@@ -19,6 +19,7 @@ const defaultSettings: Settings = {
   smartConflictResolution: true,
   ntfyEnabled: false,
   ntfyTopic: undefined,
+  taskStuckTimeoutMs: undefined,
 };
 
 vi.mock("../../api", () => ({
@@ -1151,5 +1152,63 @@ describe("SettingsModal", () => {
     fireEvent.click(testButton);
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith("Network error", "error"));
+  });
+
+  // --- Stuck Task Timeout field tests ---
+
+  it("shows Stuck Task Timeout field in Scheduling section", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("Scheduling"));
+    const input = screen.getByLabelText("Stuck Task Timeout (ms)");
+    expect(input).toBeTruthy();
+    expect(input.getAttribute("type")).toBe("number");
+    expect(input.getAttribute("min")).toBe("0");
+    expect(input.getAttribute("step")).toBe("60000");
+  });
+
+  it("Stuck Task Timeout field saves correctly when set to a value", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("Scheduling"));
+    const input = screen.getByLabelText("Stuck Task Timeout (ms)") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "600000" } });
+    expect(input.value).toBe("600000");
+
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+
+    const payload = (updateSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.taskStuckTimeoutMs).toBe(600000);
+  });
+
+  it("Stuck Task Timeout field submits undefined when set to 0 or empty (disabled)", async () => {
+    (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...defaultSettings,
+      taskStuckTimeoutMs: 600000,
+    });
+
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("Scheduling"));
+    const input = screen.getByLabelText("Stuck Task Timeout (ms)") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+
+    const payload = (updateSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.taskStuckTimeoutMs).toBeUndefined();
+  });
+
+  it("Stuck Task Timeout field shows helper text", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByText("Scheduling"));
+    expect(screen.getByText(/Timeout in milliseconds for detecting stuck tasks/)).toBeTruthy();
   });
 });
