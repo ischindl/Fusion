@@ -37,9 +37,17 @@ interface ColumnProps {
   onToggleCollapse?: () => void;
   allTasks?: Task[];
   availableModels?: ModelInfo[];
+  /**
+   * Called when the user clicks the "Plan" button in the inline create card.
+   */
+  onPlanningMode?: (initialPlan: string) => void;
+  /**
+   * Called when the user clicks the "Subtask" button in the inline create card.
+   */
+  onSubtaskBreakdown?: (description: string) => void;
 }
 
-function ColumnComponent({ column, tasks, maxConcurrent, onMoveTask, onOpenDetail, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onArchiveTask, onUnarchiveTask, onArchiveAllDone, collapsed, onToggleCollapse, allTasks, availableModels }: ColumnProps) {
+function ColumnComponent({ column, tasks, maxConcurrent, onMoveTask, onOpenDetail, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onArchiveTask, onUnarchiveTask, onArchiveAllDone, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown }: ColumnProps) {
   const [dragOver, setDragOver] = useState(false);
   const [visibleTaskCount, setVisibleTaskCount] = useState(VISIBLE_TASKS_INITIAL);
   const countFlashing = useFlashOnIncrease(tasks.length);
@@ -177,6 +185,8 @@ function ColumnComponent({ column, tasks, maxConcurrent, onMoveTask, onOpenDetai
               addToast={addToast} 
               tasks={allTasks ?? []}
               availableModels={availableModels}
+              onPlanningMode={onPlanningMode}
+              onSubtaskBreakdown={onSubtaskBreakdown}
             />
           )}
           {column === "in-progress" ? (

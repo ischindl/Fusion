@@ -56,6 +56,25 @@ Update it when:
 
 The extension has no skills — tool descriptions, `promptSnippet`, and `promptGuidelines` give the LLM everything it needs.
 
+## Dashboard Task Creation
+
+The dashboard provides two UI surfaces for creating tasks:
+
+### QuickEntryBox (List View) and InlineCreateCard (Board View)
+
+Both components provide the same task creation experience with the following options:
+
+- **Description input** — Type the task description. Press Enter to create immediately, or use the action buttons for AI-assisted creation.
+- **Deps button** — Add task dependencies before creation.
+- **Models button** — Override the default AI models for this task (executor and validator).
+- **Plan button** (Lightbulb icon) — Opens the AI Planning Mode modal with the current description pre-filled. This allows refining the task through an interactive Q&A before creation.
+- **Subtask button** (ListTree icon) — Opens the subtask breakdown dialog (placeholder for KB-247). This will allow breaking a task into multiple subtasks.
+
+**Behavior:**
+- Both Plan and Subtask buttons are disabled when no description is entered.
+- Clicking either button clears the input after triggering the action.
+- Regular task creation (Enter key) works as before without AI assistance.
+
 ## Dashboard badge WebSockets
 
 GitHub PR and issue badges in the dashboard now have a dedicated real-time WebSocket channel at `/api/ws`.

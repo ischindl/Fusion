@@ -26,6 +26,14 @@ interface BoardProps {
   onArchiveAllDone?: () => Promise<Task[]>;
   searchQuery?: string;
   availableModels?: ModelInfo[];
+  /**
+   * Called when the user clicks the "Plan" button in the inline create card.
+   */
+  onPlanningMode?: (initialPlan: string) => void;
+  /**
+   * Called when the user clicks the "Subtask" button in the inline create card.
+   */
+  onSubtaskBreakdown?: (description: string) => void;
 }
 
 function sortTasksForColumn(tasks: Task[]): Task[] {
@@ -44,7 +52,7 @@ function areTaskArraysEqual(previous: Task[], next: Task[]): boolean {
   return previous.every((task, index) => task === next[index]);
 }
 
-export function Board({ tasks, maxConcurrent, onMoveTask, onOpenDetail, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onArchiveTask, onUnarchiveTask, onArchiveAllDone, searchQuery = "", availableModels }: BoardProps) {
+export function Board({ tasks, maxConcurrent, onMoveTask, onOpenDetail, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onArchiveTask, onUnarchiveTask, onArchiveAllDone, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown }: BoardProps) {
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   const { fetchBatch } = useBatchBadgeFetch();
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -150,7 +158,7 @@ export function Board({ tasks, maxConcurrent, onMoveTask, onOpenDetail, addToast
           onUnarchiveTask={onUnarchiveTask}
           allTasks={filteredTasks}
           availableModels={availableModels}
-          {...(col === "triage" ? { onQuickCreate, onNewTask } : {})}
+          {...(col === "triage" ? { onQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
           {...(col === "in-review" ? { autoMerge, onToggleAutoMerge } : {})}
           {...(col === "done" ? { onArchiveAllDone } : {})}
           {...(col === "archived" ? { collapsed: archivedCollapsed, onToggleCollapse: handleToggleArchivedCollapse } : {})}

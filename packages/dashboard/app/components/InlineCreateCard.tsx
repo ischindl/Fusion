@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Brain, Link } from "lucide-react";
+import { Brain, Link, Lightbulb, ListTree } from "lucide-react";
 import type { Task, TaskCreateInput } from "@kb/core";
 import type { ToastType } from "../hooks/useToast";
 import { fetchModels, uploadAttachment } from "../api";
@@ -24,6 +24,14 @@ interface InlineCreateCardProps {
    * without forcing model data to be threaded through every caller.
    */
   availableModels?: ModelInfo[];
+  /**
+   * Called when the user clicks the "Plan" button to open planning mode.
+   */
+  onPlanningMode?: (initialPlan: string) => void;
+  /**
+   * Called when the user clicks the "Subtask" button to trigger subtask breakdown.
+   */
+  onSubtaskBreakdown?: (description: string) => void;
 }
 
 function getModelSelectionValue(provider?: string, modelId?: string): string {
@@ -52,6 +60,8 @@ export function InlineCreateCard({
   onCancel,
   addToast,
   availableModels,
+  onPlanningMode,
+  onSubtaskBreakdown,
 }: InlineCreateCardProps) {
   const [description, setDescription] = useState("");
   const [dependencies, setDependencies] = useState<string[]>([]);
@@ -65,7 +75,6 @@ export function InlineCreateCard({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadedModels, setLoadedModels] = useState<ModelInfo[]>(availableModels ?? []);
-  const [breakIntoSubtasks, setBreakIntoSubtasks] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -160,7 +169,6 @@ export function InlineCreateCard({
         description.trim() === "" &&
         pendingImages.length === 0 &&
         dependencies.length === 0 &&
-        !breakIntoSubtasks &&
         !hasExecutorOverride &&
         !hasValidatorOverride &&
         !showDeps &&
@@ -175,7 +183,6 @@ export function InlineCreateCard({
     description,
     pendingImages,
     dependencies,
-    breakIntoSubtasks,
     hasExecutorOverride,
     hasValidatorOverride,
     showDeps,
@@ -232,7 +239,6 @@ export function InlineCreateCard({
         description: description.trim(),
         column: "triage",
         dependencies: dependencies.length ? dependencies : undefined,
-        breakIntoSubtasks,
         modelProvider: hasExecutorOverride ? executorProvider : undefined,
         modelId: hasExecutorOverride ? executorModelId : undefined,
         validatorModelProvider: hasValidatorOverride ? validatorProvider : undefined,
@@ -267,17 +273,16 @@ export function InlineCreateCard({
   }, [
     description,
     dependencies,
-    breakIntoSubtasks,
-    submitting,
-    pendingImages,
-    onSubmit,
-    addToast,
     hasExecutorOverride,
     executorProvider,
     executorModelId,
     hasValidatorOverride,
     validatorProvider,
     validatorModelId,
+    submitting,
+    pendingImages,
+    onSubmit,
+    addToast,
   ]);
 
   const handleKeyDown = useCallback(
@@ -339,6 +344,42 @@ export function InlineCreateCard({
     }
     e.preventDefault();
   }, []);
+
+  const handlePlanClick = useCallback(() => {
+    const trimmed = description.trim();
+    if (!trimmed) {
+      addToast("Enter a description first", "error");
+      return;
+    }
+    onPlanningMode?.(trimmed);
+    // Clear the input after triggering planning mode
+    setDescription("");
+    setDependencies([]);
+    setExecutorProvider(undefined);
+    setExecutorModelId(undefined);
+    setValidatorProvider(undefined);
+    setValidatorModelId(undefined);
+    setShowDeps(false);
+    setShowModels(false);
+  }, [description, onPlanningMode, addToast]);
+
+  const handleSubtaskClick = useCallback(() => {
+    const trimmed = description.trim();
+    if (!trimmed) {
+      addToast("Enter a description first", "error");
+      return;
+    }
+    onSubtaskBreakdown?.(trimmed);
+    // Clear the input after triggering subtask breakdown
+    setDescription("");
+    setDependencies([]);
+    setExecutorProvider(undefined);
+    setExecutorModelId(undefined);
+    setValidatorProvider(undefined);
+    setValidatorModelId(undefined);
+    setShowDeps(false);
+    setShowModels(false);
+  }, [description, onSubtaskBreakdown, addToast]);
 
   const truncate = (s: string, len: number) =>
     s.length > len ? s.slice(0, len) + "…" : s;
@@ -515,18 +556,30 @@ export function InlineCreateCard({
           </div>
 
           {!submitting && (
-            <label
-              className="inline-create-hint"
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}
-            >
-              <input
-                type="checkbox"
-                data-testid="break-into-subtasks-toggle"
-                checked={breakIntoSubtasks}
-                onChange={(e) => setBreakIntoSubtasks(e.target.checked)}
-              />
-              Break into subtasks
-            </label>
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handlePlanClick}
+                disabled={!description.trim()}
+                data-testid="plan-button"
+                title="Open planning mode with current description"
+              >
+                <Lightbulb size={12} style={{ verticalAlign: "middle" }} />
+                Plan
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleSubtaskClick}
+                disabled={!description.trim()}
+                data-testid="subtask-button"
+                title="Break down into subtasks (coming soon)"
+              >
+                <ListTree size={12} style={{ verticalAlign: "middle" }} />
+                Subtask
+              </button>
+            </>
           )}
         </div>
         <div className="inline-create-actions">

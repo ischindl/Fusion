@@ -144,6 +144,13 @@ function AppInner() {
     setIsPlanningOpen(true);
   }, []);
 
+  // Handle subtask breakdown from inline/quick create
+  const handleSubtaskBreakdown = useCallback((description: string) => {
+    // Placeholder for KB-247 integration
+    // For now, show a toast indicating this feature is coming
+    addToast("Subtask breakdown coming soon! Description: " + description.slice(0, 30) + "...", "info");
+  }, [addToast]);
+
   // Usage indicator handlers
   const handleOpenUsage = useCallback(() => setUsageOpen(true), []);
   const handleCloseUsage = useCallback(() => setUsageOpen(false), []);
@@ -238,6 +245,8 @@ function AppInner() {
           addToast={addToast}
           onQuickCreate={handleBoardQuickCreate}
           onNewTask={handleNewTaskOpen}
+          onPlanningMode={handleNewTaskPlanningMode}
+          onSubtaskBreakdown={handleSubtaskBreakdown}
           autoMerge={autoMerge}
           onToggleAutoMerge={handleToggleAutoMerge}
           globalPaused={globalPaused}
@@ -258,6 +267,8 @@ function AppInner() {
           globalPaused={globalPaused}
           onNewTask={handleNewTaskOpen}
           onQuickCreate={handleBoardQuickCreate}
+          onPlanningMode={handleNewTaskPlanningMode}
+          onSubtaskBreakdown={handleSubtaskBreakdown}
           availableModels={availableModels}
         />
       )}

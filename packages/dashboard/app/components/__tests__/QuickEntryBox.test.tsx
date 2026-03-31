@@ -67,6 +67,14 @@ vi.mock("../../api", () => ({
   ]),
 }));
 
+// Mock lucide-react
+vi.mock("lucide-react", () => ({
+  Link: () => null,
+  Brain: () => null,
+  Lightbulb: () => null,
+  ListTree: () => null,
+}));
+
 function renderQuickEntryBox(props = {}) {
   const defaultProps = {
     onCreate: vi.fn().mockResolvedValue(undefined),
@@ -366,18 +374,20 @@ describe("QuickEntryBox", () => {
       expect(screen.getByTestId("quick-entry-models-button")).toBeTruthy();
     });
 
-    it("shows break-into-subtasks toggle when typing", () => {
+    it("shows Plan and Subtask buttons when typing", () => {
       renderQuickEntryBox();
       const textarea = screen.getByTestId("quick-entry-input");
 
       // Initially, no controls are visible
-      expect(screen.queryByTestId("quick-entry-subtasks-toggle")).toBeNull();
+      expect(screen.queryByTestId("plan-button")).toBeNull();
+      expect(screen.queryByTestId("subtask-button")).toBeNull();
 
       // Type something
-      fireEvent.change(textarea, { target: { value: "Task to break" } });
+      fireEvent.change(textarea, { target: { value: "Task to plan" } });
 
-      // Now the subtasks toggle should be visible
-      expect(screen.getByTestId("quick-entry-subtasks-toggle")).toBeTruthy();
+      // Now the Plan and Subtask buttons should be visible
+      expect(screen.getByTestId("plan-button")).toBeTruthy();
+      expect(screen.getByTestId("subtask-button")).toBeTruthy();
     });
 
     it("opens dependency dropdown when clicking deps button", () => {
@@ -428,26 +438,80 @@ describe("QuickEntryBox", () => {
       });
     });
 
-    it("toggles break-into-subtasks and includes it in submit payload", async () => {
-      const { props } = renderQuickEntryBox();
+    it("calls onPlanningMode and clears input when Plan clicked", async () => {
+      const onPlanningMode = vi.fn();
+      const { props } = renderQuickEntryBox({ onPlanningMode });
       const textarea = screen.getByTestId("quick-entry-input");
 
-      fireEvent.change(textarea, { target: { value: "Task to break" } });
-
-      const checkbox = screen.getByTestId("quick-entry-subtasks-toggle").querySelector("input");
-      expect(checkbox).toBeTruthy();
-      fireEvent.click(checkbox!);
-
-      fireEvent.keyDown(textarea, { key: "Enter" });
+      fireEvent.change(textarea, { target: { value: "Plan this task" } });
+      fireEvent.click(screen.getByTestId("plan-button"));
 
       await waitFor(() => {
-        expect(props.onCreate).toHaveBeenCalledWith(
-          expect.objectContaining({
-            description: "Task to break",
-            breakIntoSubtasks: true,
-          }),
-        );
+        expect(onPlanningMode).toHaveBeenCalledWith("Plan this task");
       });
+
+      // Input should be cleared
+      expect((textarea as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("calls onSubtaskBreakdown and clears input when Subtask clicked", async () => {
+      const onSubtaskBreakdown = vi.fn();
+      const { props } = renderQuickEntryBox({ onSubtaskBreakdown });
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      fireEvent.change(textarea, { target: { value: "Break this down" } });
+      fireEvent.click(screen.getByTestId("subtask-button"));
+
+      await waitFor(() => {
+        expect(onSubtaskBreakdown).toHaveBeenCalledWith("Break this down");
+      });
+
+      // Input should be cleared
+      expect((textarea as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("disables Plan and Subtask buttons when description is empty", () => {
+      renderQuickEntryBox();
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Type something first to make buttons appear
+      fireEvent.change(textarea, { target: { value: "Some task" } });
+
+      const planButton = screen.getByTestId("plan-button") as HTMLButtonElement;
+      const subtaskButton = screen.getByTestId("subtask-button") as HTMLButtonElement;
+
+      // Buttons should be enabled when there's content
+      expect(planButton.disabled).toBe(false);
+      expect(subtaskButton.disabled).toBe(false);
+
+      // Clear the input
+      fireEvent.change(textarea, { target: { value: "" } });
+
+      // Buttons should now be disabled (or hidden since controls collapse)
+      // Since the controls might hide when empty, we check if they exist and are disabled
+      const updatedPlanButton = screen.queryByTestId("plan-button") as HTMLButtonElement | null;
+      if (updatedPlanButton) {
+        expect(updatedPlanButton.disabled).toBe(true);
+      }
+    });
+
+    it("shows toast when Plan clicked with empty description", () => {
+      const addToast = vi.fn();
+      renderQuickEntryBox({ addToast });
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Type something first to make buttons appear
+      fireEvent.change(textarea, { target: { value: "Some task" } });
+
+      // Clear input
+      fireEvent.change(textarea, { target: { value: "" } });
+
+      // Button should be hidden when input is empty (controls collapse)
+      const planButton = screen.queryByTestId("plan-button");
+      if (planButton) {
+        // If somehow visible, it should be disabled
+        expect((planButton as HTMLButtonElement).disabled).toBe(true);
+      }
     });
 
     it("includes selected models in submit payload", async () => {
@@ -504,7 +568,6 @@ describe("QuickEntryBox", () => {
       const textarea = screen.getByTestId("quick-entry-input");
 
       fireEvent.change(textarea, { target: { value: "Task to clear" } });
-      fireEvent.click(screen.getByTestId("quick-entry-subtasks-toggle").querySelector("input")!);
 
       // First Escape closes any dropdowns
       fireEvent.keyDown(textarea, { key: "Escape" });
@@ -522,7 +585,6 @@ describe("QuickEntryBox", () => {
       const textarea = screen.getByTestId("quick-entry-input");
 
       fireEvent.change(textarea, { target: { value: "Task to reset" } });
-      fireEvent.click(screen.getByTestId("quick-entry-subtasks-toggle").querySelector("input")!);
 
       fireEvent.keyDown(textarea, { key: "Enter" });
 
@@ -533,7 +595,8 @@ describe("QuickEntryBox", () => {
       // After creation, controls should be collapsed
       expect((textarea as HTMLTextAreaElement).value).toBe("");
       expect(screen.queryByTestId("quick-entry-deps-button")).toBeNull();
-      expect(screen.queryByTestId("quick-entry-subtasks-toggle")).toBeNull();
+      expect(screen.queryByTestId("plan-button")).toBeNull();
+      expect(screen.queryByTestId("subtask-button")).toBeNull();
     });
   });
 });

@@ -3,7 +3,7 @@ import type { ToastType } from "../hooks/useToast";
 import type { Task, TaskCreateInput } from "@kb/core";
 import type { ModelInfo } from "../api";
 import { fetchModels } from "../api";
-import { Link, Brain } from "lucide-react";
+import { Link, Brain, Lightbulb, ListTree } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 
 interface QuickEntryBoxProps {
@@ -11,6 +11,14 @@ interface QuickEntryBoxProps {
   addToast: (message: string, type?: ToastType) => void;
   tasks?: Task[];
   availableModels?: ModelInfo[];
+  /**
+   * Called when the user clicks the "Plan" button to open planning mode.
+   */
+  onPlanningMode?: (initialPlan: string) => void;
+  /**
+   * Called when the user clicks the "Subtask" button to trigger subtask breakdown.
+   */
+  onSubtaskBreakdown?: (description: string) => void;
 }
 
 function getModelSelectionValue(provider?: string, modelId?: string): string {
@@ -33,7 +41,7 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
   };
 }
 
-export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels }: QuickEntryBoxProps) {
+export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown }: QuickEntryBoxProps) {
   const [description, setDescription] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -53,7 +61,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadedModels, setLoadedModels] = useState<ModelInfo[]>(availableModels ?? []);
-  const [breakIntoSubtasks, setBreakIntoSubtasks] = useState(false);
 
   // If onCreate is not provided, the component is disabled
   const isDisabled = !onCreate;
@@ -155,7 +162,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
   const resetForm = useCallback(() => {
     setDescription("");
     setDependencies([]);
-    setBreakIntoSubtasks(false);
     setExecutorProvider(undefined);
     setExecutorModelId(undefined);
     setValidatorProvider(undefined);
@@ -179,7 +185,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
         description: trimmed,
         column: "triage",
         dependencies: dependencies.length ? dependencies : undefined,
-        breakIntoSubtasks,
         modelProvider: hasExecutorOverride ? executorProvider : undefined,
         modelId: hasExecutorOverride ? executorModelId : undefined,
         validatorModelProvider: hasValidatorOverride ? validatorProvider : undefined,
@@ -199,7 +204,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
     isSubmitting,
     onCreate,
     dependencies,
-    breakIntoSubtasks,
     hasExecutorOverride,
     executorProvider,
     executorModelId,
@@ -324,6 +328,28 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
     }
     e.preventDefault();
   }, []);
+
+  const handlePlanClick = useCallback(() => {
+    const trimmed = description.trim();
+    if (!trimmed) {
+      addToast("Enter a description first", "error");
+      return;
+    }
+    onPlanningMode?.(trimmed);
+    // Clear the form after triggering planning mode
+    resetForm();
+  }, [description, onPlanningMode, addToast, resetForm]);
+
+  const handleSubtaskClick = useCallback(() => {
+    const trimmed = description.trim();
+    if (!trimmed) {
+      addToast("Enter a description first", "error");
+      return;
+    }
+    onSubtaskBreakdown?.(trimmed);
+    // Clear the form after triggering subtask breakdown
+    resetForm();
+  }, [description, onSubtaskBreakdown, addToast, resetForm]);
 
   const truncate = (s: string, len: number) =>
     s.length > len ? s.slice(0, len) + "…" : s;
@@ -504,17 +530,30 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels 
             </div>
 
             {!isSubmitting && (
-              <label
-                className="quick-entry-subtasks-toggle"
-                data-testid="quick-entry-subtasks-toggle"
-              >
-                <input
-                  type="checkbox"
-                  checked={breakIntoSubtasks}
-                  onChange={(e) => setBreakIntoSubtasks(e.target.checked)}
-                />
-                Break into subtasks
-              </label>
+              <>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handlePlanClick}
+                  disabled={!description.trim()}
+                  data-testid="plan-button"
+                  title="Open planning mode with current description"
+                >
+                  <Lightbulb size={12} style={{ verticalAlign: "middle" }} />
+                  Plan
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleSubtaskClick}
+                  disabled={!description.trim()}
+                  data-testid="subtask-button"
+                  title="Break down into subtasks (coming soon)"
+                >
+                  <ListTree size={12} style={{ verticalAlign: "middle" }} />
+                  Subtask
+                </button>
+              </>
             )}
           </div>
           <div className="quick-entry-hint">

@@ -34,6 +34,14 @@ interface ListViewProps {
   onNewTask?: () => void;
   onQuickCreate?: (input: TaskCreateInput) => Promise<void>;
   availableModels?: ModelInfo[];
+  /**
+   * Called when the user clicks the "Plan" button in the quick entry box.
+   */
+  onPlanningMode?: (initialPlan: string) => void;
+  /**
+   * Called when the user clicks the "Subtask" button in the quick entry box.
+   */
+  onSubtaskBreakdown?: (description: string) => void;
 }
 
 function getStepProgress(steps: TaskStep[]): string {
@@ -57,6 +65,8 @@ export function ListView({
   onNewTask,
   onQuickCreate,
   availableModels,
+  onPlanningMode,
+  onSubtaskBreakdown,
 }: ListViewProps) {
   const [sortField, setSortField] = useState<SortField>("id");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -465,6 +475,8 @@ export function ListView({
           addToast={addToast}
           tasks={tasks}
           availableModels={availableModels}
+          onPlanningMode={onPlanningMode}
+          onSubtaskBreakdown={onSubtaskBreakdown}
         />
       </div>
 
