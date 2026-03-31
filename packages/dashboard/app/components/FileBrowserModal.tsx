@@ -2,19 +2,44 @@ import { useState, useCallback, useEffect } from "react";
 import { X, Save, RotateCcw, Folder } from "lucide-react";
 import { useFileBrowser } from "../hooks/useFileBrowser";
 import { useFileEditor } from "../hooks/useFileEditor";
+import { useProjectFileBrowser } from "../hooks/useProjectFileBrowser";
+import { useProjectFileEditor } from "../hooks/useProjectFileEditor";
 import { FileBrowser } from "./FileBrowser";
 import { FileEditor } from "./FileEditor";
 
-interface FileBrowserModalProps {
+type TaskModeProps = {
   taskId: string;
   worktreePath?: string;
+  projectRoot?: never;
+};
+
+type ProjectModeProps = {
+  projectRoot: string;
+  taskId?: never;
+  worktreePath?: never;
+};
+
+type FileBrowserModalProps = {
   isOpen?: boolean;
   onClose: () => void;
-}
+} & (TaskModeProps | ProjectModeProps);
 
-export function FileBrowserModal({ taskId, worktreePath, onClose }: FileBrowserModalProps) {
+export function FileBrowserModal(props: FileBrowserModalProps) {
+  const { taskId, projectRoot, onClose } = props;
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
+  // Determine mode based on which prop is provided
+  const isTaskMode = taskId !== undefined;
+  const isProjectMode = projectRoot !== undefined;
+
+  // Use appropriate hooks based on mode
+  const taskBrowser = useFileBrowser(taskId ?? "", isTaskMode);
+  const projectBrowser = useProjectFileBrowser(projectRoot ?? "", isProjectMode);
+
+  const taskEditor = useFileEditor(taskId ?? "", selectedFile, isTaskMode);
+  const projectEditor = useProjectFileEditor(projectRoot ?? "", selectedFile, isProjectMode);
+
+  // Select the active hooks based on mode
   const {
     entries,
     currentPath,
@@ -22,7 +47,7 @@ export function FileBrowserModal({ taskId, worktreePath, onClose }: FileBrowserM
     loading: browserLoading,
     error: browserError,
     refresh,
-  } = useFileBrowser(taskId, true);
+  } = isTaskMode ? taskBrowser : projectBrowser;
 
   const {
     content,
@@ -34,7 +59,7 @@ export function FileBrowserModal({ taskId, worktreePath, onClose }: FileBrowserM
     save,
     hasChanges,
     mtime,
-  } = useFileEditor(taskId, selectedFile, true);
+  } = isTaskMode ? taskEditor : projectEditor;
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -68,13 +93,16 @@ export function FileBrowserModal({ taskId, worktreePath, onClose }: FileBrowserM
     return `${(bytes / 1024).toFixed(1)} KB`;
   };
 
+  // Determine modal title based on mode
+  const modalTitle = isTaskMode ? `Files — ${taskId}` : "Files — Project";
+
   return (
     <div className="modal-overlay open" onClick={onClose}>
       <div className="modal file-browser-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="file-browser-header-title">
             <Folder size={18} />
-            <span>Files</span>
+            <span>{modalTitle}</span>
             {selectedFile && (
               <span className="file-browser-header-path">
                 {currentPath === "." ? "" : currentPath + "/"}

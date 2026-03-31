@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Settings, Pause, Play, Square, Download, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock } from "lucide-react";
+import { Settings, Pause, Play, Square, Download, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock, Folder } from "lucide-react";
 
 interface HeaderProps {
   onOpenSettings?: () => void;
@@ -8,6 +8,8 @@ interface HeaderProps {
   onOpenUsage?: () => void;
   onOpenSchedules?: () => void;
   onToggleTerminal?: () => void;
+  onToggleFiles?: () => void;
+  filesOpen?: boolean;
   globalPaused?: boolean;
   enginePaused?: boolean;
   onToggleGlobalPause?: () => void;
@@ -42,6 +44,8 @@ export function Header({
   onOpenUsage,
   onOpenSchedules,
   onToggleTerminal,
+  onToggleFiles,
+  filesOpen,
   globalPaused,
   enginePaused,
   onToggleGlobalPause,
@@ -262,6 +266,18 @@ export function Header({
           </button>
         )}
 
+        {/* Files button - desktop only */}
+        {!isMobile && onToggleFiles && (
+          <button
+            className={`btn-icon${filesOpen ? " btn-icon--active" : ""}`}
+            onClick={onToggleFiles}
+            title="Browse Files"
+            data-testid="files-toggle-btn"
+          >
+            <Folder size={16} />
+          </button>
+        )}
+
         {/* Pause button (soft pause) - always inline */}
         <button
           className={`btn-icon${enginePaused ? " btn-icon--paused" : ""}`}
@@ -321,6 +337,18 @@ export function Header({
               <Terminal size={16} />
               <span>Open Terminal</span>
             </button>
+            {/* Files - in overflow on mobile */}
+            {onToggleFiles && (
+              <button
+                className="mobile-overflow-item"
+                onClick={() => handleOverflowAction(onToggleFiles)}
+                role="menuitem"
+                data-testid="overflow-files-btn"
+              >
+                <Folder size={16} />
+                <span>Browse Files</span>
+              </button>
+            )}
             <button
               className="mobile-overflow-item"
               onClick={() => handleOverflowAction(onOpenGitHubImport)}

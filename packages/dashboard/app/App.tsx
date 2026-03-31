@@ -6,6 +6,7 @@ import { Board } from "./components/Board";
 import { ListView } from "./components/ListView";
 import { TaskDetailModal } from "./components/TaskDetailModal";
 import { TerminalModal } from "./components/TerminalModal";
+import { FileBrowserModal } from "./components/FileBrowserModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { PlanningModeModal } from "./components/PlanningModeModal";
 import type { SectionId } from "./components/SettingsModal";
@@ -29,8 +30,10 @@ function AppInner() {
   const [githubImportOpen, setGitHubImportOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SectionId | undefined>(undefined);
   const [maxConcurrent, setMaxConcurrent] = useState(2);
+  const [rootDir, setRootDir] = useState<string>(".");
   const [autoMerge, setAutoMerge] = useState(true);
   const [globalPaused, setGlobalPaused] = useState(false);
   const [enginePaused, setEnginePaused] = useState(false);
@@ -61,7 +64,10 @@ function AppInner() {
 
   useEffect(() => {
     fetchConfig()
-      .then((cfg) => setMaxConcurrent(cfg.maxConcurrent))
+      .then((cfg) => {
+        setMaxConcurrent(cfg.maxConcurrent);
+        setRootDir(cfg.rootDir);
+      })
       .catch(() => {/* keep default */});
     fetchSettings()
       .then((s) => {
@@ -183,6 +189,10 @@ function AppInner() {
     setTerminalOpen(false);
   }, []);
 
+  const handleToggleFiles = useCallback(() => {
+    setFilesOpen((prev) => !prev);
+  }, []);
+
   return (
     <>
       <Header
@@ -192,6 +202,8 @@ function AppInner() {
         onOpenUsage={handleOpenUsage}
         onOpenSchedules={handleOpenSchedules}
         onToggleTerminal={handleToggleTerminal}
+        onToggleFiles={handleToggleFiles}
+        filesOpen={filesOpen}
         globalPaused={globalPaused}
         enginePaused={enginePaused}
         onToggleGlobalPause={handleToggleGlobalPause}
@@ -277,6 +289,13 @@ function AppInner() {
         isOpen={terminalOpen}
         onClose={handleTerminalClose}
       />
+      {filesOpen && (
+        <FileBrowserModal
+          projectRoot={rootDir}
+          isOpen={true}
+          onClose={() => setFilesOpen(false)}
+        />
+      )}
       <UsageIndicator
         isOpen={usageOpen}
         onClose={handleCloseUsage}

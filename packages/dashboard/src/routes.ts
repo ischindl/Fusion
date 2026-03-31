@@ -9,7 +9,7 @@ import { GitHubClient, getCurrentGitHubRepo, parseBadgeUrl } from "./github.js";
 import { githubRateLimiter } from "./github-poll.js";
 import { terminalSessionManager } from "./terminal.js";
 import { getTerminalService } from "./terminal-service.js";
-import { listFiles, readFile, writeFile, FileServiceError, type FileListResponse, type FileContentResponse, type SaveFileResponse } from "./file-service.js";
+import { listFiles, readFile, writeFile, listProjectFiles, readProjectFile, writeProjectFile, FileServiceError, type FileListResponse, type FileContentResponse, type SaveFileResponse } from "./file-service.js";
 import { fetchAllProviderUsage } from "./usage.js";
 import {
   getGitHubAppConfig,
@@ -576,9 +576,10 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       res.json({
         maxConcurrent: settings.maxConcurrent ?? options?.maxConcurrent ?? 2,
         maxWorktrees: settings.maxWorktrees ?? 4,
+        rootDir: store.getRootDir(),
       });
     } catch {
-      res.json({ maxConcurrent: options?.maxConcurrent ?? 2, maxWorktrees: 4 });
+      res.json({ maxConcurrent: options?.maxConcurrent ?? 2, maxWorktrees: 4, rootDir: store.getRootDir() });
     }
   });
 
@@ -2736,6 +2737,86 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       if (err instanceof FileServiceError) {
         const status = err.code === "ENOENT" ? 404
           : err.code === "ENOTASK" ? 404
+          : err.code === "EACCES" ? 403
+          : err.code === "ETOOLARGE" ? 413
+          : 400;
+        res.status(status).json({ error: err.message, code: err.code });
+      } else {
+        res.status(500).json({ error: err.message || "Internal server error" });
+      }
+    }
+  });
+
+  // ── Project File API Routes ───────────────────────────────────────
+
+  /**
+   * GET /api/files
+   * List files in project root directory.
+   * Query param: ?path=relative/path for subdirectory navigation.
+   * Returns: { path: string; entries: FileNode[] }
+   */
+  router.get("/files", async (req, res) => {
+    try {
+      const { path: subPath } = req.query;
+      const result = await listProjectFiles(store, typeof subPath === "string" ? subPath : undefined);
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FileServiceError) {
+        const status = err.code === "ENOENT" ? 404
+          : err.code === "EACCES" ? 403
+          : 400;
+        res.status(status).json({ error: err.message, code: err.code });
+      } else {
+        res.status(500).json({ error: err.message || "Internal server error" });
+      }
+    }
+  });
+
+  /**
+   * GET /api/files/{*filepath}
+   * Read file contents from project directory.
+   * Returns: { content: string; mtime: string; size: number }
+   */
+  router.get("/files/{*filepath}", async (req, res) => {
+    try {
+      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const result = await readProjectFile(store, filePath);
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FileServiceError) {
+        const status = err.code === "ENOENT" ? 404
+          : err.code === "EACCES" ? 403
+          : err.code === "ETOOLARGE" ? 413
+          : err.code === "EINVAL" && err.message.includes("Binary file") ? 415
+          : 400;
+        res.status(status).json({ error: err.message, code: err.code });
+      } else {
+        res.status(500).json({ error: err.message || "Internal server error" });
+      }
+    }
+  });
+
+  /**
+   * POST /api/files/{*filepath}
+   * Write file contents to project directory.
+   * Body: { content: string }
+   * Returns: { success: true; mtime: string; size: number }
+   */
+  router.post("/files/{*filepath}", async (req, res) => {
+    try {
+      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const { content } = req.body;
+      
+      if (typeof content !== "string") {
+        res.status(400).json({ error: "content is required and must be a string" });
+        return;
+      }
+
+      const result = await writeProjectFile(store, filePath, content);
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FileServiceError) {
+        const status = err.code === "ENOENT" ? 404
           : err.code === "EACCES" ? 403
           : err.code === "ETOOLARGE" ? 413
           : 400;

@@ -128,6 +128,14 @@ async function getTaskBasePath(store: TaskStore, taskId: string): Promise<string
 }
 
 /**
+ * Get the project root path for browsing files.
+ * Returns the root directory from the store.
+ */
+function getProjectBasePath(store: TaskStore): string {
+  return resolve(store.getRootDir());
+}
+
+/**
  * Validate and resolve a file path to ensure it stays within the allowed directory.
  * Prevents directory traversal attacks.
  */
@@ -335,6 +343,220 @@ export async function writeFile(
 
   const taskBase = await getTaskBasePath(store, taskId);
   const resolvedPath = validatePath(taskBase, filePath);
+
+  // Check if target is a directory
+  try {
+    const stats = await stat(resolvedPath);
+    if (stats.isDirectory()) {
+      throw new FileServiceError(`Cannot write to directory: ${filePath}`, "EISDIR");
+    }
+  } catch (err: any) {
+    if (err.code !== "ENOENT") {
+      throw err;
+    }
+    // File doesn't exist, that's fine for writing
+  }
+
+  // Check if parent directory exists
+  const parentDir = dirname(resolvedPath);
+  try {
+    const parentStats = await stat(parentDir);
+    if (!parentStats.isDirectory()) {
+      throw new FileServiceError(`Parent is not a directory: ${filePath}`, "ENOENT");
+    }
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`Parent directory does not exist: ${filePath}`, "ENOENT");
+    }
+    throw err;
+  }
+
+  try {
+    await fsWriteFile(resolvedPath, content, "utf-8");
+
+    const stats = await stat(resolvedPath);
+    return {
+      success: true,
+      mtime: stats.mtime.toISOString(),
+      size: stats.size,
+    };
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`Parent directory does not exist: ${filePath}`, "ENOENT");
+    }
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      throw new FileServiceError(`Permission denied: ${filePath}`, "EACCES");
+    }
+    throw err;
+  }
+}
+
+// ── Project File Functions ────────────────────────────────────────
+
+/**
+ * List files in the project root directory or subdirectory.
+ *
+ * @param store - The TaskStore instance
+ * @param subPath - Optional relative path within the project directory
+ * @returns File listing response with entries sorted (dirs first, then files alphabetically)
+ * @throws FileServiceError on validation or filesystem errors
+ */
+export async function listProjectFiles(
+  store: TaskStore,
+  subPath?: string,
+): Promise<FileListResponse> {
+  const projectBase = getProjectBasePath(store);
+  const targetPath = subPath ? validatePath(projectBase, subPath) : projectBase;
+
+  let stats;
+  try {
+    stats = await stat(targetPath);
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`Directory not found: ${subPath || "."}`, "ENOENT");
+    }
+    throw err;
+  }
+
+  if (!stats.isDirectory()) {
+    throw new FileServiceError(`Not a directory: ${subPath || "."}`, "ENOTDIR");
+  }
+
+  try {
+    const entries = await readdir(targetPath, { withFileTypes: true });
+    const fileNodes: FileNode[] = [];
+
+    for (const entry of entries) {
+      // Skip hidden files and directories
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+
+      const entryPath = join(targetPath, entry.name);
+      const entryStats = await stat(entryPath);
+
+      fileNodes.push({
+        name: entry.name,
+        type: entry.isDirectory() ? "directory" : "file",
+        size: entry.isFile() ? entryStats.size : undefined,
+        mtime: entryStats.mtime.toISOString(),
+      });
+    }
+
+    // Sort: directories first, then files, both alphabetically
+    fileNodes.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === "directory" ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    // Calculate relative path from project base
+    const relativeBase = relative(projectBase, targetPath);
+
+    return {
+      path: relativeBase || ".",
+      entries: fileNodes,
+    };
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`Directory not found: ${subPath || "."}`, "ENOENT");
+    }
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      throw new FileServiceError(`Permission denied: ${subPath || "."}`, "EACCES");
+    }
+    throw err;
+  }
+}
+
+/**
+ * Read file contents from the project directory.
+ *
+ * @param store - The TaskStore instance
+ * @param filePath - The relative file path
+ * @returns File content response with content, mtime, and size
+ * @throws FileServiceError on validation or filesystem errors
+ */
+export async function readProjectFile(
+  store: TaskStore,
+  filePath: string,
+): Promise<FileContentResponse> {
+  if (!filePath) {
+    throw new FileServiceError("File path is required", "EINVAL");
+  }
+
+  const projectBase = getProjectBasePath(store);
+  const resolvedPath = validatePath(projectBase, filePath);
+
+  let stats;
+  try {
+    stats = await stat(resolvedPath);
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`File not found: ${filePath}`, "ENOENT");
+    }
+    throw err;
+  }
+
+  if (!stats.isFile()) {
+    throw new FileServiceError(`Not a file: ${filePath}`, "EISDIR");
+  }
+
+  if (stats.size > MAX_FILE_SIZE) {
+    throw new FileServiceError(`File too large: ${stats.size} bytes (max ${MAX_FILE_SIZE})`, "ETOOLARGE");
+  }
+
+  // Check if it's a binary file
+  const basename = filePath.split("/").pop() || filePath;
+  if (isBinaryFile(basename)) {
+    throw new FileServiceError(`Binary file, cannot edit: ${filePath}`, "EINVAL");
+  }
+
+  try {
+    const content = await fsReadFile(resolvedPath, "utf-8");
+
+    return {
+      content,
+      mtime: stats.mtime.toISOString(),
+      size: stats.size,
+    };
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new FileServiceError(`File not found: ${filePath}`, "ENOENT");
+    }
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      throw new FileServiceError(`Permission denied: ${filePath}`, "EACCES");
+    }
+    throw err;
+  }
+}
+
+/**
+ * Write file contents to the project directory.
+ *
+ * @param store - The TaskStore instance
+ * @param filePath - The relative file path
+ * @param content - The content to write
+ * @returns Save file response with success, mtime, and size
+ * @throws FileServiceError on validation or filesystem errors
+ */
+export async function writeProjectFile(
+  store: TaskStore,
+  filePath: string,
+  content: string,
+): Promise<SaveFileResponse> {
+  if (!filePath) {
+    throw new FileServiceError("File path is required", "EINVAL");
+  }
+
+  // Check content size
+  const contentBytes = Buffer.byteLength(content, "utf-8");
+  if (contentBytes > MAX_FILE_SIZE) {
+    throw new FileServiceError(`Content too large: ${contentBytes} bytes (max ${MAX_FILE_SIZE})`, "ETOOLARGE");
+  }
+
+  const projectBase = getProjectBasePath(store);
+  const resolvedPath = validatePath(projectBase, filePath);
 
   // Check if target is a directory
   try {

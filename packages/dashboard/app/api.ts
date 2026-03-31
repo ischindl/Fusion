@@ -137,8 +137,8 @@ export function rejectPlan(id: string): Promise<Task> {
   return api<Task>(`/tasks/${id}/reject-plan`, { method: "POST" });
 }
 
-export function fetchConfig(): Promise<{ maxConcurrent: number }> {
-  return api<{ maxConcurrent: number }>("/config");
+export function fetchConfig(): Promise<{ maxConcurrent: number; rootDir: string }> {
+  return api<{ maxConcurrent: number; rootDir: string }>("/config");
 }
 
 export function fetchSettings(): Promise<Settings> {
@@ -705,6 +705,27 @@ export function fetchFileContent(taskId: string, filePath: string): Promise<File
 /** Save file content */
 export function saveFileContent(taskId: string, filePath: string, content: string): Promise<SaveFileResponse> {
   return api<SaveFileResponse>(`/tasks/${taskId}/files/${encodeURIComponent(filePath)}`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+// --- Project File Browser API ---
+
+/** List files in project root directory */
+export function fetchProjectFileList(path?: string): Promise<FileListResponse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return api<FileListResponse>(`/files${query}`);
+}
+
+/** Fetch file content from project directory */
+export function fetchProjectFileContent(filePath: string): Promise<FileContentResponse> {
+  return api<FileContentResponse>(`/files/${encodeURIComponent(filePath)}`);
+}
+
+/** Save file content to project directory */
+export function saveProjectFileContent(filePath: string, content: string): Promise<SaveFileResponse> {
+  return api<SaveFileResponse>(`/files/${encodeURIComponent(filePath)}`, {
     method: "POST",
     body: JSON.stringify({ content }),
   });

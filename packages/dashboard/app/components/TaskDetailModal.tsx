@@ -12,7 +12,6 @@ import { SteeringTab } from "./SteeringTab";
 import { ModelSelectorTab } from "./ModelSelectorTab";
 import { PrSection } from "./PrSection";
 import { SpecEditor } from "./SpecEditor";
-import { FileBrowserModal } from "./FileBrowserModal";
 
 interface ModelSelection {
   provider?: string;
@@ -105,7 +104,7 @@ export function TaskDetailModal({
   addToast,
   githubTokenConfigured,
 }: TaskDetailModalProps) {
-  const [activeTab, setActiveTab] = useState<"definition" | "activity" | "agent-log" | "steering" | "model" | "spec" | "files">("definition");
+  const [activeTab, setActiveTab] = useState<"definition" | "activity" | "agent-log" | "steering" | "model" | "spec">("definition");
   const [attachments, setAttachments] = useState<TaskAttachment[]>(task.attachments || []);
   const [uploading, setUploading] = useState(false);
   const [dependencies, setDependencies] = useState<string[]>(task.dependencies || []);
@@ -640,23 +639,8 @@ export function TaskDetailModal({
             >
               Spec
             </button>
-            {task.worktree && (
-              <button
-                className={`detail-tab${activeTab === "files" ? " detail-tab-active" : ""}`}
-                onClick={() => setActiveTab("files")}
-              >
-                Files
-              </button>
-            )}
           </div>
-          {activeTab === "files" ? (
-            <FileBrowserModal
-              taskId={task.id}
-              worktreePath={task.worktree}
-              isOpen={true}
-              onClose={() => setActiveTab("definition")}
-            />
-          ) : activeTab === "spec" ? (
+          {activeTab === "spec" ? (
             <div className="detail-section detail-section--spec">
               <SpecEditor
                 content={task.prompt || ""}
