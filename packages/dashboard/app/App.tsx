@@ -492,6 +492,7 @@ function AppInner() {
         onOpenWorkflowSteps={() => setWorkflowStepsOpen(true)}
         onOpenAgents={handleOpenAgents}
         onOpenScripts={handleOpenScripts}
+        onRunScript={handleRunScript}
         onToggleTerminal={handleToggleTerminal}
         onOpenFiles={handleOpenFiles}
         filesOpen={filesOpen}

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Settings, Pause, Play, Square, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Workflow, Bot, ChevronLeft } from "lucide-react";
 import type { ProjectInfo } from "@fusion/core";
 import { ProjectSelector } from "./ProjectSelector";
+import { QuickScriptsDropdown } from "./QuickScriptsDropdown";
 
 // GitHub logo icon (Octocat mark) - uses currentColor for theme compatibility
 function GitHubLogo({ size = 16 }: { size?: number }) {
@@ -29,6 +30,7 @@ export interface HeaderProps {
   onOpenWorkflowSteps?: () => void;
   onOpenAgents?: () => void;
   onOpenScripts?: () => void;
+  onRunScript?: (name: string, command: string) => void;
   onToggleTerminal?: () => void;
   /** Opens the top-level workspace-aware file browser modal. */
   onOpenFiles?: () => void;
@@ -76,6 +78,7 @@ export function Header({
   onOpenWorkflowSteps,
   onOpenAgents,
   onOpenScripts,
+  onRunScript,
   onToggleTerminal,
   onOpenFiles,
   filesOpen,
@@ -396,15 +399,11 @@ export function Header({
         )}
 
         {/* Scripts - desktop only */}
-        {!isMobile && onOpenScripts && (
-          <button
-            className="btn-icon"
-            onClick={onOpenScripts}
-            title="Scripts"
-            data-testid="scripts-btn"
-          >
-            <Terminal size={16} />
-          </button>
+        {!isMobile && onOpenScripts && onRunScript && (
+          <QuickScriptsDropdown
+            onOpenScripts={onOpenScripts}
+            onRunScript={onRunScript}
+          />
         )}
 
         {/* Settings - always inline on desktop */}
