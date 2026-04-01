@@ -23,6 +23,22 @@ import {
   startPlanningStreaming,
   fetchTasks,
   summarizeTitle,
+  fetchProjects,
+  registerProject,
+  unregisterProject,
+  fetchProjectHealth,
+  fetchActivityFeed,
+  pauseProject,
+  resumeProject,
+  fetchFirstRunStatus,
+  fetchGlobalConcurrency,
+  fetchProjectTasks,
+  fetchProjectConfig,
+  type ProjectInfo,
+  type ProjectHealth,
+  type ActivityFeedEntry,
+  type FirstRunStatus,
+  type GlobalConcurrencyState,
 } from "./api";
 import type { Task, TaskDetail, BatchStatusResponse } from "@fusion/core";
 
@@ -1797,5 +1813,345 @@ describe("summarizeTitle", () => {
     global.fetch = mockFetch;
 
     await expect(summarizeTitle("a".repeat(200))).rejects.toThrow("API returned empty title");
+  });
+});
+
+// ── Project Management API Tests ───────────────────────────────────────────
+
+const FAKE_PROJECT: ProjectInfo = {
+  id: "proj_abc123",
+  name: "Test Project",
+  path: "/path/to/project",
+  status: "active",
+  isolationMode: "in-process",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  lastActivityAt: "2026-01-01T00:00:00.000Z",
+};
+
+const FAKE_PROJECT_HEALTH: ProjectHealth = {
+  projectId: "proj_abc123",
+  status: "active",
+  activeTaskCount: 5,
+  inFlightAgentCount: 2,
+  lastActivityAt: "2026-01-01T00:00:00.000Z",
+  totalTasksCompleted: 100,
+  totalTasksFailed: 5,
+  averageTaskDurationMs: 600000,
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+const FAKE_ACTIVITY_ENTRY: ActivityFeedEntry = {
+  id: "act_123",
+  timestamp: "2026-01-01T00:00:00.000Z",
+  type: "task:created",
+  projectId: "proj_abc123",
+  projectName: "Test Project",
+  taskId: "KB-001",
+  taskTitle: "Test Task",
+  details: "Task created",
+};
+
+describe("fetchProjects", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns list of projects", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, [FAKE_PROJECT]));
+
+    const result = await fetchProjects();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("proj_abc123");
+    expect(result[0].name).toBe("Test Project");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } })
+    );
+  });
+
+  it("throws on error response", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(false, { error: "Database error" }));
+
+    await expect(fetchProjects()).rejects.toThrow("Database error");
+  });
+});
+
+describe("registerProject", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("registers a new project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, FAKE_PROJECT));
+
+    const result = await registerProject({
+      name: "Test Project",
+      path: "/path/to/project",
+      isolationMode: "in-process",
+    });
+
+    expect(result.id).toBe("proj_abc123");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Test Project",
+          path: "/path/to/project",
+          isolationMode: "in-process",
+        }),
+      })
+    );
+  });
+
+  it("uses default isolation mode when not specified", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, FAKE_PROJECT));
+
+    await registerProject({
+      name: "Test Project",
+      path: "/path/to/project",
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        body: JSON.stringify({
+          name: "Test Project",
+          path: "/path/to/project",
+          isolationMode: undefined,
+        }),
+      })
+    );
+  });
+});
+
+describe("unregisterProject", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("unregisters a project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, {}));
+
+    await unregisterProject("proj_abc123");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects/proj_abc123",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
+  it("url-encodes project id", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, {}));
+
+    await unregisterProject("proj/with+special");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects/proj%2Fwith%2Bspecial",
+      expect.any(Object)
+    );
+  });
+});
+
+describe("fetchProjectHealth", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns health metrics for a project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, FAKE_PROJECT_HEALTH));
+
+    const result = await fetchProjectHealth("proj_abc123");
+
+    expect(result.projectId).toBe("proj_abc123");
+    expect(result.activeTaskCount).toBe(5);
+    expect(result.inFlightAgentCount).toBe(2);
+    expect(result.totalTasksCompleted).toBe(100);
+  });
+});
+
+describe("fetchActivityFeed", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns activity feed without options", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, [FAKE_ACTIVITY_ENTRY]));
+
+    const result = await fetchActivityFeed();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("task:created");
+    expect(result[0].projectName).toBe("Test Project");
+  });
+
+  it("passes query parameters", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, []));
+
+    await fetchActivityFeed({
+      limit: 50,
+      since: "2026-01-01T00:00:00.000Z",
+      projectId: "proj_abc123",
+      type: "task:created",
+    });
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toContain("limit=50");
+    expect(call[0]).toContain("since=2026-01-01T00%3A00%3A00.000Z");
+    expect(call[0]).toContain("projectId=proj_abc123");
+    expect(call[0]).toContain("type=task%3Acreated");
+  });
+});
+
+describe("pauseProject", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("pauses a project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { ...FAKE_PROJECT, status: "paused" }));
+
+    const result = await pauseProject("proj_abc123");
+
+    expect(result.status).toBe("paused");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects/proj_abc123/pause",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+});
+
+describe("resumeProject", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("resumes a paused project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { ...FAKE_PROJECT, status: "active" }));
+
+    const result = await resumeProject("proj_abc123");
+
+    expect(result.status).toBe("active");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/projects/proj_abc123/resume",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+});
+
+describe("fetchFirstRunStatus", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns first run status with existing projects", async () => {
+    const mockStatus: FirstRunStatus = { hasProjects: true, singleProjectPath: "/existing/project" };
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, mockStatus));
+
+    const result = await fetchFirstRunStatus();
+
+    expect(result.hasProjects).toBe(true);
+    expect(result.singleProjectPath).toBe("/existing/project");
+  });
+
+  it("returns first run status with no projects", async () => {
+    const mockStatus: FirstRunStatus = { hasProjects: false, singleProjectPath: null };
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, mockStatus));
+
+    const result = await fetchFirstRunStatus();
+
+    expect(result.hasProjects).toBe(false);
+    expect(result.singleProjectPath).toBeNull();
+  });
+});
+
+describe("fetchGlobalConcurrency", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns global concurrency state", async () => {
+    const mockState: GlobalConcurrencyState = {
+      globalMaxConcurrent: 4,
+      currentlyActive: 2,
+      queuedCount: 1,
+      projectsActive: { "proj_abc123": 2 },
+    };
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, mockState));
+
+    const result = await fetchGlobalConcurrency();
+
+    expect(result.globalMaxConcurrent).toBe(4);
+    expect(result.currentlyActive).toBe(2);
+    expect(result.projectsActive["proj_abc123"]).toBe(2);
+  });
+});
+
+describe("fetchProjectTasks", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("fetches tasks for a specific project", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, [{ id: "KB-001", description: "Test", column: "todo", dependencies: [], steps: [], currentStep: 0, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }]));
+
+    const result = await fetchProjectTasks("proj_abc123");
+
+    expect(result).toHaveLength(1);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/tasks?"),
+      expect.any(Object)
+    );
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toContain("projectId=proj_abc123");
+  });
+
+  it("passes pagination parameters", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, []));
+
+    await fetchProjectTasks("proj_abc123", 50, 100);
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toContain("limit=50");
+    expect(call[0]).toContain("offset=100");
+  });
+});
+
+describe("fetchProjectConfig", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns project config", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { maxConcurrent: 4, rootDir: "/path/to/project" }));
+
+    const result = await fetchProjectConfig("proj_abc123");
+
+    expect(result.maxConcurrent).toBe(4);
+    expect(result.rootDir).toBe("/path/to/project");
   });
 });
