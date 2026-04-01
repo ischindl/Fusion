@@ -637,9 +637,16 @@ function TaskCardComponent({
           <span className="card-error-text">{task.error.length > 60 ? task.error.slice(0, 60) + "…" : task.error}</span>
         </div>
       )}
-      <div className="card-title">
-        {task.title || task.description || task.id}
-      </div>
+      {/* Truncate title/description to 140 chars with ellipsis; full text in tooltip */}
+      {(() => {
+        const displayText = task.title || task.description || task.id;
+        const truncatedText = truncate(displayText, 140);
+        return (
+          <div className="card-title" title={displayText}>
+            {truncatedText}
+          </div>
+        );
+      })()}
       {task.steps.length > 0 && (() => {
         const completedSteps = task.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
         const totalSteps = task.steps.length;
@@ -734,6 +741,10 @@ function TaskCardComponent({
 
 const TOUCH_MOVE_THRESHOLD = 10; // pixels
 const TOUCH_TAP_MAX_DURATION = 300; // milliseconds
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
 
 export const TaskCard = memo(TaskCardComponent, areTaskCardPropsEqual);
 TaskCard.displayName = "TaskCard";

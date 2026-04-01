@@ -2564,3 +2564,148 @@ describe("TaskCard title display", () => {
     expect(cardTitle).toBeDefined();
   });
 });
+
+/**
+ * Tests for TaskCard title truncation to 140 characters.
+ */
+describe("TaskCard title truncation", () => {
+  const noopToast = vi.fn();
+
+  const makeTask = (overrides: Partial<Task> = {}): Task => ({
+    id: "FN-001",
+    description: "Test task",
+    column: "todo",
+    dependencies: [],
+    steps: [],
+    currentStep: 0,
+    log: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    columnMovedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  } as Task);
+
+  it("displays short title unchanged (under 140 characters)", () => {
+    const shortTitle = "This is a short title";
+    const task = makeTask({ title: shortTitle });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    const cardTitle = screen.getByText(shortTitle);
+    expect(cardTitle).toBeDefined();
+    expect(cardTitle.textContent).toBe(shortTitle);
+  });
+
+  it("displays title exactly 140 characters unchanged", () => {
+    const exactTitle = "A".repeat(140);
+    const task = makeTask({ title: exactTitle });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    const cardTitle = screen.getByText(exactTitle);
+    expect(cardTitle).toBeDefined();
+    expect(cardTitle.textContent?.length).toBe(140);
+    expect(cardTitle.textContent).toBe(exactTitle);
+  });
+
+  it("truncates title over 140 characters with ellipsis", () => {
+    const longTitle = "B".repeat(150);
+    const task = makeTask({ title: longTitle });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    // Should show truncated text with ellipsis (140 chars + "…")
+    const expectedTruncated = "B".repeat(140) + "…";
+    const cardTitle = screen.getByText(expectedTruncated);
+    expect(cardTitle).toBeDefined();
+    expect(cardTitle.textContent?.length).toBe(141); // 140 + ellipsis
+  });
+
+  it("truncates description fallback when no title and description is over 140 chars", () => {
+    const longDescription = "C".repeat(200);
+    const task = makeTask({ title: undefined, description: longDescription });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    // Should show truncated description with ellipsis
+    const expectedTruncated = "C".repeat(140) + "…";
+    const cardTitle = screen.getByText(expectedTruncated);
+    expect(cardTitle).toBeDefined();
+    expect(cardTitle.textContent?.length).toBe(141);
+  });
+
+  it("includes full untruncated text in title attribute for tooltip", () => {
+    const longTitle = "D".repeat(200);
+    const task = makeTask({ title: longTitle });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    // The title attribute should contain the full untruncated text
+    const cardTitleElement = document.querySelector(".card-title");
+    expect(cardTitleElement).toBeDefined();
+    expect(cardTitleElement?.getAttribute("title")).toBe(longTitle);
+  });
+
+  it("includes full description in title attribute when using description fallback", () => {
+    const longDescription = "E".repeat(200);
+    const task = makeTask({ title: undefined, description: longDescription });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    const cardTitleElement = document.querySelector(".card-title");
+    expect(cardTitleElement).toBeDefined();
+    expect(cardTitleElement?.getAttribute("title")).toBe(longDescription);
+  });
+
+  it("includes task id in title attribute when falling back to id", () => {
+    const task = makeTask({ title: undefined, description: "" });
+
+    render(
+      <TaskCard
+        task={task}
+        onOpenDetail={vi.fn()}
+        addToast={noopToast}
+      />
+    );
+
+    const cardTitleElement = document.querySelector(".card-title");
+    expect(cardTitleElement).toBeDefined();
+    expect(cardTitleElement?.getAttribute("title")).toBe("FN-001");
+  });
+});
