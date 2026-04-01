@@ -12626,3 +12626,312 @@ html .column.drag-over * {
 .changes-diff-patch [data-prefix="@@"] {
   color: #58a6ff;
 }
+
+/* === Project Selector Component === */
+.project-selector {
+  position: relative;
+  display: inline-flex;
+}
+
+.project-selector__trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.project-selector__trigger:hover {
+  background: var(--card-hover);
+  border-color: var(--border-hover);
+}
+
+.project-selector__trigger:focus {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.project-selector__trigger--active {
+  border-color: var(--todo);
+  background: var(--bg);
+}
+
+.project-selector__trigger-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+
+.project-selector__trigger--active .project-selector__trigger-icon {
+  transform: rotate(180deg);
+}
+
+.project-selector__trigger-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.project-selector__trigger-status--active {
+  background: var(--color-success);
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.4);
+}
+
+.project-selector__trigger-status--paused {
+  background: var(--triage);
+}
+
+.project-selector__trigger-status--errored {
+  background: var(--color-error);
+}
+
+.project-selector__trigger-status--initializing {
+  background: var(--todo);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.project-selector__trigger-text {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-selector__dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 280px;
+  max-width: 320px;
+  max-height: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.project-selector__search {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.project-selector__search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 10px;
+  height: 32px;
+}
+
+.project-selector__search-input-wrap:focus-within {
+  border-color: var(--todo);
+}
+
+.project-selector__search-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.project-selector__search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+
+.project-selector__search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.project-selector__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.project-selector__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.project-selector__item:hover {
+  background: var(--card);
+}
+
+.project-selector__item--active {
+  background: var(--card-hover);
+}
+
+.project-selector__item--active .project-selector__item-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.project-selector__item-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.project-selector__item-status--active {
+  background: var(--color-success);
+}
+
+.project-selector__item-status--paused {
+  background: var(--triage);
+}
+
+.project-selector__item-status--errored {
+  background: var(--color-error);
+}
+
+.project-selector__item-status--initializing {
+  background: var(--todo);
+}
+
+.project-selector__item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-selector__item-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-selector__item-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-selector__footer {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.project-selector__view-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.project-selector__view-all:hover {
+  background: var(--card-hover);
+  border-color: var(--border-hover);
+}
+
+.project-selector__empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* === Header Multi-Row Layout for Mobile === */
+.header--multi-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.header__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.header__row--bottom {
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.header__row--bottom .project-selector {
+  width: 100%;
+  max-width: 400px;
+}
+
+.header__row--bottom .project-selector__trigger {
+  width: 100%;
+  justify-content: center;
+}
+
+/* Mobile-specific project selector adjustments */
+@media (max-width: 768px) {
+  .project-selector__dropdown {
+    left: 50%;
+    transform: translateX(-50%);
+    min-width: 260px;
+    max-width: calc(100vw - 32px);
+  }
+
+  .project-selector__trigger-text {
+    max-width: 120px;
+  }
+}
+
+/* Desktop: Project selector in header actions area */
+@media (min-width: 769px) {
+  .header .project-selector {
+    margin-right: 8px;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
