@@ -1,18 +1,48 @@
 {
   "id": "KB-648",
   "description": "Increase test speed",
-  "column": "todo",
-  "status": "queued",
+  "column": "in-progress",
   "size": "M",
   "reviewLevel": 2,
   "currentStep": 0,
+  "worktree": "/Users/eclipxe/Projects/kb/.worktrees/early-hawk",
+  "baseBranch": "kb/kb-637",
   "createdAt": "2026-04-01T02:13:55.663Z",
-  "updatedAt": "2026-04-01T05:37:52.865Z",
-  "columnMovedAt": "2026-04-01T02:26:06.029Z",
+  "updatedAt": "2026-04-01T05:41:25.465Z",
+  "columnMovedAt": "2026-04-01T05:41:22.877Z",
   "dependencies": [
     "KB-637"
   ],
-  "steps": [],
+  "steps": [
+    {
+      "name": "Optimize Backup Tests - Eliminate Real-Time Delays",
+      "status": "in-progress"
+    },
+    {
+      "name": "Enable Parallel File Execution in Core Package",
+      "status": "pending"
+    },
+    {
+      "name": "Enable Parallel File Execution in Engine Package",
+      "status": "pending"
+    },
+    {
+      "name": "Enable Parallel File Execution in CLI Package",
+      "status": "pending"
+    },
+    {
+      "name": "Evaluate Dashboard Test Parallelism",
+      "status": "pending"
+    },
+    {
+      "name": "Testing & Verification",
+      "status": "pending"
+    },
+    {
+      "name": "Documentation & Delivery",
+      "status": "pending"
+    }
+  ],
   "log": [
     {
       "timestamp": "2026-04-01T02:13:55.663Z",
@@ -26,6 +56,18 @@
       "timestamp": "2026-04-01T02:26:03.096Z",
       "action": "Spec review: APPROVE",
       "outcome": "This is a well-structured, technically accurate specification for optimizing test execution speed. The mission is clear, steps have concrete verifiable outcomes, file scope is accurate, and the approach is sound. The dependency on KB-637 is appropriately noted. Minor line number discrepancies exist in the backup.test.ts references but don't affect the overall approach."
+    },
+    {
+      "timestamp": "2026-04-01T05:41:22.976Z",
+      "action": "Worktree created at /Users/eclipxe/Projects/kb/.worktrees/early-hawk (based on kb/kb-637)"
+    },
+    {
+      "timestamp": "2026-04-01T05:41:22.978Z",
+      "action": "Step 0 (Optimize Backup Tests - Eliminate Real-Time Delays) → pending"
+    },
+    {
+      "timestamp": "2026-04-01T05:41:25.465Z",
+      "action": "Step 0 (Optimize Backup Tests - Eliminate Real-Time Delays) → in-progress"
     }
   ]
 }

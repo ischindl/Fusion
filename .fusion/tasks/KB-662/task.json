@@ -1,17 +1,28 @@
 {
   "id": "KB-662",
   "description": "When dashboard becomes visible refresh data",
-  "column": "triage",
+  "column": "todo",
+  "size": "S",
+  "reviewLevel": 1,
+  "currentStep": 0,
+  "createdAt": "2026-04-01T05:35:18.262Z",
+  "updatedAt": "2026-04-01T05:41:14.386Z",
+  "columnMovedAt": "2026-04-01T05:41:14.386Z",
   "dependencies": [],
   "steps": [],
-  "currentStep": 0,
   "log": [
     {
       "timestamp": "2026-04-01T05:35:18.262Z",
       "action": "Task created"
+    },
+    {
+      "timestamp": "2026-04-01T05:40:58.638Z",
+      "action": "Spec review requested"
+    },
+    {
+      "timestamp": "2026-04-01T05:41:11.521Z",
+      "action": "Spec review: APPROVE",
+      "outcome": "The specification is well-crafted for a small, focused change. It correctly identifies the target files, describes concrete implementation steps with verifiable outcomes, and specifies appropriate testing requirements. The mission is clear, the file scope is accurate, and the sizing (S, Review Level 1) is appropriate for this low-blast-radius feature."
     }
-  ],
-  "columnMovedAt": "2026-04-01T05:35:18.262Z",
-  "createdAt": "2026-04-01T05:35:18.262Z",
-  "updatedAt": "2026-04-01T05:35:18.262Z"
+  ]
 }
