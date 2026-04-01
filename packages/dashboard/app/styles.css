@@ -4905,6 +4905,7 @@ body {
 }
 
 .list-cell-title {
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5164,6 +5165,7 @@ body {
   }
 
   .list-cell-title {
+    width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
