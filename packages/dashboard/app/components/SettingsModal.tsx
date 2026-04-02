@@ -167,9 +167,6 @@ export function SettingsModal({
     };
   }, [activeSection, loadAuthStatus]);
 
-  /** Get the scope of the currently active section */
-  const activeSectionScope = SETTINGS_SECTIONS.find((s) => s.id === activeSection)?.scope;
-
   const handleLogin = useCallback(async (providerId: string) => {
     setAuthActionInProgress(providerId);
     try {
@@ -354,37 +351,41 @@ export function SettingsModal({
         taskPrefix: form.taskPrefix?.trim() || undefined,
       };
 
-      // Save only the scope matching the currently active section.
-      // This prevents stale values from one scope being accidentally
-      // overwritten when the user only changed fields in the other scope.
-      if (activeSectionScope === "global") {
-        const globalKeySet = new Set<string>(GLOBAL_SETTINGS_KEYS);
-        const globalPatch: Partial<GlobalSettings> = {};
-        for (const [key, value] of Object.entries(payload)) {
-          if (globalKeySet.has(key)) {
-            (globalPatch as any)[key] = value;
-          }
+      // Always save both global and project settings.
+      // The backend filters each appropriately (updateSettings ignores global keys,
+      // updateGlobalSettings ignores project keys). This ensures fields in mixed-scope
+      // sections like "model" (which has planningProvider/validatorProvider in project scope)
+      // are persisted correctly.
+
+      const globalKeySet = new Set<string>(GLOBAL_SETTINGS_KEYS);
+      const globalPatch: Partial<GlobalSettings> = {};
+      for (const [key, value] of Object.entries(payload)) {
+        if (globalKeySet.has(key)) {
+          (globalPatch as any)[key] = value;
         }
-        await updateGlobalSettings(globalPatch);
-      } else if (activeSectionScope === "project") {
-        const projectKeySet = new Set<string>(PROJECT_SETTINGS_KEYS as readonly string[]);
-        const projectPatch: Partial<Settings> = {};
-        for (const [key, value] of Object.entries(payload)) {
-          if (key === "githubTokenConfigured") continue; // server-only field
-          if (projectKeySet.has(key)) {
-            (projectPatch as any)[key] = value;
-          }
-        }
-        await updateSettings(projectPatch);
       }
-      // Authentication section (scope: undefined) doesn't use the save button
+
+      const projectKeySet = new Set<string>(PROJECT_SETTINGS_KEYS as readonly string[]);
+      const projectPatch: Partial<Settings> = {};
+      for (const [key, value] of Object.entries(payload)) {
+        if (key === "githubTokenConfigured") continue; // server-only field
+        if (projectKeySet.has(key)) {
+          (projectPatch as any)[key] = value;
+        }
+      }
+
+      // Save both scopes in parallel if they have changes
+      await Promise.all([
+        Object.keys(globalPatch).length > 0 ? updateGlobalSettings(globalPatch) : Promise.resolve(),
+        Object.keys(projectPatch).length > 0 ? updateSettings(projectPatch) : Promise.resolve(),
+      ]);
 
       addToast("Settings saved", "success");
       onClose();
     } catch (err: any) {
       addToast(err.message, "error");
     }
-  }, [form, prefixError, presetDraft, activeSectionScope, onClose, addToast]);
+  }, [form, prefixError, presetDraft, onClose, addToast]);
 
   const savePresetDraft = () => {
     if (!presetDraft) return;
