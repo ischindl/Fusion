@@ -80,15 +80,19 @@ export async function resolveProject(
         );
       }
 
-      const store = detected.id
+      const isRegistered = Boolean(detected.id);
+      const store = isRegistered
         ? await getStoreForProject(detected.id, detected.path)
         : await createLocalStore(detected.path);
 
+      // For unregistered projects, use the path as the project ID
+      const projectId = isRegistered ? detected.id : detected.path;
+
       return {
-        projectId: detected.id,
+        projectId,
         projectPath: detected.path,
         projectName: detected.name,
-        isRegistered: Boolean(detected.id),
+        isRegistered,
         store,
       };
     }
@@ -190,8 +194,9 @@ export async function detectProjectFromCwd(
       }
       // Not registered, but has .kb/kb.db - still use it as a valid project
       // This preserves legacy single-project CLI behavior.
+      // Use empty string for id to indicate unregistered status.
       return {
-        id: currentDir,
+        id: "",
         name: currentDir.split("/").filter(Boolean).at(-1) ?? "current-project",
         path: currentDir,
       };
