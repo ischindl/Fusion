@@ -804,7 +804,7 @@ export function ListView({
                       onClick={() => toggleSection(column)}
                       aria-expanded={!isCollapsed}
                     >
-                      <th colSpan={visibleColumns.size} className="list-section-cell">
+                      <th colSpan={visibleColumns.size + 1} className="list-section-cell">
                         <ChevronRight
                           size={14}
                           className={`list-section-chevron${!isCollapsed ? " list-section-chevron--expanded" : ""}`}
@@ -820,7 +820,7 @@ export function ListView({
                       <>
                         {isEmpty ? (
                           <tr className="list-section-empty">
-                            <td colSpan={visibleColumns.size} className="list-empty-cell">
+                            <td colSpan={visibleColumns.size + 1} className="list-empty-cell">
                               No tasks
                             </td>
                           </tr>

@@ -600,6 +600,33 @@ describe("ListView", () => {
     expect(noTasksCells.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("section headers span full table width including checkbox column", () => {
+    const tasks = [
+      createMockTask({ id: "FN-001", column: "triage" }),
+      createMockTask({ id: "FN-002", column: "todo" }),
+    ];
+
+    renderListView({ tasks });
+
+    // Find section header rows
+    const sectionHeaders = screen.getAllByRole("row").filter(r => r.className.includes("list-section-header"));
+
+    // Verify each section header has colSpan that includes the checkbox column
+    // Default visible columns: id, title, status, column, dependencies, progress (6 columns)
+    // Plus checkbox column = 7 total
+    for (const header of sectionHeaders) {
+      const th = header.querySelector("th.list-section-cell");
+      expect(th).not.toBeNull();
+      expect(th!.getAttribute("colSpan")).toBe("7"); // visibleColumns.size (6) + 1 for checkbox
+    }
+
+    // Also verify empty section cells span full width
+    const emptyCells = screen.getAllByRole("cell").filter(c => c.className.includes("list-empty-cell"));
+    for (const cell of emptyCells) {
+      expect(cell.getAttribute("colSpan")).toBe("7");
+    }
+  });
+
   it("hides empty sections when filter is active", () => {
     const tasks = [
       createMockTask({ id: "FN-001", title: "Alpha Task", column: "triage" }),
