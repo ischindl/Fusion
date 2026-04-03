@@ -67,7 +67,7 @@ A persistent footer status bar at the bottom of the dashboard displays real-time
 
 **Statistics Displayed**:
 - **Running**: Count of tasks currently in "in-progress" column with pulsing animation when > 0
-- **Blocked**: Count of tasks with `blockedBy` field set (waiting on file overlap)
+- **Blocked**: Count of tasks with `blockedBy` field set (a single task ID string indicating file-overlap blocking)
 - **Stuck**: Count of tasks in "in-progress" with no activity for > 10 minutes (shown only when > 0)
 - **Queued**: Count of tasks in "todo" column
 - **In Review**: Count of tasks in "in-review" column
@@ -80,14 +80,15 @@ A persistent footer status bar at the bottom of the dashboard displays real-time
 - **Running**: Engine active with running tasks
 
 **Features**:
-- Real-time updates via 5-second polling
+- **Shared task list**: Task counts are derived from the same task list used by the board and list views, so the footer always matches the board state exactly
+- Real-time updates via 5-second polling for executor state (globalPause, enginePaused, maxConcurrent)
 - Responsive design: collapses labels on mobile screens (<768px)
 - Dark/light theme support via CSS variables
 - Error state shows connection issues
 - Only visible in project view, not in overview/project selector
 
 **API Endpoint**:
-- `GET /api/executor/stats` - Returns `globalPause`, `enginePaused`, `maxConcurrent`, and `lastActivityAt` for state derivation
+- `GET /api/executor/stats` - Returns `globalPause`, `enginePaused`, `maxConcurrent`, and `lastActivityAt` for state derivation. Column-based counts (running, blocked, stuck, queued, in-review) are derived client-side from the shared task list.
 
 ### Interactive Terminal
 Access a fully functional PTY (pseudo-terminal) shell directly from the dashboard. Click the terminal icon in the header to open the interactive terminal modal.

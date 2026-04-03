@@ -13,6 +13,9 @@ import type { ExecutorStats } from "../../api";
 
 const mockUseExecutorStats = useExecutorStats as ReturnType<typeof vi.fn>;
 
+/** Minimal empty task list used by tests that mock the hook. */
+const emptyTasks: any[] = [];
+
 describe("ExecutorStatusBar", () => {
   const defaultStats: ExecutorStats = {
     runningTaskCount: 2,
@@ -41,7 +44,7 @@ describe("ExecutorStatusBar", () => {
 
   describe("rendering", () => {
     it("renders all stat segments", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("Running");
@@ -51,14 +54,14 @@ describe("ExecutorStatusBar", () => {
     });
 
     it("displays running task count", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("2");
     });
 
     it("displays max concurrent count", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("/");
@@ -66,28 +69,28 @@ describe("ExecutorStatusBar", () => {
     });
 
     it("displays blocked task count", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("1");
     });
 
     it("displays queued task count", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("5");
     });
 
     it("displays in-review count", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("3");
     });
 
     it("does not show stuck tasks segment when count is 0", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.queryByText("Stuck")).not.toBeInTheDocument();
     });
@@ -100,7 +103,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("Stuck");
@@ -110,7 +113,7 @@ describe("ExecutorStatusBar", () => {
 
   describe("executor state", () => {
     it("shows Running state with running executorState", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       const stateElement = statusBar.querySelector(".executor-status-bar__state");
@@ -125,7 +128,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       const stateElement = statusBar.querySelector(".executor-status-bar__state");
@@ -140,7 +143,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       const stateElement = statusBar.querySelector(".executor-status-bar__state");
@@ -148,7 +151,7 @@ describe("ExecutorStatusBar", () => {
     });
 
     it("applies running class when executor is running", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveClass("executor-status-bar--running");
@@ -162,7 +165,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).not.toHaveClass("executor-status-bar--running");
@@ -176,7 +179,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).not.toHaveClass("executor-status-bar--running");
@@ -192,7 +195,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("Loading...");
@@ -200,7 +203,7 @@ describe("ExecutorStatusBar", () => {
     });
 
     it("does not show loading text when not loading", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
     });
@@ -213,7 +216,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
     });
@@ -228,7 +231,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveTextContent("Failed to fetch stats");
@@ -243,7 +246,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       // The error bar shouldn't have the running segment
@@ -253,19 +256,19 @@ describe("ExecutorStatusBar", () => {
 
   describe("accessibility", () => {
     it("has role status", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.getByRole("status")).toBeInTheDocument();
     });
 
     it("has aria-label", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.getByRole("status")).toHaveAttribute("aria-label", "Executor status");
     });
 
     it("applies warning class to blocked count when blocked tasks exist", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       // Get the status bar and look for the blocked count element
       const statusBar = screen.getByRole("status");
@@ -281,7 +284,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       const stuckSegment = statusBar.querySelector(".executor-status-bar__segment--stuck");
@@ -289,7 +292,7 @@ describe("ExecutorStatusBar", () => {
     });
 
     it("applies active class to running indicator when tasks are running", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const statusBar = screen.getByRole("status");
       expect(statusBar).toHaveClass("executor-status-bar--running");
@@ -298,7 +301,7 @@ describe("ExecutorStatusBar", () => {
 
   describe("visual states", () => {
     it("shows warning styling when blocked tasks exist", () => {
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const blockedCount = screen.getByText("1");
       expect(blockedCount).toHaveClass("executor-status-bar__count--warning");
@@ -312,7 +315,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       const counts = screen.queryAllByText("0");
       // First one is running count which shouldn't have warning
@@ -321,16 +324,17 @@ describe("ExecutorStatusBar", () => {
   });
 
   describe("project context", () => {
-    it("passes projectId to useExecutorStats when provided", () => {
-      render(<ExecutorStatusBar projectId="proj_abc123" />);
+    it("passes tasks and projectId to useExecutorStats when provided", () => {
+      const tasks: any[] = [{ id: "FN-001" }];
+      render(<ExecutorStatusBar tasks={tasks} projectId="proj_abc123" />);
 
-      expect(mockUseExecutorStats).toHaveBeenCalledWith("proj_abc123");
+      expect(mockUseExecutorStats).toHaveBeenCalledWith(tasks, "proj_abc123");
     });
 
-    it("passes undefined to useExecutorStats when projectId not provided", () => {
-      render(<ExecutorStatusBar />);
+    it("passes tasks and undefined to useExecutorStats when projectId not provided", () => {
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
-      expect(mockUseExecutorStats).toHaveBeenCalledWith(undefined);
+      expect(mockUseExecutorStats).toHaveBeenCalledWith(emptyTasks, undefined);
     });
   });
 
@@ -345,7 +349,7 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.getByText("2m ago")).toBeInTheDocument();
     });
@@ -358,9 +362,39 @@ describe("ExecutorStatusBar", () => {
         refresh: vi.fn(),
       });
 
-      render(<ExecutorStatusBar />);
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
 
       expect(screen.getByText("no activity")).toBeInTheDocument();
+    });
+  });
+
+  describe("board-sync regression", () => {
+    it("requires tasks prop — does not fetch its own task list", () => {
+      // This test verifies the component receives tasks from its parent
+      // rather than creating its own useTasks instance, which was the
+      // root cause of the footer/board count mismatch.
+      const tasks: any[] = [{ id: "FN-001" }];
+      render(<ExecutorStatusBar tasks={tasks} />);
+
+      // useExecutorStats receives the tasks array as first argument
+      expect(mockUseExecutorStats).toHaveBeenCalledWith(tasks, undefined);
+    });
+
+    it("renders stuck segment with correct count when stuck tasks detected", () => {
+      vi.mocked(mockUseExecutorStats).mockReturnValue({
+        stats: { ...defaultStats, stuckTaskCount: 3, runningTaskCount: 2 },
+        loading: false,
+        error: null,
+        refresh: vi.fn(),
+      });
+
+      render(<ExecutorStatusBar tasks={emptyTasks} />);
+
+      const statusBar = screen.getByRole("status");
+      expect(statusBar).toHaveTextContent("Stuck");
+      const stuckCount = statusBar.querySelector(".executor-status-bar__segment--stuck .executor-status-bar__count");
+      expect(stuckCount).toHaveTextContent("3");
+      expect(stuckCount).toHaveClass("executor-status-bar__count--error");
     });
   });
 });

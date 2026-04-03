@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, act } from "@testing-library/react";
 import { useExecutorStats } from "./useExecutorStats";
 import * as apiModule from "../api";
 import type { Task } from "@fusion/core";
@@ -12,23 +12,6 @@ vi.mock("../api", async () => {
     fetchExecutorStats: vi.fn(),
   };
 });
-
-// Mock useTasks hook
-vi.mock("./useTasks", () => ({
-  useTasks: vi.fn(() => ({
-    tasks: [],
-    createTask: vi.fn(),
-    moveTask: vi.fn(),
-    deleteTask: vi.fn(),
-    mergeTask: vi.fn(),
-    retryTask: vi.fn(),
-    updateTask: vi.fn(),
-    duplicateTask: vi.fn(),
-    archiveTask: vi.fn(),
-    unarchiveTask: vi.fn(),
-    archiveAllDone: vi.fn(),
-  })),
-}));
 
 describe("useExecutorStats", () => {
   const mockFetchExecutorStats = apiModule.fetchExecutorStats as ReturnType<typeof vi.fn>;
@@ -50,24 +33,8 @@ describe("useExecutorStats", () => {
 
   describe("initial state", () => {
     it("returns initial stats with zero counts when tasks array is empty", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
+      const { result } = renderHook(() => useExecutorStats([]));
 
-      const { result } = renderHook(() => useExecutorStats());
-
-      // Advance timers to let the initial fetch complete
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
       });
@@ -80,22 +47,7 @@ describe("useExecutorStats", () => {
     });
 
     it("uses maxConcurrent from API", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
-
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -105,22 +57,7 @@ describe("useExecutorStats", () => {
     });
 
     it("uses lastActivityAt from API", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
-
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -132,27 +69,13 @@ describe("useExecutorStats", () => {
 
   describe("task count derivations", () => {
     it("counts tasks in in-progress column as runningTaskCount", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [
         createMockTask("FN-001", "in-progress"),
         createMockTask("FN-002", "in-progress"),
         createMockTask("FN-003", "in-progress"),
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -162,26 +85,12 @@ describe("useExecutorStats", () => {
     });
 
     it("counts tasks in todo column as queuedTaskCount", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [
         createMockTask("FN-001", "todo"),
         createMockTask("FN-002", "todo"),
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -191,27 +100,13 @@ describe("useExecutorStats", () => {
     });
 
     it("counts tasks in in-review column as inReviewCount", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [
         createMockTask("FN-001", "in-review"),
         createMockTask("FN-002", "in-review"),
         createMockTask("FN-003", "in-review"),
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -221,27 +116,13 @@ describe("useExecutorStats", () => {
     });
 
     it("counts tasks with blockedBy set as blockedTaskCount", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [
-        { ...createMockTask("FN-001", "todo"), blockedBy: ["FN-000"] },
+        { ...createMockTask("FN-001", "todo"), blockedBy: "FN-000" },
         { ...createMockTask("FN-002", "todo") }, // no blockedBy
-        { ...createMockTask("FN-003", "todo"), blockedBy: ["FN-001", "FN-002"] },
+        { ...createMockTask("FN-003", "todo"), blockedBy: "FN-002" },
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -251,27 +132,13 @@ describe("useExecutorStats", () => {
     });
 
     it("does not count tasks without blockedBy as blocked", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [
         createMockTask("FN-001", "todo"),
         createMockTask("FN-002", "todo"),
         createMockTask("FN-003", "todo"),
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -280,27 +147,13 @@ describe("useExecutorStats", () => {
       expect(result.current.stats.blockedTaskCount).toBe(0);
     });
 
-    it("does not count tasks with empty blockedBy array as blocked", async () => {
-      const { useTasks } = await import("./useTasks");
+    it("does not count tasks with empty blockedBy string as blocked", async () => {
       const tasks: Task[] = [
-        { ...createMockTask("FN-001", "todo"), blockedBy: [] },
-        { ...createMockTask("FN-002", "todo"), blockedBy: [] },
+        { ...createMockTask("FN-001", "todo"), blockedBy: "" },
+        { ...createMockTask("FN-002", "todo"), blockedBy: "" },
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -312,28 +165,14 @@ describe("useExecutorStats", () => {
 
   describe("stuck task detection", () => {
     it("detects tasks in in-progress with no activity for > 10 minutes as stuck", async () => {
-      const { useTasks } = await import("./useTasks");
       // Set updatedAt to 11 minutes ago
       const elevenMinutesAgo = new Date(Date.now() - 11 * 60 * 1000).toISOString();
       const tasks: Task[] = [
         { ...createMockTask("FN-001", "in-progress"), updatedAt: elevenMinutesAgo },
         { ...createMockTask("FN-002", "in-progress") }, // just updated
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -343,27 +182,13 @@ describe("useExecutorStats", () => {
     });
 
     it("does not count non-in-progress tasks as stuck even if old", async () => {
-      const { useTasks } = await import("./useTasks");
       // Set updatedAt to 11 minutes ago for a todo task
       const elevenMinutesAgo = new Date(Date.now() - 11 * 60 * 1000).toISOString();
       const tasks: Task[] = [
         { ...createMockTask("FN-001", "todo"), updatedAt: elevenMinutesAgo },
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -373,27 +198,13 @@ describe("useExecutorStats", () => {
     });
 
     it("does not count recent in-progress tasks as stuck", async () => {
-      const { useTasks } = await import("./useTasks");
       // Set updatedAt to 5 minutes ago
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const tasks: Task[] = [
         { ...createMockTask("FN-001", "in-progress"), updatedAt: fiveMinutesAgo },
       ];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -405,27 +216,13 @@ describe("useExecutorStats", () => {
 
   describe("executor state derivation", () => {
     it("returns 'idle' when globalPause is true", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockResolvedValue({
         globalPause: true,
         enginePaused: false,
         maxConcurrent: 4,
       });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -435,27 +232,13 @@ describe("useExecutorStats", () => {
     });
 
     it("returns 'idle' when enginePaused is true and runningTaskCount is 0", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockResolvedValue({
         globalPause: false,
         enginePaused: true,
         maxConcurrent: 4,
       });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -465,28 +248,14 @@ describe("useExecutorStats", () => {
     });
 
     it("returns 'paused' when enginePaused is true and runningTaskCount > 0", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [createMockTask("FN-001", "in-progress")];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockResolvedValue({
         globalPause: false,
         enginePaused: true,
         maxConcurrent: 4,
       });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -496,28 +265,14 @@ describe("useExecutorStats", () => {
     });
 
     it("returns 'running' when globalPause is false, enginePaused is false, and runningTaskCount > 0", async () => {
-      const { useTasks } = await import("./useTasks");
       const tasks: Task[] = [createMockTask("FN-001", "in-progress")];
-      vi.mocked(useTasks).mockReturnValue({
-        tasks,
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockResolvedValue({
         globalPause: false,
         enginePaused: false,
         maxConcurrent: 4,
       });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats(tasks));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -527,27 +282,13 @@ describe("useExecutorStats", () => {
     });
 
     it("returns 'idle' when no tasks are running and not paused", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockResolvedValue({
         globalPause: false,
         enginePaused: false,
         maxConcurrent: 4,
       });
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -558,69 +299,61 @@ describe("useExecutorStats", () => {
   });
 
   describe("project context", () => {
-    it("passes projectId to useTasks when provided", async () => {
-      const { useTasks } = await import("./useTasks");
-      const mockUseTasks = vi.mocked(useTasks);
-      mockUseTasks.mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
+    it("passes projectId to fetchExecutorStats when provided", async () => {
+      renderHook(() => useExecutorStats([], "proj_abc123"));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
       });
 
-      renderHook(() => useExecutorStats("proj_abc123"));
-
-      expect(mockUseTasks).toHaveBeenCalledWith({ projectId: "proj_abc123" });
+      expect(mockFetchExecutorStats).toHaveBeenCalledWith("proj_abc123");
     });
 
-    it("passes no options to useTasks when projectId is not provided", async () => {
-      const { useTasks } = await import("./useTasks");
-      const mockUseTasks = vi.mocked(useTasks);
-      mockUseTasks.mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
+    it("passes undefined to fetchExecutorStats when projectId is not provided", async () => {
+      renderHook(() => useExecutorStats([]));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
       });
 
-      renderHook(() => useExecutorStats());
+      expect(mockFetchExecutorStats).toHaveBeenCalledWith(undefined);
+    });
+  });
 
-      expect(mockUseTasks).toHaveBeenCalledWith(undefined);
+  describe("reactive task updates", () => {
+    it("reflects new task counts when tasks change", async () => {
+      const initialTasks: Task[] = [
+        createMockTask("FN-001", "todo"),
+      ];
+
+      const { result, rerender } = renderHook(
+        ({ tasks }) => useExecutorStats(tasks),
+        { initialProps: { tasks: initialTasks } }
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      expect(result.current.stats.queuedTaskCount).toBe(1);
+      expect(result.current.stats.runningTaskCount).toBe(0);
+
+      // Simulate task moving from todo to in-progress
+      const updatedTasks: Task[] = [
+        { ...createMockTask("FN-001", "in-progress") },
+        createMockTask("FN-002", "todo"),
+      ];
+
+      rerender({ tasks: updatedTasks });
+
+      expect(result.current.stats.queuedTaskCount).toBe(1);
+      expect(result.current.stats.runningTaskCount).toBe(1);
     });
   });
 
   describe("refresh function", () => {
     it("manually refreshes stats", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
-
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -646,23 +379,9 @@ describe("useExecutorStats", () => {
 
   describe("error handling", () => {
     it("sets error state when API call fails", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockRejectedValue(new Error("Network error"));
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -672,23 +391,9 @@ describe("useExecutorStats", () => {
     });
 
     it("clears error on successful refresh", async () => {
-      const { useTasks } = await import("./useTasks");
-      vi.mocked(useTasks).mockReturnValue({
-        tasks: [],
-        createTask: vi.fn(),
-        moveTask: vi.fn(),
-        deleteTask: vi.fn(),
-        mergeTask: vi.fn(),
-        retryTask: vi.fn(),
-        updateTask: vi.fn(),
-        duplicateTask: vi.fn(),
-        archiveTask: vi.fn(),
-        unarchiveTask: vi.fn(),
-        archiveAllDone: vi.fn(),
-      });
       mockFetchExecutorStats.mockRejectedValueOnce(new Error("Network error"));
 
-      const { result } = renderHook(() => useExecutorStats());
+      const { result } = renderHook(() => useExecutorStats([]));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(100);
@@ -707,6 +412,111 @@ describe("useExecutorStats", () => {
       });
 
       expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe("board-sync regression", () => {
+    it("derives counts from the same tasks array the board uses", async () => {
+      // Simulate a full board: 2 triage, 3 todo (1 blocked), 2 in-progress, 1 in-review, 4 done
+      const tasks: Task[] = [
+        createMockTask("FN-001", "triage"),
+        createMockTask("FN-002", "triage"),
+        createMockTask("FN-003", "todo"),
+        { ...createMockTask("FN-004", "todo"), blockedBy: "FN-010" },
+        createMockTask("FN-005", "todo"),
+        createMockTask("FN-006", "in-progress"),
+        createMockTask("FN-007", "in-progress"),
+        createMockTask("FN-008", "in-review"),
+        createMockTask("FN-009", "done"),
+        createMockTask("FN-010", "done"),
+        createMockTask("FN-011", "done"),
+        createMockTask("FN-012", "done"),
+      ];
+
+      const { result } = renderHook(() => useExecutorStats(tasks));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      // These must match the column counts shown on the board
+      expect(result.current.stats.runningTaskCount).toBe(2);  // in-progress
+      expect(result.current.stats.queuedTaskCount).toBe(3);   // todo
+      expect(result.current.stats.inReviewCount).toBe(1);     // in-review
+      expect(result.current.stats.blockedTaskCount).toBe(1);  // blockedBy set
+      expect(result.current.stats.stuckTaskCount).toBe(0);    // all recent
+
+      // Verify the executor state reflects running tasks
+      expect(result.current.stats.executorState).toBe("running");
+    });
+
+    it("does not count triage, done, or archived tasks in any footer metric", async () => {
+      const tasks: Task[] = [
+        createMockTask("FN-001", "triage"),
+        createMockTask("FN-002", "done"),
+        createMockTask("FN-003", "archived"),
+      ];
+
+      const { result } = renderHook(() => useExecutorStats(tasks));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      expect(result.current.stats.runningTaskCount).toBe(0);
+      expect(result.current.stats.queuedTaskCount).toBe(0);
+      expect(result.current.stats.inReviewCount).toBe(0);
+      expect(result.current.stats.blockedTaskCount).toBe(0);
+      expect(result.current.stats.stuckTaskCount).toBe(0);
+    });
+
+    it("updates counts immediately when tasks array reference changes", async () => {
+      const initialTasks: Task[] = [
+        createMockTask("FN-001", "todo"),
+        createMockTask("FN-002", "todo"),
+      ];
+
+      const { result, rerender } = renderHook(
+        ({ tasks }) => useExecutorStats(tasks),
+        { initialProps: { tasks: initialTasks } },
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      expect(result.current.stats.queuedTaskCount).toBe(2);
+
+      // Move FN-001 to in-progress, add a new todo
+      const updatedTasks: Task[] = [
+        { ...createMockTask("FN-001", "in-progress") },
+        createMockTask("FN-002", "todo"),
+        createMockTask("FN-003", "todo"),
+      ];
+
+      rerender({ tasks: updatedTasks });
+
+      // Should reflect immediately without waiting for polling
+      expect(result.current.stats.queuedTaskCount).toBe(2);
+      expect(result.current.stats.runningTaskCount).toBe(1);
+    });
+
+    it("uses string blockedBy matching the real Task type", async () => {
+      // Regression: blockedBy is string | undefined, not string[]
+      const tasks: Task[] = [
+        { ...createMockTask("FN-001", "todo"), blockedBy: "FN-099" },  // string, not array
+        { ...createMockTask("FN-002", "in-progress"), blockedBy: "FN-098" },
+        { ...createMockTask("FN-003", "todo") },  // no blockedBy
+      ];
+
+      const { result } = renderHook(() => useExecutorStats(tasks));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      // Both FN-001 and FN-002 have blockedBy set
+      expect(result.current.stats.blockedTaskCount).toBe(2);
     });
   });
 });

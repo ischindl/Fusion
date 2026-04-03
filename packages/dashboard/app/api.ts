@@ -1833,7 +1833,8 @@ export type ExecutorState = "idle" | "running" | "paused";
 /** Aggregated executor statistics for the status bar.
  * 
  * Counts (runningTaskCount, blockedTaskCount, queuedTaskCount, inReviewCount, stuckTaskCount)
- * are derived client-side from the tasks array to avoid duplication.
+ * are derived client-side from the same tasks array shared with the board, ensuring
+ * the footer counts always match the column counts displayed on screen.
  * The API returns settings-based values (globalPause, enginePaused, maxConcurrent) and
  * lastActivityAt from the activity log.
  * 

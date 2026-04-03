@@ -598,7 +598,7 @@ function AppInner() {
       />
       {renderMainContent()}
       {viewMode === "project" && currentProject && (
-        <ExecutorStatusBar projectId={currentProject.id} />
+        <ExecutorStatusBar tasks={tasks} projectId={currentProject.id} />
       )}
       {detailTask && (
         <TaskDetailModal

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Task } from "@fusion/core";
-import { useTasks } from "./useTasks";
 import { fetchExecutorStats } from "../api";
 import type { ExecutorStats, ExecutorState } from "../api";
 
@@ -105,15 +104,15 @@ function deriveStatsFromTasks(tasks: Task[]): Pick<
 /**
  * Hook for aggregating executor statistics for the status bar.
  * 
- * - Uses `useTasks` to get task list for column-based counts
+ * - Receives the shared task list directly (same instance used by the board)
+ *   so footer counts always match the board state
  * - Polls `/api/executor/stats` every 5 seconds for executor state
  * - Derives blockedTaskCount from tasks with blockedBy field set
  * - Derives stuckTaskCount by checking if any "in-progress" task has updatedAt > 10 minutes ago
  * - Derives executorState from globalPause and enginePaused flags
  * - Returns ExecutorStats object with reactive updates
  */
-export function useExecutorStats(projectId?: string): UseExecutorStatsResult {
-  const { tasks } = useTasks(projectId ? { projectId } : undefined);
+export function useExecutorStats(tasks: Task[], projectId?: string): UseExecutorStatsResult {
 
   const [apiData, setApiData] = useState<{
     globalPause: boolean;

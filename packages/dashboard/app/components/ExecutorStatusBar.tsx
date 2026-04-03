@@ -1,9 +1,12 @@
 import { useMemo } from "react";
+import type { Task } from "@fusion/core";
 import { Activity, AlertTriangle, Clock, Pause, Play, Zap } from "lucide-react";
 import { useExecutorStats } from "../hooks/useExecutorStats";
 import type { ExecutorState } from "../api";
 
 interface ExecutorStatusBarProps {
+  /** Task list (shared with the board to keep counts in sync) */
+  tasks: Task[];
   /** Project ID for fetching project-specific stats */
   projectId?: string;
 }
@@ -55,8 +58,8 @@ function getStateDisplay(state: ExecutorState): { label: string; color: string; 
  * - Executor state badge (idle/running/paused)
  * - Last activity timestamp
  */
-export function ExecutorStatusBar({ projectId }: ExecutorStatusBarProps) {
-  const { stats, loading, error } = useExecutorStats(projectId);
+export function ExecutorStatusBar({ tasks, projectId }: ExecutorStatusBarProps) {
+  const { stats, loading, error } = useExecutorStats(tasks, projectId);
 
   const stateDisplay = useMemo(() => getStateDisplay(stats.executorState), [stats.executorState]);
 
