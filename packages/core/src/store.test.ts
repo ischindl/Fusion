@@ -2656,10 +2656,10 @@ Task with acceptance criteria
       await store.moveTask(task.id, "todo");
       await store.moveTask(task.id, "in-progress");
 
-      // Simulate a failed state
+      // Simulate transient state that should not block completion
       await store.updateTask(task.id, {
-        status: "failed",
-        error: "Something went wrong",
+        status: "custom-status",
+        error: "Transient note",
         worktree: "test-worktree",
         blockedBy: "FN-001"
       });
@@ -2672,6 +2672,76 @@ Task with acceptance criteria
       expect(moved.error).toBeUndefined();
       expect(moved.worktree).toBeUndefined();
       expect(moved.blockedBy).toBeUndefined();
+    });
+
+    it("blocks moving failed in-review tasks to done", async () => {
+      const task = await store.createTask({ description: "test block failed review task" });
+      await store.moveTask(task.id, "todo");
+      await store.moveTask(task.id, "in-progress");
+      await store.updateTask(task.id, {
+        status: "failed",
+        error: "Workflow step failed",
+      });
+
+      await store.moveTask(task.id, "in-review");
+
+      await expect(store.moveTask(task.id, "done")).rejects.toThrow(
+        "Cannot move",
+      );
+    });
+
+    it("blocks moving in-review tasks with incomplete steps to done", async () => {
+      const task = await store.createTask({ description: "test block incomplete review task" });
+      await store.moveTask(task.id, "todo");
+      await store.moveTask(task.id, "in-progress");
+      await store.updateTask(task.id, { prompt: "## Steps\n### Step 0: First\n### Step 1: Second" });
+      await store.updateStep(task.id, 0, "done");
+      await store.updateStep(task.id, 1, "in-progress");
+
+      await store.moveTask(task.id, "in-review");
+
+      await expect(store.moveTask(task.id, "done")).rejects.toThrow(
+        "task has incomplete steps",
+      );
+    });
+
+    it("allows reopening done tasks back to todo", async () => {
+      const task = await store.createTask({ description: "test reopen done task to todo" });
+      await store.moveTask(task.id, "todo");
+      await store.moveTask(task.id, "in-progress");
+      await store.moveTask(task.id, "in-review");
+      await store.moveTask(task.id, "done");
+
+      const reopened = await store.moveTask(task.id, "todo");
+      expect(reopened.column).toBe("todo");
+    });
+
+    it("allows reopening done tasks back to triage and clears transient execution state", async () => {
+      const task = await store.createTask({ description: "test reopen done task to triage" });
+      await store.moveTask(task.id, "todo");
+      await store.moveTask(task.id, "in-progress");
+      await store.moveTask(task.id, "in-review");
+      await store.moveTask(task.id, "done");
+      await store.updateTask(task.id, {
+        status: "failed",
+        error: "stale completion error",
+        worktree: "stale-worktree",
+        blockedBy: "FN-123",
+        workflowStepResults: [{
+          workflowStepId: "wf-1",
+          workflowStepName: "Workflow step 1",
+          status: "passed",
+          startedAt: new Date().toISOString(),
+        }],
+      });
+
+      const reopened = await store.moveTask(task.id, "triage");
+      expect(reopened.column).toBe("triage");
+      expect(reopened.status).toBeUndefined();
+      expect(reopened.error).toBeUndefined();
+      expect(reopened.worktree).toBeUndefined();
+      expect(reopened.blockedBy).toBeUndefined();
+      expect(reopened.workflowStepResults).toBeUndefined();
     });
   });
 

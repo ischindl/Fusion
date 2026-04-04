@@ -8,6 +8,7 @@ export type { Statement } from "./db.js";
 export { detectLegacyData, migrateFromLegacy, getMigrationStatus } from "./db-migrate.js";
 export { GlobalSettingsStore, resolveGlobalDir } from "./global-settings.js";
 export { canTransition, getValidTransitions, resolveDependencyOrder } from "./board.js";
+export { getTaskMergeBlocker, isTaskReadyForMerge } from "./task-merge.js";
 export { 
   isGhAvailable, 
   isGhAuthenticated, 

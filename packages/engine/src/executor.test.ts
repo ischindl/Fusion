@@ -369,8 +369,12 @@ describe("TaskExecutor worktreeInitCommand", () => {
       expect.stringContaining("Worktree init command failed"),
     );
 
-    // Should NOT have called onError (task continues)
-    expect(onError).not.toHaveBeenCalled();
+    // The init command failure itself does not abort execution, but the mocked
+    // agent still exits without task_done, which now reports an execution error.
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "FN-010" }),
+      expect.objectContaining({ message: "Agent finished without calling task_done" }),
+    );
 
     // Agent should still have been created
     expect(mockedCreateHaiAgent).toHaveBeenCalled();
@@ -4545,8 +4549,11 @@ describe("Invalid transition error handling", () => {
       updatedAt: new Date().toISOString(),
     });
 
-    // Should NOT mark task as failed
-    expect(store.updateTask).not.toHaveBeenCalledWith("FN-001", { status: "failed", error: expect.any(String) });
+    // A missing task_done is now treated as a failure before the transition is attempted.
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
+      status: "failed",
+      error: "Agent finished without calling task_done",
+    });
 
     // Should log informative message
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -4727,6 +4734,66 @@ describe("Workflow Steps Execution", () => {
       return { session };
     }) as any);
   }
+
+  it("marks the task failed when the agent exits without calling task_done", async () => {
+    const store = createMockStore();
+    store.getTask.mockResolvedValue({
+      id: "FN-001",
+      title: "Test",
+      description: "Test task",
+      column: "in-progress",
+      dependencies: [],
+      steps: [{ name: "Preflight", status: "in-progress" }],
+      currentStep: 0,
+      log: [],
+      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    mockedCreateHaiAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        on: vi.fn(),
+        sessionManager: { getLeafId: vi.fn().mockReturnValue("leaf-1") },
+        state: {},
+      },
+    } as any);
+
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError });
+
+    await executor.execute({
+      id: "FN-001",
+      title: "Test",
+      description: "Test task",
+      column: "in-progress",
+      dependencies: [],
+      steps: [{ name: "Preflight", status: "in-progress" }],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
+      status: "failed",
+      error: "Agent finished without calling task_done",
+    });
+    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "in-review");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-001",
+      "Agent finished without calling task_done — moved to in-review for inspection",
+    );
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "FN-001" }),
+      expect.objectContaining({ message: "Agent finished without calling task_done" }),
+    );
+    expect(onComplete).not.toHaveBeenCalled();
+  });
 
   it("runs workflow steps after main task execution", async () => {
     const store = createMockStore();

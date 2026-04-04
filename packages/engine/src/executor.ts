@@ -692,10 +692,12 @@ export class TaskExecutor {
             executorLog.log(`✓ ${task.id} completed → in-review`);
             this.options.onComplete?.(task);
           } else {
-            await this.store.logEntry(task.id, "Agent finished without calling task_done — moved to in-review for inspection");
+            const errorMessage = "Agent finished without calling task_done";
+            await this.store.updateTask(task.id, { status: "failed", error: errorMessage });
+            await this.store.logEntry(task.id, `${errorMessage} — moved to in-review for inspection`);
             await this.store.moveTask(task.id, "in-review");
             executorLog.log(`⚠ ${task.id} finished without task_done → in-review`);
-            this.options.onComplete?.(task);
+            this.options.onError?.(task, new Error(errorMessage));
           }
         } finally {
           this.activeSessions.delete(task.id);

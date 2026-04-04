@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { createInterface } from "node:readline";
-import { TaskStore, AutomationStore, CentralCore } from "@fusion/core";
+import { TaskStore, AutomationStore, CentralCore, getTaskMergeBlocker } from "@fusion/core";
 import type { Settings, TaskDetail, PrInfo } from "@fusion/core";
 import { createServer, GitHubClient } from "@fusion/dashboard";
 import { TriageProcessor, TaskExecutor, Scheduler, AgentSemaphore, WorktreePool, aiMergeTask, UsageLimitPauser, PRIORITY_MERGE, scanIdleWorktrees, cleanupOrphanedWorktrees, NtfyNotifier, PrMonitor, PrCommentHandler, CronRunner, StuckTaskDetector, SelfHealingManager } from "@fusion/engine";
@@ -120,7 +120,7 @@ export async function processPullRequestMergeTask(
   github: Pick<GitHubClient, "findPrForBranch" | "createPr" | "getPrMergeStatus" | "mergePr">,
 ): Promise<"waiting" | "merged" | "skipped"> {
   const task = await store.getTask(taskId);
-  if (task.column !== "in-review" || task.paused) {
+  if (getTaskMergeBlocker(task)) {
     return "skipped";
   }
 
@@ -368,7 +368,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           }
           // Verify the task is still in-review and not paused
           const task = await store.getTask(taskId);
-          if (task.column !== "in-review" || task.paused) {
+          if (getTaskMergeBlocker(task)) {
             continue;
           }
           const mergeStrategy = getMergeStrategy(settings);
@@ -453,7 +453,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // enqueue it for serialized merge processing.
   store.on("task:moved", async ({ task, to }) => {
     if (to !== "in-review") return;
-    if (task.paused) return;
+    if (getTaskMergeBlocker(task)) return;
     try {
       const settings = await store.getSettings();
       if (settings.globalPause || settings.enginePaused) return;
@@ -633,7 +633,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     // ── Startup sweep: enqueue any tasks already in "in-review" ───────
     if (settings.autoMerge) {
       const existing = await store.listTasks();
-      const inReview = existing.filter((t) => t.column === "in-review" && !t.paused);
+      const inReview = existing.filter((t) => !getTaskMergeBlocker(t));
       if (inReview.length > 0) {
         console.log(
           `[auto-merge] Startup sweep: enqueueing ${inReview.length} in-review task(s)`,
@@ -662,7 +662,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           try {
             const tasks = await store.listTasks();
             for (const t of tasks) {
-              if (t.column === "in-review" && !t.paused) {
+              if (!getTaskMergeBlocker(t)) {
                 enqueueMerge(t.id);
               }
             }
@@ -687,7 +687,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           try {
             const tasks = await store.listTasks();
             for (const t of tasks) {
-              if (t.column === "in-review" && !t.paused) {
+              if (!getTaskMergeBlocker(t)) {
                 enqueueMerge(t.id);
               }
             }
@@ -721,7 +721,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
           if (!s.globalPause && !s.enginePaused && s.autoMerge) {
             const tasks = await store.listTasks();
             for (const t of tasks) {
-              if (t.column === "in-review" && !t.paused) {
+              if (!getTaskMergeBlocker(t)) {
                 enqueueMerge(t.id);
               }
             }

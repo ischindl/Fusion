@@ -69,6 +69,18 @@ vi.mock("@fusion/core", () => ({
     recordRun: vi.fn().mockResolvedValue({}),
     getDueSchedules: vi.fn().mockResolvedValue([]),
   })),
+  getTaskMergeBlocker: vi.fn((task: any) => {
+    if (task.column !== "in-review") return `task is in '${task.column}', must be in 'in-review'`;
+    if (task.paused) return "task is paused";
+    if (task.status === "failed") return "task is marked 'failed'";
+    if (task.steps?.some((step: any) => step.status === "pending" || step.status === "in-progress")) {
+      return "task has incomplete steps";
+    }
+    if (task.workflowStepResults?.some((result: any) => result.status === "pending" || result.status === "failed")) {
+      return "task has incomplete or failed workflow steps";
+    }
+    return undefined;
+  }),
 }));
 
 // ── Hoisted shared mocks ───────────────────────────────────────────
@@ -632,6 +644,59 @@ describe("runDashboard — auto-merge pause exclusion", () => {
       (call: any[]) => call[2],
     );
     expect(mergedIds).not.toContain("FN-PAUSED");
+  });
+
+  it("does not auto-merge failed in-review tasks", async () => {
+    mockStore.getSettings.mockResolvedValue({
+      maxConcurrent: 1,
+      maxWorktrees: 2,
+      autoMerge: true,
+      pollIntervalMs: 60_000,
+    });
+    mockStore.listTasks.mockResolvedValue([
+      { id: "FN-FAILED", column: "in-review", paused: false, status: "failed" },
+    ]);
+    mockStore.getTask = vi.fn().mockResolvedValue({
+      id: "FN-FAILED",
+      column: "in-review",
+      paused: false,
+      status: "failed",
+      steps: [{ name: "Step 1", status: "done" }],
+    });
+
+    const { aiMergeTask } = await import("@fusion/engine");
+    (aiMergeTask as ReturnType<typeof vi.fn>).mockClear();
+
+    await runDashboard(0, { open: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(aiMergeTask).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-merge in-review tasks with incomplete steps", async () => {
+    mockStore.getSettings.mockResolvedValue({
+      maxConcurrent: 1,
+      maxWorktrees: 2,
+      autoMerge: true,
+      pollIntervalMs: 60_000,
+    });
+    mockStore.listTasks.mockResolvedValue([
+      { id: "FN-INCOMPLETE", column: "in-review", paused: false, steps: [{ name: "Step 1", status: "in-progress" }] },
+    ]);
+    mockStore.getTask = vi.fn().mockResolvedValue({
+      id: "FN-INCOMPLETE",
+      column: "in-review",
+      paused: false,
+      steps: [{ name: "Step 1", status: "in-progress" }],
+    });
+
+    const { aiMergeTask } = await import("@fusion/engine");
+    (aiMergeTask as ReturnType<typeof vi.fn>).mockClear();
+
+    await runDashboard(0, { open: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(aiMergeTask).not.toHaveBeenCalled();
   });
 });
 

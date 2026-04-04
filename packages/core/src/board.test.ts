@@ -32,7 +32,7 @@ describe("board", () => {
     });
 
     it("returns false for some invalid backwards transitions", () => {
-      // done cannot go back to in-review (must go to archived first)
+      // done cannot go back to in-review directly
       expect(canTransition("done", "in-review")).toBe(false);
       // archived cannot go directly back to in-progress
       expect(canTransition("archived", "in-progress")).toBe(false);
@@ -83,7 +83,7 @@ describe("board", () => {
     });
 
     it("returns correct transitions for done", () => {
-      expect(getValidTransitions("done")).toEqual(["archived"]);
+      expect(getValidTransitions("done")).toEqual(["todo", "triage", "archived"]);
     });
 
     it("returns correct transitions for archived", () => {

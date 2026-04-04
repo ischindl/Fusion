@@ -11,6 +11,7 @@ import { detectLegacyData, migrateFromLegacy } from "./db-migrate.js";
 import { MissionStore } from "./mission-store.js";
 import { BackwardCompat, ProjectRequiredError } from "./migration.js";
 import { CentralCore } from "./central-core.js";
+import { getTaskMergeBlocker } from "./task-merge.js";
 
 export interface TaskStoreEvents {
   "task:created": [task: Task];
@@ -953,6 +954,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
 
       const fromColumn = task.column;
+      if (fromColumn === "in-review" && toColumn === "done") {
+        const mergeBlocker = getTaskMergeBlocker(task);
+        if (mergeBlocker) {
+          throw new Error(`Cannot move ${id} to done: ${mergeBlocker}`);
+        }
+      }
       task.column = toColumn;
       task.columnMovedAt = new Date().toISOString();
       task.updatedAt = task.columnMovedAt;
@@ -967,12 +974,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.nextRecoveryAt = undefined;
       }
 
-      // Clear transient fields when moving from in-progress to reset columns (todo/triage)
+      // Clear transient fields when reopening/resetting a task into todo/triage.
       // This ensures failed tasks don't show failed status after being moved for retry.
       // Note: recovery metadata (recoveryRetryCount, nextRecoveryAt) is intentionally
       // preserved here — the recovery-policy module manages those fields. They are
       // only cleared on terminal transitions (in-review, done, archived).
-      if (fromColumn === "in-progress" && (toColumn === "todo" || toColumn === "triage")) {
+      if (
+        (fromColumn === "in-progress" || fromColumn === "done")
+        && (toColumn === "todo" || toColumn === "triage")
+      ) {
         task.status = undefined;
         task.error = undefined;
         task.worktree = undefined;
@@ -985,9 +995,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.nextRecoveryAt = undefined;
       }
 
-      // Clear workflow step results when moving from in-review back to todo or in-progress
+      // Clear workflow step results when reopening from review/completed states.
       // This ensures fresh workflow step runs on retry
-      if (fromColumn === "in-review" && (toColumn === "todo" || toColumn === "in-progress")) {
+      if (
+        (fromColumn === "in-review" && (toColumn === "todo" || toColumn === "in-progress"))
+        || (fromColumn === "done" && (toColumn === "todo" || toColumn === "triage"))
+      ) {
         task.workflowStepResults = undefined;
       }
 
@@ -1457,10 +1470,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
-      if (task.column !== "in-review") {
-        throw new Error(
-          `Cannot merge ${id}: task is in '${task.column}', must be in 'in-review'`,
-        );
+      const mergeBlocker = getTaskMergeBlocker(task);
+      if (mergeBlocker) {
+        throw new Error(`Cannot merge ${id}: ${mergeBlocker}`);
       }
 
       const branch = `kb/${id.toLowerCase()}`;
@@ -1745,6 +1757,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
 
   private async moveToDone(task: Task, dir: string): Promise<void> {
+    const mergeBlocker = getTaskMergeBlocker(task);
+    if (mergeBlocker) {
+      throw new Error(`Cannot move ${task.id} to done: ${mergeBlocker}`);
+    }
+
     task.column = "done";
     task.worktree = undefined;
     task.status = undefined;
