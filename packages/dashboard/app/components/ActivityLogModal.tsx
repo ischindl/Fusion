@@ -182,9 +182,9 @@ export function ActivityLogModal({
       }}
       data-testid="activity-log-modal-overlay"
     >
-      <div className="modal activity-log-modal" data-testid="activity-log-modal">
-        {/* Header */}
-        <div className="activity-log-header">
+      <div className="modal modal-lg activity-log-modal" data-testid="activity-log-modal">
+        {/* Header — uses shared modal-header pattern for consistent close control */}
+        <div className="modal-header activity-log-header">
           <div className="activity-log-title">
             <History size={18} />
             <span>Activity Log</span>
@@ -250,17 +250,17 @@ export function ActivityLogModal({
                 <Trash2 size={14} />
               </button>
             )}
-
-            {/* Close button */}
-            <button
-              className="activity-log-close"
-              onClick={onClose}
-              title="Close"
-              data-testid="activity-close"
-            >
-              <X size={18} />
-            </button>
           </div>
+          {/* Close button — uses shared modal-close for consistent sizing and alignment */}
+          <button
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+            data-testid="activity-close"
+          >
+            ×
+          </button>
         </div>
 
         {/* Active filters display */}

@@ -492,12 +492,41 @@ describe("ActivityLogModal", () => {
     // Verify key structural classes that the mobile CSS targets
     const modal = container.querySelector(".activity-log-modal");
     expect(modal).toBeTruthy();
+    // Modal uses shared modal-lg for consistent wide sizing
+    expect(modal!.classList.contains("modal-lg")).toBe(true);
+    // Header uses shared modal-header pattern
+    expect(modal!.querySelector(".modal-header")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-header")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-title")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-actions")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-content")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-list")).toBeTruthy();
     expect(modal!.querySelector(".activity-log-entry")).toBeTruthy();
+  });
+
+  it("renders close button with shared modal-close class and accessibility attributes", async () => {
+    const { container } = render(
+      <ActivityLogModal
+        isOpen={true}
+        onClose={mockOnClose}
+        tasks={mockTasks}
+        onOpenTaskDetail={mockOnOpenTaskDetail}
+      />
+    );
+
+    const closeButton = await screen.findByTestId("activity-close");
+    expect(closeButton).toBeTruthy();
+    // Uses shared modal-close class for consistent styling
+    expect(closeButton.classList.contains("modal-close")).toBe(true);
+    // Has accessibility label
+    expect(closeButton.getAttribute("aria-label")).toBe("Close");
+    // Close button is a direct child of the header, NOT inside the actions row
+    const header = container.querySelector(".modal-header");
+    expect(header).toBeTruthy();
+    expect(header!.contains(closeButton)).toBe(true);
+    const actions = container.querySelector(".activity-log-actions");
+    expect(actions).toBeTruthy();
+    expect(actions!.contains(closeButton)).toBe(false);
   });
 
   it("renders entry header and details within each entry for mobile reflow", async () => {

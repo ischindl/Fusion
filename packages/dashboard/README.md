@@ -234,7 +234,7 @@ View a centralized timeline of all task lifecycle events. Click the history icon
 - **Auto-refresh**: Log updates automatically every 30 seconds when the modal is open
 - **Pagination**: "Load More" button fetches older entries (100 entries per request, max 1000)
 - **Clear Log**: Maintenance function to clear all activity history (with confirmation)
-- **Responsive Layout**: On narrow screens (≤768px), the modal adapts with a stacked header, full-width filter controls, wrapped active-filters bar, reflowed entry text, and vertically stacked confirmation actions — preserving access to filters, task links, and clear-log on mobile devices
+- **Responsive Layout**: The modal uses the shared `modal-lg` width (640px) and standard `modal-header` pattern with a dedicated close button, consistent with other dashboard modals. On narrow screens (≤768px), the modal adapts with a stacked header, full-width filter controls, wrapped active-filters bar, reflowed entry text, and vertically stacked confirmation actions — preserving access to filters, task links, and clear-log on mobile devices
 
 **Event Metadata**:
 - Task moves show from/to column transitions

@@ -11919,20 +11919,14 @@ html .column.drag-over * {
 /* ── Activity Log Modal ─────────────────────────────────────────── */
 
 .activity-log-modal {
-  max-width: 600px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
 }
 
 .activity-log-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-lg) 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  /* Extends shared .modal-header with activity-log-specific overrides */
+  gap: var(--space-sm);
 }
 
 .activity-log-title {
@@ -11971,8 +11965,7 @@ html .column.drag-over * {
 }
 
 .activity-log-refresh,
-.activity-log-clear,
-.activity-log-close {
+.activity-log-clear {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -11990,11 +11983,6 @@ html .column.drag-over * {
 .activity-log-clear:hover {
   background: var(--card-hover);
   color: var(--text);
-}
-
-.activity-log-close:hover {
-  background: var(--color-red, rgba(239, 68, 68, 0.1));
-  color: var(--color-red, #ef4444);
 }
 
 .activity-log-content {
@@ -12379,8 +12367,7 @@ html .column.drag-over * {
 
   /* Action buttons stay inline but shrink */
   .activity-log-refresh,
-  .activity-log-clear,
-  .activity-log-close {
+  .activity-log-clear {
     width: 28px;
     height: 28px;
     flex-shrink: 0;

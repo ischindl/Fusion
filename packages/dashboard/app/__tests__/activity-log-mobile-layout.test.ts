@@ -40,6 +40,23 @@ describe("activity-log-mobile-layout.css", () => {
 
   const mobileCss = extractMobileMediaBlocks(cssContent);
 
+  // ── Modal sizing ────────────────────────────────────────────────────
+
+  it("uses modal-lg base class for consistent wide sizing", () => {
+    // The activity-log-modal should NOT set its own max-width; modal-lg handles width
+    const modalBlock = cssContent.match(/\.activity-log-modal\s*\{[^}]*\}/)?.[0];
+    expect(modalBlock).toBeTruthy();
+    // Should NOT contain max-width (handled by modal-lg base class)
+    expect(modalBlock).not.toMatch(/max-width:\s*\d+px/);
+  });
+
+  // ── Close button ────────────────────────────────────────────────────
+
+  it("does not define a custom activity-log-close style (uses shared modal-close)", () => {
+    // The modal should use the shared .modal-close class instead of a custom close button
+    expect(cssContent).not.toMatch(/\.activity-log-close\s*\{/);
+  });
+
   // ── Modal header / actions ──────────────────────────────────────────
 
   it("has mobile rule for activity-log-header to wrap on narrow screens", () => {
