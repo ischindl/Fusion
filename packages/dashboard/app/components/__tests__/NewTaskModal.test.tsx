@@ -7,6 +7,9 @@ import type { Task, Column } from "@fusion/core";
 vi.mock("lucide-react", () => ({
   Sparkles: () => null,
   Globe: () => null,
+  ChevronUp: () => null,
+  ChevronDown: () => null,
+  X: () => null,
 }));
 
 // Mock the api module
@@ -410,6 +413,100 @@ describe("NewTaskModal", () => {
         expect(props.onCreateTask).toHaveBeenCalledWith(
           expect.objectContaining({
             modelPresetId: undefined,
+          }),
+        );
+      });
+    });
+  });
+
+  // Workflow step ordering tests (FN-836)
+  describe("workflow step ordering", () => {
+    it("sends ordered enabledWorkflowSteps in create payload when steps are selected in order", async () => {
+      const { fetchWorkflowSteps } = await import("../../api");
+      vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+        { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+        { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+      ]);
+
+      const { props } = renderNewTaskModal();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("workflow-step-checkbox-WS-001")).toBeTruthy();
+      });
+
+      // Select WS-001, then WS-002 — order should be preserved
+      const checkbox1 = screen.getByTestId("workflow-step-checkbox-WS-001").querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(checkbox1);
+
+      const checkbox2 = screen.getByTestId("workflow-step-checkbox-WS-002").querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(checkbox2);
+
+      // Type description and submit
+      fireEvent.change(screen.getByLabelText(/Description/i), { target: { value: "Ordered task" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+      await waitFor(() => {
+        expect(props.onCreateTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            enabledWorkflowSteps: ["WS-001", "WS-002"],
+          }),
+        );
+      });
+    });
+
+    it("sends reordered enabledWorkflowSteps after user reorders steps", async () => {
+      const { fetchWorkflowSteps } = await import("../../api");
+      vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+        { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+        { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+      ]);
+
+      const { props } = renderNewTaskModal();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("workflow-step-checkbox-WS-001")).toBeTruthy();
+      });
+
+      // Select WS-001, then WS-002
+      const checkbox1 = screen.getByTestId("workflow-step-checkbox-WS-001").querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(checkbox1);
+
+      const checkbox2 = screen.getByTestId("workflow-step-checkbox-WS-002").querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(checkbox2);
+
+      // Now reorder: move WS-002 up
+      await waitFor(() => {
+        expect(screen.getByTestId("workflow-step-move-up-WS-002")).toBeTruthy();
+      });
+      fireEvent.click(screen.getByTestId("workflow-step-move-up-WS-002"));
+
+      // Type description and submit
+      fireEvent.change(screen.getByLabelText(/Description/i), { target: { value: "Reordered task" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+      await waitFor(() => {
+        expect(props.onCreateTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            enabledWorkflowSteps: ["WS-002", "WS-001"],
+          }),
+        );
+      });
+    });
+
+    it("sends browser-verification and custom steps in selected order", async () => {
+      const { props } = renderNewTaskModal();
+
+      // Select browser-verification first, then nothing else — order is just one
+      const bvCheckbox = screen.getByTestId("browser-verification-checkbox").querySelector('input[type="checkbox"]') as HTMLInputElement;
+      fireEvent.click(bvCheckbox);
+
+      fireEvent.change(screen.getByLabelText(/Description/i), { target: { value: "BV task" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+      await waitFor(() => {
+        expect(props.onCreateTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            enabledWorkflowSteps: ["browser-verification"],
           }),
         );
       });

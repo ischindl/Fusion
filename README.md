@@ -633,10 +633,11 @@ Click **Add** on any template to create a customizable workflow step.
 
 ### Using Workflow Steps
 
-1. When creating a new task, check the workflow steps you want to run
-2. After the main task executor completes, each selected workflow step runs automatically
-3. The task only moves to in-review after all workflow steps pass
-4. View results in the **Workflow** tab of the task detail modal
+1. When creating or editing a task, check the workflow steps you want to run
+2. **Reorder steps** — When two or more steps are selected, an execution-order panel appears showing the numbered sequence. Use the ▲/▼ buttons to change the order
+3. Steps execute sequentially in the saved order — the first selected step runs first, then the next, and so on
+4. The task only moves to in-review after all workflow steps pass
+5. View results in the **Workflow** tab of the task detail modal
 
 Workflow step agents use **readonly tools** (no modifications). If a workflow step fails, the task is marked as failed and won't move to in-review.
 

@@ -11335,6 +11335,99 @@ html .column.drag-over * {
   margin-bottom: 4px !important;
 }
 
+/* Workflow step reorder controls */
+.workflow-step-order {
+  margin-top: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm);
+}
+
+.workflow-step-order-label {
+  display: block;
+  margin-bottom: var(--space-xs);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.workflow-step-order-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.workflow-step-order-item + .workflow-step-order-item {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 2px;
+  padding-top: 6px;
+}
+
+.workflow-step-order-item:hover {
+  background: var(--card-hover);
+}
+
+.workflow-step-order-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.workflow-step-order-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-step-order-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.workflow-step-order-actions .btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.workflow-step-order-actions .btn-icon:hover:not(:disabled) {
+  background: var(--card-hover);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.workflow-step-order-actions .btn-icon:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 .new-task-modal .form-group small {
   display: block;
   margin-top: var(--space-sm);

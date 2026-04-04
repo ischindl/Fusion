@@ -1110,6 +1110,8 @@ Tasks store their enabled workflow step IDs in `task.json`:
 }
 ```
 
+The order of IDs in `enabledWorkflowSteps` determines execution order — the engine iterates the array sequentially. Users can reorder steps in the task create/edit form using ▲/▼ controls when two or more steps are selected.
+
 ### API
 
 - `GET /api/workflow-steps` — List all workflow step definitions

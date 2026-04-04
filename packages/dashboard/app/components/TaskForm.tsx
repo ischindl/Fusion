@@ -4,7 +4,7 @@ import type { ToastType } from "../hooks/useToast";
 import { fetchModels, fetchSettings, fetchWorkflowSteps, refineText, getRefineErrorMessage, updateGlobalSettings, type RefinementType, type ModelInfo } from "../api";
 import { applyPresetToSelection, getRecommendedPresetForSize } from "../utils/modelPresets";
 import { CustomModelDropdown } from "./CustomModelDropdown";
-import { Sparkles, Globe } from "lucide-react";
+import { Sparkles, Globe, ChevronUp, ChevronDown, X } from "lucide-react";
 
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
@@ -292,6 +292,35 @@ export function TaskForm({
       setFavoriteModels(currentFavorites);
     }
   }, [favoriteModels, favoriteProviders]);
+
+  // Workflow step reorder helpers
+  const moveWorkflowStepUp = useCallback((index: number) => {
+    if (index <= 0) return;
+    const updated = [...selectedWorkflowSteps];
+    [updated[index - 1], updated[index]] = [updated[index], updated[index - 1]];
+    onWorkflowStepsChange(updated);
+  }, [selectedWorkflowSteps, onWorkflowStepsChange]);
+
+  const moveWorkflowStepDown = useCallback((index: number) => {
+    if (index >= selectedWorkflowSteps.length - 1) return;
+    const updated = [...selectedWorkflowSteps];
+    [updated[index], updated[index + 1]] = [updated[index + 1], updated[index]];
+    onWorkflowStepsChange(updated);
+  }, [selectedWorkflowSteps, onWorkflowStepsChange]);
+
+  const removeWorkflowStep = useCallback((stepId: string) => {
+    onWorkflowStepsChange(selectedWorkflowSteps.filter((id) => id !== stepId));
+  }, [selectedWorkflowSteps, onWorkflowStepsChange]);
+
+  // Build a lookup for step names (includes both fetched steps and built-in browser-verification)
+  const workflowStepLookup = new Map<string, { name: string; description: string }>();
+  for (const step of workflowSteps) {
+    workflowStepLookup.set(step.id, { name: step.name, description: step.description });
+  }
+  workflowStepLookup.set("browser-verification", {
+    name: "Browser Verification",
+    description: "Verify web application functionality using browser automation (agent-browser)",
+  });
 
   const availableDeps = tasks
     .filter((t) => !dependencies.includes(t.id))
@@ -655,6 +684,54 @@ export function TaskForm({
             </div>
           </label>
         </div>
+
+        {/* Selected steps — execution order with reorder controls */}
+        {selectedWorkflowSteps.length > 1 && (
+          <div className="workflow-step-order" data-testid="workflow-step-order">
+            <small className="workflow-step-order-label">Execution order:</small>
+            {selectedWorkflowSteps.map((stepId, index) => {
+              const stepInfo = workflowStepLookup.get(stepId);
+              return (
+                <div key={stepId} className="workflow-step-order-item" data-testid={`workflow-step-order-item-${stepId}`}>
+                  <span className="workflow-step-order-number">{index + 1}</span>
+                  <span className="workflow-step-order-name">{stepInfo?.name || stepId}</span>
+                  <div className="workflow-step-order-actions">
+                    <button
+                      type="button"
+                      className="btn btn-icon btn-sm"
+                      onClick={() => moveWorkflowStepUp(index)}
+                      disabled={disabled || index === 0}
+                      data-testid={`workflow-step-move-up-${stepId}`}
+                      title="Move up"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-icon btn-sm"
+                      onClick={() => moveWorkflowStepDown(index)}
+                      disabled={disabled || index === selectedWorkflowSteps.length - 1}
+                      data-testid={`workflow-step-move-down-${stepId}`}
+                      title="Move down"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-icon btn-sm"
+                      onClick={() => removeWorkflowStep(stepId)}
+                      disabled={disabled}
+                      data-testid={`workflow-step-remove-${stepId}`}
+                      title="Remove"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Attachments */}

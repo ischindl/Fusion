@@ -7,6 +7,9 @@ import type { Task, Column } from "@fusion/core";
 vi.mock("lucide-react", () => ({
   Sparkles: () => null,
   Globe: () => null,
+  ChevronUp: () => null,
+  ChevronDown: () => null,
+  X: () => null,
 }));
 
 // Mock the api module
@@ -531,5 +534,208 @@ describe("TaskForm preset selection (FN-819)", () => {
     await waitFor(() => {
       expect(screen.getByText("Using preset: Fast")).toBeTruthy();
     });
+  });
+});
+
+describe("TaskForm workflow step reordering (FN-836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does not show reorder controls when no steps are selected", () => {
+    renderTaskForm({ selectedWorkflowSteps: [] });
+    expect(screen.queryByTestId("workflow-step-order")).toBeNull();
+  });
+
+  it("does not show reorder controls when only one step is selected", () => {
+    renderTaskForm({ selectedWorkflowSteps: ["browser-verification"] });
+    expect(screen.queryByTestId("workflow-step-order")).toBeNull();
+  });
+
+  it("shows reorder controls when two or more steps are selected", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"] });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    expect(screen.getByTestId("workflow-step-order-item-WS-001")).toBeTruthy();
+    expect(screen.getByTestId("workflow-step-order-item-WS-002")).toBeTruthy();
+  });
+
+  it("shows numbered execution order", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"] });
+
+    await waitFor(() => {
+      expect(screen.getByText("1")).toBeTruthy();
+      expect(screen.getByText("2")).toBeTruthy();
+    });
+  });
+
+  it("disables move-up button on first step", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"] });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    const moveUpFirst = screen.getByTestId("workflow-step-move-up-WS-001") as HTMLButtonElement;
+    expect(moveUpFirst.disabled).toBe(true);
+  });
+
+  it("disables move-down button on last step", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"] });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    const moveDownLast = screen.getByTestId("workflow-step-move-down-WS-002") as HTMLButtonElement;
+    expect(moveDownLast.disabled).toBe(true);
+  });
+
+  it("calls onWorkflowStepsChange with swapped order when move-up is clicked", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    const onWorkflowStepsChange = vi.fn();
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"], onWorkflowStepsChange });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // Move WS-002 up (swap with WS-001)
+    fireEvent.click(screen.getByTestId("workflow-step-move-up-WS-002"));
+    expect(onWorkflowStepsChange).toHaveBeenCalledWith(["WS-002", "WS-001"]);
+  });
+
+  it("calls onWorkflowStepsChange with swapped order when move-down is clicked", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    const onWorkflowStepsChange = vi.fn();
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"], onWorkflowStepsChange });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // Move WS-001 down (swap with WS-002)
+    fireEvent.click(screen.getByTestId("workflow-step-move-down-WS-001"));
+    expect(onWorkflowStepsChange).toHaveBeenCalledWith(["WS-002", "WS-001"]);
+  });
+
+  it("calls onWorkflowStepsChange with step removed when remove button is clicked", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    const onWorkflowStepsChange = vi.fn();
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"], onWorkflowStepsChange });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // Remove WS-001
+    fireEvent.click(screen.getByTestId("workflow-step-remove-WS-001"));
+    expect(onWorkflowStepsChange).toHaveBeenCalledWith(["WS-002"]);
+  });
+
+  it("shows browser-verification step name in reorder list", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "browser-verification"] });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // browser-verification should show its friendly name in the reorder list
+    const orderItem1 = screen.getByTestId("workflow-step-order-item-WS-001");
+    const orderItem2 = screen.getByTestId("workflow-step-order-item-browser-verification");
+    expect(orderItem1.textContent).toContain("QA Check");
+    expect(orderItem2.textContent).toContain("Browser Verification");
+  });
+
+  it("preserves order when adding a new step via checkbox after reorder", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-003", name: "Doc Review", description: "Check docs", prompt: "Check docs", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    const onWorkflowStepsChange = vi.fn();
+    // Start with WS-001, WS-002
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002"], onWorkflowStepsChange });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // Click checkbox to add WS-003 — it should be appended
+    const checkbox = screen.getByTestId("workflow-step-checkbox-WS-003").querySelector('input[type="checkbox"]') as HTMLInputElement;
+    fireEvent.click(checkbox);
+
+    expect(onWorkflowStepsChange).toHaveBeenCalledWith(["WS-001", "WS-002", "WS-003"]);
+  });
+
+  it("preserves order when removing a step via checkbox (not reorder remove)", async () => {
+    const { fetchWorkflowSteps } = await import("../../api");
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([
+      { id: "WS-001", name: "QA Check", description: "Run tests", prompt: "Check tests", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-002", name: "Security Audit", description: "Check security", prompt: "Check security", enabled: true, createdAt: "", updatedAt: "" },
+      { id: "WS-003", name: "Doc Review", description: "Check docs", prompt: "Check docs", enabled: true, createdAt: "", updatedAt: "" },
+    ]);
+
+    const onWorkflowStepsChange = vi.fn();
+    renderTaskForm({ selectedWorkflowSteps: ["WS-001", "WS-002", "WS-003"], onWorkflowStepsChange });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-step-order")).toBeTruthy();
+    });
+
+    // Uncheck WS-002 via checkbox
+    const checkbox = screen.getByTestId("workflow-step-checkbox-WS-002").querySelector('input[type="checkbox"]') as HTMLInputElement;
+    fireEvent.click(checkbox);
+
+    expect(onWorkflowStepsChange).toHaveBeenCalledWith(["WS-001", "WS-003"]);
   });
 });
