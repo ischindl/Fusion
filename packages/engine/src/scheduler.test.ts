@@ -285,6 +285,47 @@ describe("Scheduler", () => {
       // So moveTask won't be called for a task already in in-progress
       expect(store.moveTask).not.toHaveBeenCalled();
     });
+
+    it("triggers scheduling when task moves to todo (retry)", async () => {
+      // Mock filesystem validation so schedule() can proceed
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFile).mockResolvedValue("# Task\nDo something");
+
+      // Return FN-001 in todo with satisfied deps
+      const listTasksMock = vi.fn()
+        .mockResolvedValueOnce([]) // Initial schedule from start()
+        .mockResolvedValueOnce([
+          createMockTask({ id: "FN-001", column: "todo", dependencies: [] }),
+        ]);
+
+      const store = createMockStore({
+        listTasks: listTasksMock,
+        getSettings: vi.fn().mockResolvedValue({ maxConcurrent: 2, maxWorktrees: 4 }),
+        updateTask: vi.fn().mockResolvedValue(undefined),
+        moveTask: vi.fn().mockResolvedValue(undefined),
+      });
+
+      const scheduler = new Scheduler(store);
+      scheduler.start();
+
+      // Wait for initial schedule pass to complete
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Find and call the task:moved handler
+      const onCalls = (store.on as any).mock.calls;
+      const movedHandler = onCalls.find((call: any) => call[0] === "task:moved")?.[1];
+      expect(movedHandler).toBeDefined();
+
+      // Simulate task:moved to todo (retry scenario)
+      const todoTask = createMockTask({ id: "FN-001", column: "in-progress" });
+      await movedHandler({ task: todoTask, from: "in-progress", to: "todo" });
+
+      // Wait for async schedule to complete
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Verify schedule() was called — task in todo should be scheduled
+      expect(store.moveTask).toHaveBeenCalledWith("FN-001", "in-progress");
+    });
   });
 
   describe("task unpause scheduling", () => {

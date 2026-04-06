@@ -4842,6 +4842,41 @@ describe("TaskExecutor bounded recovery retries", () => {
     );
   });
 
+  it("skips moveTask when task is already in todo at execute start", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+
+    mockedCreateHaiAgent.mockImplementation(async () => ({
+      session: {
+        prompt: vi.fn(async () => {
+          // Simulate stuck kill
+          executor.markStuckAborted("FN-001", true);
+          throw new Error("Stuck task");
+        }),
+        dispose: vi.fn(),
+        state: {},
+      },
+    }) as any);
+
+    await executor.execute({
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "todo", // Task was already in todo when execute started
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Should NOT call moveTask because task is already in todo
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-001", "todo");
+    // Should still clean up and mark as stuck-killed
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: "stuck-killed" });
+  });
+
   it("clears recovery metadata after successful run completes", async () => {
     const store = createMockStore();
 

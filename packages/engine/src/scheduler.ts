@@ -191,11 +191,11 @@ export class Scheduler {
         void this.handleMissionTaskCompletion(task.id, task.sliceId);
       }
 
-      // Event-driven scheduling: when a dependency completes (task moves to "done"),
+      // Event-driven scheduling: when a task moves to "done" (completion) or "todo" (retry/manual move),
       // trigger scheduling immediately so waiting tasks can start without waiting
       // for the next poll interval (up to 15 seconds).
-      if (to === "done") {
-        schedulerLog.log("Task completed — triggering scheduling");
+      if (to === "done" || to === "todo") {
+        schedulerLog.log(`Task moved to ${to} — triggering scheduling`);
         this.schedule();
       }
     });

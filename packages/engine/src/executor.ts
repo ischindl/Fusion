@@ -1198,8 +1198,15 @@ export class TaskExecutor {
             }
           }
           await this.store.updateTask(task.id, { status: "stuck-killed", worktree: undefined, branch: undefined });
-          await this.store.moveTask(task.id, "todo");
-          executorLog.log(`${task.id} moved to todo for retry after stuck kill`);
+          // Only move to todo if not already there. The task.column check uses the
+          // captured task object from execute() start — if the task was already in "todo"
+          // when execute() started (e.g., resumed orphan), we skip the redundant move.
+          if (task.column !== "todo") {
+            await this.store.moveTask(task.id, "todo");
+            executorLog.log(`${task.id} moved to todo for retry after stuck kill`);
+          } else {
+            executorLog.log(`${task.id} already in todo — skipping redundant move`);
+          }
         } catch (err: any) {
           executorLog.error(`Failed to requeue stuck task ${task.id}: ${err.message}`);
         }
