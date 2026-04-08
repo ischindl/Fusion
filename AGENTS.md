@@ -1517,7 +1517,7 @@ The Workflow tab only appears for tasks that have workflow steps enabled or have
 
 ## Workflow Step Templates
 
-Workflow step templates are pre-defined quality gates that can be added with one click instead of creating from scratch. The dashboard includes 5 built-in templates covering common quality, security, and compliance checks.
+Workflow step templates are pre-defined quality gates that can be added with one click instead of creating from scratch. The dashboard includes 6 built-in templates covering common quality, security, and compliance checks.
 
 ### Available Templates
 
@@ -1528,6 +1528,7 @@ Workflow step templates are pre-defined quality gates that can be added with one
 | **Security Audit** | Security | Check for common security vulnerabilities and anti-patterns |
 | **Performance Review** | Quality | Check for performance anti-patterns and optimization opportunities |
 | **Accessibility Check** | Quality | Verify UI changes meet accessibility standards (WCAG 2.1) |
+| **Browser Verification** | Quality | Verify end-to-end web behavior using browser automation and interaction checks |
 
 ### How to Use
 
@@ -1547,6 +1548,7 @@ Templates include high-quality agent prompts that guide the AI through specific 
 - **Security Audit** — Scans for injection vulnerabilities, hardcoded secrets, unsafe eval, path traversal
 - **Performance Review** — Identifies algorithmic complexity issues, N+1 queries, memory leaks, unnecessary re-renders
 - **Accessibility Check** — Validates keyboard navigation, ARIA labels, color contrast, focus indicators, semantic HTML
+- **Browser Verification** — Uses browser automation to validate user flows, page interactions, and visual regressions
 
 ### API
 

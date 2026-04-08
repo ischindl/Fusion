@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { WorkflowStepManager } from "../WorkflowStepManager";
 import type { WorkflowStep } from "@fusion/core";
 
@@ -47,6 +47,32 @@ vi.mock("../../api", () => ({
   refineWorkflowStepPrompt: vi.fn(() => Promise.resolve({
     prompt: "AI-generated detailed prompt",
     workflowStep: { ...mockSteps[0], prompt: "AI-generated detailed prompt" },
+  })),
+  fetchWorkflowStepTemplates: vi.fn(() => Promise.resolve({
+    templates: [
+      {
+        id: "browser-verification",
+        name: "Browser Verification",
+        description: "Verify web application functionality using browser automation",
+        prompt: "Test prompt",
+        category: "Quality",
+        icon: "globe",
+        toolMode: "coding",
+      },
+    ],
+  })),
+  createWorkflowStepFromTemplate: vi.fn(() => Promise.resolve({
+    id: "WS-010",
+    templateId: "browser-verification",
+    name: "Browser Verification",
+    description: "Verify web application functionality using browser automation",
+    mode: "prompt",
+    phase: "pre-merge",
+    prompt: "Test prompt",
+    toolMode: "coding",
+    enabled: true,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   })),
   fetchScripts: vi.fn(() => Promise.resolve({ test: "pnpm test", lint: "pnpm lint" })),
   fetchModels: vi.fn(() => Promise.resolve({
@@ -104,6 +130,8 @@ import {
   updateWorkflowStep,
   deleteWorkflowStep,
   refineWorkflowStepPrompt,
+  fetchWorkflowStepTemplates,
+  createWorkflowStepFromTemplate,
   fetchModels,
 } from "../../api";
 import { fetchScripts } from "../../api";
@@ -593,6 +621,62 @@ describe("WorkflowStepManager", () => {
     });
 
     expect(screen.queryByText("Default on")).not.toBeInTheDocument();
+  });
+});
+
+describe("WorkflowStepManager templates tab", () => {
+  it("renders browser verification template", async () => {
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([]);
+
+    render(<WorkflowStepManager isOpen={true} onClose={onClose} addToast={addToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-templates")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("tab-templates"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("template-browser-verification")).toBeInTheDocument();
+      expect(screen.getByText("Browser Verification")).toBeInTheDocument();
+    });
+
+    expect(fetchWorkflowStepTemplates).toHaveBeenCalled();
+  });
+
+  it("displays the Globe icon for browser verification template", async () => {
+    vi.mocked(fetchWorkflowSteps).mockResolvedValueOnce([]);
+
+    render(<WorkflowStepManager isOpen={true} onClose={onClose} addToast={addToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-templates")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("tab-templates"));
+
+    const templateCard = await screen.findByTestId("template-browser-verification");
+    expect(templateCard.querySelector(".lucide-globe")).toBeInTheDocument();
+  });
+
+  it("can add browser verification template as a workflow step", async () => {
+    vi.mocked(fetchWorkflowSteps).mockResolvedValue([]);
+
+    render(<WorkflowStepManager isOpen={true} onClose={onClose} addToast={addToast} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-templates")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("tab-templates"));
+
+    const templateCard = await screen.findByTestId("template-browser-verification");
+    fireEvent.click(within(templateCard).getByTestId("add-template-browser-verification"));
+
+    await waitFor(() => {
+      expect(createWorkflowStepFromTemplate).toHaveBeenCalledWith("browser-verification", undefined);
+      expect(addToast).toHaveBeenCalledWith("Added Browser Verification workflow step", "success");
+    });
   });
 });
 

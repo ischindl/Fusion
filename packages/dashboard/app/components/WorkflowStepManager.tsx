@@ -27,6 +27,7 @@ import {
   Shield,
   Zap,
   Eye,
+  Globe,
   LayoutGrid,
   BookOpen,
   Terminal,
@@ -95,6 +96,8 @@ function getTemplateIcon(iconName: string | undefined) {
       return Zap;
     case "eye":
       return Eye;
+    case "globe":
+      return Globe;
     default:
       return CheckCircle;
   }
