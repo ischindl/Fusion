@@ -490,6 +490,54 @@ export function TaskForm({
         </div>
       )}
 
+      {/* Attachments */}
+      <div className="form-group">
+        <label>Attachments</label>
+        {pendingImages.length > 0 && (
+          <div className="inline-create-previews">
+            {pendingImages.map((img, i) => (
+              <div key={img.previewUrl} className="inline-create-preview">
+                <img src={img.previewUrl} alt={img.file.name} />
+                <button
+                  type="button"
+                  className="inline-create-preview-remove"
+                  onClick={() => removeImage(i)}
+                  disabled={disabled}
+                  title="Remove image"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              onImagesChange([
+                ...pendingImages,
+                { file, previewUrl: URL.createObjectURL(file) },
+              ]);
+              e.target.value = "";
+            }
+          }}
+          style={{ display: "none" }}
+        />
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled}
+        >
+          Attach Screenshot
+        </button>
+        <small>You can also paste images or drag & drop</small>
+      </div>
+
       {/* Dependencies */}
       <div className="form-group">
         <label>Dependencies</label>
@@ -792,53 +840,6 @@ export function TaskForm({
         )}
       </div>
 
-      {/* Attachments */}
-      <div className="form-group">
-        <label>Attachments</label>
-        {pendingImages.length > 0 && (
-          <div className="inline-create-previews">
-            {pendingImages.map((img, i) => (
-              <div key={img.previewUrl} className="inline-create-preview">
-                <img src={img.previewUrl} alt={img.file.name} />
-                <button
-                  type="button"
-                  className="inline-create-preview-remove"
-                  onClick={() => removeImage(i)}
-                  disabled={disabled}
-                  title="Remove image"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) {
-              onImagesChange([
-                ...pendingImages,
-                { file, previewUrl: URL.createObjectURL(file) },
-              ]);
-              e.target.value = "";
-            }
-          }}
-          style={{ display: "none" }}
-        />
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-        >
-          Attach Screenshot
-        </button>
-        <small>You can also paste images or drag & drop</small>
-      </div>
     </div>
   );
 }

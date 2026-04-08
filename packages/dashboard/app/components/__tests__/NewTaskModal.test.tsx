@@ -81,6 +81,17 @@ describe("NewTaskModal", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
+  it("renders attachments before dependencies in form order", () => {
+    renderNewTaskModal();
+
+    const attachmentsLabel = screen.getByText("Attachments");
+    const dependenciesLabel = screen.getByText("Dependencies");
+
+    expect(
+      attachmentsLabel.compareDocumentPosition(dependenciesLabel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("focuses description textarea when modal opens", async () => {
     renderNewTaskModal();
     
