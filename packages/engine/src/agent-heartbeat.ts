@@ -17,7 +17,7 @@
  * - onTerminated: Called when an unresponsive agent is terminated
  */
 
-import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, Message, MessageStore, TaskStore, TaskDetail } from "@fusion/core";
+import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, AgentBudgetStatus, Message, MessageStore, TaskStore, TaskDetail } from "@fusion/core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@mariozechner/pi-ai";
 import { createTaskCreateTool, createTaskLogTool, taskCreateParams } from "./agent-tools.js";
@@ -308,24 +308,25 @@ export class HeartbeatMonitor {
     if (!run) return;
 
     const tracked = this.trackedAgents.get(agentId);
+    let completionResult = result;
 
     // Merge accumulated task creations into resultJson
     const createdTasks = this.runCreatedTasks.get(agentId);
     const enrichedResultJson = createdTasks?.length
-      ? { ...result.resultJson, tasksCreated: createdTasks }
-      : result.resultJson;
+      ? { ...completionResult.resultJson, tasksCreated: createdTasks }
+      : completionResult.resultJson;
 
     const completedRun: AgentHeartbeatRun = {
       ...run,
       endedAt: new Date().toISOString(),
-      status: result.status,
-      exitCode: result.exitCode,
+      status: completionResult.status,
+      exitCode: completionResult.exitCode,
       sessionIdBefore: tracked?.sessionIdBefore,
-      sessionIdAfter: result.sessionIdAfter,
-      usageJson: result.usageJson,
+      sessionIdAfter: completionResult.sessionIdAfter,
+      usageJson: completionResult.usageJson,
       resultJson: enrichedResultJson,
-      stdoutExcerpt: result.stdoutExcerpt,
-      stderrExcerpt: result.stderrExcerpt,
+      stdoutExcerpt: completionResult.stdoutExcerpt,
+      stderrExcerpt: completionResult.stderrExcerpt,
     };
 
     await this.store.saveRun(completedRun);
@@ -334,13 +335,13 @@ export class HeartbeatMonitor {
     this.clearRunState(agentId);
 
     // Update cumulative usage on agent
-    if (result.usageJson) {
+    if (completionResult.usageJson) {
       try {
         const agent = await this.store.getAgent(agentId);
         if (agent) {
           await this.store.updateAgent(agentId, {
-            totalInputTokens: (agent.totalInputTokens ?? 0) + result.usageJson.inputTokens,
-            totalOutputTokens: (agent.totalOutputTokens ?? 0) + result.usageJson.outputTokens,
+            totalInputTokens: (agent.totalInputTokens ?? 0) + completionResult.usageJson.inputTokens,
+            totalOutputTokens: (agent.totalOutputTokens ?? 0) + completionResult.usageJson.outputTokens,
           });
         }
       } catch {
@@ -348,13 +349,29 @@ export class HeartbeatMonitor {
       }
     }
 
-    // Transition agent state based on result
-    if (!result.skipStateTransition) {
+    // Budget governance: pause agent if over budget after usage update
+    if (completionResult.usageJson && completionResult.status !== "failed" && completionResult.status !== "terminated") {
       try {
-        if (result.status === "failed") {
+        const budgetStatus = await this.store.getBudgetStatus(agentId);
+        if (budgetStatus.isOverBudget) {
+          heartbeatLog.log(`Agent ${agentId} is over budget — pausing with reason "budget-exhausted"`);
+          await this.store.updateAgentState(agentId, "paused");
+          await this.store.updateAgent(agentId, { pauseReason: "budget-exhausted" });
+          // Skip the normal state transition below since we already set the correct state
+          completionResult = { ...completionResult, skipStateTransition: true };
+        }
+      } catch {
+        // If budget check fails, proceed with normal state transition
+      }
+    }
+
+    // Transition agent state based on result
+    if (!completionResult.skipStateTransition) {
+      try {
+        if (completionResult.status === "failed") {
           await this.store.updateAgentState(agentId, "error");
-          await this.store.updateAgent(agentId, { lastError: result.stderrExcerpt ?? "Run failed" });
-        } else if (result.status === "terminated") {
+          await this.store.updateAgent(agentId, { lastError: completionResult.stderrExcerpt ?? "Run failed" });
+        } else if (completionResult.status === "terminated") {
           await this.store.updateAgentState(agentId, "terminated");
         } else {
           // Completed successfully - back to active
@@ -366,7 +383,7 @@ export class HeartbeatMonitor {
     }
 
     // End the heartbeat run tracking
-    await this.store.endHeartbeatRun(runId, result.status === "completed" ? "completed" : "terminated");
+    await this.store.endHeartbeatRun(runId, completionResult.status === "completed" ? "completed" : "terminated");
 
     this.onRunCompleted?.(agentId, completedRun);
   }
@@ -476,6 +493,11 @@ export class HeartbeatMonitor {
    * 3. Work — run a lightweight agent session with readonly tools + task_create/task_log
    * 4. Exit — record results and complete the run
    * 
+   * Budget governance:
+   * - Skip all triggers when the agent is over budget (`isOverBudget`)
+   * - Skip timer triggers when over the warning threshold (`isOverThreshold`)
+   * - Continue normal execution for critical triggers (assignment/on_demand) when only over threshold
+   * 
    * Per-agent execution is serialized via `withAgentStartLock` — concurrent calls
    * for the same agent wait for the previous run to complete.
    * 
@@ -501,6 +523,32 @@ export class HeartbeatMonitor {
       const run = await this.startRun(agentId, { source, triggerDetail, contextSnapshot });
 
       try {
+        // Budget governance: check if agent can run
+        try {
+          const budgetStatus = await this.store.getBudgetStatus(agentId);
+          if (budgetStatus.isOverBudget) {
+            heartbeatLog.log(`Agent ${agentId} budget exhausted — heartbeat skipped`);
+            await this.completeRun(agentId, run.id, {
+              status: "completed",
+              resultJson: { reason: "budget_exhausted", budgetStatus },
+              skipStateTransition: true,
+            });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+          // Above threshold: only allow critical triggers (assignment, on_demand)
+          if (budgetStatus.isOverThreshold && source === "timer") {
+            heartbeatLog.log(`Agent ${agentId} over budget threshold (${budgetStatus.usagePercent}%) — timer heartbeat skipped`);
+            await this.completeRun(agentId, run.id, {
+              status: "completed",
+              resultJson: { reason: "budget_threshold_exceeded", budgetStatus },
+              skipStateTransition: true,
+            });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+        } catch {
+          // If getBudgetStatus fails (e.g., method not available), proceed without budget check
+        }
+
         // Resolve agent
         const agent = await this.store.getAgent(agentId);
         if (!agent) {
@@ -838,6 +886,8 @@ export interface WakeContext {
   wakeReason: string;
   /** Detail about the specific trigger */
   triggerDetail: string;
+  /** Budget governance status for the agent at trigger time */
+  budgetStatus?: AgentBudgetStatus;
   /** Additional context (intervalMs, etc.) */
   [key: string]: unknown;
 }
@@ -998,11 +1048,24 @@ export class HeartbeatTriggerScheduler {
           return;
         }
 
+        let budgetStatus: AgentBudgetStatus | undefined;
+        // Budget governance: block even critical triggers when budget is fully exhausted
+        try {
+          budgetStatus = await this.store.getBudgetStatus(agent.id);
+          if (budgetStatus.isOverBudget) {
+            heartbeatLog.log(`Agent ${agent.id} budget exhausted — assignment trigger skipped`);
+            return;
+          }
+        } catch {
+          // If getBudgetStatus fails, proceed without budget check
+        }
+
         heartbeatLog.log(`Assignment trigger for ${agent.id} (task: ${taskId})`);
         await this.callback(agent.id, "assignment", {
           taskId,
           wakeReason: "assignment",
           triggerDetail: "task-assigned",
+          ...(budgetStatus && { budgetStatus }),
         });
       } catch (err) {
         heartbeatLog.error(`Assignment trigger error for ${agent.id}: ${err instanceof Error ? err.message : err}`);
@@ -1037,6 +1100,21 @@ export class HeartbeatTriggerScheduler {
       if (activeRun) {
         heartbeatLog.log(`Timer tick skipped for ${agentId} (active run)`);
         return;
+      }
+
+      // Budget governance: skip timer triggers for over-budget agents
+      try {
+        const budgetStatus = await this.store.getBudgetStatus(agentId);
+        if (budgetStatus.isOverBudget) {
+          heartbeatLog.log(`Agent ${agentId} budget exhausted — timer tick skipped`);
+          return;
+        }
+        if (budgetStatus.isOverThreshold) {
+          heartbeatLog.log(`Agent ${agentId} over budget threshold (${budgetStatus.usagePercent}%) — timer tick skipped`);
+          return;
+        }
+      } catch {
+        // If getBudgetStatus fails, proceed without budget check
       }
 
       await this.callback(agentId, "timer", {

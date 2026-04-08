@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { HeartbeatMonitor, HeartbeatTriggerScheduler, type AgentSession, type HeartbeatExecutionOptions, HEARTBEAT_SYSTEM_PROMPT } from "./agent-heartbeat.js";
-import type { AgentStore, AgentHeartbeatRun, TaskStore, TaskDetail, Agent, MessageStore, Message } from "@fusion/core";
+import type { AgentStore, AgentHeartbeatRun, TaskStore, TaskDetail, Agent, MessageStore, Message, AgentBudgetStatus } from "@fusion/core";
 
 // Mock logger to suppress noise in test output
 vi.mock("./logger.js", () => {
@@ -64,6 +64,21 @@ function createMessage(overrides: Partial<Message> = {}): Message {
     read: false,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
+  };
+}
+
+function createBudgetStatus(overrides: Partial<AgentBudgetStatus> = {}): AgentBudgetStatus {
+  return {
+    agentId: "agent-001",
+    currentUsage: 0,
+    budgetLimit: null,
+    usagePercent: null,
+    thresholdPercent: null,
+    isOverBudget: false,
+    isOverThreshold: false,
+    lastResetAt: null,
+    nextResetAt: null,
     ...overrides,
   };
 }
@@ -1013,6 +1028,7 @@ describe("HeartbeatMonitor", () => {
           };
         }),
         endHeartbeatRun: vi.fn().mockResolvedValue(undefined),
+        getBudgetStatus: vi.fn().mockResolvedValue(createBudgetStatus()),
         getCachedAgent: vi.fn().mockReturnValue(null),
       } as unknown as AgentStore;
     }
@@ -1525,6 +1541,132 @@ describe("HeartbeatMonitor", () => {
         expect(monitor.getTrackedAgents()).not.toContain("agent-001");
       });
     });
+
+    describe("Budget Governance", () => {
+      it("skips heartbeat when agent is over budget (timer)", async () => {
+        const budgetStatus = createBudgetStatus({
+          currentUsage: 10000,
+          budgetLimit: 10000,
+          usagePercent: 100,
+          thresholdPercent: 80,
+          isOverBudget: true,
+          isOverThreshold: true,
+        });
+        const store = createStoreWithAgentForExec();
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(budgetStatus);
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+        expect(result.status).toBe("completed");
+        expect(result.resultJson).toMatchObject({ reason: "budget_exhausted", budgetStatus });
+        expect(mockedCreateKbAgent).not.toHaveBeenCalled();
+        expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "active");
+      });
+
+      it("skips heartbeat when agent is over budget (on_demand)", async () => {
+        const store = createStoreWithAgentForExec();
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+          createBudgetStatus({ isOverBudget: true, isOverThreshold: true, usagePercent: 100 })
+        );
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
+
+        expect(result.resultJson).toMatchObject({ reason: "budget_exhausted" });
+        expect(mockedCreateKbAgent).not.toHaveBeenCalled();
+      });
+
+      it("skips heartbeat when agent is over budget (assignment)", async () => {
+        const store = createStoreWithAgentForExec();
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+          createBudgetStatus({ isOverBudget: true, isOverThreshold: true, usagePercent: 100 })
+        );
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "assignment" });
+
+        expect(result.resultJson).toMatchObject({ reason: "budget_exhausted" });
+        expect(mockedCreateKbAgent).not.toHaveBeenCalled();
+      });
+
+      it("skips timer heartbeat when agent is over threshold but not over budget", async () => {
+        const budgetStatus = createBudgetStatus({
+          currentUsage: 850,
+          budgetLimit: 1000,
+          usagePercent: 85,
+          thresholdPercent: 80,
+          isOverBudget: false,
+          isOverThreshold: true,
+        });
+        const store = createStoreWithAgentForExec();
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(budgetStatus);
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+        expect(result.resultJson).toMatchObject({ reason: "budget_threshold_exceeded", budgetStatus });
+        expect(mockedCreateKbAgent).not.toHaveBeenCalled();
+      });
+
+      it("allows on_demand heartbeat when agent is over threshold", async () => {
+        const store = createStoreWithAgentForExec();
+        const mockSession = createMockAgentSession();
+        mockedCreateKbAgent.mockResolvedValue({ session: mockSession as any });
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+          createBudgetStatus({ isOverThreshold: true, usagePercent: 85, budgetLimit: 1000, thresholdPercent: 80 })
+        );
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
+
+        expect(result.status).toBe("completed");
+        expect(mockedCreateKbAgent).toHaveBeenCalledOnce();
+      });
+
+      it("allows assignment heartbeat when agent is over threshold", async () => {
+        const store = createStoreWithAgentForExec();
+        const mockSession = createMockAgentSession();
+        mockedCreateKbAgent.mockResolvedValue({ session: mockSession as any });
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+          createBudgetStatus({ isOverThreshold: true, usagePercent: 85, budgetLimit: 1000, thresholdPercent: 80 })
+        );
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "assignment" });
+
+        expect(result.status).toBe("completed");
+        expect(mockedCreateKbAgent).toHaveBeenCalledOnce();
+      });
+
+      it("proceeds normally when agent is below threshold", async () => {
+        const store = createStoreWithAgentForExec();
+        const mockSession = createMockAgentSession();
+        mockedCreateKbAgent.mockResolvedValue({ session: mockSession as any });
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+          createBudgetStatus({ isOverBudget: false, isOverThreshold: false, usagePercent: 30, budgetLimit: 1000, thresholdPercent: 80 })
+        );
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+        expect(result.status).toBe("completed");
+        expect(mockedCreateKbAgent).toHaveBeenCalledOnce();
+      });
+
+      it("proceeds normally when getBudgetStatus throws", async () => {
+        const store = createStoreWithAgentForExec();
+        const mockSession = createMockAgentSession();
+        mockedCreateKbAgent.mockResolvedValue({ session: mockSession as any });
+        (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("budget unavailable"));
+
+        const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+        const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+        expect(result.status).toBe("completed");
+        expect(mockedCreateKbAgent).toHaveBeenCalledOnce();
+      });
+    });
   });
 
   // ── Task Creation Tracking Tests ──────────────────────────────────────
@@ -1744,6 +1886,139 @@ describe("HeartbeatMonitor", () => {
     });
   });
 
+  describe("Budget Governance", () => {
+    function createCompleteRunBudgetStore(options: {
+      agent?: Partial<Agent>;
+      budgetStatus?: AgentBudgetStatus;
+      budgetStatusError?: Error;
+    } = {}): AgentStore {
+      const run: AgentHeartbeatRun = {
+        id: "run-budget-001",
+        agentId: "agent-001",
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        status: "active",
+      };
+      const agent: Agent = {
+        id: "agent-001",
+        name: "Budget Agent",
+        role: "executor",
+        state: "running",
+        taskId: "FN-001",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metadata: {},
+        ...options.agent,
+      } as Agent;
+
+      return {
+        getRunDetail: vi.fn().mockResolvedValue(run),
+        saveRun: vi.fn().mockResolvedValue(undefined),
+        endHeartbeatRun: vi.fn().mockResolvedValue(undefined),
+        getAgent: vi.fn().mockResolvedValue(agent),
+        updateAgent: vi.fn().mockResolvedValue(undefined),
+        updateAgentState: vi.fn().mockResolvedValue(undefined),
+        getBudgetStatus: options.budgetStatusError
+          ? vi.fn().mockRejectedValue(options.budgetStatusError)
+          : vi.fn().mockResolvedValue(options.budgetStatus ?? createBudgetStatus()),
+      } as unknown as AgentStore;
+    }
+
+    it("pauses agent with budget-exhausted reason when run pushes usage over budget", async () => {
+      const store = createCompleteRunBudgetStore({
+        agent: { totalInputTokens: 950, totalOutputTokens: 0 },
+        budgetStatus: createBudgetStatus({
+          currentUsage: 1050,
+          budgetLimit: 1000,
+          usagePercent: 105,
+          thresholdPercent: 80,
+          isOverBudget: true,
+          isOverThreshold: true,
+        }),
+      });
+      const monitor = new HeartbeatMonitor({ store });
+
+      await monitor.completeRun("agent-001", "run-budget-001", {
+        status: "completed",
+        usageJson: { inputTokens: 0, outputTokens: 100, cachedTokens: 0 },
+      });
+
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "paused");
+      expect(store.updateAgent).toHaveBeenCalledWith("agent-001", { pauseReason: "budget-exhausted" });
+      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "active");
+    });
+
+    it("does not pause agent when below budget after run", async () => {
+      const store = createCompleteRunBudgetStore({
+        budgetStatus: createBudgetStatus({
+          currentUsage: 700,
+          budgetLimit: 1000,
+          usagePercent: 70,
+          thresholdPercent: 80,
+          isOverBudget: false,
+          isOverThreshold: false,
+        }),
+      });
+      const monitor = new HeartbeatMonitor({ store });
+
+      await monitor.completeRun("agent-001", "run-budget-001", {
+        status: "completed",
+        usageJson: { inputTokens: 10, outputTokens: 50, cachedTokens: 0 },
+      });
+
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "active");
+      expect(store.updateAgent).not.toHaveBeenCalledWith("agent-001", { pauseReason: "budget-exhausted" });
+    });
+
+    it("does not pause agent when run fails (status=failed)", async () => {
+      const store = createCompleteRunBudgetStore({
+        budgetStatus: createBudgetStatus({ isOverBudget: true, isOverThreshold: true }),
+      });
+      const monitor = new HeartbeatMonitor({ store });
+
+      await monitor.completeRun("agent-001", "run-budget-001", {
+        status: "failed",
+        usageJson: { inputTokens: 10, outputTokens: 50, cachedTokens: 0 },
+        stderrExcerpt: "failure",
+      });
+
+      expect(store.getBudgetStatus).not.toHaveBeenCalled();
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "error");
+      expect(store.updateAgent).not.toHaveBeenCalledWith("agent-001", { pauseReason: "budget-exhausted" });
+    });
+
+    it("does not pause agent when run is terminated", async () => {
+      const store = createCompleteRunBudgetStore({
+        budgetStatus: createBudgetStatus({ isOverBudget: true, isOverThreshold: true }),
+      });
+      const monitor = new HeartbeatMonitor({ store });
+
+      await monitor.completeRun("agent-001", "run-budget-001", {
+        status: "terminated",
+        usageJson: { inputTokens: 10, outputTokens: 50, cachedTokens: 0 },
+      });
+
+      expect(store.getBudgetStatus).not.toHaveBeenCalled();
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "terminated");
+      expect(store.updateAgent).not.toHaveBeenCalledWith("agent-001", { pauseReason: "budget-exhausted" });
+    });
+
+    it("does not pause agent when usageJson is undefined", async () => {
+      const store = createCompleteRunBudgetStore({
+        budgetStatus: createBudgetStatus({ isOverBudget: true, isOverThreshold: true }),
+      });
+      const monitor = new HeartbeatMonitor({ store });
+
+      await monitor.completeRun("agent-001", "run-budget-001", {
+        status: "completed",
+      });
+
+      expect(store.getBudgetStatus).not.toHaveBeenCalled();
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "active");
+      expect(store.updateAgent).not.toHaveBeenCalledWith("agent-001", { pauseReason: "budget-exhausted" });
+    });
+  });
+
   describe("clearRunState", () => {
     it("resets accumulated task state for an agent", async () => {
       const savedRuns: Map<string, AgentHeartbeatRun> = new Map();
@@ -1817,6 +2092,7 @@ describe("HeartbeatTriggerScheduler", () => {
     callback = vi.fn().mockResolvedValue(undefined);
     store = {
       getActiveHeartbeatRun: vi.fn().mockResolvedValue(null),
+      getBudgetStatus: vi.fn().mockResolvedValue(createBudgetStatus()),
       on: vi.fn(),
       off: vi.fn(),
     } as unknown as AgentStore;
@@ -1996,6 +2272,60 @@ describe("HeartbeatTriggerScheduler", () => {
 
       expect(callback).not.toHaveBeenCalled();
     });
+
+    it("skips timer tick when agent is over budget", async () => {
+      (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+        createBudgetStatus({ isOverBudget: true, isOverThreshold: true, usagePercent: 100 })
+      );
+
+      scheduler.registerAgent("agent-001", { heartbeatIntervalMs: 5000 });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("skips timer tick when agent is over threshold", async () => {
+      (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+        createBudgetStatus({
+          budgetLimit: 1000,
+          usagePercent: 85,
+          thresholdPercent: 80,
+          isOverBudget: false,
+          isOverThreshold: true,
+        })
+      );
+
+      scheduler.registerAgent("agent-001", { heartbeatIntervalMs: 5000 });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("fires timer tick normally when below threshold", async () => {
+      (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+        createBudgetStatus({
+          budgetLimit: 1000,
+          usagePercent: 30,
+          thresholdPercent: 80,
+          isOverBudget: false,
+          isOverThreshold: false,
+        })
+      );
+
+      scheduler.registerAgent("agent-001", { heartbeatIntervalMs: 5000 });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(callback).toHaveBeenCalledOnce();
+    });
+
+    it("fires timer tick when getBudgetStatus throws", async () => {
+      (store.getBudgetStatus as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("budget unavailable"));
+
+      scheduler.registerAgent("agent-001", { heartbeatIntervalMs: 5000 });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(callback).toHaveBeenCalledOnce();
+    });
   });
 
   describe("stop clears all timers", () => {
@@ -2080,6 +2410,75 @@ describe("HeartbeatTriggerScheduler", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("blocks assignment trigger when agent is over budget", async () => {
+      (eventStore as any).getBudgetStatus = vi.fn().mockResolvedValue(
+        createBudgetStatus({
+          agentId: "agent-test",
+          isOverBudget: true,
+          isOverThreshold: true,
+          usagePercent: 100,
+          budgetLimit: 1000,
+          thresholdPercent: 80,
+        })
+      );
+
+      const agent = { id: "agent-test", name: "Test" } as import("@fusion/core").Agent;
+      eventStore.emit("agent:assigned", agent, "FN-003");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("allows assignment trigger when agent is over threshold", async () => {
+      const budgetStatus = createBudgetStatus({
+        agentId: "agent-test",
+        budgetLimit: 1000,
+        usagePercent: 85,
+        thresholdPercent: 80,
+        isOverBudget: false,
+        isOverThreshold: true,
+      });
+      (eventStore as any).getBudgetStatus = vi.fn().mockResolvedValue(budgetStatus);
+
+      const agent = { id: "agent-test", name: "Test" } as import("@fusion/core").Agent;
+      eventStore.emit("agent:assigned", agent, "FN-003");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(callback).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledWith("agent-test", "assignment", {
+        taskId: "FN-003",
+        wakeReason: "assignment",
+        triggerDetail: "task-assigned",
+        budgetStatus,
+      });
+    });
+
+    it("passes budgetStatus in WakeContext for assignment triggers", async () => {
+      const budgetStatus = createBudgetStatus({
+        agentId: "agent-test",
+        budgetLimit: 1000,
+        usagePercent: 45,
+        thresholdPercent: 80,
+      });
+      (eventStore as any).getBudgetStatus = vi.fn().mockResolvedValue(budgetStatus);
+
+      const agent = { id: "agent-test", name: "Test" } as import("@fusion/core").Agent;
+      eventStore.emit("agent:assigned", agent, "FN-005");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(callback).toHaveBeenCalledWith(
+        "agent-test",
+        "assignment",
+        expect.objectContaining({
+          taskId: "FN-005",
+          budgetStatus,
+        }),
+      );
     });
 
     it("cleans up listener on unwatch", async () => {
