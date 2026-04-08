@@ -1603,6 +1603,12 @@ export interface Agent {
   instructionsText?: string;
 }
 
+/** Recursive node in the agent org tree. */
+export interface OrgTreeNode {
+  agent: Agent;
+  children: OrgTreeNode[];
+}
+
 export type MessageResponseMode = "immediate" | "on-heartbeat";
 
 /** Per-agent heartbeat configuration, stored in agent.runtimeConfig */

@@ -618,6 +618,179 @@ describe("AgentStore", () => {
     });
   });
 
+  // ── Org Hierarchy ────────────────────────────────────────────────
+
+  describe("getChainOfCommand", () => {
+    it("returns empty array for nonexistent agent", async () => {
+      const chain = await store.getChainOfCommand("agent-missing");
+      expect(chain).toEqual([]);
+    });
+
+    it("returns only self when agent has no manager", async () => {
+      const solo = await store.createAgent({ name: "Solo", role: "executor" });
+
+      const chain = await store.getChainOfCommand(solo.id);
+      expect(chain.map((agent) => agent.id)).toEqual([solo.id]);
+    });
+
+    it("returns self → manager → grand-manager", async () => {
+      const grandManager = await store.createAgent({ name: "Grand", role: "executor" });
+      const manager = await store.createAgent({
+        name: "Manager",
+        role: "executor",
+        reportsTo: grandManager.id,
+      });
+      const agent = await store.createAgent({
+        name: "Worker",
+        role: "executor",
+        reportsTo: manager.id,
+      });
+
+      const chain = await store.getChainOfCommand(agent.id);
+      expect(chain.map((item) => item.id)).toEqual([agent.id, manager.id, grandManager.id]);
+    });
+
+    it("stops traversal when a cycle is detected", async () => {
+      const a = await store.createAgent({ name: "Cycle A", role: "executor" });
+      const b = await store.createAgent({
+        name: "Cycle B",
+        role: "executor",
+        reportsTo: a.id,
+      });
+
+      await store.updateAgent(a.id, { reportsTo: b.id });
+
+      const chain = await store.getChainOfCommand(a.id);
+      expect(chain.map((agent) => agent.id)).toEqual([a.id, b.id]);
+      expect(chain.length).toBeLessThanOrEqual(20);
+    });
+  });
+
+  describe("getOrgTree", () => {
+    it("returns empty array when no agents exist", async () => {
+      const tree = await store.getOrgTree();
+      expect(tree).toEqual([]);
+    });
+
+    it("returns all agents as roots when no one has reportsTo", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+        const first = await store.createAgent({ name: "First", role: "executor" });
+
+        vi.setSystemTime(new Date("2026-01-02T00:00:00Z"));
+        const second = await store.createAgent({ name: "Second", role: "executor" });
+
+        const tree = await store.getOrgTree();
+        expect(tree).toHaveLength(2);
+        expect(tree.map((node) => node.agent.id)).toEqual([first.id, second.id]);
+        expect(tree[0].children).toEqual([]);
+        expect(tree[1].children).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("builds a nested hierarchy and sorts children by createdAt ascending", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-02-01T00:00:00Z"));
+        const root = await store.createAgent({ name: "Root", role: "executor" });
+
+        vi.setSystemTime(new Date("2026-02-02T00:00:00Z"));
+        const childOlder = await store.createAgent({
+          name: "Child Older",
+          role: "executor",
+          reportsTo: root.id,
+        });
+
+        vi.setSystemTime(new Date("2026-02-03T00:00:00Z"));
+        const childYounger = await store.createAgent({
+          name: "Child Younger",
+          role: "executor",
+          reportsTo: root.id,
+        });
+
+        vi.setSystemTime(new Date("2026-02-04T00:00:00Z"));
+        const grandChild = await store.createAgent({
+          name: "Grand Child",
+          role: "executor",
+          reportsTo: childOlder.id,
+        });
+
+        const tree = await store.getOrgTree();
+        expect(tree).toHaveLength(1);
+        expect(tree[0].agent.id).toBe(root.id);
+        expect(tree[0].children.map((node) => node.agent.id)).toEqual([
+          childOlder.id,
+          childYounger.id,
+        ]);
+        expect(tree[0].children[0].children.map((node) => node.agent.id)).toEqual([
+          grandChild.id,
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("treats agents with missing managers as root nodes", async () => {
+      const root = await store.createAgent({ name: "Root", role: "executor" });
+      const orphan = await store.createAgent({
+        name: "Orphan",
+        role: "executor",
+        reportsTo: "agent-nonexistent",
+      });
+
+      const tree = await store.getOrgTree();
+      expect(tree.map((node) => node.agent.id)).toEqual([root.id, orphan.id]);
+    });
+  });
+
+  describe("resolveAgent", () => {
+    it("resolves by exact agent ID", async () => {
+      const created = await store.createAgent({ name: "ID Match", role: "executor" });
+
+      const resolved = await store.resolveAgent(created.id);
+      expect(resolved?.id).toBe(created.id);
+    });
+
+    it("resolves by normalized name", async () => {
+      const created = await store.createAgent({ name: "My Agent", role: "executor" });
+
+      const resolved = await store.resolveAgent("my-agent");
+      expect(resolved?.id).toBe(created.id);
+    });
+
+    it("returns null when multiple agents share the same normalized shortname", async () => {
+      await store.createAgent({ name: "My Agent", role: "executor" });
+      await store.createAgent({ name: "my-agent", role: "reviewer" });
+
+      const resolved = await store.resolveAgent("my-agent");
+      expect(resolved).toBeNull();
+    });
+
+    it("returns null for unknown shortnames", async () => {
+      await store.createAgent({ name: "Known Agent", role: "executor" });
+
+      const resolved = await store.resolveAgent("not-found");
+      expect(resolved).toBeNull();
+    });
+
+    it("matches shortnames case-insensitively", async () => {
+      const created = await store.createAgent({ name: "My Agent", role: "executor" });
+
+      const resolved = await store.resolveAgent("MY-AGENT");
+      expect(resolved?.id).toBe(created.id);
+    });
+
+    it("normalizes special characters in names", async () => {
+      const created = await store.createAgent({ name: "Test Agent v2!", role: "executor" });
+
+      const resolved = await store.resolveAgent("test-agent-v2");
+      expect(resolved?.id).toBe(created.id);
+    });
+  });
+
   // ── updateAgentState ──────────────────────────────────────────────
 
   describe("updateAgentState", () => {

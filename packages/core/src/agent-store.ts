@@ -33,6 +33,7 @@ import type {
   AgentConfigRevision,
   AgentConfigSnapshot,
   AgentAccessState,
+  OrgTreeNode,
 } from "./types.js";
 import { AGENT_VALID_TRANSITIONS, agentToConfigSnapshot, diffConfigSnapshots } from "./types.js";
 import { computeAccessState } from "./agent-permissions.js";
@@ -883,6 +884,103 @@ export class AgentStore extends EventEmitter {
   async getAgentsByReportsTo(agentId: string): Promise<Agent[]> {
     const all = await this.listAgents();
     return all.filter((a) => a.reportsTo === agentId);
+  }
+
+  /**
+   * Walk the chain of command for an agent.
+   * @param agentId - Starting agent ID
+   * @returns Ordered chain [self, manager, grandManager, ...]
+   */
+  async getChainOfCommand(agentId: string): Promise<Agent[]> {
+    const chain: Agent[] = [];
+    const visited = new Set<string>();
+    let currentId: string | undefined = agentId;
+
+    for (let depth = 0; depth < 20 && currentId; depth += 1) {
+      if (visited.has(currentId)) {
+        break;
+      }
+      visited.add(currentId);
+
+      const agent = await this.getAgent(currentId);
+      if (!agent) {
+        return depth === 0 ? [] : chain;
+      }
+
+      chain.push(agent);
+      currentId = agent.reportsTo;
+    }
+
+    return chain;
+  }
+
+  /**
+   * Build the recursive org tree for all agents.
+   * @returns Root nodes with nested children
+   */
+  async getOrgTree(): Promise<OrgTreeNode[]> {
+    const agents = await this.listAgents();
+    if (agents.length === 0) {
+      return [];
+    }
+
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+    const childrenByParent = new Map<string, Agent[]>();
+    const roots: Agent[] = [];
+
+    for (const agent of agents) {
+      if (!agent.reportsTo || !agentsById.has(agent.reportsTo)) {
+        roots.push(agent);
+        continue;
+      }
+
+      const siblings = childrenByParent.get(agent.reportsTo) ?? [];
+      siblings.push(agent);
+      childrenByParent.set(agent.reportsTo, siblings);
+    }
+
+    const sortByCreatedAtAsc = (a: Agent, b: Agent): number =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+    for (const children of childrenByParent.values()) {
+      children.sort(sortByCreatedAtAsc);
+    }
+    roots.sort(sortByCreatedAtAsc);
+
+    const buildNode = (agent: Agent): OrgTreeNode => ({
+      agent,
+      children: (childrenByParent.get(agent.id) ?? []).map((child) => buildNode(child)),
+    });
+
+    return roots.map((root) => buildNode(root));
+  }
+
+  /**
+   * Resolve an agent by exact ID or normalized shortname derived from display name.
+   * @param shortname - Agent ID or normalized agent name
+   * @returns Matching agent when unambiguous; otherwise null
+   */
+  async resolveAgent(shortname: string): Promise<Agent | null> {
+    const normalize = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+    const all = await this.listAgents();
+
+    const exact = all.find((agent) => agent.id === shortname);
+    if (exact) {
+      return exact;
+    }
+
+    const normalizedTarget = normalize(shortname);
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const matches = all.filter((agent) => normalize(agent.name) === normalizedTarget);
+    return matches.length === 1 ? matches[0] : null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
