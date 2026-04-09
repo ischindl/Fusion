@@ -59,7 +59,7 @@ export function fromJson<T>(json: string | null | undefined): T | undefined {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -373,6 +373,25 @@ CREATE TABLE IF NOT EXISTS mission_events (
 CREATE INDEX IF NOT EXISTS idxMissionEventsMissionId ON mission_events(missionId);
 CREATE INDEX IF NOT EXISTS idxMissionEventsTimestamp ON mission_events(timestamp);
 CREATE INDEX IF NOT EXISTS idxMissionEventsType ON mission_events(eventType);
+
+-- Plugins table for plugin system
+CREATE TABLE IF NOT EXISTS plugins (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  description TEXT,
+  author TEXT,
+  homepage TEXT,
+  path TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'installed',
+  settings TEXT DEFAULT '{}',
+  settingsSchema TEXT,
+  error TEXT,
+  dependencies TEXT DEFAULT '[]',
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
 `;
 
 // ── Database Class ───────────────────────────────────────────────────
@@ -860,6 +879,30 @@ export class Database {
         this.addColumnIfMissing("slices", "verification", "TEXT");
         this.addColumnIfMissing("slices", "planState", "TEXT NOT NULL DEFAULT 'not_started'");
         this.addColumnIfMissing("mission_events", "seq", "INTEGER NOT NULL DEFAULT 0");
+      });
+    }
+
+    if (version < 24) {
+      this.applyMigration(24, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS plugins (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            description TEXT,
+            author TEXT,
+            homepage TEXT,
+            path TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            state TEXT NOT NULL DEFAULT 'installed',
+            settings TEXT DEFAULT '{}',
+            settingsSchema TEXT,
+            error TEXT,
+            dependencies TEXT DEFAULT '[]',
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          )
+        `);
       });
     }
   }

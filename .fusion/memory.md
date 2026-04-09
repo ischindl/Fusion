@@ -37,6 +37,36 @@
 - There are **34 unique color themes** in `packages/dashboard/app/styles.css` (ocean, forest, sunset, berry, monochrome, slate, ash, graphite, silver, zen, high-contrast, industrial, solarized, factory, ayu, one-dark, nord, dracula, gruvbox, tokyo-night, catppuccin-mocha, github-dark, everforest, rose-pine, kanagawa, night-owl, palenight, monokai-pro, slime, brutalist, neon-city, parchment, terminal, glass). Each has a dark variant `[data-color-theme="<name>"]` and a light variant `[data-color-theme="<name>"][data-theme="light"]`.
 - When adding CSS custom properties that should be theme-aware (like `--accent`, `--status-*-bg`), add them to all 34 theme blocks plus `:root` and `[data-theme="light"]` base blocks. The test in `status-colors-theme.test.ts` iterates all blocks programmatically to prevent regressions.
 
+## Plugin System (FN-1111)
+
+The plugin system is built on three layers:
+1. **PluginStore** (`packages/core/src/plugin-store.ts`) — SQLite-backed CRUD operations for plugin installations, stored in the `plugins` table (schema v24)
+2. **PluginLoader** (`packages/core/src/plugin-loader.ts`) — Dynamic import, lifecycle management, dependency resolution (topological sort), hook invocation
+3. **Plugin SDK** (`packages/plugin-sdk/`) — Type re-exports and `definePlugin()` helper for third-party plugins
+
+**Key types** (in `packages/core/src/plugin-types.ts`):
+- `PluginManifest` — Plugin metadata (id, name, version, dependencies, settingsSchema)
+- `FusionPlugin` — Loaded plugin instance with hooks, tools, routes
+- `PluginContext` — Runtime API surface (taskStore, settings, logger, emitEvent)
+- `PluginInstallation` — Persisted plugin record in SQLite
+
+**Hook types**: `onLoad`, `onUnload`, `onTaskCreated`, `onTaskMoved`, `onTaskCompleted`, `onError`
+
+**Database schema** (`plugins` table, v24):
+- Stores plugin metadata, path, enabled flag, state, settings, error
+- Settings stored as JSON, validated against `settingsSchema` on update
+
+**PluginLoader patterns**:
+- Uses topological sort for dependency resolution (throws on circular deps)
+- Error isolation: plugin crashes set `state: "error` but don't crash loader
+- Hook invocation is non-blocking: one plugin's failure doesn't prevent others from receiving hooks
+- `createContext()` is async (gets settings from store)
+
+**Integration points for FN-1113**:
+- Hooks invoked by scheduler on task lifecycle events
+- Tools registered via `getPluginTools()` → merged with built-in agent tools
+- Routes registered via `getPluginRoutes()` → mounted under `/api/plugins/:pluginId/`
+
 ## Pitfalls
 
 - When adding props to a React component interface that were previously declared but not destructured in the function body, remember to add them to the destructuring list too. TypeScript won't warn about unused interface fields, so `onOpenScripts` in `MobileNavBarProps` compiled fine but caused `ReferenceError: onOpenScripts is not defined` at runtime.

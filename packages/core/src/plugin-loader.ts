@@ -1,0 +1,535 @@
+/**
+ * PluginLoader - Dynamic plugin loading and lifecycle management.
+ *
+ * Handles:
+ * - Dynamic import of plugins from file paths or npm packages
+ * - Plugin lifecycle (load, start, stop)
+ * - Dependency resolution via topological sort
+ * - Hook invocation across all loaded plugins
+ * - Error isolation (plugin crashes don't crash the loader)
+ */
+
+import { join, isAbsolute, resolve } from "node:path";
+import { EventEmitter } from "node:events";
+import type { TaskStore } from "./store.js";
+import { PluginStore } from "./plugin-store.js";
+import type {
+  FusionPlugin,
+  PluginContext,
+  PluginLogger,
+  PluginToolDefinition,
+  PluginRouteDefinition,
+  PluginState,
+  PluginInstallation,
+} from "./plugin-types.js";
+import { validatePluginManifest } from "./plugin-types.js";
+
+// Minimum Fusion version for plugin compatibility checks (can be expanded later)
+const MINIMUM_FUSION_VERSION = "0.1.0";
+
+export interface PluginLoaderOptions {
+  /** Plugin store for persistence */
+  pluginStore: PluginStore;
+  /** Task store for plugin context */
+  taskStore: TaskStore;
+  /** Additional directories to scan for plugins */
+  pluginDirs?: string[];
+  /** npm prefix for resolving packages */
+  npmPrefix?: string;
+}
+
+/**
+ * Event emitted when a plugin is loaded and started.
+ */
+export interface PluginLoadedEvent {
+  pluginId: string;
+  plugin: FusionPlugin;
+}
+
+/**
+ * Event emitted when a plugin encounters an error.
+ */
+export interface PluginErrorEvent {
+  pluginId: string;
+  error: Error;
+}
+
+export class PluginLoader extends EventEmitter<{
+  "plugin:loaded": [PluginLoadedEvent];
+  "plugin:error": [PluginErrorEvent];
+  "plugin:stopped": [string];
+}> {
+  /** Loaded plugin instances keyed by plugin id */
+  private plugins: Map<string, FusionPlugin> = new Map();
+
+  /** Cache of dynamically imported modules */
+  private loadedModules: Map<string, unknown> = new Map();
+
+  constructor(private options: PluginLoaderOptions) {
+    super();
+  }
+
+  // ── Context Creation ───────────────────────────────────────────────
+
+  private async createContext(plugin: FusionPlugin): Promise<PluginContext> {
+    return {
+      pluginId: plugin.manifest.id,
+      taskStore: this.options.taskStore,
+      settings: await this.getPluginSettings(plugin.manifest.id),
+      logger: this.createLogger(plugin.manifest.id),
+      emitEvent: (event: string, data: unknown) => {
+        this.emit("plugin:error", { pluginId: plugin.manifest.id, error: new Error(`Custom event: ${event}`) });
+        // Custom events are logged but not surfaced as errors
+        console.log(`[plugin:${plugin.manifest.id}] Custom event: ${event}`, data);
+      },
+    };
+  }
+
+  private createLogger(pluginId: string): PluginLogger {
+    const prefix = `[plugin:${pluginId}]`;
+    return {
+      info: (...args: unknown[]) => console.log(prefix, ...args),
+      warn: (...args: unknown[]) => console.warn(prefix, ...args),
+      error: (...args: unknown[]) => console.error(prefix, ...args),
+      debug: (...args: unknown[]) => {
+        if (process.env.DEBUG?.includes("plugins")) {
+          console.log(prefix, ...args);
+        }
+      },
+    };
+  }
+
+  private async getPluginSettings(pluginId: string): Promise<Record<string, unknown>> {
+    try {
+      const plugin = await this.options.pluginStore.getPlugin(pluginId);
+      return plugin.settings;
+    } catch {
+      return {};
+    }
+  }
+
+  // ── Plugin Loading ─────────────────────────────────────────────────
+
+  /**
+   * Load and start a single plugin.
+   */
+  async loadPlugin(pluginId: string): Promise<FusionPlugin> {
+    // Get plugin installation record
+    let installation: PluginInstallation;
+    try {
+      installation = await this.options.pluginStore.getPlugin(pluginId);
+    } catch (err) {
+      throw new Error(`Plugin "${pluginId}" not found in store: ${(err as Error).message}`);
+    }
+
+    // Skip disabled plugins
+    if (!installation.enabled) {
+      console.log(`[plugin-loader] Skipping disabled plugin: ${pluginId}`);
+      throw Object.assign(new Error(`Plugin "${pluginId}" is disabled`), {
+        code: "PLUGIN_DISABLED",
+      });
+    }
+
+    // Skip already loaded plugins
+    if (this.plugins.has(pluginId)) {
+      console.log(`[plugin-loader] Plugin already loaded: ${pluginId}`);
+      return this.plugins.get(pluginId)!;
+    }
+
+    // Resolve plugin path
+    const pluginPath = this.resolvePluginPath(installation.path);
+
+    try {
+      // Dynamic import the plugin
+      const mod = await this.importPluginModule(pluginPath);
+      const plugin = this.extractPluginFromModule(mod);
+
+      // Validate manifest
+      const manifestValidation = validatePluginManifest(plugin.manifest);
+      if (!manifestValidation.valid) {
+        throw new Error(
+          `Invalid plugin manifest: ${manifestValidation.errors.join(", ")}`,
+        );
+      }
+
+      // Check version compatibility
+      if (plugin.manifest.fusionVersion) {
+        const compatible = this.checkVersionCompatibility(
+          plugin.manifest.fusionVersion,
+        );
+        if (!compatible) {
+          console.warn(
+            `[plugin-loader] Plugin ${pluginId} requires Fusion ${plugin.manifest.fusionVersion}, minimum is ${MINIMUM_FUSION_VERSION}`,
+          );
+        }
+      }
+
+      // Resolve dependencies
+      await this.resolveDependencies(plugin);
+
+      // Update state to started
+      await this.options.pluginStore.updatePluginState(pluginId, "started");
+
+      // Update plugin state locally and store
+      plugin.state = "started";
+      this.plugins.set(pluginId, plugin);
+
+      // Call onLoad hook
+      const ctx = await this.createContext(plugin);
+      await this.safeCallHook(plugin, "onLoad", [ctx]);
+
+      this.emit("plugin:loaded", { pluginId, plugin });
+      return plugin;
+    } catch (err) {
+      // Error isolation: set error state but don't crash
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await this.options.pluginStore.updatePluginState(
+        pluginId,
+        "error",
+        errorMsg,
+      );
+
+      this.emit("plugin:error", {
+        pluginId,
+        error: err instanceof Error ? err : new Error(errorMsg),
+      });
+
+      throw err;
+    }
+  }
+
+  private resolvePluginPath(path: string): string {
+    // If already absolute, use as-is
+    if (isAbsolute(path)) {
+      return path;
+    }
+
+    // Check if it's an npm package (contains / or starts with @)
+    if (path.startsWith("@") || path.includes("/")) {
+      // For npm packages, we'd use require.resolve in a real implementation
+      // For now, assume it's a local path relative to project root
+      return resolve(process.cwd(), path);
+    }
+
+    // Default: resolve relative to project root
+    return resolve(process.cwd(), path);
+  }
+
+  private async importPluginModule(path: string): Promise<unknown> {
+    // Check cache first
+    if (this.loadedModules.has(path)) {
+      return this.loadedModules.get(path)!;
+    }
+
+    // Dynamic import
+    const mod = await import(path);
+    this.loadedModules.set(path, mod);
+    return mod;
+  }
+
+  private extractPluginFromModule(mod: unknown): FusionPlugin {
+    if (!mod || typeof mod !== "object") {
+      throw new Error("Plugin module must export an object");
+    }
+
+    const obj = mod as Record<string, unknown>;
+
+    // Look for default export first, then named export
+    const pluginExport = obj.default ?? obj.plugin;
+
+    if (!pluginExport || typeof pluginExport !== "object") {
+      throw new Error(
+        "Plugin module must export a default 'FusionPlugin' or have a 'plugin' export",
+      );
+    }
+
+    const plugin = pluginExport as FusionPlugin;
+
+    // Basic validation
+    if (!plugin.manifest?.id) {
+      throw new Error("Plugin must have a manifest with id");
+    }
+
+    return plugin;
+  }
+
+  private checkVersionCompatibility(requiredVersion: string): boolean {
+    // Simple version comparison for now
+    // In a real implementation, use a proper semver library
+    const required = this.parseVersion(requiredVersion);
+    const minimum = this.parseVersion(MINIMUM_FUSION_VERSION);
+
+    if (required.major > minimum.major) return false;
+    if (required.major < minimum.major) return true;
+    if (required.minor > minimum.minor) return false;
+    if (required.minor < minimum.minor) return true;
+    return required.patch <= minimum.patch;
+  }
+
+  private parseVersion(version: string): { major: number; minor: number; patch: number } {
+    const parts = version.split(".").map(Number);
+    return {
+      major: parts[0] || 0,
+      minor: parts[1] || 0,
+      patch: parts[2] || 0,
+    };
+  }
+
+  private async resolveDependencies(plugin: FusionPlugin): Promise<void> {
+    if (!plugin.manifest.dependencies?.length) return;
+
+    for (const depId of plugin.manifest.dependencies) {
+      if (!this.plugins.has(depId)) {
+        throw new Error(
+          `Plugin ${plugin.manifest.id} depends on ${depId}, which is not loaded`,
+        );
+      }
+    }
+  }
+
+  // ── Load All ──────────────────────────────────────────────────────
+
+  /**
+   * Load all enabled plugins in dependency order.
+   */
+  async loadAllPlugins(): Promise<{ loaded: number; errors: number }> {
+    const enabled = await this.options.pluginStore.listPlugins({ enabled: true });
+    const sorted = this.resolveLoadOrder(enabled);
+
+    let loaded = 0;
+    let errors = 0;
+
+    for (const installation of sorted) {
+      try {
+        await this.loadPlugin(installation.id);
+        loaded++;
+      } catch (err) {
+        if ((err as any).code !== "PLUGIN_DISABLED") {
+          errors++;
+          console.error(
+            `[plugin-loader] Failed to load plugin ${installation.id}:`,
+            err,
+          );
+        }
+      }
+    }
+
+    return { loaded, errors };
+  }
+
+  /**
+   * Topological sort for load order.
+   */
+  resolveLoadOrder(plugins: PluginInstallation[]): PluginInstallation[] {
+    const pluginMap = new Map(plugins.map((p) => [p.id, p]));
+    const visited = new Set<string>();
+    const result: PluginInstallation[] = [];
+    const visiting = new Set<string>();
+
+    const visit = (id: string) => {
+      if (visited.has(id)) return;
+      if (visiting.has(id)) {
+        throw new Error(`Circular dependency detected: ${id}`);
+      }
+
+      const plugin = pluginMap.get(id);
+      if (!plugin) return; // Skip plugins not in our list
+
+      visiting.add(id);
+
+      // Visit dependencies first
+      for (const depId of plugin.dependencies || []) {
+        visit(depId);
+      }
+
+      visiting.delete(id);
+      visited.add(id);
+      result.push(plugin);
+    };
+
+    for (const plugin of plugins) {
+      visit(plugin.id);
+    }
+
+    return result;
+  }
+
+  // ── Plugin Stopping ────────────────────────────────────────────────
+
+  /**
+   * Stop and unload a single plugin.
+   */
+  async stopPlugin(pluginId: string): Promise<void> {
+    const plugin = this.plugins.get(pluginId);
+    if (!plugin) {
+      console.log(`[plugin-loader] Plugin not loaded: ${pluginId}`);
+      return;
+    }
+
+    try {
+      // Call onUnload hook
+      await this.safeCallHook(plugin, "onUnload", []);
+    } catch (err) {
+      console.error(`[plugin-loader] Error in onUnload for ${pluginId}:`, err);
+    }
+
+    // Update state
+    await this.options.pluginStore.updatePluginState(pluginId, "stopped");
+
+    // Remove from loaded plugins
+    this.plugins.delete(pluginId);
+
+    this.emit("plugin:stopped", pluginId);
+  }
+
+  /**
+   * Stop all loaded plugins in reverse dependency order.
+   */
+  async stopAllPlugins(): Promise<void> {
+    // Get plugins in reverse topological order
+    const loadedPlugins = Array.from(this.plugins.values());
+    const sorted = this.resolveLoadOrder(
+      loadedPlugins.map((p) => ({
+        id: p.manifest.id,
+        name: p.manifest.name,
+        version: p.manifest.version,
+        description: p.manifest.description,
+        author: p.manifest.author,
+        homepage: p.manifest.homepage,
+        path: "",
+        enabled: true,
+        state: p.state,
+        settings: {},
+        dependencies: p.manifest.dependencies,
+        createdAt: "",
+        updatedAt: "",
+      })),
+    );
+
+    // Stop in reverse order
+    for (const plugin of sorted.reverse()) {
+      try {
+        await this.stopPlugin(plugin.id);
+      } catch (err) {
+        console.error(`[plugin-loader] Error stopping plugin ${plugin.id}:`, err);
+      }
+    }
+  }
+
+  // ── Hook Invocation ────────────────────────────────────────────────
+
+  /**
+   * Invoke a hook on all loaded plugins.
+   * Errors are isolated - one plugin's failure doesn't affect others.
+   */
+  async invokeHook(
+    hookName: keyof FusionPlugin["hooks"],
+    ...args: unknown[]
+  ): Promise<void> {
+    for (const [pluginId, plugin] of this.plugins) {
+      const hook = plugin.hooks[hookName];
+      if (!hook) continue;
+
+      try {
+        await this.safeCallHook(plugin, hookName, args);
+      } catch (err) {
+        console.error(
+          `[plugin-loader] Error in ${hookName} hook for ${pluginId}:`,
+          err,
+        );
+
+        // Update plugin state to error
+        try {
+          await this.options.pluginStore.updatePluginState(
+            pluginId,
+            "error",
+            err instanceof Error ? err.message : String(err),
+          );
+          plugin.state = "error";
+        } catch {
+          // Non-fatal
+        }
+
+        // Call onError hook if available
+        if (hookName !== "onError" && plugin.hooks.onError) {
+          try {
+            const ctx = await this.createContext(plugin);
+            await plugin.hooks.onError(
+              err instanceof Error ? err : new Error(String(err)),
+              ctx,
+            );
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+    }
+  }
+
+  private async safeCallHook(
+    plugin: FusionPlugin,
+    hookName: keyof FusionPlugin["hooks"],
+    args: unknown[],
+  ): Promise<void> {
+    const hook = plugin.hooks[hookName];
+    if (!hook) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = hook as (...args: unknown[]) => unknown;
+    const result = fn(...args);
+    if (result instanceof Promise) {
+      await result;
+    }
+  }
+
+  // ── Accessors ─────────────────────────────────────────────────────
+
+  /**
+   * Get all tools from loaded plugins.
+   */
+  getPluginTools(): PluginToolDefinition[] {
+    const tools: PluginToolDefinition[] = [];
+    for (const plugin of this.plugins.values()) {
+      if (plugin.tools) {
+        tools.push(...plugin.tools);
+      }
+    }
+    return tools;
+  }
+
+  /**
+   * Get all routes from loaded plugins.
+   */
+  getPluginRoutes(): Array<{ pluginId: string; route: PluginRouteDefinition }> {
+    const routes: Array<{ pluginId: string; route: PluginRouteDefinition }> = [];
+    for (const [pluginId, plugin] of this.plugins) {
+      if (plugin.routes) {
+        for (const route of plugin.routes) {
+          routes.push({ pluginId, route });
+        }
+      }
+    }
+    return routes;
+  }
+
+  /**
+   * Get all loaded plugin instances.
+   */
+  getLoadedPlugins(): FusionPlugin[] {
+    return Array.from(this.plugins.values());
+  }
+
+  /**
+   * Get a loaded plugin by id.
+   */
+  getPlugin(pluginId: string): FusionPlugin | undefined {
+    return this.plugins.get(pluginId);
+  }
+
+  /**
+   * Check if a plugin is loaded.
+   */
+  isPluginLoaded(pluginId: string): boolean {
+    return this.plugins.has(pluginId);
+  }
+}
