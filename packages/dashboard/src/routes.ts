@@ -9454,6 +9454,140 @@ Output ONLY the prompt text (no markdown, no explanations).`;
     }
   });
 
+  // ── Agent Rating Routes ─────────────────────────────────────────────────
+
+  /**
+   * GET /api/agents/:id/ratings
+   * Fetch ratings for an agent.
+   * Query params: limit (number, default 50), category (string, optional)
+   * Response 200: AgentRating[]
+   */
+  router.get("/agents/:id/ratings", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+      const { AgentStore } = await import("@fusion/core");
+      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir() });
+      await agentStore.init();
+
+      const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 50;
+      const category = typeof req.query.category === "string" ? req.query.category : undefined;
+
+      const ratings = await agentStore.getRatings(req.params.id, { limit, category });
+      res.json(ratings);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err.message?.includes("not found")) {
+        throw notFound(err.message);
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  /**
+   * POST /api/agents/:id/ratings
+   * Add a rating for an agent.
+   * Body: { score: number, category?: string, comment?: string, runId?: string, taskId?: string, raterType?: string }
+   * Response 201: AgentRating — The created rating
+   * Response 400: { error: "score is required" } — When score is missing
+   *             { error: "score must be a number between 1 and 5" } — When score is invalid
+   */
+  router.post("/agents/:id/ratings", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+      const { AgentStore } = await import("@fusion/core");
+      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir() });
+      await agentStore.init();
+
+      const { score, category, comment, runId, taskId, raterType } = req.body || {};
+
+      // Validate score
+      if (score === undefined || score === null) {
+        throw badRequest("score is required");
+      }
+      if (typeof score !== "number" || !Number.isFinite(score) || score < 1 || score > 5) {
+        throw badRequest("score must be a number between 1 and 5");
+      }
+
+      // Default raterType to "user" if not provided
+      const resolvedRaterType = raterType || "user";
+
+      const rating = await agentStore.addRating(req.params.id, {
+        score,
+        category,
+        comment,
+        runId,
+        taskId,
+        raterType: resolvedRaterType,
+      });
+
+      res.status(201).json(rating);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err.message?.includes("not found")) {
+        throw notFound(err.message);
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  /**
+   * GET /api/agents/:id/ratings/summary
+   * Fetch rating summary for an agent.
+   * Response 200: AgentRatingSummary
+   */
+  router.get("/agents/:id/ratings/summary", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+      const { AgentStore } = await import("@fusion/core");
+      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir() });
+      await agentStore.init();
+
+      const summary = await agentStore.getRatingSummary(req.params.id);
+      res.json(summary);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err.message?.includes("not found")) {
+        throw notFound(err.message);
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  /**
+   * DELETE /api/agents/:id/ratings/:ratingId
+   * Delete a specific rating.
+   * Response 204: No Content
+   */
+  router.delete("/agents/:id/ratings/:ratingId", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+      const { AgentStore } = await import("@fusion/core");
+      const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir() });
+      await agentStore.init();
+
+      await agentStore.deleteRating(req.params.ratingId);
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err.message?.includes("not found")) {
+        throw notFound(err.message);
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
   // ── Agent Generation Routes ──────────────────────────────────────────────
 
   /**

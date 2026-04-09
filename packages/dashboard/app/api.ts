@@ -27,6 +27,9 @@ import type {
   MissionEvent,
   MissionHealth,
   MissionEventType,
+  AgentRating,
+  AgentRatingSummary,
+  AgentRatingInput,
 } from "@fusion/core";
 import type { PlanningQuestion, PlanningSummary, PlanningResponse } from "@fusion/core";
 import type { ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, AutomationStep } from "@fusion/core";
@@ -3704,4 +3707,42 @@ export function fetchAgentPerformance(agentId: string, windowMs?: number, projec
   if (projectId) params.set("projectId", projectId);
   const query = params.size > 0 ? `?${params.toString()}` : "";
   return api<AgentPerformanceSummary>(`/agents/${encodeURIComponent(agentId)}/performance${query}`);
+}
+
+/** Fetch ratings for an agent */
+export function fetchAgentRatings(
+  agentId: string,
+  options?: { limit?: number; category?: string },
+  projectId?: string,
+): Promise<AgentRating[]> {
+  const params = new URLSearchParams();
+  if (options?.limit !== undefined) params.set("limit", String(options.limit));
+  if (options?.category) params.set("category", options.category);
+  if (projectId) params.set("projectId", projectId);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return api<AgentRating[]>(`/agents/${encodeURIComponent(agentId)}/ratings${query}`);
+}
+
+/** Add a rating for an agent */
+export function addAgentRating(
+  agentId: string,
+  input: AgentRatingInput,
+  projectId?: string,
+): Promise<AgentRating> {
+  return api<AgentRating>(withProjectId(`/agents/${encodeURIComponent(agentId)}/ratings`, projectId), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Fetch rating summary for an agent */
+export function fetchAgentRatingSummary(agentId: string, projectId?: string): Promise<AgentRatingSummary> {
+  return api<AgentRatingSummary>(withProjectId(`/agents/${encodeURIComponent(agentId)}/ratings/summary`, projectId));
+}
+
+/** Delete a specific rating */
+export function deleteAgentRating(agentId: string, ratingId: string, projectId?: string): Promise<void> {
+  return api<void>(withProjectId(`/agents/${encodeURIComponent(agentId)}/ratings/${encodeURIComponent(ratingId)}`, projectId), {
+    method: "DELETE",
+  });
 }
