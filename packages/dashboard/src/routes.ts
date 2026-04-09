@@ -27,7 +27,7 @@ import {
 } from "./github-webhooks.js";
 import { createMissionRouter } from "./mission-routes.js";
 import { getOrCreateProjectStore } from "./project-store-resolver.js";
-import { AiSessionStore } from "./ai-session-store.js";
+import { AiSessionStore, SESSION_CLEANUP_DEFAULT_MAX_AGE_MS } from "./ai-session-store.js";
 import { getSession as getPlanningSession, cleanupSession as cleanupPlanningSession } from "./planning.js";
 import { getSubtaskSession, cleanupSubtaskSession } from "./subtask-breakdown.js";
 import {
@@ -9201,6 +9201,34 @@ Output ONLY the prompt text (no markdown, no explanations).`;
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     const sessions = aiSessionStore.listActive(projectId);
     res.json({ sessions });
+  });
+
+  /**
+   * DELETE /api/ai-sessions/cleanup
+   * Cleanup stale AI sessions with optional max-age override.
+   */
+  router.delete("/ai-sessions/cleanup", (req, res) => {
+    if (!aiSessionStore) {
+      sendErrorResponse(res, 503, "Session store not available");
+      return;
+    }
+
+    const minimumMaxAgeMs = 60 * 60 * 1000;
+    let maxAgeMs = SESSION_CLEANUP_DEFAULT_MAX_AGE_MS;
+
+    if (typeof req.query.maxAgeMs === "string") {
+      const parsed = Number(req.query.maxAgeMs);
+      if (!Number.isFinite(parsed)) {
+        throw badRequest("maxAgeMs must be a valid number");
+      }
+      maxAgeMs = Math.max(minimumMaxAgeMs, Math.floor(parsed));
+    }
+
+    const result = aiSessionStore.cleanupStaleSessions(maxAgeMs);
+    res.json({
+      ...result,
+      maxAgeMs,
+    });
   });
 
   /**

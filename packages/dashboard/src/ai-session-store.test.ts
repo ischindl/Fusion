@@ -4,7 +4,12 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "@fusion/core";
-import { AiSessionStore, type AiSessionRow, type AiSessionStatus } from "./ai-session-store.js";
+import {
+  AiSessionStore,
+  SESSION_CLEANUP_DEFAULT_MAX_AGE_MS,
+  type AiSessionRow,
+  type AiSessionStatus,
+} from "./ai-session-store.js";
 
 describe("AiSessionStore", () => {
   let tmpRoot: string;
@@ -68,7 +73,7 @@ describe("AiSessionStore", () => {
     }
   }
 
-  it("cleanupOld removes stale sessions across all statuses and emits deleted events", () => {
+  it("cleanupOld removes only stale terminal sessions and emits deleted events", () => {
     const deletedIds: string[] = [];
     store.on("ai_session:deleted", (id) => deletedIds.push(id));
 
@@ -76,61 +81,68 @@ describe("AiSessionStore", () => {
     seedSession({ id: "S-error", status: "error", ageMs: 2 * 60 * 60 * 1000 });
     seedSession({ id: "S-generating", status: "generating", ageMs: 2 * 60 * 60 * 1000 });
     seedSession({ id: "S-awaiting", status: "awaiting_input", ageMs: 2 * 60 * 60 * 1000 });
-    seedSession({ id: "S-fresh", status: "generating", ageMs: 5 * 60 * 1000 });
 
     const removed = store.cleanupOld(60 * 60 * 1000);
 
-    expect(removed).toBe(4);
+    expect(removed).toBe(2);
     expect(store.get("S-complete")).toBeNull();
     expect(store.get("S-error")).toBeNull();
-    expect(store.get("S-generating")).toBeNull();
-    expect(store.get("S-awaiting")).toBeNull();
-    expect(store.get("S-fresh")).not.toBeNull();
-    expect(deletedIds.sort()).toEqual(["S-awaiting", "S-complete", "S-error", "S-generating"]);
+    expect(store.get("S-generating")).not.toBeNull();
+    expect(store.get("S-awaiting")).not.toBeNull();
+    expect(deletedIds.sort()).toEqual(["S-complete", "S-error"]);
   });
 
-  it("cleanupOld marks stale generating/awaiting_input sessions as error before delete", () => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS ai_session_status_audit (
-        id TEXT NOT NULL,
-        oldStatus TEXT NOT NULL,
-        newStatus TEXT NOT NULL,
-        error TEXT
-      );
-    `);
-    db.exec(`
-      CREATE TRIGGER IF NOT EXISTS trg_ai_sessions_mark_expired
-      AFTER UPDATE OF status ON ai_sessions
-      WHEN NEW.status = 'error' AND OLD.status IN ('generating', 'awaiting_input')
-      BEGIN
-        INSERT INTO ai_session_status_audit (id, oldStatus, newStatus, error)
-        VALUES (NEW.id, OLD.status, NEW.status, NEW.error);
-      END;
-    `);
+  it("cleanupStaleSessions removes stale terminal and orphaned sessions with summary", () => {
+    seedSession({ id: "S-complete-old", status: "complete", ageMs: 8 * 24 * 60 * 60 * 1000 });
+    seedSession({ id: "S-error-old", status: "error", ageMs: 8 * 24 * 60 * 60 * 1000 });
+    seedSession({ id: "S-generating-old", status: "generating", ageMs: 8 * 24 * 60 * 60 * 1000 });
+    seedSession({ id: "S-awaiting-old", status: "awaiting_input", ageMs: 8 * 24 * 60 * 60 * 1000 });
+    seedSession({ id: "S-generating-fresh", status: "generating", ageMs: 2 * 24 * 60 * 60 * 1000 });
 
-    seedSession({ id: "S-generating", status: "generating", ageMs: 2 * 60 * 60 * 1000, error: null });
-    seedSession({ id: "S-awaiting", status: "awaiting_input", ageMs: 2 * 60 * 60 * 1000, error: null });
+    const summary = store.cleanupStaleSessions();
 
-    store.cleanupOld(60 * 60 * 1000);
+    expect(summary).toEqual({
+      terminalDeleted: 2,
+      orphanedDeleted: 2,
+      totalDeleted: 4,
+    });
+    expect(store.get("S-complete-old")).toBeNull();
+    expect(store.get("S-error-old")).toBeNull();
+    expect(store.get("S-generating-old")).toBeNull();
+    expect(store.get("S-awaiting-old")).toBeNull();
+    expect(store.get("S-generating-fresh")).not.toBeNull();
+  });
 
-    const auditRows = db
-      .prepare("SELECT id, oldStatus, newStatus, error FROM ai_session_status_audit ORDER BY id")
-      .all() as Array<{ id: string; oldStatus: string; newStatus: string; error: string }>;
+  it("cleanupStaleSessions respects explicit maxAgeMs values", () => {
+    seedSession({ id: "S-complete-older", status: "complete", ageMs: 2 * 60 * 60 * 1000 });
+    seedSession({ id: "S-awaiting-older", status: "awaiting_input", ageMs: 2 * 60 * 60 * 1000 });
+    seedSession({ id: "S-error-recent", status: "error", ageMs: 30 * 60 * 1000 });
 
-    expect(auditRows).toEqual([
-      {
-        id: "S-awaiting",
-        oldStatus: "awaiting_input",
-        newStatus: "error",
-        error: "Session expired",
-      },
-      {
-        id: "S-generating",
-        oldStatus: "generating",
-        newStatus: "error",
-        error: "Session expired",
-      },
-    ]);
+    const summary = store.cleanupStaleSessions(60 * 60 * 1000);
+
+    expect(summary).toEqual({
+      terminalDeleted: 1,
+      orphanedDeleted: 1,
+      totalDeleted: 2,
+    });
+    expect(store.get("S-complete-older")).toBeNull();
+    expect(store.get("S-awaiting-older")).toBeNull();
+    expect(store.get("S-error-recent")).not.toBeNull();
+  });
+
+  it("cleanupStaleSessions defaults to 7-day max age", () => {
+    seedSession({ id: "S-complete-6days", status: "complete", ageMs: SESSION_CLEANUP_DEFAULT_MAX_AGE_MS - 60_000 });
+    seedSession({ id: "S-complete-8days", status: "complete", ageMs: SESSION_CLEANUP_DEFAULT_MAX_AGE_MS + 60_000 });
+
+    const summary = store.cleanupStaleSessions();
+
+    expect(summary).toEqual({
+      terminalDeleted: 1,
+      orphanedDeleted: 0,
+      totalDeleted: 1,
+    });
+    expect(store.get("S-complete-6days")).not.toBeNull();
+    expect(store.get("S-complete-8days")).toBeNull();
   });
 
   it("startScheduledCleanup and stopScheduledCleanup control cleanup interval", () => {

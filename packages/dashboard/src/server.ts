@@ -17,7 +17,11 @@ import { parseBadgeUrl } from "./github.js";
 import { WebSocketManager, type BadgeSnapshot } from "./websocket.js";
 import type { BadgePubSub } from "./badge-pubsub.js";
 import { createBadgePubSub, type BadgePubSubMessage } from "./badge-pubsub.js";
-import { AiSessionStore } from "./ai-session-store.js";
+import {
+  AiSessionStore,
+  SESSION_CLEANUP_DEFAULT_MAX_AGE_MS,
+  SESSION_CLEANUP_INTERVAL_MS,
+} from "./ai-session-store.js";
 import {
   setAiSessionStore as setPlanningAiSessionStore,
   rehydrateFromStore as rehydratePlanningSessions,
@@ -33,13 +37,27 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DEFAULT_AI_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_AI_SESSION_TTL_MS = SESSION_CLEANUP_DEFAULT_MAX_AGE_MS;
 const MIN_AI_SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_AI_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-const DEFAULT_AI_SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_AI_SESSION_CLEANUP_INTERVAL_MS = SESSION_CLEANUP_INTERVAL_MS;
 const MIN_AI_SESSION_CLEANUP_INTERVAL_MS = 60 * 1000;
 const MAX_AI_SESSION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+let aiSessionCleanupIntervalHandle: ReturnType<typeof setInterval> | undefined;
+
+function clearAiSessionCleanupInterval(): void {
+  if (!aiSessionCleanupIntervalHandle) {
+    return;
+  }
+  clearInterval(aiSessionCleanupIntervalHandle);
+  aiSessionCleanupIntervalHandle = undefined;
+}
+
+process.on("beforeExit", () => {
+  clearAiSessionCleanupInterval();
+});
 
 export interface ServerOptions {
   /** Custom merge handler — when provided, used instead of store.mergeTask */
@@ -351,6 +369,26 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     );
   }
 
+  const runAiSessionCleanup = (maxAgeMs: number, source: "initial" | "scheduled") => {
+    const result = aiSessionStore.cleanupStaleSessions(maxAgeMs);
+    console.log(
+      `[server] AI session cleanup (${source}): removed ${result.terminalDeleted} terminal, ${result.orphanedDeleted} orphaned sessions`,
+    );
+    return result;
+  };
+
+  const scheduleAiSessionCleanup = (cleanupIntervalMs: number, maxAgeMs: number) => {
+    clearAiSessionCleanupInterval();
+    aiSessionCleanupIntervalHandle = setInterval(() => {
+      try {
+        runAiSessionCleanup(maxAgeMs, "scheduled");
+      } catch (err) {
+        console.error("[server] Scheduled AI session cleanup failed", err);
+      }
+    }, cleanupIntervalMs);
+    aiSessionCleanupIntervalHandle.unref?.();
+  };
+
   const loadSettings = (store as { getSettings?: () => Promise<{ aiSessionTtlMs?: number; aiSessionCleanupIntervalMs?: number }> }).getSettings;
   if (typeof loadSettings === "function") {
     void loadSettings
@@ -368,17 +406,37 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
           MIN_AI_SESSION_CLEANUP_INTERVAL_MS,
           MAX_AI_SESSION_CLEANUP_INTERVAL_MS,
         );
-        aiSessionStore.startScheduledCleanup(cleanupIntervalMs, ttlMs);
+
+        void Promise.resolve()
+          .then(() => runAiSessionCleanup(ttlMs, "initial"))
+          .catch((err) => {
+            console.error("[server] Initial AI session cleanup failed", err);
+          });
+
+        scheduleAiSessionCleanup(cleanupIntervalMs, ttlMs);
       })
       .catch((err) => {
         console.warn("[server] Failed to load settings for AI session cleanup; using defaults", err);
-        aiSessionStore.startScheduledCleanup(
+
+        void Promise.resolve()
+          .then(() => runAiSessionCleanup(DEFAULT_AI_SESSION_TTL_MS, "initial"))
+          .catch((cleanupErr) => {
+            console.error("[server] Initial AI session cleanup failed", cleanupErr);
+          });
+
+        scheduleAiSessionCleanup(
           DEFAULT_AI_SESSION_CLEANUP_INTERVAL_MS,
           DEFAULT_AI_SESSION_TTL_MS,
         );
       });
   } else {
-    aiSessionStore.startScheduledCleanup(
+    void Promise.resolve()
+      .then(() => runAiSessionCleanup(DEFAULT_AI_SESSION_TTL_MS, "initial"))
+      .catch((err) => {
+        console.error("[server] Initial AI session cleanup failed", err);
+      });
+
+    scheduleAiSessionCleanup(
       DEFAULT_AI_SESSION_CLEANUP_INTERVAL_MS,
       DEFAULT_AI_SESSION_TTL_MS,
     );
@@ -443,6 +501,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     const server = originalListen(...normalizedArgs);
 
     server.once("close", () => {
+      clearAiSessionCleanupInterval();
       aiSessionStore.stopScheduledCleanup();
     });
 

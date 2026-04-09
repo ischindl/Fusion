@@ -60,6 +60,18 @@ const MAX_THINKING_BYTES = 50 * 1024;
 /** Debounce interval for thinking-only writes (ms). */
 const THINKING_DEBOUNCE_MS = 2000;
 
+/** Default max age before stale AI sessions are eligible for cleanup (7 days). */
+export const SESSION_CLEANUP_DEFAULT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Default scheduled interval for stale session cleanup runs (6 hours). */
+export const SESSION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export interface AiSessionCleanupSummary {
+  terminalDeleted: number;
+  orphanedDeleted: number;
+  totalDeleted: number;
+}
+
 // ── Store ───────────────────────────────────────────────────────────────
 
 export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
@@ -397,10 +409,7 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
   }
 
   /**
-   * Clean up stale sessions older than the given age (ms).
-   *
-   * For stale in-progress sessions (`generating`, `awaiting_input`), status is first
-   * transitioned to `error` with a "Session expired" marker before deletion.
+   * Clean up stale terminal sessions (`complete`, `error`) older than the given age (ms).
    * Returns the number of deleted sessions.
    */
   cleanupOld(maxAgeMs: number): number {
@@ -410,7 +419,7 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
       .prepare(
         `SELECT id FROM ai_sessions
          WHERE updatedAt < ?
-           AND status IN ('complete', 'error', 'generating', 'awaiting_input')`,
+           AND status IN ('complete', 'error')`,
       )
       .all(cutoff) as Array<{ id: string }>;
 
@@ -418,35 +427,59 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
       return 0;
     }
 
-    this.db.transaction(() => {
-      this.db
-        .prepare(
-          `UPDATE ai_sessions
-           SET status = 'error',
-               error = CASE
-                 WHEN error IS NULL OR error = '' THEN 'Session expired'
-                 ELSE error
-               END
-           WHERE updatedAt < ?
-             AND status IN ('generating', 'awaiting_input')`,
-        )
-        .run(cutoff);
+    this.db
+      .prepare(
+        `DELETE FROM ai_sessions
+         WHERE updatedAt < ?
+           AND status IN ('complete', 'error')`,
+      )
+      .run(cutoff);
 
-      this.db
+    this.emitDeletedSessions(stale);
+    return stale.length;
+  }
+
+  /**
+   * Cleans up stale terminal and orphaned active sessions older than `maxAgeMs`.
+   *
+   * - Terminal sessions (`complete`, `error`) are deleted via `cleanupOld()`.
+   * - Orphaned active sessions (`generating`, `awaiting_input`) are deleted directly.
+   */
+  cleanupStaleSessions(maxAgeMs = SESSION_CLEANUP_DEFAULT_MAX_AGE_MS): AiSessionCleanupSummary {
+    const terminalDeleted = this.cleanupOld(maxAgeMs);
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+
+    const orphaned = this.db
+      .prepare(
+        `SELECT id FROM ai_sessions
+         WHERE updatedAt < ?
+           AND status IN ('generating', 'awaiting_input')`,
+      )
+      .all(cutoff) as Array<{ id: string }>;
+
+    let orphanedDeleted = 0;
+    if (orphaned.length > 0) {
+      const result = this.db
         .prepare(
           `DELETE FROM ai_sessions
            WHERE updatedAt < ?
-             AND status IN ('complete', 'error', 'generating', 'awaiting_input')`,
+             AND status IN ('generating', 'awaiting_input')`,
         )
-        .run(cutoff);
-    });
-
-    for (const { id } of stale) {
-      this.clearThinkingTimer(id);
-      this.emit("ai_session:deleted", id);
+        .run(cutoff) as { changes?: number };
+      orphanedDeleted = Number(result.changes ?? 0);
+      this.emitDeletedSessions(orphaned);
     }
 
-    return stale.length;
+    const totalDeleted = terminalDeleted + orphanedDeleted;
+    console.log(
+      `[ai-session-store] Cleanup: removed ${terminalDeleted} terminal, ${orphanedDeleted} orphaned sessions`,
+    );
+
+    return {
+      terminalDeleted,
+      orphanedDeleted,
+      totalDeleted,
+    };
   }
 
   /**
@@ -457,10 +490,7 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
 
     const runCleanup = () => {
       try {
-        const deleted = this.cleanupOld(ttlMs);
-        if (deleted > 0) {
-          console.log(`[ai-session-store] Cleaned up ${deleted} stale sessions`);
-        }
+        this.cleanupStaleSessions(ttlMs);
       } catch (err) {
         console.error("[ai-session-store] Scheduled cleanup failed:", err);
       }
@@ -482,6 +512,13 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
   }
 
   // ── Internal ────────────────────────────────────────────────────────
+
+  private emitDeletedSessions(rows: Array<{ id: string }>): void {
+    for (const { id } of rows) {
+      this.clearThinkingTimer(id);
+      this.emit("ai_session:deleted", id);
+    }
+  }
 
   private writeThinking(sessionId: string, thinkingOutput: string): void {
     const now = new Date().toISOString();

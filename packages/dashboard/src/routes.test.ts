@@ -19,6 +19,7 @@ import { __resetPlanningState, __setCreateKbAgent, planningStreamManager } from 
 import * as planningModule from "./planning.js";
 import { __resetSubtaskBreakdownState, subtaskStreamManager } from "./subtask-breakdown.js";
 import * as subtaskBreakdownModule from "./subtask-breakdown.js";
+import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS } from "./ai-session-store.js";
 import * as projectStoreResolver from "./project-store-resolver.js";
 import * as terminalServiceModule from "./terminal-service.js";
 import { get as performGet, request as performRequest } from "./test-request.js";
@@ -7021,6 +7022,75 @@ describe("Git Management endpoints", () => {
         expect(res.body.error).toContain("sessionId is required");
       });
     });
+  });
+});
+
+describe("DELETE /api/ai-sessions/cleanup", () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = createMockStore();
+  });
+
+  it("returns cleanup summary with default maxAgeMs", async () => {
+    const mockAiSessionStore = {
+      cleanupStaleSessions: vi.fn().mockReturnValue({
+        terminalDeleted: 5,
+        orphanedDeleted: 2,
+        totalDeleted: 7,
+      }),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, { aiSessionStore: mockAiSessionStore as any }));
+
+    const res = await REQUEST(app, "DELETE", "/api/ai-sessions/cleanup");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      terminalDeleted: 5,
+      orphanedDeleted: 2,
+      totalDeleted: 7,
+      maxAgeMs: SESSION_CLEANUP_DEFAULT_MAX_AGE_MS,
+    });
+    expect(mockAiSessionStore.cleanupStaleSessions).toHaveBeenCalledWith(SESSION_CLEANUP_DEFAULT_MAX_AGE_MS);
+  });
+
+  it("respects maxAgeMs override and clamps values below one hour", async () => {
+    const mockAiSessionStore = {
+      cleanupStaleSessions: vi.fn().mockReturnValue({
+        terminalDeleted: 1,
+        orphanedDeleted: 1,
+        totalDeleted: 2,
+      }),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, { aiSessionStore: mockAiSessionStore as any }));
+
+    const res = await REQUEST(app, "DELETE", "/api/ai-sessions/cleanup?maxAgeMs=1000");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      terminalDeleted: 1,
+      orphanedDeleted: 1,
+      totalDeleted: 2,
+      maxAgeMs: 60 * 60 * 1000,
+    });
+    expect(mockAiSessionStore.cleanupStaleSessions).toHaveBeenCalledWith(60 * 60 * 1000);
+  });
+
+  it("returns 503 when aiSessionStore is unavailable", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+
+    const res = await REQUEST(app, "DELETE", "/api/ai-sessions/cleanup");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "Session store not available" });
   });
 });
 
