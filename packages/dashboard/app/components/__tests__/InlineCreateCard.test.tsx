@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { InlineCreateCard } from "../InlineCreateCard";
 import type { Task, Column } from "@fusion/core";
 import { fetchModels, fetchSettings, fetchAgents } from "../../api";
@@ -21,6 +21,8 @@ vi.mock("lucide-react", () => ({
   ChevronDown: () => null,
   ChevronUp: () => null,
   Bot: () => null,
+  Maximize2: () => null,
+  Minimize2: () => null,
 }));
 
 // Mock ModelSelectionModal (renders via portal, so mock for testability)
@@ -1078,6 +1080,146 @@ describe("InlineCreateCard button visibility when collapsed", () => {
       await waitFor(() => {
         const payload = onSubmit.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(payload.assignedAgentId).toBeUndefined();
+      });
+    });
+  });
+
+  describe("description fullscreen expansion", () => {
+    it("shows expand button when textarea is focused and has content", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Focus and type content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test task description" } });
+
+      // Expand button should be visible
+      await waitFor(() => {
+        expect(screen.getByTestId("inline-create-expand")).toBeInTheDocument();
+      });
+    });
+
+    it("hides expand button when textarea is empty", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Focus without typing
+      fireEvent.focus(textarea);
+
+      // Expand button should not be visible when empty
+      expect(screen.queryByTestId("inline-create-expand")).not.toBeInTheDocument();
+    });
+
+    it("hides expand button when textarea is blurred", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Focus, type, then blur
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test content" } });
+
+      // Verify expand button is visible before blur
+      await waitFor(() => {
+        expect(screen.getByTestId("inline-create-expand")).toBeInTheDocument();
+      });
+
+      // Blur the textarea
+      await act(async () => {
+        fireEvent.blur(textarea);
+      });
+
+      // Expand button should be hidden after blur
+      await waitFor(() => {
+        expect(screen.queryByTestId("inline-create-expand")).not.toBeInTheDocument();
+      });
+    });
+
+    it("enters fullscreen mode when expand button is clicked", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Focus and type content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+
+      // Click expand button
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("inline-create-expand"));
+      });
+
+      // Fullscreen textarea should be visible
+      await waitFor(() => {
+        expect(screen.getByTestId("inline-create-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Collapse button should be visible
+      expect(screen.getByTestId("inline-create-collapse")).toBeInTheDocument();
+    });
+
+    it("exits fullscreen mode when collapse button is clicked", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Enter fullscreen mode
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("inline-create-expand"));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("inline-create-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Click collapse button
+      fireEvent.click(screen.getByTestId("inline-create-collapse"));
+
+      // Fullscreen textarea should be hidden
+      await waitFor(() => {
+        expect(screen.queryByTestId("inline-create-input-fullscreen")).not.toBeInTheDocument();
+      });
+    });
+
+    it("exits fullscreen mode when Escape key is pressed in fullscreen", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Enter fullscreen mode
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("inline-create-expand"));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("inline-create-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Press Escape
+      const fullscreenTextarea = screen.getByTestId("inline-create-input-fullscreen");
+      fireEvent.keyDown(fullscreenTextarea, { key: "Escape" });
+
+      // Fullscreen should be exited
+      await waitFor(() => {
+        expect(screen.queryByTestId("inline-create-input-fullscreen")).not.toBeInTheDocument();
+      });
+    });
+
+    it("preserves description text when entering fullscreen", async () => {
+      renderCard();
+      const textarea = screen.getByPlaceholderText("What needs to be done?");
+
+      // Type some content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "My test task description" } });
+
+      // Enter fullscreen
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("inline-create-expand"));
+      });
+
+      // Check fullscreen textarea has the content
+      await waitFor(() => {
+        const fullscreenTextarea = screen.getByTestId("inline-create-input-fullscreen") as HTMLTextAreaElement;
+        expect(fullscreenTextarea.value).toBe("My test task description");
       });
     });
   });

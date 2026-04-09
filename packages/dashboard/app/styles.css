@@ -5218,6 +5218,39 @@ body {
   color: var(--text-dim);
 }
 
+/* Inline Create Card textarea wrap for expand button positioning */
+.inline-create-textarea-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Inline Create Card expand button - bottom-right of textarea */
+.inline-create-expand-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 32px;
+  padding: 4px;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast);
+  z-index: 1;
+}
+
+.inline-create-expand-btn:hover {
+  opacity: 1;
+}
+
+/* Inline Create Card fullscreen mode */
+.inline-create-input--fullscreen {
+  flex: 1;
+  padding-right: 70px;
+  min-height: unset;
+  resize: none;
+  border-radius: var(--radius-md);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
 /* Inline Create Card Toggle Button */
 .inline-create-toggle {
   display: inline-flex;
@@ -16360,6 +16393,39 @@ body[data-color-theme="terminal"][data-theme="light"]::before {
 .quick-entry-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Quick Entry Box textarea wrap for expand button positioning */
+.quick-entry-textarea-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Quick Entry Box expand button - bottom-right of textarea */
+.quick-entry-expand-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 32px;
+  padding: 4px;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast);
+  z-index: 1;
+}
+
+.quick-entry-expand-btn:hover {
+  opacity: 1;
+}
+
+/* Quick Entry Box fullscreen mode */
+.quick-entry-input--fullscreen {
+  flex: 1;
+  padding-right: 70px;
+  min-height: unset;
+  resize: none;
+  border-radius: var(--radius-md);
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 /* Quick Entry Box expanded controls */

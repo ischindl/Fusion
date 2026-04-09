@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Brain, Link, Lightbulb, ListTree, Zap, ChevronDown, ChevronUp, Bot } from "lucide-react";
+import { Brain, Link, Lightbulb, ListTree, Zap, ChevronDown, ChevronUp, Bot, Maximize2, Minimize2 } from "lucide-react";
 import type { Task, TaskCreateInput, Settings } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
 import { fetchModels, uploadAttachment, fetchSettings, updateGlobalSettings, fetchAgents } from "../api";
@@ -99,6 +99,10 @@ export function InlineCreateCard({
   const [submitting, setSubmitting] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isExpanded, setIsExpanded] = useState(false);
+  // isDescriptionExpanded controls fullscreen description editing mode
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+  // Track textarea focus for expand button visibility
+  const [isDescriptionFocused, setIsDescriptionFocused] = useState(false);
   const justResetRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -348,6 +352,7 @@ export function InlineCreateCard({
 
       // Collapse and clear localStorage after successful task creation
       setIsExpanded(false);
+      setIsDescriptionExpanded(false); // Exit fullscreen mode on submit
       justResetRef.current = true;
       if (typeof window !== "undefined") {
         removeScopedItem(STORAGE_KEY, projectId);
@@ -380,6 +385,11 @@ export function InlineCreateCard({
     async (e: React.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        // Exit fullscreen mode first - highest priority
+        if (isDescriptionExpanded) {
+          setIsDescriptionExpanded(false);
+          return;
+        }
         // Close dropdowns first if open
         if (showDeps || showAgentPicker || isModelModalOpen || showPresets) {
           setShowDeps(false);
@@ -414,6 +424,7 @@ export function InlineCreateCard({
       handleSubmit,
       onCancel,
       description,
+      isDescriptionExpanded,
       showDeps,
       showAgentPicker,
       isModelModalOpen,
@@ -579,38 +590,116 @@ export function InlineCreateCard({
     setIsExpanded((prev) => !prev);
   }, []);
 
+  const handleToggleDescriptionExpand = useCallback(() => {
+    setIsDescriptionExpanded((prev) => {
+      const next = !prev;
+      // Focus the fullscreen textarea after it renders
+      if (next && inputRef.current) {
+        setTimeout(() => inputRef.current?.focus(), 0);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleDescriptionFullscreenKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isDescriptionExpanded || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDescriptionExpanded(false);
+  }, [isDescriptionExpanded]);
+
   return (
     <div className={`inline-create-card ${isExpanded ? "inline-create-card--expanded" : "inline-create-card--collapsed"}`} ref={cardRef}>
-      <div className="inline-create-main-row">
-        <textarea
-          ref={inputRef}
-          rows={1}
-          className="inline-create-input"
-          placeholder="What needs to be done?"
-          value={description}
-          onChange={(e) => {
-            setDescription(e.target.value);
-            const el = e.target;
-            el.style.height = "auto";
-            el.style.height = el.scrollHeight + "px";
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={submitting}
-          aria-controls={isExpanded ? "inline-create-controls" : undefined}
-        />
-        <button
-          type="button"
-          className="btn btn-sm inline-create-toggle"
-          onClick={toggleExpanded}
-          aria-expanded={isExpanded}
-          aria-controls={isExpanded ? "inline-create-controls" : undefined}
-          aria-label={isExpanded ? "Collapse advanced task options" : "Expand advanced task options"}
-          data-testid="inline-create-toggle"
-          title={isExpanded ? "Collapse" : "Expand"}
-        >
-          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
+      <div
+        className={`description-with-refine${isDescriptionExpanded ? " description--fullscreen" : ""}`}
+        onKeyDown={handleDescriptionFullscreenKeyDown}
+      >
+        {isDescriptionExpanded && (
+          <div className="description-fullscreen-header">
+            <span>Editing Description</span>
+            <button
+              type="button"
+              className="btn btn-sm description-expand-btn"
+              onClick={handleToggleDescriptionExpand}
+              aria-label="Collapse description"
+              title="Collapse description"
+              data-testid="inline-create-collapse"
+            >
+              <Minimize2 size={14} />
+            </button>
+          </div>
+        )}
+        {!isDescriptionExpanded && (
+          <div className="inline-create-main-row">
+            <div className="inline-create-textarea-wrap">
+              <textarea
+                ref={inputRef}
+                rows={1}
+                className="inline-create-input"
+                placeholder="What needs to be done?"
+                value={description}
+                onChange={(e) => {
+                  setDescription(e.target.value);
+                  const el = e.target;
+                  el.style.height = "auto";
+                  el.style.height = el.scrollHeight + "px";
+                }}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                onFocus={() => setIsDescriptionFocused(true)}
+                onBlur={() => setIsDescriptionFocused(false)}
+                disabled={submitting}
+                aria-controls={isExpanded ? "inline-create-controls" : undefined}
+              />
+              {isDescriptionFocused && description.trim() && !submitting && (
+                <button
+                  type="button"
+                  className="btn btn-sm inline-create-expand-btn"
+                  onClick={handleToggleDescriptionExpand}
+                  onMouseDown={(e) => e.preventDefault()}
+                  aria-label="Expand description"
+                  title="Expand description"
+                  data-testid="inline-create-expand"
+                >
+                  <Maximize2 size={14} />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm inline-create-toggle"
+              onClick={toggleExpanded}
+              aria-expanded={isExpanded}
+              aria-controls={isExpanded ? "inline-create-controls" : undefined}
+              aria-label={isExpanded ? "Collapse advanced task options" : "Expand advanced task options"}
+              data-testid="inline-create-toggle"
+              title={isExpanded ? "Collapse" : "Expand"}
+            >
+              {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+          </div>
+        )}
+        {isDescriptionExpanded && (
+          <textarea
+            ref={inputRef}
+            rows={10}
+            className="inline-create-input inline-create-input--fullscreen"
+            placeholder="What needs to be done?"
+            value={description}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              const el = e.target;
+              el.style.height = "auto";
+              el.style.height = el.scrollHeight + "px";
+            }}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onFocus={() => setIsDescriptionFocused(true)}
+            onBlur={() => setIsDescriptionFocused(false)}
+            disabled={submitting}
+            data-testid="inline-create-input-fullscreen"
+          />
+        )}
       </div>
       {pendingImages.length > 0 && (
         <div className="inline-create-previews">

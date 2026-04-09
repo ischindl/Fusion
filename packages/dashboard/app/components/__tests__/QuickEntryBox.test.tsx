@@ -114,6 +114,8 @@ vi.mock("lucide-react", () => ({
   ChevronUp: () => null,
   ChevronRight: () => null,
   Bot: () => null,
+  Maximize2: () => null,
+  Minimize2: () => null,
 }));
 
 // Mock ModelSelectionModal (kept for backward compatibility - no longer directly rendered)
@@ -2331,6 +2333,138 @@ describe("QuickEntryBox", () => {
       await waitFor(() => {
         const payload = onCreate.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(payload.assignedAgentId).toBeUndefined();
+      });
+    });
+  });
+
+  describe("description fullscreen expansion", () => {
+    it("shows expand button when textarea is focused and has content", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Focus and type content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test task description" } });
+
+      // Expand button should be visible
+      await waitFor(() => {
+        expect(screen.getByTestId("quick-entry-expand")).toBeInTheDocument();
+      });
+    });
+
+    it("hides expand button when textarea is empty", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Focus without typing
+      fireEvent.focus(textarea);
+
+      // Expand button should not be visible when empty
+      expect(screen.queryByTestId("quick-entry-expand")).not.toBeInTheDocument();
+    });
+
+    it("hides expand button when textarea is blurred", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Focus, type, then blur
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test content" } });
+      fireEvent.blur(textarea);
+
+      // Expand button should be hidden after blur
+      await act(async () => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(screen.queryByTestId("quick-entry-expand")).not.toBeInTheDocument();
+    });
+
+    it("enters fullscreen mode when expand button is clicked", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Focus and type content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+
+      // Click expand button
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("quick-entry-expand"));
+      });
+
+      // Fullscreen textarea should be visible
+      await waitFor(() => {
+        expect(screen.getByTestId("quick-entry-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Collapse button should be visible
+      expect(screen.getByTestId("quick-entry-collapse")).toBeInTheDocument();
+    });
+
+    it("exits fullscreen mode when collapse button is clicked", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Enter fullscreen mode
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("quick-entry-expand"));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("quick-entry-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Click collapse button
+      fireEvent.click(screen.getByTestId("quick-entry-collapse"));
+
+      // Fullscreen textarea should be hidden
+      await waitFor(() => {
+        expect(screen.queryByTestId("quick-entry-input-fullscreen")).not.toBeInTheDocument();
+      });
+    });
+
+    it("exits fullscreen mode when Escape key is pressed in fullscreen", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Enter fullscreen mode
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Test description" } });
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("quick-entry-expand"));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("quick-entry-input-fullscreen")).toBeInTheDocument();
+      });
+
+      // Press Escape
+      const fullscreenTextarea = screen.getByTestId("quick-entry-input-fullscreen");
+      fireEvent.keyDown(fullscreenTextarea, { key: "Escape" });
+
+      // Fullscreen should be exited
+      await waitFor(() => {
+        expect(screen.queryByTestId("quick-entry-input-fullscreen")).not.toBeInTheDocument();
+      });
+    });
+
+    it("preserves description text when entering fullscreen", async () => {
+      renderQuickEntryBox({});
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      // Type some content
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "My test task description" } });
+
+      // Enter fullscreen
+      await waitFor(() => {
+        fireEvent.click(screen.getByTestId("quick-entry-expand"));
+      });
+
+      // Check fullscreen textarea has the content
+      await waitFor(() => {
+        const fullscreenTextarea = screen.getByTestId("quick-entry-input-fullscreen") as HTMLTextAreaElement;
+        expect(fullscreenTextarea.value).toBe("My test task description");
       });
     });
   });
