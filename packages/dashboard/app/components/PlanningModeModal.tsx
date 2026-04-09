@@ -752,19 +752,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                     ))}
                   </div>
                 </div>
-              </div>
 
-              <div className="planning-view-footer">
-                <div
-                  className="model-select-row"
-                  style={{
-                    marginRight: "auto",
-                    minWidth: "min(100%, 320px)",
-                    maxWidth: "420px",
-                    textAlign: "left",
-                  }}
-                >
-                  <label htmlFor="planning-modal-model" className="model-select-label">
+                <div className="planning-model-select-group">
+                  <label htmlFor="planning-modal-model" className="form-label">
                     Planning Model
                     {modelsLoading && (
                       <span className="text-muted" style={{ marginLeft: "8px", fontSize: "12px" }}>
@@ -822,7 +812,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                     </span>
                   </div>
                 </div>
+              </div>
 
+              <div className="planning-view-footer">
                 <button
                   className="btn btn-primary planning-start-btn"
                   onClick={() => handleStartPlanning()}
