@@ -1429,6 +1429,26 @@ async function fetchZaiUsage(): Promise<ProviderUsage> {
 
 // ── Kimi (Moonshot AI) fetcher ───────────────────────────────────────────
 
+// Kimi API endpoints (Moonshot domain)
+const KIMI_ENDPOINTS = [
+  "https://api.moonshot.cn/v1/coding-plan/usage", // hyphen
+  "https://api.moonshot.cn/v1/coding_plan/usage", // underscore
+];
+
+/**
+ * Check if the response body indicates a Moonshot endpoint-not-found error.
+ * Moonshot returns {"error": "url.not_found"} for missing endpoints.
+ */
+function isMoonshotNotFound(body: string): boolean {
+  try {
+    const data = JSON.parse(body);
+    // Moonshot returns {"error": "url.not_found"} for missing endpoints
+    return data?.error === "url.not_found";
+  } catch {
+    return false;
+  }
+}
+
 async function fetchKimiUsage(): Promise<ProviderUsage> {
   const usage: ProviderUsage = {
     name: "Kimi",
@@ -1444,29 +1464,62 @@ async function fetchKimiUsage(): Promise<ProviderUsage> {
     return usage;
   }
 
-  try {
-    const res = await httpsRequest("https://api.moonshot.cn/v1/coding-plan/usage", {
-      method: "GET",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-    });
+  let responseBody: string | null = null;
 
-    if (res.status === 401 || res.status === 403) {
-      usage.status = "error";
-      usage.error = "Auth expired — check your Kimi API key";
-      return usage;
+  try {
+    // Try each endpoint in order
+    for (let i = 0; i < KIMI_ENDPOINTS.length; i++) {
+      const endpoint = KIMI_ENDPOINTS[i];
+      const isLastEndpoint = i === KIMI_ENDPOINTS.length - 1;
+
+      const res = await httpsRequest(endpoint, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+      });
+
+      // Auth errors short-circuit (no fallback for 401/403)
+      if (res.status === 401 || res.status === 403) {
+        usage.status = "error";
+        usage.error = "Auth expired — check your Kimi API key";
+        return usage;
+      }
+
+      // 404 with url.not_found triggers fallback to next endpoint
+      if (res.status === 404 && isMoonshotNotFound(res.body)) {
+        if (isLastEndpoint) {
+          // Last endpoint also returned not_found — return error
+          usage.status = "error";
+          usage.error = `HTTP 404: ${res.body.slice(0, 200)}`;
+          return usage;
+        }
+        // Try next endpoint
+        continue;
+      }
+
+      // Any other non-200 status returns error
+      if (res.status !== 200) {
+        usage.status = "error";
+        usage.error = `HTTP ${res.status}: ${res.body.slice(0, 200)}`;
+        return usage;
+      }
+
+      // Success — store body and break out of loop
+      responseBody = res.body;
+      break;
     }
 
-    if (res.status !== 200) {
+    // Should have a response body at this point
+    if (responseBody === null) {
       usage.status = "error";
-      usage.error = `HTTP ${res.status}: ${res.body.slice(0, 200)}`;
+      usage.error = "Failed to fetch Kimi usage — no valid response";
       return usage;
     }
 
     usage.status = "ok";
-    const data = JSON.parse(res.body);
+    const data = JSON.parse(responseBody);
 
     // Defensive parsing: try known field names
     let windows: any[] = [];
