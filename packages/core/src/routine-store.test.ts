@@ -375,7 +375,7 @@ describe("RoutineStore", () => {
     });
 
     it("emits routine:deleted event", async () => {
-      const routine = await store.createRoutine({
+      const created = await store.createRoutine({
         name: "Delete test",
         agentId: "test-agent",
         trigger: { type: "manual" },
@@ -384,13 +384,13 @@ describe("RoutineStore", () => {
       const listener = vi.fn();
       store.on("routine:deleted", listener);
 
-      await store.deleteRoutine(routine.id);
-      expect(listener).toHaveBeenCalled();
-      const emittedRoutine = listener.mock.calls[0][0];
-      // Verify the emitted routine has the expected fields
-      expect(emittedRoutine.id).toBe(routine.id);
-      expect(emittedRoutine.name).toBe("Delete test");
-      expect(emittedRoutine.agentId).toBe("test-agent");
+      await store.deleteRoutine(created.id);
+      // The emitted routine comes from getRoutine() which adds extra fields
+      expect(listener).toHaveBeenCalledTimes(1);
+      const emitted = listener.mock.calls[0][0];
+      expect(emitted.id).toBe(created.id);
+      expect(emitted.name).toBe("Delete test");
+      expect(emitted.agentId).toBe("test-agent");
     });
   });
 

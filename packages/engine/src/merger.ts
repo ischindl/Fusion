@@ -167,6 +167,171 @@ async function syncDependenciesForMerge(
   }
 }
 
+// ── Deterministic merge verification ──────────────────────────────────
+
+/** Result of running a single verification command */
+export interface VerificationCommandResult {
+  command: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  success: boolean;
+}
+
+/** Result of running all verification commands */
+export interface VerificationResult {
+  testResult?: VerificationCommandResult;
+  buildResult?: VerificationCommandResult;
+  allPassed: boolean;
+  failedCommand?: string;
+}
+
+/**
+ * Run verification commands deterministically in the engine.
+ * Executes testCommand first, then buildCommand (when both are configured).
+ * Returns structured results so failures are logged with actionable detail.
+ * Throws VerificationError on failure with command details.
+ */
+export class VerificationError extends Error {
+  constructor(
+    message: string,
+    public readonly verificationResult: VerificationResult,
+  ) {
+    super(message);
+    this.name = "VerificationError";
+  }
+}
+
+async function runDeterministicVerification(
+  store: TaskStore,
+  rootDir: string,
+  taskId: string,
+  testCommand?: string,
+  buildCommand?: string,
+): Promise<VerificationResult> {
+  const result: VerificationResult = { allPassed: true };
+
+  // Nothing to verify
+  if (!testCommand && !buildCommand) {
+    mergerLog.log(`${taskId}: no verification commands configured — skipping`);
+    return result;
+  }
+
+  const normalizedTestCommand = testCommand?.trim();
+  const normalizedBuildCommand = buildCommand?.trim();
+  const hasTestCommand = !!normalizedTestCommand;
+  const hasBuildCommand = !!normalizedBuildCommand;
+
+  mergerLog.log(
+    `${taskId}: running deterministic verification` +
+    (hasTestCommand ? ` [test: ${normalizedTestCommand}]` : "") +
+    (hasBuildCommand ? ` [build: ${normalizedBuildCommand}]` : ""),
+  );
+  await store.logEntry(
+    taskId,
+    "Running deterministic merge verification" +
+    (hasTestCommand ? ` (testCommand: ${normalizedTestCommand})` : "") +
+    (hasBuildCommand ? ` (buildCommand: ${normalizedBuildCommand})` : ""),
+  );
+
+  // Run test command first if configured
+  if (hasTestCommand) {
+    const testResult = await runVerificationCommand(
+      store, rootDir, taskId, normalizedTestCommand!, "test",
+    );
+    result.testResult = testResult;
+
+    if (!testResult.success) {
+      result.allPassed = false;
+      result.failedCommand = "testCommand";
+      await store.logEntry(
+        taskId,
+        `Deterministic test verification failed (exit ${testResult.exitCode}): ${testResult.stderr || testResult.stdout}`.trim(),
+        "VerificationError",
+      );
+      throw new VerificationError(
+        `Deterministic test verification failed for ${taskId}`,
+        result,
+      );
+    }
+  }
+
+  // Run build command second if configured
+  if (hasBuildCommand) {
+    const buildResult = await runVerificationCommand(
+      store, rootDir, taskId, normalizedBuildCommand!, "build",
+    );
+    result.buildResult = buildResult;
+
+    if (!buildResult.success) {
+      result.allPassed = false;
+      result.failedCommand = "buildCommand";
+      await store.logEntry(
+        taskId,
+        `Deterministic build verification failed (exit ${buildResult.exitCode}): ${buildResult.stderr || buildResult.stdout}`.trim(),
+        "VerificationError",
+      );
+      throw new VerificationError(
+        `Deterministic build verification failed for ${taskId}`,
+        result,
+      );
+    }
+  }
+
+  mergerLog.log(`${taskId}: deterministic verification passed`);
+  await store.logEntry(taskId, "Deterministic merge verification passed");
+  return result;
+}
+
+async function runVerificationCommand(
+  store: TaskStore,
+  rootDir: string,
+  taskId: string,
+  command: string,
+  type: "test" | "build",
+): Promise<VerificationCommandResult> {
+  mergerLog.log(`${taskId}: running ${type} command: ${command}`);
+  await store.logEntry(taskId, `[verification] Running ${type} command: ${command}`);
+
+  const result: VerificationCommandResult = {
+    command,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    success: false,
+  };
+
+  try {
+    // Execute the command with timeout
+    const output = execSync(command, {
+      cwd: rootDir,
+      encoding: "utf-8",
+      timeout: 300_000, // 5 minute timeout for verification commands
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    result.stdout = output;
+    result.exitCode = 0;
+    result.success = true;
+    mergerLog.log(`${taskId}: ${type} command succeeded`);
+    await store.logEntry(taskId, `[verification] ${type} command succeeded (exit 0)`);
+  } catch (error: any) {
+    result.stdout = error.stdout?.toString() || "";
+    result.stderr = error.stderr?.toString() || "";
+    result.exitCode = error.status ?? null;
+    result.success = false;
+
+    // Build a useful error summary
+    const summary = result.stderr || result.stdout || error.message || "Unknown error";
+    mergerLog.error(`${taskId}: ${type} command failed (exit ${result.exitCode}): ${summary.trim()}`);
+    await store.logEntry(
+      taskId,
+      `[verification] ${type} command failed (exit ${result.exitCode}): ${summary.trim()}`,
+    );
+  }
+
+  return result;
+}
+
 // ── Pre-merge diffstat scope validation ──────────────────────────────
 
 interface DiffFileEntry {
@@ -847,7 +1012,8 @@ export async function aiMergeTask(
   const mergeAttempt = async (attemptNum: 1 | 2 | 3): Promise<boolean> => {
     mergerLog.log(`${taskId}: merge attempt ${attemptNum}/3...`);
 
-    // Normalize buildCommand: treat empty string as undefined
+    // Normalize verification commands: treat empty string as undefined
+    const testCommand = settings.testCommand?.trim() || undefined;
     const buildCommand = settings.buildCommand?.trim() || undefined;
 
     try {
@@ -864,6 +1030,7 @@ export async function aiMergeTask(
         attemptNum,
         options,
         result,
+        testCommand,
         buildCommand,
       }, aiTracker);
 
@@ -887,6 +1054,13 @@ export async function aiMergeTask(
 
       return false;
     } catch (error: any) {
+      // Check if it's a deterministic verification failure (testCommand or buildCommand failed)
+      // VerificationError is fatal - don't retry, propagate immediately
+      if (error.name === "VerificationError") {
+        mergerLog.error(`${taskId}: deterministic verification failed — aborting merge`);
+        throw error; // Fatal - verification failures don't retry
+      }
+
       // Check if it's a build verification failure
       if (error.message?.includes("Build verification failed")) {
         const buildRetryCount = settings.buildRetryCount ?? 0;
@@ -1101,6 +1275,7 @@ interface MergeAttemptParams {
   attemptNum: 1 | 2 | 3;
   options: MergerOptions;
   result: MergeResult;
+  testCommand?: string;
   buildCommand?: string;
 }
 
@@ -1130,6 +1305,7 @@ async function executeMergeAttempt(
     attemptNum,
     options,
     result,
+    testCommand,
     buildCommand,
   } = params;
 
@@ -1213,6 +1389,10 @@ async function executeMergeAttempt(
             );
             mergerLog.log(`${taskId}: committed after auto-resolving all conflicts`);
           }
+          // Run deterministic verification before completing the merge
+          if (testCommand || buildCommand) {
+            await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
+          }
           return true;
         }
 
@@ -1227,6 +1407,10 @@ async function executeMergeAttempt(
 
         if (squashIsEmpty) {
           mergerLog.log(`${taskId}: squash merge staged nothing — already merged`);
+          // Run deterministic verification (nothing staged but still verify)
+          if (testCommand || buildCommand) {
+            await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
+          }
           return true;
         }
         // No conflicts but has staged changes - continue to AI for commit message
@@ -1246,6 +1430,10 @@ async function executeMergeAttempt(
 
       if (squashIsEmpty) {
         mergerLog.log(`${taskId}: squash merge staged nothing — already merged`);
+        // Run deterministic verification (nothing staged but still verify)
+        if (testCommand || buildCommand) {
+          await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
+        }
         return true;
       }
 
@@ -1290,6 +1478,7 @@ async function executeMergeAttempt(
       hasConflicts,
       simplifiedContext: attemptNum === 2,
       options,
+      testCommand,
       buildCommand,
     });
 
@@ -1307,6 +1496,11 @@ async function executeMergeAttempt(
       }
       
       throw new Error(`Build verification failed for ${taskId}: ${errorMessage}`);
+    }
+
+    // Run deterministic verification after AI agent commits
+    if (testCommand || buildCommand) {
+      await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
     }
 
     return true;
@@ -1335,7 +1529,7 @@ async function executeMergeAttempt(
  * Attempt 3: Use git merge -X theirs --squash strategy
  */
 async function attemptWithTheirsStrategy(params: MergeAttemptParams): Promise<boolean> {
-  const { rootDir, branch, commitLog, includeTaskId, taskId } = params;
+  const { rootDir, branch, commitLog, includeTaskId, taskId, store, testCommand, buildCommand } = params;
 
   mergerLog.log(`${taskId}: attempting merge with -X theirs strategy`);
 
@@ -1365,6 +1559,10 @@ async function attemptWithTheirsStrategy(params: MergeAttemptParams): Promise<bo
 
     if (staged === "0") {
       // Nothing staged - already merged
+      // Run deterministic verification even when nothing is staged
+      if (testCommand || buildCommand) {
+        await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
+      }
       return true;
     }
 
@@ -1376,6 +1574,12 @@ async function attemptWithTheirsStrategy(params: MergeAttemptParams): Promise<bo
       { cwd: rootDir, stdio: "pipe" },
     );
     mergerLog.log(`${taskId}: committed with -X theirs auto-resolution`);
+
+    // Run deterministic verification after committing
+    if (testCommand || buildCommand) {
+      await runDeterministicVerification(store, rootDir, taskId, testCommand, buildCommand);
+    }
+
     return true;
   } catch (error) {
     mergerLog.error(`${taskId}: -X theirs merge failed: ${error}`);
@@ -1394,6 +1598,7 @@ interface AiAgentParams {
   hasConflicts: boolean;
   simplifiedContext: boolean;
   options: MergerOptions;
+  testCommand?: string;
   buildCommand?: string;
 }
 
@@ -1430,6 +1635,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     hasConflicts,
     simplifiedContext,
     options,
+    testCommand,
     buildCommand,
   } = params;
 
@@ -1517,6 +1723,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
       diffStat,
       hasConflicts,
       simplifiedContext,
+      testCommand,
       buildCommand,
     });
 
@@ -1627,11 +1834,12 @@ interface MergePromptParams {
   diffStat: string;
   hasConflicts: boolean;
   simplifiedContext?: boolean;
+  testCommand?: string;
   buildCommand?: string;
 }
 
 function buildMergePrompt(params: MergePromptParams): string {
-  const { taskId, branch, commitLog, diffStat, hasConflicts, simplifiedContext, buildCommand } = params;
+  const { taskId, branch, commitLog, diffStat, hasConflicts, simplifiedContext, testCommand, buildCommand } = params;
 
   const parts = [
     `Finalize the merge of branch \`${branch}\` for task ${taskId}.`,
@@ -1666,6 +1874,20 @@ function buildMergePrompt(params: MergePromptParams): string {
       "## No conflicts",
       "The merge applied cleanly. All changes are staged.",
       "Write and run the `git commit` command with a good message summarizing the work.",
+    );
+  }
+
+  // Add test command section if provided
+  if (testCommand) {
+    parts.push(
+      "",
+      "## Test command",
+      `Test command: \`${testCommand}\``,
+      "",
+      "This command is mandatory before commit.",
+      "Run it with the bash tool in the current worktree and inspect the actual exit code.",
+      "Only proceed if it exits 0.",
+      "If it exits non-zero, call `report_build_failure` with the concrete error output and stop without committing.",
     );
   }
 
