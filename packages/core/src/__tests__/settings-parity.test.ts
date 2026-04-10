@@ -98,6 +98,7 @@ const PROJECT_KEYS: (keyof ProjectSettings)[] = [
   "reflectionEnabled",
   "reflectionIntervalMs",
   "reflectionAfterTask",
+  "reviewHandoffPolicy",
 ];
 
 function assertExactKeyCoverage(scopeName: string, actual: readonly string[], expected: readonly string[]): void {

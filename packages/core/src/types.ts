@@ -122,7 +122,7 @@ export interface WorkflowStep {
 
 /** Input for creating a new workflow step. */
 /** Event types that can trigger ntfy notifications */
-export type NtfyNotificationEvent = "in-review" | "merged" | "failed" | "awaiting-approval";
+export type NtfyNotificationEvent = "in-review" | "merged" | "failed" | "awaiting-approval" | "awaiting-user-review";
 
 export interface WorkflowStepInput {
   /** Built-in template source ID when creating a concrete step from a template. */
@@ -684,6 +684,10 @@ export interface Task {
   thinkingLevel?: ThinkingLevel;
   /** Explicitly assigned agent ID for task-agent linking. Distinct from Agent.taskId active execution state. */
   assignedAgentId?: string;
+  /** Explicitly assigned user ID for task-user linking. Used during review handoff to indicate
+   *  which user should review the task. The sentinel value "requesting-user" indicates the
+   *  user who created or steered the task. */
+  assigneeUserId?: string;
   /** Agent ID currently holding the checkout lease for this task. Undefined when no active lease. */
   checkedOutBy?: string;
   /** ISO-8601 timestamp when the checkout lease was acquired. */
@@ -758,6 +762,8 @@ export interface TaskCreateInput {
   sliceId?: string;
   /** Optional explicit agent assignment for this task */
   assignedAgentId?: string;
+  /** Optional explicit user assignment for this task (used during review handoff) */
+  assigneeUserId?: string;
 }
 
 // ── Settings Scope Types ────────────────────────────────────────────────
@@ -1125,6 +1131,13 @@ export interface ProjectSettings {
   reflectionIntervalMs?: number;
   /** When true, automatically trigger reflection after task completion. Default: true. */
   reflectionAfterTask?: boolean;
+  /** Policy for agent-to-user review handoff. When enabled, agents can hand off
+   *  tasks to users for human review via steering comments.
+   *  - "disabled": No handoff detection (default)
+   *  - "comment-triggered": Detect handoff phrases in agent steering comments
+   *  - "always": Always handoff after completion (not implemented, reserved for future)
+   */
+  reviewHandoffPolicy?: "disabled" | "comment-triggered" | "always";
 }
 
 /**
@@ -1153,7 +1166,7 @@ export const DEFAULT_GLOBAL_SETTINGS: Required<Pick<GlobalSettings, "themeMode" 
   defaultThinkingLevel: undefined,
   ntfyEnabled: false,
   ntfyTopic: undefined,
-  ntfyEvents: ["in-review", "merged", "failed", "awaiting-approval"],
+  ntfyEvents: ["in-review", "merged", "failed", "awaiting-approval", "awaiting-user-review"],
   ntfyDashboardHost: undefined,
   defaultProjectId: undefined,
   setupComplete: undefined,
@@ -1235,6 +1248,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   reflectionEnabled: false,
   reflectionIntervalMs: 3_600_000,
   reflectionAfterTask: true,
+  reviewHandoffPolicy: "disabled",
 };
 
 /**
@@ -1340,6 +1354,7 @@ export const PROJECT_SETTINGS_KEYS: ReadonlyArray<keyof ProjectSettings> = [
   "reflectionEnabled",
   "reflectionIntervalMs",
   "reflectionAfterTask",
+  "reviewHandoffPolicy",
 ] as const;
 
 // ── Compile-time parity: ensures every interface key is listed exactly once ──
@@ -1455,6 +1470,8 @@ export interface ArchivedTaskEntry {
   recoveryRetryCount?: number;
   nextRecoveryAt?: string;
   error?: string;
+  /** User assigned to review this task (used during review handoff) */
+  assigneeUserId?: string;
 }
 
 /** Type of planning question presented to the user */

@@ -59,7 +59,7 @@ export function fromJson<T>(json: string | null | undefined): T | undefined {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -168,7 +168,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   modifiedFiles TEXT DEFAULT '[]',
   missionId TEXT,
   sliceId TEXT,
-  assignedAgentId TEXT
+  assignedAgentId TEXT,
+  assigneeUserId TEXT
 );
 
 -- Config table (single row with project settings)
@@ -933,6 +934,13 @@ export class Database {
           CREATE INDEX IF NOT EXISTS idxRunAuditEventsTimestamp
             ON runAuditEvents(timestamp)
         `);
+      });
+    }
+
+    if (version < 26) {
+      this.applyMigration(26, () => {
+        this.addColumnIfMissing("tasks", "assigneeUserId", "TEXT");
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxTasksAssigneeUserId ON tasks(assigneeUserId)`);
       });
     }
   }

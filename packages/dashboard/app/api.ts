@@ -2205,6 +2205,28 @@ export function assignTask(taskId: string, agentId: string | null, projectId?: s
   });
 }
 
+/** Assign or unassign a task to a user (for review handoff) */
+export function assignTaskToUser(taskId: string, userId: string | null, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/assign-user`, projectId), {
+    method: "PATCH",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+/** Accept review - clear assignee and awaiting-user-review status, keep in in-review */
+export function acceptTaskReview(taskId: string, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/accept-review`, projectId), {
+    method: "POST",
+  });
+}
+
+/** Return task to agent - clear assignee and status, move to todo */
+export function returnTaskToAgent(taskId: string, projectId?: string): Promise<Task> {
+  return api<Task>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/return-to-agent`, projectId), {
+    method: "POST",
+  });
+}
+
 /** Fetch tasks explicitly assigned to an agent */
 export function fetchAgentTasks(agentId: string, projectId?: string): Promise<Task[]> {
   return api<Task[]>(withProjectId(`/agents/${encodeURIComponent(agentId)}/tasks`, projectId));

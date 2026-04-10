@@ -3,6 +3,7 @@ import type { Task, WorkflowStepResult } from "./types.js";
 const BLOCKING_TASK_STATUSES = new Set([
   "failed",
   "awaiting-inspection",
+  "awaiting-user-review",
 ]);
 
 const NON_TERMINAL_STEP_STATUSES = new Set([

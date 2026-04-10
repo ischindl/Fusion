@@ -31,6 +31,16 @@ describe("getTaskMergeBlocker", () => {
       .toContain("failed");
   });
 
+  it("returns reason when task has awaiting-user-review status", () => {
+    expect(getTaskMergeBlocker({ ...baseTask, status: "awaiting-user-review" }))
+      .toContain("awaiting-user-review");
+  });
+
+  it("returns reason when task has awaiting-inspection status", () => {
+    expect(getTaskMergeBlocker({ ...baseTask, status: "awaiting-inspection" }))
+      .toContain("awaiting-inspection");
+  });
+
   it("returns reason when task has incomplete steps", () => {
     expect(getTaskMergeBlocker({
       ...baseTask,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentSemaphore } from "./concurrency.js";
+import { detectReviewHandoffIntent } from "./executor.js";
 
 // Mock external dependencies
 vi.mock("./pi.js", () => ({
@@ -9145,5 +9146,50 @@ describe("StepSessionExecutor integration", () => {
     // Invoking callbacks should not throw
     expect(() => ctorOptions.onStepStart!(0)).not.toThrow();
     expect(() => ctorOptions.onStepComplete!(0, { stepIndex: 0, success: true, retries: 0 })).not.toThrow();
+  });
+});
+
+describe("detectReviewHandoffIntent", () => {
+  it("returns true for 'send it back to me'", () => {
+    expect(detectReviewHandoffIntent("Please send it back to me for review")).toBe(true);
+  });
+
+  it("returns true for 'hand off to user'", () => {
+    expect(detectReviewHandoffIntent("I need to hand off to user")).toBe(true);
+  });
+
+  it("returns true for 'needs human review'", () => {
+    expect(detectReviewHandoffIntent("This needs human review")).toBe(true);
+  });
+
+  it("returns true for 'assign to user'", () => {
+    expect(detectReviewHandoffIntent("Please assign to user")).toBe(true);
+  });
+
+  it("returns true for 'return to user'", () => {
+    expect(detectReviewHandoffIntent("Return to user for final approval")).toBe(true);
+  });
+
+  it("returns true for 'user review needed'", () => {
+    expect(detectReviewHandoffIntent("User review needed")).toBe(true);
+  });
+
+  it("returns true for 'requesting user review'", () => {
+    expect(detectReviewHandoffIntent("I am requesting user review")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(detectReviewHandoffIntent("SEND IT BACK TO ME")).toBe(true);
+    expect(detectReviewHandoffIntent("Send It Back To Me")).toBe(true);
+  });
+
+  it("returns false for regular comments without handoff intent", () => {
+    expect(detectReviewHandoffIntent("Good progress on the implementation")).toBe(false);
+    expect(detectReviewHandoffIntent("Please add more tests")).toBe(false);
+    expect(detectReviewHandoffIntent("The code looks great")).toBe(false);
+  });
+
+  it("returns false for empty strings", () => {
+    expect(detectReviewHandoffIntent("")).toBe(false);
   });
 });

@@ -233,6 +233,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       missionId: row.missionId || undefined,
       sliceId: row.sliceId || undefined,
       assignedAgentId: row.assignedAgentId || undefined,
+      assigneeUserId: row.assigneeUserId || undefined,
       checkedOutBy: row.checkedOutBy || undefined,
       checkedOutAt: row.checkedOutAt || undefined,
     };
@@ -284,10 +285,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         summary, thinkingLevel, createdAt, updatedAt, columnMovedAt,
         dependencies, steps, log, attachments, steeringComments,
         comments, workflowStepResults, prInfo, issueInfo, mergeDetails,
-        breakIntoSubtasks, enabledWorkflowSteps, modifiedFiles, missionId, sliceId, assignedAgentId, checkedOutBy, checkedOutAt
+        breakIntoSubtasks, enabledWorkflowSteps, modifiedFiles, missionId, sliceId, assignedAgentId, assigneeUserId, checkedOutBy, checkedOutAt
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `).run(
       task.id,
@@ -337,6 +338,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.missionId ?? null,
       task.sliceId ?? null,
       task.assignedAgentId ?? null,
+      task.assigneeUserId ?? null,
       task.checkedOutBy ?? null,
       task.checkedOutAt ?? null,
     );
@@ -1059,6 +1061,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       enabledWorkflowSteps: resolvedWorkflowSteps,
       modelPresetId: input.modelPresetId,
       assignedAgentId: input.assignedAgentId,
+      assigneeUserId: input.assigneeUserId,
       modelProvider: input.modelProvider,
       modelId: input.modelId,
       validatorModelProvider: input.validatorModelProvider,
@@ -1484,7 +1487,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async updateTask(
     id: string,
-    updates: { title?: string; description?: string; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; blockedBy?: string | null; assignedAgentId?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; mergeRetries?: number; stuckKillCount?: number | null; recoveryRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
+    updates: { title?: string; description?: string; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; blockedBy?: string | null; assignedAgentId?: string | null; assigneeUserId?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; mergeRetries?: number; stuckKillCount?: number | null; recoveryRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
     runContext?: RunMutationContext,
   ): Promise<Task> {
     return this.withTaskLock(id, async () => {
@@ -1544,6 +1547,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.assignedAgentId = undefined;
       } else if (updates.assignedAgentId !== undefined) {
         task.assignedAgentId = updates.assignedAgentId;
+      }
+      if (updates.assigneeUserId === null) {
+        task.assigneeUserId = undefined;
+      } else if (updates.assigneeUserId !== undefined) {
+        task.assigneeUserId = updates.assigneeUserId;
       }
       if (updates.checkedOutBy === null) {
         task.checkedOutBy = undefined;

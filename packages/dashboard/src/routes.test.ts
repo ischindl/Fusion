@@ -1824,6 +1824,8 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
+      assigneeUserId: null,
     });
     expect(res.body.dependencies).toEqual(["FN-002"]);
   });
@@ -1849,6 +1851,8 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
+      assigneeUserId: null,
     });
   });
 
@@ -1884,6 +1888,39 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
+      assigneeUserId: null,
+    });
+  });
+
+  it("forwards assigneeUserId to store.updateTask", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      assigneeUserId: "requesting-user",
+    });
+
+    const res = await REQUEST(buildApp(), "PATCH", "/api/tasks/KB-001", JSON.stringify({
+      assigneeUserId: "requesting-user",
+    }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
+      title: undefined,
+      description: undefined,
+      prompt: undefined,
+      dependencies: undefined,
+      enabledWorkflowSteps: undefined,
+      modelProvider: null,
+      modelId: null,
+      validatorModelProvider: null,
+      validatorModelId: null,
+      planningModelProvider: null,
+      planningModelId: null,
+      thinkingLevel: undefined,
+      assigneeUserId: null,
+      assigneeUserId: "requesting-user",
     });
   });
 
@@ -1937,6 +1974,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
   });
 
@@ -1946,6 +1984,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: "google",
       planningModelId: "gemini-2.5-pro",
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
 
     const res = await REQUEST(buildApp(), "PATCH", "/api/tasks/KB-001", JSON.stringify({
@@ -1969,6 +2008,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: "google",
       planningModelId: "gemini-2.5-pro",
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
   });
 
@@ -2022,6 +2062,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
   });
 
@@ -2051,6 +2092,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
   });
 
@@ -2091,6 +2133,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: "high",
+      assigneeUserId: null,
     });
   });
 
@@ -2098,6 +2141,7 @@ describe("PATCH /tasks/:id", () => {
     (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...FAKE_TASK_DETAIL,
       thinkingLevel: undefined,
+      assigneeUserId: null,
     });
 
     const res = await REQUEST(buildApp(), "PATCH", "/api/tasks/KB-001", JSON.stringify({
@@ -2120,6 +2164,7 @@ describe("PATCH /tasks/:id", () => {
       planningModelProvider: null,
       planningModelId: null,
       thinkingLevel: null,
+      assigneeUserId: null,
     });
   });
 
@@ -2245,6 +2290,90 @@ describe("PATCH /tasks/:id/assign and GET /agents/:id/tasks", () => {
     expect(res.body.error).toBe("Agent not found");
     expect(store.listTasks).not.toHaveBeenCalled();
   }, 30_000);
+
+  it("PATCH /tasks/:id/assign-user assigns user to task", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-200",
+      assigneeUserId: "requesting-user",
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "PATCH",
+      "/api/tasks/FN-200/assign-user",
+      JSON.stringify({ userId: "requesting-user" }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-200", {
+      assigneeUserId: "requesting-user",
+      status: null, // clears awaiting-user-review status
+    });
+    expect(res.body.assigneeUserId).toBe("requesting-user");
+  }, 20000);
+
+  it("PATCH /tasks/:id/assign-user clears user assignment when userId is null", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-200",
+      assigneeUserId: undefined,
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "PATCH",
+      "/api/tasks/FN-200/assign-user",
+      JSON.stringify({ userId: null }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-200", { assigneeUserId: null });
+    expect(res.body.assigneeUserId).toBeUndefined();
+  }, 20000);
+
+  it("POST /tasks/:id/accept-review clears assignee and status", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-200",
+      column: "in-review",
+      assigneeUserId: undefined,
+      status: undefined,
+    });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/FN-200/accept-review");
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-200", {
+      assigneeUserId: null,
+      status: null,
+    });
+  }, 20000);
+
+  it("POST /tasks/:id/return-to-agent clears assignee and status, moves to todo", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-200",
+      assigneeUserId: undefined,
+      status: undefined,
+    });
+    (store.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-200",
+      column: "todo",
+    });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/FN-200/return-to-agent");
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-200", {
+      assigneeUserId: null,
+      status: null,
+    });
+    expect(store.moveTask).toHaveBeenCalledWith("FN-200", "todo");
+  }, 20000);
 
   it("POST /api/agents/:id/inbox returns next selection when work exists", async () => {
     const inboxTask = {

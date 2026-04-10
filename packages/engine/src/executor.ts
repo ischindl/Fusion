@@ -485,6 +485,20 @@ export class TaskExecutor {
                 // the agent with failed injections. The error is logged for debugging.
               }
             }
+
+            // After injecting comments, check for review handoff intent
+            // Only detect handoff in agent-authored comments when policy is enabled
+            const settings = await this.store.getSettings();
+            if (settings.reviewHandoffPolicy === "comment-triggered") {
+              const agentComments = newComments.filter(c => c.author !== "user");
+              for (const comment of agentComments) {
+                if (detectReviewHandoffIntent(comment.text)) {
+                  executorLog.log(`Review handoff detected in ${task.id}: ${comment.text.slice(0, 50)}...`);
+                  await this.executeReviewHandoff(task, session, activeSession);
+                  return; // Exit early - handoff handles session disposal
+                }
+              }
+            }
           }
         }
       } catch (err) {
@@ -527,6 +541,59 @@ export class TaskExecutor {
   private async clearResumeFailureState(task: Task): Promise<void> {
     if (task.status === "failed" || task.error) {
       await this.store.updateTask(task.id, { status: null, error: null });
+    }
+  }
+
+  /**
+   * Execute a review handoff: move the task to in-review column with
+   * awaiting-user-review status, assign the requesting user, and dispose
+   * the agent session.
+   */
+  private async executeReviewHandoff(
+    task: Task,
+    session: AgentSession,
+    sessionEntry: { session: AgentSession; seenSteeringIds: Set<string>; lastModelProvider?: string | null; lastModelId?: string | null },
+  ): Promise<void> {
+    try {
+      executorLog.log(`Executing review handoff for ${task.id}`);
+
+      // Log the handoff event
+      await this.store.logEntry(
+        task.id,
+        "Review handoff requested by agent — moving to in-review for user review",
+        undefined,
+        this.currentRunContext
+      );
+
+      // Update task with awaiting-user-review status and assignee
+      // Use a single updateTask call for atomicity
+      await this.store.updateTask(
+        task.id,
+        {
+          status: "awaiting-user-review",
+          assigneeUserId: "requesting-user",
+        },
+        this.currentRunContext
+      );
+
+      // Move the task to in-review column (this will also emit task:moved event)
+      // The task:moved handler will clean up activeSessions
+      await this.store.moveTask(task.id, "in-review");
+
+      // Dispose the agent session (this may already be done by task:moved handler)
+      // but we do it here to be explicit
+      if (this.activeSessions.has(task.id)) {
+        const { session: activeSession } = this.activeSessions.get(task.id)!;
+        activeSession.dispose();
+        this.activeSessions.delete(task.id);
+      }
+
+      // Untrack from stuck detector
+      this.options.stuckTaskDetector?.untrackTask(task.id);
+
+      executorLog.log(`Review handoff complete for ${task.id} — task moved to in-review`);
+    } catch (err: any) {
+      executorLog.error(`Failed to execute review handoff for ${task.id}: ${err.message}`);
     }
   }
 
@@ -3395,4 +3462,24 @@ Use \`task_create\` for truly separate follow-up work, not for fixes required to
 function formatCommentForInjection(comment: import("@fusion/core").SteeringComment): string {
   const timestamp = formatTimestamp(comment.createdAt);
   return `📣 **New feedback** — ${timestamp} (${comment.author}):\n\n${comment.text}\n\nPlease adjust your approach based on this feedback.`;
+}
+
+/**
+ * Detect if a steering comment contains a review handoff request.
+ * Matches common handoff phrases that agents can use to request
+ * human review of their work.
+ */
+export function detectReviewHandoffIntent(commentText: string): boolean {
+  const text = commentText.toLowerCase();
+  const handoffPhrases = [
+    "send it back to me",
+    "hand off to user",
+    "needs human review",
+    "assign to user",
+    "return to user",
+    "user review needed",
+    "requesting user review",
+  ];
+
+  return handoffPhrases.some((phrase) => text.includes(phrase));
 }

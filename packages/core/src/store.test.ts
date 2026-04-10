@@ -1197,6 +1197,30 @@ describe("TaskStore", () => {
     });
   });
 
+  describe("updateTask — assigneeUserId", () => {
+    it("sets assigneeUserId via updateTask", async () => {
+      const task = await store.createTask({ title: "User task", description: "A task" });
+      const updated = await store.updateTask(task.id, { assigneeUserId: "requesting-user" });
+      expect(updated.assigneeUserId).toBe("requesting-user");
+    });
+
+    it("clears assigneeUserId when set to null", async () => {
+      const task = await store.createTask({ title: "User task", description: "A task" });
+      await store.updateTask(task.id, { assigneeUserId: "requesting-user" });
+      const updated = await store.updateTask(task.id, { assigneeUserId: null });
+      expect(updated.assigneeUserId).toBeUndefined();
+    });
+
+    it("sets and clears status: awaiting-user-review", async () => {
+      const task = await store.createTask({ title: "Review task", description: "A task" });
+      const updated = await store.updateTask(task.id, { status: "awaiting-user-review" });
+      expect(updated.status).toBe("awaiting-user-review");
+
+      const cleared = await store.updateTask(task.id, { status: null });
+      expect(cleared.status).toBeUndefined();
+    });
+  });
+
   // ── Task prefix tests ──────────────────────────────────────────
 
   describe("taskPrefix setting", () => {
@@ -1573,6 +1597,21 @@ describe("TaskStore", () => {
       expect(persisted.modelId).toBe("claude-sonnet-4-5");
       expect(persisted.validatorModelProvider).toBe("openai");
       expect(persisted.validatorModelId).toBe("gpt-4o");
+    });
+  });
+
+  describe("createTask — assigneeUserId", () => {
+    it("persists assigneeUserId on creation", async () => {
+      const created = await store.createTask({
+        title: "Task with user assignment",
+        description: "A task assigned to a user",
+        assigneeUserId: "requesting-user",
+      });
+
+      expect(created.assigneeUserId).toBe("requesting-user");
+
+      const persisted = await store.getTask(created.id);
+      expect(persisted.assigneeUserId).toBe("requesting-user");
     });
   });
 

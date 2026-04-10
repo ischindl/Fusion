@@ -2933,7 +2933,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   router.patch("/tasks/:id", async (req, res) => {
     try {
       const scopedStore = await getScopedStore(req);
-      const { title, description, prompt, dependencies, enabledWorkflowSteps, modelProvider, modelId, validatorModelProvider, validatorModelId, planningModelProvider, planningModelId, thinkingLevel } = req.body;
+      const { title, description, prompt, dependencies, enabledWorkflowSteps, modelProvider, modelId, validatorModelProvider, validatorModelId, planningModelProvider, planningModelId, thinkingLevel, assigneeUserId } = req.body;
 
       // Validate model fields are strings or undefined/null
       const validateModelField = (value: unknown, name: string): string | null | undefined => {
@@ -2950,6 +2950,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       const validatedValidatorModelId = validateModelField(validatorModelId, "validatorModelId");
       const validatedPlanningModelProvider = validateModelField(planningModelProvider, "planningModelProvider");
       const validatedPlanningModelId = validateModelField(planningModelId, "planningModelId");
+      const validatedAssigneeUserId = validateModelField(assigneeUserId, "assigneeUserId");
 
       // Validate thinkingLevel if provided
       const validThinkingLevels = ["off", "minimal", "low", "medium", "high"];
@@ -2976,6 +2977,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         planningModelProvider: validatedPlanningModelProvider,
         planningModelId: validatedPlanningModelId,
         thinkingLevel: thinkingLevel === null ? null : thinkingLevel,
+        assigneeUserId: validatedAssigneeUserId,
       });
       res.json(task);
     } catch (err: any) {
@@ -3013,6 +3015,91 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       const task = await scopedStore.updateTask(req.params.id, {
         assignedAgentId: agentId === null ? null : agentId,
       });
+      res.json(task);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err?.code === "ENOENT" || err?.message?.includes("not found")) {
+        throw notFound(err.message ?? "Task not found");
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  // Assign or unassign a task to a user (for review handoff)
+  router.patch("/tasks/:id/assign-user", async (req, res) => {
+    try {
+      const { userId } = req.body as { userId?: string | null };
+      if (userId !== null && typeof userId !== "string") {
+        throw badRequest("userId must be a string or null");
+      }
+      if (typeof userId === "string" && userId.trim().length === 0) {
+        throw badRequest("userId must be a non-empty string or null");
+      }
+
+      const scopedStore = await getScopedStore(req);
+
+      // When assigning a user, also clear the awaiting-user-review status
+      // so the task can proceed to merge
+      const updates: Record<string, unknown> = {
+        assigneeUserId: userId === null ? null : userId,
+      };
+
+      // Clear awaiting-user-review status when explicitly assigning a user
+      if (userId !== null) {
+        updates.status = null;
+      }
+
+      const task = await scopedStore.updateTask(req.params.id, updates as any);
+      res.json(task);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err?.code === "ENOENT" || err?.message?.includes("not found")) {
+        throw notFound(err.message ?? "Task not found");
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  // Accept review - clear assignee and awaiting-user-review status, keep in in-review
+  router.post("/tasks/:id/accept-review", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+
+      // Clear assignee and status to allow auto-merge to proceed
+      const task = await scopedStore.updateTask(req.params.id, {
+        assigneeUserId: null,
+        status: null,
+      });
+      res.json(task);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err?.code === "ENOENT" || err?.message?.includes("not found")) {
+        throw notFound(err.message ?? "Task not found");
+      } else {
+        rethrowAsApiError(err);
+      }
+    }
+  });
+
+  // Return task to agent - clear assignee and status, move to todo
+  router.post("/tasks/:id/return-to-agent", async (req, res) => {
+    try {
+      const scopedStore = await getScopedStore(req);
+
+      // Clear assignee and status, move to todo so scheduler re-dispatches
+      await scopedStore.updateTask(req.params.id, {
+        assigneeUserId: null,
+        status: null,
+      });
+      const task = await scopedStore.moveTask(req.params.id, "todo");
       res.json(task);
     } catch (err: any) {
       if (err instanceof ApiError) {
