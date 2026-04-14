@@ -8,6 +8,7 @@ import type {
   AgentHeartbeatRun,
   PluginStore,
   PluginLoader,
+  MessageStore,
 } from "@fusion/core";
 import { Scheduler } from "../scheduler.js";
 import { TaskExecutor, type TaskExecutorOptions } from "../executor.js";
@@ -91,6 +92,7 @@ export class InProcessRuntime
   private missionExecutionLoop?: MissionExecutionLoop;
   private missionAutopilot?: MissionAutopilot;
   private triageProcessor?: TriageProcessor;
+  private messageStore?: MessageStore;
   private concurrencyChangedListener?: (state: { globalMaxConcurrent: number }) => void;
 
   /**
@@ -339,15 +341,20 @@ export class InProcessRuntime
 
       // 6. Initialize AgentStore and HeartbeatMonitor
       try {
-        const { AgentStore: AgentStoreClass } = await import("@fusion/core");
+        const { AgentStore: AgentStoreClass, MessageStore: MessageStoreClass } = await import("@fusion/core");
         this.agentStore = new AgentStoreClass({ rootDir: this.taskStore.getFusionDir() });
         await this.agentStore.init();
+
+        // Initialize MessageStore for wake-on-message behavior
+        this.messageStore = new MessageStoreClass({ rootDir: this.taskStore.getFusionDir() });
+        await this.messageStore.init();
 
         this.heartbeatMonitor = new HeartbeatMonitor({
           store: this.agentStore,
           agentStore: this.agentStore, // enables per-agent config resolution
           taskStore: this.taskStore,
           rootDir: this.config.workingDirectory,
+          messageStore: this.messageStore,
           onMissed: (agentId) => {
             runtimeLog.warn(`Agent ${agentId} missed heartbeat`);
           },

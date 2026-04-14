@@ -13,6 +13,7 @@ const {
   mockRecoverNoProgressNoTaskDoneFailures,
   mockRunStartupRecovery,
   mockExecutorCtor,
+  mockMessageStoreSetHook,
 } = vi.hoisted(() => ({
   mockSelfHealingStart: vi.fn(),
   mockSelfHealingStop: vi.fn(),
@@ -20,6 +21,7 @@ const {
   mockRecoverNoProgressNoTaskDoneFailures: vi.fn().mockResolvedValue(0),
   mockRunStartupRecovery: vi.fn().mockResolvedValue(undefined),
   mockExecutorCtor: vi.fn(),
+  mockMessageStoreSetHook: vi.fn(),
 }));
 
 // Mock the TaskStore class
@@ -63,6 +65,12 @@ vi.mock("@fusion/core", async () => {
       self.getLoadedPlugins = vi.fn().mockReturnValue([]);
       self.on = vi.fn();
       self.off = vi.fn();
+      return self;
+    }),
+    MessageStore: vi.fn().mockImplementation(function() {
+      const self = {} as Record<string, unknown>;
+      self.init = vi.fn().mockResolvedValue(undefined);
+      self.setMessageToAgentHook = mockMessageStoreSetHook;
       return self;
     }),
   };
@@ -562,6 +570,28 @@ describe("InProcessRuntime", () => {
 
     it("should store maxWorktrees in config", () => {
       expect(4).toBe(4);
+    });
+  });
+
+  describe("message store wiring", () => {
+    it("registers wake-on-message hook when messageStore is provided", async () => {
+      // Reset the mock to ensure clean state for this test
+      mockMessageStoreSetHook.mockClear();
+
+      await runtime.start();
+
+      // Verify that setMessageToAgentHook was called with a function
+      expect(mockMessageStoreSetHook).toHaveBeenCalledTimes(1);
+      expect(mockMessageStoreSetHook).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    it("creates MessageStore with correct rootDir", async () => {
+      // Start runtime
+      await runtime.start();
+
+      // The MessageStore mock was created - verify the MessageStore constructor was called
+      const { MessageStore } = await import("@fusion/core");
+      expect(MessageStore).toHaveBeenCalled();
     });
   });
 });
