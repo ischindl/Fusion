@@ -145,7 +145,7 @@ export function SettingsModal({
   const [memoryDirty, setMemoryDirty] = useState(false);
 
   // Global concurrency state
-  const [globalMaxConcurrent, setGlobalMaxConcurrent] = useState<number>(4);
+  const [globalMaxConcurrent, setGlobalMaxConcurrent] = useState<number | undefined>(4);
 
   // Import/Export state
   const [importDialogOpen, setImportDialogOpen] = useState(false);
@@ -558,7 +558,7 @@ export function SettingsModal({
       await Promise.all([
         Object.keys(globalPatch).length > 0 ? updateGlobalSettings(globalPatch) : Promise.resolve(),
         Object.keys(projectPatch).length > 0 ? updateSettings(projectPatch, projectId) : Promise.resolve(),
-        updateGlobalConcurrency({ globalMaxConcurrent }),
+        updateGlobalConcurrency({ globalMaxConcurrent: globalMaxConcurrent ?? 4 }),
       ]);
 
       addToast("Settings saved", "success");
@@ -1320,8 +1320,11 @@ export function SettingsModal({
                 type="number"
                 min={1}
                 max={50}
-                value={globalMaxConcurrent}
-                onChange={(e) => setGlobalMaxConcurrent(Number(e.target.value))}
+                value={globalMaxConcurrent ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setGlobalMaxConcurrent(val === "" ? undefined : Number(val));
+                }}
               />
               <small className="form-text text-muted">Maximum concurrent agents across all projects</small>
             </div>
@@ -1332,10 +1335,11 @@ export function SettingsModal({
                 type="number"
                 min={1}
                 max={10}
-                value={form.maxConcurrent}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, maxConcurrent: Number(e.target.value) }))
-                }
+                value={form.maxConcurrent ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setForm((f) => ({ ...f, maxConcurrent: val === "" ? undefined : Number(val) }));
+                }}
               />
             </div>
             <div className="form-group">
@@ -1345,10 +1349,11 @@ export function SettingsModal({
                 type="number"
                 min={5000}
                 step={1000}
-                value={form.pollIntervalMs}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, pollIntervalMs: Number(e.target.value) }))
-                }
+                value={form.pollIntervalMs ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setForm((f) => ({ ...f, pollIntervalMs: val === "" ? undefined : Number(val) }));
+                }}
               />
             </div>
             <div className="form-group">
@@ -1453,10 +1458,11 @@ export function SettingsModal({
                 type="number"
                 min={1}
                 max={4}
-                value={form.maxParallelSteps ?? 2}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, maxParallelSteps: Number(e.target.value) }))
-                }
+                value={form.maxParallelSteps ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setForm((f) => ({ ...f, maxParallelSteps: val === "" ? undefined : Number(val) }));
+                }}
                 disabled={!form.runStepsInNewSessions}
               />
               <small>Maximum number of steps to run in parallel when file scopes don&apos;t overlap (1-4)</small>
@@ -1475,10 +1481,11 @@ export function SettingsModal({
                 type="number"
                 min={1}
                 max={20}
-                value={form.maxWorktrees}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, maxWorktrees: Number(e.target.value) }))
-                }
+                value={form.maxWorktrees ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setForm((f) => ({ ...f, maxWorktrees: val === "" ? undefined : Number(val) }));
+                }}
               />
               <small>Limits total git worktrees including in-review tasks</small>
             </div>
@@ -1893,10 +1900,11 @@ export function SettingsModal({
                 type="number"
                 min={1}
                 max={100}
-                value={form.autoBackupRetention || 7}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, autoBackupRetention: Number(e.target.value) }))
-                }
+                value={form.autoBackupRetention ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setForm((f) => ({ ...f, autoBackupRetention: val === "" ? undefined : Number(val) }));
+                }}
                 disabled={!form.autoBackupEnabled}
               />
               <small>Number of backup files to keep (oldest are deleted first). Range: 1-100.</small>

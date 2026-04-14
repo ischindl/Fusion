@@ -245,6 +245,68 @@ describe("SettingsModal", () => {
     });
   });
 
+  describe("Number input clearing", () => {
+    it("allows clearing maxConcurrent without leaving a stuck zero", async () => {
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      // Open Scheduling section
+      fireEvent.click(screen.getByText("Scheduling"));
+
+      const input = screen.getByLabelText("Max Concurrent Tasks") as HTMLInputElement;
+      expect(input).toBeDefined();
+
+      // Clear the input - the input should be empty, not show "0"
+      await userEvent.clear(input);
+      expect(input.value).toBe("");
+    });
+
+    it("allows clearing globalMaxConcurrent without leaving a stuck zero", async () => {
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      // Open Scheduling section
+      fireEvent.click(screen.getByText("Scheduling"));
+
+      const input = screen.getByLabelText("Global Max Concurrent") as HTMLInputElement;
+      expect(input).toBeDefined();
+
+      // Clear the input - the input should be empty, not show "0"
+      await userEvent.clear(input);
+      expect(input.value).toBe("");
+    });
+
+    it("allows clearing pollIntervalMs without leaving a stuck zero", async () => {
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      // Open Scheduling section
+      fireEvent.click(screen.getByText("Scheduling"));
+
+      const input = screen.getByLabelText("Poll Interval (ms)") as HTMLInputElement;
+      expect(input).toBeDefined();
+
+      // Clear the input - the input should be empty, not show "0"
+      await userEvent.clear(input);
+      expect(input.value).toBe("");
+    });
+
+    it("allows clearing maxWorktrees without leaving a stuck zero", async () => {
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      // Open Worktrees section
+      fireEvent.click(screen.getByText("Worktrees"));
+
+      const input = screen.getByLabelText("Max Worktrees") as HTMLInputElement;
+      expect(input).toBeDefined();
+
+      // Clear the input - the input should be empty, not show "0"
+      await userEvent.clear(input);
+      expect(input.value).toBe("");
+    });
+  });
+
   describe("Memory section", () => {
     it("renders the Memory section in the sidebar", async () => {
       renderModal();
