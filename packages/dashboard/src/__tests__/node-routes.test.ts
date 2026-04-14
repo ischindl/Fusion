@@ -16,6 +16,9 @@ const mockUpdateProject = vi.fn();
 const mockAssignProjectToNode = vi.fn();
 const mockUnassignProjectFromNode = vi.fn();
 const mockGetMeshState = vi.fn();
+const mockGetNodeVersionInfo = vi.fn();
+const mockSyncPlugins = vi.fn();
+const mockCheckVersionCompatibility = vi.fn();
 
 vi.mock("@fusion/core", async () => {
   const actual = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
@@ -34,6 +37,9 @@ vi.mock("@fusion/core", async () => {
       assignProjectToNode: mockAssignProjectToNode,
       unassignProjectFromNode: mockUnassignProjectFromNode,
       getMeshState: mockGetMeshState,
+      getNodeVersionInfo: mockGetNodeVersionInfo,
+      syncPlugins: mockSyncPlugins,
+      checkVersionCompatibility: mockCheckVersionCompatibility,
     })),
   };
 });
@@ -136,6 +142,21 @@ describe("Node routes", () => {
       lastSeen: "2026-01-01T00:00:00.000Z",
       connectedAt: "2026-01-01T00:00:00.000Z",
       knownPeers: [],
+    });
+    mockGetNodeVersionInfo.mockResolvedValue(undefined);
+    mockSyncPlugins.mockResolvedValue({
+      localNodeId: "node_local",
+      remoteNodeId: "node_remote",
+      plugins: [],
+      comparedAt: "2026-01-01T00:00:00.000Z",
+      isCompatible: true,
+      summary: "No plugins to compare",
+    });
+    mockCheckVersionCompatibility.mockReturnValue({
+      localVersion: "1.0.0",
+      remoteVersion: "1.0.0",
+      status: "compatible",
+      message: "Versions match",
     });
   });
 
@@ -410,5 +431,170 @@ describe("Node routes", () => {
     expect(res.status).toBe(200);
     expect(mockUnassignProjectFromNode).toHaveBeenCalledWith("proj_123");
     expect(res.body).not.toHaveProperty("nodeId");
+  });
+
+  // ── Node Version Routes ────────────────────────────────────────────────
+
+  describe("GET /api/nodes/:id/version", () => {
+    it("returns version info when available", async () => {
+      const versionInfo = {
+        appVersion: "1.2.3",
+        pluginVersions: { "my-plugin": "0.1.0" },
+        lastSyncedAt: "2026-01-01T00:00:00.000Z",
+      };
+      mockGetNode.mockResolvedValue(makeNode({ id: "node_1", versionInfo }));
+
+      const res = await request(app, "GET", "/api/nodes/node_1/version");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(versionInfo);
+    });
+
+    it("returns null when version info is absent", async () => {
+      mockGetNode.mockResolvedValue(makeNode({ id: "node_2", type: "remote" }));
+      mockGetNodeVersionInfo.mockResolvedValue(undefined);
+
+      const res = await request(app, "GET", "/api/nodes/node_2/version");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toBeNull();
+    });
+
+    it("returns 404 when node is missing", async () => {
+      mockGetNode.mockResolvedValue(undefined);
+
+      const res = await request(app, "GET", "/api/nodes/missing/version");
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/nodes/:id/sync-plugins", () => {
+    it("returns 200 for remote node when local node exists", async () => {
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      const localNode = makeNode({ id: "node_local", name: "local", type: "local" });
+      const syncResult = {
+        localNodeId: "node_local",
+        remoteNodeId: "node_remote",
+        plugins: [],
+        comparedAt: "2026-01-01T00:00:00.000Z",
+        isCompatible: true,
+        summary: "No plugins to compare",
+      };
+
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([localNode, remoteNode]);
+      mockSyncPlugins.mockResolvedValue(syncResult);
+
+      const res = await request(app, "POST", "/api/nodes/node_remote/sync-plugins");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(syncResult);
+      expect(mockSyncPlugins).toHaveBeenCalledWith("node_local", "node_remote");
+    });
+
+    it("returns 400 when target node is local", async () => {
+      const localNode = makeNode({ id: "node_local", name: "local", type: "local" });
+      mockGetNode.mockResolvedValue(localNode);
+
+      const res = await request(app, "POST", "/api/nodes/node_local/sync-plugins");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Cannot sync plugins to a local node - sync-plugins is for remote nodes only" });
+    });
+
+    it("returns 400 when no local node exists", async () => {
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([remoteNode]); // No local node
+
+      const res = await request(app, "POST", "/api/nodes/node_remote/sync-plugins");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Local node not registered - cannot perform sync" });
+    });
+
+    it("returns 404 when target node is missing", async () => {
+      mockGetNode.mockResolvedValue(undefined);
+
+      const res = await request(app, "POST", "/api/nodes/missing/sync-plugins");
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("GET /api/nodes/:id/compatibility", () => {
+    it("returns 200 when both local and target versions are available", async () => {
+      const localNode = makeNode({ id: "node_local", name: "local", type: "local" });
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      const compatibilityResult = {
+        localVersion: "1.0.0",
+        remoteVersion: "1.1.0",
+        status: "minor-difference",
+        message: "Minor version difference: local 1.0.0 vs remote 1.1.0",
+      };
+
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([localNode, remoteNode]);
+      mockGetNodeVersionInfo
+        .mockResolvedValueOnce({ appVersion: "1.0.0", pluginVersions: {}, lastSyncedAt: "2026-01-01T00:00:00.000Z" })
+        .mockResolvedValueOnce({ appVersion: "1.1.0", pluginVersions: {}, lastSyncedAt: "2026-01-01T00:00:00.000Z" });
+      mockCheckVersionCompatibility.mockReturnValue(compatibilityResult);
+
+      const res = await request(app, "GET", "/api/nodes/node_remote/compatibility");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(compatibilityResult);
+      expect(mockCheckVersionCompatibility).toHaveBeenCalledWith("1.0.0", "1.1.0");
+    });
+
+    it("returns 400 when local node is missing", async () => {
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([remoteNode]); // No local node
+
+      const res = await request(app, "GET", "/api/nodes/node_remote/compatibility");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Local node not registered - cannot check compatibility" });
+    });
+
+    it("returns 400 when local version info is missing", async () => {
+      const localNode = makeNode({ id: "node_local", name: "local", type: "local" });
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([localNode, remoteNode]);
+      mockGetNodeVersionInfo
+        .mockResolvedValueOnce(undefined) // No version info for local
+        .mockResolvedValueOnce({ appVersion: "1.1.0", pluginVersions: {}, lastSyncedAt: "2026-01-01T00:00:00.000Z" });
+
+      const res = await request(app, "GET", "/api/nodes/node_remote/compatibility");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Local node has no version info yet" });
+    });
+
+    it("returns 400 when target version info is missing", async () => {
+      const localNode = makeNode({ id: "node_local", name: "local", type: "local" });
+      const remoteNode = makeNode({ id: "node_remote", name: "remote", type: "remote", url: "http://remote:3001" });
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockListNodes.mockResolvedValue([localNode, remoteNode]);
+      mockGetNodeVersionInfo
+        .mockResolvedValueOnce({ appVersion: "1.0.0", pluginVersions: {}, lastSyncedAt: "2026-01-01T00:00:00.000Z" })
+        .mockResolvedValueOnce(undefined); // No version info for remote
+
+      const res = await request(app, "GET", "/api/nodes/node_remote/compatibility");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "Target node has no version info yet" });
+    });
+
+    it("returns 404 when target node is missing", async () => {
+      mockGetNode.mockResolvedValue(undefined);
+
+      const res = await request(app, "GET", "/api/nodes/missing/compatibility");
+
+      expect(res.status).toBe(404);
+    });
   });
 });

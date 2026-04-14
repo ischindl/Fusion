@@ -13103,6 +13103,135 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     }
   });
 
+  /**
+   * GET /api/nodes/:id/version
+   * Get version information for a node.
+   * Returns NodeVersionInfo when present, null when no version info has been stored yet.
+   */
+  router.get("/nodes/:id/version", async (req, res) => {
+    try {
+      const { CentralCore } = await import("@fusion/core");
+      const central = new CentralCore();
+      await central.init();
+
+      const node = await central.getNode(req.params.id);
+      await central.close();
+
+      if (!node) {
+        throw notFound("Node not found");
+      }
+
+      // Return versionInfo if present, null if not yet stored
+      res.json(node.versionInfo ?? null);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  /**
+   * POST /api/nodes/:id/sync-plugins
+   * Compare plugin versions between the local node and a remote node.
+   * Returns PluginSyncResult with recommendations for each plugin.
+   */
+  router.post("/nodes/:id/sync-plugins", async (req, res) => {
+    try {
+      const { CentralCore } = await import("@fusion/core");
+      const central = new CentralCore();
+      await central.init();
+
+      // Validate target node exists
+      const targetNode = await central.getNode(req.params.id);
+      if (!targetNode) {
+        await central.close();
+        throw notFound("Node not found");
+      }
+
+      // Reject local target nodes - sync-plugins is for remote nodes only
+      if (targetNode.type === "local") {
+        await central.close();
+        throw badRequest("Cannot sync plugins to a local node - sync-plugins is for remote nodes only");
+      }
+
+      // Find the local node
+      const nodes = await central.listNodes();
+      const localNode = nodes.find((n) => n.type === "local");
+      if (!localNode) {
+        await central.close();
+        throw badRequest("Local node not registered - cannot perform sync");
+      }
+
+      // Perform plugin sync comparison
+      const result = await central.syncPlugins(localNode.id, targetNode.id);
+      await central.close();
+
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  /**
+   * GET /api/nodes/:id/compatibility
+   * Check version compatibility between the local node and a target node.
+   * Returns VersionCompatibilityResult based on app version comparison.
+   */
+  router.get("/nodes/:id/compatibility", async (req, res) => {
+    try {
+      const { CentralCore } = await import("@fusion/core");
+      const central = new CentralCore();
+      await central.init();
+
+      // Validate target node exists
+      const targetNode = await central.getNode(req.params.id);
+      if (!targetNode) {
+        await central.close();
+        throw notFound("Node not found");
+      }
+
+      // Find the local node
+      const nodes = await central.listNodes();
+      const localNode = nodes.find((n) => n.type === "local");
+      if (!localNode) {
+        await central.close();
+        throw badRequest("Local node not registered - cannot check compatibility");
+      }
+
+      // Get version info for both nodes
+      const localVersionInfo = await central.getNodeVersionInfo(localNode.id);
+      const targetVersionInfo = await central.getNodeVersionInfo(targetNode.id);
+
+      // Validate both have version info
+      if (!localVersionInfo) {
+        await central.close();
+        throw badRequest("Local node has no version info yet");
+      }
+      if (!targetVersionInfo) {
+        await central.close();
+        throw badRequest("Target node has no version info yet");
+      }
+
+      // Check compatibility using version strings
+      const result = central.checkVersionCompatibility(
+        localVersionInfo.appVersion,
+        targetVersionInfo.appVersion,
+      );
+      await central.close();
+
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
   // ── Mesh Topology Routes ────────────────────────────────────────────────
 
   /**
