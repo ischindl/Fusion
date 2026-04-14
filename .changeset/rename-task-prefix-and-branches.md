@@ -1,7 +1,4 @@
 ---
-"@fusion/core": minor
-"@fusion/dashboard": minor
-"@fusion/engine": minor
 "@gsxdsm/fusion": minor
 ---
 
