@@ -342,11 +342,34 @@ export class TriageProcessor {
     if (this.running) return;
     this.running = true;
 
+    // Clear stale "specifying" statuses left by a prior crash/restart.
+    // No triage agent is actually running at startup, so any task still
+    // marked as "specifying" is a leftover from a previous engine lifecycle.
+    // Without this, stale statuses consume concurrency slots and block
+    // new triage work indefinitely.
+    this.clearStaleSpecifyingStatuses().catch((err) => {
+      triageLog.error("Failed to clear stale specifying statuses:", err);
+    });
+
     const interval = this.options.pollIntervalMs ?? 10_000;
     this.activePollMs = interval;
     this.pollInterval = setInterval(() => this.poll(), interval);
     this.poll();
     triageLog.log("Processor started");
+  }
+
+  private async clearStaleSpecifyingStatuses(): Promise<void> {
+    const tasks = await this.store.listTasks({ column: "triage", slim: true });
+    const stale = tasks.filter(
+      (t) => t.status === "specifying" && !this.processing.has(t.id),
+    );
+    for (const t of stale) {
+      triageLog.log(`Startup sweep: clearing stale 'specifying' status on ${t.id}`);
+      await this.store.updateTask(t.id, { status: null });
+    }
+    if (stale.length > 0) {
+      triageLog.log(`Startup sweep: cleared ${stale.length} stale specifying task(s)`);
+    }
   }
 
   stop(): void {
