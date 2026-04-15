@@ -52,8 +52,8 @@ vi.mock("../../api", () => ({
   })),
   testNtfyNotification: vi.fn(() => Promise.resolve({ success: true })),
   // Global concurrency mocks
-  fetchGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentUsage: 0 })),
-  updateGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentUsage: 0 })),
+  fetchGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} })),
+  updateGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} })),
   // Plugin API mocks
   fetchPlugins: vi.fn(() => Promise.resolve([])),
   installPlugin: vi.fn(() => Promise.resolve({ id: "test-plugin", name: "Test Plugin", version: "1.0.0", state: "started" as const, enabled: true, settings: {}, settingsSchema: {} })),
@@ -66,7 +66,7 @@ vi.mock("../../api", () => ({
   fetchBackups: vi.fn(() => Promise.resolve({ backups: [], totalSize: 0 })),
   createBackup: vi.fn(() => Promise.resolve({ success: true })),
   exportSettings: vi.fn(() => Promise.resolve({ version: 1, exportedAt: new Date().toISOString(), global: undefined, project: {} })),
-  importSettings: vi.fn(() => Promise.resolve({ success: true })),
+  importSettings: vi.fn(() => Promise.resolve({ success: true, globalCount: 0, projectCount: 0 })),
   fetchMemory: vi.fn(() => Promise.resolve({ content: "" })),
   saveMemory: vi.fn(() => Promise.resolve({ success: true })),
 }));
@@ -771,7 +771,9 @@ describe("SettingsModal", () => {
   it("loads and saves the central global concurrency limit", async () => {
     (fetchGlobalConcurrency as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       globalMaxConcurrent: 8,
-      currentUsage: 3,
+      currentlyActive: 3,
+      queuedCount: 0,
+      projectsActive: {},
     });
 
     render(<SettingsModal onClose={onClose} addToast={addToast} initialSection="scheduling" />);

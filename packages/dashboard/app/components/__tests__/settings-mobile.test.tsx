@@ -46,12 +46,12 @@ vi.mock("../../api", () => ({
   testNtfyNotification: vi.fn(() => Promise.resolve({ success: true })),
   fetchBackups: vi.fn(() => Promise.resolve({ count: 0, totalSize: 0, backups: [] })),
   createBackup: vi.fn(() => Promise.resolve({ success: true })),
-  exportSettings: vi.fn(() => Promise.resolve({ success: true, data: {} })),
-  importSettings: vi.fn(() => Promise.resolve({ success: true })),
-  fetchMemory: vi.fn(() => Promise.resolve({ memory: "" })),
+  exportSettings: vi.fn(() => Promise.resolve({ version: 1, exportedAt: new Date().toISOString(), global: undefined, project: {} })),
+  importSettings: vi.fn(() => Promise.resolve({ success: true, globalCount: 0, projectCount: 0 })),
+  fetchMemory: vi.fn(() => Promise.resolve({ content: "" })),
   saveMemory: vi.fn(() => Promise.resolve({ success: true })),
-  fetchGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentUsage: 0 })),
-  updateGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentUsage: 0 })),
+  fetchGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} })),
+  updateGlobalConcurrency: vi.fn(() => Promise.resolve({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} })),
   fetchMemoryBackendStatus: vi.fn(() => Promise.resolve({
     currentBackend: "file",
     capabilities: {

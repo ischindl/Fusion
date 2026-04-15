@@ -85,8 +85,9 @@ describe("SettingsModal", () => {
     mockFetchBackups.mockResolvedValue({ backups: [], totalSize: 0 });
     mockFetchMemory.mockResolvedValue({ content: "## Existing memory\n- Learned pattern" });
     mockSaveMemory.mockResolvedValue({ success: true });
-    mockFetchGlobalConcurrency.mockResolvedValue({ globalMaxConcurrent: 4, currentUsage: 0 });
-    mockUpdateGlobalConcurrency.mockResolvedValue({ globalMaxConcurrent: 4, currentUsage: 0 });
+    mockImportSettings.mockResolvedValue({ success: true, globalCount: 0, projectCount: 0 });
+    mockFetchGlobalConcurrency.mockResolvedValue({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} });
+    mockUpdateGlobalConcurrency.mockResolvedValue({ globalMaxConcurrent: 4, currentlyActive: 0, queuedCount: 0, projectsActive: {} });
     mockFetchMemoryBackendStatus.mockResolvedValue({
       currentBackend: "file",
       capabilities: {

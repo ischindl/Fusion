@@ -22,7 +22,7 @@ vi.mock("../../api", async (importOriginal) => {
   return {
     ...actual,
     fetchTasks: vi.fn(() => Promise.resolve([])),
-    fetchConfig: vi.fn(() => Promise.resolve({ maxConcurrent: 2 })),
+    fetchConfig: vi.fn(() => Promise.resolve({ maxConcurrent: 2, rootDir: "/workspace/project" })),
     fetchSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
     updateSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
     fetchGlobalSettings: vi.fn(() => Promise.resolve({})),
