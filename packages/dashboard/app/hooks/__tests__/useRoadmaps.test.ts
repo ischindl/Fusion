@@ -16,6 +16,9 @@ vi.mock("../../api", () => ({
   createRoadmapFeature: vi.fn(),
   updateRoadmapFeature: vi.fn(),
   deleteRoadmapFeature: vi.fn(),
+  reorderRoadmapMilestones: vi.fn(),
+  reorderRoadmapFeatures: vi.fn(),
+  moveRoadmapFeature: vi.fn(),
 }));
 
 const mockRoadmaps = [
@@ -466,5 +469,215 @@ describe("useRoadmaps", () => {
 
     expect(api.fetchRoadmaps).toHaveBeenCalled();
     expect(api.fetchRoadmap).toHaveBeenCalledWith("RM-001", undefined);
+  });
+
+  describe("reorderMilestones", () => {
+    it("reorders milestones and refreshes", async () => {
+      (api.reorderRoadmapMilestones as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      // Reorder milestones: swap RMS-001 and RMS-002
+      await result.current.reorderMilestones("RM-001", ["RMS-002", "RMS-001"]);
+
+      expect(api.reorderRoadmapMilestones).toHaveBeenCalledWith(
+        "RM-001",
+        ["RMS-002", "RMS-001"],
+        undefined
+      );
+      // Should refresh to get server state
+      expect(api.fetchRoadmap).toHaveBeenCalled();
+    });
+
+    it("rolls back on failure and calls onError", async () => {
+      const reorderError = new Error("Reorder failed");
+      (api.reorderRoadmapMilestones as ReturnType<typeof vi.fn>).mockRejectedValue(reorderError);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      const initialMilestones = result.current.milestones;
+      const onError = vi.fn();
+
+      try {
+        await result.current.reorderMilestones("RM-001", ["RMS-002", "RMS-001"], { onError });
+      } catch {
+        // Expected to throw
+      }
+
+      expect(onError).toHaveBeenCalledWith(reorderError);
+      // State should be rolled back
+      expect(result.current.milestones).toEqual(initialMilestones);
+    });
+
+    it("sends correct payload shape for reorder", async () => {
+      (api.reorderRoadmapMilestones as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      await result.current.reorderMilestones("RM-001", ["RMS-001", "RMS-002"]);
+
+      // Verify the payload shape
+      expect(api.reorderRoadmapMilestones).toHaveBeenCalledTimes(1);
+      const call = (api.reorderRoadmapMilestones as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(call[0]).toBe("RM-001");
+      expect(Array.isArray(call[1])).toBe(true);
+      expect(call[1]).toHaveLength(2);
+    });
+  });
+
+  describe("reorderFeatures", () => {
+    it("reorders features within a milestone", async () => {
+      (api.reorderRoadmapFeatures as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      // Reorder features in RMS-001: already has RF-001 at orderIndex 0
+      await result.current.reorderFeatures("RMS-001", ["RF-001"]);
+
+      expect(api.reorderRoadmapFeatures).toHaveBeenCalledWith(
+        "RMS-001",
+        ["RF-001"],
+        undefined
+      );
+      expect(api.fetchRoadmap).toHaveBeenCalled();
+    });
+
+    it("rolls back on failure", async () => {
+      const reorderError = new Error("Feature reorder failed");
+      (api.reorderRoadmapFeatures as ReturnType<typeof vi.fn>).mockRejectedValue(reorderError);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      const initialFeatures = result.current.featuresByMilestoneId["RMS-001"];
+      const onError = vi.fn();
+
+      try {
+        await result.current.reorderFeatures("RMS-001", ["RF-001"], { onError });
+      } catch {
+        // Expected to throw
+      }
+
+      expect(onError).toHaveBeenCalledWith(reorderError);
+      expect(result.current.featuresByMilestoneId["RMS-001"]).toEqual(initialFeatures);
+    });
+  });
+
+  describe("moveFeature", () => {
+    it("moves a feature to a different milestone", async () => {
+      (api.moveRoadmapFeature as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      // Move RF-001 from RMS-001 to RMS-002 at index 0
+      await result.current.moveFeature("RF-001", "RMS-002", 0);
+
+      expect(api.moveRoadmapFeature).toHaveBeenCalledWith(
+        "RF-001",
+        "RMS-002",
+        0,
+        undefined
+      );
+      expect(api.fetchRoadmap).toHaveBeenCalled();
+    });
+
+    it("rolls back on failure", async () => {
+      const moveError = new Error("Move failed");
+      (api.moveRoadmapFeature as ReturnType<typeof vi.fn>).mockRejectedValue(moveError);
+
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      const initialFeaturesByMilestoneId = result.current.featuresByMilestoneId;
+      const onError = vi.fn();
+
+      try {
+        await result.current.moveFeature("RF-001", "RMS-002", 0, { onError });
+      } catch {
+        // Expected to throw
+      }
+
+      expect(onError).toHaveBeenCalledWith(moveError);
+      expect(result.current.featuresByMilestoneId).toEqual(initialFeaturesByMilestoneId);
+    });
+
+    it("throws when feature not found", async () => {
+      const { result } = renderHook(() => useRoadmaps());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      result.current.selectRoadmap("RM-001");
+      await waitFor(() => {
+        expect(result.current.selectedRoadmapId).toBe("RM-001");
+      });
+
+      const onError = vi.fn();
+      await expect(
+        result.current.moveFeature("NONEXISTENT", "RMS-002", 0, { onError })
+      ).rejects.toThrow("Feature not found");
+    });
   });
 });

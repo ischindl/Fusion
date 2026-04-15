@@ -4191,4 +4191,117 @@ describe("Settings API wrappers", () => {
       await expect(fetchGlobalSettings()).rejects.toThrow("Settings file corrupted");
     });
   });
+
+  describe("roadmap reorder APIs", () => {
+    it("reorderRoadmapMilestones sends POST with orderedMilestoneIds", async () => {
+      const { reorderRoadmapMilestones } = await import("./api");
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+        headers: {
+          get: () => null,
+        },
+        text: () => Promise.resolve(""),
+      } as unknown as Response);
+
+      await reorderRoadmapMilestones("RM-001", ["RMS-002", "RMS-001", "RMS-003"]);
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe("/api/roadmaps/RM-001/milestones/reorder");
+      expect(options.method).toBe("POST");
+      expect(JSON.parse(options.body as string)).toEqual({
+        orderedMilestoneIds: ["RMS-002", "RMS-001", "RMS-003"],
+      });
+    });
+
+    it("reorderRoadmapMilestones includes projectId when provided", async () => {
+      const { reorderRoadmapMilestones } = await import("./api");
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+        headers: {
+          get: () => null,
+        },
+        text: () => Promise.resolve(""),
+      } as unknown as Response);
+
+      await reorderRoadmapMilestones("RM-001", ["RMS-001", "RMS-002"], "proj_abc");
+
+      const [url] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe("/api/roadmaps/RM-001/milestones/reorder?projectId=proj_abc");
+    });
+
+    it("reorderRoadmapFeatures sends POST with orderedFeatureIds", async () => {
+      const { reorderRoadmapFeatures } = await import("./api");
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+        headers: {
+          get: () => null,
+        },
+        text: () => Promise.resolve(""),
+      } as unknown as Response);
+
+      await reorderRoadmapFeatures("RMS-001", ["RF-002", "RF-001"]);
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe("/api/roadmaps/milestones/RMS-001/features/reorder");
+      expect(options.method).toBe("POST");
+      expect(JSON.parse(options.body as string)).toEqual({
+        orderedFeatureIds: ["RF-002", "RF-001"],
+      });
+    });
+
+    it("moveRoadmapFeature sends POST with targetMilestoneId and targetIndex", async () => {
+      const { moveRoadmapFeature } = await import("./api");
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+        headers: {
+          get: () => null,
+        },
+        text: () => Promise.resolve(""),
+      } as unknown as Response);
+
+      await moveRoadmapFeature("RF-001", "RMS-002", 2);
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe("/api/roadmaps/features/RF-001/move");
+      expect(options.method).toBe("POST");
+      expect(JSON.parse(options.body as string)).toEqual({
+        targetMilestoneId: "RMS-002",
+        targetIndex: 2,
+      });
+    });
+
+    it("moveRoadmapFeature includes projectId when provided", async () => {
+      const { moveRoadmapFeature } = await import("./api");
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        statusText: "No Content",
+        headers: {
+          get: () => null,
+        },
+        text: () => Promise.resolve(""),
+      } as unknown as Response);
+
+      await moveRoadmapFeature("RF-001", "RMS-002", 0, "proj_xyz");
+
+      const [url] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe("/api/roadmaps/features/RF-001/move?projectId=proj_xyz");
+    });
+  });
 });

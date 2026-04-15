@@ -4537,6 +4537,35 @@ export function deleteRoadmapFeature(featureId: string, projectId?: string): Pro
   });
 }
 
+/** Reorder milestones within a roadmap */
+export function reorderRoadmapMilestones(roadmapId: string, orderedMilestoneIds: string[], projectId?: string): Promise<void> {
+  return api<void>(withProjectId(`/roadmaps/${encodeURIComponent(roadmapId)}/milestones/reorder`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ orderedMilestoneIds }),
+  });
+}
+
+/** Reorder features within a milestone */
+export function reorderRoadmapFeatures(milestoneId: string, orderedFeatureIds: string[], projectId?: string): Promise<void> {
+  return api<void>(withProjectId(`/roadmaps/milestones/${encodeURIComponent(milestoneId)}/features/reorder`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ orderedFeatureIds }),
+  });
+}
+
+/** Move a feature to a different milestone or position */
+export function moveRoadmapFeature(
+  featureId: string,
+  targetMilestoneId: string,
+  targetIndex: number,
+  projectId?: string
+): Promise<void> {
+  return api<void>(withProjectId(`/roadmaps/features/${encodeURIComponent(featureId)}/move`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ targetMilestoneId, targetIndex }),
+  });
+}
+
 // ── AI Sessions (Background Tasks) ─────────────────────────────────────────
 
 export interface AiSessionSummary {

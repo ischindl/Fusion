@@ -2409,6 +2409,312 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   // Models
   registerModelsRoute(router, options?.modelRegistry, store);
 
+  // ── Roadmap Routes ─────────────────────────────────────────────────
+
+  // List all roadmaps
+  router.get("/roadmaps", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const roadmaps = roadmapStore.listRoadmaps();
+      res.json(roadmaps);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to list roadmaps");
+    }
+  });
+
+  // Create a roadmap
+  router.post("/roadmaps", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { title, description } = req.body as { title: string; description?: string };
+
+      if (!title || typeof title !== "string" || !title.trim()) {
+        throw badRequest("title is required");
+      }
+
+      const roadmap = roadmapStore.createRoadmap({ title: title.trim(), description });
+      res.status(201).json(roadmap);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to create roadmap");
+    }
+  });
+
+  // Get a roadmap with full hierarchy
+  router.get("/roadmaps/:roadmapId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { roadmapId } = req.params;
+
+      const roadmap = roadmapStore.getRoadmapWithHierarchy(roadmapId);
+      if (!roadmap) {
+        throw notFound(`Roadmap ${roadmapId} not found`);
+      }
+
+      res.json(roadmap);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to get roadmap");
+    }
+  });
+
+  // Update a roadmap
+  router.patch("/roadmaps/:roadmapId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { roadmapId } = req.params;
+      const { title, description } = req.body as { title?: string; description?: string };
+
+      const roadmap = roadmapStore.updateRoadmap(roadmapId, { title, description });
+      res.json(roadmap);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to update roadmap");
+    }
+  });
+
+  // Delete a roadmap
+  router.delete("/roadmaps/:roadmapId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { roadmapId } = req.params;
+
+      roadmapStore.deleteRoadmap(roadmapId);
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to delete roadmap");
+    }
+  });
+
+  // Create a milestone
+  router.post("/roadmaps/:roadmapId/milestones", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { roadmapId } = req.params;
+      const { title, description } = req.body as { title: string; description?: string };
+
+      if (!title || typeof title !== "string" || !title.trim()) {
+        throw badRequest("title is required");
+      }
+
+      const milestone = roadmapStore.createMilestone(roadmapId, { title: title.trim(), description });
+      res.status(201).json(milestone);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to create milestone");
+    }
+  });
+
+  // Reorder milestones
+  router.post("/roadmaps/:roadmapId/milestones/reorder", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { roadmapId } = req.params;
+      const { orderedMilestoneIds } = req.body as { orderedMilestoneIds: string[] };
+
+      if (!Array.isArray(orderedMilestoneIds)) {
+        throw badRequest("orderedMilestoneIds must be an array");
+      }
+
+      roadmapStore.reorderMilestones({ roadmapId, orderedMilestoneIds });
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to reorder milestones");
+    }
+  });
+
+  // Update a milestone
+  router.patch("/roadmaps/milestones/:milestoneId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { milestoneId } = req.params;
+      const { title, description } = req.body as { title?: string; description?: string };
+
+      const milestone = roadmapStore.updateMilestone(milestoneId, { title, description });
+      res.json(milestone);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to update milestone");
+    }
+  });
+
+  // Delete a milestone
+  router.delete("/roadmaps/milestones/:milestoneId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { milestoneId } = req.params;
+
+      roadmapStore.deleteMilestone(milestoneId);
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to delete milestone");
+    }
+  });
+
+  // Create a feature
+  router.post("/roadmaps/milestones/:milestoneId/features", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { milestoneId } = req.params;
+      const { title, description } = req.body as { title: string; description?: string };
+
+      if (!title || typeof title !== "string" || !title.trim()) {
+        throw badRequest("title is required");
+      }
+
+      const feature = roadmapStore.createFeature(milestoneId, { title: title.trim(), description });
+      res.status(201).json(feature);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to create feature");
+    }
+  });
+
+  // Reorder features within a milestone
+  router.post("/roadmaps/milestones/:milestoneId/features/reorder", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { milestoneId } = req.params;
+      const { orderedFeatureIds } = req.body as { orderedFeatureIds: string[] };
+
+      if (!Array.isArray(orderedFeatureIds)) {
+        throw badRequest("orderedFeatureIds must be an array");
+      }
+
+      // Get the milestone to find the roadmapId
+      const milestone = roadmapStore.getMilestone(milestoneId);
+      if (!milestone) {
+        throw notFound(`Milestone ${milestoneId} not found`);
+      }
+
+      roadmapStore.reorderFeatures({ roadmapId: milestone.roadmapId, milestoneId, orderedFeatureIds });
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to reorder features");
+    }
+  });
+
+  // Update a feature
+  router.patch("/roadmaps/features/:featureId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { featureId } = req.params;
+      const { title, description } = req.body as { title?: string; description?: string };
+
+      const feature = roadmapStore.updateFeature(featureId, { title, description });
+      res.json(feature);
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to update feature");
+    }
+  });
+
+  // Delete a feature
+  router.delete("/roadmaps/features/:featureId", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { featureId } = req.params;
+
+      roadmapStore.deleteFeature(featureId);
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to delete feature");
+    }
+  });
+
+  // Move a feature
+  router.post("/roadmaps/features/:featureId/move", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const roadmapStore = scopedStore.getRoadmapStore();
+      const { featureId } = req.params;
+      const { targetMilestoneId, targetIndex } = req.body as { targetMilestoneId: string; targetIndex: number };
+
+      if (!targetMilestoneId) {
+        throw badRequest("targetMilestoneId is required");
+      }
+      if (typeof targetIndex !== "number") {
+        throw badRequest("targetIndex must be a number");
+      }
+
+      // Get the feature and source milestone
+      const feature = roadmapStore.getFeature(featureId);
+      if (!feature) {
+        throw notFound(`Feature ${featureId} not found`);
+      }
+
+      const fromMilestone = roadmapStore.getMilestone(feature.milestoneId);
+      if (!fromMilestone) {
+        throw notFound(`Source milestone ${feature.milestoneId} not found`);
+      }
+
+      const toMilestone = roadmapStore.getMilestone(targetMilestoneId);
+      if (!toMilestone) {
+        throw notFound(`Target milestone ${targetMilestoneId} not found`);
+      }
+
+      roadmapStore.moveFeature({
+        roadmapId: fromMilestone.roadmapId,
+        featureId,
+        fromMilestoneId: feature.milestoneId,
+        toMilestoneId: targetMilestoneId,
+        targetOrderIndex: targetIndex,
+      });
+
+      res.status(204).send();
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err, "Failed to move feature");
+    }
+  });
+
   // List all tasks
   router.get("/tasks", async (req, res) => {
     try {

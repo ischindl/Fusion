@@ -194,6 +194,30 @@ Roadmaps provide a dedicated planning surface for organizing product development
 - Click the **pencil icon** to edit a feature title inline
 - Click the **trash icon** to delete a feature (requires confirmation)
 
+### Roadmap Drag-and-Drop Ordering
+
+Milestones and features can be reordered using native drag-and-drop:
+
+**Milestone Reordering:**
+- Drag a milestone by its grip handle on the left side of the milestone card
+- Drop it before or after other milestones to reorder
+- The new order is persisted immediately
+
+**Feature Reordering:**
+- Drag a feature by its grip handle on the left side of the feature row
+- Drop before or after other features within the same milestone to reorder
+- The new order is persisted immediately
+
+**Cross-Milestone Moves:**
+- Drag a feature and drop it into a different milestone card
+- The feature is moved to the new milestone at the drop position
+- Empty milestone areas also accept drops (appends to end)
+
+**Visual Feedback:**
+- Dragging items show reduced opacity
+- Drop targets highlight with a blue border
+- Drop position indicators show before/after placement with blue lines
+
 ### Roadmap Actions
 
 - Click a roadmap in the sidebar to view its milestones and features

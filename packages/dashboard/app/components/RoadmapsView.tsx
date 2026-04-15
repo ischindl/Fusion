@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Plus, Pencil, Trash2, Check, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Check, X, GripVertical } from "lucide-react";
 import type { ToastType } from "../hooks/useToast";
 import { useRoadmaps } from "../hooks/useRoadmaps";
 import type {
@@ -17,6 +17,22 @@ import type {
 export interface RoadmapsViewProps {
   projectId?: string;
   addToast: (message: string, type?: ToastType) => void;
+}
+
+// ── Drag State Types ────────────────────────────────────────────────
+
+interface MilestoneDragState {
+  draggingId: string | null;
+  dropTargetId: string | null;
+  dropPosition: "before" | "after" | null;
+}
+
+interface FeatureDragState {
+  draggingId: string | null;
+  draggingMilestoneId: string | null;
+  dropTargetMilestoneId: string | null;
+  dropTargetIndex: number | null;
+  dropPosition: "before" | "after" | null;
 }
 
 // ── Inline Edit State Types ─────────────────────────────────────────
@@ -143,6 +159,25 @@ function MilestoneCard({
   onSaveFeatureEdit,
   projectId,
   addToast,
+  // Milestone drag-and-drop props
+  isMilestoneDragging,
+  isMilestoneDropTarget,
+  milestoneDropPosition,
+  onMilestoneDragStart,
+  onMilestoneDragEnd,
+  onMilestoneDragOver,
+  onMilestoneDrop,
+  onMilestoneDragLeave,
+  // Feature drag-and-drop props
+  isFeatureDragging,
+  isFeatureDropTarget,
+  featureDropIndex,
+  onFeatureDragStart,
+  onFeatureDragEnd,
+  onFeatureDragOver,
+  onFeatureDrop,
+  onFeatureDragLeave,
+  onFeatureDropOnMilestone,
 }: {
   milestone: RoadmapMilestone;
   features: RoadmapFeature[];
@@ -161,6 +196,25 @@ function MilestoneCard({
   onSaveFeatureEdit: (updates: RoadmapFeatureUpdateInput) => void;
   projectId?: string;
   addToast: (message: string, type?: ToastType) => void;
+  // Milestone drag-and-drop props
+  isMilestoneDragging: boolean;
+  isMilestoneDropTarget: boolean;
+  milestoneDropPosition: "before" | "after" | null;
+  onMilestoneDragStart: (milestoneId: string) => void;
+  onMilestoneDragEnd: () => void;
+  onMilestoneDragOver: (milestoneId: string) => void;
+  onMilestoneDrop: (milestoneId: string) => void;
+  onMilestoneDragLeave: (e: React.DragEvent) => void;
+  // Feature drag-and-drop props
+  isFeatureDragging: (featureId: string) => boolean;
+  isFeatureDropTarget: boolean;
+  featureDropIndex: number | null;
+  onFeatureDragStart: (featureId: string, milestoneId: string) => void;
+  onFeatureDragEnd: () => void;
+  onFeatureDragOver: (featureId: string, position: "before" | "after") => void;
+  onFeatureDrop: (featureId: string, targetIndex: number) => void;
+  onFeatureDragLeave: (e: React.DragEvent) => void;
+  onFeatureDropOnMilestone: () => void;
 }) {
   const isEditingMilestone = milestoneEdit?.milestoneId === milestone.id;
 
@@ -181,12 +235,70 @@ function MilestoneCard({
     }
   };
 
+  // Build class names for drag states
+  const milestoneClasses = [
+    "roadmaps-view__milestone",
+    isMilestoneDragging ? "roadmaps-view__milestone--dragging" : "",
+    isMilestoneDropTarget ? "roadmaps-view__milestone--drop-target" : "",
+    isMilestoneDropTarget && milestoneDropPosition === "before" ? "roadmaps-view__milestone--drop-before" : "",
+    isMilestoneDropTarget && milestoneDropPosition === "after" ? "roadmaps-view__milestone--drop-after" : "",
+  ].filter(Boolean).join(" ");
+
+  // Build class names for feature list drop state
+  const featureListClasses = [
+    "roadmaps-view__feature-list",
+    isFeatureDropTarget ? "roadmaps-view__feature-list--drop-target" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <div className="roadmaps-view__milestone">
+    <div
+      className={milestoneClasses}
+      draggable={!isEditingMilestone}
+      onDragStart={(e) => {
+        if (!isEditingMilestone) {
+          onMilestoneDragStart(milestone.id);
+          e.dataTransfer.setData("text/plain", `milestone:${milestone.id}`);
+          e.dataTransfer.effectAllowed = "move";
+        }
+      }}
+      onDragEnd={onMilestoneDragEnd}
+      onDragOver={(e) => {
+        // Only prevent default for milestone drops, not feature drops
+        if (e.dataTransfer.types.includes("text/plain")) {
+          const data = e.dataTransfer.types.includes("text/plain");
+          if (data) {
+            // This is a milestone drag
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            onMilestoneDragOver(milestone.id);
+          }
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        // Check if this is a feature drop or milestone drop
+        const data = e.dataTransfer.getData("text/plain");
+        if (data?.startsWith("feature:")) {
+          // Feature drop - handled by child element
+        } else {
+          onMilestoneDrop(milestone.id);
+        }
+      }}
+      onDragLeave={onMilestoneDragLeave}
+      data-testid={`milestone-card-${milestone.id}`}
+    >
       <div className="roadmaps-view__milestone-header">
         {isEditingMilestone ? (
           <div className="roadmaps-view__inline-edit">
             <div className="roadmaps-view__inline-edit-row">
+              <span
+                className="roadmaps-view__drag-handle"
+                title="Drag to reorder"
+                aria-label="Drag to reorder"
+                data-testid={`milestone-drag-handle-${milestone.id}`}
+              >
+                <GripVertical size={14} />
+              </span>
               <input
                 type="text"
                 className="roadmaps-view__inline-input"
@@ -231,6 +343,14 @@ function MilestoneCard({
         ) : (
           <>
             <div className="roadmaps-view__milestone-title-row">
+              <span
+                className="roadmaps-view__drag-handle"
+                title="Drag to reorder"
+                aria-label="Drag to reorder"
+                data-testid={`milestone-drag-handle-${milestone.id}`}
+              >
+                <GripVertical size={14} />
+              </span>
               <h3 className="roadmaps-view__milestone-title">{milestone.title}</h3>
               <div className="roadmaps-view__milestone-actions">
                 <button
@@ -273,12 +393,33 @@ function MilestoneCard({
         </button>
       </div>
 
-      <div className="roadmaps-view__feature-list">
+      <div
+        className={featureListClasses}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          // Check if this is a feature being dragged
+          const data = e.dataTransfer.getData("text/plain");
+          if (data?.startsWith("feature:")) {
+            onFeatureDropOnMilestone();
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const data = e.dataTransfer.getData("text/plain");
+          if (data?.startsWith("feature:")) {
+            // Drop on empty area of feature list - append to end
+            onFeatureDrop(data.split(":")[1], features.length);
+          }
+        }}
+        onDragLeave={onFeatureDragLeave}
+      >
         {features.length === 0 ? (
           <p className="roadmaps-view__empty-features">No features yet.</p>
         ) : (
-          features.map((feature) => {
+          features.map((feature, index) => {
             const isEditingFeature = featureEdit?.featureId === feature.id;
+            const isFeatureDraggingThis = isFeatureDragging(feature.id);
 
             const handleFeatureTitleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
               if (e.key === "Enter") {
@@ -291,11 +432,71 @@ function MilestoneCard({
               }
             };
 
+            // Build class names for feature drag states
+            const featureClasses = [
+              "roadmaps-view__feature-item",
+              isFeatureDraggingThis ? "roadmaps-view__feature-item--dragging" : "",
+              isFeatureDropTarget && featureDropIndex === index ? "roadmaps-view__feature-item--drop-before" : "",
+              isFeatureDropTarget && featureDropIndex === index + 1 ? "roadmaps-view__feature-item--drop-after" : "",
+            ].filter(Boolean).join(" ");
+
             return (
-              <div key={feature.id} className="roadmaps-view__feature-item">
+              <div
+                key={feature.id}
+                className={featureClasses}
+                draggable={!isEditingFeature}
+                onDragStart={(e) => {
+                  if (!isEditingFeature) {
+                    onFeatureDragStart(feature.id, milestone.id);
+                    e.dataTransfer.setData("text/plain", `feature:${feature.id}`);
+                    e.dataTransfer.effectAllowed = "move";
+                  }
+                }}
+                onDragEnd={onFeatureDragEnd}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = "move";
+                  const data = e.dataTransfer.getData("text/plain");
+                  if (data?.startsWith("feature:")) {
+                    // Calculate position (before or after)
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    const midY = rect.top + rect.height / 2;
+                    const position: "before" | "after" = e.clientY < midY ? "before" : "after";
+                    onFeatureDragOver(feature.id, position);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const data = e.dataTransfer.getData("text/plain");
+                  if (data?.startsWith("feature:")) {
+                    const draggedFeatureId = data.split(":")[1];
+                    // Calculate target index
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    const midY = rect.top + rect.height / 2;
+                    const position: "before" | "after" = e.clientY < midY ? "before" : "after";
+                    let targetIndex = index;
+                    if (position === "after") {
+                      targetIndex = index + 1;
+                    }
+                    onFeatureDrop(draggedFeatureId, targetIndex);
+                  }
+                }}
+                onDragLeave={onFeatureDragLeave}
+                data-testid={`feature-item-${feature.id}`}
+              >
                 {isEditingFeature ? (
                   <div className="roadmaps-view__inline-edit roadmaps-view__inline-edit--compact">
                     <div className="roadmaps-view__inline-edit-row">
+                      <span
+                        className="roadmaps-view__drag-handle roadmaps-view__drag-handle--feature"
+                        title="Drag to reorder"
+                        aria-label="Drag to reorder"
+                        data-testid={`feature-drag-handle-${feature.id}`}
+                      >
+                        <GripVertical size={12} />
+                      </span>
                       <input
                         type="text"
                         className="roadmaps-view__inline-input"
@@ -326,6 +527,14 @@ function MilestoneCard({
                   </div>
                 ) : (
                   <>
+                    <span
+                      className="roadmaps-view__drag-handle roadmaps-view__drag-handle--feature"
+                      title="Drag to reorder"
+                      aria-label="Drag to reorder"
+                      data-testid={`feature-drag-handle-${feature.id}`}
+                    >
+                      <GripVertical size={12} />
+                    </span>
                     <div className="roadmaps-view__feature-content">
                       <span className="roadmaps-view__feature-title">{feature.title}</span>
                       {feature.description && (
@@ -571,6 +780,9 @@ export function RoadmapsView({ projectId, addToast }: RoadmapsViewProps) {
     createFeature,
     updateFeature,
     deleteFeature,
+    reorderMilestones,
+    reorderFeatures,
+    moveFeature,
   } = useRoadmaps({ projectId });
 
   // Inline edit states
@@ -600,6 +812,263 @@ export function RoadmapsView({ projectId, addToast }: RoadmapsViewProps) {
 
   // Mobile sidebar state
   const [mobileSelectedRoadmapId, setMobileSelectedRoadmapId] = useState<string | null>(null);
+
+  // Milestone drag-and-drop state
+  const [milestoneDrag, setMilestoneDrag] = useState<MilestoneDragState>({
+    draggingId: null,
+    dropTargetId: null,
+    dropPosition: null,
+  });
+
+  // Milestone drag handlers
+  const handleMilestoneDragStart = useCallback((milestoneId: string) => {
+    setMilestoneDrag((prev) => ({
+      ...prev,
+      draggingId: milestoneId,
+    }));
+  }, []);
+
+  const handleMilestoneDragEnd = useCallback(() => {
+    setMilestoneDrag({
+      draggingId: null,
+      dropTargetId: null,
+      dropPosition: null,
+    });
+  }, []);
+
+  const handleMilestoneDragOver = useCallback((targetMilestoneId: string) => {
+    setMilestoneDrag((prev) => {
+      // Don't update if dragging over self
+      if (prev.draggingId === targetMilestoneId) {
+        return prev;
+      }
+      // Calculate drop position based on mouse position relative to target
+      // The position will be computed based on where the drop will happen
+      // For now, we just track the target
+      return {
+        ...prev,
+        dropTargetId: targetMilestoneId,
+        dropPosition: null, // Will be set in handleMilestoneDrop
+      };
+    });
+  }, []);
+
+  // Feature drag-and-drop state
+  const [featureDrag, setFeatureDrag] = useState<FeatureDragState>({
+    draggingId: null,
+    draggingMilestoneId: null,
+    dropTargetMilestoneId: null,
+    dropTargetIndex: null,
+    dropPosition: null,
+  });
+
+  // Feature drag handlers
+  const handleFeatureDragStart = useCallback((featureId: string, milestoneId: string) => {
+    setFeatureDrag((prev) => ({
+      ...prev,
+      draggingId: featureId,
+      draggingMilestoneId: milestoneId,
+    }));
+  }, []);
+
+  const handleFeatureDragEnd = useCallback(() => {
+    setFeatureDrag({
+      draggingId: null,
+      draggingMilestoneId: null,
+      dropTargetMilestoneId: null,
+      dropTargetIndex: null,
+      dropPosition: null,
+    });
+  }, []);
+
+  const handleFeatureDragOver = useCallback((targetFeatureId: string, position: "before" | "after") => {
+    setFeatureDrag((prev) => {
+      // Don't update if dragging over self
+      if (prev.draggingId === targetFeatureId) {
+        return prev;
+      }
+      // Find the target feature's index in its milestone
+      const targetFeatures = featuresByMilestoneId[prev.draggingMilestoneId || ""] || [];
+      const targetIndex = targetFeatures.findIndex((f) => f.id === targetFeatureId);
+
+      let dropTargetIndex: number;
+      if (position === "before") {
+        dropTargetIndex = targetIndex;
+      } else {
+        dropTargetIndex = targetIndex + 1;
+      }
+
+      return {
+        ...prev,
+        dropTargetMilestoneId: prev.draggingMilestoneId,
+        dropTargetIndex,
+        dropPosition: position,
+      };
+    });
+  }, [featuresByMilestoneId]);
+
+  const handleFeatureDropOnMilestone = useCallback(() => {
+    setFeatureDrag((prev) => ({
+      ...prev,
+      dropTargetMilestoneId: prev.draggingMilestoneId,
+      // Append to end of feature list
+      dropTargetIndex: (featuresByMilestoneId[prev.draggingMilestoneId || ""] || []).length,
+    }));
+  }, [featuresByMilestoneId]);
+
+  const handleFeatureDrop = useCallback(async (featureId: string, targetIndex: number) => {
+    const { draggingMilestoneId, dropTargetMilestoneId } = featureDrag;
+    if (!draggingMilestoneId) {
+      handleFeatureDragEnd();
+      return;
+    }
+
+    // Determine the target milestone - use the drop target if available, otherwise the dragging milestone
+    const targetMilestoneId = dropTargetMilestoneId || draggingMilestoneId;
+
+    // Get the source features
+    const sourceFeatures = featuresByMilestoneId[draggingMilestoneId] || [];
+
+    // Find the feature being dragged
+    const featureBeingDragged = sourceFeatures.find((f) => f.id === featureId);
+    if (!featureBeingDragged) {
+      handleFeatureDragEnd();
+      return;
+    }
+
+    // Check if this is a cross-milestone move
+    const isCrossMilestone = draggingMilestoneId !== targetMilestoneId;
+
+    if (isCrossMilestone) {
+      // Cross-milestone move
+      const targetFeatures = featuresByMilestoneId[targetMilestoneId] || [];
+
+      // No-op check: if moving to same position in same milestone (shouldn't happen but safety check)
+      if (draggingMilestoneId === targetMilestoneId) {
+        handleFeatureDragEnd();
+        return;
+      }
+
+      // Perform the move
+      try {
+        await moveFeature(featureId, targetMilestoneId, targetIndex, {
+          onError: (err) => {
+            addToast(`Failed to move feature: ${err.message}`, "error");
+          },
+        });
+      } catch {
+        // Error handled in callback
+      }
+    } else {
+      // Same-milestone reorder
+      const targetFeatures = [...sourceFeatures];
+      const fromIndex = targetFeatures.findIndex((f) => f.id === featureId);
+
+      // Remove from current position and insert at target
+      targetFeatures.splice(fromIndex, 1);
+      targetFeatures.splice(targetIndex, 0, featureBeingDragged);
+
+      // Compute new order of feature IDs
+      const orderedIds = targetFeatures.map((f) => f.id);
+
+      // No-op check: if order is unchanged
+      const currentIds = sourceFeatures.map((f) => f.id);
+      if (orderedIds.join(",") === currentIds.join(",")) {
+        handleFeatureDragEnd();
+        return;
+      }
+
+      // Perform the reorder
+      try {
+        await reorderFeatures(draggingMilestoneId, orderedIds, {
+          onError: (err) => {
+            addToast(`Failed to reorder features: ${err.message}`, "error");
+          },
+        });
+      } catch {
+        // Error handled in callback
+      }
+    }
+
+    handleFeatureDragEnd();
+  }, [featureDrag, featuresByMilestoneId, reorderFeatures, moveFeature, addToast, handleFeatureDragEnd]);
+
+  const handleFeatureDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear if leaving the element entirely
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setFeatureDrag((prev) => ({
+        ...prev,
+        dropTargetMilestoneId: null,
+        dropTargetIndex: null,
+        dropPosition: null,
+      }));
+    }
+  }, []);
+
+  // Check if a feature is being dragged
+  const isFeatureDragging = useCallback((featureId: string) => {
+    return featureDrag.draggingId === featureId;
+  }, [featureDrag.draggingId]);
+
+  const handleMilestoneDrop = useCallback(async (targetMilestoneId: string) => {
+    const { draggingId } = milestoneDrag;
+    if (!draggingId || draggingId === targetMilestoneId) {
+      handleMilestoneDragEnd();
+      return;
+    }
+
+    // Compute the new order
+    const currentOrder = milestones.map((m) => m.id);
+    const fromIndex = currentOrder.indexOf(draggingId);
+    const toIndex = currentOrder.indexOf(targetMilestoneId);
+
+    if (fromIndex === -1 || toIndex === -1) {
+      handleMilestoneDragEnd();
+      return;
+    }
+
+    // Compute the new order based on drop position
+    // The drop indicator shows where the item will be inserted
+    const newOrder = [...currentOrder];
+    newOrder.splice(fromIndex, 1);
+    newOrder.splice(toIndex, 0, draggingId);
+
+    // No-op check: if the order is unchanged
+    if (newOrder.join(",") === currentOrder.join(",")) {
+      handleMilestoneDragEnd();
+      return;
+    }
+
+    // Perform the reorder
+    try {
+      await reorderMilestones(selectedRoadmapId!, newOrder, {
+        onError: (err) => {
+          addToast(`Failed to reorder milestones: ${err.message}`, "error");
+        },
+      });
+    } catch {
+      // Error handled in callback
+    }
+
+    handleMilestoneDragEnd();
+  }, [milestoneDrag, milestones, selectedRoadmapId, reorderMilestones, addToast, handleMilestoneDragEnd]);
+
+  const handleMilestoneDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear if leaving the element entirely
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setMilestoneDrag((prev) => ({
+        ...prev,
+        dropTargetId: null,
+        dropPosition: null,
+      }));
+    }
+  }, []);
 
   // Roadmap handlers
   const handleStartRoadmapEdit = useCallback((roadmap: Roadmap) => {
@@ -985,6 +1454,25 @@ export function RoadmapsView({ projectId, addToast }: RoadmapsViewProps) {
                       onSaveFeatureEdit={handleSaveFeatureEdit}
                       projectId={projectId}
                       addToast={addToast}
+                      // Milestone drag-and-drop props
+                      isMilestoneDragging={milestoneDrag.draggingId === milestone.id}
+                      isMilestoneDropTarget={milestoneDrag.dropTargetId === milestone.id}
+                      milestoneDropPosition={milestoneDrag.dropTargetId === milestone.id ? milestoneDrag.dropPosition : null}
+                      onMilestoneDragStart={handleMilestoneDragStart}
+                      onMilestoneDragEnd={handleMilestoneDragEnd}
+                      onMilestoneDragOver={handleMilestoneDragOver}
+                      onMilestoneDrop={handleMilestoneDrop}
+                      onMilestoneDragLeave={handleMilestoneDragLeave}
+                      // Feature drag-and-drop props
+                      isFeatureDragging={isFeatureDragging}
+                      isFeatureDropTarget={featureDrag.dropTargetMilestoneId === milestone.id}
+                      featureDropIndex={featureDrag.dropTargetMilestoneId === milestone.id ? featureDrag.dropTargetIndex : null}
+                      onFeatureDragStart={handleFeatureDragStart}
+                      onFeatureDragEnd={handleFeatureDragEnd}
+                      onFeatureDragOver={handleFeatureDragOver}
+                      onFeatureDrop={handleFeatureDrop}
+                      onFeatureDragLeave={handleFeatureDragLeave}
+                      onFeatureDropOnMilestone={handleFeatureDropOnMilestone}
                     />
                   ))}
                 </>
