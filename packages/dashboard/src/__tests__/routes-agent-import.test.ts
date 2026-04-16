@@ -374,6 +374,7 @@ describe("POST /api/agents/import", () => {
 describe("GET /api/agents/companies", () => {
   let store: MockStore;
   let app: ReturnType<typeof import("../server.js").createServer>;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -391,13 +392,69 @@ describe("GET /api/agents/companies", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    globalThis.fetch = originalFetch;
   });
 
-  it("returns companies from companies.sh API", async () => {
+  it("returns companies when external API succeeds", async () => {
+    const mockCompanies = [
+      { slug: "test-company", name: "Test Company", tagline: "A test company" },
+      { slug: "another-company", name: "Another Company" },
+    ];
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => mockCompanies,
+    });
+
     const response = await request(app, "GET", "/api/agents/companies");
 
-    // The actual API might return data or an empty array on failure
-    // Just verify the endpoint responds
-    expect([200, 500]).toContain(response.status);
+    expect(response.status).toBe(200);
+    const body = response.body as any;
+    expect(body.companies).toHaveLength(2);
+    expect(body.companies[0].slug).toBe("test-company");
+    expect(body.error).toBeUndefined();
+  });
+
+  it("returns error message when external API is unreachable", async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network unreachable"));
+
+    const response = await request(app, "GET", "/api/agents/companies");
+
+    expect(response.status).toBe(200);
+    const body = response.body as any;
+    expect(body.companies).toEqual([]);
+    expect(body.error).toContain("Failed to fetch companies.sh catalog:");
+    expect(body.error).toContain("Network unreachable");
+  });
+
+  it("returns error message when external API returns non-JSON", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "text/html" },
+      json: async () => { throw new Error("Not JSON"); },
+    });
+
+    const response = await request(app, "GET", "/api/agents/companies");
+
+    expect(response.status).toBe(200);
+    const body = response.body as any;
+    expect(body.companies).toEqual([]);
+    expect(body.error).toContain("Failed to fetch companies.sh catalog:");
+  });
+
+  it("returns 500 when request times out", async () => {
+    // Create an AbortError by using a mock that throws with 'aborted' in the message
+    const abortError = new Error("The operation was aborted");
+    abortError.name = "AbortError";
+    globalThis.fetch = vi.fn().mockRejectedValue(abortError);
+
+    const response = await request(app, "GET", "/api/agents/companies");
+
+    expect(response.status).toBe(500);
+    const body = response.body as any;
+    expect(body.error).toContain("timed out");
   });
 });

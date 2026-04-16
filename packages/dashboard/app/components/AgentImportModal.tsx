@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Upload, FileText, CheckCircle, AlertTriangle, X, Loader2, FolderOpen, Globe, Search } from "lucide-react";
+import { Upload, FileText, CheckCircle, AlertTriangle, X, Loader2, FolderOpen, Globe, Search, RefreshCw } from "lucide-react";
 import { fetchCompanies, type CompanyEntry } from "../api";
 
 export interface AgentImportModalProps {
@@ -133,14 +133,24 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(false);
   const [companiesError, setCompaniesError] = useState<string | null>(null);
 
+  // Track whether we've attempted to fetch to prevent infinite retry loops
+  const fetchAttemptedRef = useRef(false);
+
   // Load companies when browse mode is selected
   useEffect(() => {
-    if (inputMethod === "browse" && companies.length === 0 && !isLoadingCompanies) {
+    if (inputMethod === "browse" && !fetchAttemptedRef.current && !isLoadingCompanies) {
+      fetchAttemptedRef.current = true;
       setIsLoadingCompanies(true);
       setCompaniesError(null);
       fetchCompanies()
         .then((data) => {
-          setCompanies(data);
+          if (data.error) {
+            setCompaniesError(data.error);
+          } else if (data.companies.length > 0) {
+            setCompanies(data.companies);
+          } else {
+            setCompaniesError("No companies available");
+          }
         })
         .catch((err) => {
           setCompaniesError(err instanceof Error ? err.message : "Failed to load companies");
@@ -149,7 +159,32 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
           setIsLoadingCompanies(false);
         });
     }
-  }, [inputMethod, companies.length, isLoadingCompanies]);
+  }, [inputMethod, isLoadingCompanies]);
+
+  /** Retry fetching companies after an error - calls fetch directly to bypass useEffect */
+  const handleRetryFetchCompanies = useCallback(() => {
+    fetchAttemptedRef.current = true; // Prevent useEffect from also firing
+    setCompaniesError(null);
+    setCompanies([]);
+    setSelectedCompany(null);
+    setIsLoadingCompanies(true);
+    fetchCompanies()
+      .then((data) => {
+        if (data.error) {
+          setCompaniesError(data.error);
+        } else if (data.companies.length > 0) {
+          setCompanies(data.companies);
+        } else {
+          setCompaniesError("No companies available");
+        }
+      })
+      .catch((err) => {
+        setCompaniesError(err instanceof Error ? err.message : "Failed to load companies");
+      })
+      .finally(() => {
+        setIsLoadingCompanies(false);
+      });
+  }, []);
 
   const reset = useCallback(() => {
     setStep("input");
@@ -168,6 +203,7 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
     setSelectedCompany(null);
     setIsLoadingCompanies(false);
     setCompaniesError(null);
+    fetchAttemptedRef.current = false;
   }, []);
 
   const handleClose = useCallback(() => {
@@ -454,6 +490,14 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
                     <div className="agent-import-browse-error">
                       <AlertTriangle size={16} />
                       <span>{companiesError}</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={handleRetryFetchCompanies}
+                      >
+                        <RefreshCw size={14} />
+                        Retry
+                      </button>
                     </div>
                   )}
 

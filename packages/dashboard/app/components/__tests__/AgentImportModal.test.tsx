@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AgentImportModal } from "../AgentImportModal";
 
@@ -284,5 +284,148 @@ describe("AgentImportModal", () => {
 
     fireEvent.click(overlay!);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  describe("Browse Catalog Mode", () => {
+    function createMockResponse(body: unknown): Response {
+      return {
+        ok: true,
+        status: 200,
+        headers: new globalThis.Headers({ "content-type": "application/json" }),
+        text: async () => JSON.stringify(body),
+        json: async () => body,
+      } as unknown as Response;
+    }
+
+    it("shows companies when fetch succeeds", async () => {
+      const mockCompanies = [
+        { slug: "test-company", name: "Test Company", tagline: "A great company" },
+        { slug: "another-co", name: "Another Company" },
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue(createMockResponse({ companies: mockCompanies }));
+
+      renderModal(true);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Browse Catalog" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Test Company")).toBeInTheDocument();
+        expect(screen.getByText("Another Company")).toBeInTheDocument();
+      });
+    });
+
+    it("shows error message when companies.sh returns error", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(createMockResponse({
+        companies: [],
+        error: "Failed to fetch companies.sh catalog: Network unreachable",
+      }));
+
+      renderModal(true);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Browse Catalog" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Failed to fetch companies.sh catalog/)).toBeInTheDocument();
+      });
+    });
+
+    it("shows Retry button when error occurs", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(createMockResponse({
+        companies: [],
+        error: "Failed to fetch companies.sh catalog: Network unreachable",
+      }));
+
+      renderModal(true);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Browse Catalog" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+      });
+    });
+
+    it("does not retry infinitely after error", async () => {
+      let fetchCallCount = 0;
+      globalThis.fetch = vi.fn().mockImplementation(() => {
+        fetchCallCount++;
+        return Promise.resolve(createMockResponse({
+          companies: [],
+          error: "Network unreachable",
+        }));
+      });
+
+      renderModal(true);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Browse Catalog" }));
+
+      // Wait for the error to appear
+      await waitFor(() => {
+        expect(screen.getByText(/Network unreachable/)).toBeInTheDocument();
+      });
+
+      // Allow a bit of time for any potential extra fetches
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Should have exactly 1 fetch call (no infinite retry)
+      expect(fetchCallCount).toBe(1);
+    });
+
+    it("retry button allows re-fetching after error", async () => {
+      // Use a ref to track call count
+      const callCountRef = { current: 0 };
+
+      globalThis.fetch = vi.fn().mockImplementation(() => {
+        callCountRef.current++;
+        const callNum = callCountRef.current;
+
+        // First call returns error, subsequent calls return success
+        if (callNum === 1) {
+          return Promise.resolve(createMockResponse({
+            companies: [],
+            error: "Network unreachable",
+          }));
+        }
+        return Promise.resolve(createMockResponse({
+          companies: [{ slug: "test-co", name: "Test Company" }],
+        }));
+      });
+
+      renderModal(true);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Browse Catalog" }));
+
+      // Wait for error
+      await waitFor(() => {
+        expect(screen.getByText(/Network unreachable/)).toBeInTheDocument();
+      });
+
+      // Verify only 1 fetch happened
+      expect(callCountRef.current).toBe(1);
+
+      // Click retry using act to ensure state updates are processed
+      const retryButton = screen.getByRole("button", { name: /Retry/i });
+      await act(async () => {
+        await user.click(retryButton);
+      });
+
+      // Wait for the error to be cleared (indicating retry is in progress)
+      await waitFor(() => {
+        expect(screen.queryByText(/Network unreachable/)).not.toBeInTheDocument();
+      });
+
+      // The mock should return success on second call, so we should see the companies
+      await waitFor(() => {
+        expect(screen.getByText("Test Company")).toBeInTheDocument();
+      });
+
+      // Verify a second fetch happened
+      expect(callCountRef.current).toBe(2);
+    });
   });
 });

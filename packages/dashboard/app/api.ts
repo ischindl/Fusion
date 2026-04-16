@@ -2707,6 +2707,12 @@ export interface CompanyEntry {
   installs?: number;
 }
 
+/** Response from companies.sh catalog API */
+export interface CompaniesCatalogResponse {
+  companies: CompanyEntry[];
+  error?: string;
+}
+
 /** Result of importing agents from an Agent Companies source */
 export interface AgentImportResult {
   companyName?: string;
@@ -2721,9 +2727,10 @@ export interface AgentImportResult {
 
 /**
  * Fetch companies from companies.sh catalog.
+ * Returns both companies and optional error message for proper error surfacing.
  */
-export function fetchCompanies(): Promise<CompanyEntry[]> {
-  return api<{ companies: CompanyEntry[] }>("/agents/companies").then((res) => res.companies);
+export function fetchCompanies(): Promise<CompaniesCatalogResponse> {
+  return api<CompaniesCatalogResponse>("/agents/companies");
 }
 
 /**

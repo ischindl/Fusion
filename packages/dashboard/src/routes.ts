@@ -10638,13 +10638,15 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
           }).filter((c): c is CompaniesShCompany => c !== null);
         }
       } catch (fetchErr) {
-        // Return empty array on network/parsing errors (graceful degradation)
+        // Return empty array + error message on network/parsing errors
         const message = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         if (message.includes("aborted")) {
           throw new Error("companies.sh request timed out");
         }
-        // Log but don't fail - return empty catalog
+        // Log and include error in response so frontend can display it
         console.warn(`[agents/companies] Failed to fetch catalog: ${message}`);
+        res.json({ companies, error: `Failed to fetch companies.sh catalog: ${message}` });
+        return;
       }
 
       res.json({ companies });
@@ -10824,10 +10826,34 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
           // Download the archive
           const archivePath = join(tempDir, "archive.tar.gz");
 
-          const archiveResponse = await fetch(archiveUrl);
-          const downloadResponse = archiveResponse.ok
-            ? archiveResponse
-            : await fetch(`https://github.com/${repoOwner}/${repoName}/archive/refs/heads/master.tar.gz`);
+          // Download with 30-second timeout
+          const downloadController = new AbortController();
+          const downloadTimeout = setTimeout(() => downloadController.abort(), 30000);
+
+          let archiveResponse: globalThis.Response;
+          try {
+            archiveResponse = await fetch(archiveUrl, { signal: downloadController.signal });
+          } finally {
+            clearTimeout(downloadTimeout);
+          }
+
+          let downloadResponse: globalThis.Response;
+          if (archiveResponse.ok) {
+            downloadResponse = archiveResponse;
+          } else {
+            // Try fallback branch (master) with its own timeout
+            const fallbackController = new AbortController();
+            const fallbackTimeout = setTimeout(() => fallbackController.abort(), 30000);
+
+            try {
+              downloadResponse = await fetch(
+                `https://github.com/${repoOwner}/${repoName}/archive/refs/heads/master.tar.gz`,
+                { signal: fallbackController.signal },
+              );
+            } finally {
+              clearTimeout(fallbackTimeout);
+            }
+          }
 
           if (!downloadResponse.ok) {
             throw badRequest(`Failed to download repository archive: ${downloadResponse.status} ${downloadResponse.statusText}`);
@@ -11009,6 +11035,10 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       }
       if (err instanceof Error && err.name === "AgentCompaniesParseError") {
         throw badRequest(err instanceof Error ? err.message : String(err));
+      }
+      // Handle AbortError from timed-out fetch calls
+      if (err instanceof Error && err.name === "AbortError") {
+        throw badRequest("Downloading company repository timed out after 30 seconds");
       }
       rethrowAsApiError(err);
     }

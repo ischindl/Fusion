@@ -90,17 +90,23 @@ describe("memory-compaction", () => {
 
       expect(automation.steps![0]).not.toHaveProperty("modelProvider");
       expect(automation.steps![0]).not.toHaveProperty("modelId");
+      expect(automation.steps![0]).not.toHaveProperty("modelProvider");
+      expect(automation.steps![0]).not.toHaveProperty("modelId");
     });
 
     it("should set correct timeout", () => {
       const automation = createAutoSummarizeAutomation({});
 
       expect(automation.steps![0].timeoutMs).toBe(120_000);
+      expect(automation.steps![0].timeoutMs).toBe(120_000);
     });
 
     it("should prompt to preserve core sections", () => {
       const automation = createAutoSummarizeAutomation({});
 
+      expect(automation.steps![0].prompt).toContain("Architecture");
+      expect(automation.steps![0].prompt).toContain("Conventions");
+      expect(automation.steps![0].prompt).toContain("Pitfalls");
       expect(automation.steps![0].prompt).toContain("Architecture");
       expect(automation.steps![0].prompt).toContain("Conventions");
       expect(automation.steps![0].prompt).toContain("Pitfalls");
@@ -111,11 +117,14 @@ describe("memory-compaction", () => {
 
       expect(automation.steps![0].prompt).toContain("Below threshold");
       expect(automation.steps![0].prompt).toContain("skipped");
+      expect(automation.steps![0].prompt).toContain("Below threshold");
+      expect(automation.steps![0].prompt).toContain("skipped");
     });
 
     it("should prompt to write compacted content to file", () => {
       const automation = createAutoSummarizeAutomation({});
 
+      expect(automation.steps![0].prompt).toContain(".fusion/memory.md");
       expect(automation.steps![0].prompt).toContain(".fusion/memory.md");
     });
   });
