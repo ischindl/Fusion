@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Task, TaskStore, MergeResult, AutomationStore, RoutineStore, CentralCore } from "@fusion/core";
+import type { Task, TaskStore, MergeResult, AutomationStore, RoutineStore, CentralCore, MessageStore } from "@fusion/core";
 import { ChatStore } from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "./routes.js";
 import { createApiRoutes } from "./routes.js";
@@ -367,7 +367,16 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       const { AgentStore: AgentStoreClass } = await import("@fusion/core");
       const defaultAgentStore = new AgentStoreClass({ rootDir: store.getFusionDir() });
       await defaultAgentStore.init();
-      createSSE(store, store.getMissionStore(), aiSessionStore, store.getPluginStore(), undefined, defaultAgentStore)(req, res);
+      const defaultMessageStore = options?.engine?.getMessageStore();
+      createSSE(
+        store,
+        store.getMissionStore(),
+        aiSessionStore,
+        store.getPluginStore(),
+        undefined,
+        defaultAgentStore,
+        defaultMessageStore,
+      )(req, res);
       return;
     }
 
@@ -377,11 +386,13 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       // rather than a separate store created by getOrCreateProjectStore.
       let scopedStore: TaskStore;
       let agentStore;
+      let messageStore: MessageStore | undefined;
       if (engineManager) {
         const engine = engineManager.getEngine(projectId);
         scopedStore = engine?.getTaskStore() ?? await getOrCreateProjectStore(projectId);
-        // Use the engine's AgentStore if available
+        // Use the engine's stores if available
         agentStore = engine?.getAgentStore();
+        messageStore = engine?.getMessageStore();
       } else {
         scopedStore = await getOrCreateProjectStore(projectId);
       }
@@ -391,9 +402,17 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
         agentStore = new AgentStoreClass({ rootDir: scopedStore.getFusionDir() });
         await agentStore.init();
       }
-      createSSE(scopedStore, scopedStore.getMissionStore(), aiSessionStore, scopedStore.getPluginStore(), {
-        projectId,
-      }, agentStore)(req, res);
+      createSSE(
+        scopedStore,
+        scopedStore.getMissionStore(),
+        aiSessionStore,
+        scopedStore.getPluginStore(),
+        {
+          projectId,
+        },
+        agentStore,
+        messageStore,
+      )(req, res);
     } catch (err: unknown) {
       sendErrorResponse(res, 500, err instanceof Error ? err.message : "Failed to open project event stream");
     }

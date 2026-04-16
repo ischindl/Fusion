@@ -104,8 +104,8 @@ describe("createSendMessageTool", () => {
     );
   });
 
-  it("uses provided type when specified", async () => {
-    const mockMessage = createMessage();
+  it("uses provided type when specified and maps recipient type for agent-to-user", async () => {
+    const mockMessage = createMessage({ toType: "user", type: "agent-to-user" });
     vi.mocked(messageStore.sendMessage).mockReturnValue(mockMessage);
 
     await executeTool(tool, {
@@ -115,7 +115,22 @@ describe("createSendMessageTool", () => {
     });
 
     expect(messageStore.sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "agent-to-user" })
+      expect.objectContaining({ type: "agent-to-user", toType: "user" })
+    );
+  });
+
+  it("maps recipient type to agent for agent-to-agent messages", async () => {
+    const mockMessage = createMessage({ toType: "agent", type: "agent-to-agent" });
+    vi.mocked(messageStore.sendMessage).mockReturnValue(mockMessage);
+
+    await executeTool(tool, {
+      to_id: "agent-2",
+      content: "Test",
+      type: "agent-to-agent",
+    });
+
+    expect(messageStore.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent-to-agent", toType: "agent" })
     );
   });
 

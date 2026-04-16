@@ -16076,8 +16076,18 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   const messageStoreCache = new Map<string, MessageStore>();
 
   async function getMessageStore(req: Request): Promise<MessageStore> {
-    const { store: scopedStore } = await getProjectContext(req);
+    const { store: scopedStore, engine, projectId } = await getProjectContext(req);
     const rootDir = scopedStore.getRootDir();
+
+    // Prefer the runtime's MessageStore when available so routes and SSE share
+    // the same EventEmitter instance (required for live mailbox updates).
+    const runtimeMessageStore = engine?.getMessageStore()
+      ?? (!projectId ? options?.engine?.getMessageStore() : undefined);
+    if (runtimeMessageStore) {
+      messageStoreCache.set(rootDir, runtimeMessageStore);
+      return runtimeMessageStore;
+    }
+
     let msgStore = messageStoreCache.get(rootDir);
     if (!msgStore) {
       const db = scopedStore.getDatabase();

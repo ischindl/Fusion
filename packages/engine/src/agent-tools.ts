@@ -68,7 +68,7 @@ export const delegateTaskParams = Type.Object({
 });
 
 export const sendMessageParams = Type.Object({
-  to_id: Type.String({ description: "Recipient agent ID (e.g. 'agent-abc123')" }),
+  to_id: Type.String({ description: "Recipient ID (agent ID or user ID, depending on message type)" }),
   content: Type.String({ description: "Message body (1-2000 characters)" }),
   type: Type.Optional(Type.Union([
     Type.Literal("agent-to-agent"),
@@ -474,13 +474,16 @@ export function createSendMessageTool(messageStore: MessageStore, fromAgentId: s
       }
 
       try {
+        const messageType = params.type ?? "agent-to-agent";
+        const recipientType = messageType === "agent-to-user" ? "user" : "agent";
+
         const message = messageStore.sendMessage({
           fromId: fromAgentId,
           fromType: "agent",
           toId: params.to_id,
-          toType: "agent",
+          toType: recipientType,
           content,
-          type: params.type ?? "agent-to-agent",
+          type: messageType,
         });
 
         return {

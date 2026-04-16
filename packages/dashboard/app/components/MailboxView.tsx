@@ -225,6 +225,42 @@ export function MailboxView({
     loadAgents();
   }, [loadAgents]);
 
+  // Subscribe to mailbox SSE events for near-real-time refresh.
+  useEffect(() => {
+    if (typeof EventSource === "undefined") {
+      return;
+    }
+
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const eventSource = new EventSource(`/api/events${query}`);
+
+    const onMailboxUpdate = () => {
+      void refreshUnreadCount();
+      if (activeTab === "inbox") {
+        void loadInbox();
+      } else if (activeTab === "outbox") {
+        void loadOutbox();
+      }
+
+      if (selectedAgentId) {
+        void loadAgentMailbox(selectedAgentId);
+      }
+    };
+
+    eventSource.addEventListener("message:sent", onMailboxUpdate);
+    eventSource.addEventListener("message:received", onMailboxUpdate);
+    eventSource.addEventListener("message:read", onMailboxUpdate);
+    eventSource.addEventListener("message:deleted", onMailboxUpdate);
+
+    return () => {
+      eventSource.removeEventListener("message:sent", onMailboxUpdate);
+      eventSource.removeEventListener("message:received", onMailboxUpdate);
+      eventSource.removeEventListener("message:read", onMailboxUpdate);
+      eventSource.removeEventListener("message:deleted", onMailboxUpdate);
+      eventSource.close();
+    };
+  }, [projectId, activeTab, selectedAgentId, refreshUnreadCount, loadInbox, loadOutbox, loadAgentMailbox]);
+
   // ── Actions ───────────────────────────────────────────────────────────
 
   const handleOpenMessage = useCallback(async (message: Message) => {

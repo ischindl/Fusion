@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { TaskStore, MissionStore, PluginStore, PluginInstallation, PluginState, AgentStore } from "@fusion/core";
+import type { TaskStore, MissionStore, PluginStore, PluginInstallation, PluginState, AgentStore, MessageStore } from "@fusion/core";
 import type { AiSessionStore } from "./ai-session-store.js";
 
 let activeConnections = 0;
@@ -69,6 +69,13 @@ export type PluginLifecycleTransition =
   | "error"
   | "uninstalled"
   | "settings-updated";
+
+/** Message event types forwarded through the SSE stream. */
+export type MessageSseEventType =
+  | "message:sent"
+  | "message:received"
+  | "message:read"
+  | "message:deleted";
 
 /**
  * Normalized plugin lifecycle payload emitted via SSE.
@@ -173,6 +180,7 @@ export function createSSE(
   pluginStore?: PluginStore,
   options?: CreateSSEOptions,
   agentStore?: AgentStore,
+  messageStore?: MessageStore,
 ) {
   const { projectId } = options ?? {};
 
@@ -342,6 +350,23 @@ export function createSSE(
       send(`event: agent:stateChanged\ndata: ${JSON.stringify({ id: agentId, from: fromState, to: toState })}\n\n`);
     };
 
+    // --- Message event handlers ---
+    const onMessageSent = (message: unknown) => {
+      send(`event: message:sent\ndata: ${JSON.stringify(message)}\n\n`);
+    };
+
+    const onMessageReceived = (message: unknown) => {
+      send(`event: message:received\ndata: ${JSON.stringify(message)}\n\n`);
+    };
+
+    const onMessageRead = (message: unknown) => {
+      send(`event: message:read\ndata: ${JSON.stringify(message)}\n\n`);
+    };
+
+    const onMessageDeleted = (messageId: string) => {
+      send(`event: message:deleted\ndata: ${JSON.stringify({ id: messageId })}\n\n`);
+    };
+
     // --- Cleanup (all handlers are defined above, safe to reference) ---
 
     let cleaned = false;
@@ -396,6 +421,12 @@ export function createSSE(
         agentStore.off("agent:deleted", onAgentDeleted);
         agentStore.off("agent:stateChanged", onAgentStateChanged);
       }
+      if (messageStore) {
+        messageStore.off("message:sent", onMessageSent);
+        messageStore.off("message:received", onMessageReceived);
+        messageStore.off("message:read", onMessageRead);
+        messageStore.off("message:deleted", onMessageDeleted);
+      }
     };
 
     // --- Subscribe ---
@@ -449,6 +480,13 @@ export function createSSE(
       agentStore.on("agent:updated", onAgentUpdated);
       agentStore.on("agent:deleted", onAgentDeleted);
       agentStore.on("agent:stateChanged", onAgentStateChanged);
+    }
+
+    if (messageStore) {
+      messageStore.on("message:sent", onMessageSent);
+      messageStore.on("message:received", onMessageReceived);
+      messageStore.on("message:read", onMessageRead);
+      messageStore.on("message:deleted", onMessageDeleted);
     }
 
     // Heartbeat every 30s to keep connection alive.

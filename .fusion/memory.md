@@ -18,6 +18,11 @@
   - `useAgents` hook excludes ephemeral agents from `activeAgents` by default
   - Server SSE endpoint resolves `AgentStore` from engine via `getAgentStore()` for project-scoped streams
 
+- **`FN-1976 Message SSE + Route Store Cohesion`**:
+  - `MessageStore` is an `EventEmitter`; SSE listeners must attach to the SAME `MessageStore` instance used by message-writing routes.
+  - Reusing the same SQLite database is not enough for realtime updates — two `MessageStore` instances on one DB do not share in-memory events.
+  - In dashboard routes, prefer `engine.getMessageStore()` (or `options.engine?.getMessageStore()` for default scope) before creating a fallback `new MessageStore(db)`.
+
 - **`FN-1736 Multi-Project Scoping Audit`**: Comprehensive audit of project-scoping across the Fusion stack found:
   - SSE/WebSocket endpoints (`/api/tasks/:id/logs/stream`, `/api/events`, `/api/ws`) already use `resolveProjectScopedStore()` or `getProjectContext()` correctly
   - Badge WebSocket (`setupBadgeWebSocket`) properly scopes per-project with listeners on scoped stores

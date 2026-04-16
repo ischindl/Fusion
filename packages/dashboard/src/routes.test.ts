@@ -15282,5 +15282,328 @@ describe("POST /api/ai/refine-text with projectId scoping", () => {
   });
 });
 
+describe("Messaging Routes", () => {
+  let rootDir: string;
+  let store: TaskStore;
+  let app: express.Express;
+  let messageStore: import("@fusion/core").MessageStore;
+
+  beforeEach(async () => {
+    rootDir = mkdtempSync(join(tmpdir(), "kb-message-routes-"));
+    const { TaskStore, MessageStore } = await import("@fusion/core");
+
+    store = new TaskStore(rootDir);
+    await store.init();
+    messageStore = new MessageStore(store.getDatabase());
+
+    app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+  });
+
+  afterEach(() => {
+    rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it("uses the engine MessageStore when available", async () => {
+    const message = {
+      id: "msg-runtime-1",
+      fromId: "dashboard",
+      fromType: "user",
+      toId: "agent-1",
+      toType: "agent",
+      content: "runtime store message",
+      type: "user-to-agent",
+      read: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const runtimeMessageStore = {
+      sendMessage: vi.fn().mockReturnValue(message),
+    };
+    const runtimeEngine = {
+      getMessageStore: vi.fn().mockReturnValue(runtimeMessageStore),
+    };
+
+    const runtimeApp = express();
+    runtimeApp.use(express.json());
+    runtimeApp.use("/api", createApiRoutes(store, { engine: runtimeEngine as any }));
+
+    const res = await REQUEST(
+      runtimeApp,
+      "POST",
+      "/api/messages",
+      JSON.stringify({
+        toId: "agent-1",
+        toType: "agent",
+        content: "runtime store message",
+        type: "user-to-agent",
+      }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(201);
+    expect(runtimeEngine.getMessageStore).toHaveBeenCalled();
+    expect(runtimeMessageStore.sendMessage).toHaveBeenCalledWith({
+      fromId: "dashboard",
+      fromType: "user",
+      toId: "agent-1",
+      toType: "agent",
+      content: "runtime store message",
+      type: "user-to-agent",
+      metadata: undefined,
+    });
+    expect(res.body.id).toBe("msg-runtime-1");
+  });
+
+  it("GET /api/messages/inbox returns dashboard inbox messages", async () => {
+    const inboxMessage = messageStore.sendMessage({
+      fromId: "agent-1",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Hello dashboard",
+      type: "agent-to-user",
+    });
+    messageStore.sendMessage({
+      fromId: "agent-2",
+      fromType: "agent",
+      toId: "someone-else",
+      toType: "user",
+      content: "not for dashboard",
+      type: "agent-to-user",
+    });
+
+    const res = await GET(app, "/api/messages/inbox");
+
+    expect(res.status).toBe(200);
+    expect(res.body.messages).toHaveLength(1);
+    expect(res.body.messages[0].id).toBe(inboxMessage.id);
+    expect(res.body.unreadCount).toBe(1);
+  });
+
+  it("GET /api/messages/outbox returns dashboard sent messages", async () => {
+    const sent = await REQUEST(
+      app,
+      "POST",
+      "/api/messages",
+      JSON.stringify({
+        toId: "agent-7",
+        toType: "agent",
+        content: "Can you review this?",
+        type: "user-to-agent",
+      }),
+      { "Content-Type": "application/json" },
+    );
+    expect(sent.status).toBe(201);
+
+    const res = await GET(app, "/api/messages/outbox");
+
+    expect(res.status).toBe(200);
+    expect(res.body.messages).toHaveLength(1);
+    expect(res.body.messages[0].id).toBe(sent.body.id);
+    expect(res.body.messages[0].fromId).toBe("dashboard");
+  });
+
+  it("GET /api/messages/unread-count returns the unread count", async () => {
+    const unread = messageStore.sendMessage({
+      fromId: "agent-1",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Unread",
+      type: "agent-to-user",
+    });
+    const read = messageStore.sendMessage({
+      fromId: "agent-2",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Read",
+      type: "agent-to-user",
+    });
+    messageStore.markAsRead(read.id);
+
+    const res = await GET(app, "/api/messages/unread-count");
+
+    expect(unread).toBeDefined();
+    expect(res.status).toBe(200);
+    expect(res.body.unreadCount).toBe(1);
+  });
+
+  it("POST /api/messages validates required fields and creates messages", async () => {
+    const created = await REQUEST(
+      app,
+      "POST",
+      "/api/messages",
+      JSON.stringify({
+        toId: "agent-3",
+        toType: "agent",
+        content: "Need your help",
+        type: "user-to-agent",
+      }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(created.status).toBe(201);
+    expect(created.body.toId).toBe("agent-3");
+    expect(created.body.fromId).toBe("dashboard");
+
+    const invalidCases = [
+      { body: { toType: "agent", content: "x", type: "user-to-agent" }, message: "toId is required" },
+      { body: { toId: "agent-1", content: "x", type: "user-to-agent", toType: "bad" }, message: "toType must be one of" },
+      { body: { toId: "agent-1", toType: "agent", content: "", type: "user-to-agent" }, message: "content is required" },
+      { body: { toId: "agent-1", toType: "agent", content: "a".repeat(2001), type: "user-to-agent" }, message: "content is required" },
+      { body: { toId: "agent-1", toType: "agent", content: "x", type: "bad-type" }, message: "type must be one of" },
+    ];
+
+    for (const testCase of invalidCases) {
+      const res = await REQUEST(
+        app,
+        "POST",
+        "/api/messages",
+        JSON.stringify(testCase.body),
+        { "Content-Type": "application/json" },
+      );
+      expect(res.status).toBe(400);
+      expect(String(res.body.error)).toContain(testCase.message);
+    }
+  });
+
+  it("GET /api/messages/:id returns a message and 404 when missing", async () => {
+    const msg = messageStore.sendMessage({
+      fromId: "agent-3",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Lookup me",
+      type: "agent-to-user",
+    });
+
+    const found = await GET(app, `/api/messages/${msg.id}`);
+    const missing = await GET(app, "/api/messages/msg-missing");
+
+    expect(found.status).toBe(200);
+    expect(found.body.id).toBe(msg.id);
+    expect(missing.status).toBe(404);
+  });
+
+  it("POST /api/messages/:id/read marks the message as read", async () => {
+    const msg = messageStore.sendMessage({
+      fromId: "agent-4",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Mark me as read",
+      type: "agent-to-user",
+    });
+
+    const res = await REQUEST(app, "POST", `/api/messages/${msg.id}/read`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.read).toBe(true);
+    expect(messageStore.getMessage(msg.id)?.read).toBe(true);
+  });
+
+  it("DELETE /api/messages/:id deletes the message", async () => {
+    const msg = messageStore.sendMessage({
+      fromId: "agent-5",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Delete me",
+      type: "agent-to-user",
+    });
+
+    const res = await REQUEST(app, "DELETE", `/api/messages/${msg.id}`);
+
+    expect(res.status).toBe(204);
+    expect(messageStore.getMessage(msg.id)).toBeNull();
+  });
+
+  it("POST /api/messages/read-all marks all dashboard inbox messages as read", async () => {
+    messageStore.sendMessage({
+      fromId: "agent-1",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "1",
+      type: "agent-to-user",
+    });
+    messageStore.sendMessage({
+      fromId: "agent-2",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "2",
+      type: "agent-to-user",
+    });
+
+    const res = await REQUEST(app, "POST", "/api/messages/read-all");
+    const unread = await GET(app, "/api/messages/unread-count");
+
+    expect(res.status).toBe(200);
+    expect(res.body.markedAsRead).toBe(2);
+    expect(unread.body.unreadCount).toBe(0);
+  });
+
+  it("GET /api/messages/conversation/:participantType/:participantId returns the conversation thread", async () => {
+    const outbound = messageStore.sendMessage({
+      fromId: "dashboard",
+      fromType: "user",
+      toId: "agent-convo",
+      toType: "agent",
+      content: "Question",
+      type: "user-to-agent",
+    });
+    const inbound = messageStore.sendMessage({
+      fromId: "agent-convo",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Answer",
+      type: "agent-to-user",
+    });
+    messageStore.sendMessage({
+      fromId: "agent-other",
+      fromType: "agent",
+      toId: "dashboard",
+      toType: "user",
+      content: "Other thread",
+      type: "agent-to-user",
+    });
+
+    const res = await GET(app, "/api/messages/conversation/agent/agent-convo");
+
+    expect(res.status).toBe(200);
+    const ids = res.body.map((m: { id: string }) => m.id);
+    expect(ids).toContain(outbound.id);
+    expect(ids).toContain(inbound.id);
+    expect(ids).toHaveLength(2);
+  });
+
+  it("GET /api/agents/:id/mailbox returns mailbox summary and inbox messages", async () => {
+    const agentId = "agent-mailbox";
+    const msg = messageStore.sendMessage({
+      fromId: "dashboard",
+      fromType: "user",
+      toId: agentId,
+      toType: "agent",
+      content: "Ping",
+      type: "user-to-agent",
+    });
+
+    const res = await GET(app, `/api/agents/${agentId}/mailbox`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.ownerId).toBe(agentId);
+    expect(res.body.ownerType).toBe("agent");
+    expect(res.body.unreadCount).toBe(1);
+    expect(res.body.messages).toHaveLength(1);
+    expect(res.body.messages[0].id).toBe(msg.id);
+  });
+});
+
 // Note: Project pause/resume route tests are in src/__tests__/project-pause-resume-routes.test.ts
 // to avoid test isolation issues with vi.restoreAllMocks() from other tests in routes.test.ts

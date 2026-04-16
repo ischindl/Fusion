@@ -268,6 +268,11 @@ export class ProjectEngine {
     return this.runtime.getAgentStore();
   }
 
+  /** Get the MessageStore (if initialized). Returns undefined before start(). */
+  getMessageStore(): import("@fusion/core").MessageStore | undefined {
+    return this.runtime.getMessageStore();
+  }
+
   /** Get the HeartbeatMonitor (if initialized). */
   getHeartbeatMonitor() {
     return this.runtime.getHeartbeatMonitor();

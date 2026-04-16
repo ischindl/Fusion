@@ -73,6 +73,30 @@ function createMockPlugin(overrides: Partial<{
   };
 }
 
+function createMockMessage(overrides: Partial<{
+  id: string;
+  fromId: string;
+  fromType: string;
+  toId: string;
+  toType: string;
+  content: string;
+  type: string;
+  read: boolean;
+}> = {}) {
+  return {
+    id: overrides.id ?? "msg-123",
+    fromId: overrides.fromId ?? "dashboard",
+    fromType: overrides.fromType ?? "user",
+    toId: overrides.toId ?? "agent-1",
+    toType: overrides.toType ?? "agent",
+    content: overrides.content ?? "hello",
+    type: overrides.type ?? "user-to-agent",
+    read: overrides.read ?? false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 describe("createSSE", () => {
   let store: ReturnType<typeof createMockStore>;
 
@@ -278,6 +302,55 @@ describe("createSSE", () => {
     expect(getActiveSSEConnections()).toBe(initial + 1);
     req2.emit("close");
     expect(getActiveSSEConnections()).toBe(initial);
+  });
+
+  describe("message events", () => {
+    it("relays message lifecycle events when messageStore is provided", () => {
+      const messageStore = createMockStore();
+      const req = createMockRequest();
+      const { res, chunks } = createMockResponse();
+      createSSE(store, undefined, undefined, undefined, undefined, undefined, messageStore)(req, res);
+
+      const sentMessage = createMockMessage();
+      messageStore.emit("message:sent", sentMessage);
+      messageStore.emit("message:received", sentMessage);
+      messageStore.emit("message:read", { ...sentMessage, read: true });
+      messageStore.emit("message:deleted", sentMessage.id);
+
+      const sentEvent = chunks.find((c) => c.includes("event: message:sent"));
+      const receivedEvent = chunks.find((c) => c.includes("event: message:received"));
+      const readEvent = chunks.find((c) => c.includes("event: message:read"));
+      const deletedEvent = chunks.find((c) => c.includes("event: message:deleted"));
+
+      expect(sentEvent).toBeDefined();
+      expect(receivedEvent).toBeDefined();
+      expect(readEvent).toBeDefined();
+      expect(deletedEvent).toBeDefined();
+
+      expect(extractSSEPayload(sentEvent!).id).toBe(sentMessage.id);
+      expect(extractSSEPayload(receivedEvent!).id).toBe(sentMessage.id);
+      expect(extractSSEPayload(readEvent!).read).toBe(true);
+      expect(extractSSEPayload(deletedEvent!).id).toBe(sentMessage.id);
+    });
+
+    it("cleans up message listeners on disconnect", () => {
+      const messageStore = createMockStore();
+      const req = createMockRequest();
+      const { res } = createMockResponse();
+      createSSE(store, undefined, undefined, undefined, undefined, undefined, messageStore)(req, res);
+
+      expect(messageStore.listenerCount("message:sent")).toBe(1);
+      expect(messageStore.listenerCount("message:received")).toBe(1);
+      expect(messageStore.listenerCount("message:read")).toBe(1);
+      expect(messageStore.listenerCount("message:deleted")).toBe(1);
+
+      req.emit("close");
+
+      expect(messageStore.listenerCount("message:sent")).toBe(0);
+      expect(messageStore.listenerCount("message:received")).toBe(0);
+      expect(messageStore.listenerCount("message:read")).toBe(0);
+      expect(messageStore.listenerCount("message:deleted")).toBe(0);
+    });
   });
 
   // ── Plugin Lifecycle Event Tests ─────────────────────────────────────────────

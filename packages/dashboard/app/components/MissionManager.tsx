@@ -568,6 +568,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const [activeTab, setActiveTab] = useState<"structure" | "activity">("structure");
   const [missionEvents, setMissionEvents] = useState<MissionEvent[]>([]);
   const missionEventsRef = useRef<MissionEvent[]>([]);
+  const missionsRef = useRef<MissionWithSummary[]>([]);
+  const selectedMissionRef = useRef<MissionWithHierarchy | null>(null);
+  const activeTabRef = useRef<"structure" | "activity">("structure");
+  const eventsFilterRef = useRef<"all" | "errors" | "state_changes" | "tasks" | "slices" | "autopilot">("all");
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsTotal, setEventsTotal] = useState(0);
   const [eventsFilter, setEventsFilter] = useState<
@@ -577,6 +581,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const activityEventsContainerRef = useRef<HTMLDivElement>(null);
   const activityEventsEndRef = useRef<HTMLDivElement>(null);
+
+  // Keep latest state available to long-lived SSE handlers without reconnect churn.
+  missionsRef.current = missions;
+  selectedMissionRef.current = selectedMission;
+  activeTabRef.current = activeTab;
+  eventsFilterRef.current = eventsFilter;
 
   const scrollActivityToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     const endNode = activityEventsEndRef.current;
@@ -766,7 +776,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   }, [activeTab, isActive, loadMissionEvents, selectedMission, eventsFilter]);
 
   useEffect(() => {
-    if (!isActive || missions.length === 0 || typeof EventSource === "undefined") {
+    if (!isActive || typeof EventSource === "undefined") {
       return;
     }
 
@@ -778,7 +788,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     const eventSource = new EventSource(eventUrl);
 
     const refreshHealth = () => {
-      void loadMissionHealth(missions);
+      void loadMissionHealth(missionsRef.current);
     };
 
     const handleMissionUpdated = (rawEvent: Event) => {
@@ -802,32 +812,32 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       }
 
       // Reload the selected mission detail to reflect updated mission state (autopilot, status, etc.)
-      if (selectedMission) {
-        void loadMissionDetail(selectedMission.id);
+      if (selectedMissionRef.current) {
+        void loadMissionDetail(selectedMissionRef.current.id);
       }
     };
 
     const handleSliceUpdated = (rawEvent: Event) => {
       refreshHealth();
       // Reload the selected mission detail to reflect updated slice status
-      if (selectedMission) {
-        void loadMissionDetail(selectedMission.id);
+      if (selectedMissionRef.current) {
+        void loadMissionDetail(selectedMissionRef.current.id);
       }
     };
 
     const handleFeatureUpdated = () => {
       refreshHealth();
       // Reload the selected mission detail to reflect updated feature status
-      if (selectedMission) {
-        void loadMissionDetail(selectedMission.id);
+      if (selectedMissionRef.current) {
+        void loadMissionDetail(selectedMissionRef.current.id);
       }
     };
 
     const handleMilestoneUpdated = (_rawEvent: Event) => {
       refreshHealth();
       // Reload the selected mission detail to reflect updated milestone status
-      if (selectedMission) {
-        void loadMissionDetail(selectedMission.id);
+      if (selectedMissionRef.current) {
+        void loadMissionDetail(selectedMissionRef.current.id);
       }
     };
 
@@ -860,8 +870,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           // Refresh validation runs
           void loadValidationRuns(payload.featureId);
           // Refresh mission detail to update feature status
-          if (selectedMission) {
-            void loadMissionDetail(selectedMission.id);
+          if (selectedMissionRef.current) {
+            void loadMissionDetail(selectedMissionRef.current.id);
           }
         }
       } catch {
@@ -908,8 +918,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           // Refresh feature loop state for the source feature
           void loadFeatureLoopState(payload.sourceFeatureId);
           // Refresh mission detail to show the new fix feature in the list
-          if (selectedMission) {
-            void loadMissionDetail(selectedMission.id);
+          if (selectedMissionRef.current) {
+            void loadMissionDetail(selectedMissionRef.current.id);
           }
         }
       } catch {
@@ -920,7 +930,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     const handleMissionEvent = (rawEvent: Event) => {
       refreshHealth();
 
-      if (!selectedMission || activeTab !== "activity") {
+      const currentSelectedMission = selectedMissionRef.current;
+      if (!currentSelectedMission || activeTabRef.current !== "activity") {
         return;
       }
 
@@ -935,10 +946,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         if (!isMissionEvent(payload)) {
           return;
         }
-        if (payload.missionId !== selectedMission.id) {
+        if (payload.missionId !== currentSelectedMission.id) {
           return;
         }
-        if (!matchesEventFilter(payload.eventType, eventsFilter)) {
+        if (!matchesEventFilter(payload.eventType, eventsFilterRef.current)) {
           return;
         }
 
@@ -995,16 +1006,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       eventSource.close();
     };
   }, [
-    activeTab,
-    eventsFilter,
     isActive,
     isActivityScrolledNearBottom,
     loadMissionDetail,
     loadMissionHealth,
-    missions,
     projectId,
-    scrollActivityToLatest,
-    selectedMission,
   ]);
 
   // Mission handlers

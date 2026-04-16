@@ -131,7 +131,12 @@ export class InProcessRuntime
 
     try {
       // 1. Initialize TaskStore (use external if provided, otherwise create new)
-      const { TaskStore, PluginStore: PluginStoreClass, PluginLoader: PluginLoaderClass } = await import("@fusion/core");
+      const {
+        TaskStore,
+        PluginStore: PluginStoreClass,
+        PluginLoader: PluginLoaderClass,
+        MessageStore: MessageStoreClass,
+      } = await import("@fusion/core");
       if (this.config.externalTaskStore) {
         this.taskStore = this.config.externalTaskStore;
         runtimeLog.log(`TaskStore provided externally for project ${this.config.projectId}`);
@@ -140,6 +145,9 @@ export class InProcessRuntime
         await this.taskStore.init();
         runtimeLog.log(`TaskStore initialized for project ${this.config.projectId}`);
       }
+
+      // Initialize MessageStore early so TaskExecutor receives send_message capability.
+      this.messageStore = new MessageStoreClass(this.taskStore.getDatabase());
 
       // 2. Initialize Plugin system (PluginStore + PluginLoader + PluginRunner)
       this.pluginStore = new PluginStoreClass(this.taskStore.getFusionDir());
@@ -263,6 +271,7 @@ export class InProcessRuntime
         usageLimitPauser: this.usageLimitPauser,
         stuckTaskDetector: this.stuckTaskDetector,
         pluginRunner: this.pluginRunner,
+        messageStore: this.messageStore,
         missionStore,
         onSliceComplete: (slice) => {
           void this.scheduler.onSliceComplete(slice);
@@ -353,12 +362,9 @@ export class InProcessRuntime
 
       // 6. Initialize AgentStore and HeartbeatMonitor
       try {
-        const { AgentStore: AgentStoreClass, MessageStore: MessageStoreClass } = await import("@fusion/core");
+        const { AgentStore: AgentStoreClass } = await import("@fusion/core");
         this.agentStore = new AgentStoreClass({ rootDir: this.taskStore.getFusionDir() });
         await this.agentStore.init();
-
-        // Initialize MessageStore for wake-on-message behavior
-        this.messageStore = new MessageStoreClass(this.taskStore.getDatabase());
 
         this.heartbeatMonitor = new HeartbeatMonitor({
           store: this.agentStore,
@@ -716,6 +722,14 @@ export class InProcessRuntime
    */
   getAgentStore(): import("@fusion/core").AgentStore | undefined {
     return this.agentStore;
+  }
+
+  /**
+   * Get the MessageStore instance (if initialized).
+   * Returns undefined before start() or if initialization fails.
+   */
+  getMessageStore(): import("@fusion/core").MessageStore | undefined {
+    return this.messageStore;
   }
 
   /**
