@@ -13,8 +13,6 @@
  * - Error mapping (validation 400, not found 404, AI/parser 500/503)
  */
 
-import { randomUUID } from "node:crypto";
-
 // Dynamic import for @fusion/engine to avoid resolution issues in test environment
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let createKbAgent: any;
@@ -96,6 +94,9 @@ Do NOT include any markdown formatting, code fences, or additional text. Only ou
 
 /** Maximum length for goal prompt */
 const MAX_GOAL_PROMPT_LENGTH = 4000;
+
+/** Timeout for AI suggestion generation (2 minutes) */
+export const SUGGESTION_TIMEOUT_MS = 120_000;
 
 /** Default number of suggestions to generate */
 const DEFAULT_SUGGESTION_COUNT = 5;
@@ -364,122 +365,132 @@ export async function generateMilestoneSuggestions(
     throw new Error("rootDir is required for AI-powered suggestion generation");
   }
 
-  // Create a unique session ID for this generation
-  const sessionId = randomUUID();
+  // Race AI generation against a timeout to prevent hanging requests
+  const result = await Promise.race([
+    (async () => {
+      let agent: ReturnType<typeof createKbAgent> | undefined;
 
-  let agent: ReturnType<typeof createKbAgent> | undefined;
-
-  try {
-    // Create AI agent with milestone suggestion system prompt
-    agent = await createKbAgent({
-      cwd: rootDir,
-      systemPrompt: MILESTONE_SUGGESTION_SYSTEM_PROMPT,
-      tools: "readonly",
-      ...(modelProvider && modelId
-        ? {
-            defaultProvider: modelProvider,
-            defaultModelId: modelId,
-          }
-        : {}),
-      onThinking: () => {
-        // Ignore thinking output for milestone suggestions
-      },
-      onText: () => {
-        // Ignore incremental text
-      },
-    });
-
-    // Send the goal prompt with count instruction
-    const userMessage = `Please suggest ${count} milestones for the following roadmap goal:\n\n${goalPrompt.trim()}`;
-
-    // Get response from AI
-    await agent.session.prompt(userMessage);
-
-    // Extract response text from agent state
-    interface AgentMessage {
-      role: string;
-      content?: string | Array<{ type: string; text: string }>;
-    }
-    const lastMessage = (agent.session.state.messages as AgentMessage[])
-      .filter((m: AgentMessage) => m.role === "assistant")
-      .pop();
-
-    let responseText = "";
-    if (lastMessage?.content) {
-      if (typeof lastMessage.content === "string") {
-        responseText = lastMessage.content;
-      } else if (Array.isArray(lastMessage.content)) {
-        responseText = lastMessage.content
-          .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
-          .map((c: { type: string; text: string }) => c.text)
-          .join("");
-      }
-    }
-
-    // Parse the JSON response with retry
-    let suggestions: MilestoneSuggestion[] | undefined;
-    let lastError: Error | undefined;
-
-    for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
       try {
-        suggestions = parseMilestoneSuggestions(responseText);
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+        // Create AI agent with milestone suggestion system prompt
+        agent = await createKbAgent({
+          cwd: rootDir,
+          systemPrompt: MILESTONE_SUGGESTION_SYSTEM_PROMPT,
+          tools: "readonly",
+          ...(modelProvider && modelId
+            ? {
+                defaultProvider: modelProvider,
+                defaultModelId: modelId,
+              }
+            : {}),
+          onThinking: () => {
+            // Ignore thinking output for milestone suggestions
+          },
+          onText: () => {
+            // Ignore incremental text
+          },
+        });
 
-        if (attempt < MAX_PARSE_RETRIES) {
-          // Retry: ask the AI to reformat as clean JSON
+        // Send the goal prompt with count instruction
+        const userMessage = `Please suggest ${count} milestones for the following roadmap goal:\n\n${goalPrompt.trim()}`;
+
+        // Get response from AI
+        await agent.session.prompt(userMessage);
+
+        // Extract response text from agent state
+        interface AgentMessage {
+          role: string;
+          content?: string | Array<{ type: string; text: string }>;
+        }
+        const lastMessage = (agent.session.state.messages as AgentMessage[])
+          .filter((m: AgentMessage) => m.role === "assistant")
+          .pop();
+
+        let responseText = "";
+        if (lastMessage?.content) {
+          if (typeof lastMessage.content === "string") {
+            responseText = lastMessage.content;
+          } else if (Array.isArray(lastMessage.content)) {
+            responseText = lastMessage.content
+              .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
+              .map((c: { type: string; text: string }) => c.text)
+              .join("");
+          }
+        }
+
+        // Parse the JSON response with retry
+        let suggestions: MilestoneSuggestion[] | undefined;
+        let lastError: Error | undefined;
+
+        for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
           try {
-            await agent.session.prompt(
-              "Your previous response could not be parsed as JSON. " +
-              "Please respond with ONLY a JSON array of milestone suggestions in this format: " +
-              '[{"title": "Milestone Title", "description": "Brief description"}, ...]. ' +
-              "No markdown, no explanation, just the JSON array."
-            );
+            suggestions = parseMilestoneSuggestions(responseText);
+            break;
+          } catch (err) {
+            lastError = err instanceof Error ? err : new Error(String(err));
 
-            // Get the new response text
-            const retryMessage = (agent.session.state.messages as AgentMessage[])
-              .filter((m: AgentMessage) => m.role === "assistant")
-              .pop();
+            if (attempt < MAX_PARSE_RETRIES) {
+              // Retry: ask the AI to reformat as clean JSON
+              try {
+                await agent.session.prompt(
+                  "Your previous response could not be parsed as JSON. " +
+                  "Please respond with ONLY a JSON array of milestone suggestions in this format: " +
+                  '[{"title": "Milestone Title", "description": "Brief description"}, ...]. ' +
+                  "No markdown, no explanation, just the JSON array."
+                );
 
-            let retryText = "";
-            if (retryMessage?.content) {
-              if (typeof retryMessage.content === "string") {
-                retryText = retryMessage.content;
-              } else if (Array.isArray(retryMessage.content)) {
-                retryText = retryMessage.content
-                  .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
-                  .map((c: { type: string; text: string }) => c.text)
-                  .join("");
+                // Get the new response text
+                const retryMessage = (agent.session.state.messages as AgentMessage[])
+                  .filter((m: AgentMessage) => m.role === "assistant")
+                  .pop();
+
+                let retryText = "";
+                if (retryMessage?.content) {
+                  if (typeof retryMessage.content === "string") {
+                    retryText = retryMessage.content;
+                  } else if (Array.isArray(retryMessage.content)) {
+                    retryText = retryMessage.content
+                      .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
+                      .map((c: { type: string; text: string }) => c.text)
+                      .join("");
+                  }
+                }
+                responseText = retryText;
+              } catch {
+                // Retry prompt itself failed — give up
+                break;
               }
             }
-            responseText = retryText;
+          }
+        }
+
+        if (!suggestions) {
+          throw new ParseError(
+            `Failed to parse AI response after ${MAX_PARSE_RETRIES + 1} attempts: ${lastError?.message || "Unknown error"}`
+          );
+        }
+
+        // Limit to requested count
+        return suggestions.slice(0, count);
+      } finally {
+        // Always dispose the agent session (inside the raced promise so cleanup happens when this settles)
+        if (agent) {
+          try {
+            agent.session.dispose?.();
           } catch {
-            // Retry prompt itself failed — give up
-            break;
+            // Ignore disposal errors
           }
         }
       }
-    }
+    })(),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new ServiceUnavailableError("AI suggestion generation timed out. Please try again.")),
+        SUGGESTION_TIMEOUT_MS
+      )
+    ),
+  ]);
 
-    if (!suggestions) {
-      throw new ParseError(
-        `Failed to parse AI response after ${MAX_PARSE_RETRIES + 1} attempts: ${lastError?.message || "Unknown error"}`
-      );
-    }
-
-    // Limit to requested count
-    return suggestions.slice(0, count);
-  } finally {
-    // Always dispose the agent session
-    if (agent) {
-      try {
-        agent.session.dispose?.();
-      } catch {
-        // Ignore disposal errors
-      }
-    }
-  }
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -722,122 +733,135 @@ export async function generateFeatureSuggestions(
     milestoneContextStr
   );
 
-  let agent: ReturnType<typeof createKbAgent> | undefined;
+  // Race AI generation against a timeout to prevent hanging requests
+  const result = await Promise.race([
+    (async () => {
+      let agent: ReturnType<typeof createKbAgent> | undefined;
 
-  try {
-    // Create AI agent with feature suggestion system prompt
-    agent = await createKbAgent({
-      cwd: rootDir,
-      systemPrompt,
-      tools: "readonly",
-      ...(modelProvider && modelId
-        ? {
-            defaultProvider: modelProvider,
-            defaultModelId: modelId,
-          }
-        : {}),
-      onThinking: () => {
-        // Ignore thinking output for feature suggestions
-      },
-      onText: () => {
-        // Ignore incremental text
-      },
-    });
-
-    // Build the user message
-    let userMessage = `Please suggest ${count} features for the milestone described above.`;
-    if (prompt && prompt.trim()) {
-      userMessage += `\n\nAdditional guidance:\n${prompt.trim()}`;
-    }
-
-    // Get response from AI
-    await agent.session.prompt(userMessage);
-
-    // Extract response text from agent state
-    interface AgentMessage {
-      role: string;
-      content?: string | Array<{ type: string; text: string }>;
-    }
-    const lastMessage = (agent.session.state.messages as AgentMessage[])
-      .filter((m: AgentMessage) => m.role === "assistant")
-      .pop();
-
-    let responseText = "";
-    if (lastMessage?.content) {
-      if (typeof lastMessage.content === "string") {
-        responseText = lastMessage.content;
-      } else if (Array.isArray(lastMessage.content)) {
-        responseText = lastMessage.content
-          .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
-          .map((c: { type: string; text: string }) => c.text)
-          .join("");
-      }
-    }
-
-    // Parse the JSON response with retry
-    let suggestions: FeatureSuggestion[] | undefined;
-    let lastError: Error | undefined;
-
-    for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
       try {
-        suggestions = parseFeatureSuggestions(responseText);
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+        // Create AI agent with feature suggestion system prompt
+        agent = await createKbAgent({
+          cwd: rootDir,
+          systemPrompt,
+          tools: "readonly",
+          ...(modelProvider && modelId
+            ? {
+                defaultProvider: modelProvider,
+                defaultModelId: modelId,
+              }
+            : {}),
+          onThinking: () => {
+            // Ignore thinking output for feature suggestions
+          },
+          onText: () => {
+            // Ignore incremental text
+          },
+        });
 
-        if (attempt < MAX_PARSE_RETRIES) {
-          // Retry: ask the AI to reformat as clean JSON
+        // Build the user message
+        let userMessage = `Please suggest ${count} features for the milestone described above.`;
+        if (prompt && prompt.trim()) {
+          userMessage += `\n\nAdditional guidance:\n${prompt.trim()}`;
+        }
+
+        // Get response from AI
+        await agent.session.prompt(userMessage);
+
+        // Extract response text from agent state
+        interface AgentMessage {
+          role: string;
+          content?: string | Array<{ type: string; text: string }>;
+        }
+        const lastMessage = (agent.session.state.messages as AgentMessage[])
+          .filter((m: AgentMessage) => m.role === "assistant")
+          .pop();
+
+        let responseText = "";
+        if (lastMessage?.content) {
+          if (typeof lastMessage.content === "string") {
+            responseText = lastMessage.content;
+          } else if (Array.isArray(lastMessage.content)) {
+            responseText = lastMessage.content
+              .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
+              .map((c: { type: string; text: string }) => c.text)
+              .join("");
+          }
+        }
+
+        // Parse the JSON response with retry
+        let suggestions: FeatureSuggestion[] | undefined;
+        let lastError: Error | undefined;
+
+        for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt++) {
           try {
-            await agent.session.prompt(
-              "Your previous response could not be parsed as JSON. " +
-              "Please respond with ONLY a JSON array of feature suggestions in this format: " +
-              '[{"title": "Feature Title", "description": "Brief description"}, ...]. ' +
-              "No markdown, no explanation, just the JSON array."
-            );
+            suggestions = parseFeatureSuggestions(responseText);
+            break;
+          } catch (err) {
+            lastError = err instanceof Error ? err : new Error(String(err));
 
-            // Get the new response text
-            const retryMessage = (agent.session.state.messages as AgentMessage[])
-              .filter((m: AgentMessage) => m.role === "assistant")
-              .pop();
+            if (attempt < MAX_PARSE_RETRIES) {
+              // Retry: ask the AI to reformat as clean JSON
+              try {
+                await agent.session.prompt(
+                  "Your previous response could not be parsed as JSON. " +
+                  "Please respond with ONLY a JSON array of feature suggestions in this format: " +
+                  '[{"title": "Feature Title", "description": "Brief description"}, ...]. ' +
+                  "No markdown, no explanation, just the JSON array."
+                );
 
-            let retryText = "";
-            if (retryMessage?.content) {
-              if (typeof retryMessage.content === "string") {
-                retryText = retryMessage.content;
-              } else if (Array.isArray(retryMessage.content)) {
-                retryText = retryMessage.content
-                  .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
-                  .map((c: { type: string; text: string }) => c.text)
-                  .join("");
+                // Get the new response text
+                const retryMessage = (agent.session.state.messages as AgentMessage[])
+                  .filter((m: AgentMessage) => m.role === "assistant")
+                  .pop();
+
+                let retryText = "";
+                if (retryMessage?.content) {
+                  if (typeof retryMessage.content === "string") {
+                    retryText = retryMessage.content;
+                  } else if (Array.isArray(retryMessage.content)) {
+                    retryText = retryMessage.content
+                      .filter((c: { type: string; text: string }): c is { type: "text"; text: string } => c.type === "text")
+                      .map((c: { type: string; text: string }) => c.text)
+                      .join("");
+                  }
+                }
+                responseText = retryText;
+              } catch {
+                // Retry prompt itself failed — give up
+                break;
               }
             }
-            responseText = retryText;
+          }
+        }
+
+        if (!suggestions) {
+          throw new ParseError(
+            `Failed to parse AI response after ${MAX_PARSE_RETRIES + 1} attempts: ${lastError?.message || "Unknown error"}`
+          );
+        }
+
+        // Limit to requested count
+        return suggestions.slice(0, count);
+      } finally {
+        // Always dispose the agent session (inside the raced promise so cleanup happens when this settles)
+        if (agent) {
+          try {
+            agent.session.dispose?.();
           } catch {
-            // Retry prompt itself failed — give up
-            break;
+            // Ignore disposal errors
           }
         }
       }
-    }
+    })(),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new ServiceUnavailableError("AI suggestion generation timed out. Please try again.")),
+        SUGGESTION_TIMEOUT_MS
+      )
+    ),
+  ]);
 
-    if (!suggestions) {
-      throw new ParseError(
-        `Failed to parse AI response after ${MAX_PARSE_RETRIES + 1} attempts: ${lastError?.message || "Unknown error"}`
-      );
-    }
-
-    // Limit to requested count
-    return suggestions.slice(0, count);
-  } finally {
-    // Always dispose the agent session
-    if (agent) {
-      try {
-        agent.session.dispose?.();
-      } catch {
-        // Ignore disposal errors
-      }
-    }
-  }
+  return result;
 }
 
 // ── Custom Errors ───────────────────────────────────────────────────────────

@@ -7,15 +7,25 @@ import { createRoadmapRouter } from "./roadmap-routes.js";
 import { ApiError } from "./api-error.js";
 import type { Roadmap, RoadmapMilestone, RoadmapFeature, RoadmapStore } from "@fusion/core";
 
-vi.mock("./roadmap-suggestions.js", () => ({
-  generateMilestoneSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
-  validateSuggestionInput: vi.fn(),
-  generateFeatureSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
-  validateFeatureSuggestionInput: vi.fn(),
-  ValidationError: class extends Error { name = "ValidationError"; constructor(m: string) { super(m); } },
-  ParseError: class extends Error { name = "ParseError"; constructor(m: string) { super(m); } },
-  ServiceUnavailableError: class extends Error { name = "ServiceUnavailableError"; constructor(m: string) { super(m); } },
-}));
+
+// vi.mock is hoisted
+vi.mock("./roadmap-suggestions.js", () => {
+  // Define error classes inside the factory - these will be used by the mocked module
+  class MockValidationError extends Error { name = "ValidationError"; constructor(m: string) { super(m); } }
+  class MockParseError extends Error { name = "ParseError"; constructor(m: string) { super(m); } }
+  class MockServiceUnavailableError extends Error { name = "ServiceUnavailableError"; constructor(m: string) { super(m); } }
+
+  return {
+    generateMilestoneSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+    validateSuggestionInput: vi.fn(),
+    generateFeatureSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+    validateFeatureSuggestionInput: vi.fn(),
+    ValidationError: MockValidationError,
+    ParseError: MockParseError,
+    ServiceUnavailableError: MockServiceUnavailableError,
+    SUGGESTION_TIMEOUT_MS: 120_000,
+  };
+});
 
 const mockGetOrCreateProjectStore = vi.fn();
 vi.mock("./project-store-resolver.js", () => ({
@@ -562,6 +572,59 @@ describe("Roadmap Routes", () => {
       expect(response.body.source.milestoneTitle).toBe("Phase 1");
       expect(response.body.title).toBe("Feature A");
       expect(response.body.description).toBe("Feature desc");
+    });
+  });
+
+  describe("POST /api/roadmaps/:roadmapId/suggestions/milestones", () => {
+    it("returns 503 when generation times out", async () => {
+      // Import the mocked module
+      const mod = await import("./roadmap-suggestions.js");
+
+      // Create an instance of the mocked ServiceUnavailableError
+      const error = new mod.ServiceUnavailableError("AI suggestion generation timed out. Please try again.");
+
+      // Mock to throw ServiceUnavailableError with timeout message
+      (mod.generateMilestoneSuggestions as ReturnType<typeof vi.fn>).mockRejectedValue(error);
+
+      const roadmap = mockRoadmapStore.createRoadmap({ title: "Test Roadmap" });
+
+      const response = await performRequest(
+        app,
+        "POST",
+        "/api/roadmaps/" + roadmap.id + "/suggestions/milestones",
+        JSON.stringify({ goalPrompt: "Build a platform", count: 5 }),
+        { "Content-Type": "application/json" }
+      );
+
+      expect(response.status).toBe(503);
+      expect(response.body.error).toContain("timed out");
+    });
+  });
+
+  describe("POST /api/roadmaps/milestones/:milestoneId/suggestions/features", () => {
+    it("returns 503 when generation times out", async () => {
+      // Import the mocked module - vi.mocked helps with type inference
+      const mod = vi.mocked(await import("./roadmap-suggestions.js"));
+
+      // Create an instance of the mocked ServiceUnavailableError
+      const error = new mod.ServiceUnavailableError("AI suggestion generation timed out. Please try again.");
+
+      // Mock to throw ServiceUnavailableError with timeout message
+      mod.generateFeatureSuggestions.mockRejectedValue(error);
+
+      const roadmap = mockRoadmapStore.createRoadmap({ title: "Test Roadmap" });
+      const milestone = mockRoadmapStore.createMilestone(roadmap.id, { title: "Phase 1" });
+
+      const response = await performRequest(
+        app,
+        "POST",
+        "/api/roadmaps/milestones/" + milestone.id + "/suggestions/features",
+        JSON.stringify({ count: 5 }),
+        { "Content-Type": "application/json" }
+      );
+
+      expect(response.status).toBe(503);
+      expect(response.body.error).toContain("timed out");
     });
   });
 });

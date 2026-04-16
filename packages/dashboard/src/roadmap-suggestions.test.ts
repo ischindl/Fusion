@@ -6,6 +6,8 @@ import {
   generateFeatureSuggestions,
   ValidationError,
   ParseError,
+  ServiceUnavailableError,
+  SUGGESTION_TIMEOUT_MS,
   __resetSuggestionState,
   __setCreateKbAgent,
 } from "./roadmap-suggestions";
@@ -616,6 +618,43 @@ describe("roadmap-suggestions", () => {
           defaultModelId: "gpt-4o",
         })
       );
+    });
+
+    it("times out when AI prompt hangs", async () => {
+      // Create a mock session whose prompt hangs (never resolves)
+      const mockSession = {
+        prompt: vi.fn().mockReturnValue(
+          new Promise<undefined>(() => {
+            // Never resolves - simulates hanging AI
+          })
+        ),
+        dispose: vi.fn(),
+        state: {
+          messages: [],
+        },
+      };
+
+      const mockCreateKbAgent = vi.fn().mockResolvedValue({
+        session: mockSession,
+      });
+
+      __setCreateKbAgent(mockCreateKbAgent);
+
+      // Use fake timers
+      vi.useFakeTimers();
+
+      try {
+        const promise = generateMilestoneSuggestions("Test goal", 5, rootDir);
+
+        // Advance timers past the timeout threshold
+        await vi.advanceTimersByTimeAsync(SUGGESTION_TIMEOUT_MS + 100);
+
+        // The promise should reject with ServiceUnavailableError
+        await expect(promise).rejects.toThrow(ServiceUnavailableError);
+        await expect(promise).rejects.toThrow(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -1405,6 +1444,43 @@ describe("roadmap-suggestions", () => {
       expect(suggestions).toHaveLength(2);
       expect(suggestions[0]).toEqual({ title: "Valid", description: undefined });
       expect(suggestions[1]).toEqual({ title: "Also Valid", description: undefined });
+    });
+
+    it("times out when AI prompt hangs", async () => {
+      // Create a mock session whose prompt hangs (never resolves)
+      const mockSession = {
+        prompt: vi.fn().mockReturnValue(
+          new Promise<undefined>(() => {
+            // Never resolves - simulates hanging AI
+          })
+        ),
+        dispose: vi.fn(),
+        state: {
+          messages: [],
+        },
+      };
+
+      const mockCreateKbAgent = vi.fn().mockResolvedValue({
+        session: mockSession,
+      });
+
+      __setCreateKbAgent(mockCreateKbAgent);
+
+      // Use fake timers
+      vi.useFakeTimers();
+
+      try {
+        const promise = generateFeatureSuggestions(baseContext, 5, undefined, rootDir);
+
+        // Advance timers past the timeout threshold
+        await vi.advanceTimersByTimeAsync(SUGGESTION_TIMEOUT_MS + 100);
+
+        // The promise should reject with ServiceUnavailableError
+        await expect(promise).rejects.toThrow(ServiceUnavailableError);
+        await expect(promise).rejects.toThrow(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

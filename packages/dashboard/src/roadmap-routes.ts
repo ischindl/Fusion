@@ -50,6 +50,7 @@ import {
   ValidationError as SuggestionValidationError,
   ParseError as SuggestionParseError,
   ServiceUnavailableError as SuggestionServiceUnavailableError,
+  SUGGESTION_TIMEOUT_MS,
 } from "./roadmap-suggestions.js";
 import { getOrCreateProjectStore } from "./project-store-resolver.js";
 
@@ -452,6 +453,21 @@ export function createRoadmapRouter(store: TaskStore): Router {
    * Generate milestone suggestions using AI.
    */
   router.post("/:roadmapId/suggestions/milestones", async (req, res) => {
+    // Route-level timeout as safety net (slightly longer than internal timeout)
+    const ROUTE_TIMEOUT_MS = SUGGESTION_TIMEOUT_MS + 10_000;
+    let routeTimedOut = false;
+    const routeTimeoutId = setTimeout(() => {
+      routeTimedOut = true;
+      if (!res.headersSent) {
+        res.status(503).json({ error: "Request timed out" });
+      }
+    }, ROUTE_TIMEOUT_MS);
+
+    // Clean up timeout on connection close
+    res.on("close", () => {
+      if (routeTimeoutId) clearTimeout(routeTimeoutId);
+    });
+
     try {
       const roadmapStore = getScopedStore().getRoadmapStore();
       const scopedStore = getScopedStore();
@@ -500,6 +516,8 @@ export function createRoadmapRouter(store: TaskStore): Router {
     } catch (err) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err, "Failed to generate milestone suggestions");
+    } finally {
+      if (routeTimeoutId) clearTimeout(routeTimeoutId);
     }
   });
 
@@ -508,6 +526,21 @@ export function createRoadmapRouter(store: TaskStore): Router {
    * Generate feature suggestions using AI.
    */
   router.post("/milestones/:milestoneId/suggestions/features", async (req, res) => {
+    // Route-level timeout as safety net (slightly longer than internal timeout)
+    const ROUTE_TIMEOUT_MS = SUGGESTION_TIMEOUT_MS + 10_000;
+    let routeTimedOut = false;
+    const routeTimeoutId = setTimeout(() => {
+      routeTimedOut = true;
+      if (!res.headersSent) {
+        res.status(503).json({ error: "Request timed out" });
+      }
+    }, ROUTE_TIMEOUT_MS);
+
+    // Clean up timeout on connection close
+    res.on("close", () => {
+      if (routeTimeoutId) clearTimeout(routeTimeoutId);
+    });
+
     try {
       const roadmapStore = getScopedStore().getRoadmapStore();
       const scopedStore = getScopedStore();
@@ -576,6 +609,8 @@ export function createRoadmapRouter(store: TaskStore): Router {
     } catch (err) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err, "Failed to generate feature suggestions");
+    } finally {
+      if (routeTimeoutId) clearTimeout(routeTimeoutId);
     }
   });
 
