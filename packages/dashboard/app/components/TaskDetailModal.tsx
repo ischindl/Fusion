@@ -193,6 +193,19 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
+function sameStringArray(a: string[] = [], b: string[] = []): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function splitModelSelection(value: string): { provider: string; modelId: string } | null {
+  const slashIdx = value.indexOf("/");
+  if (!value || slashIdx === -1) return null;
+  return {
+    provider: value.slice(0, slashIdx),
+    modelId: value.slice(slashIdx + 1),
+  };
+}
+
 const DESCRIPTION_TRUNCATE_LENGTH = 200;
 
 const EDITABLE_COLUMNS: Set<Column> = new Set(["triage", "todo"]);
@@ -529,26 +542,54 @@ export function TaskDetailModal({
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      // Build update payload with all changed fields
-      const executorSlashIdx = editExecutorModel.indexOf("/");
-      const validatorSlashIdx = editValidatorModel.indexOf("/");
-      const planningSlashIdx = editPlanningModel.indexOf("/");
+      const updates: Parameters<typeof updateTask>[1] = {};
+      const trimmedTitle = editTitle.trim();
+      const trimmedDescription = editDescription.trim();
 
-      const updates: Parameters<typeof updateTask>[1] = {
-        title: editTitle.trim() || undefined,
-        description: editDescription.trim() || undefined,
-        dependencies: editDependencies,
-        enabledWorkflowSteps: editSelectedWorkflowSteps,
-        modelProvider: editExecutorModel && executorSlashIdx !== -1 ? editExecutorModel.slice(0, executorSlashIdx) : null,
-        modelId: editExecutorModel && executorSlashIdx !== -1 ? editExecutorModel.slice(executorSlashIdx + 1) : null,
-        validatorModelProvider: editValidatorModel && validatorSlashIdx !== -1 ? editValidatorModel.slice(0, validatorSlashIdx) : null,
-        validatorModelId: editValidatorModel && validatorSlashIdx !== -1 ? editValidatorModel.slice(validatorSlashIdx + 1) : null,
-        planningModelProvider: editPlanningModel && planningSlashIdx !== -1 ? editPlanningModel.slice(0, planningSlashIdx) : null,
-        planningModelId: editPlanningModel && planningSlashIdx !== -1 ? editPlanningModel.slice(planningSlashIdx + 1) : null,
-        thinkingLevel: editThinkingLevel !== "" ? (editThinkingLevel as "minimal" | "low" | "medium" | "high") : null,
-      };
+      if (trimmedTitle && trimmedTitle !== (task.title ?? "")) {
+        updates.title = trimmedTitle;
+      }
+      if (trimmedDescription && trimmedDescription !== (task.description ?? "")) {
+        updates.description = trimmedDescription;
+      }
+      if (!sameStringArray(editDependencies, task.dependencies ?? [])) {
+        updates.dependencies = editDependencies;
+      }
+      if (!sameStringArray(editSelectedWorkflowSteps, task.enabledWorkflowSteps ?? [])) {
+        updates.enabledWorkflowSteps = editSelectedWorkflowSteps;
+      }
 
-      await updateTask(task.id, updates, projectId);
+      const executorSelection = splitModelSelection(editExecutorModel);
+      const currentExecutorModel = task.modelProvider && task.modelId ? `${task.modelProvider}/${task.modelId}` : "";
+      if (editExecutorModel !== currentExecutorModel) {
+        updates.modelProvider = executorSelection?.provider ?? null;
+        updates.modelId = executorSelection?.modelId ?? null;
+      }
+
+      const validatorSelection = splitModelSelection(editValidatorModel);
+      const currentValidatorModel = task.validatorModelProvider && task.validatorModelId ? `${task.validatorModelProvider}/${task.validatorModelId}` : "";
+      if (editValidatorModel !== currentValidatorModel) {
+        updates.validatorModelProvider = validatorSelection?.provider ?? null;
+        updates.validatorModelId = validatorSelection?.modelId ?? null;
+      }
+
+      const planningSelection = splitModelSelection(editPlanningModel);
+      const currentPlanningModel = task.planningModelProvider && task.planningModelId ? `${task.planningModelProvider}/${task.planningModelId}` : "";
+      if (editPlanningModel !== currentPlanningModel) {
+        updates.planningModelProvider = planningSelection?.provider ?? null;
+        updates.planningModelId = planningSelection?.modelId ?? null;
+      }
+
+      const currentThinkingLevel = task.thinkingLevel ?? "";
+      if (editThinkingLevel !== currentThinkingLevel) {
+        updates.thinkingLevel = editThinkingLevel !== "" ? (editThinkingLevel as "minimal" | "low" | "medium" | "high") : null;
+      }
+
+      const hasTaskUpdates = Object.keys(updates).length > 0;
+      if (hasTaskUpdates) {
+        const updatedTask = await updateTask(task.id, updates, projectId);
+        onTaskUpdated?.(updatedTask);
+      }
 
       // Upload pending images as attachments
       if (editPendingImages.length > 0) {
@@ -578,7 +619,7 @@ export function TaskDetailModal({
         setIsSaving(false);
       }
     }
-  }, [task.id, editTitle, editDescription, editDependencies, editExecutorModel, editValidatorModel, editPlanningModel, editThinkingLevel, editSelectedWorkflowSteps, editPendingImages, addToast, projectId]);
+  }, [task, editTitle, editDescription, editDependencies, editExecutorModel, editValidatorModel, editPlanningModel, editThinkingLevel, editSelectedWorkflowSteps, editPendingImages, addToast, projectId, onTaskUpdated]);
 
   const handleAutoSaveDescription = useCallback(async (description: string) => {
     try {

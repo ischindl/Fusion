@@ -902,19 +902,41 @@ export class TriageProcessor {
           }
 
           // Post-session APPROVE gate: only advance to todo when the spec
-          // reviewer explicitly approved.  Any other verdict (REVISE,
-          // RETHINK, UNAVAILABLE) or a missing review (null) keeps the task
-          // in triage so unreviewed / rejected specs never reach execution.
+          // reviewer explicitly approved. Any other verdict (REVISE,
+          // RETHINK, UNAVAILABLE) or a missing review (null) stays in triage
+          // and is retried with bounded backoff instead of immediately failing.
           if (specReviewVerdictRef.current !== "APPROVE") {
             const verdictDesc =
               specReviewVerdictRef.current === null
                 ? "review_spec was never called"
                 : `verdict was ${specReviewVerdictRef.current}`;
+            const decision = computeRecoveryDecision({
+              recoveryRetryCount: task.recoveryRetryCount,
+              nextRecoveryAt: task.nextRecoveryAt,
+            });
+
+            if (decision.shouldRetry) {
+              const attempt = decision.nextState.recoveryRetryCount;
+              const delay = formatDelay(decision.delayMs);
+              const retryMessage =
+                `Spec review not approved (${verdictDesc}) — retry ${attempt}/${MAX_RECOVERY_RETRIES} in ${delay}.`;
+              triageLog.warn(`${task.id} ${retryMessage}`);
+              await this.store.logEntry(task.id, retryMessage);
+              const restoreStatus = task.status === "needs-respecify" ? "needs-respecify" : null;
+              await this.store.updateTask(task.id, {
+                status: restoreStatus,
+                error: null,
+                recoveryRetryCount: decision.nextState.recoveryRetryCount,
+                nextRecoveryAt: decision.nextState.nextRecoveryAt,
+              });
+              return;
+            }
+
             const failureMessage =
-              `Specification failed: spec review not approved (${verdictDesc}). ` +
+              `Specification failed after ${MAX_RECOVERY_RETRIES} unapproved spec reviews (${verdictDesc}). ` +
               "Retry after adjusting the task prompt or model.";
             triageLog.log(
-              `${task.id} spec review not approved (${verdictDesc}) — marking specification failed`,
+              `${task.id} spec review not approved (${verdictDesc}) — retry budget exhausted`,
             );
             await this.store.logEntry(
               task.id,

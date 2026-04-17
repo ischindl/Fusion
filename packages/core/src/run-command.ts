@@ -23,6 +23,8 @@ export interface RunCommandResult {
 }
 
 const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024;
+const FORCE_KILL_DELAY_MS = 5_000;
+const NORMAL_CLEANUP_FORCE_KILL_DELAY_MS = 500;
 
 /**
  * Run a shell command without blocking the Node.js event loop.
@@ -45,13 +47,37 @@ export function runCommandAsync(
     let stderr = "";
     let bufferExceeded = false;
     let timedOut = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    const useProcessGroup = process.platform !== "win32";
 
     const child = spawn(command, {
       cwd: options.cwd,
       env: options.env,
+      detached: useProcessGroup,
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    const signalProcessGroup = (signal: NodeJS.Signals): void => {
+      if (!child.pid) return;
+      try {
+        if (useProcessGroup) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch {
+        // The command may already have exited and cleaned up its process group.
+      }
+    };
+
+    const scheduleForceKill = (delayMs: number): void => {
+      if (forceKillTimer) return;
+      forceKillTimer = setTimeout(() => {
+        signalProcessGroup("SIGKILL");
+      }, delayMs);
+      forceKillTimer.unref();
+    };
 
     const append = (current: string, chunk: Buffer): string => {
       const s = chunk.toString("utf-8");
@@ -73,17 +99,17 @@ export function runCommandAsync(
     const timer = options.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
-          setTimeout(() => {
-            if (child.exitCode === null && child.signalCode === null) {
-              child.kill("SIGKILL");
-            }
-          }, 5_000).unref();
+          signalProcessGroup("SIGTERM");
+          scheduleForceKill(FORCE_KILL_DELAY_MS);
         }, options.timeoutMs)
       : null;
 
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
       resolve({
         stdout,
         stderr,
@@ -97,6 +123,16 @@ export function runCommandAsync(
 
     child.on("close", (code, signal) => {
       if (timer) clearTimeout(timer);
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+      // A shell command can exit successfully while leaving background children
+      // in its process group (for example test runners, qmd indexers, or dev
+      // servers launched with `&`). Clean the group after every run so Fusion
+      // agents do not leak processes beyond the command lifecycle.
+      signalProcessGroup("SIGTERM");
+      scheduleForceKill(NORMAL_CLEANUP_FORCE_KILL_DELAY_MS);
       resolve({
         stdout,
         stderr,

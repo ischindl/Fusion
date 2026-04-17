@@ -4134,6 +4134,9 @@ describe("TaskDetailModal", () => {
       // Enter edit mode
       fireEvent.click(container.querySelector(".modal-edit-btn")!);
 
+      const titleInput = container.querySelector("#task-form-title") as HTMLInputElement;
+      fireEvent.change(titleInput, { target: { value: "Changed title" } });
+
       // Click Save
       fireEvent.click(screen.getByText("Save"));
 
@@ -4162,6 +4165,9 @@ describe("TaskDetailModal", () => {
 
       // Enter edit mode
       fireEvent.click(container.querySelector(".modal-edit-btn")!);
+
+      const titleInput = container.querySelector("#task-form-title") as HTMLInputElement;
+      fireEvent.change(titleInput, { target: { value: "Changed title" } });
 
       // Click Save
       fireEvent.click(screen.getByText("Save"));
@@ -4195,6 +4201,9 @@ describe("TaskDetailModal", () => {
 
       // Enter edit mode
       fireEvent.click(container.querySelector(".modal-edit-btn")!);
+
+      const titleInput = container.querySelector("#task-form-title") as HTMLInputElement;
+      fireEvent.change(titleInput, { target: { value: "Changed title" } });
 
       // Click Save
       fireEvent.click(screen.getByText("Save"));
@@ -4276,7 +4285,7 @@ describe("TaskDetailModal", () => {
       expect(screen.getByText(/Workflow Steps/i)).toBeTruthy();
     });
 
-    it("save sends all changed fields via updateTask", async () => {
+    it("save sends only changed fields via updateTask", async () => {
       const { updateTask } = await import("../../api");
       const mockUpdate = vi.mocked(updateTask);
       mockUpdate.mockResolvedValueOnce({ id: "FN-001" } as Task);
@@ -4296,16 +4305,16 @@ describe("TaskDetailModal", () => {
       // Enter edit mode
       fireEvent.click(container.querySelector(".modal-edit-btn")!);
 
+      const descTextarea = container.querySelector("#task-form-description") as HTMLTextAreaElement;
+      fireEvent.change(descTextarea, { target: { value: "Updated desc" } });
+
       // Click Save
       fireEvent.click(screen.getByText("Save"));
 
       await waitFor(() => {
-        expect(mockUpdate).toHaveBeenCalledWith("FN-001", expect.objectContaining({
-          title: "Test",
-          description: "Desc",
-          dependencies: ["FN-002"],
-          enabledWorkflowSteps: [],
-        }), undefined);
+        expect(mockUpdate).toHaveBeenCalledWith("FN-001", {
+          description: "Updated desc",
+        }, undefined);
       });
     });
 
@@ -4408,12 +4417,10 @@ describe("TaskDetailModal", () => {
         expect(mockUpdateTask).toHaveBeenNthCalledWith(
           2,
           "FN-001",
-          expect.objectContaining({
-            modelProvider: "anthropic",
-            modelId: "claude-sonnet-4-5",
+          {
             validatorModelProvider: "openai",
             validatorModelId: "gpt-4o",
-          }),
+          },
         );
       });
 

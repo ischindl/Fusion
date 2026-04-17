@@ -11,7 +11,7 @@ Create a new task on the Fusion board. Enters triage for AI specification.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | ✓ | What needs to be done — be descriptive |
-| `depends` | string[] | — | Task IDs this depends on (e.g., ["KB-001"]) |
+| `depends` | string[] | — | Task IDs this depends on (e.g., ["FN-001"]) |
 
 Returns: task ID, column, dependencies, path
 
@@ -21,7 +21,7 @@ Update fields on an existing task (title, description, dependencies).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `id` | string | ✓ | Task ID (e.g., KB-001) |
+| `id` | string | ✓ | Task ID (e.g., FN-001) |
 | `title` | string | — | New task title |
 | `description` | string | — | New task description |
 | `depends` | string[] | — | New dependency list — replaces existing |
@@ -45,7 +45,7 @@ Show full task details including steps, progress, prompt preview, and log.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `id` | string | ✓ | Task ID (e.g., KB-001) |
+| `id` | string | ✓ | Task ID (e.g., FN-001) |
 
 Returns: task details with steps, prompt preview (500 chars), last 5 log entries
 
@@ -244,7 +244,7 @@ Link a feature to a kb task. Updates feature status to triaged.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `featureId` | string | ✓ | Feature ID (e.g., F-001) |
-| `taskId` | string | ✓ | Task ID (e.g., KB-001) |
+| `taskId` | string | ✓ | Task ID (e.g., FN-001) |
 
 ### fn_agent_stop
 

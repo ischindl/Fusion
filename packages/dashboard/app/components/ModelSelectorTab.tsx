@@ -237,26 +237,19 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
       setSavingTarget(target);
 
       try {
-        const updatedTask = await updateTask(requestTaskId, {
-          modelProvider: target === "executor"
-            ? nextSelection.provider ?? null
-            : previousSavedExecutor.provider ?? null,
-          modelId: target === "executor"
-            ? nextSelection.modelId ?? null
-            : previousSavedExecutor.modelId ?? null,
-          validatorModelProvider: target === "validator"
-            ? nextSelection.provider ?? null
-            : previousSavedValidator.provider ?? null,
-          validatorModelId: target === "validator"
-            ? nextSelection.modelId ?? null
-            : previousSavedValidator.modelId ?? null,
-          planningModelProvider: target === "planning"
-            ? nextSelection.provider ?? null
-            : previousSavedPlanning.provider ?? null,
-          planningModelId: target === "planning"
-            ? nextSelection.modelId ?? null
-            : previousSavedPlanning.modelId ?? null,
-        });
+        const updates: Parameters<typeof updateTask>[1] = {};
+        if (target === "executor") {
+          updates.modelProvider = nextSelection.provider ?? null;
+          updates.modelId = nextSelection.modelId ?? null;
+        } else if (target === "validator") {
+          updates.validatorModelProvider = nextSelection.provider ?? null;
+          updates.validatorModelId = nextSelection.modelId ?? null;
+        } else {
+          updates.planningModelProvider = nextSelection.provider ?? null;
+          updates.planningModelId = nextSelection.modelId ?? null;
+        }
+
+        const updatedTask = await updateTask(requestTaskId, updates);
 
         if (activeTaskIdRef.current !== requestTaskId) {
           return;

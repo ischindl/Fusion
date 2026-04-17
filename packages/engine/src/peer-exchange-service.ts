@@ -3,7 +3,7 @@ import type { NodeConfig, PeerSyncRequest, PeerSyncResponse } from "@fusion/core
 import { peerExchangeLog } from "./logger.js";
 
 export interface PeerExchangeServiceOptions {
-  /** Interval between peer sync cycles in milliseconds. Default: 60000 (1 minute) */
+  /** Interval between peer sync cycles in milliseconds. Default: 120000 (2 minutes) */
   syncIntervalMs?: number;
   /** When true, include settings and model auth data in peer sync exchanges. Default: false. */
   settingsSyncEnabled?: boolean;
@@ -70,7 +70,7 @@ export class PeerExchangeService {
    */
   constructor(centralCore: CentralCore, options: PeerExchangeServiceOptions = {}) {
     this.centralCore = centralCore;
-    this.syncIntervalMs = options.syncIntervalMs ?? 60_000; // 1 minute default
+    this.syncIntervalMs = options.syncIntervalMs ?? 120_000; // 2 minute default
     this.settingsSyncEnabled = options.settingsSyncEnabled ?? false;
     this.settingsSyncThrottleMs = options.settingsSyncThrottleMs ?? 300_000; // 5 minutes default
     this.globalSettings = options.globalSettings;

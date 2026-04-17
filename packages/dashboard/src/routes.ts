@@ -4618,10 +4618,12 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const { title, description, prompt, dependencies, enabledWorkflowSteps, modelProvider, modelId, validatorModelProvider, validatorModelId, planningModelProvider, planningModelId, thinkingLevel, assigneeUserId } = req.body;
+      const hasBodyField = (field: string) => Object.prototype.hasOwnProperty.call(req.body, field);
 
       // Validate model fields are strings or undefined/null
       const validateModelField = (value: unknown, name: string): string | null | undefined => {
-        if (value === undefined || value === null) return null;
+        if (value === undefined) return undefined;
+        if (value === null) return null;
         if (typeof value !== "string") {
           throw new Error(`${name} must be a string`);
         }
@@ -4648,21 +4650,22 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         }
       }
 
-      const task = await scopedStore.updateTask(req.params.id, {
-        title,
-        description,
-        prompt,
-        dependencies,
-        enabledWorkflowSteps,
-        modelProvider: validatedModelProvider,
-        modelId: validatedModelId,
-        validatorModelProvider: validatedValidatorModelProvider,
-        validatorModelId: validatedValidatorModelId,
-        planningModelProvider: validatedPlanningModelProvider,
-        planningModelId: validatedPlanningModelId,
-        thinkingLevel: thinkingLevel === null ? null : thinkingLevel,
-        assigneeUserId: validatedAssigneeUserId,
-      });
+      const updates: Parameters<typeof scopedStore.updateTask>[1] = {};
+      if (title !== undefined) updates.title = title;
+      if (description !== undefined) updates.description = description;
+      if (prompt !== undefined) updates.prompt = prompt;
+      if (dependencies !== undefined) updates.dependencies = dependencies;
+      if (enabledWorkflowSteps !== undefined) updates.enabledWorkflowSteps = enabledWorkflowSteps;
+      if (hasBodyField("modelProvider")) updates.modelProvider = validatedModelProvider;
+      if (hasBodyField("modelId")) updates.modelId = validatedModelId;
+      if (hasBodyField("validatorModelProvider")) updates.validatorModelProvider = validatedValidatorModelProvider;
+      if (hasBodyField("validatorModelId")) updates.validatorModelId = validatedValidatorModelId;
+      if (hasBodyField("planningModelProvider")) updates.planningModelProvider = validatedPlanningModelProvider;
+      if (hasBodyField("planningModelId")) updates.planningModelId = validatedPlanningModelId;
+      if (hasBodyField("thinkingLevel")) updates.thinkingLevel = thinkingLevel === null ? null : thinkingLevel;
+      if (hasBodyField("assigneeUserId")) updates.assigneeUserId = validatedAssigneeUserId;
+
+      const task = await scopedStore.updateTask(req.params.id, updates);
       res.json(task);
     } catch (err: unknown) {
       if (err instanceof ApiError) {

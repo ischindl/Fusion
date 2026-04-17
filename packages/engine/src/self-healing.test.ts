@@ -1120,6 +1120,72 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
+    it("moves stale in-review tasks with incomplete steps back to todo for retry", async () => {
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        taskStuckTimeoutMs: 1_000,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: "FN-1572",
+          column: "in-review",
+          paused: false,
+          status: null,
+          error: null,
+          worktree: "/tmp/test-project/.worktrees/fn-1572",
+          updatedAt: new Date(Date.now() - 5_000).toISOString(),
+          steps: [
+            { name: "Preflight", status: "done" },
+            { name: "Testing & Verification", status: "in-progress" },
+          ],
+          workflowStepResults: [],
+          mergeDetails: undefined,
+          log: [],
+        },
+      ]);
+
+      const result = await managerWithRecovery.recoverStaleIncompleteReviewTasks();
+
+      expect(result).toBe(1);
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-1572",
+        expect.stringContaining("in-review task still had incomplete steps"),
+      );
+      expect(store.moveTask).toHaveBeenCalledWith("FN-1572", "todo");
+
+      managerWithRecovery.stop();
+    });
+
+    it("does not move fresh in-review tasks with incomplete steps", async () => {
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        taskStuckTimeoutMs: 60_000,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: "FN-1573",
+          column: "in-review",
+          paused: false,
+          status: null,
+          updatedAt: new Date().toISOString(),
+          steps: [{ name: "Testing", status: "in-progress" }],
+          workflowStepResults: [],
+          log: [],
+        },
+      ]);
+
+      const result = await managerWithRecovery.recoverStaleIncompleteReviewTasks();
+
+      expect(result).toBe(0);
+      expect(store.moveTask).not.toHaveBeenCalled();
+
+      managerWithRecovery.stop();
+    });
+
     it("moves merged in-review tasks to done and clears transient merge state", async () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",

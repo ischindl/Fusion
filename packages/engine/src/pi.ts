@@ -381,7 +381,8 @@ function isRetryableModelSelectionError(message: string): boolean {
     || normalized.includes("overloaded")
     || normalized.includes("quota")
     || normalized.includes("capacity")
-    || normalized.includes("temporarily unavailable");
+    || normalized.includes("temporarily unavailable")
+    || normalized.includes("invalid temperature");
 }
 
 interface PackageManagerSettingsView {

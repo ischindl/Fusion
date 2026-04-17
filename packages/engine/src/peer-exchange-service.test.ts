@@ -111,6 +111,17 @@ describe("PeerExchangeService", () => {
       expect(service).toBeDefined();
     });
 
+    it("should use default sync interval of 120 seconds", () => {
+      mockListNodes.mockResolvedValue([]);
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+      const service = new PeerExchangeService(mockCentralCore);
+
+      service.start();
+
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 120_000);
+      service.stop();
+    });
+
     it("should default settingsSyncEnabled to false", async () => {
       const service = new PeerExchangeService(mockCentralCore);
       setupSuccessfulSync();

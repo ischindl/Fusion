@@ -36,6 +36,11 @@ type ExecFileAsync = (
 const qmdRefreshState = new Map<string, { lastStartedAt: number; inFlight?: Promise<void> }>();
 let qmdInstallPromise: Promise<boolean> | null = null;
 
+export function shouldSkipBackgroundQmdRefresh(): boolean {
+  return (process.env.VITEST === "true" || process.env.NODE_ENV === "test")
+    && process.env.FUSION_ENABLE_QMD_REFRESH_IN_TESTS !== "1";
+}
+
 // ── Type Definitions ────────────────────────────────────────────────
 
 /**
@@ -966,6 +971,10 @@ export async function refreshQmdProjectMemoryIndex(
 }
 
 export function scheduleQmdProjectMemoryRefresh(rootDir: string): void {
+  if (shouldSkipBackgroundQmdRefresh()) {
+    return;
+  }
+
   void refreshQmdProjectMemoryIndex(rootDir).catch(() => {
     // qmd is optional. Search falls back to local file scanning when refresh fails.
   });
@@ -1029,6 +1038,10 @@ export async function ensureQmdInstalledAndRefresh(rootDir: string): Promise<voi
 }
 
 export function scheduleQmdInstallAndRefresh(rootDir: string): void {
+  if (shouldSkipBackgroundQmdRefresh()) {
+    return;
+  }
+
   void ensureQmdInstalledAndRefresh(rootDir).catch(() => {
     // qmd remains optional at runtime. Search falls back to local file scanning.
   });

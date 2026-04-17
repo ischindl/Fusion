@@ -27,6 +27,7 @@ import {
   ensureQmdInstalled,
   qmdMemoryCollectionName,
   QMD_REFRESH_INTERVAL_MS,
+  shouldSkipBackgroundQmdRefresh,
 } from "./memory-backend.js";
 import type { MemoryBackend } from "./memory-backend.js";
 
@@ -479,6 +480,10 @@ describe("memory-backend", () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+
+      it("skips background qmd refreshes under Vitest by default", () => {
+        expect(shouldSkipBackgroundQmdRefresh()).toBe(true);
       });
 
       it("uses the OpenClaw qmd package install command", () => {

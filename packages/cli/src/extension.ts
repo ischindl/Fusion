@@ -136,7 +136,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_create",
-    label: "KB: Create Task",
+    label: "fn: Create Task",
     description:
       "Create a new task on the Fusion task board. The task enters the triage column " +
       "where the AI triage agent will specify it into a full prompt with steps, " +
@@ -150,7 +150,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       description: Type.String({ description: "What needs to be done — be descriptive" }),
       depends: Type.Optional(
         Type.Array(Type.String(), {
-          description: "Task IDs this depends on (e.g. ['KB-001', 'KB-002'])",
+          description: "Task IDs this depends on (e.g. ['FN-001', 'FN-002'])",
         }),
       ),
       agentId: Type.Optional(
@@ -203,7 +203,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_update",
-    label: "KB: Update Task",
+    label: "fn: Update Task",
     description:
       "Update fields on an existing task. Supports modifying the title, " +
       "description, dependencies, and assigned agent after task creation.",
@@ -213,12 +213,12 @@ export default function kbExtension(pi: ExtensionAPI) {
       "At least one field must be provided to update.",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID (e.g. FN-001)" }),
       title: Type.Optional(Type.String({ description: "New task title" })),
       description: Type.Optional(Type.String({ description: "New task description" })),
       depends: Type.Optional(
         Type.Array(Type.String(), {
-          description: "New dependency list — replaces existing dependencies (e.g. ['KB-001', 'KB-002'])",
+          description: "New dependency list — replaces existing dependencies (e.g. ['FN-001', 'FN-002'])",
         }),
       ),
       agentId: Type.Optional(
@@ -293,7 +293,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_list",
-    label: "KB: List Tasks",
+    label: "fn: List Tasks",
     description: "List all tasks on the Fusion board, grouped by column.",
     promptSnippet: "List all tasks on the Fusion board grouped by column",
     parameters: Type.Object({
@@ -351,11 +351,11 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_show",
-    label: "KB: Show Task",
+    label: "fn: Show Task",
     description: "Show full details for a task including steps, progress, and log entries.",
     promptSnippet: "Show full details for a Fusion task",
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID (e.g. FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -430,13 +430,13 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_attach",
-    label: "KB: Attach File",
+    label: "fn: Attach File",
     description:
       "Attach a file to a task. Supports images (png, jpg, gif, webp) and " +
       "text files (txt, log, json, yaml, yml, toml, csv, xml).",
     promptSnippet: "Attach a file to a Fusion task",
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID (e.g. FN-001)" }),
       path: Type.String({ description: "Path to the file to attach" }),
     }),
 
@@ -481,12 +481,12 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_pause",
-    label: "KB: Pause Task",
+    label: "fn: Pause Task",
     description:
       "Pause a task — stops all automated agent and scheduler interaction for this task.",
     promptSnippet: "Pause a Fusion task (stops automation)",
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID (e.g. FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -504,12 +504,12 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_unpause",
-    label: "KB: Unpause Task",
+    label: "fn: Unpause Task",
     description:
       "Unpause a task — resumes automated agent and scheduler interaction.",
     promptSnippet: "Unpause a Fusion task (resumes automation)",
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID (e.g. FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -527,7 +527,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_retry",
-    label: "KB: Retry Task",
+    label: "fn: Retry Task",
     description:
       "Retry a failed task — clears the error state and moves it back to the todo column for re-execution.",
     promptSnippet: "Retry a failed Fusion task (clears error, moves to todo)",
@@ -537,7 +537,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "The task will be moved to the todo column with error state cleared",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID to retry (e.g. KB-001). Must be in 'failed' state." }),
+      id: Type.String({ description: "Task ID to retry (e.g. FN-001). Must be in 'failed' state." }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -584,7 +584,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_duplicate",
-    label: "KB: Duplicate Task",
+    label: "fn: Duplicate Task",
     description:
       "Duplicate an existing task, creating a fresh copy in triage. " +
       "Copies the title and description but resets all execution state. " +
@@ -596,7 +596,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Dependencies, attachments, and execution state are NOT copied",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Source task ID to duplicate (e.g. KB-001)" }),
+      id: Type.String({ description: "Source task ID to duplicate (e.g. FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -614,7 +614,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_refine",
-    label: "KB: Refine Task",
+    label: "fn: Refine Task",
     description:
       "Request a refinement of a completed or in-review task. " +
       "Creates a new follow-up task in triage that references the original task as a dependency. " +
@@ -627,7 +627,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Provide clear feedback about what needs to be refined or improved",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID to refine (e.g. KB-001). Must be in 'done' or 'in-review' column." }),
+      id: Type.String({ description: "Task ID to refine (e.g. FN-001). Must be in 'done' or 'in-review' column." }),
       feedback: Type.String({ 
         description: "Description of what needs to be refined or improved",
         minLength: 1,
@@ -652,7 +652,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_archive",
-    label: "KB: Archive Task",
+    label: "fn: Archive Task",
     description:
       "Archive a done task (move from done → archived). " +
       "Archived tasks are preserved for historical reference but moved out of the main board view.",
@@ -663,7 +663,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Archived tasks can be unarchived later if needed",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID to archive (e.g. KB-001). Must be in 'done' column." }),
+      id: Type.String({ description: "Task ID to archive (e.g. FN-001). Must be in 'done' column." }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -681,7 +681,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_unarchive",
-    label: "KB: Unarchive Task",
+    label: "fn: Unarchive Task",
     description:
       "Unarchive an archived task (move from archived → done). " +
       "Restores the task to the done column.",
@@ -691,7 +691,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Only tasks in the 'archived' column can be unarchived",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID to unarchive (e.g. KB-001). Must be in 'archived' column." }),
+      id: Type.String({ description: "Task ID to unarchive (e.g. FN-001). Must be in 'archived' column." }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -709,7 +709,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_delete",
-    label: "KB: Delete Task",
+    label: "fn: Delete Task",
     description:
       "Permanently delete a task from the Fusion board. " +
       "Tasks are deleted immediately and cannot be recovered.",
@@ -720,7 +720,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Consider archiving instead of deleting for completed work you may need to reference later",
     ],
     parameters: Type.Object({
-      id: Type.String({ description: "Task ID to delete (e.g. KB-001)" }),
+      id: Type.String({ description: "Task ID to delete (e.g. FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -738,7 +738,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_import_github",
-    label: "KB: Import GitHub Issues",
+    label: "fn: Import GitHub Issues",
     description:
       "Import GitHub issues as Fusion tasks. Fetches open issues from a repository " +
       "and creates tasks in the triage column. Each task includes the issue title " +
@@ -829,7 +829,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_import_github_issue",
-    label: "KB: Import GitHub Issue",
+    label: "fn: Import GitHub Issue",
     description:
       "Import a specific GitHub issue as a Fusion task. Fetches the issue by number " +
       "and creates a single task in the triage column with the issue title and body.",
@@ -910,7 +910,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_browse_github_issues",
-    label: "KB: Browse GitHub Issues",
+    label: "fn: Browse GitHub Issues",
     description:
       "List open GitHub issues from a repository to browse before importing. " +
       "Returns issue numbers, titles, and URLs for selection. Use with fn_task_import_github_issue " +
@@ -1002,7 +1002,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_task_plan",
-    label: "KB: Plan Task",
+    label: "fn: Plan Task",
     description:
       "Create a task via AI-guided planning mode — interactive conversation to refine your idea into a well-specified task.",
     promptSnippet: "Create a task via AI-guided planning mode",
@@ -1050,8 +1050,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       // Parse created task ID from logs
-      const createdMatch = logs.find((l) => l.match(/Created (KB-\d+):/));
-      const taskId = createdMatch ? createdMatch.match(/Created (KB-\d+):/)?.[1] : undefined;
+      const createdMatch = logs.find((l) => l.match(/Created (FN-\d+):/));
+      const taskId = createdMatch ? createdMatch.match(/Created (FN-\d+):/)?.[1] : undefined;
 
       // Get summary line
       const summaryLine = logs.find((l) => l.includes("✓ Created")) || "Task created";
@@ -1075,7 +1075,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_mission_create",
-    label: "KB: Create Mission",
+    label: "fn: Create Mission",
     description:
       "Create a new mission — a high-level objective that can span multiple milestones. " +
       "Missions contain milestones that break down work into phases.",
@@ -1131,7 +1131,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_mission_list",
-    label: "KB: List Missions",
+    label: "fn: List Missions",
     description: "List all missions with their current status.",
     promptSnippet: "List all missions",
     promptGuidelines: [
@@ -1185,7 +1185,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_mission_show",
-    label: "KB: Show Mission",
+    label: "fn: Show Mission",
     description: "Show mission details with full hierarchy: milestones → slices → features.",
     promptSnippet: "Show mission details with hierarchy",
     promptGuidelines: [
@@ -1250,7 +1250,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_mission_delete",
-    label: "KB: Delete Mission",
+    label: "fn: Delete Mission",
     description: "Delete a mission and all its milestones, slices, and features. Cannot be undone.",
     promptSnippet: "Delete a mission and all its contents",
     promptGuidelines: [
@@ -1288,7 +1288,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_milestone_add",
-    label: "KB: Add Milestone",
+    label: "fn: Add Milestone",
     description: "Add a milestone to a mission. Milestones represent phases of work.",
     promptSnippet: "Add a milestone to a mission",
     promptGuidelines: [
@@ -1332,7 +1332,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_slice_add",
-    label: "KB: Add Slice",
+    label: "fn: Add Slice",
     description: "Add a slice to a milestone. Slices are work units that can be activated for implementation.",
     promptSnippet: "Add a work slice to a milestone",
     promptGuidelines: [
@@ -1377,7 +1377,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_feature_add",
-    label: "KB: Add Feature",
+    label: "fn: Add Feature",
     description: "Add a feature to a slice. Features are deliverables that can be linked to tasks.",
     promptSnippet: "Add a feature to a slice",
     promptGuidelines: [
@@ -1426,7 +1426,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_slice_activate",
-    label: "KB: Activate Slice",
+    label: "fn: Activate Slice",
     description:
       "Activate a pending slice for implementation. " +
       "Sets status to 'active' and enables task linking for its features.",
@@ -1479,7 +1479,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_feature_link_task",
-    label: "KB: Link Feature to Task",
+    label: "fn: Link Feature to Task",
     description:
       "Link a feature to a fn task for implementation. " +
       "Updates the feature status to 'triaged' and associates it with the task.",
@@ -1492,7 +1492,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       featureId: Type.String({ description: "Feature ID to link (e.g., F-001)" }),
-      taskId: Type.String({ description: "Task ID to link to (e.g., KB-001)" }),
+      taskId: Type.String({ description: "Task ID to link to (e.g., FN-001)" }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1538,7 +1538,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_agent_stop",
-    label: "KB: Stop Agent",
+    label: "fn: Stop Agent",
     description:
       "Stop a running agent — pauses its execution. " +
       "Transitions the agent from running/active to paused state.",
@@ -1601,7 +1601,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "fn_agent_start",
-    label: "KB: Start Agent",
+    label: "fn: Start Agent",
     description:
       "Start a stopped agent — resumes its execution. " +
       "Transitions the agent from paused to active state.",

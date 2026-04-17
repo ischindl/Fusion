@@ -69,6 +69,8 @@ export { AUTOMATION_PRESETS, MAX_RUN_HISTORY } from "./automation.js";
 export type { ScheduleType, ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, AutomationStepType, AutomationStep, AutomationStepResult } from "./automation.js";
 export { AutomationStore } from "./automation-store.js";
 export type { AutomationStoreEvents } from "./automation-store.js";
+export { runCommandAsync } from "./run-command.js";
+export type { RunCommandOptions, RunCommandResult } from "./run-command.js";
 
 // ── Routine System ───────────────────────────────────────────────────
 export {

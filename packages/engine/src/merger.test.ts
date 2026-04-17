@@ -19,7 +19,35 @@ vi.mock("./pi.js", () => ({
 // resolves/rejects based on the callback wired here.
 vi.mock("node:child_process", async () => {
   const { promisify } = await import("node:util");
+  const { EventEmitter } = await import("node:events");
   const execSyncFn = vi.fn();
+  const spawnFn = vi.fn((cmd: string, opts?: any) => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.pid = 12345;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = vi.fn();
+    queueMicrotask(() => {
+      try {
+        const out = execSyncFn(cmd, opts);
+        const stdout = out === undefined ? "" : out.toString();
+        if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+        child.exitCode = 0;
+        child.emit("close", 0, null);
+      } catch (err) {
+        const error = err as { stdout?: string; stderr?: string; status?: number; code?: number };
+        const stdout = error?.stdout?.toString?.() ?? "";
+        const stderr = error?.stderr?.toString?.() ?? "";
+        if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+        if (stderr) child.stderr.emit("data", Buffer.from(stderr));
+        child.exitCode = error.status ?? error.code ?? 1;
+        child.emit("close", child.exitCode, null);
+      }
+    });
+    return child;
+  });
   const execFn: any = vi.fn((cmd: any, opts: any, cb: any) => {
     const callback = typeof opts === "function" ? opts : cb;
     try {
@@ -45,7 +73,7 @@ vi.mock("node:child_process", async () => {
         }
       });
     });
-  return { execSync: execSyncFn, exec: execFn };
+  return { execSync: execSyncFn, exec: execFn, spawn: spawnFn };
 });
 
 vi.mock("node:fs", () => ({

@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getTaskMergeBlocker, type TaskStore, type MergeResult, type MergeDetails, type WorkflowStep, type WorkflowStepResult, type Settings, type AgentPromptsConfig } from "@fusion/core";
+import { getTaskMergeBlocker, runCommandAsync, type TaskStore, type MergeResult, type MergeDetails, type WorkflowStep, type WorkflowStepResult, type Settings, type AgentPromptsConfig } from "@fusion/core";
 import { resolveAgentPrompt } from "@fusion/core";
 import { createKbAgent, describeModel, promptWithFallback, compactSessionContext } from "./pi.js";
 import { buildSessionSkillContext } from "./session-skill-context.js";
@@ -570,20 +570,36 @@ async function runVerificationCommand(
   };
 
   try {
-    // Execute the command with timeout (non-blocking: uses async exec so the
-    // engine event loop keeps running while the child process executes)
-    const { stdout, stderr } = await execAsync(command, {
+    const commandResult = await runCommandAsync(command, {
       cwd: rootDir,
-      encoding: "utf-8",
+      timeoutMs: 300_000,
       maxBuffer: VERIFICATION_COMMAND_MAX_BUFFER,
-      timeout: 300_000, // 5 minute timeout for verification commands
     });
-    result.stdout = stdout;
-    result.stderr = stderr;
-    result.exitCode = 0;
-    result.success = true;
-    mergerLog.log(`${taskId}: ${type} command succeeded`);
-    await store.logEntry(taskId, `[verification] ${type} command succeeded (exit 0)`);
+    result.stdout = commandResult.stdout;
+    result.stderr = commandResult.stderr;
+    result.exitCode = commandResult.exitCode;
+    result.success = !commandResult.spawnError
+      && !commandResult.timedOut
+      && commandResult.exitCode === 0;
+
+    if (result.success) {
+      const bufferNote = commandResult.bufferExceeded ? ", output exceeded buffer" : "";
+      mergerLog.log(`${taskId}: ${type} command succeeded`);
+      await store.logEntry(taskId, `[verification] ${type} command succeeded (exit 0${bufferNote})`);
+      return result;
+    }
+
+    const failureText = commandResult.spawnError?.message
+      || (commandResult.timedOut ? "Command timed out" : "")
+      || commandResult.stderr
+      || commandResult.stdout
+      || `Command exited with ${commandResult.exitCode ?? commandResult.signal ?? "unknown status"}`;
+    throw Object.assign(new Error(failureText), {
+      stdout: commandResult.stdout,
+      stderr: commandResult.stderr,
+      status: commandResult.exitCode,
+      code: commandResult.timedOut ? "ETIMEDOUT" : undefined,
+    });
   } catch (error: any) {
     result.stdout = error.stdout?.toString() || "";
     result.stderr = error.stderr?.toString() || "";

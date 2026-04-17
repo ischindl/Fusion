@@ -555,6 +555,53 @@ describe("createKbAgent", () => {
     }));
   });
 
+  it("falls back during prompt when the primary model rejects temperature settings", async () => {
+    const primaryPrompt = vi.fn().mockRejectedValue(
+      new Error("400 invalid temperature: only 0.6 is allowed for this model"),
+    );
+    const fallbackPrompt = vi.fn().mockResolvedValue(undefined);
+    const primaryDispose = vi.fn();
+
+    createAgentSessionMock
+      .mockResolvedValueOnce({
+        session: {
+          prompt: primaryPrompt,
+          subscribe: vi.fn(),
+          dispose: primaryDispose,
+          setThinkingLevel: vi.fn(),
+        },
+      })
+      .mockResolvedValueOnce({
+        session: {
+          prompt: fallbackPrompt,
+          subscribe: vi.fn(),
+          dispose: vi.fn(),
+          setThinkingLevel: vi.fn(),
+        },
+      });
+
+    const { createKbAgent } = await import("./pi.js");
+
+    const { session } = await createKbAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultProvider: "kimi-coding",
+      defaultModelId: "kimi-k2.6-preview",
+      fallbackProvider: "zai",
+      fallbackModelId: "glm-5.1",
+    });
+
+    await (session as any).promptWithFallback("review this spec");
+
+    expect(primaryPrompt).toHaveBeenCalledWith("review this spec");
+    expect(primaryDispose).toHaveBeenCalled();
+    expect(fallbackPrompt).toHaveBeenCalledWith("review this spec");
+    expect(createAgentSessionMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: { provider: "zai", id: "glm-5.1" },
+    }));
+  });
+
   it("enables auto-compaction to prevent context-window overflow", async () => {
     const { createKbAgent } = await import("./pi.js");
 

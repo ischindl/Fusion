@@ -64,6 +64,7 @@ export interface SelfHealingOptions {
 const APPROVED_TRIAGE_RECOVERY_GRACE_MS = 60_000;
 const ORPHANED_EXECUTION_RECOVERY_GRACE_MS = 60_000;
 const ACTIVE_MERGE_STATUSES = new Set(["merging", "merging-pr"]);
+const NON_TERMINAL_STEP_STATUSES = new Set(["pending", "in-progress"]);
 /**
  * Longer grace period for tasks that still have a worktree on disk.
  * This avoids racing with `executor.resumeOrphaned()` which runs on
@@ -140,6 +141,7 @@ export class SelfHealingManager {
   async runStartupRecovery(): Promise<void> {
     await this.recoverNoProgressNoTaskDoneFailures();
     await this.recoverCompletedTasks();
+    await this.recoverStaleIncompleteReviewTasks();
     await this.recoverInterruptedMergingTasks();
     await this.recoverMisclassifiedFailures();
     await this.recoverOrphanedExecutions();
@@ -456,6 +458,7 @@ export class SelfHealingManager {
       this.checkpointWal();
       await this.enforceWorktreeCap();
       await this.recoverCompletedTasks();
+      await this.recoverStaleIncompleteReviewTasks();
       await this.recoverInterruptedMergingTasks();
       await this.recoverMergeableReviewTasks();
       await this.recoverMergedReviewTasks();
@@ -628,6 +631,58 @@ export class SelfHealingManager {
       return recovered;
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Mergeable review recovery failed: ${errorMessage}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Recover tasks that reached `in-review` while a task step was still marked
+   * pending/in-progress. These tasks are not tracked by StuckTaskDetector
+   * anymore because the executor session is gone, and they are not mergeable
+   * because `getTaskMergeBlocker()` correctly blocks incomplete steps.
+   *
+   * Moving them back to `todo` lets the normal scheduler/executor resume the
+   * incomplete step instead of leaving the task stranded in review.
+   */
+  async recoverStaleIncompleteReviewTasks(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      const timeoutMs = settings.taskStuckTimeoutMs;
+      if (!timeoutMs || timeoutMs <= 0) return 0;
+
+      const now = Date.now();
+      const tasks = await this.store.listTasks({ column: "in-review" });
+      const staleIncomplete = tasks.filter((task) =>
+        task.column === "in-review" &&
+        !task.paused &&
+        !task.status &&
+        task.steps.length > 0 &&
+        task.steps.some((step) => NON_TERMINAL_STEP_STATUSES.has(step.status)) &&
+        now - new Date(task.updatedAt).getTime() >= timeoutMs
+      );
+
+      if (staleIncomplete.length === 0) return 0;
+
+      log.warn(`Found ${staleIncomplete.length} stale in-review task(s) with incomplete steps`);
+
+      let recovered = 0;
+      for (const task of staleIncomplete) {
+        try {
+          await this.store.logEntry(
+            task.id,
+            "Auto-recovered: in-review task still had incomplete steps — moved back to todo for retry",
+          );
+          await this.store.moveTask(task.id, "todo");
+          log.log(`Recovered stale incomplete review task ${task.id}: moved back to todo`);
+          recovered++;
+        } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
+          log.error(`Failed to recover stale incomplete review task ${task.id}: ${errorMessage}`);
+        }
+      }
+
+      return recovered;
+    } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
+      log.error(`Stale incomplete review recovery failed: ${errorMessage}`);
       return 0;
     }
   }

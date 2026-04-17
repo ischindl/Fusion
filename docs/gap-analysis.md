@@ -80,12 +80,12 @@ Notes:
 - Not all matches are inconsistencies. Strings like `KB` as kilobytes, or internal user-agent tokens (`kb-cli/1.0`) are technical/internal.
 - This category is broadly covered by existing tasks **FN-1163** and **FN-1216**.
 
-### Finding 3.2 — Pi extension still branded as `KB` tools (**Medium**, likely covered by FN-1216 scope)
+### Finding 3.2 — Pi extension tool branding migrated from `KB` to `fn` (**Resolved**)
 
 In `packages/cli/src/extension.ts`:
-- Tool labels remain `KB: Create Task`, `KB: List Tasks`, etc.
-- Parameter examples use `KB-001` style IDs.
-- Tool names use `kb_*` namespace (`kb_task_create`, `kb_task_update`, ...).
+- Tool labels use `fn: Create Task`, `fn: List Tasks`, etc.
+- Parameter examples use `FN-001` style IDs.
+- Tool names use `fn_*` namespace (`fn_task_create`, `fn_task_update`, ...).
 
 Impact:
 - In-chat affordances present mixed branding (`Fusion` in descriptions but `KB` in labels/tool names), which increases cognitive friction.

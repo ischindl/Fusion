@@ -1386,7 +1386,7 @@ describe("taskCreate tool model inheritance", () => {
   });
 
   describe("bounded recovery retries for triage", () => {
-    it("marks triage failed when the agent exits without calling review_spec", async () => {
+    it("requeues triage with backoff when the agent exits without calling review_spec", async () => {
       const task = {
         id: "FN-202",
         description: "Test triage task",
@@ -1424,14 +1424,14 @@ describe("taskCreate tool model inheritance", () => {
       await processor.specifyTask(task);
 
       expect(store.updateTask).toHaveBeenCalledWith("FN-202", expect.objectContaining({
-        status: "failed",
-        error: expect.stringContaining("review_spec was never called"),
-        recoveryRetryCount: null,
-        nextRecoveryAt: null,
+        status: null,
+        error: null,
+        recoveryRetryCount: 1,
+        nextRecoveryAt: expect.any(String),
       }));
       expect(store.logEntry).toHaveBeenCalledWith(
         "FN-202",
-        expect.stringContaining("Specification failed: spec review not approved"),
+        expect.stringContaining("Spec review not approved (review_spec was never called)"),
       );
     });
 

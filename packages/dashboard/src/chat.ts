@@ -537,7 +537,7 @@ export class ChatManager {
       agentResult = await createKbAgent({
         cwd: this.rootDir,
         systemPrompt,
-        tools: "readonly",
+        tools: "coding",
         ...(effectiveModelProvider && effectiveModelId
           ? {
               defaultProvider: effectiveModelProvider,

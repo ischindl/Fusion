@@ -303,6 +303,27 @@ describe("ChatManager.sendMessage", () => {
     expect(assistantCall?.[1].content).toBe("Hello world!");
   });
 
+  it("creates chat agents with the full coding toolset", async () => {
+    let createOptions: any;
+    __setCreateKbAgent(async (options: any) => {
+      createOptions = options;
+      return {
+        session: {
+          prompt: vi.fn().mockResolvedValue(undefined),
+          dispose: vi.fn(),
+          state: {
+            messages: [{ role: "assistant", content: "Done" }],
+          },
+        },
+      };
+    });
+
+    const chatManager = createChatManager();
+    await chatManager.sendMessage("chat-001", "Hello");
+
+    expect(createOptions.tools).toBe("coding");
+  });
+
   it("accumulates thinking output separately from text", async () => {
     let onThinkingCb: ((delta: string) => void) | undefined;
     let onTextCb: ((delta: string) => void) | undefined;

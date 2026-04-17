@@ -6,7 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import type { TaskStore, Task, TaskDetail, StepStatus, Settings, WorkflowStep, MissionStore, Slice, AgentState, AgentCapability, RunMutationContext } from "@fusion/core";
-import { buildExecutionMemoryInstructions, getTaskMergeBlocker, resolveAgentPrompt } from "@fusion/core";
+import { buildExecutionMemoryInstructions, getTaskMergeBlocker, resolveAgentPrompt, runCommandAsync, type RunCommandResult } from "@fusion/core";
 import { findWorktreeUser } from "./merger.js";
 import { generateWorktreeName, slugify } from "./worktree-names.js";
 import { Type, type Static } from "@mariozechner/pi-ai";
@@ -76,6 +76,31 @@ class NonRetryableWorktreeError extends Error {}
 function truncateWorkflowScriptOutput(output: string): string {
   if (output.length <= WORKFLOW_SCRIPT_OUTPUT_MAX_CHARS) return output;
   return `... output truncated to last ${WORKFLOW_SCRIPT_OUTPUT_MAX_CHARS} characters ...\n${output.slice(-WORKFLOW_SCRIPT_OUTPUT_MAX_CHARS)}`;
+}
+
+function configuredCommandErrorMessage(result: RunCommandResult): string {
+  if (result.spawnError) return result.spawnError.message;
+  const parts: string[] = [];
+  if (result.timedOut) parts.push("Timed out");
+  if (result.exitCode !== null) parts.push(`Exit code: ${result.exitCode}`);
+  if (result.signal) parts.push(`Signal: ${result.signal}`);
+  const stdout = result.stdout.trim();
+  const stderr = result.stderr.trim();
+  if (stdout) parts.push(`stdout: ${truncateWorkflowScriptOutput(stdout)}`);
+  if (stderr) parts.push(`stderr: ${truncateWorkflowScriptOutput(stderr)}`);
+  return parts.length ? parts.join("\n") : "Command failed";
+}
+
+async function runConfiguredCommand(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<RunCommandResult> {
+  return runCommandAsync(command, {
+    cwd,
+    timeoutMs,
+    maxBuffer: 10 * 1024 * 1024,
+  });
 }
 
 // ── Tool parameter schemas (module-level for reuse in ToolDefinition generics) ──
@@ -1072,10 +1097,10 @@ export class TaskExecutor {
           // while the user-configured command (e.g. `pnpm install`) executes.
           if (settings.worktreeInitCommand) {
             try {
-              await execAsync(settings.worktreeInitCommand, {
-                cwd: worktreePath,
-                timeout: 120_000,
-              });
+              const initResult = await runConfiguredCommand(settings.worktreeInitCommand, worktreePath, 120_000);
+              if (initResult.spawnError || initResult.timedOut || initResult.exitCode !== 0) {
+                throw new Error(configuredCommandErrorMessage(initResult));
+              }
               await this.store.logEntry(task.id, "Worktree init command completed", settings.worktreeInitCommand, this.currentRunContext);
             } catch (err: unknown) {
               const execError = err instanceof Error ? err : new Error(String(err));
@@ -1091,10 +1116,10 @@ export class TaskExecutor {
             const scriptCommand = settings.scripts?.[settings.setupScript];
             if (scriptCommand) {
               try {
-                await execAsync(scriptCommand, {
-                  cwd: worktreePath,
-                  timeout: 120_000,
-                });
+                const setupResult = await runConfiguredCommand(scriptCommand, worktreePath, 120_000);
+                if (setupResult.spawnError || setupResult.timedOut || setupResult.exitCode !== 0) {
+                  throw new Error(configuredCommandErrorMessage(setupResult));
+                }
                 await this.store.logEntry(task.id, `Setup script '${settings.setupScript}' completed`, scriptCommand, this.currentRunContext);
               } catch (err: unknown) {
                 const execError = err instanceof Error ? err : new Error(String(err));
@@ -3126,12 +3151,10 @@ ${failureFeedback}
     await this.store.logEntry(task.id, `Workflow step '${workflowStep.name}' executing script '${scriptName}': ${scriptCommand}`);
 
     try {
-      // Non-blocking: async exec so the executor event loop keeps running
-      // while the user-configured workflow script executes.
-      await execAsync(scriptCommand, {
-        cwd: worktreePath,
-        timeout: 120_000,
-      });
+      const scriptResult = await runConfiguredCommand(scriptCommand, worktreePath, 120_000);
+      if (scriptResult.spawnError || scriptResult.timedOut || scriptResult.exitCode !== 0) {
+        return { success: false, error: configuredCommandErrorMessage(scriptResult) };
+      }
       return { success: true, output: `Script '${scriptName}' completed successfully` };
     } catch (err: unknown) {
       const execError = err instanceof Error ? err : new Error(String(err));

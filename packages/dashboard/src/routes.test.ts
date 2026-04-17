@@ -2296,21 +2296,28 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
       dependencies: ["FN-002"],
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
     expect(res.body.dependencies).toEqual(["FN-002"]);
+  });
+
+  it("does not clear model or assignee fields when they are omitted", async () => {
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...FAKE_TASK_DETAIL, title: "New" });
+
+    const res = await REQUEST(buildApp(), "PATCH", "/api/tasks/KB-001", JSON.stringify({ title: "New" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("KB-001", { title: "New" });
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "KB-001",
+      expect.objectContaining({
+        modelProvider: null,
+        modelId: null,
+        assigneeUserId: null,
+      }),
+    );
   });
 
   it("forwards title and description without dependencies", async () => {
@@ -2323,18 +2330,6 @@ describe("PATCH /tasks/:id", () => {
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
       title: "New",
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2358,19 +2353,10 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
       modelProvider: "anthropic",
       modelId: "claude-sonnet-4-5",
       validatorModelProvider: "openai",
       validatorModelId: "gpt-4o",
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2388,18 +2374,6 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
       assigneeUserId: "requesting-user",
     });
   });
@@ -2442,19 +2416,8 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
       modelProvider: null,
       modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2476,19 +2439,8 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
       planningModelProvider: "google",
       planningModelId: "gemini-2.5-pro",
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2530,19 +2482,8 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
       planningModelProvider: null,
       planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2560,19 +2501,7 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
       enabledWorkflowSteps: ["browser-verification"],
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
-      thinkingLevel: undefined,
-      assigneeUserId: null,
     });
   });
 
@@ -2601,19 +2530,7 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
       thinkingLevel: "high",
-      assigneeUserId: null,
     });
   });
 
@@ -2632,19 +2549,7 @@ describe("PATCH /tasks/:id", () => {
 
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
-      title: undefined,
-      description: undefined,
-      prompt: undefined,
-      dependencies: undefined,
-      enabledWorkflowSteps: undefined,
-      modelProvider: null,
-      modelId: null,
-      validatorModelProvider: null,
-      validatorModelId: null,
-      planningModelProvider: null,
-      planningModelId: null,
       thinkingLevel: null,
-      assigneeUserId: null,
     });
   });
 
