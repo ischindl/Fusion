@@ -6114,7 +6114,7 @@ Task with acceptance criteria
       await store.archiveTask(task.id, false);
 
       const dir = join(rootDir, ".fusion", "tasks", task.id);
-      expect(existsSync(dir)).toBe(false);
+      expect(existsSync(dir)).toBe(true);
 
       await store.cleanupArchivedTasks();
 
@@ -6130,7 +6130,7 @@ Task with acceptance criteria
       await store.archiveTask(task.id, false);
 
       const cleaned1 = await store.cleanupArchivedTasks();
-      expect(cleaned1).toEqual([]);
+      expect(cleaned1).toContain(task.id);
 
       const cleaned2 = await store.cleanupArchivedTasks();
       expect(cleaned2).toHaveLength(0);
@@ -6458,7 +6458,7 @@ Task with acceptance criteria
       expect(existsSync(dir)).toBe(false);
     });
 
-    it("archiveTask(false) still removes active task storage", async () => {
+    it("archiveTask(false) preserves directory for explicit non-cleanup archives", async () => {
       const task = await store.createTask({ description: "No cleanup" });
       await store.moveTask(task.id, "todo");
       await store.moveTask(task.id, "in-progress");
@@ -6469,7 +6469,7 @@ Task with acceptance criteria
       expect(archived.column).toBe("archived");
 
       const dir = join(rootDir, ".fusion", "tasks", task.id);
-      expect(existsSync(dir)).toBe(false);
+      expect(existsSync(dir)).toBe(true);
     });
 
     it("default cleanup parameter removes active task storage", async () => {

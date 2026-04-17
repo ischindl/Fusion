@@ -2950,14 +2950,19 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         action: "Task archived",
       });
 
-      if (cleanup) {
-        const cleanedBranches = await this.cleanupBranchForTask(task);
-        if (cleanedBranches.length > 0) {
-          task.log.push({
-            timestamp: new Date().toISOString(),
-            action: `Cleaned up branch: ${cleanedBranches.join(", ")}`,
-          });
-        }
+      if (!cleanup) {
+        await this.atomicWriteTaskJson(dir, task);
+        if (this.isWatching) this.taskCache.set(id, { ...task });
+        this.emit("task:moved", { task, from: "done" as Column, to: "archived" as Column });
+        return task;
+      }
+
+      const cleanedBranches = await this.cleanupBranchForTask(task);
+      if (cleanedBranches.length > 0) {
+        task.log.push({
+          timestamp: new Date().toISOString(),
+          action: `Cleaned up branch: ${cleanedBranches.join(", ")}`,
+        });
       }
 
       const entry = await this.taskToArchiveEntry(task, task.columnMovedAt);
