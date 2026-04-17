@@ -107,6 +107,7 @@ export class SelfHealingManager {
 
   // ── Maintenance timer ───────────────────────────────────────────────
   private maintenanceInterval: ReturnType<typeof setInterval> | null = null;
+  private maintenanceRunning = false;
 
   // ── Event listener cleanup ──────────────────────────────────────────
   private settingsListener: ((data: { settings: Settings; previous: Settings }) => void) | null = null;
@@ -448,31 +449,61 @@ export class SelfHealingManager {
   }
 
   private async runMaintenance(): Promise<void> {
+    if (this.maintenanceRunning) {
+      log.log("Maintenance cycle skipped — previous cycle still running");
+      return;
+    }
+
+    this.maintenanceRunning = true;
     const startMs = Date.now();
     log.log("Maintenance cycle starting");
 
     try {
-      await this.pruneWorktrees();
-      await this.cleanupOrphans();
-      await this.cleanupOrphanedBranches();
-      this.checkpointWal();
-      await this.enforceWorktreeCap();
-      await this.recoverCompletedTasks();
-      await this.recoverStaleIncompleteReviewTasks();
-      await this.recoverInterruptedMergingTasks();
-      await this.recoverMergeableReviewTasks();
-      await this.recoverMergedReviewTasks();
-      await this.recoverMisclassifiedFailures();
-      await this.recoverNoProgressNoTaskDoneFailures();
-      await this.recoverOrphanedExecutions();
-      await this.recoverApprovedTriageTasks();
-      await this.recoverOrphanedSpecifyingTasks();
-      await this.archiveStaleDoneTasks();
+      // Batch 1 — Git/filesystem cleanup
+      const batch1Results = await Promise.allSettled([
+        this.pruneWorktrees(),
+        this.cleanupOrphans(),
+        this.cleanupOrphanedBranches(),
+        Promise.resolve(this.checkpointWal()),
+        this.enforceWorktreeCap(),
+      ]);
+      for (const result of batch1Results) {
+        if (result.status === "rejected") {
+          log.error(`Batch 1 cleanup failed: ${result.reason}`);
+        }
+      }
+
+      // Batch 2 — Task recovery (operations are independent of each other)
+      const batch2Results = await Promise.allSettled([
+        this.recoverCompletedTasks(),
+        this.recoverStaleIncompleteReviewTasks(),
+        this.recoverInterruptedMergingTasks(),
+        this.recoverMergeableReviewTasks(),
+        this.recoverMergedReviewTasks(),
+        this.recoverMisclassifiedFailures(),
+        this.recoverNoProgressNoTaskDoneFailures(),
+        this.recoverOrphanedExecutions(),
+        this.recoverApprovedTriageTasks(),
+        this.recoverOrphanedSpecifyingTasks(),
+      ]);
+      for (const result of batch2Results) {
+        if (result.status === "rejected") {
+          log.error(`Batch 2 recovery failed: ${result.reason}`);
+        }
+      }
+
+      // Batch 3 — Archive (runs after recovery so we don't archive recoverable tasks)
+      const batch3Results = await Promise.allSettled([this.archiveStaleDoneTasks()]);
+      for (const result of batch3Results) {
+        if (result.status === "rejected") {
+          log.error(`Batch 3 archive failed: ${result.reason}`);
+        }
+      }
 
       const elapsedMs = Date.now() - startMs;
       log.log(`Maintenance cycle completed in ${elapsedMs}ms`);
-    } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error(`Maintenance cycle failed: ${errorMessage}`);
+    } finally {
+      this.maintenanceRunning = false;
     }
   }
 

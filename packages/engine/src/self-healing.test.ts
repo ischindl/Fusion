@@ -1829,3 +1829,177 @@ describe("stale triage processing eviction before recovery", () => {
     manager.stop();
   });
 });
+
+// ── Maintenance cycle concurrency ──────────────────────────────────
+
+describe("maintenance cycle concurrency", () => {
+  let store: TaskStore & EventEmitter;
+  let manager: SelfHealingManager;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({
+        autoUnpauseEnabled: false,
+        maintenanceIntervalMs: 0, // disable interval so we only test runMaintenance() directly
+        maxWorktrees: 4,
+      } as unknown as Settings),
+      listTasks: vi.fn().mockResolvedValue([]),
+      walCheckpoint: vi.fn().mockReturnValue({ busy: 0, log: 0, checkpointed: 0 }),
+    });
+    manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+  });
+
+  afterEach(() => {
+    manager.stop();
+    vi.useRealTimers();
+  });
+
+  it("skips cycle when already running", async () => {
+    // Use a deferred to keep the first cycle "running" while we call runMaintenance again
+    let resolvePrune: (value: number) => void;
+    const prunePromise = new Promise<number>((resolve) => {
+      resolvePrune = resolve;
+    });
+
+    const pruneSpy = (vi.spyOn(manager as any, "pruneWorktrees").mockImplementation(async () => {
+      return prunePromise;
+    }) as any);
+
+    // Start first cycle — it will wait on prunePromise
+    const firstCycleDone = (manager as any).runMaintenance();
+
+    // Advance time so the first cycle proceeds and sets maintenanceRunning = true
+    await vi.advanceTimersByTimeAsync(1);
+
+    // Call runMaintenance again — should be skipped because maintenanceRunning is true
+    (manager as any).runMaintenance();
+
+    // Second cycle should be skipped (pruneWorktrees only called once)
+    const pruneCallCount = pruneSpy.mock.calls.length;
+
+    // Now resolve the first cycle
+    resolvePrune!(0);
+    await firstCycleDone;
+
+    expect(pruneCallCount).toBe(1);
+  });
+
+  it("resets maintenanceRunning flag on error", async () => {
+    const error = new Error("simulated failure");
+    (vi.spyOn(manager as any, "pruneWorktrees").mockRejectedValue(error) as any);
+
+    await (manager as any).runMaintenance();
+
+    expect((manager as any).maintenanceRunning).toBe(false);
+  });
+
+  it("resets maintenanceRunning flag on success", async () => {
+    (vi.spyOn(manager as any, "pruneWorktrees").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphans").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphanedBranches").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "enforceWorktreeCap").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverCompletedTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverStaleIncompleteReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverInterruptedMergingTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMergeableReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMergedReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMisclassifiedFailures").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverNoProgressNoTaskDoneFailures").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverOrphanedExecutions").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverApprovedTriageTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverOrphanedSpecifyingTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "archiveStaleDoneTasks").mockResolvedValue(0) as any);
+
+    await (manager as any).runMaintenance();
+
+    expect((manager as any).maintenanceRunning).toBe(false);
+  });
+
+  it("runs batch 1 operations in parallel", async () => {
+    let runningCount = 0;
+    let maxConcurrent = 0;
+
+    const makeSlow = (label: string) =>
+      (vi.spyOn(manager as any, label).mockImplementation(async () => {
+        runningCount++;
+        maxConcurrent = Math.max(maxConcurrent, runningCount);
+        await vi.advanceTimersByTimeAsync(10);
+        runningCount--;
+        return 0;
+      }) as any);
+
+    makeSlow("pruneWorktrees");
+    makeSlow("cleanupOrphans");
+    makeSlow("cleanupOrphanedBranches");
+    makeSlow("enforceWorktreeCap");
+    // checkpointWal is synchronous, no need to mock
+
+    await (manager as any).runMaintenance();
+
+    // If they ran in parallel, maxConcurrent should be > 1
+    expect(maxConcurrent).toBeGreaterThan(1);
+  });
+
+  it("runs batch 2 operations in parallel", async () => {
+    let runningCount = 0;
+    let maxConcurrent = 0;
+
+    const makeSlow = (label: string) =>
+      (vi.spyOn(manager as any, label).mockImplementation(async () => {
+        runningCount++;
+        maxConcurrent = Math.max(maxConcurrent, runningCount);
+        await vi.advanceTimersByTimeAsync(10);
+        runningCount--;
+        return 0;
+      }) as any);
+
+    makeSlow("recoverCompletedTasks");
+    makeSlow("recoverStaleIncompleteReviewTasks");
+    makeSlow("recoverInterruptedMergingTasks");
+    makeSlow("recoverMergeableReviewTasks");
+    makeSlow("recoverMergedReviewTasks");
+    makeSlow("recoverMisclassifiedFailures");
+    makeSlow("recoverNoProgressNoTaskDoneFailures");
+    makeSlow("recoverOrphanedExecutions");
+    makeSlow("recoverApprovedTriageTasks");
+    makeSlow("recoverOrphanedSpecifyingTasks");
+
+    await (manager as any).runMaintenance();
+
+    expect(maxConcurrent).toBeGreaterThan(1);
+  });
+
+  it("one failing batch 2 operation does not abort the batch", async () => {
+    const batch2Operations = [
+      "recoverCompletedTasks",
+      "recoverStaleIncompleteReviewTasks",
+      "recoverInterruptedMergingTasks",
+      "recoverMergeableReviewTasks",
+      "recoverMergedReviewTasks",
+      "recoverMisclassifiedFailures",
+      "recoverNoProgressNoTaskDoneFailures",
+      "recoverOrphanedExecutions",
+      "recoverApprovedTriageTasks",
+      "recoverOrphanedSpecifyingTasks",
+    ] as const;
+
+    // Make one operation fail
+    (vi.spyOn(manager as any, "recoverCompletedTasks").mockRejectedValue(new Error("db error")) as any);
+
+    // Make all others succeed
+    for (const op of batch2Operations.slice(1)) {
+      (vi.spyOn(manager as any, op as string).mockResolvedValue(0) as any);
+    }
+
+    // Mock batch 1 and 3 as well
+    (vi.spyOn(manager as any, "pruneWorktrees").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphans").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphanedBranches").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "enforceWorktreeCap").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "archiveStaleDoneTasks").mockResolvedValue(0) as any);
+
+    // Should not throw — Promise.allSettled handles failures
+    await expect((manager as any).runMaintenance()).resolves.toBeUndefined();
+  });
+});
