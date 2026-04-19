@@ -9,12 +9,14 @@ vi.mock("../../api", () => ({
   registerProject: vi.fn(),
   unregisterProject: vi.fn(),
   updateProject: vi.fn(),
+  reportDashboardPerf: vi.fn(),
 }));
 
 const mockFetchProjectsAcrossNodes = vi.mocked(api.fetchProjectsAcrossNodes);
 const mockUpdateProject = vi.mocked(api.updateProject);
 const mockRegisterProject = vi.mocked(api.registerProject);
 const mockUnregisterProject = vi.mocked(api.unregisterProject);
+const mockReportDashboardPerf = vi.mocked(api.reportDashboardPerf);
 
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
@@ -28,6 +30,7 @@ describe("useProjects", () => {
     mockUpdateProject.mockReset();
     mockRegisterProject.mockReset();
     mockUnregisterProject.mockReset();
+    mockReportDashboardPerf.mockReset();
   });
 
   afterEach(() => {

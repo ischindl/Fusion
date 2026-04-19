@@ -8,12 +8,12 @@ declare module "express" {
 }
 import multer from "multer";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, access, stat, mkdir, readdir, rm, readFile as fsReadFile } from "node:fs/promises";
+import { mkdtemp, access, stat, mkdir, readdir, rm, readFile as fsReadFile, appendFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
 import { resolve, sep, join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import * as nodeFs from "node:fs";
 
 import { promisify } from "node:util";
@@ -1879,6 +1879,16 @@ function checkSessionLock(
 
 export function createApiRoutes(store: TaskStore, options?: ServerOptions): Router {
   const router = Router();
+
+  // Dashboard load perf log — server and client timings get appended here so
+  // they can be inspected without browser devtools (e.g. on mobile).
+  const PERF_LOG_PATH = join(homedir(), ".fusion", "dashboard-perf.log");
+  const perfLog = (source: string, message: string): void => {
+    const line = `[${new Date().toISOString()}] ${source} ${message}\n`;
+    appendFile(PERF_LOG_PATH, line).catch(() => {
+      // best-effort only
+    });
+  };
 
   function prioritizeProjectsForCurrentDirectory<T extends { path: string }>(projects: T[]): T[] {
     const cwd = resolve(process.cwd());
@@ -14692,26 +14702,61 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
    * Returns: Array of projects with nodeId and _sourceNodeName for remote projects.
    */
   router.get("/projects/across-nodes", async (_req, res) => {
+    const t0 = performance.now();
+    const timings: Record<string, number> = {};
+    const mark = (label: string, from: number) => {
+      timings[label] = Math.round(performance.now() - from);
+    };
     try {
+      const tImport = performance.now();
       const { CentralCore } = await import("@fusion/core");
       const central = new CentralCore();
+      mark("import+construct", tImport);
+
+      const tInit = performance.now();
       await central.init();
+      mark("central.init", tInit);
 
       // Reconcile stale "initializing" projects before listing
+      const tReconcile = performance.now();
       await central.reconcileProjectStatuses();
+      mark("reconcileProjectStatuses", tReconcile);
 
-      // Get local projects
-      const localProjects = await central.listProjects();
-
-      // Get all registered nodes
-      const allNodes = await central.listNodes();
+      // Get local projects and registered nodes in parallel
+      const tListLocal = performance.now();
+      const [localProjects, allNodes] = await Promise.all([
+        central.listProjects(),
+        central.listNodes(),
+      ]);
+      mark("listProjects+listNodes", tListLocal);
 
       // Filter to online remote nodes with URLs
       const remoteNodes = allNodes.filter(
         (node) => node.type === "remote" && node.status === "online" && node.url
       );
 
+      // Short-circuit: zero remote nodes means we behave exactly like /projects.
+      // Skip the Promise.allSettled machinery entirely so local-only setups pay
+      // no cross-node aggregation overhead.
+      if (remoteNodes.length === 0) {
+        const tPrioritize = performance.now();
+        const prioritizedProjects = prioritizeProjectsForCurrentDirectory(localProjects);
+        mark("prioritize", tPrioritize);
+
+        const tClose = performance.now();
+        await central.close();
+        mark("central.close", tClose);
+
+        timings.total = Math.round(performance.now() - t0);
+        const msg = `local-only path (${localProjects.length} projects) timings=${JSON.stringify(timings)}`;
+        console.log(`[projects:across-nodes] ${msg}`);
+        perfLog("[projects:across-nodes]", msg);
+        res.json(prioritizedProjects);
+        return;
+      }
+
       // Fetch projects from all remote nodes in parallel
+      const tRemote = performance.now();
       const remoteProjectArrays = await Promise.allSettled(
         remoteNodes.map(async (node) => {
           const controller = new AbortController();
@@ -14752,6 +14797,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
           }
         })
       );
+      mark("remoteFetch", tRemote);
 
       // Collect successful remote projects, log failures
       type RemoteProject = {
@@ -14782,16 +14828,41 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       const mergedProjects = [...localProjects, ...remoteProjects];
 
       // Apply directory prioritization
+      const tPrioritize = performance.now();
       const prioritizedProjects = prioritizeProjectsForCurrentDirectory(mergedProjects);
+      mark("prioritize", tPrioritize);
 
+      const tClose = performance.now();
       await central.close();
+      mark("central.close", tClose);
 
+      timings.total = Math.round(performance.now() - t0);
+      const msg = `${remoteNodes.length} remote node(s), ${localProjects.length} local + ${remoteProjects.length} remote projects timings=${JSON.stringify(timings)}`;
+      console.log(`[projects:across-nodes] ${msg}`);
+      perfLog("[projects:across-nodes]", msg);
       res.json(prioritizedProjects);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
       }
       rethrowAsApiError(err);
+    }
+  });
+
+  /**
+   * POST /api/_perf/dashboard-load
+   * Collect client-side dashboard-load timings. Appended to the same perf log
+   * the server uses so both sides can be inspected together without devtools.
+   * Body: { source: string, message: string } — message typically JSON-stringified timings.
+   */
+  router.post("/_perf/dashboard-load", (req, res) => {
+    try {
+      const source = typeof req.body?.source === "string" ? req.body.source.slice(0, 64) : "[client]";
+      const message = typeof req.body?.message === "string" ? req.body.message.slice(0, 1024) : "";
+      perfLog(source, message);
+      res.json({ ok: true });
+    } catch {
+      res.status(200).json({ ok: false });
     }
   });
 
