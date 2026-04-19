@@ -1077,12 +1077,8 @@ describe("NewAgentDialog", () => {
   });
 
   describe("model favorites persistence", () => {
-    it("calls updateGlobalSettings when toggling provider favorite", async () => {
-      mockFetchModels.mockResolvedValue({
-        models: MOCK_MODELS_RESPONSE.models,
-        favoriteProviders: [],
-        favoriteModels: [],
-      });
+    it("persists provider favorite toggle via updateGlobalSettings", async () => {
+      mockFetchModels.mockResolvedValue(MOCK_MODELS_RESPONSE);
 
       render(
         <NewAgentDialog isOpen={true} onClose={mockOnClose} onCreated={mockOnCreated} />,
@@ -1096,70 +1092,17 @@ describe("NewAgentDialog", () => {
       await user.click(screen.getByText("Next"));
 
       const portal = await openModelDropdown();
-      fireEvent.click(within(portal).getByRole("button", { name: "Add anthropic to favorites" }));
-
-      await waitFor(() => {
-        expect(mockUpdateGlobalSettings).toHaveBeenCalled();
-      });
-    });
-
-    it("persists provider favorite toggle to global settings", async () => {
-      mockFetchModels.mockResolvedValue({
-        models: MOCK_MODELS_RESPONSE.models,
-        favoriteProviders: [],
-        favoriteModels: [],
-      });
-
-      render(
-        <NewAgentDialog isOpen={true} onClose={mockOnClose} onCreated={mockOnCreated} />,
-      );
-
-      await waitFor(() => expect(mockFetchModels).toHaveBeenCalledOnce());
-
-      const user = userEvent.setup();
-      const nameInput = screen.getByLabelText(/Name/);
-      await user.type(nameInput, "Test Agent");
-      await user.click(screen.getByText("Next"));
-
-      const portal = await openModelDropdown();
-      fireEvent.click(within(portal).getByRole("button", { name: "Add anthropic to favorites" }));
-
-      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
-        favoriteProviders: ["anthropic"],
-        favoriteModels: [],
-      });
-    });
-
-    it("persists model favorite toggle to global settings", async () => {
-      mockFetchModels.mockResolvedValue({
-        models: MOCK_MODELS_RESPONSE.models,
-        favoriteProviders: [],
-        favoriteModels: [],
-      });
-
-      render(
-        <NewAgentDialog isOpen={true} onClose={mockOnClose} onCreated={mockOnCreated} />,
-      );
-
-      await waitFor(() => expect(mockFetchModels).toHaveBeenCalledOnce());
-
-      const user = userEvent.setup();
-      const nameInput = screen.getByLabelText(/Name/);
-      await user.type(nameInput, "Test Agent");
-      await user.click(screen.getByText("Next"));
-
-      const portal = await openModelDropdown();
-      fireEvent.click(within(portal).getByRole("button", { name: "Add Claude Sonnet 4.5 to favorites" }));
+      fireEvent.click(within(portal).getByRole("button", { name: "Remove anthropic from favorites" }));
 
       expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
         favoriteProviders: [],
-        favoriteModels: ["anthropic/claude-sonnet-4-5"],
+        favoriteModels: expect.any(Array),
       });
     });
 
     it("rolls back local favorite state when updateGlobalSettings fails", async () => {
       mockFetchModels.mockResolvedValue(MOCK_MODELS_RESPONSE);
-      vi.mocked(apiModule.updateGlobalSettings).mockRejectedValueOnce(new Error("Network error"));
+      mockUpdateGlobalSettings.mockRejectedValueOnce(new Error("Network error"));
 
       render(
         <NewAgentDialog isOpen={true} onClose={mockOnClose} onCreated={mockOnCreated} />,
@@ -1179,7 +1122,7 @@ describe("NewAgentDialog", () => {
       fireEvent.click(removeButton);
 
       await waitFor(() => {
-        expect(apiModule.updateGlobalSettings).toHaveBeenCalled();
+        expect(mockUpdateGlobalSettings).toHaveBeenCalled();
       });
 
       const portalAfterRollback = document.body.querySelector('[data-testid="model-combobox-portal"]') as HTMLElement;

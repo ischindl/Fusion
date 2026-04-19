@@ -453,7 +453,6 @@ describe("MissionInterviewModal", () => {
         favoriteProviders: [],
         favoriteModels: [],
       });
-      mockUpdateGlobalSettings.mockResolvedValue({});
 
       renderModal();
 
@@ -477,9 +476,38 @@ describe("MissionInterviewModal", () => {
       });
     });
 
+    it("persists model favorite toggle via updateGlobalSettings", async () => {
+      mockFetchModels.mockResolvedValue({
+        models: mockModelsWithFavorites.models,
+        favoriteProviders: [],
+        favoriteModels: [],
+      });
+
+      renderModal();
+
+      await waitFor(() => {
+        expect(mockFetchModels).toHaveBeenCalled();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Planning Model" }));
+
+      await waitFor(() => {
+        expect(document.body.querySelector('[data-testid="model-combobox-portal"]')).not.toBeNull();
+      });
+
+      const portal = document.body.querySelector('[data-testid="model-combobox-portal"]')!;
+      const addModelButton = within(portal).getByRole("button", { name: "Add Claude Sonnet 4.5 to favorites" });
+      fireEvent.click(addModelButton);
+
+      expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+        favoriteProviders: [],
+        favoriteModels: ["anthropic/claude-sonnet-4-5"],
+      });
+    });
+
     it("rolls back local favorite state when updateGlobalSettings fails", async () => {
       mockFetchModels.mockResolvedValue(mockModelsWithFavorites);
-      vi.mocked(api.updateGlobalSettings).mockRejectedValueOnce(new Error("Network error"));
+      mockUpdateGlobalSettings.mockRejectedValueOnce(new Error("Network error"));
 
       renderModal();
 
