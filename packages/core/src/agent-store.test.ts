@@ -35,7 +35,8 @@ describe("AgentStore", () => {
   });
 
   afterEach(async () => {
-    await rm(rootDir, { recursive: true, force: true });
+    store.close();
+    await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   // ── init ──────────────────────────────────────────────────────────
@@ -80,18 +81,22 @@ describe("AgentStore", () => {
 
         const legacyStore = new AgentStore({ rootDir: legacyRoot });
         await legacyStore.init();
-        const run = await legacyStore.getRunDetail("agent-legacy", "run-legacy");
+        try {
+          const run = await legacyStore.getRunDetail("agent-legacy", "run-legacy");
 
-        expect(run).toMatchObject({
-          id: "run-legacy",
-          agentId: "agent-legacy",
-          status: "completed",
-          contextSnapshot: { taskId: "FN-001" },
-          stdoutExcerpt: "done",
-        });
-        expect(await legacyStore.importLegacyFileRuns()).toBe(0);
+          expect(run).toMatchObject({
+            id: "run-legacy",
+            agentId: "agent-legacy",
+            status: "completed",
+            contextSnapshot: { taskId: "FN-001" },
+            stdoutExcerpt: "done",
+          });
+          expect(await legacyStore.importLegacyFileRuns()).toBe(0);
+        } finally {
+          legacyStore.close();
+        }
       } finally {
-        await rm(legacyRoot, { recursive: true, force: true });
+        await rm(legacyRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       }
     });
   });
@@ -1502,6 +1507,10 @@ describe("AgentStore", () => {
       taskId = task.id;
     });
 
+    afterEach(() => {
+      taskStore.close();
+    });
+
     it("checkoutTask acquires a lease and stamps checkedOutAt", async () => {
       const updated = await store.checkoutTask(holderId, taskId);
 
@@ -2382,11 +2391,14 @@ describe("AgentStore", () => {
 
       const store2 = new AgentStore({ rootDir });
       await store2.init();
-
-      const keys = await store2.listApiKeys(agent.id);
-      expect(keys).toHaveLength(1);
-      expect(keys[0].id).toBe(key.id);
-      expect(keys[0].label).toBe("persist");
+      try {
+        const keys = await store2.listApiKeys(agent.id);
+        expect(keys).toHaveLength(1);
+        expect(keys[0].id).toBe(key.id);
+        expect(keys[0].label).toBe("persist");
+      } finally {
+        store2.close();
+      }
     });
   });
 
@@ -2461,18 +2473,21 @@ describe("AgentStore", () => {
       // Create a new store instance pointing to the same rootDir
       const store2 = new AgentStore({ rootDir });
       await store2.init();
+      try {
+        const found = await store2.getAgent(agent.id);
+        expect(found).not.toBeNull();
+        expect(found!.id).toBe(agent.id);
+        expect(found!.name).toBe("Persistent");
+        expect(found!.role).toBe("reviewer");
+        expect(found!.metadata).toEqual({ key: "val" });
+        expect(found!.lastHeartbeatAt).toBeDefined();
 
-      const found = await store2.getAgent(agent.id);
-      expect(found).not.toBeNull();
-      expect(found!.id).toBe(agent.id);
-      expect(found!.name).toBe("Persistent");
-      expect(found!.role).toBe("reviewer");
-      expect(found!.metadata).toEqual({ key: "val" });
-      expect(found!.lastHeartbeatAt).toBeDefined();
-
-      // Heartbeat history persists too
-      const history = await store2.getHeartbeatHistory(agent.id);
-      expect(history).toHaveLength(1);
+        // Heartbeat history persists too
+        const history = await store2.getHeartbeatHistory(agent.id);
+        expect(history).toHaveLength(1);
+      } finally {
+        store2.close();
+      }
     });
   });
 });

@@ -27,9 +27,11 @@ describe("AgentStore — instructions fields", () => {
     }
     createdAgentIds.length = 0;
 
+    store.close();
+
     // Filesystem cleanup last
     try {
-      await rm(testDir, { recursive: true, force: true });
+      await rm(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     } catch {
       // Ignore cleanup errors
     }

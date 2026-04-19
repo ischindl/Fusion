@@ -1995,6 +1995,16 @@ export class AgentStore extends EventEmitter {
     this.db.bumpLastModified();
   }
 
+  /**
+   * Close the underlying SQLite connection and release resources.
+   */
+  close(): void {
+    if (this._db) {
+      this._db.close();
+      this._db = null;
+    }
+  }
+
   private async withLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
     // Get or create lock for this agent
     let lock = this.locks.get(agentId);

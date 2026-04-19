@@ -48,8 +48,8 @@ describe("TaskStore", () => {
 
   afterEach(async () => {
     store.close();
-    await rm(rootDir, { recursive: true, force: true });
-    await rm(globalDir, { recursive: true, force: true });
+    await rm(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(globalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   async function createTestTask(): Promise<Task> {
