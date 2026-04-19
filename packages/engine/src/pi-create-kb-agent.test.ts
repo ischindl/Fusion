@@ -760,8 +760,6 @@ describe("createKbAgent", () => {
         return "{}";
       });
 
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
       let capturedResourceLoaderOptions: any;
       vi.doMock("@mariozechner/pi-coding-agent", () => ({
         AuthStorage: {
@@ -831,13 +829,9 @@ describe("createKbAgent", () => {
         });
         expect(result.skills).toHaveLength(1); // All skills pass through
       }
-
-      consoleErrorSpy.mockRestore();
     });
 
     it("with skillSelection (specific requested names) activates skill filtering", async () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
       let capturedResourceLoaderOptions: any;
       vi.doMock("@mariozechner/pi-coding-agent", () => ({
         AuthStorage: {
@@ -915,12 +909,11 @@ describe("createKbAgent", () => {
       // Only paperclip should pass through (matching requested name)
       expect(result.skills).toHaveLength(1);
       expect(result.skills[0].name).toBe("paperclip");
-
-      consoleErrorSpy.mockRestore();
     });
 
-    it("diagnostics are logged via console.error with [pi] [skills] prefix", async () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    it("diagnostics are logged via structured logger with [skills] context", async () => {
+      const { piLog } = await import("./logger.js");
+      const piWarnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
 
       // Test diagnostics logging by directly calling createSkillsOverrideFromSelection
       const { createSkillsOverrideFromSelection } = await import("./skill-resolver.js");
@@ -945,9 +938,9 @@ describe("createKbAgent", () => {
       // Check that diagnostics were produced
       expect(result.diagnostics.length).toBeGreaterThan(0);
 
-      // Check that diagnostics were logged with correct prefix
-      const skillLogs = consoleErrorSpy.mock.calls.filter(call =>
-        String(call[0]).includes("[pi] [skills]")
+      // Check that diagnostics were logged with [skills] context
+      const skillLogs = piWarnSpy.mock.calls.filter(call =>
+        String(call[0]).includes("[skills]")
       );
       expect(skillLogs.length).toBeGreaterThan(0);
 
@@ -955,7 +948,7 @@ describe("createKbAgent", () => {
       const lastLog = skillLogs[skillLogs.length - 1][0] as string;
       expect(lastLog).toContain("[executor]");
 
-      consoleErrorSpy.mockRestore();
+      piWarnSpy.mockRestore();
     });
   });
 });

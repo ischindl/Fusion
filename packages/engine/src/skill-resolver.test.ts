@@ -3,6 +3,19 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { mockPiLog } = vi.hoisted(() => ({
+  mockPiLog: {
+    log: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock("./logger.js", () => ({
+  piLog: mockPiLog,
+}));
+
 import {
   resolveSessionSkills,
   createSkillsOverrideFromSelection,
@@ -385,6 +398,12 @@ describe("resolveSessionSkills", () => {
 });
 
 describe("createSkillsOverrideFromSelection", () => {
+  beforeEach(() => {
+    mockPiLog.log.mockClear();
+    mockPiLog.warn.mockClear();
+    mockPiLog.error.mockClear();
+  });
+
   describe("with filterActive: false", () => {
     it("returns base unchanged", () => {
       const selection: SkillSelectionResult = {
@@ -510,9 +529,7 @@ describe("createSkillsOverrideFromSelection", () => {
       expect(result.diagnostics[0].message).toBe("base warning");
     });
 
-    it("logs diagnostics via console.error", () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
+    it("logs diagnostics via structured logger", () => {
       const selection: SkillSelectionResult = {
         allowedSkillPaths: new Set(["/path/nonexistent"]),
         excludedSkillPaths: new Set<string>(),
@@ -531,17 +548,13 @@ describe("createSkillsOverrideFromSelection", () => {
 
       override(base);
 
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      const lastCall = consoleErrorSpy.mock.calls[consoleErrorSpy.mock.calls.length - 1][0] as string;
-      expect(lastCall).toContain("[pi] [skills]");
+      expect(mockPiLog.warn).toHaveBeenCalled();
+      const lastCall = mockPiLog.warn.mock.calls[mockPiLog.warn.mock.calls.length - 1][0] as string;
+      expect(lastCall).toContain("[skills]");
       expect(lastCall).toContain("nonexistent");
-
-      consoleErrorSpy.mockRestore();
     });
 
-    it("includes sessionPurpose in log messages when provided", () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
+    it("includes sessionPurpose in structured logger messages when provided", () => {
       const selection: SkillSelectionResult = {
         allowedSkillPaths: new Set(["/path/foo"]),
         excludedSkillPaths: new Set<string>(),
@@ -563,16 +576,12 @@ describe("createSkillsOverrideFromSelection", () => {
 
       override(base);
 
-      const lastCall = consoleErrorSpy.mock.calls[consoleErrorSpy.mock.calls.length - 1][0] as string;
+      const lastCall = mockPiLog.warn.mock.calls[mockPiLog.warn.mock.calls.length - 1][0] as string;
       expect(lastCall).toContain("[reviewer]");
       expect(lastCall).toContain("missing-skill");
-
-      consoleErrorSpy.mockRestore();
     });
 
     it("produces warning diagnostic for disabled skills (exists but excluded by patterns)", () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
       // Simulate a skill that exists but was disabled by project exclusion pattern
       const selection: SkillSelectionResult = {
         allowedSkillPaths: new Set<string>(),
@@ -605,11 +614,9 @@ describe("createSkillsOverrideFromSelection", () => {
       expect(result.diagnostics[0].message).toContain("disabled-skill");
 
       // Verify logging
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      const lastCall = consoleErrorSpy.mock.calls[consoleErrorSpy.mock.calls.length - 1][0] as string;
+      expect(mockPiLog.warn).toHaveBeenCalled();
+      const lastCall = mockPiLog.warn.mock.calls[mockPiLog.warn.mock.calls.length - 1][0] as string;
       expect(lastCall).toContain("disabled");
-
-      consoleErrorSpy.mockRestore();
     });
 
     it("distinguishes missing skills (not found) from disabled skills (excluded) via message content", () => {
@@ -698,8 +705,6 @@ describe("createSkillsOverrideFromSelection", () => {
     });
 
     it("filters discovered Skill[] by requested names and logs warnings for missing skills", () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
       // Create selection with empty allowed paths (only requested names filtering)
       const selection: SkillSelectionResult = {
         allowedSkillPaths: new Set<string>(),
@@ -733,13 +738,58 @@ describe("createSkillsOverrideFromSelection", () => {
       );
       expect(missingWarning).toBeDefined();
 
-      // Verify console.error logging
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      const loggedMessages = consoleErrorSpy.mock.calls.map(c => c[0] as string);
+      // Verify structured logger warning output
+      expect(mockPiLog.warn).toHaveBeenCalled();
+      const loggedMessages = mockPiLog.warn.mock.calls.map(c => c[0] as string);
       const hasExecutorPrefix = loggedMessages.some(m => m.includes("[executor]") && m.includes("missing-skill"));
       expect(hasExecutorPrefix).toBe(true);
+    });
+
+    it("uses structured piLog.warn for skill override diagnostics", () => {
+      const selection: SkillSelectionResult = {
+        allowedSkillPaths: new Set(["/path/ghost"]),
+        excludedSkillPaths: new Set<string>(),
+        diagnostics: [],
+        filterActive: true,
+      };
+
+      const override = createSkillsOverrideFromSelection(selection, {
+        sessionPurpose: "executor",
+      });
+
+      override({ skills: [], diagnostics: [] });
+
+      expect(mockPiLog.warn).toHaveBeenCalledWith(
+        expect.stringContaining("[skills] warning: Configured skill pattern '/path/ghost' not found in discovered skills [executor]"),
+      );
+    });
+
+    it("does not call console.error, console.warn, or console.log for diagnostics", () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const selection: SkillSelectionResult = {
+        allowedSkillPaths: new Set(["/path/missing"]),
+        excludedSkillPaths: new Set<string>(),
+        diagnostics: [],
+        filterActive: true,
+      };
+
+      const override = createSkillsOverrideFromSelection(selection, {
+        sessionPurpose: "executor",
+      });
+
+      override({ skills: [], diagnostics: [] });
+
+      expect(mockPiLog.warn).toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+      expect(consoleLogSpy).not.toHaveBeenCalled();
 
       consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+      consoleLogSpy.mockRestore();
     });
   });
 

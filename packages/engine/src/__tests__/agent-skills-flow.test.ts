@@ -5,6 +5,19 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { mockPiLog } = vi.hoisted(() => ({
+  mockPiLog: {
+    log: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock("../logger.js", () => ({
+  piLog: mockPiLog,
+}));
+
 import { buildSessionSkillContext } from "../session-skill-context.js";
 import { resolveSessionSkills, createSkillsOverrideFromSelection } from "../skill-resolver.js";
 import type { Agent, AgentStore } from "@fusion/core";
@@ -45,15 +58,16 @@ function createMockProjectDir(settings: Record<string, unknown> | null): string 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("agent skills flow - full integration", () => {
-  const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
   beforeEach(() => {
     mockFiles.clear();
     mockDirCounter = 0;
+    mockPiLog.log.mockClear();
+    mockPiLog.warn.mockClear();
+    mockPiLog.error.mockClear();
   });
 
   afterEach(() => {
-    consoleErrorSpy.mockRestore();
+    vi.clearAllMocks();
   });
 
   it("full end-to-end flow: settings patterns + agent metadata + discovered skills produce correct override", async () => {
@@ -130,8 +144,8 @@ describe("agent skills flow - full integration", () => {
     expect(disabledLintWarning).toBeDefined();
     expect(disabledLintWarning?.type).toBe("warning");
 
-    // Step 10: Verify console.error was called with disabled skill warning
-    const loggedMessages = consoleErrorSpy.mock.calls.map(c => c[0] as string);
+    // Step 10: Verify structured logger warning was called with disabled skill warning
+    const loggedMessages = mockPiLog.warn.mock.calls.map(c => c[0] as string);
     const hasDisabledLintWarning = loggedMessages.some(m =>
       m.includes("disabled") && m.includes("lint")
     );

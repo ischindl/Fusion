@@ -264,18 +264,22 @@ describe("promptWithFallback context recovery", () => {
 });
 
 describe("createKbAgent skills parameter", () => {
-  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let piLogSpy: ReturnType<typeof vi.spyOn>;
+  let piWarnSpy: ReturnType<typeof vi.spyOn>;
+  let piErrorSpy: ReturnType<typeof vi.spyOn>;
   let mockResolveSessionSkills: ReturnType<typeof vi.fn>;
   let mockCreateSkillsOverride: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
-    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    
+    piLogSpy = vi.spyOn(piLog, "log").mockImplementation(() => {});
+    piWarnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
+    piErrorSpy = vi.spyOn(piLog, "error").mockImplementation(() => {});
+
     // Access the mocked module to get/set mocks
     const skillResolver = await import("./skill-resolver.js");
     mockResolveSessionSkills = vi.mocked(skillResolver.resolveSessionSkills);
     mockCreateSkillsOverride = vi.mocked(skillResolver.createSkillsOverrideFromSelection);
-    
+
     mockResolveSessionSkills.mockReturnValue({
       allowedSkillPaths: new Set(),
       excludedSkillPaths: new Set(),
@@ -289,7 +293,9 @@ describe("createKbAgent skills parameter", () => {
   });
 
   afterEach(() => {
-    consoleErrorSpy.mockRestore();
+    piLogSpy.mockRestore();
+    piWarnSpy.mockRestore();
+    piErrorSpy.mockRestore();
     vi.clearAllMocks();
   });
 
@@ -332,7 +338,7 @@ describe("createKbAgent skills parameter", () => {
     expect(callArgs.sessionPurpose).toBe("triage");
 
     // Verify the convenience log was NOT emitted (skillSelection takes precedence)
-    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+    expect(piLogSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("Using skills from convenience parameter")
     );
   });
@@ -361,8 +367,8 @@ describe("createKbAgent skills parameter", () => {
     await createKbAgent(options);
 
     // Verify the log message includes the skill names
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[pi] Using skills from convenience parameter: [review, fusion]")
+    expect(piLogSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Using skills from convenience parameter: [review, fusion]")
     );
   });
 
@@ -387,21 +393,27 @@ describe("createKbAgent skills parameter", () => {
 
     // The diagnostics should be logged
     expect(mockResolveSessionSkills).toHaveBeenCalled();
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
+    expect(piWarnSpy).toHaveBeenCalledWith(
       expect.stringContaining("warning")
     );
   });
 });
 
 describe("promptWithFallback auto-compaction", () => {
-  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let piLogSpy: ReturnType<typeof vi.spyOn>;
+  let piWarnSpy: ReturnType<typeof vi.spyOn>;
+  let piErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    piLogSpy = vi.spyOn(piLog, "log").mockImplementation(() => {});
+    piWarnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
+    piErrorSpy = vi.spyOn(piLog, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    consoleErrorSpy.mockRestore();
+    piLogSpy.mockRestore();
+    piWarnSpy.mockRestore();
+    piErrorSpy.mockRestore();
     vi.clearAllMocks();
   });
 
@@ -605,5 +617,99 @@ describe("session failure diagnostics", () => {
     );
 
     warnSpy.mockRestore();
+  });
+});
+
+describe("piLog structured diagnostics", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logSpy = vi.spyOn(piLog, "log").mockImplementation(() => {});
+    warnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
+    errorSpy = vi.spyOn(piLog, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("logs session creation with model info", async () => {
+    await createKbAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test",
+      defaultProvider: "test",
+      defaultModelId: "test-model",
+    });
+
+    const hasModelLog = logSpy.mock.calls.some(([message]) =>
+      String(message).includes("Session created successfully (model=test/test-model)"),
+    );
+    expect(hasModelLog).toBe(true);
+  });
+
+  it("logs warning on primary model failure and fallback attempt", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock
+      .mockRejectedValueOnce(new Error("429 Too Many Requests"))
+      .mockResolvedValueOnce({
+        session: {
+          model: { provider: "test", id: "fallback-model" },
+          prompt: vi.fn(),
+          subscribe: vi.fn(),
+          dispose: vi.fn(),
+          setThinkingLevel: vi.fn(),
+          sessionFile: undefined,
+        },
+      } as any);
+
+    await createKbAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test",
+      defaultProvider: "test",
+      defaultModelId: "primary-model",
+      fallbackProvider: "test",
+      fallbackModelId: "fallback-model",
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Primary model failed (429 Too Many Requests), trying fallback",
+    );
+    expect(logSpy).toHaveBeenCalledWith("Fallback session created successfully");
+  });
+
+  it("logs error when session creation fails with non-retryable error", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock.mockRejectedValueOnce(new Error("fatal model failure"));
+
+    await expect(createKbAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test",
+      defaultProvider: "test",
+      defaultModelId: "primary-model",
+    })).rejects.toThrow("fatal model failure");
+
+    expect(errorSpy).toHaveBeenCalledWith("Session creation failed: fatal model failure");
+  });
+
+  it("logs promptWithFallback trace at log level", async () => {
+    const session = {
+      prompt: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AgentSession;
+
+    await promptWithFallback(session, "test prompt");
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("promptWithFallback: calling session.prompt (prompt length=11)"),
+    );
+    expect(logSpy).toHaveBeenCalledWith("promptWithFallback: prompt completed");
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });

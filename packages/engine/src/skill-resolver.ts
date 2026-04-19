@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResourceDiagnostic, Skill } from "@mariozechner/pi-coding-agent";
+import { piLog } from "./logger.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -387,7 +388,7 @@ export function createSkillsOverrideFromSelection(
     if (newDiagnostics.length > 0) {
       const _purpose = sessionPurpose ? `[${sessionPurpose}]` : "skills";
       for (const diag of newDiagnostics) {
-        console.error(`[pi] [skills] ${diag.type}: ${diag.message}`);
+        piLog.warn(`[skills] ${diag.type}: ${diag.message}`);
       }
     }
 

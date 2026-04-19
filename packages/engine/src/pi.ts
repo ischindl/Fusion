@@ -34,7 +34,7 @@ import {
 } from "./skill-resolver.js";
 import { isContextLimitError } from "./context-limit-detector.js";
 import { createFusionAuthStorage, getModelRegistryModelsPath } from "./auth-storage.js";
-import { piLog } from "./logger.js";
+import { piLog, extensionsLog } from "./logger.js";
 
 export interface AgentResult {
   session: AgentSession;
@@ -81,20 +81,20 @@ async function promptSessionAndCheck(session: AgentSession, prompt: string, opti
 export async function promptWithFallback(session: AgentSession, prompt: string, options?: unknown): Promise<void> {
   const maybePromptable = session as Partial<PromptableSession>;
   if (typeof maybePromptable.promptWithFallback === "function") {
-    console.error(`[pi] promptWithFallback: delegating to session.promptWithFallback (prompt length=${prompt.length})`);
+    piLog.log(`promptWithFallback: delegating to session.promptWithFallback (prompt length=${prompt.length})`);
     await maybePromptable.promptWithFallback(prompt, options);
-    console.error(`[pi] promptWithFallback: completed`);
+    piLog.log("promptWithFallback: completed");
     return;
   }
 
-  console.error(`[pi] promptWithFallback: calling session.prompt (prompt length=${prompt.length})`);
+  piLog.log(`promptWithFallback: calling session.prompt (prompt length=${prompt.length})`);
   try {
     await promptSessionAndCheck(session, prompt, options);
-    console.error(`[pi] promptWithFallback: prompt completed`);
+    piLog.log("promptWithFallback: prompt completed");
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     if (!isContextLimitError(errorMessage)) {
-      console.error(`[pi] promptWithFallback: non-context error — propagating: ${errorMessage}`);
+      piLog.error(`promptWithFallback: non-context error — propagating: ${errorMessage}`);
       throw err;
     }
 
@@ -110,21 +110,21 @@ export async function promptWithFallback(session: AgentSession, prompt: string, 
       }
     }
 
-    console.error(`[pi] promptWithFallback: context limit error — attempting auto-compaction`);
+    piLog.warn("promptWithFallback: context limit error — attempting auto-compaction");
     await flushMemoryBeforeSessionCompaction(session);
     const compactResult = await compactSessionContext(session);
     if (!compactResult) {
-      console.error(`[pi] promptWithFallback: compaction unavailable — propagating original error`);
+      piLog.error("promptWithFallback: compaction unavailable — propagating original error");
       throw err;
     }
 
-    console.error(`[pi] promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
+    piLog.log(`promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
     try {
       await promptSessionAndCheck(session, prompt, options);
-      console.error(`[pi] promptWithFallback: prompt completed after auto-compaction`);
+      piLog.log("promptWithFallback: prompt completed after auto-compaction");
     } catch (retryErr: unknown) {
       const retryErrorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      console.error(`[pi] promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
+      piLog.error(`promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
       throw err; // Throw original error to preserve original context
     }
   }
@@ -226,17 +226,17 @@ async function retryWithCompactedPromptMemory(
     return { recovered: false };
   }
 
-  console.error(
-    `[pi] promptWithFallback: retrying with compacted prompt memory (${prompt.length} → ${compactedPrompt.length} chars)`,
+  piLog.log(
+    `promptWithFallback: retrying with compacted prompt memory (${prompt.length} → ${compactedPrompt.length} chars)`,
   );
 
   try {
     await promptSessionAndCheck(session, compactedPrompt, options);
-    console.error(`[pi] promptWithFallback: prompt completed after prompt-memory compaction`);
+    piLog.log("promptWithFallback: prompt completed after prompt-memory compaction");
     return { recovered: true };
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error(`[pi] promptWithFallback: retry after prompt-memory compaction failed: ${errorMessage}`);
+    piLog.error(`promptWithFallback: retry after prompt-memory compaction failed: ${errorMessage}`);
     return { recovered: false, error: err };
   }
 }
@@ -257,7 +257,7 @@ async function flushMemoryBeforeSessionCompaction(session: AgentSession): Promis
     await promptSessionAndCheck(session, flushPrompt);
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error(`[pi] promptWithFallback: memory flush before compaction skipped: ${errorMessage}`);
+    piLog.warn(`promptWithFallback: memory flush before compaction skipped: ${errorMessage}`);
   }
 }
 
@@ -357,7 +357,7 @@ function resolveConfiguredModel(
   const providerModels = modelRegistry.getAll().filter((m) => m.provider === provider);
   if (providerModels.length > 0) {
     const baseModel = providerModels[0]!;
-    console.error(`[pi] ${kind} model ${provider}/${modelId} not in registry; using provider base model as template`);
+    piLog.warn(`${kind} model ${provider}/${modelId} not in registry; using provider base model as template`);
     return { ...baseModel, id: modelId, name: modelId };
   }
 
@@ -476,7 +476,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
     );
 
     for (const { path, error } of extensionsResult.errors) {
-      console.error(`[extensions] Failed to load ${path}: ${error}`);
+      extensionsLog.warn(`Failed to load ${path}: ${error}`);
     }
 
     for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
@@ -484,7 +484,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
         modelRegistry.registerProvider(name, config);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[extensions] Failed to register provider from ${extensionPath}: ${message}`);
+        extensionsLog.warn(`Failed to register provider from ${extensionPath}: ${message}`);
       }
     }
 
@@ -492,7 +492,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
     modelRegistry.refresh();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[extensions] Failed to discover extensions: ${message}`);
+    extensionsLog.error(`Failed to discover extensions: ${message}`);
     createExtensionRuntime();
     modelRegistry.refresh();
   }
@@ -668,7 +668,7 @@ export function wrapToolsWithBoundary(
  * Reuses the user's existing pi auth and model configuration.
  */
 export async function createKbAgent(options: AgentOptions): Promise<AgentResult> {
-  console.error(`[pi] createKbAgent called (cwd=${options.cwd}, tools=${options.tools}, provider=${options.defaultProvider}, model=${options.defaultModelId})`);
+  piLog.log(`createKbAgent called (cwd=${options.cwd}, tools=${options.tools}, provider=${options.defaultProvider}, model=${options.defaultModelId})`);
   const authStorage = createFusionAuthStorage();
   const modelRegistry = new ModelRegistry(authStorage, getModelRegistryModelsPath());
   await registerExtensionProviders(options.cwd, modelRegistry);
@@ -713,7 +713,7 @@ export async function createKbAgent(options: AgentOptions): Promise<AgentResult>
   // Resolve skill selection: explicit skillSelection wins over convenience `skills`
   let effectiveSkillSelection: SkillSelectionContext | undefined = options.skillSelection;
   if (!effectiveSkillSelection && options.skills && options.skills.length > 0) {
-    console.error(`[pi] Using skills from convenience parameter: [${options.skills.join(", ")}]`);
+    piLog.log(`Using skills from convenience parameter: [${options.skills.join(", ")}]`);
     effectiveSkillSelection = {
       projectRootDir: options.cwd,
       requestedSkillNames: options.skills,
@@ -728,7 +728,7 @@ export async function createKbAgent(options: AgentOptions): Promise<AgentResult>
     if (selectionResult.diagnostics.length > 0) {
       const purpose = effectiveSkillSelection.sessionPurpose ?? "skills";
       for (const diag of selectionResult.diagnostics) {
-        console.error(`[pi] [skills] [${purpose}] ${diag.type}: ${diag.message}`);
+        piLog.warn(`[skills] [${purpose}] ${diag.type}: ${diag.message}`);
       }
     }
     skillsOverrideFn = createSkillsOverrideFromSelection(selectionResult, {
@@ -766,16 +766,16 @@ export async function createKbAgent(options: AgentOptions): Promise<AgentResult>
   let usingFallback = false;
   try {
     sessionResult = await createSessionWithModel(selectedModel);
-    console.error(`[pi] Session created successfully (model=${selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "default"})`);
+    piLog.log(`Session created successfully (model=${selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "default"})`);
   } catch (err: any) {
     if (!fallbackModel || !selectedModel || !isRetryableModelSelectionError(err?.message || "")) {
-      console.error(`[pi] Session creation failed: ${err.message}`);
+      piLog.error(`Session creation failed: ${err.message}`);
       throw err;
     }
-    console.error(`[pi] Primary model failed (${err.message}), trying fallback`);
+    piLog.warn(`Primary model failed (${err.message}), trying fallback`);
     usingFallback = true;
     sessionResult = await createSessionWithModel(fallbackModel);
-    console.error(`[pi] Fallback session created successfully`);
+    piLog.log("Fallback session created successfully");
   }
 
   const { session } = sessionResult;
@@ -801,22 +801,22 @@ export async function createKbAgent(options: AgentOptions): Promise<AgentResult>
           }
         }
 
-        console.error(`[pi] promptWithFallback: context limit error — attempting auto-compaction`);
+        piLog.warn("promptWithFallback: context limit error — attempting auto-compaction");
         await flushMemoryBeforeSessionCompaction(session);
         const compactResult = await compactSessionContext(session);
         if (compactResult) {
-          console.error(`[pi] promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
+          piLog.log(`promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
           try {
             await promptSessionAndCheck(session, prompt, promptOptions);
             return;
           } catch (retryErr: any) {
             const retryErrorMessage = retryErr?.message || "";
-            console.error(`[pi] promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
+            piLog.error(`promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
             // Throw original error to preserve original context
             throw err;
           }
         } else {
-          console.error(`[pi] promptWithFallback: compaction unavailable — propagating original error`);
+          piLog.error("promptWithFallback: compaction unavailable — propagating original error");
           throw err;
         }
       }
@@ -880,21 +880,21 @@ export async function createKbAgent(options: AgentOptions): Promise<AgentResult>
             }
           }
 
-          console.error(`[pi] promptWithFallback: fallback session context limit error — attempting auto-compaction`);
+          piLog.warn("promptWithFallback: fallback session context limit error — attempting auto-compaction");
           await flushMemoryBeforeSessionCompaction(fallbackSession);
           const compactResult = await compactSessionContext(fallbackSession);
           if (compactResult) {
-            console.error(`[pi] promptWithFallback: fallback compaction succeeded (${compactResult.tokensBefore} tokens) — retrying`);
+            piLog.log(`promptWithFallback: fallback compaction succeeded (${compactResult.tokensBefore} tokens) — retrying`);
             try {
               await promptSessionAndCheck(fallbackSession, prompt, promptOptions);
               return;
             } catch (retryErr: any) {
               const retryErrorMessage = retryErr?.message || "";
-              console.error(`[pi] promptWithFallback: fallback retry after auto-compaction failed: ${retryErrorMessage}`);
+              piLog.error(`promptWithFallback: fallback retry after auto-compaction failed: ${retryErrorMessage}`);
               throw fallbackErr; // Throw original fallback error
             }
           } else {
-            console.error(`[pi] promptWithFallback: fallback compaction unavailable — propagating original error`);
+            piLog.error("promptWithFallback: fallback compaction unavailable — propagating original error");
             throw fallbackErr;
           }
         }
