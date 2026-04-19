@@ -8251,10 +8251,8 @@ Task with acceptance criteria
   });
 
   describe("project memory bootstrap", () => {
-    it("creates .fusion/memory.md on init when memoryEnabled is default (true)", async () => {
-      // The default store in beforeEach already called init() with default settings
-      // memoryEnabled defaults to true, so memory.md should exist
-      const memoryPath = join(rootDir, ".fusion", "memory.md");
+    it("creates .fusion/memory/MEMORY.md on init when memoryEnabled is default (true)", async () => {
+      const memoryPath = join(rootDir, ".fusion", "memory", "MEMORY.md");
       expect(existsSync(memoryPath)).toBe(true);
 
       const content = await readFile(memoryPath, "utf-8");
@@ -8263,71 +8261,60 @@ Task with acceptance criteria
       expect(content).toContain("## Conventions");
     });
 
-    it("does not create .fusion/memory.md when memoryEnabled is false", async () => {
+    it("does not create .fusion/memory/MEMORY.md when memoryEnabled is false after re-init", async () => {
       const localRoot = makeTmpDir();
       const localGlobal = makeTmpDir();
+      let localStore: TaskStore | undefined;
+      let secondStore: TaskStore | undefined;
       try {
-        const localStore = new TaskStore(localRoot, localGlobal);
+        localStore = new TaskStore(localRoot, localGlobal);
         await localStore.init();
-        // Explicitly disable memory
         await localStore.updateSettings({ memoryEnabled: false } as any);
-        // Delete the file if it was created during init (default enabled)
-        const memoryPath = join(localRoot, ".fusion", "memory.md");
-        if (existsSync(memoryPath)) {
-          await unlink(memoryPath);
-        }
-        localStore.close();
 
-        // Re-init with memory disabled
-        const store2 = new TaskStore(localRoot, localGlobal);
-        // Manually set memoryEnabled to false before init
-        await store2.init();
-        await store2.updateSettings({ memoryEnabled: false } as any);
-        // After setting false, verify we can init without creating
-        store2.close();
-
-        // Create a third store with memory disabled in config
-        const store3 = new TaskStore(localRoot, localGlobal);
-        await store3.updateSettings({ memoryEnabled: false } as any);
-        await store3.init();
-
-        // Memory file should not exist if it was deleted
-        // But init creates it by default, then we disabled it
-        // The key behavior is that when memoryEnabled is explicitly false,
-        // init() should not create the file
-        store3.close();
-      } finally {
-        await rm(localRoot, { recursive: true, force: true });
-        await rm(localGlobal, { recursive: true, force: true });
-      }
-    });
-
-    it("creates .fusion/memory.md when memory is toggled on via updateSettings", async () => {
-      const localRoot = makeTmpDir();
-      const localGlobal = makeTmpDir();
-      try {
-        const localStore = new TaskStore(localRoot, localGlobal);
-        await localStore.init();
-
-        // First disable memory
-        await localStore.updateSettings({ memoryEnabled: false } as any);
-        const memoryPath = join(localRoot, ".fusion", "memory.md");
-
-        // Delete the file that was created during init
+        const memoryPath = join(localRoot, ".fusion", "memory", "MEMORY.md");
         if (existsSync(memoryPath)) {
           await unlink(memoryPath);
         }
         expect(existsSync(memoryPath)).toBe(false);
 
-        // Now toggle memory back on
+        localStore.close();
+        localStore = undefined;
+
+        secondStore = new TaskStore(localRoot, localGlobal);
+        await secondStore.init();
+
+        expect(existsSync(memoryPath)).toBe(false);
+      } finally {
+        secondStore?.close();
+        localStore?.close();
+        await rm(localRoot, { recursive: true, force: true });
+        await rm(localGlobal, { recursive: true, force: true });
+      }
+    });
+
+    it("creates .fusion/memory/MEMORY.md when memory is toggled on via updateSettings", async () => {
+      const localRoot = makeTmpDir();
+      const localGlobal = makeTmpDir();
+      let localStore: TaskStore | undefined;
+      try {
+        localStore = new TaskStore(localRoot, localGlobal);
+        await localStore.init();
+
+        await localStore.updateSettings({ memoryEnabled: false } as any);
+        const memoryPath = join(localRoot, ".fusion", "memory", "MEMORY.md");
+
+        if (existsSync(memoryPath)) {
+          await unlink(memoryPath);
+        }
+        expect(existsSync(memoryPath)).toBe(false);
+
         await localStore.updateSettings({ memoryEnabled: true } as any);
         expect(existsSync(memoryPath)).toBe(true);
 
         const content = await readFile(memoryPath, "utf-8");
         expect(content).toContain("# Project Memory");
-
-        localStore.close();
       } finally {
+        localStore?.close();
         await rm(localRoot, { recursive: true, force: true });
         await rm(localGlobal, { recursive: true, force: true });
       }
@@ -8336,25 +8323,22 @@ Task with acceptance criteria
     it("does not overwrite existing memory content when toggled on", async () => {
       const localRoot = makeTmpDir();
       const localGlobal = makeTmpDir();
+      let localStore: TaskStore | undefined;
       try {
-        const localStore = new TaskStore(localRoot, localGlobal);
+        localStore = new TaskStore(localRoot, localGlobal);
         await localStore.init();
-        const memoryPath = join(localRoot, ".fusion", "memory.md");
+        const memoryPath = join(localRoot, ".fusion", "memory", "MEMORY.md");
 
-        // Write custom content
         const customContent = "# My Custom Memory\n\nImportant stuff";
         await writeFile(memoryPath, customContent, "utf-8");
 
-        // Disable then re-enable memory
         await localStore.updateSettings({ memoryEnabled: false } as any);
         await localStore.updateSettings({ memoryEnabled: true } as any);
 
-        // Custom content should be preserved
         const content = await readFile(memoryPath, "utf-8");
         expect(content).toBe(customContent);
-
-        localStore.close();
       } finally {
+        localStore?.close();
         await rm(localRoot, { recursive: true, force: true });
         await rm(localGlobal, { recursive: true, force: true });
       }

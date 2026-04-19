@@ -17,6 +17,7 @@ import {
   searchProjectMemory,
   resolveMemoryInstructionContext,
 } from "./project-memory.js";
+import { LEGACY_MEMORY_FILE_PATH } from "./memory-backend.js";
 
 describe("project-memory", () => {
   let testDir: string;
@@ -24,7 +25,7 @@ describe("project-memory", () => {
 
   beforeEach(async () => {
     testDir = join(tmpdir(), `kb-memory-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    memoryPath = join(testDir, ".fusion", "memory.md");
+    memoryPath = join(testDir, ".fusion", "memory", "MEMORY.md");
     // Create the test directory but not the .fusion subdirectory
     // Individual tests can create .fusion as needed
     await mkdir(testDir, { recursive: true });
@@ -39,13 +40,13 @@ describe("project-memory", () => {
 
   describe("MEMORY_FILE_PATH", () => {
     it("is a relative path under .fusion", () => {
-      expect(MEMORY_FILE_PATH).toBe(".fusion/memory.md");
+      expect(MEMORY_FILE_PATH).toBe(".fusion/memory/MEMORY.md");
     });
   });
 
   describe("memoryFilePath", () => {
     it("returns absolute path joining root and relative path", () => {
-      expect(memoryFilePath("/project")).toBe("/project/.fusion/memory.md");
+      expect(memoryFilePath("/project")).toBe("/project/.fusion/memory/MEMORY.md");
     });
   });
 
@@ -115,7 +116,7 @@ describe("project-memory", () => {
       // Manually edit the content
       const { writeFile } = await import("node:fs/promises");
       const customContent = "# Custom Memory\n\nMy custom content";
-      await writeFile(memoryFilePath(testDir), customContent, "utf-8");
+      await writeFile(memoryPath, customContent, "utf-8");
 
       // Ensure again — should NOT overwrite
       const created = await ensureMemoryFile(testDir);
@@ -154,6 +155,14 @@ describe("project-memory", () => {
       const content = await readProjectMemory(testDir);
       expect(content).toContain("# Project Memory");
     });
+
+    it("returns empty content when only the legacy memory file exists", async () => {
+      await mkdir(join(testDir, ".fusion"), { recursive: true });
+      await writeFile(join(testDir, LEGACY_MEMORY_FILE_PATH), "legacy content", "utf-8");
+
+      const content = await readProjectMemory(testDir);
+      expect(content).toBe("");
+    });
   });
 
   // ── buildTriageMemoryInstructions ─────────────────────────────────
@@ -166,7 +175,7 @@ describe("project-memory", () => {
 
     it("does not inject a raw memory file path by default", () => {
       const instructions = buildTriageMemoryInstructions(testDir);
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
     });
 
     it("instructs agent to search memory first", () => {
@@ -191,7 +200,7 @@ describe("project-memory", () => {
 
     it("does not inject a raw memory file path by default", () => {
       const instructions = buildExecutionMemoryInstructions(testDir);
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
     });
 
     it("instructs agent to search memory at start", () => {
@@ -228,7 +237,7 @@ describe("project-memory", () => {
 
     it("keeps qmd default path-agnostic", () => {
       const instructions = buildExecutionMemoryInstructions(testDir);
-      expect(instructions).not.toContain("`.fusion/memory.md`");
+      expect(instructions).not.toContain("`.fusion/memory/MEMORY.md`");
     });
   });
 
@@ -392,7 +401,7 @@ describe("project-memory", () => {
 
     it("returns memory content when using QMD backend", async () => {
       // Create the memory file directly (simulating prior creation)
-      await mkdir(join(testDir, ".fusion"), { recursive: true });
+      await mkdir(join(testDir, ".fusion", "memory"), { recursive: true });
       await writeFile(memoryPath, "# QMD Memory\n\nSome content", "utf-8");
 
       const settings = { memoryBackendType: "qmd" };
@@ -451,7 +460,7 @@ describe("project-memory", () => {
     it("returns file backend context when explicitly set", () => {
       const ctx = resolveMemoryInstructionContext({ memoryBackendType: "file" });
       expect(ctx.backendType).toBe("file");
-      expect(ctx.instructionPathHint).toBe(".fusion/memory.md");
+      expect(ctx.instructionPathHint).toBe(".fusion/memory/MEMORY.md");
     });
 
     it("returns readonly backend context", () => {
@@ -482,10 +491,10 @@ describe("project-memory", () => {
   // ── Backend-aware buildTriageMemoryInstructions ─────────────────────────────────
 
   describe("buildTriageMemoryInstructions with backend settings", () => {
-    it("includes .fusion/memory.md for file backend", () => {
+    it("includes .fusion/memory/MEMORY.md for file backend", () => {
       const settings = { memoryBackendType: "file" };
       const instructions = buildTriageMemoryInstructions(testDir, settings);
-      expect(instructions).toContain(".fusion/memory.md");
+      expect(instructions).toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("## Project Memory");
     });
 
@@ -496,17 +505,17 @@ describe("project-memory", () => {
       // Should NOT contain write/update directives
       expect(instructions).not.toMatch(/write|update/i);
       // Should NOT contain the specific file path
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       // Should instruct to consult memory
       expect(instructions).toMatch(/consult.*memory|memory.*context/i);
     });
 
-    it("does not include .fusion/memory.md for qmd backend", () => {
+    it("does not include .fusion/memory/MEMORY.md for qmd backend", () => {
       const settings = { memoryBackendType: "qmd" };
       const instructions = buildTriageMemoryInstructions(testDir, settings);
       expect(instructions).toContain("## Project Memory");
-      // QMD should NOT unconditionally reference .fusion/memory.md
-      expect(instructions).not.toContain(".fusion/memory.md");
+      // QMD should NOT unconditionally reference .fusion/memory/MEMORY.md
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("memory_search");
       expect(instructions).toContain("memory_get");
     });
@@ -515,32 +524,32 @@ describe("project-memory", () => {
       const settings = { memoryBackendType: "qmd" };
       const instructions = buildTriageMemoryInstructions(testDir, settings);
       expect(instructions).toContain("## Project Memory");
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("memory_search");
     });
 
-    it("does not include .fusion/memory.md for non-file backends without instructionPathHint", () => {
+    it("does not include .fusion/memory/MEMORY.md for non-file backends without instructionPathHint", () => {
       const settings = { memoryBackendType: "some-custom-backend" };
       const instructions = buildTriageMemoryInstructions(testDir, settings);
       expect(instructions).toContain("memory_search");
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
     });
 
     it("defaults to qmd guidance when settings are omitted", () => {
       const instructions = buildTriageMemoryInstructions(testDir);
       expect(instructions).toContain("memory_search");
       expect(instructions).toContain("memory_get");
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
     });
   });
 
   // ── Backend-aware buildExecutionMemoryInstructions ─────────────────────────────────
 
   describe("buildExecutionMemoryInstructions with backend settings", () => {
-    it("includes .fusion/memory.md for file backend", () => {
+    it("includes .fusion/memory/MEMORY.md for file backend", () => {
       const settings = { memoryBackendType: "file" };
       const instructions = buildExecutionMemoryInstructions(testDir, settings);
-      expect(instructions).toContain(".fusion/memory.md");
+      expect(instructions).toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("## Project Memory");
       // Should have write instructions
       expect(instructions).toMatch(/end of execution|before calling.*task_done/i);
@@ -553,17 +562,17 @@ describe("project-memory", () => {
       // Should NOT contain write/update directives
       expect(instructions).not.toMatch(/write.*memory|update.*memory/i);
       // Should NOT contain the specific file path
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       // Should instruct to consult memory at start
       expect(instructions).toMatch(/consult.*memory/i);
     });
 
-    it("does not include .fusion/memory.md for qmd backend", () => {
+    it("does not include .fusion/memory/MEMORY.md for qmd backend", () => {
       const settings = { memoryBackendType: "qmd" };
       const instructions = buildExecutionMemoryInstructions(testDir, settings);
       expect(instructions).toContain("## Project Memory");
-      // QMD should NOT unconditionally reference .fusion/memory.md
-      expect(instructions).not.toContain(".fusion/memory.md");
+      // QMD should NOT unconditionally reference .fusion/memory/MEMORY.md
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("memory_search");
       expect(instructions).toContain("memory_get");
     });
@@ -572,7 +581,7 @@ describe("project-memory", () => {
       const settings = { memoryBackendType: "qmd" };
       const instructions = buildExecutionMemoryInstructions(testDir, settings);
       expect(instructions).toContain("## Project Memory");
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toContain("memory_search");
       // Contains "end of execution" write guidance
       expect(instructions).toMatch(/end of execution/i);
@@ -586,7 +595,7 @@ describe("project-memory", () => {
       const instructions = buildExecutionMemoryInstructions(testDir);
       expect(instructions).toContain("memory_search");
       expect(instructions).toContain("memory_get");
-      expect(instructions).not.toContain(".fusion/memory.md");
+      expect(instructions).not.toContain(".fusion/memory/MEMORY.md");
       expect(instructions).toMatch(/end of execution|before calling.*task_done/i);
     });
 

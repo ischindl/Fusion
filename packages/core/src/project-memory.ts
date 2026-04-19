@@ -1,7 +1,7 @@
 /**
  * Project Memory Bootstrap
  *
- * Provides the canonical path and default scaffold for `.fusion/memory.md`,
+ * Provides the canonical path and default scaffold for `.fusion/memory/MEMORY.md`,
  * plus idempotent `ensure` functions that create memory only when missing.
  *
  * This module supports both file-based (direct filesystem) and backend-aware
@@ -19,7 +19,7 @@
  * - The memory instruction templates used by triage and executor prompts
  */
 
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -34,7 +34,7 @@ import {
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Path to the project memory file relative to project root. */
-export const MEMORY_FILE_PATH = ".fusion/memory.md";
+export const MEMORY_FILE_PATH = ".fusion/memory/MEMORY.md";
 
 /** Canonical absolute path helper. */
 export function memoryFilePath(rootDir: string): string {
@@ -88,19 +88,15 @@ export function getDefaultMemoryScaffold(): string {
  */
 export async function ensureMemoryFile(rootDir: string): Promise<boolean> {
   const filePath = memoryFilePath(rootDir);
-  if (existsSync(filePath)) {
-    await ensureOpenClawMemoryFiles(rootDir);
-    return false;
+  const legacyPath = join(rootDir, ".fusion", "memory.md");
+  const hasLegacySeed = existsSync(legacyPath);
+
+  const { longTermCreated } = await ensureOpenClawMemoryFiles(rootDir);
+  if (longTermCreated && !hasLegacySeed) {
+    await writeFile(filePath, getDefaultMemoryScaffold(), "utf-8");
   }
 
-  const dir = join(rootDir, ".fusion");
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
-
-  await writeFile(filePath, getDefaultMemoryScaffold(), "utf-8");
-  await ensureOpenClawMemoryFiles(rootDir);
-  return true;
+  return longTermCreated;
 }
 
 /**
@@ -140,7 +136,7 @@ export interface MemoryInstructionContext {
   capabilities: import("./memory-backend.js").MemoryBackendCapabilities;
   /**
    * Path hint for memory instructions.
-   * - For "file" backend: ".fusion/memory.md"
+   * - For "file" backend: ".fusion/memory/MEMORY.md"
    * - For "readonly" backend: null (no write path)
    * - For "qmd"/non-file backends: null (path is backend-specific)
    */
@@ -152,9 +148,9 @@ export interface MemoryInstructionContext {
  *
  * This function determines what memory instructions should be injected
  * based on the configured backend type:
- * - "file" backend: full read/write instructions with `.fusion/memory.md` path
+ * - "file" backend: full read/write instructions with `.fusion/memory/MEMORY.md` path
  * - "readonly" backend: read-only instructions, no write/update directives
- * - "qmd"/non-file backends: instructions without unconditional `.fusion/memory.md` path
+ * - "qmd"/non-file backends: instructions without unconditional `.fusion/memory/MEMORY.md` path
  *   (unless `instructionPathHint` is explicitly non-null)
  *
  * @param settings - Optional project settings containing memoryEnabled and memoryBackendType
@@ -213,7 +209,7 @@ export function resolveMemoryInstructionContext(
     case "file":
       return {
         backendType: "file",
-        backendName: "File (.fusion/memory.md)",
+        backendName: "File (.fusion/memory/MEMORY.md)",
         capabilities: {
           readable: true,
           writable: true,
@@ -221,7 +217,7 @@ export function resolveMemoryInstructionContext(
           hasConflictResolution: false,
           persistent: true,
         },
-        instructionPathHint: ".fusion/memory.md",
+        instructionPathHint: ".fusion/memory/MEMORY.md",
       };
     default:
       return {
@@ -396,9 +392,9 @@ export async function getProjectMemory(
  * @param rootDir - Absolute path to the project root directory.
  * @param settings - Optional project settings for backend-aware instruction generation.
  *                 When provided, the function branches based on memoryBackendType:
- *                 - "file": includes `.fusion/memory.md` read guidance
+ *                 - "file": includes `.fusion/memory/MEMORY.md` read guidance
  *                 - "readonly": read-only instructions, no write directives
- *                 - "qmd"/non-file: instructions without unconditional `.fusion/memory.md` path
+ *                 - "qmd"/non-file: instructions without unconditional `.fusion/memory/MEMORY.md` path
  * @returns The memory instruction section string, or empty string if the
  *          memory file does not exist yet.
  */
@@ -436,14 +432,13 @@ This project has a memory system that stores durable project learnings.
 This project has OpenClaw-style memory files:
 - \`.fusion/memory/MEMORY.md\` — curated long-term memory for durable decisions, conventions, and pitfalls
 - \`.fusion/memory/YYYY-MM-DD.md\` — append-only daily notes for running context
-- Legacy fallback: \`.fusion/memory.md\`
 
 **Before writing the specification:**
 1. Use \`memory_search\` first for task-relevant context
 2. Use \`memory_get\` only for specific memory files/line ranges returned by search
 3. Incorporate relevant learnings into your specification — reference actual patterns, constraints, and conventions documented there
 
-Do not read all memory or read \`.fusion/memory.md\` directly by default. If memory is irrelevant, skip it.
+Do not read all memory directly by default. If memory is irrelevant, skip it.
 `;
   }
 
@@ -476,9 +471,9 @@ This project has a memory system that stores durable project learnings.
  * @param rootDir - Absolute path to the project root directory.
  * @param settings - Optional project settings for backend-aware instruction generation.
  *                  When provided, the function branches based on memoryBackendType:
- *                  - "file": includes `.fusion/memory.md` read/write guidance
+ *                  - "file": includes `.fusion/memory/MEMORY.md` read/write guidance
  *                  - "readonly": read-only instructions, no write/update directives
- *                  - "qmd"/non-file: instructions without unconditional `.fusion/memory.md` path
+ *                  - "qmd"/non-file: instructions without unconditional `.fusion/memory/MEMORY.md` path
  * @returns The memory instruction section string.
  */
 export function buildExecutionMemoryInstructions(
@@ -515,13 +510,12 @@ This project has a memory system that stores durable project learnings.
 This project has OpenClaw-style memory files:
 - \`.fusion/memory/MEMORY.md\` — curated long-term memory for durable decisions, conventions, and pitfalls
 - \`.fusion/memory/YYYY-MM-DD.md\` — append-only daily notes for running observations and open loops
-- Legacy fallback: \`.fusion/memory.md\`
 
 **At the start of execution:**
 1. Use \`memory_search\` first for task-relevant context
 2. Use \`memory_get\` only for specific memory files/line ranges returned by search
 3. Apply relevant learnings to your implementation — follow documented patterns and avoid known pitfalls
-4. Do not load all memory or read \`.fusion/memory.md\` directly by default. Skip memory reads when memory is irrelevant or context is tight.
+4. Do not load all memory directly by default. Skip memory reads when memory is irrelevant or context is tight.
 
 **At the end of execution (before calling \`task_done()\`):**
 1. Review what you learned during this task that would genuinely benefit future runs
@@ -607,16 +601,8 @@ This project has a memory system that stores durable project learnings.
  */
 export async function readProjectMemory(rootDir: string): Promise<string> {
   const longTermPath = memoryLongTermPath(rootDir);
-  const filePath = memoryFilePath(rootDir);
-  if (existsSync(longTermPath) && existsSync(filePath)) {
-    const [longTermStat, legacyStat] = await Promise.all([stat(longTermPath), stat(filePath)]);
-    return readFile(legacyStat.mtimeMs > longTermStat.mtimeMs ? filePath : longTermPath, "utf-8");
-  }
-  if (existsSync(longTermPath)) {
-    return readFile(longTermPath, "utf-8");
-  }
-  if (!existsSync(filePath)) {
+  if (!existsSync(longTermPath)) {
     return "";
   }
-  return readFile(filePath, "utf-8");
+  return readFile(longTermPath, "utf-8");
 }

@@ -236,13 +236,12 @@ From `packages/core/src/index.ts` exports (selected high-impact modules):
 
 ### Memory System
 
-Fusion supports OpenClaw-style project memory with legacy fallback support:
+Fusion uses OpenClaw-style project memory files:
 
 **Primary memory files:**
 - Long-term: `.fusion/memory/MEMORY.md`
 - Daily notes: `.fusion/memory/YYYY-MM-DD.md`
 - Dream processing: `.fusion/memory/DREAMS.md`
-- Legacy fallback (deprecated compatibility path): `.fusion/memory.md`
 
 **Memory subsystems:**
 - `memory-backend.ts` — backend contracts + file/readonly/qmd implementations
@@ -485,7 +484,7 @@ SQLite schema is initialized in `packages/core/src/db.ts` and uses:
   - `.fusion/memory/MEMORY.md`
   - `.fusion/memory/YYYY-MM-DD.md`
   - `.fusion/memory/DREAMS.md`
-- Legacy fallback (deprecated compatibility path): `.fusion/memory.md`
+- Upgrade migration may seed `MEMORY.md` from legacy `.fusion/memory.md` if present.
 
 ### File-based side stores
 Some data remains intentionally filesystem-based:

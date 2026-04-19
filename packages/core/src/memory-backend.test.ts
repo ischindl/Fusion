@@ -18,6 +18,7 @@ import {
   memoryExists,
   MEMORY_BACKEND_SETTINGS_KEYS,
   DEFAULT_MEMORY_BACKEND,
+  LEGACY_MEMORY_FILE_PATH,
   QMD_INSTALL_COMMAND,
   buildQmdSearchArgs,
   buildQmdCollectionAddArgs,
@@ -28,11 +29,17 @@ import {
   qmdMemoryCollectionName,
   QMD_REFRESH_INTERVAL_MS,
   shouldSkipBackgroundQmdRefresh,
+  listProjectMemoryFiles,
+  readProjectMemoryFile,
+  writeProjectMemoryFile,
 } from "./memory-backend.js";
 import type { MemoryBackend } from "./memory-backend.js";
 
 describe("memory-backend", () => {
   let tempDir: string;
+
+  const longTermMemoryPath = (rootDir: string) => join(rootDir, ".fusion", "memory", "MEMORY.md");
+  const legacyMemoryPath = (rootDir: string) => join(rootDir, ".fusion", "memory.md");
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "kb-memory-backend-test-"));
@@ -78,7 +85,7 @@ describe("memory-backend", () => {
 
       it("should have human-readable name", () => {
         const backend = new FileMemoryBackend();
-        expect(backend.name).toBe("File (.fusion/memory.md)");
+        expect(backend.name).toBe("File (.fusion/memory/MEMORY.md)");
       });
     });
 
@@ -112,7 +119,8 @@ describe("memory-backend", () => {
       });
 
       it("should return content when file exists", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "# Project Memory\n\nTest content", "utf-8");
 
         const backend = new FileMemoryBackend();
@@ -121,6 +129,16 @@ describe("memory-backend", () => {
         expect(result.content).toBe("# Project Memory\n\nTest content");
         expect(result.exists).toBe(true);
         expect(result.backend).toBe("file");
+      });
+
+      it("ignores legacy memory.md when long-term memory is missing", async () => {
+        writeFileSync(legacyMemoryPath(tempDir), "legacy content", "utf-8");
+
+        const backend = new FileMemoryBackend();
+        const result = await backend.read(tempDir);
+
+        expect(result.content).toBe("");
+        expect(result.exists).toBe(false);
       });
 
       // Note: Testing read failure is complex in ESM because we can't easily mock
@@ -137,9 +155,10 @@ describe("memory-backend", () => {
         expect(result.success).toBe(true);
         expect(result.backend).toBe("file");
 
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(tempDir);
         expect(existsSync(memoryPath)).toBe(true);
         expect(readFileSync(memoryPath, "utf-8")).toBe("# Project Memory\n\nNew content");
+        expect(existsSync(legacyMemoryPath(tempDir))).toBe(false);
       });
 
       it("should create .fusion directory if missing", async () => {
@@ -149,12 +168,13 @@ describe("memory-backend", () => {
         const backend = new FileMemoryBackend();
         await backend.write(newDir, "# Memory");
 
-        const memoryPath = join(newDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(newDir);
         expect(existsSync(memoryPath)).toBe(true);
       });
 
       it("should overwrite existing content", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(tempDir);
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
         writeFileSync(memoryPath, "Original content", "utf-8");
 
         const backend = new FileMemoryBackend();
@@ -165,17 +185,17 @@ describe("memory-backend", () => {
 
       it("should not leave temp files on error", async () => {
         // This test verifies atomic write behavior
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(tempDir);
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
         writeFileSync(memoryPath, "Original", "utf-8");
 
         const backend = new FileMemoryBackend();
-        
+
         // Write should succeed, temp file should be cleaned up
         await backend.write(tempDir, "Updated");
-        
+
         // No temp files should exist
-        const fusionDir = join(tempDir, ".fusion");
-        const files = require("node:fs").readdirSync(fusionDir);
+        const files = require("node:fs").readdirSync(join(tempDir, ".fusion", "memory"));
         expect(files.filter((f: string) => f.endsWith(".tmp"))).toHaveLength(0);
       });
     });
@@ -188,12 +208,52 @@ describe("memory-backend", () => {
       });
 
       it("should return true when file exists", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "Content", "utf-8");
 
         const backend = new FileMemoryBackend();
         const result = await backend.exists(tempDir);
         expect(result).toBe(true);
+      });
+
+      it("returns false when only legacy memory.md exists", async () => {
+        writeFileSync(legacyMemoryPath(tempDir), "legacy content", "utf-8");
+
+        const backend = new FileMemoryBackend();
+        await expect(backend.exists(tempDir)).resolves.toBe(false);
+      });
+    });
+
+    describe("project memory file APIs", () => {
+      it("writeProjectMemoryFile writes long-term memory without legacy mirror", async () => {
+        await writeProjectMemoryFile(tempDir, ".fusion/memory/MEMORY.md", "layered content");
+
+        expect(readFileSync(longTermMemoryPath(tempDir), "utf-8")).toBe("layered content");
+        expect(existsSync(legacyMemoryPath(tempDir))).toBe(false);
+      });
+
+      it("readProjectMemoryFile rejects legacy memory.md paths", async () => {
+        await expect(readProjectMemoryFile(tempDir, { path: LEGACY_MEMORY_FILE_PATH })).rejects.toThrow(MemoryBackendError);
+      });
+
+      it("listProjectMemoryFiles excludes legacy memory.md entries", async () => {
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        writeFileSync(longTermMemoryPath(tempDir), "# Memory\n\nLong-term", "utf-8");
+        writeFileSync(legacyMemoryPath(tempDir), "# Memory\n\nLegacy", "utf-8");
+
+        const files = await listProjectMemoryFiles(tempDir);
+        expect(files.some((file) => file.path === LEGACY_MEMORY_FILE_PATH)).toBe(false);
+      });
+
+      it("search ignores legacy memory.md content", async () => {
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        writeFileSync(longTermMemoryPath(tempDir), "# Memory\n\nDurable conventions", "utf-8");
+        writeFileSync(legacyMemoryPath(tempDir), "legacy-only-token", "utf-8");
+
+        const backend = new FileMemoryBackend();
+        const results = await backend.search(tempDir, { query: "legacy-only-token" });
+        expect(results).toHaveLength(0);
       });
     });
   });
@@ -294,7 +354,8 @@ describe("memory-backend", () => {
 
     describe("read", () => {
       it("should read memory from filesystem and return qmd backend identifier", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "# Project Memory\n\nTest content", "utf-8");
 
         const backend = new QmdMemoryBackend();
@@ -315,7 +376,8 @@ describe("memory-backend", () => {
       });
 
       it("should return empty content for empty file", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "", "utf-8");
 
         const backend = new QmdMemoryBackend();
@@ -324,6 +386,16 @@ describe("memory-backend", () => {
         expect(result.content).toBe("");
         expect(result.exists).toBe(true); // File exists, just empty
         expect(result.backend).toBe("qmd");
+      });
+
+      it("ignores legacy memory.md when long-term memory is missing", async () => {
+        writeFileSync(legacyMemoryPath(tempDir), "legacy content", "utf-8");
+
+        const backend = new QmdMemoryBackend();
+        const result = await backend.read(tempDir);
+
+        expect(result.content).toBe("");
+        expect(result.exists).toBe(false);
       });
     });
 
@@ -336,13 +408,14 @@ describe("memory-backend", () => {
         expect(result.backend).toBe("qmd");
 
         // Verify file was actually written
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(tempDir);
         expect(existsSync(memoryPath)).toBe(true);
         expect(readFileSync(memoryPath, "utf-8")).toBe("# Memory\n\nContent");
       });
 
       it("should overwrite existing content", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(tempDir);
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
         writeFileSync(memoryPath, "Original content", "utf-8");
 
         const backend = new QmdMemoryBackend();
@@ -358,7 +431,7 @@ describe("memory-backend", () => {
         const backend = new QmdMemoryBackend();
         await backend.write(newDir, "# Memory");
 
-        const memoryPath = join(newDir, ".fusion", "memory.md");
+        const memoryPath = longTermMemoryPath(newDir);
         expect(existsSync(memoryPath)).toBe(true);
       });
 
@@ -375,7 +448,8 @@ describe("memory-backend", () => {
 
     describe("exists", () => {
       it("should return true when memory file exists", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "Content", "utf-8");
 
         const backend = new QmdMemoryBackend();
@@ -391,8 +465,16 @@ describe("memory-backend", () => {
         expect(result).toBe(false);
       });
 
+      it("returns false when only legacy memory.md exists", async () => {
+        writeFileSync(legacyMemoryPath(tempDir), "legacy content", "utf-8");
+
+        const backend = new QmdMemoryBackend();
+        await expect(backend.exists(tempDir)).resolves.toBe(false);
+      });
+
       it("should return true for empty file", async () => {
-        const memoryPath = join(tempDir, ".fusion", "memory.md");
+        await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+        const memoryPath = longTermMemoryPath(tempDir);
         writeFileSync(memoryPath, "", "utf-8");
 
         const backend = new QmdMemoryBackend();
@@ -705,7 +787,8 @@ describe("memory-backend", () => {
 
   describe("readMemory", () => {
     it("should read using qmd backend by default", async () => {
-      const memoryPath = join(tempDir, ".fusion", "memory.md");
+      await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+      const memoryPath = longTermMemoryPath(tempDir);
       writeFileSync(memoryPath, "Test memory content", "utf-8");
 
       const result = await readMemory(tempDir);
@@ -735,7 +818,7 @@ describe("memory-backend", () => {
       expect(result.success).toBe(true);
       expect(result.backend).toBe("qmd");
 
-      const memoryPath = join(tempDir, ".fusion", "memory.md");
+      const memoryPath = longTermMemoryPath(tempDir);
       expect(readFileSync(memoryPath, "utf-8")).toBe("# Memory\n\nContent");
     });
 
@@ -765,7 +848,8 @@ describe("memory-backend", () => {
     });
 
     it("should return true when file exists", async () => {
-      const memoryPath = join(tempDir, ".fusion", "memory.md");
+      await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
+      const memoryPath = longTermMemoryPath(tempDir);
       writeFileSync(memoryPath, "Content", "utf-8");
 
       const result = await memoryExists(tempDir);
@@ -786,7 +870,7 @@ describe("memory-backend", () => {
     it("should handle backend switching via settings", async () => {
       // First, write with file backend
       await writeMemory(tempDir, "Initial content");
-      expect(existsSync(join(tempDir, ".fusion", "memory.md"))).toBe(true);
+      expect(existsSync(longTermMemoryPath(tempDir))).toBe(true);
 
       // Read with readonly backend (should still find the file even though it's read-only)
       // Note: readMemory doesn't check file existence for readonly - it just returns empty
@@ -800,7 +884,7 @@ describe("memory-backend", () => {
       await writeMemory(tempDir, "Persistent content");
 
       // File should exist
-      expect(existsSync(join(tempDir, ".fusion", "memory.md"))).toBe(true);
+      expect(existsSync(longTermMemoryPath(tempDir))).toBe(true);
 
       // Read back with file backend
       const fileSettings = { [MEMORY_BACKEND_SETTINGS_KEYS.MEMORY_BACKEND_TYPE]: "file" };
@@ -942,7 +1026,7 @@ describe("memory-backend", () => {
       
       const result = await readMemory(nestedDir);
       expect(result.content).toBe("Nested content");
-      expect(existsSync(join(nestedDir, ".fusion", "memory.md"))).toBe(true);
+      expect(existsSync(longTermMemoryPath(nestedDir))).toBe(true);
     });
   });
 });

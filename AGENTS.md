@@ -385,7 +385,7 @@ See [docs/task-management.md](./docs/task-management.md) for the archive and res
 
 ## Dashboard UI Styling Guide
 
-This guide documents the dashboard's design system so that any AI agent or developer building new UI components follows established conventions automatically. All CSS lives in `packages/dashboard/app/styles.css` (≈60K lines). For deeper context on the theme system and known pitfalls, see `.fusion/memory.md`.
+This guide documents the dashboard's design system so that any AI agent or developer building new UI components follows established conventions automatically. All CSS lives in `packages/dashboard/app/styles.css` (≈60K lines). For deeper context on the theme system and known pitfalls, see `.fusion/memory/MEMORY.md`.
 
 ---
 

@@ -31,7 +31,7 @@ describe("memory-insights", () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "kb-memory-insights-test-"));
-    await mkdir(join(tempDir, ".fusion"), { recursive: true });
+    await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
   });
 
   afterEach(async () => {
@@ -612,7 +612,7 @@ describe("memory-insights", () => {
 
   describe("constants", () => {
     it("should have correct file paths", () => {
-      expect(MEMORY_WORKING_PATH).toBe(".fusion/memory.md");
+      expect(MEMORY_WORKING_PATH).toBe(".fusion/memory/MEMORY.md");
       expect(MEMORY_INSIGHTS_PATH).toBe(".fusion/memory-insights.md");
     });
 
@@ -637,7 +637,7 @@ describe("memory-insights audit file operations", () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "kb-memory-audit-test-"));
-    await mkdir(join(tempDir, ".fusion"), { recursive: true });
+    await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
   });
 
   afterEach(async () => {
@@ -697,7 +697,7 @@ describe("memory-insights run processing", () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "kb-memory-run-test-"));
-    await mkdir(join(tempDir, ".fusion"), { recursive: true });
+    await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
   });
 
   afterEach(async () => {
@@ -1028,7 +1028,7 @@ describe("memory-insights audit generation", () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "kb-memory-audit-gen-test-"));
-    await mkdir(join(tempDir, ".fusion"), { recursive: true });
+    await mkdir(join(tempDir, ".fusion", "memory"), { recursive: true });
   });
 
   afterEach(async () => {

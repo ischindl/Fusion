@@ -483,7 +483,7 @@ describe("REVIEWER_SYSTEM_PROMPT", () => {
     expect(REVIEWER_SYSTEM_PROMPT).toContain("Worktree Boundary Review");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("assigned task worktree");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("blocking REVISE");
-    expect(REVIEWER_SYSTEM_PROMPT).toContain(".fusion/memory/");
+    expect(REVIEWER_SYSTEM_PROMPT).toContain(".fusion/memory/MEMORY.md");
   });
 });
 
@@ -633,7 +633,7 @@ describe("reviewStep — user comments in spec review", () => {
     expect(capturedPrompt).toContain("## Worktree Boundary");
     expect(capturedPrompt).toContain("Assigned task worktree: `/tmp/project/.worktrees/happy-robin`");
     expect(capturedPrompt).toContain("primary project checkout");
-    expect(capturedPrompt).toContain(".fusion/memory/");
+    expect(capturedPrompt).toContain(".fusion/memory/MEMORY.md");
   });
 });
 

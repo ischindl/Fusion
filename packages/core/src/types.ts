@@ -1269,9 +1269,9 @@ export interface ProjectSettings {
    *  Extraction only runs if BOTH this time has elapsed AND memory has grown
    *  by more than MIN_INSIGHT_GROWTH_CHARS characters. Default: 86400000 (24h). */
   insightExtractionMinIntervalMs?: number;
-  /** When enabled, agents will consult and update the .fusion/memory/ directory with durable
+  /** When enabled, agents will consult and update .fusion/memory/MEMORY.md with durable
    *  project learnings. When disabled, agents will not include memory instructions
-   *  in their prompts and will not read or write to the .fusion/memory/ directory.
+   *  in their prompts and will not read or write to .fusion/memory/MEMORY.md.
    *  Default: true (enabled for backward compatibility). */
   memoryEnabled?: boolean;
   /** Memory backend type for pluggable memory storage.

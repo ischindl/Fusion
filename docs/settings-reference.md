@@ -390,8 +390,7 @@ Fusion can automatically extract insights from project memory and prune transien
 
 1. **Scheduled Extraction**: When `insightExtractionEnabled` is `true`, a background automation runs on the configured `insightExtractionSchedule` (default: daily at 2 AM).
 
-2. **AI-Powered Analysis**: The automation uses an AI agent to read canonical OpenClaw memory files (`.fusion/memory/MEMORY.md`, `.fusion/memory/YYYY-MM-DD.md`) plus compatibility insight artifacts (`.fusion/memory-insights.md`), then extract new insights and produce a pruned working memory candidate.
-   - Legacy fallback note: `.fusion/memory.md` remains supported for backward compatibility in older projects.
+2. **AI-Powered Analysis**: The automation uses an AI agent to read `.fusion/memory/MEMORY.md` and `.fusion/memory-insights.md`, extract new insights, and produce a pruned working memory candidate.
 
 3. **Insight Merging**: New insights are automatically merged into `.fusion/memory-insights.md` under the appropriate category (Patterns, Principles, Conventions, Pitfalls, Context). Duplicates are skipped.
 
@@ -411,11 +410,9 @@ Fusion can automatically extract insights from project memory and prune transien
 
 | File | Description |
 |------|-------------|
-| `.fusion/memory/MEMORY.md` | Canonical long-term memory file (updated with durable content) |
-| `.fusion/memory/YYYY-MM-DD.md` | Daily running notes used during synthesis/pruning workflows |
-| `.fusion/memory/DREAMS.md` | Dream synthesis output derived from daily notes |
-| `.fusion/memory-insights.md` | Legacy distilled-insights artifact kept for compatibility |
-| `.fusion/memory-audit.md` | Legacy human-readable audit report after each extraction |
+| `.fusion/memory/MEMORY.md` | Working memory (updated when pruning is applied and validated) |
+| `.fusion/memory-insights.md` | Long-term insights distilled from working memory |
+| `.fusion/memory-audit.md` | Human-readable audit report after each extraction |
 
 ### Settings Interaction
 

@@ -155,7 +155,7 @@ describe("worktree path boundary helpers", () => {
       expect(mockReadTool.execute).not.toHaveBeenCalled();
     });
 
-    it("allows project root .fusion/memory/ paths from worktree session", async () => {
+    it("allows project root .fusion/memory/MEMORY.md from worktree session", async () => {
       const mockReadTool = {
         name: "read",
         label: "Read",
@@ -172,10 +172,10 @@ describe("worktree path boundary helpers", () => {
         "/project",
       );
 
-      // Reading project root .fusion/memory.md (legacy) should be allowed
-      const legacyResult = await (wrapped[0] as any).execute("call-1", { path: "/project/.fusion/memory.md" });
+      // Reading project root .fusion/memory/MEMORY.md should be allowed
+      const result = await (wrapped[0] as any).execute("call-1", { path: "/project/.fusion/memory/MEMORY.md" });
       expect(mockReadTool.execute).toHaveBeenCalled();
-      expect(legacyResult).toEqual({ ok: true, content: [{ type: "text", text: "memory content" }] });
+      expect(result).toEqual({ ok: true, content: [{ type: "text", text: "memory content" }] });
 
       // Reading project root .fusion/memory/MEMORY.md should also be allowed
       mockReadTool.execute.mockClear();
@@ -194,6 +194,28 @@ describe("worktree path boundary helpers", () => {
       const dreamsResult = await (wrapped[0] as any).execute("call-4", { path: "/project/.fusion/memory/DREAMS.md" });
       expect(mockReadTool.execute).toHaveBeenCalled();
       expect(dreamsResult).toEqual({ ok: true, content: [{ type: "text", text: "memory content" }] });
+    });
+
+    it("allows daily memory files under .fusion/memory from worktree session", async () => {
+      const mockReadTool = {
+        name: "read",
+        label: "Read",
+        description: "Read a file",
+        parameters: {},
+        execute: vi.fn().mockResolvedValue({ ok: true, content: [{ type: "text", text: "daily memory" }] }),
+      };
+
+      const { wrapToolsWithBoundary } = await import("./pi.js");
+
+      const wrapped = wrapToolsWithBoundary(
+        [mockReadTool as any],
+        "/project/.worktrees/fn-001",
+        "/project",
+      );
+
+      const result = await (wrapped[0] as any).execute("call-1", { path: "/project/.fusion/memory/2026-04-19.md" });
+      expect(mockReadTool.execute).toHaveBeenCalled();
+      expect(result).toEqual({ ok: true, content: [{ type: "text", text: "daily memory" }] });
     });
 
     it("allows task attachments from worktree session", async () => {

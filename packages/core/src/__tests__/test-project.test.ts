@@ -38,7 +38,7 @@ describe("test-project fixture", () => {
     expect(existsSync(join(fixture.rootDir, ".fusion", "fusion.db"))).toBe(true);
     expect(existsSync(join(fixture.rootDir, ".fusion", "config.json"))).toBe(true);
     expect(existsSync(join(fixture.rootDir, ".fusion", "tasks"))).toBe(true);
-    expect(existsSync(join(fixture.rootDir, ".fusion", "memory.md"))).toBe(true);
+    expect(existsSync(join(fixture.rootDir, ".fusion", "memory", "MEMORY.md"))).toBe(true);
 
     const configRaw = await readFile(join(fixture.rootDir, ".fusion", "config.json"), "utf-8");
     const config = JSON.parse(configRaw);

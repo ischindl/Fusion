@@ -217,7 +217,7 @@ One prelisted item is no longer untested:
 
 ## 4.5 Memory pitfall cross-reference
 
-From `.fusion/memory.md` testing pitfalls:
+From `.fusion/memory/MEMORY.md` testing pitfalls:
 
 - **Engine pool setting must remain threads** — config currently reflects this (`packages/engine/vitest.config.ts:10`), but there is no dedicated regression test guarding accidental config drift.
 - **Dashboard 429 retry test requires 30s timeout** — still covered (`packages/dashboard/src/routes.test.ts:3992-4016`).

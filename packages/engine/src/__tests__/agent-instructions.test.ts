@@ -499,8 +499,8 @@ describe("buildAgentChatPrompt", () => {
   });
 
   it("builds an identity-aware prompt with soul, memory, instructions, and project memory", async () => {
-    await mkdir(join(testDir, ".fusion"), { recursive: true });
-    await writeFile(join(testDir, ".fusion", "memory.md"), "Project preference: avoid force pushes.");
+    await mkdir(join(testDir, ".fusion", "memory"), { recursive: true });
+    await writeFile(join(testDir, ".fusion", "memory", "MEMORY.md"), "Project preference: avoid force pushes.");
 
     const agent = makeAgent({
       name: "Avery",

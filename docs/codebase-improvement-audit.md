@@ -10,7 +10,7 @@
 ## 1. Scope & Methodology
 
 ### Files Examined
-- **Context files read:** `.fusion/memory.md`, `package.json`, `docs/architecture.md`, `improvements.md`, `docs/gap-analysis.md`, `docs/test-audit-report.md`
+- **Context files read:** `.fusion/memory/MEMORY.md`, `package.json`, `docs/architecture.md`, `improvements.md`, `docs/gap-analysis.md`, `docs/test-audit-report.md`
 - **Core hotspots:** `packages/core/src/store.ts` (3,895 LOC), `packages/engine/src/executor.ts` (3,355 LOC), `packages/dashboard/src/routes.ts` (12,480 LOC), `packages/cli/src/extension.ts` (1,741 LOC)
 - **Engine runtime:** `packages/engine/src/runtimes/child-process-runtime.ts`, `packages/engine/src/step-session-executor.ts`, `packages/engine/src/project-manager.ts`, `packages/engine/src/cron-runner.ts`
 
@@ -18,7 +18,7 @@
 1. Re-checked each finding from prior audits against current code state
 2. Assessed whether issues are: **resolved**, **still open**, or **changed scope**
 3. Provided concrete evidence (file paths + line numbers)
-4. Incorporated memory-informed checks from `.fusion/memory.md`
+4. Incorporated memory-informed checks from `.fusion/memory/MEMORY.md`
 
 ---
 
@@ -67,7 +67,7 @@
 
 ## 3. Memory-Informed Checks
 
-Based on `.fusion/memory.md` constraints and pitfalls:
+Based on `.fusion/memory/MEMORY.md` constraints and pitfalls:
 
 | # | Constraint/Pitfall | Still a Concern? | Notes |
 |---|-------------------|------------------|-------|

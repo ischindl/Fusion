@@ -114,7 +114,7 @@ export interface MemorySearchResult {
 export interface MemoryFileInfo {
   path: string;
   label: string;
-  layer: "long-term" | "daily" | "dreams" | "legacy";
+  layer: "long-term" | "daily" | "dreams";
   size: number;
   updatedAt: string;
 }
@@ -210,12 +210,12 @@ const backendRegistry = new Map<string, MemoryBackend>();
 /**
  * File-based memory backend.
  *
- * Stores project memory in `.fusion/memory.md` at the project root.
- * Preserves the legacy `.fusion/memory.md` storage path when explicitly selected.
+ * Stores project memory in `.fusion/memory/MEMORY.md` at the project root.
+ * Legacy `.fusion/memory.md` is only used by migration bootstrap when upgrading.
  */
 export class FileMemoryBackend implements MemoryBackend {
   readonly type = "file";
-  readonly name = "File (.fusion/memory.md)";
+  readonly name = "File (.fusion/memory/MEMORY.md)";
   readonly capabilities: MemoryBackendCapabilities = {
     readable: true,
     writable: true,
@@ -224,25 +224,12 @@ export class FileMemoryBackend implements MemoryBackend {
     persistent: true,
   };
 
-  /**
-   * Get the absolute path to the memory file.
-   */
-  private getFilePath(rootDir: string): string {
-    return join(rootDir, LEGACY_MEMORY_FILE_PATH);
-  }
-
   private getLongTermPath(rootDir: string): string {
     return join(rootDir, MEMORY_WORKSPACE_PATH, MEMORY_LONG_TERM_FILENAME);
   }
 
   async read(rootDir: string): Promise<MemoryReadResult> {
-    const longTermPath = this.getLongTermPath(rootDir);
-    const legacyPath = this.getFilePath(rootDir);
-    let filePath = existsSync(longTermPath) ? longTermPath : legacyPath;
-    if (existsSync(longTermPath) && existsSync(legacyPath)) {
-      const [longTermStat, legacyStat] = await Promise.all([stat(longTermPath), stat(legacyPath)]);
-      filePath = legacyStat.mtimeMs > longTermStat.mtimeMs ? legacyPath : longTermPath;
-    }
+    const filePath = this.getLongTermPath(rootDir);
     try {
       const content = await readFile(filePath, "utf-8");
       return {
@@ -269,16 +256,11 @@ export class FileMemoryBackend implements MemoryBackend {
   async write(rootDir: string, content: string): Promise<MemoryWriteResult> {
     const filePath = this.getLongTermPath(rootDir);
     const dir = join(rootDir, MEMORY_WORKSPACE_PATH);
-    const legacyPath = this.getFilePath(rootDir);
-    const legacyDir = join(rootDir, ".fusion");
 
     try {
       // Ensure directory exists
       if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true });
-      }
-      if (!existsSync(legacyDir)) {
-        await mkdir(legacyDir, { recursive: true });
       }
 
       // Write atomically using temp file
@@ -288,11 +270,6 @@ export class FileMemoryBackend implements MemoryBackend {
       // Import rename for atomic swap
       const { rename } = await import("node:fs/promises");
       await rename(tmpPath, filePath);
-
-      // Temporary compatibility mirror while callers migrate to the layered path.
-      const legacyTmpPath = legacyPath + ".tmp";
-      await writeFile(legacyTmpPath, content, "utf-8");
-      await rename(legacyTmpPath, legacyPath);
 
       return {
         success: true,
@@ -308,11 +285,8 @@ export class FileMemoryBackend implements MemoryBackend {
   }
 
   async exists(rootDir: string): Promise<boolean> {
-    const filePath = existsSync(this.getLongTermPath(rootDir))
-      ? this.getLongTermPath(rootDir)
-      : this.getFilePath(rootDir);
     try {
-      await access(filePath, constants.R_OK);
+      await access(this.getLongTermPath(rootDir), constants.R_OK);
       return true;
     } catch {
       return false;
@@ -377,17 +351,17 @@ export class ReadOnlyMemoryBackend implements MemoryBackend {
 /**
  * QMD (qmd index/query integration) memory backend.
  *
- * Stores project memory in `.fusion/memory.md` so it can be indexed and queried
+ * Stores project memory in `.fusion/memory/MEMORY.md` so it can be indexed and queried
  * by the external `qmd` tool. Read/write operations use direct filesystem access
  * for reliability. The `qmd` tool can be configured separately to watch and index
- * the memory file for advanced querying capabilities.
+ * layered memory files for advanced querying capabilities.
  *
  * **Capabilities:**
  * - readable: true
  * - writable: true
  * - supportsAtomicWrite: false (QMD indexing is async/external)
  * - hasConflictResolution: false
- * - persistent: true (memory file persists in `.fusion/memory.md`)
+ * - persistent: true (memory files persist in `.fusion/memory/`)
  *
  * @example
  * ```typescript
@@ -587,7 +561,6 @@ export async function ensureOpenClawMemoryFiles(rootDir: string, date = new Date
 function getMemoryFileLayer(displayPath: string): MemoryFileInfo["layer"] {
   if (displayPath === `${MEMORY_WORKSPACE_PATH}/${MEMORY_LONG_TERM_FILENAME}`) return "long-term";
   if (displayPath === `${MEMORY_WORKSPACE_PATH}/${MEMORY_DREAMS_FILENAME}`) return "dreams";
-  if (displayPath === LEGACY_MEMORY_FILE_PATH) return "legacy";
   return "daily";
 }
 
@@ -595,7 +568,6 @@ function getMemoryFileLabel(displayPath: string): string {
   const layer = getMemoryFileLayer(displayPath);
   if (layer === "long-term") return "Long-term memory";
   if (layer === "dreams") return "Dreams";
-  if (layer === "legacy") return "Legacy memory";
   return `Daily notes ${basename(displayPath, ".md")}`;
 }
 
@@ -618,7 +590,6 @@ export async function listProjectMemoryFiles(rootDir: string, date = new Date())
     "long-term": 0,
     daily: 1,
     dreams: 2,
-    legacy: 3,
   };
   return infos.sort((a, b) => order[a.layer] - order[b.layer] || b.path.localeCompare(a.path));
 }
@@ -641,19 +612,12 @@ export async function readProjectMemoryFileContent(rootDir: string, path: string
 }
 
 export async function writeProjectMemoryFile(rootDir: string, path: string, content: string): Promise<MemoryWriteResult> {
-  const { absPath, displayPath } = resolveMemoryFilePath(rootDir, path);
+  const { absPath } = resolveMemoryFilePath(rootDir, path);
   await mkdir(dirname(absPath), { recursive: true });
   const tmpPath = `${absPath}.tmp`;
   await writeFile(tmpPath, content, "utf-8");
   const { rename } = await import("node:fs/promises");
   await rename(tmpPath, absPath);
-
-  if (displayPath === `${MEMORY_WORKSPACE_PATH}/${MEMORY_LONG_TERM_FILENAME}`) {
-    const legacyPath = join(rootDir, LEGACY_MEMORY_FILE_PATH);
-    const legacyTmpPath = `${legacyPath}.tmp`;
-    await writeFile(legacyTmpPath, content, "utf-8");
-    await rename(legacyTmpPath, legacyPath);
-  }
 
   return { success: true, backend: "file" };
 }
@@ -679,9 +643,6 @@ function normalizeMemoryRequestPath(rawPath: string): string {
   ) {
     return `${MEMORY_WORKSPACE_PATH}/${basename(normalized)}`;
   }
-  if (normalized === LEGACY_MEMORY_FILE_PATH) {
-    return normalized;
-  }
   if (DAILY_MEMORY_RE.test(basename(normalized)) && (normalized === basename(normalized) || normalized.startsWith("memory/"))) {
     return `${MEMORY_WORKSPACE_PATH}/${basename(normalized)}`;
   }
@@ -693,7 +654,7 @@ function normalizeMemoryRequestPath(rawPath: string): string {
   }
   throw new MemoryBackendError(
     "UNSUPPORTED",
-    `Memory path '${rawPath}' is outside allowed files: MEMORY.md, DREAMS.md, memory/YYYY-MM-DD.md, .fusion/memory.md`,
+    `Memory path '${rawPath}' is outside allowed files: MEMORY.md, DREAMS.md, memory/YYYY-MM-DD.md`,
     "memory",
   );
 }
@@ -758,11 +719,6 @@ async function listMemoryFiles(rootDir: string): Promise<Array<{ absPath: string
         files.push({ absPath, displayPath: `${MEMORY_WORKSPACE_PATH}/${entry}` });
       }
     }
-  }
-
-  const legacyPath = join(rootDir, LEGACY_MEMORY_FILE_PATH);
-  if (existsSync(legacyPath)) {
-    files.push({ absPath: legacyPath, displayPath: LEGACY_MEMORY_FILE_PATH });
   }
 
   return files;

@@ -154,7 +154,7 @@ describe("resolveAgentPrompt", () => {
 
   it("built-in executor prompt mentions memory exception", () => {
     const result = resolveAgentPrompt("executor");
-    expect(result).toContain(".fusion/memory/");
+    expect(result).toContain(".fusion/memory/MEMORY.md");
   });
 
   it("built-in executor prompt mentions attachments exception", () => {
@@ -183,7 +183,7 @@ describe("resolveAgentPrompt", () => {
     };
 
     const result = resolveAgentPrompt("executor", config);
-    expect(result).toContain(".fusion/memory/");
+    expect(result).toContain(".fusion/memory/MEMORY.md");
   });
 
   it("senior-engineer prompt mentions attachments exception", () => {

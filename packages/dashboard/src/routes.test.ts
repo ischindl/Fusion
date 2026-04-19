@@ -8689,7 +8689,7 @@ describe("Planning Mode Routes", () => {
  * UTILITY PATH contract: These routes are on the heartbeat control-plane lane
  * and must NOT be gated on task-lane saturation (maxConcurrent, semaphore, queue depth).
  *
- * See .fusion/memory.md "Heartbeat Control-Plane Lane (FN-1487)"
+ * See .fusion/memory/MEMORY.md "Heartbeat Control-Plane Lane (FN-1487)"
  */
 describe("Saturated-slot regression: utility AI routes", () => {
   /**
@@ -9035,7 +9035,7 @@ describe("Saturated-slot regression: utility AI routes", () => {
  * UTILITY PATH contract: Wake delegation (heartbeatMonitor.executeHeartbeat) is on
  * the heartbeat control-plane lane and must NOT be gated on task-lane saturation.
  *
- * See .fusion/memory.md "Heartbeat Control-Plane Lane (FN-1487)"
+ * See .fusion/memory/MEMORY.md "Heartbeat Control-Plane Lane (FN-1487)"
  */
 describe("Saturated-slot regression: heartbeat wake routes", () => {
   /**
@@ -12954,8 +12954,9 @@ describe("POST /api/memory/extract", () => {
   });
 
   it("returns 200 with extraction result on success", async () => {
-    // Working memory is at .fusion/memory.md
-    writeFileSync(join(rootDir, ".fusion", "memory.md"), "Working memory content for extraction that is long enough.");
+    // Working memory is at .fusion/memory/MEMORY.md
+    mkdirSync(join(rootDir, ".fusion", "memory"), { recursive: true });
+    writeFileSync(join(rootDir, ".fusion", "memory", "MEMORY.md"), "Working memory content for extraction that is long enough.");
 
     const res = await REQUEST(
       buildApp(),

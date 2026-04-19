@@ -52,7 +52,7 @@
  *
  * ## Retention Policy
  *
- * - **Working memory** (`memory.md`): Manual/agent-maintained. No automatic
+ * - **Working memory** (`MEMORY.md`): Manual/agent-maintained. No automatic
  *   pruning — agents are expected to keep it relevant.
  *
  * - **Insights memory** (`memory-insights.md`): Only grows through
@@ -66,14 +66,14 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ProjectSettings } from "./types.js";
 import type { ScheduledTaskCreateInput } from "./automation.js";
 
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Path to working memory relative to project root. */
-export const MEMORY_WORKING_PATH = ".fusion/memory.md";
+export const MEMORY_WORKING_PATH = ".fusion/memory/MEMORY.md";
 
 /** Path to insights memory relative to project root. */
 export const MEMORY_INSIGHTS_PATH = ".fusion/memory-insights.md";
@@ -225,7 +225,7 @@ export interface ProcessRunInput {
 // ── File I/O ─────────────────────────────────────────────────────────
 
 /**
- * Read the working memory file (`memory.md`).
+ * Read the working memory file (`MEMORY.md`).
  *
  * Returns an empty string if the file does not exist, enabling graceful
  * handling when FN-810's memory system is not yet in place.
@@ -277,7 +277,7 @@ export async function writeInsightsMemory(rootDir: string, content: string): Pro
 }
 
 /**
- * Write the working memory file (`memory.md`).
+ * Write the working memory file (`MEMORY.md`).
  *
  * Creates the `.fusion` directory if it does not exist.
  *
@@ -286,7 +286,7 @@ export async function writeInsightsMemory(rootDir: string, content: string): Pro
  */
 export async function writeWorkingMemory(rootDir: string, content: string): Promise<void> {
   const filePath = join(rootDir, MEMORY_WORKING_PATH);
-  const dir = join(rootDir, ".fusion");
+  const dir = dirname(filePath);
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });
   }

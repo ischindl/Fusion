@@ -24,14 +24,12 @@ const MEMORY_LAYER_NAMES: Record<MemoryFileInfo["layer"], string> = {
   "long-term": "Long-term",
   daily: "Daily",
   dreams: "Dreams",
-  legacy: "Legacy",
 };
 
 const MEMORY_LAYER_DESCRIPTIONS: Record<MemoryFileInfo["layer"], string> = {
   "long-term": "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams.",
   daily: "Raw daily observations, open loops, and running context for dream processing.",
   dreams: "Synthesized patterns and open loops promoted from daily memory.",
-  legacy: "Compatibility mirror for older agents and tools.",
 };
 
 interface ParsedInsightCategory {

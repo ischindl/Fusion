@@ -2199,7 +2199,6 @@ export function SettingsModal({
           "long-term": "Long-term",
           daily: "Daily",
           dreams: "Dreams",
-          legacy: "Legacy",
         };
 
         return (
@@ -2438,7 +2437,6 @@ export function SettingsModal({
                   {selectedMemoryFile?.layer === "long-term" && "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams."}
                   {selectedMemoryFile?.layer === "daily" && "Raw daily observations, open loops, and running context for dream processing."}
                   {selectedMemoryFile?.layer === "dreams" && "Synthesized patterns and open loops promoted from daily memory."}
-                  {selectedMemoryFile?.layer === "legacy" && "Compatibility mirror for older agents and tools."}
                   {!selectedMemoryFile && "Edits the selected memory file."}
                 </small>
                 <div className="memory-editor-frame">

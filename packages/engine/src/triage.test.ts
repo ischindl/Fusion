@@ -320,7 +320,7 @@ describe("buildSpecificationPrompt", () => {
   });
 
   describe("memoryBackendType setting", () => {
-    it("includes .fusion/memory.md for file backend", () => {
+    it("includes .fusion/memory/MEMORY.md for file backend", () => {
       const settings: Settings = {
         maxConcurrent: 2,
         maxWorktrees: 4,
@@ -336,7 +336,7 @@ describe("buildSpecificationPrompt", () => {
         settings,
       );
       expect(prompt).toContain("## Project Memory");
-      expect(prompt).toContain(".fusion/memory.md");
+      expect(prompt).toContain(".fusion/memory/MEMORY.md");
     });
 
     it("includes read-only wording for readonly backend without write directives", () => {
@@ -358,10 +358,10 @@ describe("buildSpecificationPrompt", () => {
       // Should NOT contain write/update directives
       expect(prompt).not.toMatch(/write.*memory|update.*memory/i);
       // Should NOT contain the specific file path
-      expect(prompt).not.toContain(".fusion/memory.md");
+      expect(prompt).not.toContain(".fusion/memory/MEMORY.md");
     });
 
-    it("does not include .fusion/memory.md for qmd backend", () => {
+    it("does not include .fusion/memory/MEMORY.md for qmd backend", () => {
       const settings: Settings = {
         maxConcurrent: 2,
         maxWorktrees: 4,
@@ -377,8 +377,8 @@ describe("buildSpecificationPrompt", () => {
         settings,
       );
       expect(prompt).toContain("## Project Memory");
-      // QMD should NOT unconditionally reference .fusion/memory.md
-      expect(prompt).not.toContain(".fusion/memory.md");
+      // QMD should NOT unconditionally reference .fusion/memory/MEMORY.md
+      expect(prompt).not.toContain(".fusion/memory/MEMORY.md");
       expect(prompt).toContain("memory_search");
       expect(prompt).toContain("memory_get");
     });
@@ -399,8 +399,8 @@ describe("buildSpecificationPrompt", () => {
         settings,
       );
       expect(prompt).toContain("## Project Memory");
-      // QMD should NOT contain .fusion/memory.md
-      expect(prompt).not.toContain(".fusion/memory.md");
+      // QMD should NOT contain .fusion/memory/MEMORY.md
+      expect(prompt).not.toContain(".fusion/memory/MEMORY.md");
       expect(prompt).toContain("memory_search");
     });
   });

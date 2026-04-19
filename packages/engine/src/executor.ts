@@ -300,7 +300,7 @@ If the task's PROMPT.md includes a "Documentation Requirements" section listing 
 You are running in an **isolated git worktree**. This means:
 
 - **All code changes must be made inside the current worktree directory.** Do not modify files outside the worktree — the worktree is your isolated execution environment.
-- **Exception — Project memory:** You MAY read and write to files under .fusion/memory/ at the project root (MEMORY.md for durable learnings, YYYY-MM-DD.md for daily notes) to save durable project learnings.
+- **Exception — Project memory:** You MAY read and write to .fusion/memory/MEMORY.md at the project root to save durable project learnings (architecture patterns, conventions, pitfalls).
 - **Exception — Task attachments:** You MAY read files under .fusion/tasks/{taskId}/attachments/ at the project root for context screenshots and documents attached to this task.
 - **Shell commands** run inside the worktree by default. Avoid using cd to navigate outside the worktree.
 
@@ -4477,7 +4477,7 @@ ${reviewLevel >= 3 ? `After tests, also call review_step with type="code" for te
 You are running in an **isolated git worktree**. This means:
 
 - **All code changes must be made inside the current worktree directory.** Do not modify files outside the worktree.
-- **Exception — Project memory:** You MAY read and write to files under \`.fusion/memory/\` at the project root (MEMORY.md for durable learnings, YYYY-MM-DD.md for daily notes).
+- **Exception — Project memory:** You MAY read and write to \`.fusion/memory/MEMORY.md\` at the project root to save durable project learnings.
 - **Exception — Task attachments:** You MAY read files under \`.fusion/tasks/{taskId}/attachments/\` at the project root for context.
 - **Shell commands** run inside the worktree by default. Avoid using \`cd\` to navigate outside the worktree.
 

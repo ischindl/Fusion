@@ -330,7 +330,7 @@ export function saveMemory(content: string, projectId?: string): Promise<{ succe
 export interface MemoryFileInfo {
   path: string;
   label: string;
-  layer: "long-term" | "daily" | "dreams" | "legacy";
+  layer: "long-term" | "daily" | "dreams";
   size: number;
   updatedAt: string;
 }
