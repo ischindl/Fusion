@@ -26746,6 +26746,12 @@ html .column.drag-over * {
 .agent-card-actions {
   display: flex;
   gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.agent-card-details-btn {
+  margin-left: auto;
 }
 
 .agent-empty {
@@ -28627,6 +28633,10 @@ html .column.drag-over * {
   .agent-board-actions .btn,
   .agent-card-actions .btn {
     min-height: calc(var(--space-2xl) + var(--space-xs));
+  }
+
+  .agent-card-details-btn {
+    margin-left: auto;
   }
 
   .agent-controls {

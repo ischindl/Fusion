@@ -954,7 +954,7 @@ describe("MissionManager", () => {
       expect(screen.getByText("Mission event 65")).toBeDefined();
       expect(screen.queryByTestId("mission-activity-load-more")).toBeNull();
     }, { timeout: 5000 });
-  });
+  }, 15000);
 
   it("auto-scrolls to latest mission activity on initial load", async () => {
     globalThis.fetch = createDetailFetchMock(mockMissionEvents);

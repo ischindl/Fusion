@@ -189,6 +189,45 @@ describe("AgentsView", () => {
       });
     });
 
+    it("renders explicit View Details button on list cards", async () => {
+      render(<AgentsView addToast={mockAddToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "View details for Test Agent 1" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "View details for Test Agent 2" })).toBeTruthy();
+      });
+
+      expect(screen.getAllByText("View Details").length).toBeGreaterThanOrEqual(4);
+    });
+
+    it("opens matching detail view when clicking View Details button", async () => {
+      render(<AgentsView addToast={mockAddToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "View details for Test Agent 3" })).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "View details for Test Agent 3" }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("agent-detail-view")).toHaveTextContent("agent-003");
+      });
+    });
+
+    it("keeps clickable identity area behavior for opening detail view", async () => {
+      render(<AgentsView addToast={mockAddToast} />);
+
+      const agentName = await screen.findByText("Test Agent 1");
+      const clickableIdentity = agentName.closest(".agent-info--clickable") as HTMLElement | null;
+      expect(clickableIdentity).toBeTruthy();
+
+      fireEvent.click(clickableIdentity!);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("agent-detail-view")).toHaveTextContent("agent-001");
+      });
+    });
+
     it("shows heartbeat interval control on agent cards with 5m minimum presets", async () => {
       render(<AgentsView addToast={mockAddToast} />);
 

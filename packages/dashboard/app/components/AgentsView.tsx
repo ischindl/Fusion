@@ -1216,6 +1216,14 @@ export function AgentsView({ addToast, projectId }: AgentsViewProps) {
                         </button>
                       </>
                     )}
+                    <button
+                      className="btn btn--sm agent-card-details-btn"
+                      onClick={() => setSelectedAgentId(agent.id)}
+                      title={`View details for ${agent.name}`}
+                      aria-label={`View details for ${agent.name}`}
+                    >
+                      View Details
+                    </button>
                   </div>
                 </div>
               );
