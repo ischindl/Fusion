@@ -9,6 +9,8 @@ import {
 
 describe("mobile build output chunking", () => {
   beforeAll(() => {
+    // Clean worktrees and CI often start without dist/client; build explicitly so
+    // chunking assertions always execute instead of being gated by ambient artifacts.
     ensureDashboardClientBuild();
   }, 180_000);
 
@@ -26,5 +28,7 @@ describe("mobile build output chunking", () => {
 
     expect(indexHtml).toContain("<script");
     expect(indexHtml).toMatch(/assets\/.+-[A-Za-z0-9_-]+\.js/);
+    expect(indexHtml).toMatch(/assets\/vendor-react-[A-Za-z0-9_-]+\.js/);
+    expect(indexHtml).toMatch(/assets\/vendor-xterm-[A-Za-z0-9_-]+\.js/);
   });
 });
