@@ -168,6 +168,7 @@ describe("GlobalSettingsStore", () => {
       expect(settings.colorTheme).toBe("ocean");
       // Defaults are filled in for missing fields
       expect(settings.ntfyEnabled).toBe(false);
+      expect(settings.ntfyBaseUrl).toBeUndefined();
       expect(settings.defaultProvider).toBeUndefined();
     });
 
@@ -271,6 +272,23 @@ describe("GlobalSettingsStore", () => {
 
       const settings = await store.getSettings();
       expect(settings.ntfyDashboardHost).toBeUndefined();
+    });
+
+    it("clearing ntfyBaseUrl with null removes it from disk and falls back to default behavior", async () => {
+      await store.init();
+      await store.updateSettings({ ntfyBaseUrl: "https://ntfy.internal.example" });
+
+      const rawBefore = JSON.parse(await readFile(join(dir, "settings.json"), "utf-8"));
+      expect(rawBefore.ntfyBaseUrl).toBe("https://ntfy.internal.example");
+
+      // @ts-expect-error - null is intentionally used to clear field (null-as-delete)
+      await store.updateSettings({ ntfyBaseUrl: null });
+
+      const rawAfter = JSON.parse(await readFile(join(dir, "settings.json"), "utf-8"));
+      expect(rawAfter.ntfyBaseUrl).toBeUndefined();
+
+      const settings = await store.getSettings();
+      expect(settings.ntfyBaseUrl).toBeUndefined();
     });
 
     it("persists custom ntfy event lists including planning-awaiting-input", async () => {

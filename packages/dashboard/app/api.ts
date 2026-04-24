@@ -650,7 +650,7 @@ export function updatePiExtensions(disabledIds: string[], projectId?: string): P
   });
 }
 
-export function testNtfyNotification(config?: { ntfyEnabled?: boolean; ntfyTopic?: string }, projectId?: string): Promise<{ success: boolean }> {
+export function testNtfyNotification(config?: { ntfyEnabled?: boolean; ntfyTopic?: string; ntfyBaseUrl?: string }, projectId?: string): Promise<{ success: boolean }> {
   return api<{ success: boolean }>(withProjectId("/settings/test-ntfy", projectId), {
     method: "POST",
     body: config ? JSON.stringify(config) : undefined,

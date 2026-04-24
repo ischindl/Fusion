@@ -21,6 +21,7 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   defaultThinkingLevel: undefined,
   ntfyEnabled: false,
   ntfyTopic: undefined,
+  ntfyBaseUrl: undefined,
   ntfyEvents: ["in-review", "merged", "failed", "awaiting-approval", "awaiting-user-review", "planning-awaiting-input"],
   ntfyDashboardHost: undefined,
   defaultProjectId: undefined,

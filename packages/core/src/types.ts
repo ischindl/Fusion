@@ -1000,8 +1000,13 @@ export interface GlobalSettings {
    *  Requires ntfyTopic to be set. Default: false. */
   ntfyEnabled?: boolean;
   /** ntfy.sh topic name for push notifications. When set along with ntfyEnabled,
-   *  notifications are sent to https://ntfy.sh/{topic} when tasks complete or fail. */
+   *  notifications are sent to {ntfyBaseUrl}/{topic} (default: https://ntfy.sh/{topic})
+   *  when tasks complete or fail. */
   ntfyTopic?: string;
+  /** Optional ntfy server base URL for push notifications.
+   *  Must be an http:// or https:// URL. When omitted, notifications default to
+   *  https://ntfy.sh. Example: "https://ntfy.internal.example" */
+  ntfyBaseUrl?: string;
   /** List of notification events to send via ntfy.sh.
    *  When ntfyEnabled is true, only events in this list will trigger notifications.
    *  If undefined or empty when ntfyEnabled is true, all events are sent (backward compatible).

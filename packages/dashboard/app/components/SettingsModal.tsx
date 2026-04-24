@@ -486,9 +486,11 @@ export function SettingsModal({
 
     setTestNotificationLoading(true);
     try {
+      const ntfyBaseUrl = form.ntfyBaseUrl?.trim();
       const result = await testNtfyNotification({
         ntfyEnabled: form.ntfyEnabled,
         ntfyTopic: form.ntfyTopic,
+        ...(ntfyBaseUrl ? { ntfyBaseUrl } : {}),
       }, projectId);
       if (result.success) {
         addToast("Test notification sent — check your ntfy app!", "success");
@@ -500,7 +502,7 @@ export function SettingsModal({
     } finally {
       setTestNotificationLoading(false);
     }
-  }, [addToast, form.ntfyEnabled, form.ntfyTopic, projectId]);
+  }, [addToast, form.ntfyBaseUrl, form.ntfyEnabled, form.ntfyTopic, projectId]);
 
   const handleBackupNow = useCallback(async () => {
     setBackupLoading(true);
@@ -2811,6 +2813,25 @@ export function SettingsModal({
                     Topic must be 1–64 alphanumeric, hyphen, or underscore characters
                   </small>
                 )}
+                <details className="ntfy-advanced-disclosure">
+                  <summary>Advanced</summary>
+                  <div className="ntfy-advanced-content">
+                    <label htmlFor="ntfyBaseUrl">Custom ntfy server URL (optional)</label>
+                    <input
+                      id="ntfyBaseUrl"
+                      type="url"
+                      placeholder="https://ntfy.sh"
+                      value={form.ntfyBaseUrl || ""}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setForm((f) => ({ ...f, ntfyBaseUrl: value || undefined }));
+                      }}
+                    />
+                    <small>
+                      Leave blank to keep the default server: https://ntfy.sh. Custom servers must use http:// or https://.
+                    </small>
+                  </div>
+                </details>
                 <button
                   type="button"
                   className="btn btn-sm"

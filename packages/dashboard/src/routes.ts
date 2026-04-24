@@ -3735,6 +3735,26 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
    * Returns: { success: true } on success, { error: string } on failure.
    */
   router.post("/settings/test-ntfy", async (req, res) => {
+    const normalizeNtfyBaseUrl = (value: string, source: "request" | "settings"): string => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw badRequest("ntfy server URL cannot be empty");
+      }
+
+      let parsed: URL;
+      try {
+        parsed = new URL(trimmed);
+      } catch {
+        throw badRequest(`ntfy server URL from ${source} must be a valid URL`);
+      }
+
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw badRequest("ntfy server URL must use http:// or https://");
+      }
+
+      return trimmed.replace(/\/+$/, "");
+    };
+
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const settings = await scopedStore.getSettings();
@@ -3750,8 +3770,18 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         throw badRequest("ntfy topic is not configured or invalid");
       }
 
-      // Send test notification to ntfy.sh
-      const ntfyBaseUrl = "https://ntfy.sh";
+      const overrideValue = req.body?.ntfyBaseUrl;
+      if (overrideValue !== undefined && overrideValue !== null && typeof overrideValue !== "string") {
+        throw badRequest("ntfy server URL must be a string");
+      }
+
+      const requestOverride = typeof overrideValue === "string" && overrideValue.trim()
+        ? normalizeNtfyBaseUrl(overrideValue, "request")
+        : undefined;
+      const storedServer = typeof settings.ntfyBaseUrl === "string" && settings.ntfyBaseUrl.trim()
+        ? normalizeNtfyBaseUrl(settings.ntfyBaseUrl, "settings")
+        : undefined;
+      const ntfyBaseUrl = requestOverride ?? storedServer ?? "https://ntfy.sh";
       const url = `${ntfyBaseUrl}/${topic}`;
 
       const response = await fetch(url, {
@@ -3765,7 +3795,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       });
 
       if (!response.ok) {
-        throw new ApiError(502, `ntfy.sh returned ${response.status}: ${response.statusText}`);
+        throw new ApiError(502, `ntfy server returned ${response.status}: ${response.statusText}`);
       }
 
       res.json({ success: true });

@@ -10,6 +10,8 @@ export interface NtfyNotifierOptions {
 
 export type NtfyNotificationPriority = "low" | "default" | "high" | "urgent";
 
+const DEFAULT_NTFY_BASE_URL = "https://ntfy.sh";
+
 export const DEFAULT_NTFY_EVENTS: readonly NtfyNotificationEvent[] = [
   "in-review",
   "merged",
@@ -71,6 +73,14 @@ interface NtfyNotifierStore {
   off(event: string, listener: (...args: any[]) => void): void;
 }
 
+function resolveNtfyBaseUrl(baseUrl: string | undefined, fallback = DEFAULT_NTFY_BASE_URL): string {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.replace(/\/+$/, "");
+}
+
 export function resolveNtfyEvents(events?: NtfyNotificationEvent[]): NtfyNotificationEvent[] {
   return events ? [...events] : [...DEFAULT_NTFY_EVENTS];
 }
@@ -108,7 +118,7 @@ export function buildNtfyClickUrl(options: {
  * Errors are logged and swallowed so callers can treat delivery as best-effort.
  */
 export async function sendNtfyNotification({
-  ntfyBaseUrl = "https://ntfy.sh",
+  ntfyBaseUrl,
   topic,
   title,
   message,
@@ -127,7 +137,8 @@ export async function sendNtfyNotification({
       headers.Click = clickUrl;
     }
 
-    const response = await fetch(`${ntfyBaseUrl}/${topic}`, {
+    const resolvedBaseUrl = resolveNtfyBaseUrl(ntfyBaseUrl);
+    const response = await fetch(`${resolvedBaseUrl}/${topic}`, {
       method: "POST",
       headers,
       body: message,
@@ -158,6 +169,7 @@ export class NtfyNotifier {
     events: [...DEFAULT_NTFY_EVENTS],
   };
   private ntfyBaseUrl: string;
+  private readonly defaultNtfyBaseUrl: string;
   private projectId?: string;
   private notifiedEvents: Set<string> = new Set();
   private abortController: AbortController | null = null;
@@ -166,7 +178,8 @@ export class NtfyNotifier {
     private store: NtfyNotifierStore,
     options: NtfyNotifierOptions = {},
   ) {
-    this.ntfyBaseUrl = options.ntfyBaseUrl ?? "https://ntfy.sh";
+    this.defaultNtfyBaseUrl = resolveNtfyBaseUrl(options.ntfyBaseUrl);
+    this.ntfyBaseUrl = this.defaultNtfyBaseUrl;
     this.projectId = options.projectId;
   }
 
@@ -314,6 +327,7 @@ export class NtfyNotifier {
 
     if (settings.ntfyEnabled !== previous.ntfyEnabled ||
         settings.ntfyTopic !== previous.ntfyTopic ||
+        settings.ntfyBaseUrl !== previous.ntfyBaseUrl ||
         settings.ntfyDashboardHost !== previous.ntfyDashboardHost ||
         JSON.stringify(settings.ntfyEvents) !== JSON.stringify(previous.ntfyEvents)) {
       const wasEnabled = this.config.enabled;
@@ -325,6 +339,8 @@ export class NtfyNotifier {
         schedulerLog.log("NtfyNotifier disabled");
       } else if (this.config.topic !== previous.ntfyTopic) {
         schedulerLog.log("NtfyNotifier topic updated");
+      } else if (this.ntfyBaseUrl !== resolveNtfyBaseUrl(previous.ntfyBaseUrl)) {
+        schedulerLog.log("NtfyNotifier base URL updated");
       } else if (this.config.dashboardHost !== previous.ntfyDashboardHost) {
         schedulerLog.log("NtfyNotifier dashboard host updated");
       } else if (JSON.stringify(this.config.events) !== JSON.stringify(previous.ntfyEvents)) {
@@ -340,6 +356,7 @@ export class NtfyNotifier {
       dashboardHost: settings.ntfyDashboardHost,
       events: resolveNtfyEvents(settings.ntfyEvents),
     };
+    this.ntfyBaseUrl = resolveNtfyBaseUrl(settings.ntfyBaseUrl, this.defaultNtfyBaseUrl);
   }
 
   private isEventEnabled(event: TaskNotificationEvent): boolean {

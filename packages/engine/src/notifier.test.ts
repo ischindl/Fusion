@@ -1098,7 +1098,7 @@ describe("NtfyNotifier", () => {
   });
 
   describe("custom base URL", () => {
-    it("uses custom ntfy base URL when provided", async () => {
+    it("uses custom ntfy base URL when provided in notifier options", async () => {
       store.setSettings({ ntfyEnabled: true, ntfyTopic: "test-topic" });
       fetchMock.mockResolvedValue({ ok: true });
 
@@ -1112,6 +1112,67 @@ describe("NtfyNotifier", () => {
       expect(fetchMock).toHaveBeenCalledWith(
         "https://my-ntfy.example.com/test-topic",
         expect.any(Object)
+      );
+    });
+
+    it("uses ntfyBaseUrl from settings when configured", async () => {
+      store.setSettings({
+        ntfyEnabled: true,
+        ntfyTopic: "test-topic",
+        ntfyBaseUrl: "https://ntfy.internal.example///",
+      });
+      fetchMock.mockResolvedValue({ ok: true });
+
+      notifier = new NtfyNotifier(store);
+      await notifier.start();
+
+      store.triggerTaskMoved(createTask("FN-101", "Configured URL Task"), "in-progress", "in-review");
+      await flushAsyncWork();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://ntfy.internal.example/test-topic",
+        expect.any(Object),
+      );
+    });
+
+    it("falls back to default ntfy.sh when settings ntfyBaseUrl is blank", async () => {
+      store.setSettings({
+        ntfyEnabled: true,
+        ntfyTopic: "test-topic",
+        ntfyBaseUrl: "   ",
+      });
+      fetchMock.mockResolvedValue({ ok: true });
+
+      notifier = new NtfyNotifier(store);
+      await notifier.start();
+
+      store.triggerTaskMoved(createTask("FN-102", "Blank URL Task"), "in-progress", "in-review");
+      await flushAsyncWork();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://ntfy.sh/test-topic",
+        expect.any(Object),
+      );
+    });
+
+    it("applies updated ntfyBaseUrl from settings changes at runtime", async () => {
+      store.setSettings({ ntfyEnabled: true, ntfyTopic: "test-topic" });
+      fetchMock.mockResolvedValue({ ok: true });
+
+      notifier = new NtfyNotifier(store);
+      await notifier.start();
+
+      store.triggerTaskMoved(createTask("FN-103", "Before Update"), "in-progress", "in-review");
+      await flushAsyncWork();
+      expect(fetchMock).toHaveBeenLastCalledWith("https://ntfy.sh/test-topic", expect.any(Object));
+
+      store.setSettings({ ntfyBaseUrl: "https://ntfy.changed.example" });
+      store.triggerTaskMoved(createTask("FN-104", "After Update"), "in-progress", "in-review");
+      await flushAsyncWork();
+
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "https://ntfy.changed.example/test-topic",
+        expect.any(Object),
       );
     });
   });

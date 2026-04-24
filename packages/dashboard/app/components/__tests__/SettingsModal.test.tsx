@@ -46,6 +46,7 @@ const defaultSettings: SettingsWithAutoArchive = {
   defaultPresetBySize: {},
   ntfyEnabled: false,
   ntfyTopic: undefined,
+  ntfyBaseUrl: undefined,
   ntfyEvents: ["in-review", "merged", "failed", "awaiting-approval", "awaiting-user-review", "planning-awaiting-input"],
   taskStuckTimeoutMs: undefined,
   maxStuckKills: 6,
@@ -2298,6 +2299,34 @@ describe("SettingsModal", () => {
     expect(screen.getByLabelText("ntfy Topic")).toBeTruthy();
   });
 
+  it("hides advanced ntfy server field by default and reveals it on disclosure", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitForSettingsModalReady();
+
+    fireEvent.click(screen.getByText("Notifications"));
+    fireEvent.click(screen.getByLabelText("Enable ntfy.sh notifications"));
+
+    const disclosure = screen.getByText("Advanced").closest("details") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(false);
+
+    const advancedInput = screen.getByLabelText("Custom ntfy server URL (optional)");
+    expect(advancedInput).not.toBeVisible();
+
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(disclosure.open).toBe(true);
+    expect(screen.getByLabelText("Custom ntfy server URL (optional)")).toBeVisible();
+  });
+
+  it("hides advanced ntfy server controls entirely when ntfy is disabled", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitForSettingsModalReady();
+
+    fireEvent.click(screen.getByText("Notifications"));
+
+    expect(screen.queryByText("Advanced")).toBeNull();
+    expect(screen.queryByLabelText("Custom ntfy server URL (optional)")).toBeNull();
+  });
+
   it("toggling ntfyEnabled checkbox sends true in save payload", async () => {
     render(<SettingsModal onClose={onClose} addToast={addToast} />);
     await waitForSettingsModalReady();
@@ -2375,6 +2404,29 @@ describe("SettingsModal", () => {
 
     const payload = (updateGlobalSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(payload.ntfyTopic).toBeNull(); // null means "explicitly clear this field"
+  });
+
+  it("ntfy custom server submits null when cleared (null-as-delete semantics)", async () => {
+    (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...defaultSettings,
+      ntfyEnabled: true,
+      ntfyTopic: "existing-topic",
+      ntfyBaseUrl: "https://ntfy.internal.example",
+    });
+
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitForSettingsModalReady();
+
+    fireEvent.click(screen.getByRole("button", { name: /Notifications/ }));
+    fireEvent.click(screen.getByText("Advanced"));
+    const baseUrlInput = screen.getByLabelText("Custom ntfy server URL (optional)") as HTMLInputElement;
+    fireEvent.change(baseUrlInput, { target: { value: "" } });
+
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(updateGlobalSettings).toHaveBeenCalledTimes(1));
+
+    const payload = (updateGlobalSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.ntfyBaseUrl).toBeNull();
   });
 
   it("ntfy topic shows validation error for invalid input", async () => {
@@ -2909,6 +2961,49 @@ describe("SettingsModal", () => {
     // Click test button
     const testButton = screen.getByRole("button", { name: "Test notification" });
     fireEvent.click(testButton);
+
+    await waitFor(() => expect(testNtfyNotification).toHaveBeenCalledTimes(1));
+    expect(testNtfyNotification).toHaveBeenCalledWith({ ntfyEnabled: true, ntfyTopic: "my-valid-topic" }, undefined);
+  });
+
+  it("Test notification call includes custom ntfy server when populated", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitForSettingsModalReady();
+
+    fireEvent.click(screen.getByText("Notifications"));
+    fireEvent.click(screen.getByLabelText("Enable ntfy.sh notifications"));
+
+    const topicInput = screen.getByLabelText("ntfy Topic") as HTMLInputElement;
+    fireEvent.change(topicInput, { target: { value: "my-valid-topic" } });
+
+    fireEvent.click(screen.getByText("Advanced"));
+    const baseUrlInput = screen.getByLabelText("Custom ntfy server URL (optional)") as HTMLInputElement;
+    fireEvent.change(baseUrlInput, { target: { value: "https://ntfy.internal.example/" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Test notification" }));
+
+    await waitFor(() => expect(testNtfyNotification).toHaveBeenCalledTimes(1));
+    expect(testNtfyNotification).toHaveBeenCalledWith(
+      {
+        ntfyEnabled: true,
+        ntfyTopic: "my-valid-topic",
+        ntfyBaseUrl: "https://ntfy.internal.example/",
+      },
+      undefined,
+    );
+  });
+
+  it("Test notification call omits custom ntfy server when blank", async () => {
+    render(<SettingsModal onClose={onClose} addToast={addToast} />);
+    await waitForSettingsModalReady();
+
+    fireEvent.click(screen.getByText("Notifications"));
+    fireEvent.click(screen.getByLabelText("Enable ntfy.sh notifications"));
+
+    const topicInput = screen.getByLabelText("ntfy Topic") as HTMLInputElement;
+    fireEvent.change(topicInput, { target: { value: "my-valid-topic" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Test notification" }));
 
     await waitFor(() => expect(testNtfyNotification).toHaveBeenCalledTimes(1));
     expect(testNtfyNotification).toHaveBeenCalledWith({ ntfyEnabled: true, ntfyTopic: "my-valid-topic" }, undefined);

@@ -13327,6 +13327,61 @@ describe("POST /settings/test-ntfy", () => {
     expect(options?.body).toBe("Fusion test notification — your notifications are working!");
   });
 
+  it("uses configured ntfyBaseUrl from settings when present", async () => {
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ntfyEnabled: true,
+      ntfyTopic: "my-topic",
+      ntfyBaseUrl: "https://ntfy.internal.example///",
+    });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/settings/test-ntfy");
+
+    expect(res.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const url = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(url).toBe("https://ntfy.internal.example/my-topic");
+  });
+
+  it("uses request ntfyBaseUrl override when provided", async () => {
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ntfyEnabled: true,
+      ntfyTopic: "my-topic",
+      ntfyBaseUrl: "https://ntfy.saved.example",
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/settings/test-ntfy",
+      JSON.stringify({ ntfyBaseUrl: "https://ntfy.override.example//" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    const url = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(url).toBe("https://ntfy.override.example/my-topic");
+  });
+
+  it("falls back to saved ntfyBaseUrl when request override is blank", async () => {
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ntfyEnabled: true,
+      ntfyTopic: "my-topic",
+      ntfyBaseUrl: "https://ntfy.saved.example",
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/settings/test-ntfy",
+      JSON.stringify({ ntfyBaseUrl: "   " }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    const url = fetchSpy.mock.calls[0]?.[0] as string;
+    expect(url).toBe("https://ntfy.saved.example/my-topic");
+  });
+
   it("returns 400 when ntfy is not enabled", async () => {
     (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
       ntfyEnabled: false,
@@ -13349,6 +13404,44 @@ describe("POST /settings/test-ntfy", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("not configured or invalid");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when request ntfyBaseUrl uses non-http protocol", async () => {
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ntfyEnabled: true,
+      ntfyTopic: "test-topic",
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/settings/test-ntfy",
+      JSON.stringify({ ntfyBaseUrl: "ftp://ntfy.example.com" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("http:// or https://");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when request ntfyBaseUrl is malformed", async () => {
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ntfyEnabled: true,
+      ntfyTopic: "test-topic",
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/settings/test-ntfy",
+      JSON.stringify({ ntfyBaseUrl: "not-a-url" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("must be a valid URL");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

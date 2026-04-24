@@ -3695,6 +3695,34 @@ input[type="range"]:focus-visible {
   }
 }
 
+/* === Notifications Settings === */
+.ntfy-advanced-disclosure {
+  margin-top: var(--space-md);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.ntfy-advanced-disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ntfy-advanced-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ntfy-advanced-content {
+  padding: 0 var(--space-md) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
 /* === Memory Settings === */
 .memory-status-message {
   display: flex;
