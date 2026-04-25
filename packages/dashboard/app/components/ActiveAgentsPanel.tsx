@@ -80,16 +80,22 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ agents, projectId, onAgentSelect }: ActiveAgentsPanelProps) {
-  if (agents.length === 0) return null;
+  // Dedupe by id defensively. The store should return unique agents but a race
+  // between the initial fetch and an SSE refresh can briefly surface the same
+  // agent twice — without this guard React floods the console with duplicate
+  // key warnings (which previously snowballed into OOM).
+  const uniqueAgents = Array.from(new Map(agents.map((a) => [a.id, a])).values());
+
+  if (uniqueAgents.length === 0) return null;
 
   return (
     <div className="active-agents-panel">
       <div className="active-agents-panel-header">
         <Activity size={16} />
-        <span>Active Agents ({agents.length})</span>
+        <span>Active Agents ({uniqueAgents.length})</span>
       </div>
       <div className="active-agents-grid">
-        {agents.map(agent => (
+        {uniqueAgents.map(agent => (
           <LiveAgentCard key={agent.id} agent={agent} projectId={projectId} onSelect={onAgentSelect} />
         ))}
       </div>

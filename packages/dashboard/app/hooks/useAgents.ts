@@ -34,7 +34,12 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
         },
         projectId,
       );
-      setAgents(data);
+      // Defensive dedupe: a race between the initial fetch and an SSE refresh
+      // (or a backend that returned the same agent twice) would otherwise put
+      // duplicate ids into every list rendered from this hook, flooding React
+      // with duplicate-key warnings until the dashboard runs out of heap.
+      const unique = Array.from(new Map(data.map((a) => [a.id, a])).values());
+      setAgents(unique);
     } catch (err) {
       console.error("Failed to load agents:", err);
     } finally {
