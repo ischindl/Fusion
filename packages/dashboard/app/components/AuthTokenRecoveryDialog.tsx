@@ -44,14 +44,14 @@ export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) 
       }}
     >
       <div
-        className="modal auth-token-recovery-modal"
+        className="modal modal-md"
         role="dialog"
         aria-modal="true"
         aria-labelledby="auth-token-recovery-title"
         aria-describedby="auth-token-recovery-description"
       >
         <div className="modal-header auth-token-recovery-header">
-          <h2 id="auth-token-recovery-title">Authentication token required</h2>
+          <h3 id="auth-token-recovery-title">Authentication token required</h3>
         </div>
 
         <div className="auth-token-recovery-content">

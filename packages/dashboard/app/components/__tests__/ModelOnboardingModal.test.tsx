@@ -2361,7 +2361,7 @@ describe("ModelOnboardingModal", () => {
       expect(mockFetchGlobalSettings).toHaveBeenCalled();
 
       // The model dropdown should be pre-populated with the saved default
-      const dropdown = screen.getByTestId("mock-model-dropdown") as HTMLSelectElement;
+      const dropdown = await screen.findByTestId("mock-model-dropdown") as HTMLSelectElement;
       expect(dropdown.value).toBe("anthropic/claude-sonnet-4-5");
     });
 
@@ -2407,7 +2407,7 @@ describe("ModelOnboardingModal", () => {
       });
 
       // The model dropdown should be pre-populated with the saved default
-      const dropdown = screen.getByTestId("mock-model-dropdown") as HTMLSelectElement;
+      const dropdown = await screen.findByTestId("mock-model-dropdown") as HTMLSelectElement;
       expect(dropdown.value).toBe("openai/gpt-4o");
     });
   });

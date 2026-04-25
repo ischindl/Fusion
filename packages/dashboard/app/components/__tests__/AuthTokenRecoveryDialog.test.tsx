@@ -29,8 +29,18 @@ describe("AuthTokenRecoveryDialog", () => {
   it("renders a blocking dialog with disabled set button until token is entered", () => {
     render(<AuthTokenRecoveryDialog open={true} />);
 
-    expect(screen.getByRole("dialog", { name: "Authentication token required" })).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "Authentication token required" });
+    expect(dialog).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
+
+    const overlay = dialog.closest(".auth-token-recovery-overlay");
+    expect(overlay).toBeTruthy();
+
+    if (!overlay) {
+      throw new Error("Expected auth token recovery overlay");
+    }
+
+    expect(dialog.className).toContain("modal-md");
 
     const setTokenButton = screen.getByRole("button", { name: "Set token and reload" });
     expect(setTokenButton).toBeDisabled();

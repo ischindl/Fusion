@@ -2,13 +2,8 @@
   z-index: 210;
 }
 
-.auth-token-recovery-modal {
-  width: min(560px, calc(100vw - (var(--space-xl) * 2)));
-}
-
-.auth-token-recovery-header h2 {
+.auth-token-recovery-header h3 {
   margin: 0;
-  font-size: 1.1rem;
 }
 
 .auth-token-recovery-content {
