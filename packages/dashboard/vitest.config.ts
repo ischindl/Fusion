@@ -25,6 +25,7 @@ export default defineConfig({
     globals: true,
     include: ["app/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     setupFiles: [
+      "./src/__tests__/setup-test-isolation.ts",
       resolve(__dirname, "../core/src/__test-utils__/vitest-setup.ts"),
       "./vitest.setup.ts",
     ],

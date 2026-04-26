@@ -1,9 +1,9 @@
 // @vitest-environment node
 
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   PRIORITY_SCRIPTS,
   detectDevServerCommands,
@@ -23,8 +23,21 @@ async function writePackageJson(
 }
 
 describe("devserver-detect", () => {
+  const tempRoots = new Set<string>();
+
+  afterEach(async () => {
+    await Promise.all(Array.from(tempRoots).map((root) => rm(root, { recursive: true, force: true })));
+    tempRoots.clear();
+  });
+
+  const createTempRoot = async (prefix: string) => {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    tempRoots.add(root);
+    return root;
+  };
+
   it("detects priority scripts from root package.json", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     await writePackageJson(root, {
       scripts: {
         dev: "vite",
@@ -46,7 +59,7 @@ describe("devserver-detect", () => {
   });
 
   it("only returns priority scripts", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     await writePackageJson(root, {
       scripts: {
         dev: "vite",
@@ -62,7 +75,7 @@ describe("devserver-detect", () => {
   });
 
   it("scans nested package.json files in apps/* and packages/*", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     await writePackageJson(root, { scripts: {} });
     await writePackageJson(
       root,
@@ -82,7 +95,7 @@ describe("devserver-detect", () => {
   });
 
   it("sorts results by PRIORITY_SCRIPTS order", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     expect(PRIORITY_SCRIPTS.indexOf("dev")).toBeLessThan(PRIORITY_SCRIPTS.indexOf("serve"));
     await writePackageJson(root, {
       scripts: {
@@ -99,7 +112,7 @@ describe("devserver-detect", () => {
   });
 
   it("returns empty array when scripts is empty", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     await writePackageJson(root, { scripts: {} });
 
     const detected = await detectDevServerCommands(root);
@@ -107,14 +120,14 @@ describe("devserver-detect", () => {
   });
 
   it("returns empty array when root package.json is missing", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
 
     const detected = await detectDevServerCommands(root);
     expect(detected).toEqual([]);
   });
 
   it("returns empty array for malformed package.json without throwing", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     const filePath = join(root, "package.json");
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, '{ "invalid json', "utf-8");
@@ -124,7 +137,7 @@ describe("devserver-detect", () => {
   });
 
   it("deeply nested package.json (2+ levels) is NOT scanned", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-detect-"));
+    const root = await createTempRoot("devserver-detect-");
     await writePackageJson(root, { scripts: {} });
     // Create a deeply nested package.json (2 levels deep)
     await writePackageJson(
@@ -144,7 +157,7 @@ describe("devserver-detect", () => {
   });
 
   it("persists and reloads devserver configs", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-config-"));
+    const root = await createTempRoot("devserver-config-");
     const configs: DevServerConfig[] = [
       {
         id: createDevServerId("cfg-1"),

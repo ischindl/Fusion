@@ -191,7 +191,7 @@ import { TaskExecutor, buildExecutionPrompt } from "../executor.js";
 import { createFnAgent } from "../pi.js";
 import { reviewStep as mockedReviewStepFn } from "../reviewer.js";
 import { execSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findWorktreeUser, aiMergeTask } from "../merger.js";
@@ -8242,6 +8242,7 @@ describe("Workflow Steps Execution", () => {
     expect(promptContent).toContain("Quality gate hard failure");
 
     vi.useRealTimers();
+    await rm(tempRoot, { recursive: true, force: true });
   });
 
   it("skips script-mode step when scriptName is missing", async () => {

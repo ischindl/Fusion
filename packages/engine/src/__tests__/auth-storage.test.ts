@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFusionAuthStorage, getFusionAuthPath } from "../auth-storage.js";
@@ -15,7 +15,11 @@ describe("createFusionAuthStorage", () => {
     process.env.HOME = homeDir;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (homeDir) {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {

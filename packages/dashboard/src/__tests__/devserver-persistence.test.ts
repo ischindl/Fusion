@@ -1,16 +1,28 @@
 // @vitest-environment node
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { loadDevServerConfigs, saveDevServerConfigs } from "../devserver-persistence.js";
 import { createDevServerId, type DevServerConfig } from "../devserver-types.js";
 
 describe("devserver-persistence", () => {
+  const tempRoots = new Set<string>();
+
+  afterEach(async () => {
+    await Promise.all(Array.from(tempRoots).map((root) => rm(root, { recursive: true, force: true })));
+    tempRoots.clear();
+  });
+
+  const createTempRoot = async (prefix: string) => {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    tempRoots.add(root);
+    return root;
+  };
+
   it("saves and reloads multiple dev server configs", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-"));
+    const root = await createTempRoot("devserver-persist-");
     const configs: DevServerConfig[] = [
       {
         id: createDevServerId("server-1"),
@@ -46,7 +58,7 @@ describe("devserver-persistence", () => {
   });
 
   it("preserves exact config properties on reload", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-exact-"));
+    const root = await createTempRoot("devserver-persist-exact-");
     const config: DevServerConfig = {
       id: createDevServerId("exact-test"),
       name: "Exact Config",
@@ -66,14 +78,14 @@ describe("devserver-persistence", () => {
   });
 
   it("returns empty array when no configs have been saved", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-empty-"));
+    const root = await createTempRoot("devserver-persist-empty-");
 
     const loaded = await loadDevServerConfigs(root);
     expect(loaded).toEqual([]);
   });
 
   it("handles corrupted devserver.json gracefully", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-corrupt-"));
+    const root = await createTempRoot("devserver-persist-corrupt-");
     const configPath = join(root, ".fusion", "devserver.json");
     await mkdir(dirname(configPath), { recursive: true });
     await writeFile(configPath, '{ "invalid json', "utf-8");
@@ -83,7 +95,7 @@ describe("devserver-persistence", () => {
   });
 
   it("handles empty devserver.json", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-empty-file-"));
+    const root = await createTempRoot("devserver-persist-empty-file-");
     const configPath = join(root, ".fusion", "devserver.json");
     await mkdir(dirname(configPath), { recursive: true });
     await writeFile(configPath, '', "utf-8");
@@ -93,7 +105,7 @@ describe("devserver-persistence", () => {
   });
 
   it("handles devserver.json with missing configs array", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-missing-"));
+    const root = await createTempRoot("devserver-persist-missing-");
     const configPath = join(root, ".fusion", "devserver.json");
     await mkdir(dirname(configPath), { recursive: true });
     await writeFile(configPath, '{"other": "data"}', "utf-8");
@@ -103,7 +115,7 @@ describe("devserver-persistence", () => {
   });
 
   it("persists three or more servers correctly", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-multi-"));
+    const root = await createTempRoot("devserver-persist-multi-");
     const configs: DevServerConfig[] = [
       { id: createDevServerId("multi-1"), name: "Server 1", command: "npm run dev", cwd: root },
       { id: createDevServerId("multi-2"), name: "Server 2", command: "npm run storybook", cwd: root },
@@ -119,7 +131,7 @@ describe("devserver-persistence", () => {
   });
 
   it("filters out invalid configs during load", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-filter-"));
+    const root = await createTempRoot("devserver-persist-filter-");
     const configPath = join(root, ".fusion", "devserver.json");
     await mkdir(dirname(configPath), { recursive: true });
     // Write manually with an invalid config (missing required fields)
@@ -144,7 +156,7 @@ describe("devserver-persistence", () => {
   });
 
   it("overwrites existing configs when saving", async () => {
-    const root = await mkdtemp(join(tmpdir(), "devserver-persist-overwrite-"));
+    const root = await createTempRoot("devserver-persist-overwrite-");
 
     const initialConfigs: DevServerConfig[] = [
       { id: createDevServerId("overwrite-1"), name: "Initial", command: "npm run dev", cwd: root },
