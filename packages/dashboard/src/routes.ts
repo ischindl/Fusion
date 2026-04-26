@@ -2788,6 +2788,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   // - /missions
   // - /roadmaps
   // - /insights
+  // - /todos
   registerIntegratedRouters({
     router,
     store,
