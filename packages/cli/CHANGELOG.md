@@ -1,5 +1,12 @@
 # @runfusion/fusion
 
+## 0.4.1
+
+### Patch Changes
+
+- b5200ba: Add Cloudflare Quick Tunnel mode for Remote Access so Fusion can auto-provision an ephemeral `trycloudflare.com` URL via `cloudflared tunnel --url` without requiring a pre-created named tunnel or tunnel token.
+- 8097db2: Rename status values: specifying→planning, needs-respecify→needs-replan. Display label "Triage"→"Planning". Includes DB migration for existing records.
+
 ## 0.4.0
 
 ### Minor Changes

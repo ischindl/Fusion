@@ -2,27 +2,64 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
-## 1.0.0
+## 0.4.1
 
 ### @fusion/dashboard
 
 #### Patch Changes
 
-- @fusion/core@1.0.0
-- @fusion/engine@1.0.0
+- @fusion/core@0.4.1
+- @fusion/engine@0.4.1
 
 ### @fusion/engine
 
 #### Patch Changes
 
-- @fusion/core@1.0.0
-- @fusion/pi-claude-cli@1.0.0
+- @fusion/core@0.4.1
+- @fusion/pi-claude-cli@0.4.1
 
 ### @fusion/plugin-sdk
 
 #### Patch Changes
 
-- @fusion/core@1.0.0
+- @fusion/core@0.4.1
+
+### @runfusion/fusion
+
+#### Patch Changes
+
+- b5200ba: Add Cloudflare Quick Tunnel mode for Remote Access so Fusion can auto-provision an ephemeral `trycloudflare.com` URL via `cloudflared tunnel --url` without requiring a pre-created named tunnel or tunnel token.
+- 8097db2: Rename status values: specifying→planning, needs-respecify→needs-replan. Display label "Triage"→"Planning". Includes DB migration for existing records.
+
+### runfusion.ai
+
+#### Patch Changes
+
+- Updated dependencies [b5200ba]
+- Updated dependencies [8097db2]
+  - @runfusion/fusion@0.4.1
+
+## 0.4.0
+
+### @fusion/dashboard
+
+#### Patch Changes
+
+- @fusion/core@0.4.0
+- @fusion/engine@0.4.0
+
+### @fusion/engine
+
+#### Patch Changes
+
+- @fusion/core@0.4.0
+- @fusion/pi-claude-cli@0.4.0
+
+### @fusion/plugin-sdk
+
+#### Patch Changes
+
+- @fusion/core@0.4.0
 
 ### @runfusion/fusion
 
@@ -58,7 +95,7 @@ User-facing release notes aggregated across all packages. This file is auto-sync
 - Updated dependencies [39622f0]
 - Updated dependencies [26f9c74]
 - Updated dependencies [9d8852e]
-  - @runfusion/fusion@1.0.0
+  - @runfusion/fusion@0.4.0
 
 ## Unreleased
 
