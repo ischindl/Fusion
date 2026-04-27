@@ -519,128 +519,128 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             />
           </div>
         </section>
+      </div>
 
-        <section className="dev-server-panel devserver-preview-panel" data-testid="devserver-preview-panel" aria-label="Dev server preview">
-          <div className="devserver-preview-header">
-            <div className="devserver-preview-title">
-              <Eye size={14} />
-              <span>Preview</span>
-            </div>
-            <span
-              className={`devserver-preview-url-badge ${isManualPreviewOverride ? "devserver-preview-url-badge--manual" : "devserver-preview-url-badge--auto"}`}
-              title={effectivePreviewUrl ?? "No preview URL"}
-              data-testid="devserver-preview-url-badge"
-            >
-              {isManualPreviewOverride ? "Manual" : "Auto"}
-              {effectivePreviewUrl ? ` · ${effectivePreviewUrl}` : " · Not available"}
-            </span>
-            <div className="devserver-preview-actions">
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => setPreviewMode((current) => (current === "embedded" ? "external" : "embedded"))}
-                data-testid="devserver-preview-mode-toggle"
-              >
-                {previewMode === "embedded" ? "External only" : "Embedded"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-icon"
-                title="Open in new tab"
-                onClick={handleOpenInNewTab}
-                disabled={!effectivePreviewUrl}
-                data-testid="devserver-preview-open-tab"
-              >
-                <ExternalLink size={14} />
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-icon"
-                title="Refresh preview"
-                onClick={handleRefreshPreview}
-                disabled={!effectivePreviewUrl}
-                data-testid="devserver-preview-refresh"
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
+      <section className="dev-server-panel devserver-preview-panel" data-testid="devserver-preview-panel" aria-label="Dev server preview">
+        <div className="devserver-preview-header">
+          <div className="devserver-preview-title">
+            <Eye size={14} />
+            <span>Preview</span>
           </div>
+          <span
+            className={`devserver-preview-url-badge ${isManualPreviewOverride ? "devserver-preview-url-badge--manual" : "devserver-preview-url-badge--auto"}`}
+            title={effectivePreviewUrl ?? "No preview URL"}
+            data-testid="devserver-preview-url-badge"
+          >
+            {isManualPreviewOverride ? "Manual" : "Auto"}
+            {effectivePreviewUrl ? ` · ${effectivePreviewUrl}` : " · Not available"}
+          </span>
+          <div className="devserver-preview-actions">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setPreviewMode((current) => (current === "embedded" ? "external" : "embedded"))}
+              data-testid="devserver-preview-mode-toggle"
+            >
+              {previewMode === "embedded" ? "External only" : "Embedded"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-icon"
+              title="Open in new tab"
+              onClick={handleOpenInNewTab}
+              disabled={!effectivePreviewUrl}
+              data-testid="devserver-preview-open-tab"
+            >
+              <ExternalLink size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-icon"
+              title="Refresh preview"
+              onClick={handleRefreshPreview}
+              disabled={!effectivePreviewUrl}
+              data-testid="devserver-preview-refresh"
+            >
+              <RefreshCw size={14} />
+            </button>
+          </div>
+        </div>
 
-          <div className="devserver-preview-container" data-embed-status={embedStatus} data-embedded={isEmbedded ? "true" : "false"}>
-            {!effectivePreviewUrl && !isRunning && (
-              <p className="devserver-preview-empty">Start a dev server to see a live preview here.</p>
-            )}
+        <div className="devserver-preview-container" data-embed-status={embedStatus} data-embedded={isEmbedded ? "true" : "false"}>
+          {!effectivePreviewUrl && !isRunning && (
+            <p className="devserver-preview-empty">Start a dev server to see a live preview here.</p>
+          )}
 
-            {!effectivePreviewUrl && isRunning && (
-              <p className="devserver-preview-empty">No preview URL detected. Start the dev server or set a manual URL to preview your app.</p>
-            )}
+          {!effectivePreviewUrl && isRunning && (
+            <p className="devserver-preview-empty">No preview URL detected. Start the dev server or set a manual URL to preview your app.</p>
+          )}
 
-            {effectivePreviewUrl && previewMode === "external" && (
-              <div className="devserver-preview-external-only" data-testid="devserver-preview-external-only">
-                <p>Embedded preview is disabled. Open your app in a separate browser tab.</p>
+          {effectivePreviewUrl && previewMode === "external" && (
+            <div className="devserver-preview-external-only" data-testid="devserver-preview-external-only">
+              <p>Embedded preview is disabled. Open your app in a separate browser tab.</p>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm touch-target"
+                onClick={handleOpenInNewTab}
+                data-testid="devserver-preview-external-open-tab"
+              >
+                Open in new tab
+              </button>
+            </div>
+          )}
+
+          {effectivePreviewUrl && previewMode === "embedded" && showFallback && isBlocked && (
+            <div
+              className={embedStatus === "error" ? "devserver-preview-error-panel" : "devserver-preview-blocked-panel"}
+              data-testid="devserver-preview-fallback"
+              role="alert"
+            >
+              {embedStatus === "error"
+                ? <AlertTriangle className="devserver-preview-blocked-icon" aria-hidden="true" />
+                : <ShieldAlert className="devserver-preview-blocked-icon" aria-hidden="true" />}
+              <div>
+                <p className="devserver-preview-blocked-title">
+                  {embedStatus === "error" ? "Preview failed" : "Preview blocked"}
+                </p>
+                {blockReason && <p className="devserver-preview-blocked-context">{blockReason}</p>}
+              </div>
+              <p className="devserver-preview-blocked-description">
+                Open the preview in a new tab, or retry embedded mode after checking your server settings.
+              </p>
+              <div className="devserver-preview-blocked-actions">
                 <button
                   type="button"
-                  className="btn btn-primary btn-sm touch-target"
+                  className="btn btn-primary"
                   onClick={handleOpenInNewTab}
-                  data-testid="devserver-preview-external-open-tab"
+                  data-testid="devserver-preview-fallback-open-tab"
                 >
-                  Open in new tab
+                  Open preview in new tab
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleRetryEmbeddedPreview}
+                  data-testid="devserver-preview-fallback-retry"
+                >
+                  Retry embedded preview
                 </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {effectivePreviewUrl && previewMode === "embedded" && showFallback && isBlocked && (
-              <div
-                className={embedStatus === "error" ? "devserver-preview-error-panel" : "devserver-preview-blocked-panel"}
-                data-testid="devserver-preview-fallback"
-                role="alert"
-              >
-                {embedStatus === "error"
-                  ? <AlertTriangle className="devserver-preview-blocked-icon" aria-hidden="true" />
-                  : <ShieldAlert className="devserver-preview-blocked-icon" aria-hidden="true" />}
-                <div>
-                  <p className="devserver-preview-blocked-title">
-                    {embedStatus === "error" ? "Preview failed" : "Preview blocked"}
-                  </p>
-                  {blockReason && <p className="devserver-preview-blocked-context">{blockReason}</p>}
-                </div>
-                <p className="devserver-preview-blocked-description">
-                  Open the preview in a new tab, or retry embedded mode after checking your server settings.
-                </p>
-                <div className="devserver-preview-blocked-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={handleOpenInNewTab}
-                    data-testid="devserver-preview-fallback-open-tab"
-                  >
-                    Open preview in new tab
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={handleRetryEmbeddedPreview}
-                    data-testid="devserver-preview-fallback-retry"
-                  >
-                    Retry embedded preview
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {effectivePreviewUrl && previewMode === "embedded" && !showFallback && (
-              <PreviewIframe
-                url={effectivePreviewUrl}
-                embedStatus={embedStatus}
-                onEmbedStatusChange={setEmbedStatus}
-                iframeRef={iframeRef}
-                blockReason={blockReason}
-                onRetry={handleRetryEmbeddedPreview}
-              />
-            )}
-          </div>
-        </section>
-      </div>
+          {effectivePreviewUrl && previewMode === "embedded" && !showFallback && (
+            <PreviewIframe
+              url={effectivePreviewUrl}
+              embedStatus={embedStatus}
+              onEmbedStatusChange={setEmbedStatus}
+              iframeRef={iframeRef}
+              blockReason={blockReason}
+              onRetry={handleRetryEmbeddedPreview}
+            />
+          )}
+        </div>
+      </section>
     </div>
   );
 }

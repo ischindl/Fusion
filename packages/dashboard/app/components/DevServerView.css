@@ -292,9 +292,8 @@
 .dev-server-content {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-md);
+  display: flex;
+  flex-direction: column;
 }
 
 .dev-server-logs-panel,
@@ -535,8 +534,44 @@
 .dev-server-spin {
   animation: dev-server-spin 1s linear infinite;
 }
+
+@media (min-width: 769px) {
+  .dev-server-view {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr;
+  }
+
+  .dev-server-header {
+    grid-column: 1 / -1;
+  }
+
+  .dev-server-config {
+    grid-column: 1;
+    grid-row: 2;
+    max-height: none;
+  }
+
+  .dev-server-content {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .devserver-preview-panel {
+    grid-column: 2;
+    grid-row: 2 / 4;
+  }
+
+  .devserver-preview-container {
+    min-height: 0;
+    max-height: none;
+  }
+}
+
 @media (max-width: 768px) {
   .dev-server-view {
+    display: flex;
+    flex-direction: column;
     padding: var(--space-md);
   }
 
@@ -560,7 +595,8 @@
   }
 
   .dev-server-content {
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
   }
 
   .devserver-preview-header {
