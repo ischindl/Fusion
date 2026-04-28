@@ -253,6 +253,86 @@ describe("useAuthOnboarding", () => {
     });
   });
 
+  it("does not auto-trigger before a projectId exists (fresh install pre-wizard race)", async () => {
+    mockFetchAuthStatus.mockResolvedValue({
+      providers: [{ id: "openai", name: "OpenAI", authenticated: false }],
+    });
+    mockFetchGlobalSettings.mockResolvedValue({
+      modelOnboardingComplete: false,
+      defaultProvider: undefined,
+      defaultModelId: undefined,
+    } as never);
+
+    const { rerender } = renderHook(
+      ({ projectId, setupWizardOpen }: { projectId: string | undefined; setupWizardOpen: boolean }) =>
+        useAuthOnboarding({
+          projectId,
+          setupWizardOpen,
+          openModelOnboarding,
+          openSettings,
+        }),
+      {
+        initialProps: { projectId: undefined as string | undefined, setupWizardOpen: false },
+      },
+    );
+
+    // No project yet — the setup wizard owns this phase. Don't fetch or open.
+    await waitFor(() => {
+      expect(mockFetchAuthStatus).not.toHaveBeenCalled();
+      expect(openModelOnboarding).not.toHaveBeenCalled();
+    });
+
+    // Setup wizard opens, user fills it out…
+    rerender({ projectId: undefined, setupWizardOpen: true });
+    // …completes it: project registered, wizard closes.
+    rerender({ projectId: "proj_new", setupWizardOpen: false });
+
+    await waitFor(() => {
+      expect(openModelOnboarding).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not stack model onboarding on top of a setup wizard that opens mid-fetch", async () => {
+    let resolveAuth: (value: { providers: Array<{ id: string; name: string; authenticated: boolean }> }) => void = () => {};
+    mockFetchAuthStatus.mockReturnValue(
+      new Promise((resolve) => {
+        resolveAuth = resolve;
+      }) as never,
+    );
+    mockFetchGlobalSettings.mockResolvedValue({
+      modelOnboardingComplete: false,
+      defaultProvider: undefined,
+      defaultModelId: undefined,
+    } as never);
+
+    const { rerender } = renderHook(
+      ({ setupWizardOpen }: { setupWizardOpen: boolean }) =>
+        useAuthOnboarding({
+          projectId: "proj_123",
+          setupWizardOpen,
+          openModelOnboarding,
+          openSettings,
+        }),
+      { initialProps: { setupWizardOpen: false } },
+    );
+
+    // Wizard opens while fetch is still pending.
+    rerender({ setupWizardOpen: true });
+    resolveAuth({ providers: [{ id: "openai", name: "OpenAI", authenticated: false }] });
+
+    await waitFor(() => {
+      expect(mockFetchAuthStatus).toHaveBeenCalled();
+    });
+    // Onboarding must not open while wizard is up.
+    expect(openModelOnboarding).not.toHaveBeenCalled();
+
+    // After wizard closes, onboarding takes over.
+    rerender({ setupWizardOpen: false });
+    await waitFor(() => {
+      expect(openModelOnboarding).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // --- One-shot guard ---
 
   it("does not re-trigger onboarding when projectId changes after initial bootstrap", async () => {

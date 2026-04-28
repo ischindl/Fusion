@@ -32,11 +32,22 @@ export function useAuthOnboarding({
   // One-shot guard: prevents the auto-trigger logic from running more than once
   // per hook instance, even if the effect re-runs due to dependency changes.
   const hasTriggeredRef = useRef(false);
+  // Track latest setupWizardOpen so the resolved fetch promise can re-check
+  // it without becoming a stale-closure read.
+  const setupWizardOpenRef = useRef(setupWizardOpen);
+  setupWizardOpenRef.current = setupWizardOpen;
 
   useEffect(() => {
     // Defer auto-triggering while setup wizard is open.
     // Important: this must run before consuming the one-shot flag.
     if (setupWizardOpen) return;
+    // Hold off until the user has a project. On a fresh install the setup
+    // wizard opens ~500ms after mount, so without this gate the effect would
+    // race ahead, lock the one-shot flag, and (a) potentially stack both
+    // modals, or (b) never re-trigger model onboarding once the wizard
+    // closes. With a project in scope, either the wizard already finished
+    // or it was never going to open.
+    if (!projectId) return;
     // Skip if we've already triggered (one-shot guard)
     if (hasTriggeredRef.current) return;
     // Mark as triggered immediately to prevent any race condition on re-runs
@@ -74,7 +85,15 @@ export function useAuthOnboarding({
         }
       })
       .then(() => {
-        // Execute after the promise chain resolves
+        // Execute after the promise chain resolves. Re-check the wizard:
+        // the user (or auto-open logic) may have opened it while the auth
+        // fetch was in flight, and we don't want to stack modals.
+        if (setupWizardOpenRef.current) {
+          // Release the one-shot so the effect can retry once the wizard
+          // closes (the effect re-runs on the setupWizardOpen dep flip).
+          hasTriggeredRef.current = false;
+          return;
+        }
         if (shouldOpenOnboarding) {
           trackOnboardingEvent("onboarding:auto-triggered", { trigger: "first-run" });
           openModelOnboarding();
