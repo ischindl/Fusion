@@ -11,6 +11,7 @@ import type { AgentRuntime, AgentRuntimeOptions, AgentSessionResult } from "./ag
 import type { PluginRunner } from "./plugin-runner.js";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { createLogger } from "./logger.js";
+import { createFnAgent, promptWithFallback, describeModel } from "./pi.js";
 
 /** Logger for the runtime resolution subsystem */
 const runtimeLog = createLogger("runtime-resolver");
@@ -77,36 +78,16 @@ export class DefaultPiRuntime implements AgentRuntime {
   readonly id = "pi";
   readonly name = "Default PI Runtime";
 
-  // Synchronous cached describeModel function
-  private static describeModelFn: ((session: AgentSession) => string) | null = null;
-
-  /**
-   * Create an agent session using the default pi implementation.
-   */
   async createSession(options: AgentRuntimeOptions): Promise<AgentSessionResult> {
-    const { createFnAgent } = await import("./pi.js");
     return createFnAgent(options);
   }
 
-  /**
-   * Prompt with automatic retry and compaction.
-   * Delegates to the existing promptWithFallback implementation.
-   */
   async promptWithFallback(session: AgentSession, prompt: string, options?: unknown): Promise<void> {
-    const { promptWithFallback: pwf } = await import("./pi.js");
-    return pwf(session, prompt, options);
+    return promptWithFallback(session, prompt, options);
   }
 
-  /**
-   * Get model description from session.
-   */
   describeModel(session: AgentSession): string {
-    if (!DefaultPiRuntime.describeModelFn) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { describeModel } = require("./pi.js");
-      DefaultPiRuntime.describeModelFn = describeModel;
-    }
-    return DefaultPiRuntime.describeModelFn!(session);
+    return describeModel(session);
   }
 }
 
@@ -216,18 +197,15 @@ function wrapPluginRuntime(
         return adapter.promptWithFallback(session, prompt, options);
       }
       // Fallback to default pi promptWithFallback
-      const { promptWithFallback: pwf } = await import("./pi.js");
-      return pwf(session, prompt, options);
+      return promptWithFallback(session, prompt, options);
     },
     describeModel: (session: AgentSession) => {
       const adapter = instance as Record<string, unknown>;
       if (typeof adapter.describeModel === "function") {
         return (adapter.describeModel as (s: AgentSession) => string)(session);
       }
-      // Fallback to default pi describeModel - use cached sync function
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { describeModel: dm } = require("./pi.js");
-      return dm(session);
+      // Fallback to default pi describeModel
+      return describeModel(session);
     },
   };
 }

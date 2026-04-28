@@ -12,6 +12,7 @@ import type { PluginRunner } from "./plugin-runner.js";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { resolveRuntime, buildRuntimeResolutionContext, type SessionPurpose } from "./runtime-resolution.js";
 import { createLogger } from "./logger.js";
+import { promptWithFallback, describeModel } from "./pi.js";
 
 /** Logger for agent session helpers */
 const sessionLog = createLogger("agent-session");
@@ -130,10 +131,7 @@ export async function promptWithAutoRetry(
   prompt: string,
   options?: unknown,
 ): Promise<void> {
-  // Dynamic import to get the default runtime's promptWithFallback
-  // This works because the default runtime delegates to the existing implementation
-  const { promptWithFallback: pwf } = await import("./pi.js");
-  return pwf(session, prompt, options);
+  return promptWithFallback(session, prompt, options);
 }
 
 /**
@@ -143,6 +141,5 @@ export async function promptWithAutoRetry(
  * @returns Model description string
  */
 export async function describeAgentModel(session: AgentSession): Promise<string> {
-  const { describeModel: dm } = await import("./pi.js");
-  return dm(session);
+  return describeModel(session);
 }

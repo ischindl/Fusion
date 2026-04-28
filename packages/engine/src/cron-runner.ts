@@ -5,6 +5,7 @@ import type { AutomationStore } from "@fusion/core";
 import type { ScheduledTask, AutomationRunResult, AutomationStep, AutomationStepResult, Column, TaskCreateInput } from "@fusion/core";
 import { createLogger } from "./logger.js";
 import { defaultShell } from "./shell-utils.js";
+import { createFnAgent, promptWithFallback } from "./pi.js";
 
 const execAsync = promisify(exec);
 const log = createLogger("cron-runner");
@@ -628,9 +629,6 @@ const AI_AUTOMATION_SYSTEM_PROMPT = [
  * @returns An AiPromptExecutor function suitable for CronRunnerOptions.
  */
 export async function createAiPromptExecutor(cwd: string): Promise<AiPromptExecutor> {
-  // We import lazily to keep the factory self-contained and to avoid
-  // pulling pi.ts into the module graph when AI execution isn't used.
-  const { createFnAgent, promptWithFallback } = await import("./pi.js");
   const disposeLog = createLogger("cron-runner");
 
   return async (prompt: string, modelProvider?: string, modelId?: string): Promise<string> => {

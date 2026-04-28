@@ -26,9 +26,7 @@ import { AgentLogger } from "./agent-logger.js";
 import { resolveAgentInstructionsWithRatings, buildSystemPromptWithInstructions } from "./agent-instructions.js";
 import { heartbeatLog, formatError } from "./logger.js";
 import { createRunAuditor, type EngineRunContext } from "./run-audit.js";
-
-// Lazy import for pi — avoids pulling the pi SDK into the module graph
-// when heartbeat execution isn't needed.
+import { promptWithFallback } from "./pi.js";
 
 /** Resolved per-agent heartbeat config after validation and fallback */
 interface ResolvedHeartbeatConfig {
@@ -1099,8 +1097,6 @@ export class HeartbeatMonitor {
           },
         };
 
-        // Lazy-load promptWithFallback
-        const { promptWithFallback } = await import("./pi.js");
         const { createResolvedAgentSession, extractRuntimeHint } = await import("./agent-session-helpers.js");
         const { buildSessionSkillContextSync } = await import("./session-skill-context.js");
 
