@@ -286,7 +286,10 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId 
       try {
         const task = await apiImportGitHubIssue(owner.trim(), repo.trim(), selectedIssueNumber, projectId);
         onImport(task);
-        onClose();
+        setSelectedIssueNumber(null);
+        if (isMobile && mobileView === "preview") {
+          setMobileView("list");
+        }
       } catch (err) {
         const msg = getErrorMessage(err);
         if (msg?.includes("already imported")) {
@@ -306,7 +309,10 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId 
       try {
         const task = await apiImportGitHubPull(owner.trim(), repo.trim(), selectedPullNumber, projectId);
         onImport(task);
-        onClose();
+        setSelectedPullNumber(null);
+        if (isMobile && mobileView === "preview") {
+          setMobileView("list");
+        }
       } catch (err) {
         const msg = getErrorMessage(err);
         if (msg?.includes("already imported")) {
@@ -318,7 +324,7 @@ export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId 
         setImporting(false);
       }
     }
-  }, [activeTab, selectedIssueNumber, selectedPullNumber, owner, repo, onImport, onClose]);
+  }, [activeTab, selectedIssueNumber, selectedPullNumber, owner, repo, onImport, isMobile, mobileView]);
 
   const selectedIssue = issues.find((i) => i.number === selectedIssueNumber);
   const selectedPull = pulls.find((p) => p.number === selectedPullNumber);

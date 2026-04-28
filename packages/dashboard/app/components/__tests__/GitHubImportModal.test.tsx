@@ -234,8 +234,10 @@ describe("GitHubImportModal", () => {
         expect(resultsSection).toBeTruthy();
       });
 
-      const loadButton = screen.getByRole("button", { name: /Load issues/i }) as HTMLButtonElement;
-      expect(loadButton.disabled).toBe(false);
+      await waitFor(() => {
+        const loadButton = screen.getByRole("button", { name: /Load issues/i }) as HTMLButtonElement;
+        expect(loadButton.disabled).toBe(false);
+      });
     });
 
     it("auto-loads issues when single remote is detected", async () => {
@@ -395,7 +397,49 @@ describe("GitHubImportModal", () => {
       await waitFor(() => {
         expect(apiImportGitHubIssue).toHaveBeenCalledWith("dustinbyrne", "kb", 1, "project-1");
         expect(onImport).toHaveBeenCalledWith(mockTask);
-        expect(onClose).toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByText("Import from GitHub")).toBeTruthy();
+      });
+    });
+
+    it("stays open and resets selection after successful issue import", async () => {
+      const issues = [
+        { number: 1, title: "First Issue", body: "Body 1", html_url: "https://github.com/owner/repo/issues/1", labels: [] },
+      ];
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issues);
+      vi.mocked(apiImportGitHubIssue).mockResolvedValueOnce(mockTask);
+
+      const { rerender } = render(
+        <GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("First Issue")).toBeTruthy();
+      });
+
+      const importButton = screen.getByRole("button", { name: /Import$/i }) as HTMLButtonElement;
+      fireEvent.click(screen.getByRole("radio", { name: /Select issue #1/i }));
+      expect(importButton.disabled).toBe(false);
+
+      fireEvent.click(importButton);
+
+      await waitFor(() => {
+        expect(apiImportGitHubIssue).toHaveBeenCalledWith("owner", "repo", 1, "project-1");
+        expect(onClose).not.toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect((screen.getByRole("button", { name: /Import$/i }) as HTMLButtonElement).disabled).toBe(true);
+      });
+
+      rerender(
+        <GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[mockTask]} projectId="project-1" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("First Issue")).toBeTruthy();
+        expect(screen.getByText("Imported")).toBeTruthy();
       });
     });
 
@@ -585,6 +629,43 @@ describe("GitHubImportModal", () => {
       const previewPane = screen.getByTestId("github-import-preview-pane");
       expect(previewPane.classList.contains("active")).toBe(false);
     });
+
+    it("returns to list view on mobile after successful import", async () => {
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: 480,
+      });
+
+      const issues = [
+        { number: 1, title: "First Issue", body: "Body 1", html_url: "https://github.com/owner/repo/issues/1", labels: [] },
+      ];
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce(issues);
+      vi.mocked(apiImportGitHubIssue).mockResolvedValueOnce(mockTask);
+
+      render(<GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByText("First Issue")).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole("radio", { name: /Select issue #1/i }));
+
+      const previewPane = screen.getByTestId("github-import-preview-pane");
+      await waitFor(() => {
+        expect(previewPane.classList.contains("active")).toBe(true);
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /Import$/i }));
+
+      await waitFor(() => {
+        expect(apiImportGitHubIssue).toHaveBeenCalledWith("owner", "repo", 1, "project-1");
+      });
+
+      expect(previewPane.classList.contains("active")).toBe(false);
+      expect(onClose).not.toHaveBeenCalled();
+    });
   });
 
   describe("modal actions", () => {
@@ -763,7 +844,48 @@ describe("GitHubImportModal", () => {
       await waitFor(() => {
         expect(apiImportGitHubPull).toHaveBeenCalledWith("dustinbyrne", "kb", 1, "project-1");
         expect(onImport).toHaveBeenCalledWith(mockPRTask);
-        expect(onClose).toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByText("Import from GitHub")).toBeTruthy();
+      });
+    });
+
+    it("stays open and resets selection after successful PR import", async () => {
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([{ name: "origin", owner: "owner", repo: "repo", url: "" }]);
+      vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce(mockPulls);
+      vi.mocked(apiImportGitHubPull).mockResolvedValueOnce(mockPRTask);
+
+      const { rerender } = render(
+        <GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[]} projectId="project-1" />,
+      );
+
+      fireEvent.click(screen.getByRole("tab", { name: /Pull Requests/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Test PR")).toBeTruthy();
+      });
+
+      const importButton = screen.getByRole("button", { name: /Import$/i }) as HTMLButtonElement;
+      fireEvent.click(screen.getByRole("radio", { name: /Select pull request #1/i }));
+      expect(importButton.disabled).toBe(false);
+
+      fireEvent.click(importButton);
+
+      await waitFor(() => {
+        expect(apiImportGitHubPull).toHaveBeenCalledWith("owner", "repo", 1, "project-1");
+        expect(onClose).not.toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect((screen.getByRole("button", { name: /Import$/i }) as HTMLButtonElement).disabled).toBe(true);
+      });
+
+      rerender(
+        <GitHubImportModal isOpen={true} onClose={onClose} onImport={onImport} tasks={[mockPRTask]} projectId="project-1" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Test PR")).toBeTruthy();
+        expect(screen.getByText("Imported")).toBeTruthy();
       });
     });
 
