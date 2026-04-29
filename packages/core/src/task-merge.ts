@@ -2,15 +2,28 @@ import type { Task, WorkflowStepResult } from "./types.js";
 
 const BLOCKING_TASK_STATUSES = new Set([
   "failed",
+  // ── User-attention / awaiting-handoff states ─────────────────────────
   "awaiting-inspection",
   "awaiting-user-review",
+  "awaiting-approval",       // triage spec awaiting user approval
+  // ── Active merge in-flight ───────────────────────────────────────────
   "merging",
   "merging-pr",
+  // ── Re-planning / triage states (scope not finalized) ────────────────
   // A task in planning/triage hasn't finalized its scope yet — letting it
   // merge skips the work the user moved it back to plan. Same for the legacy
   // "specifying" alias migrated to "planning" in db.ts.
   "planning",
   "specifying",
+  "needs-replan",            // scheduler/executor/triage signaled re-plan
+  // ── Mission-level validation in flight ───────────────────────────────
+  "mission-validation",
+  // ── Scheduler-side transient state ───────────────────────────────────
+  "queued",                  // scheduler placed the task in line; not finalized
+  // ── Abnormal termination — defensive guard ───────────────────────────
+  // Task was killed by the stuck detector. If it surfaces in in-review,
+  // it needs investigation, not auto-merge.
+  "stuck-killed",
 ]);
 
 const NON_TERMINAL_STEP_STATUSES = new Set([

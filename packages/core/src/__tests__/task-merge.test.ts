@@ -60,6 +60,34 @@ describe("getTaskMergeBlocker", () => {
       .toContain("specifying");
   });
 
+  it("returns reason when task is awaiting-approval", () => {
+    expect(getTaskMergeBlocker({ ...baseTask, status: "awaiting-approval" }))
+      .toContain("awaiting-approval");
+  });
+
+  it("returns reason when task needs-replan", () => {
+    // scheduler/executor/triage move a task here when its plan must be revisited.
+    expect(getTaskMergeBlocker({ ...baseTask, status: "needs-replan" }))
+      .toContain("needs-replan");
+  });
+
+  it("returns reason when task is in mission-validation", () => {
+    expect(getTaskMergeBlocker({ ...baseTask, status: "mission-validation" }))
+      .toContain("mission-validation");
+  });
+
+  it("returns reason when task is queued (scheduler transient)", () => {
+    expect(getTaskMergeBlocker({ ...baseTask, status: "queued" }))
+      .toContain("queued");
+  });
+
+  it("returns reason when task is stuck-killed", () => {
+    // Defensive: if this transient marker surfaces in in-review, the task
+    // needs investigation rather than auto-merge.
+    expect(getTaskMergeBlocker({ ...baseTask, status: "stuck-killed" }))
+      .toContain("stuck-killed");
+  });
+
   it("returns reason when task has incomplete steps", () => {
     expect(getTaskMergeBlocker({
       ...baseTask,
