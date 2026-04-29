@@ -333,5 +333,15 @@ describe("remote access API route contracts", () => {
       data: expect.stringContaining("<svg"),
       tokenType: "short-lived",
     });
+    // The .url field is what the QR matrix encodes — assert it carries the
+    // tailnet origin AND the rt= access token so a single scan authenticates.
+    expect(qrSvg.body.url).toMatch(/\/remote-login\?rt=[A-Za-z0-9_-]+/);
+
+    const qrTerminal = await REQUEST(app, "GET", "/api/remote/qr?format=terminal&tokenType=persistent");
+    expect(qrTerminal.status).toBe(200);
+    expect(qrTerminal.body.format).toBe("terminal");
+    expect(typeof qrTerminal.body.data).toBe("string");
+    expect(qrTerminal.body.data.length).toBeGreaterThan(0);
+    expect(qrTerminal.body.url).toMatch(/\/remote-login\?rt=[A-Za-z0-9_-]+/);
   });
 });
