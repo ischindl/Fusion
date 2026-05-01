@@ -11,6 +11,7 @@ export const registerModelRoutes: ApiRouteRegistrar = (ctx) => {
     let defaultProvider: string | undefined;
     let defaultModelId: string | undefined;
     let useClaudeCli = false;
+    let useDroidCli = false;
     if (store) {
       try {
         const globalStore = store.getGlobalSettingsStore();
@@ -20,6 +21,7 @@ export const registerModelRoutes: ApiRouteRegistrar = (ctx) => {
         defaultProvider = globalSettings.defaultProvider;
         defaultModelId = globalSettings.defaultModelId;
         useClaudeCli = globalSettings.useClaudeCli === true;
+        useDroidCli = globalSettings.useDroidCli === true;
       } catch {
         // Silently ignore settings errors - just return empty favorites/default model
       }
@@ -60,6 +62,9 @@ export const registerModelRoutes: ApiRouteRegistrar = (ctx) => {
       // direct provider auth the user has connected.
       if (!useClaudeCli) {
         models = models.filter((m) => m.provider !== "pi-claude-cli");
+      }
+      if (!useDroidCli) {
+        models = models.filter((m) => m.provider !== "droid-cli");
       }
 
       res.json({
