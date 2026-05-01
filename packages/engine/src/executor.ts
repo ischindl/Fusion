@@ -2426,7 +2426,7 @@ export class TaskExecutor {
         // Agent delegation tools — discover and delegate work to other agents.
         ...(this.options.agentStore ? [
           createListAgentsTool(this.options.agentStore),
-          createDelegateTaskTool(this.options.agentStore, this.store),
+          createDelegateTaskTool(this.options.agentStore, this.store, { rootDir: this.rootDir }),
         ] : []),
         // Messaging tools — allows executor agents to send and receive messages.
         ...(this.options.messageStore && assignedAgentId ? [
@@ -3350,7 +3350,7 @@ export class TaskExecutor {
   }
 
   private createTaskCreateTool(): ToolDefinition {
-    return sharedCreateTaskCreateTool(this.store, { sourceType: "api" });
+    return sharedCreateTaskCreateTool(this.store, { sourceType: "api" }, { rootDir: this.rootDir });
   }
 
   private createTaskDocumentWriteTool(taskId: string): ToolDefinition {

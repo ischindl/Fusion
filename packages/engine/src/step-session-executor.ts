@@ -932,14 +932,14 @@ export class StepSessionExecutor {
             ? [createTaskLogTool(this.options.store, taskDetail.id)]
             : [];
           const taskCreateTool = this.options.store
-            ? [createTaskCreateTool(this.options.store)]
+            ? [createTaskCreateTool(this.options.store, undefined, { rootDir: this.options.rootDir })]
             : [];
 
           // Agent delegation tools — discover and delegate work to other agents.
           const delegationTools = this.options.agentStore
             ? [
                 createListAgentsTool(this.options.agentStore),
-                createDelegateTaskTool(this.options.agentStore, this.options.store!),
+                createDelegateTaskTool(this.options.agentStore, this.options.store!, { rootDir: this.options.rootDir }),
               ]
             : [];
 

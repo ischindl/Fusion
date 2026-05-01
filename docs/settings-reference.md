@@ -210,7 +210,7 @@ Defaults from `DEFAULT_PROJECT_SETTINGS`; key scope from `PROJECT_SETTINGS_KEYS`
 | `autoBackupSchedule` | `string` | `"0 2 * * *"` | Backup cron schedule. |
 | `autoBackupRetention` | `number` | `7` | Number of backups to retain. |
 | `autoBackupDir` | `string` | `".fusion/backups"` | Relative backup directory path. |
-| `autoSummarizeTitles` | `boolean` | `false` | Auto-generate titles for long untitled descriptions. |
+| `autoSummarizeTitles` | `boolean` | `false` | Auto-generate titles for long untitled descriptions across dashboard/API task creation and agent/tool-created tasks. |
 | `useAiMergeCommitSummary` | `boolean` | `false` | Use AI-generated merge commit summaries instead of raw step-commit subject lists. |
 | `titleSummarizerProvider` | `string` | `undefined` | Provider for title summarization. |
 | `titleSummarizerModelId` | `string` | `undefined` | Model ID for title summarization. |

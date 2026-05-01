@@ -37,6 +37,7 @@ import type { StuckTaskDetector } from "./stuck-task-detector.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  createAgentTask,
   createDelegateTaskTool,
   createListAgentsTool,
   createMemoryTools,
@@ -930,7 +931,7 @@ export class TriageProcessor {
           // Agent delegation tools — discover and delegate work to other agents.
           ...(this.options.agentStore ? [
             createListAgentsTool(this.options.agentStore),
-            createDelegateTaskTool(this.options.agentStore, this.store),
+            createDelegateTaskTool(this.options.agentStore, this.store, { rootDir: this.rootDir }),
           ] : []),
           this.createReviewSpecTool(
             task.id,
@@ -1642,7 +1643,7 @@ export class TriageProcessor {
             parentTask = undefined;
           }
 
-          const newTask = await store.createTask({
+          const newTask = await createAgentTask(store, {
             title: params.title,
             description: params.description,
             dependencies: validDeps,
@@ -1656,7 +1657,7 @@ export class TriageProcessor {
               sourceType: "agent_heartbeat",
               sourceParentTaskId: options.parentTaskId,
             },
-          });
+          }, { rootDir: this.rootDir });
 
           // Track the created subtask
           options.createdSubtasksRef.current.push(newTask.id);

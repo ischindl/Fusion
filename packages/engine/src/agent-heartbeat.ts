@@ -1355,11 +1355,11 @@ export class HeartbeatMonitor {
             sourceType: "agent_heartbeat",
             sourceAgentId: agentId,
             sourceRunId: runContext?.runId,
-          }));
+          }, { rootDir: this.rootDir }));
 
           // Agent delegation tools
           heartbeatTools.push(createListAgentsTool(this.store));
-          heartbeatTools.push(createDelegateTaskTool(this.store, taskStore));
+          heartbeatTools.push(createDelegateTaskTool(this.store, taskStore, { rootDir: this.rootDir }));
 
           // Messaging tools — when MessageStore is available
           if (this.messageStore) {
@@ -1845,7 +1845,7 @@ export class HeartbeatMonitor {
     const baseCreateTool = createTaskCreateTool(taskStore, {
       sourceType: "agent_heartbeat",
       sourceAgentId: agentId,
-    });
+    }, { rootDir: this.rootDir });
     const trackedCreateTool: ToolDefinition = {
       ...baseCreateTool,
       execute: async (id: string, params: Static<typeof taskCreateParams>, signal, onUpdate, ctx) => {
@@ -1885,7 +1885,7 @@ export class HeartbeatMonitor {
     tools.push(createTaskDocumentReadTool(taskStore, taskId));
     // Agent delegation tools — discover and delegate work to other agents
     tools.push(createListAgentsTool(this.store));
-    tools.push(createDelegateTaskTool(this.store, taskStore));
+    tools.push(createDelegateTaskTool(this.store, taskStore, { rootDir: this.rootDir }));
 
     // Messaging tools — when MessageStore is available, agents can send and receive messages
     if (messageStore) {

@@ -1534,6 +1534,8 @@ describe("taskCreate tool model inheritance", () => {
       expect(store.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: "Child Task",
         description: "Child task description",
+      }), expect.objectContaining({
+        settings: { autoSummarizeTitles: false },
       }));
     });
 
@@ -1632,6 +1634,7 @@ describe("taskCreate tool model inheritance", () => {
       // The second createTask call should have the resolved sibling id preserved.
       expect(createTaskMock).toHaveBeenLastCalledWith(
         expect.objectContaining({ dependencies: ["FN-701"] }),
+        expect.objectContaining({ settings: { autoSummarizeTitles: false } }),
       );
       expect(createdSubtasksRef.current).toEqual(["FN-701", "FN-702"]);
     });

@@ -17,6 +17,7 @@ import {
   sendMessageParams,
   readMessagesParams,
 } from "../agent-tools.js";
+import * as core from "@fusion/core";
 import type { MessageStore, Message } from "@fusion/core";
 
 const loggerSpies = vi.hoisted(() => ({
@@ -62,6 +63,7 @@ vi.mock("node:child_process", async () => {
 describe("createTaskCreateTool", () => {
   it("returns details.taskId and keeps Created <id> response text", async () => {
     const store = {
+      getSettings: vi.fn().mockResolvedValue({ autoSummarizeTitles: false }),
       createTask: vi.fn().mockResolvedValue({
         id: "PROJ-042",
         description: "Follow-up task",
@@ -87,6 +89,9 @@ describe("createTaskCreateTool", () => {
       dependencies: ["PROJ-001"],
       column: "triage",
       source: undefined,
+    }, {
+      settings: { autoSummarizeTitles: false },
+      onSummarize: undefined,
     });
     expect(result.details).toEqual({ taskId: "PROJ-042" });
     const responseText = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -96,6 +101,7 @@ describe("createTaskCreateTool", () => {
 
   it("passes explicit provenance to store.createTask", async () => {
     const store = {
+      getSettings: vi.fn().mockResolvedValue({ autoSummarizeTitles: false }),
       createTask: vi.fn().mockResolvedValue({ id: "PROJ-099", description: "Test", dependencies: [], column: "triage" }),
     };
 
@@ -108,7 +114,7 @@ describe("createTaskCreateTool", () => {
 
     expect(store.createTask).toHaveBeenCalledWith(expect.objectContaining({
       source: { sourceType: "agent_heartbeat", sourceAgentId: "agent-123", sourceRunId: undefined },
-    }));
+    }), expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
   });
 });
 
@@ -118,6 +124,7 @@ describe("createDelegateTaskTool", () => {
       getAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Worker", role: "executor", state: "idle" }),
     };
     const taskStore = {
+      getSettings: vi.fn().mockResolvedValue({ autoSummarizeTitles: false }),
       createTask: vi.fn().mockResolvedValue({ id: "FN-100", dependencies: [], description: "Delegated" }),
     };
 
@@ -126,7 +133,33 @@ describe("createDelegateTaskTool", () => {
 
     expect(taskStore.createTask).toHaveBeenCalledWith(expect.objectContaining({
       source: { sourceType: "api" },
+    }), expect.objectContaining({
+      settings: { autoSummarizeTitles: false },
     }));
+  });
+
+  it("wires title summarization callback when rootDir is provided", async () => {
+    const summarizeSpy = vi.spyOn(core, "summarizeTitle").mockResolvedValue("Short title");
+    const agentStore = {
+      getAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Worker", role: "executor", state: "idle" }),
+    };
+    const taskStore = {
+      getSettings: vi.fn().mockResolvedValue({
+        autoSummarizeTitles: true,
+        titleSummarizerProvider: "openai",
+        titleSummarizerModelId: "gpt-4o-mini",
+      }),
+      createTask: vi.fn().mockResolvedValue({ id: "FN-101", dependencies: [], description: "Delegated" }),
+    };
+
+    const tool = createDelegateTaskTool(agentStore as any, taskStore as any, { rootDir: "/repo" });
+    await tool.execute("call-1", { agent_id: "agent-1", description: "Delegated" } as any, undefined, undefined, {} as any);
+
+    const options = vi.mocked(taskStore.createTask).mock.calls[0]?.[1] as { onSummarize?: (description: string) => Promise<string | null> };
+    expect(options.onSummarize).toBeTypeOf("function");
+    await options.onSummarize?.("Long description");
+    expect(summarizeSpy).toHaveBeenCalledWith("Long description", "/repo", "openai", "gpt-4o-mini");
+    summarizeSpy.mockRestore();
   });
 });
 

@@ -12,6 +12,7 @@ function createMockAgentStore(overrides: Partial<AgentStore> = {}): AgentStore {
 
 function createMockTaskStore(overrides: Partial<TaskStore> = {}): TaskStore {
   return {
+    getSettings: vi.fn().mockResolvedValue({ autoSummarizeTitles: false }),
     createTask: vi.fn().mockResolvedValue({
       id: "FN-001",
       description: "",
@@ -188,7 +189,7 @@ describe("createDelegateTaskTool", () => {
       column: "todo",
       assignedAgentId: "agent-001",
       source: { sourceType: "api" },
-    });
+    }, expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
 
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("Delegated to Bob (agent-001)");
@@ -283,7 +284,7 @@ describe("createDelegateTaskTool", () => {
       column: "todo",
       assignedAgentId: "agent-001",
       source: { sourceType: "api" },
-    });
+    }, expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
 
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("depends on: FN-010");
@@ -312,6 +313,7 @@ describe("createDelegateTaskTool", () => {
 
     expect(taskStore.createTask).toHaveBeenCalledWith(
       expect.objectContaining({ dependencies: undefined }),
+      expect.objectContaining({ settings: { autoSummarizeTitles: false } }),
     );
 
     const text = (result.content[0] as { text: string }).text;

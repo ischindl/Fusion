@@ -11,8 +11,8 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import type { AgentStore, AgentState, AgentCapability, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, Agent } from "@fusion/core";
-import { dailyMemoryPath, ensureOpenClawMemoryFiles, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, resolveMemoryBackend, resolveResearchSettings, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import type { AgentStore, AgentState, AgentCapability, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, Agent, TaskCreateInput } from "@fusion/core";
+import { dailyMemoryPath, ensureOpenClawMemoryFiles, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, resolveMemoryBackend, resolveResearchSettings, resolveTitleSummarizerSettingsModel, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, summarizeTitle } from "@fusion/core";
 import { ResearchOrchestrator } from "./research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research-step-runner.js";
@@ -442,6 +442,31 @@ async function getAgentMemoryWindow(rootDir: string, agentMemory: AgentMemoryCon
 
 // ── Tool factory functions ────────────────────────────────────────────────
 
+type AgentTaskCreationOptions = {
+  rootDir?: string;
+};
+
+export async function createAgentTask(
+  store: TaskStore,
+  input: TaskCreateInput,
+  options?: AgentTaskCreationOptions,
+): Promise<Awaited<ReturnType<TaskStore["createTask"]>>> {
+  const settings = typeof (store as { getSettings?: unknown }).getSettings === "function"
+    ? await store.getSettings()
+    : {} as Settings;
+  const rootDir = options?.rootDir;
+
+  return store.createTask(input, {
+    settings: { autoSummarizeTitles: settings.autoSummarizeTitles === true },
+    onSummarize: rootDir
+      ? async (description: string) => {
+        const resolved = resolveTitleSummarizerSettingsModel(settings);
+        return summarizeTitle(description, rootDir, resolved.provider, resolved.modelId);
+      }
+      : undefined,
+  });
+}
+
 /**
  * Create a `fn_task_create` tool that creates a new task in triage.
  *
@@ -451,6 +476,7 @@ async function getAgentMemoryWindow(rootDir: string, agentMemory: AgentMemoryCon
 export function createTaskCreateTool(
   store: TaskStore,
   provenance?: { sourceType: SourceType; sourceAgentId?: string; sourceRunId?: string },
+  options?: AgentTaskCreationOptions,
 ): ToolDefinition {
   return {
     name: "fn_task_create",
@@ -462,7 +488,7 @@ export function createTaskCreateTool(
       "or the current task should wait for the new one).",
     parameters: taskCreateParams,
     execute: async (_id: string, params: Static<typeof taskCreateParams>) => {
-      const task = await store.createTask({
+      const task = await createAgentTask(store, {
         description: params.description,
         dependencies: params.dependencies,
         column: "triage",
@@ -471,7 +497,7 @@ export function createTaskCreateTool(
           sourceAgentId: provenance.sourceAgentId,
           sourceRunId: provenance.sourceRunId,
         } : undefined,
-      });
+      }, options);
       const deps = task.dependencies.length ? ` (depends on: ${task.dependencies.join(", ")})` : "";
       return {
         content: [{
@@ -926,7 +952,11 @@ export function createListAgentsTool(agentStore: AgentStore): ToolDefinition {
  * @param taskStore - TaskStore for task creation
  * @returns ToolDefinition for the `fn_delegate_task` tool
  */
-export function createDelegateTaskTool(agentStore: AgentStore, taskStore: TaskStore): ToolDefinition {
+export function createDelegateTaskTool(
+  agentStore: AgentStore,
+  taskStore: TaskStore,
+  options?: AgentTaskCreationOptions,
+): ToolDefinition {
   return {
     name: "fn_delegate_task",
     label: "Delegate Task",
@@ -954,13 +984,13 @@ export function createDelegateTaskTool(agentStore: AgentStore, taskStore: TaskSt
       }
 
       // Create task assigned to the target agent
-      const task = await taskStore.createTask({
+      const task = await createAgentTask(taskStore, {
         description: params.description,
         dependencies: params.dependencies,
         column: "todo",
         assignedAgentId: params.agent_id,
         source: { sourceType: "api" },
-      });
+      }, options);
 
       const deps = task.dependencies.length ? ` (depends on: ${task.dependencies.join(", ")})` : "";
       return {

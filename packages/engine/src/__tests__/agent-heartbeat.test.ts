@@ -3350,7 +3350,7 @@ describe("HeartbeatMonitor", () => {
             sourceAgentId: "agent-001",
             sourceRunId: undefined,
           },
-        });
+        }, expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
       });
     });
 
@@ -3870,7 +3870,7 @@ describe("HeartbeatMonitor", () => {
           sourceAgentId: "agent-001",
           sourceRunId: undefined,
         },
-      });
+      }, expect.objectContaining({ settings: { autoSummarizeTitles: false } }));
 
       const responseText = result.content[0] && "text" in result.content[0] ? result.content[0].text : "";
       expect(responseText).toContain("Created FN-100");
