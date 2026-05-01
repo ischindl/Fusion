@@ -48,6 +48,16 @@ describe("ProviderIcon", () => {
     expect(wrapper).toHaveStyle({ color: "var(--provider-anthropic)" });
   });
 
+  it("renders droid-cli icon with tokenized contrast stroke", () => {
+    render(<ProviderIcon provider="droid-cli" />);
+    const svg = screen.getByTestId("droid-cli-icon");
+    expect(svg).toBeInTheDocument();
+    expect(screen.getByLabelText("Factory AI — via Droid CLI")).toBeInTheDocument();
+    const badgeGlyph = svg.querySelector('path[stroke="var(--provider-icon-contrast)"]');
+    expect(badgeGlyph).toBeInTheDocument();
+    expect(svg.parentElement).toHaveStyle({ color: "var(--provider-openai)" });
+  });
+
   it("normalizes PI-Claude-CLI provider name to lowercase alias", () => {
     render(<ProviderIcon provider="PI-Claude-CLI" />);
     const svg = screen.getByTestId("claude-cli-icon");

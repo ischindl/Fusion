@@ -25,6 +25,7 @@ import { useModalResizePersist } from "../hooks/useModalResizePersist";
 const PluginManager = lazy(() => import("./PluginManager").then((m) => ({ default: m.PluginManager })));
 const PiExtensionsManager = lazy(() => import("./PiExtensionsManager").then((m) => ({ default: m.PiExtensionsManager })));
 import { ClaudeCliProviderCard } from "./ClaudeCliProviderCard";
+import { DroidCliProviderCard } from "./DroidCliProviderCard";
 import { HermesRuntimeCard } from "./HermesRuntimeCard";
 import { OpenClawRuntimeCard } from "./OpenClawRuntimeCard";
 import { PaperclipRuntimeCard } from "./PaperclipRuntimeCard";
@@ -4839,11 +4840,10 @@ export function SettingsModal({
         const authenticatedProviders = sortedProviders.filter(p => p.authenticated);
         const unauthenticatedProviders = sortedProviders.filter(p => !p.authenticated);
 
-        // Claude CLI lives in whichever bucket matches its current auth state
-        // (Authenticated when signed in, Available otherwise) instead of
-        // floating at the top of the panel — keeps the section that owns it
-        // visually consistent with the rest of the providers.
+        // CLI-backed providers live in whichever bucket matches their current
+        // auth state (Authenticated when signed in, Available otherwise).
         const claudeCliProvider = cliAuthProviders.find((p) => p.id === "claude-cli");
+        const droidCliProvider = cliAuthProviders.find((p) => p.id === "droid-cli");
         const claudeCliCard = claudeCliProvider ? (
           <ClaudeCliProviderCard
             compact
@@ -4853,10 +4853,23 @@ export function SettingsModal({
             }}
           />
         ) : null;
+        const droidCliCard = droidCliProvider ? (
+          <DroidCliProviderCard
+            compact
+            authenticated={droidCliProvider.authenticated}
+            onToggled={() => {
+              void loadAuthStatus();
+            }}
+          />
+        ) : null;
         const showAuthenticatedGroup =
-          authenticatedProviders.length > 0 || (claudeCliProvider?.authenticated ?? false);
+          authenticatedProviders.length > 0
+          || (claudeCliProvider?.authenticated ?? false)
+          || (droidCliProvider?.authenticated ?? false);
         const showAvailableGroup =
-          unauthenticatedProviders.length > 0 || (claudeCliProvider && !claudeCliProvider.authenticated);
+          unauthenticatedProviders.length > 0
+          || (claudeCliProvider && !claudeCliProvider.authenticated)
+          || (droidCliProvider && !droidCliProvider.authenticated);
 
         return (
           <>
@@ -4878,6 +4891,7 @@ export function SettingsModal({
                 <div className="auth-provider-group">
                   <div className="auth-group-label">Authenticated</div>
                   {claudeCliProvider?.authenticated && claudeCliCard}
+                  {droidCliProvider?.authenticated && droidCliCard}
                   {authenticatedProviders.map((provider) => (
                     <div key={provider.id} className="auth-provider-card auth-provider-card--authenticated">
                       <div className="auth-provider-header">
@@ -4971,6 +4985,7 @@ export function SettingsModal({
                 <div className="auth-provider-group">
                   <div className="auth-group-label">Available</div>
                   {claudeCliProvider && !claudeCliProvider.authenticated && claudeCliCard}
+                  {droidCliProvider && !droidCliProvider.authenticated && droidCliCard}
                   {unauthenticatedProviders.map((provider) => (
                     <div key={provider.id} className="auth-provider-card">
                       <div className="auth-provider-header">

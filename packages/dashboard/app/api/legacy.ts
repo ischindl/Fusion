@@ -1273,9 +1273,32 @@ export interface ClaudeCliStatus {
   ready: boolean;
 }
 
+export interface DroidCliStatus {
+  binary: {
+    available: boolean;
+    version?: string;
+    binaryPath?: string;
+    reason?: string;
+    probeDurationMs: number;
+  };
+  enabled: boolean;
+  extension: {
+    status: "ok" | "not-installed" | "missing-entry" | "error";
+    path?: string;
+    packageVersion?: string;
+    reason?: string;
+  } | null;
+  ready: boolean;
+}
+
 /** Probe the local Claude CLI binary + setting + extension state. */
 export function fetchClaudeCliStatus(): Promise<ClaudeCliStatus> {
   return api<ClaudeCliStatus>("/providers/claude-cli/status");
+}
+
+/** Probe the local Droid CLI binary + setting + extension state. */
+export function fetchDroidCliStatus(): Promise<DroidCliStatus> {
+  return api<DroidCliStatus>("/providers/droid-cli/status");
 }
 
 // --- Runtime Provider Status Types ---
@@ -1522,6 +1545,16 @@ export function setClaudeCliEnabled(
   enabled: boolean,
 ): Promise<{ enabled: boolean; restartRequired: boolean }> {
   return api<{ enabled: boolean; restartRequired: boolean }>("/auth/claude-cli", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** Enable or disable the Droid CLI provider. Refuses enable if binary is missing. */
+export function setDroidCliEnabled(
+  enabled: boolean,
+): Promise<{ enabled: boolean; restartRequired: boolean }> {
+  return api<{ enabled: boolean; restartRequired: boolean }>("/auth/droid-cli", {
     method: "POST",
     body: JSON.stringify({ enabled }),
   });

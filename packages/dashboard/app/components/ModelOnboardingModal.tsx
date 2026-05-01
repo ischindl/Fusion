@@ -22,6 +22,7 @@ import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { ProviderIcon } from "./ProviderIcon";
 import { ClaudeCliProviderCard } from "./ClaudeCliProviderCard";
+import { DroidCliProviderCard } from "./DroidCliProviderCard";
 import { LoginInstructions } from "./LoginInstructions";
 import { CustomProviderForm } from "./CustomProviderForm";
 import { appendTokenQuery } from "../auth";
@@ -192,6 +193,7 @@ const QUICK_START_PROVIDER_IDS = ["anthropic", "openai", "google", "gemini", "ol
 const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
   "anthropic",
   "claude-cli",
+  "droid-cli",
   "openai-codex",
   "gemini",
   "minimax",
@@ -202,6 +204,7 @@ const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
 const ONBOARDING_PROVIDER_FAMILY_ALIASES: Record<string, (typeof ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER)[number]> = {
   anthropic: "anthropic",
   "claude-cli": "claude-cli",
+  "droid-cli": "droid-cli",
   "openai-codex": "openai-codex",
   google: "gemini",
   gemini: "gemini",
@@ -1713,6 +1716,18 @@ export function ModelOnboardingModal({
     if (provider.id === "claude-cli" && provider.type === "cli") {
       return (
         <ClaudeCliProviderCard
+          key={provider.id}
+          authenticated={provider.authenticated}
+          onToggled={() => {
+            void loadAuthStatus();
+          }}
+        />
+      );
+    }
+
+    if (provider.id === "droid-cli" && provider.type === "cli") {
+      return (
+        <DroidCliProviderCard
           key={provider.id}
           authenticated={provider.authenticated}
           onToggled={() => {
