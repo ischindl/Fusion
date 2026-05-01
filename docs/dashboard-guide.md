@@ -110,6 +110,7 @@ The toggle button is accessible with `aria-pressed` for screen readers. Toggle s
 Research view is a standalone dashboard surface for creating and managing research runs.
 
 > Available when `experimentalFeatures.researchView` is enabled.
+> The related Settings sections (`Research Defaults` and project `Research`) are also hidden until this flag is enabled.
 
 Features:
 

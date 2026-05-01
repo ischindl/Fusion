@@ -397,8 +397,20 @@ export function SettingsModal({
   } = useWorkspaceFileBrowser("project", overlapPathPickerIndex !== null, projectId);
 
   const { nodes } = useNodes();
-  const remoteAccessEnabled = isExperimentalFeatureEnabled(form.experimentalFeatures ?? {}, "remoteAccess");
-  const visibleSections = SETTINGS_SECTIONS.filter((section) => section.id !== "remote" || remoteAccessEnabled);
+  const experimentalFeatures = form.experimentalFeatures ?? {};
+  const remoteAccessEnabled = isExperimentalFeatureEnabled(experimentalFeatures, "remoteAccess");
+  const researchViewEnabled = isExperimentalFeatureEnabled(experimentalFeatures, "researchView");
+  const visibleSections = SETTINGS_SECTIONS.filter((section) => {
+    if (section.id === "remote") {
+      return remoteAccessEnabled;
+    }
+
+    if (section.id === "research-global" || section.id === "research-project") {
+      return researchViewEnabled;
+    }
+
+    return true;
+  });
   const firstVisibleSectionId = visibleSections.find((section) => !section.isGroupHeader)?.id ?? "general";
 
   /** Get the scope of the currently active section */
@@ -410,10 +422,15 @@ export function SettingsModal({
       return;
     }
 
+    if ((activeSection === "research-global" || activeSection === "research-project") && !researchViewEnabled) {
+      setActiveSection(firstVisibleSectionId);
+      return;
+    }
+
     if (!visibleSections.some((section) => section.id === activeSection)) {
       setActiveSection(firstVisibleSectionId);
     }
-  }, [activeSection, remoteAccessEnabled, firstVisibleSectionId, visibleSections]);
+  }, [activeSection, remoteAccessEnabled, researchViewEnabled, firstVisibleSectionId, visibleSections]);
 
   // Auth state (independent of the settings save flow)
   const [authProviders, setAuthProviders] = useState<AuthProvider[]>([]);

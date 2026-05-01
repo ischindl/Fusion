@@ -260,6 +260,7 @@ This applies to:
 - export default (`defaultExportFormat`)
 
 The standalone Research route is feature-gated separately via `experimentalFeatures.researchView`.
+When that flag is disabled, the Settings modal also hides both Research sections (`Research Defaults` and project `Research`) and falls back to the first visible section if a hidden research section is requested directly.
 
 **Credential storage rule:** API keys for Research providers are not stored in settings JSON. They are managed through the existing auth storage pipeline (`/api/auth/status`, `POST /api/auth/api-key`, `DELETE /api/auth/api-key`) and persisted in auth credential storage with masked hints in API responses.
 

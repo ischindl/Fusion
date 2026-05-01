@@ -1540,7 +1540,7 @@ describe("SettingsModal", () => {
       expect(devServerToggles[0]).toBeChecked();
     });
 
-    describe("Remote Access section visibility", () => {
+    describe("section visibility behind experimental flags", () => {
       it("hides Remote Access nav item when experimentalFeatures.remoteAccess is falsy", async () => {
         mockFetchSettings.mockResolvedValue({
           ...defaultSettings,
@@ -1587,6 +1587,45 @@ describe("SettingsModal", () => {
         await waitForSettingsModalReady();
 
         expect(screen.queryByRole("button", { name: /Remote Access/i })).not.toBeInTheDocument();
+        expect(screen.getByRole("heading", { name: "Authentication" })).toBeInTheDocument();
+      });
+
+      it("hides research settings nav items when experimentalFeatures.researchView is disabled", async () => {
+        mockFetchSettings.mockResolvedValue({
+          ...defaultSettings,
+          experimentalFeatures: {},
+        });
+
+        renderModal();
+        await waitForSettingsModalReady();
+
+        expect(screen.queryByRole("button", { name: /Research Defaults/i })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: /^Research$/i })).not.toBeInTheDocument();
+      });
+
+      it("shows research settings nav items when experimentalFeatures.researchView is enabled", async () => {
+        mockFetchSettings.mockResolvedValue({
+          ...defaultSettings,
+          experimentalFeatures: { researchView: true },
+        });
+
+        renderModal();
+        await waitForSettingsModalReady();
+
+        expect(screen.getByRole("button", { name: /Research Defaults/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /^Research$/i })).toBeInTheDocument();
+      });
+
+      it("falls back to the first selectable section when opening research settings while researchView is disabled", async () => {
+        mockFetchSettings.mockResolvedValue({
+          ...defaultSettings,
+          experimentalFeatures: {},
+        });
+
+        renderModal({ initialSection: "research-global" });
+        await waitForSettingsModalReady();
+
+        expect(screen.queryByRole("button", { name: /Research Defaults/i })).not.toBeInTheDocument();
         expect(screen.getByRole("heading", { name: "Authentication" })).toBeInTheDocument();
       });
     });
@@ -2298,9 +2337,25 @@ describe("SettingsModal", () => {
   });
 
   describe("research settings sections", () => {
+    beforeEach(() => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        experimentalFeatures: { researchView: true },
+      });
+    });
+
+    const openResearchGlobalSection = async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /Research Defaults/i }));
+    };
+
+    const openResearchProjectSection = async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /^Research$/i }));
+    };
+
     it("saves global research defaults through updateGlobalSettings only", async () => {
-      renderModal({ initialSection: "research-global" });
+      renderModal();
       await waitForSettingsModalReady();
+      await openResearchGlobalSection();
 
       const searchInput = await screen.findByLabelText("Default Search Provider");
       await userEvent.clear(searchInput);
@@ -2321,8 +2376,9 @@ describe("SettingsModal", () => {
     });
 
     it("saves project research settings through updateSettings only", async () => {
-      renderModal({ initialSection: "research-project" });
+      renderModal();
       await waitForSettingsModalReady();
+      await openResearchProjectSection();
 
       await userEvent.click(screen.getByLabelText("Enable research in this project"));
       const maxConcurrent = await screen.findByLabelText("Max Concurrent Runs");
@@ -2346,8 +2402,9 @@ describe("SettingsModal", () => {
     });
 
     it("blocks save and shows inline error for invalid research limits", async () => {
-      renderModal({ initialSection: "research-project" });
+      renderModal();
       await waitForSettingsModalReady();
+      await openResearchProjectSection();
 
       const maxConcurrent = await screen.findByLabelText("Max Concurrent Runs");
       fireEvent.change(maxConcurrent, { target: { value: "0" } });
@@ -2357,15 +2414,23 @@ describe("SettingsModal", () => {
     });
 
     it("shows missing credentials warning and routes CTA to Authentication", async () => {
-      mockFetchAuthStatus.mockResolvedValueOnce({
+      mockFetchSettings.mockResolvedValueOnce({
+        ...defaultSettings,
+        experimentalFeatures: { researchView: true },
+        researchGlobalDefaults: {
+          searchProvider: "brave",
+        },
+      });
+      mockFetchAuthStatus.mockResolvedValue({
         providers: [
           { id: "brave", name: "Brave Search", type: "api_key", authenticated: false },
           { id: "tavily", name: "Tavily", type: "api_key", authenticated: true },
         ],
       });
 
-      renderModal({ initialSection: "research-global" });
+      renderModal();
       await waitForSettingsModalReady();
+      await openResearchGlobalSection();
 
       expect(await screen.findByText(/Missing credentials for one or more research providers/i)).toBeInTheDocument();
       await userEvent.click(screen.getByRole("button", { name: "Open Authentication" }));

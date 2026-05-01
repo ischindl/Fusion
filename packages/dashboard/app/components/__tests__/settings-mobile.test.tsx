@@ -195,6 +195,36 @@ describe("SettingsModal mobile adaptations", () => {
     expect(await findByText("Version 1.2.3")).toBeTruthy();
   });
 
+  it("excludes research sections from mobile picker when researchView is disabled", async () => {
+    mockSettingsViewport(true);
+    const user = userEvent.setup();
+    const { getByLabelText } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    const picker = getByLabelText("Settings Section") as HTMLSelectElement;
+    expect(Array.from(picker.options).map((opt) => opt.value)).not.toContain("research-global");
+    expect(Array.from(picker.options).map((opt) => opt.value)).not.toContain("research-project");
+
+    await user.selectOptions(picker, "memory");
+    expect((picker as HTMLSelectElement).value).toBe("memory");
+  });
+
+  it("includes research sections in mobile picker when researchView is enabled", async () => {
+    vi.mocked(fetchSettings).mockResolvedValueOnce({
+      ...defaultSettings,
+      experimentalFeatures: { researchView: true },
+    });
+
+    mockSettingsViewport(true);
+    const { getByLabelText } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
+
+    const picker = getByLabelText("Settings Section") as HTMLSelectElement;
+    const optionValues = Array.from(picker.options).map((opt) => opt.value);
+    expect(optionValues).toContain("research-global");
+    expect(optionValues).toContain("research-project");
+  });
+
   it("can open memory settings from the mobile section picker", async () => {
     mockSettingsViewport(true);
     const user = userEvent.setup();
