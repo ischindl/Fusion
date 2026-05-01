@@ -821,7 +821,7 @@ body {
 }
 
 .column-header h2 {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   flex: 1;
   min-width: 0;
@@ -831,7 +831,7 @@ body {
 }
 
 .column-count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-muted);
   background: var(--card);
   padding: calc(var(--space-xs) / 2) var(--space-sm);
@@ -854,7 +854,7 @@ body {
 }
 
 .column-desc {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--text-dim);
   padding: var(--space-xs) calc(var(--space-lg) - 2px) calc(var(--space-md) - 2px);
 }
@@ -2248,7 +2248,7 @@ input[type="range"]:focus-visible {
 }
 
 .step-progress-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -2894,7 +2894,7 @@ input[type="range"]:focus-visible {
 }
 
 .toggle-label {
-  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  font-size: 0.6875rem;
   color: var(--text-muted);
   white-space: nowrap;
 }

@@ -16,8 +16,8 @@ describe("mobile input font size CSS", () => {
       const quickEntryMatch = css.match(/\.quick-entry-input\s*\{[^}]*\}/);
       expect(quickEntryMatch).not.toBeNull();
       
-      // Should have 13px font-size on desktop
-      expect(quickEntryMatch![0]).toContain("font-size: 13px");
+      // Should keep quick entry typography below the mobile 16px override baseline
+      expect(quickEntryMatch![0]).toContain("font-size: 0.8125rem");
     });
 
     it("form-group textarea has desktop font-size below 16px", () => {

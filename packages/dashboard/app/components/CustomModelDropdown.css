@@ -609,6 +609,12 @@ html .column.drag-over * {
   color: var(--bg);
 }
 
+.theme-mode-btn:focus-visible {
+  outline: none;
+  border-color: var(--todo);
+  box-shadow: var(--focus-ring-strong);
+}
+
 .theme-section-title {
   font-size: 12px;
   font-weight: 600;
@@ -652,6 +658,12 @@ html .column.drag-over * {
   color: var(--text);
 }
 
+.theme-font-size-btn:focus-visible {
+  outline: none;
+  border-color: var(--todo);
+  box-shadow: var(--focus-ring-strong);
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -685,6 +697,12 @@ html .column.drag-over * {
 .theme-option.active {
   border-color: var(--todo);
   background: color-mix(in srgb, var(--todo) 14%, transparent);
+}
+
+.theme-option:focus-visible {
+  outline: none;
+  border-color: var(--todo);
+  box-shadow: var(--focus-ring-strong);
 }
 
 .theme-option-swatch {
@@ -1444,6 +1462,12 @@ html .column.drag-over * {
   background: var(--card-hover);
   color: var(--text);
   border-color: var(--text-muted);
+}
+
+.theme-reset-btn:focus-visible {
+  outline: none;
+  border-color: var(--todo);
+  box-shadow: var(--focus-ring-strong);
 }
 
 /* Theme current preview in settings */

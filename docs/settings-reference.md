@@ -33,7 +33,7 @@ Defaults from `DEFAULT_GLOBAL_SETTINGS`; key scope from `GLOBAL_SETTINGS_KEYS`.
 |---|---|---:|---|
 | `themeMode` | `"dark" \| "light" \| "system"` | `"dark"` | Dashboard theme mode. |
 | `colorTheme` | `ColorTheme` | `"default"` | Dashboard color theme preset. |
-| `dashboardFontScalePct` | `number` | `100` | Dashboard font scale percentage used by Appearance settings. Valid range: `85` to `125`; applied pre-hydration via document root font-size to avoid first-paint flash. |
+| `dashboardFontScalePct` | `number` | `100` | Dashboard font scale percentage used by Appearance settings. Valid range: `85` to `125`; applied pre-hydration via document root font-size so board typography (column headers/counts, task cards, and quick-entry text) scales with the setting from first paint. |
 | `defaultProvider` | `string` | `undefined` | Default AI provider. |
 | `defaultModelId` | `string` | `undefined` | Default AI model ID. |
 | `fallbackProvider` | `string` | `undefined` | Fallback provider when the primary default model hits transient provider failures. |

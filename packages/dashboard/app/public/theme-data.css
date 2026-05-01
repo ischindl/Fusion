@@ -908,7 +908,7 @@
 [data-color-theme="factory"] .column-header h2 {
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 [data-color-theme="factory"] .column-count,

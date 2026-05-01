@@ -31,7 +31,7 @@ export type AgentOnboardingStreamEvent =
 
 export type AgentOnboardingStreamCallback = (event: AgentOnboardingStreamEvent, eventId?: number) => void;
 
-const createFnAgent = engineCreateFnAgent;
+const createFnAgent: typeof engineCreateFnAgent = engineCreateFnAgent;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const GENERATION_TIMEOUT_MS = 120_000;
@@ -140,23 +140,27 @@ export function parseAgentOnboardingResponse(text: string): { type: "question"; 
   } catch {
     parsed = JSON.parse(repairJson(candidate));
   }
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    !("type" in parsed) ||
-    ((parsed as { type?: unknown }).type !== "question" &&
-      (parsed as { type?: unknown }).type !== "complete")
-  ) {
+  if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
     throw new Error("AI returned invalid response type");
   }
-  if ((parsed as { type: string }).type === "complete") {
-    const data = (parsed as { data?: Record<string, unknown> }).data ?? {};
+
+  const typed = parsed as { type?: unknown; data?: unknown };
+  if (typed.type !== "question" && typed.type !== "complete") {
+    throw new Error("AI returned invalid response type");
+  }
+
+  if (typed.type === "complete") {
+    const data = (typed.data ?? {}) as { name?: unknown; instructionsText?: unknown; maxTurns?: unknown };
     if (typeof data.name !== "string" || !data.name.trim()) throw new Error("Invalid summary.name");
     if (typeof data.instructionsText !== "string" || !data.instructionsText.trim()) throw new Error("Invalid summary.instructionsText");
     const maxTurns = data.maxTurns;
-    if (!Number.isInteger(maxTurns) || (maxTurns as number) <= 0) throw new Error("Invalid summary.maxTurns");
+    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns <= 0) {
+      throw new Error("Invalid summary.maxTurns");
+    }
+    return { type: "complete", data: typed.data as AgentOnboardingSummary };
   }
-  return parsed as { type: "question"; data: PlanningQuestion } | { type: "complete"; data: AgentOnboardingSummary };
+
+  return { type: "question", data: typed.data as PlanningQuestion };
 }
 
 export function createAgentOnboardingSessionPrompt(input: {
@@ -231,8 +235,8 @@ async function runGenerationWithTimeout<T>(session: Session, operation: () => Pr
 }
 
 async function continueConversation(session: Session, message: string): Promise<void> {
+  if (!session.agent) throw new Error("Session agent not initialized");
   const agent = session.agent;
-  if (!agent) throw new Error("Session agent not initialized");
   session.thinkingOutput = "";
   try {
     await runGenerationWithTimeout(session, async () => {
