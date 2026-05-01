@@ -41,6 +41,11 @@ import {
   saveWorkspaceFileContent,
   deleteFile,
   startPlanningStreaming,
+  startAgentOnboardingStreaming,
+  respondToAgentOnboarding,
+  retryAgentOnboardingSession,
+  stopAgentOnboardingGeneration,
+  cancelAgentOnboarding,
   fetchTasks,
   summarizeTitle,
   fetchProjects,
@@ -6274,5 +6279,60 @@ describe("updatePiExtensions", () => {
     globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(false, { error: "Server error" }, 500));
 
     await expect(updatePiExtensions(["ext-1"])).rejects.toThrow();
+  });
+});
+
+describe("agent onboarding API wrappers", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("starts onboarding streaming session with context payload", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { sessionId: "onb-1" }, 201));
+
+    const result = await startAgentOnboardingStreaming(
+      "Need a docs reviewer",
+      {
+        existingAgents: [{ id: "agent-1", name: "Reviewer", role: "reviewer" }],
+        templates: [{ id: "preset-1", label: "Reviewer preset" }],
+      },
+      "proj-123",
+      { planningModelProvider: "openai", planningModelId: "gpt-4o" },
+    );
+
+    expect(result.sessionId).toBe("onb-1");
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/agents/onboarding/start-streaming?projectId=proj-123", {
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+      body: JSON.stringify({
+        intent: "Need a docs reviewer",
+        context: {
+          existingAgents: [{ id: "agent-1", name: "Reviewer", role: "reviewer" }],
+          templates: [{ id: "preset-1", label: "Reviewer preset" }],
+        },
+        planningModelProvider: "openai",
+        planningModelId: "gpt-4o",
+      }),
+    });
+  });
+
+  it("posts onboarding response/retry/stop/cancel endpoints", async () => {
+    globalThis.fetch = vi.fn()
+      .mockReturnValueOnce(mockFetchResponse(true, { type: "question", data: { id: "q1", type: "text", question: "?" } }))
+      .mockReturnValueOnce(mockFetchResponse(true, { success: true, sessionId: "onb-1" }))
+      .mockReturnValueOnce(mockFetchResponse(true, { success: true }))
+      .mockReturnValueOnce(mockFetchResponse(true, {}));
+
+    await respondToAgentOnboarding("onb-1", { q1: "answer" }, "proj-123");
+    await retryAgentOnboardingSession("onb-1", "proj-123");
+    await stopAgentOnboardingGeneration("onb-1", "proj-123");
+    await cancelAgentOnboarding("onb-1", "proj-123");
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, "/api/agents/onboarding/respond?projectId=proj-123", expect.objectContaining({ method: "POST" }));
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, "/api/agents/onboarding/onb-1/retry?projectId=proj-123", expect.objectContaining({ method: "POST" }));
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(3, "/api/agents/onboarding/onb-1/stop?projectId=proj-123", expect.objectContaining({ method: "POST" }));
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(4, "/api/agents/onboarding/cancel?projectId=proj-123", expect.objectContaining({ method: "POST" }));
   });
 });

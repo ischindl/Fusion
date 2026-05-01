@@ -1508,6 +1508,14 @@ describe("SettingsModal", () => {
       expect(screen.getByLabelText("Research View")).toBeInTheDocument();
     });
 
+    it("shows agentOnboarding in the Experimental Features list", async () => {
+      renderModal();
+
+      await openExperimentalFeaturesSection();
+
+      expect(screen.getByLabelText("Planning-style Agent Onboarding")).toBeInTheDocument();
+    });
+
     it("shows a single canonical Dev Server toggle", async () => {
       renderModal();
 

@@ -2456,6 +2456,30 @@ export type PlanningStreamEvent =
   | { type: "error"; data: string }
   | { type: "complete"; data: Record<string, never> };
 
+export interface AgentOnboardingSummary {
+  name: string;
+  role: AgentCapability | "custom";
+  instructionsText: string;
+  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high";
+  maxTurns: number;
+  title?: string;
+  icon?: string;
+  reportsTo?: string;
+  soul?: string;
+  memory?: string;
+  skills?: string[];
+  templateId?: string;
+  patternAgentId?: string;
+  rationale?: string;
+}
+
+export type AgentOnboardingStreamEvent =
+  | { type: "thinking"; data: string }
+  | { type: "question"; data: PlanningQuestion }
+  | { type: "summary"; data: AgentOnboardingSummary }
+  | { type: "error"; data: string }
+  | { type: "complete"; data: Record<string, never> };
+
 /** Start a new planning session with an initial plan */
 export function startPlanning(initialPlan: string, projectId?: string): Promise<PlanningSession> {
   return api<PlanningSession>(withProjectId("/planning/start", projectId), {
@@ -2528,6 +2552,56 @@ export function cancelPlanning(sessionId: string, projectId?: string, tabId?: st
   return api<void>(withProjectId("/planning/cancel", projectId), {
     method: "POST",
     body: JSON.stringify({ sessionId, tabId }),
+  });
+}
+
+export function startAgentOnboardingStreaming(
+  intent: string,
+  context: {
+    existingAgents: Array<{ id: string; name: string; role: string }>;
+    templates: Array<{ id: string; label: string; description?: string }>;
+  },
+  projectId?: string,
+  modelOverride?: { planningModelProvider?: string; planningModelId?: string },
+): Promise<{ sessionId: string }> {
+  return api<{ sessionId: string }>(withProjectId("/agents/onboarding/start-streaming", projectId), {
+    method: "POST",
+    body: JSON.stringify({
+      intent,
+      context,
+      planningModelProvider: modelOverride?.planningModelProvider,
+      planningModelId: modelOverride?.planningModelId,
+    }),
+  });
+}
+
+export function respondToAgentOnboarding(
+  sessionId: string,
+  responses: Record<string, unknown>,
+  projectId?: string,
+): Promise<{ type: "question" | "complete"; data: PlanningQuestion | AgentOnboardingSummary }> {
+  return api(withProjectId("/agents/onboarding/respond", projectId), {
+    method: "POST",
+    body: JSON.stringify({ sessionId, responses }),
+  });
+}
+
+export function retryAgentOnboardingSession(sessionId: string, projectId?: string): Promise<{ success: boolean; sessionId: string }> {
+  return api(withProjectId(`/agents/onboarding/${encodeURIComponent(sessionId)}/retry`, projectId), {
+    method: "POST",
+  });
+}
+
+export function stopAgentOnboardingGeneration(sessionId: string, projectId?: string): Promise<{ success: boolean }> {
+  return api(withProjectId(`/agents/onboarding/${encodeURIComponent(sessionId)}/stop`, projectId), {
+    method: "POST",
+  });
+}
+
+export function cancelAgentOnboarding(sessionId: string, projectId?: string): Promise<void> {
+  return api(withProjectId("/agents/onboarding/cancel", projectId), {
+    method: "POST",
+    body: JSON.stringify({ sessionId }),
   });
 }
 
@@ -3611,6 +3685,63 @@ function startKeepAlive(
 /** Get the SSE stream URL for a planning session */
 export function getPlanningStreamUrl(sessionId: string, projectId?: string): string {
   return buildApiUrl(withProjectId(`/planning/${encodeURIComponent(sessionId)}/stream`, projectId));
+}
+
+export function getAgentOnboardingStreamUrl(sessionId: string, projectId?: string): string {
+  return buildApiUrl(withProjectId(`/agents/onboarding/${encodeURIComponent(sessionId)}/stream`, projectId));
+}
+
+export function connectAgentOnboardingStream(
+  sessionId: string,
+  projectId: string | undefined,
+  handlers: {
+    onThinking?: (data: string) => void;
+    onQuestion?: (data: PlanningQuestion) => void;
+    onSummary?: (data: AgentOnboardingSummary) => void;
+    onError?: (data: string) => void;
+    onComplete?: () => void;
+    onConnectionStateChange?: (state: StreamConnectionState) => void;
+  },
+  options?: { maxReconnectAttempts?: number },
+): { close: () => void; isConnected: () => boolean } {
+  const url = getAgentOnboardingStreamUrl(sessionId, projectId);
+  const resilient = createResilientEventSource(
+    url,
+    {
+      events: {
+        thinking: (event) => {
+          try { handlers.onThinking?.(JSON.parse(event.data)); } catch { handlers.onThinking?.(event.data); }
+        },
+        question: (event) => {
+          try { handlers.onQuestion?.(JSON.parse(event.data) as PlanningQuestion); } catch {}
+        },
+        summary: (event) => {
+          try { handlers.onSummary?.(JSON.parse(event.data) as AgentOnboardingSummary); } catch {}
+        },
+        error: (event) => {
+          try {
+            const parsed = JSON.parse(event.data);
+            handlers.onError?.(parsed.message || parsed);
+          } catch {
+            handlers.onError?.(event.data || "Stream error");
+          }
+        },
+        complete: () => {
+          handlers.onComplete?.();
+        },
+      },
+    },
+    {
+      maxReconnectAttempts: options?.maxReconnectAttempts,
+      onConnectionStateChange: handlers.onConnectionStateChange,
+      onFatalError: (message) => handlers.onError?.(message),
+    },
+  );
+
+  return {
+    close: resilient.close,
+    isConnected: resilient.isConnected,
+  };
 }
 
 /** Connect to planning session SSE stream and handle events

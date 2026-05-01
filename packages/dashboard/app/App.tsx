@@ -373,6 +373,7 @@ function AppInner() {
   const skillsEnabled = experimentalFeatures.skillsView === true;
   const nodesEnabled = experimentalFeatures.nodesView === true;
   const researchEnabled = experimentalFeatures.researchView === true;
+  const agentOnboardingEnabled = experimentalFeatures.agentOnboarding === true;
   const agentsEnabled = true;
 
   // Redirect to board if feature-gated views are disabled.
@@ -688,7 +689,12 @@ function AppInner() {
       return (
         <PageErrorBoundary>
           <Suspense fallback={null}>
-            <AgentsView addToast={addToast} projectId={currentProject?.id} onOpenTaskLogs={handleOpenTaskLogs} />
+            <AgentsView
+              addToast={addToast}
+              projectId={currentProject?.id}
+              onOpenTaskLogs={handleOpenTaskLogs}
+              agentOnboardingEnabled={agentOnboardingEnabled}
+            />
           </Suspense>
         </PageErrorBoundary>
       );

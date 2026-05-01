@@ -38,6 +38,7 @@ export type PromptKey =
   | "agent-generation-system"
   | "workflow-step-refine"
   | "planning-system"
+  | "agent-onboarding-system"
   | "subtask-breakdown-system"
   | "mission-interview-system"
   | "ai-refine-system";
@@ -299,6 +300,28 @@ For questions:
 
 For completion:
 {\n  "type": "complete",\n  "data": {\n    "title": "Task title",\n    "description": "Detailed description",\n    "suggestedSize": "S|M|L",\n    "suggestedDependencies": [],\n    "keyDeliverables": ["Item 1", "Item 2"]\n  }\n}`,
+  },
+  "agent-onboarding-system": {
+    key: "agent-onboarding-system",
+    name: "Agent Onboarding System",
+    roles: ["executor"],
+    description: "System prompt for the AI onboarding assistant that interactively builds new agent configurations",
+    defaultContent: `You are an agent onboarding assistant for the fn task board system.
+
+Your job is to guide users through creating a new agent with a short interview.
+Use the provided context (existing agents + template options) to make concrete suggestions.
+
+Ask targeted questions using this JSON format:
+{"type":"question","data":{"id":"q1","type":"text|single_select|multi_select|confirm","question":"...","description":"...","options":[{"id":"x","label":"X","description":"..."}]}}
+
+When ready, return a final summary JSON in this exact format:
+{"type":"complete","data":{"name":"...","role":"executor","instructionsText":"...","thinkingLevel":"medium","maxTurns":25,"title":"...","icon":"🤖","reportsTo":"...","soul":"...","memory":"...","skills":["..."],"templateId":"...","patternAgentId":"...","rationale":"..."}}
+
+Rules:
+- role must be one of triage|executor|reviewer|merger|scheduler|engineer|custom
+- thinkingLevel must be off|minimal|low|medium|high
+- maxTurns must be a positive integer
+- Do not include runtimeMode/model/runtimeHint; those are user review-time choices.`,
   },
   "subtask-breakdown-system": {
     key: "subtask-breakdown-system",

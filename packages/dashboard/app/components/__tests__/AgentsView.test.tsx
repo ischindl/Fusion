@@ -20,6 +20,11 @@ vi.mock("../../api", () => ({
   fetchModels: vi.fn().mockResolvedValue({ models: [] }),
   fetchPluginRuntimes: vi.fn().mockResolvedValue([]),
   fetchDiscoveredSkills: vi.fn().mockResolvedValue([]),
+  startAgentOnboardingStreaming: vi.fn().mockResolvedValue({ sessionId: "onb-1" }),
+  respondToAgentOnboarding: vi.fn().mockResolvedValue({ type: "question", data: { id: "q1", type: "text", question: "?" } }),
+  retryAgentOnboardingSession: vi.fn().mockResolvedValue({ success: true, sessionId: "onb-1" }),
+  stopAgentOnboardingGeneration: vi.fn().mockResolvedValue({ success: true }),
+  cancelAgentOnboarding: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../AgentDetailView", () => ({
@@ -1145,6 +1150,35 @@ describe("AgentsView", () => {
       });
       fireEvent.click(screen.getByRole("tab", { name: "Custom agent" }));
       expect(screen.getByPlaceholderText("e.g. Frontend Reviewer")).toBeTruthy();
+    });
+
+    it("keeps legacy dialog launch when agent onboarding flag is disabled", async () => {
+      render(<AgentsView addToast={mockAddToast} agentOnboardingEnabled={false} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("New Agent")).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByText("New Agent"));
+
+      await waitFor(() => {
+        expect(screen.getByRole("dialog", { name: "Create new agent" })).toBeTruthy();
+      });
+    });
+
+    it("opens onboarding modal and not legacy dialog when agent onboarding flag is enabled", async () => {
+      render(<AgentsView addToast={mockAddToast} agentOnboardingEnabled={true} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("New Agent")).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByText("New Agent"));
+
+      await waitFor(() => {
+        expect(screen.getByRole("dialog", { name: "Agent onboarding" })).toBeTruthy();
+        expect(screen.queryByRole("dialog", { name: "Create new agent" })).toBeNull();
+      });
     });
 
     it("does not allow proceeding with empty name", async () => {

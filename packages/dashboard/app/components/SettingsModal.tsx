@@ -244,6 +244,7 @@ const KNOWN_EXPERIMENTAL_FEATURES: Record<string, string> = {
   devServerView: "Dev Server",
   todoView: "Todo List",
   researchView: "Research View",
+  agentOnboarding: "Planning-style Agent Onboarding",
 };
 
 const EXPERIMENTAL_FEATURE_LEGACY_ALIASES: Record<string, string> = {

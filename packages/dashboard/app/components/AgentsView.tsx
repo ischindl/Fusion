@@ -14,6 +14,7 @@ import { useConfirm } from "../hooks/useConfirm";
 import { useAgentHierarchy } from "../hooks/useAgentHierarchy";
 import type { AgentNode } from "../hooks/useAgentHierarchy";
 import { NewAgentDialog } from "./NewAgentDialog";
+import { AgentOnboardingModal } from "./AgentOnboardingModal";
 import { AgentImportModal } from "./AgentImportModal";
 import { getScopedItem, setScopedItem } from "../utils/projectStorage";
 import { getAgentHealthStatus } from "../utils/agentHealth";
@@ -31,6 +32,7 @@ export interface AgentsViewProps {
   addToast: (message: string, type?: "success" | "error") => void;
   projectId?: string;
   onOpenTaskLogs?: (taskId: string) => void;
+  agentOnboardingEnabled?: boolean;
 }
 
 const AGENT_ROLES: { value: AgentCapability; label: string; icon: string }[] = [
@@ -258,7 +260,7 @@ function OrgChartNode({
   );
 }
 
-export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewProps) {
+export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardingEnabled = false }: AgentsViewProps) {
   const [showSystemAgents, setShowSystemAgents] = useState(false);
   const [filterState, setFilterState] = useState<AgentState | "all">("all");
   const { agents, stats, isLoading, loadAgents } = useAgents(projectId, {
@@ -266,6 +268,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
     showSystemAgents,
   });
   const [isCreating, setIsCreating] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [agentView, setAgentView] = useState<"list" | "board" | "tree" | "org">(() => {
@@ -715,6 +718,14 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
 
   const showInitialAgentsLoading = isLoading && agents.length === 0;
 
+  const handleOpenNewAgent = useCallback(() => {
+    if (agentOnboardingEnabled) {
+      setIsOnboardingOpen(true);
+      return;
+    }
+    setIsCreating(true);
+  }, [agentOnboardingEnabled]);
+
   return (
     <div className="agents-view">
       <div className="agents-view-header">
@@ -785,7 +796,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
             <button
               className="btn btn-task-create btn-sm"
               onClick={() => {
-                setIsCreating(true);
+                handleOpenNewAgent();
                 setIsControlsPanelOpen(false);
               }}
             >
@@ -915,6 +926,18 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
           projectId={projectId}
         />
 
+        <AgentOnboardingModal
+          isOpen={isOnboardingOpen}
+          onClose={() => setIsOnboardingOpen(false)}
+          onCreated={() => {
+            setIsOnboardingOpen(false);
+            void loadAgents();
+          }}
+          addToast={addToast}
+          projectId={projectId}
+          existingAgents={agents}
+        />
+
         <AgentImportModal
           isOpen={isImporting}
           onClose={() => setIsImporting(false)}
@@ -931,7 +954,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
         ) : agentView === "tree" ? (
           <div className="agent-tree__view">
             {displayAgents.length === 0 ? (
-              <AgentEmptyState onCtaClick={() => setIsCreating(true)} />
+              <AgentEmptyState onCtaClick={handleOpenNewAgent} />
             ) : (
               hierarchy.rootNodes.map((node) => (
                 <AgentTreeNode
@@ -956,7 +979,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
                 <span>Loading org chart...</span>
               </div>
             ) : displayOrgTree.length === 0 ? (
-              <AgentEmptyState onCtaClick={() => setIsCreating(true)} />
+              <AgentEmptyState onCtaClick={handleOpenNewAgent} />
             ) : (
               displayOrgTree.map((node) => (
                 <OrgChartNode
@@ -973,7 +996,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
         ) : agentView === "board" ? (
           <div className="agent-board">
             {displayAgents.length === 0 ? (
-              <AgentEmptyState onCtaClick={() => setIsCreating(true)} />
+              <AgentEmptyState onCtaClick={handleOpenNewAgent} />
             ) : (
               displayAgents.map((agent) => {
                 const health = getHealthStatus(agent);
@@ -1007,7 +1030,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs }: AgentsViewPr
         ) : (
         <div className="agent-list">
           {displayAgents.length === 0 ? (
-            <AgentEmptyState onCtaClick={() => setIsCreating(true)} />
+            <AgentEmptyState onCtaClick={handleOpenNewAgent} />
           ) : (
             // List view: detailed card layout
             displayAgents.map(agent => {

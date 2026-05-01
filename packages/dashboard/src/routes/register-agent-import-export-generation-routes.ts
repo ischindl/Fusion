@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { ApiError, badRequest, notFound, rateLimited } from "../api-error.js";
 import { createSessionDiagnostics } from "../ai-session-diagnostics.js";
+import { writeSSEEvent } from "../sse-buffer.js";
 import {
   startAgentGeneration,
   generateAgentSpec,
@@ -793,6 +794,166 @@ async function persistImportedSkills(
 export function registerAgentGenerationRoutes(ctx: ApiRoutesContext): void {
   const { router, getProjectContext, rethrowAsApiError } = ctx;
   const agentGenerationDiagnostics = createSessionDiagnostics("agent-generation");
+
+  router.post("/agents/onboarding/start-streaming", async (req, res) => {
+    try {
+      const { intent, context, planningModelProvider, planningModelId } = req.body as {
+        intent?: string;
+        context?: {
+          existingAgents?: Array<{ id: string; name: string; role: string }>;
+          templates?: Array<{ id: string; label: string; description?: string }>;
+        };
+        planningModelProvider?: string;
+        planningModelId?: string;
+      };
+
+      if (!intent || typeof intent !== "string") {
+        throw badRequest("intent is required and must be a string");
+      }
+
+      const { store: scopedStore } = await getProjectContext(req);
+      const settings = await scopedStore.getSettings();
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const { startAgentOnboardingSession } = await import("../agent-onboarding.js");
+      const sessionId = await startAgentOnboardingSession(
+        ip,
+        {
+          intent,
+          existingAgents: Array.isArray(context?.existingAgents) ? context.existingAgents : [],
+          templates: Array.isArray(context?.templates) ? context.templates : [],
+        },
+        scopedStore.getRootDir(),
+        planningModelProvider,
+        planningModelId,
+        settings.promptOverrides,
+      );
+
+      res.status(201).json({ sessionId });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to start agent onboarding session");
+    }
+  });
+
+  router.get("/agents/onboarding/:sessionId/stream", async (req, res) => {
+    const { sessionId } = req.params;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    res.write(": connected\n\n");
+
+    const { agentOnboardingStreamManager, getAgentOnboardingSession } = await import("../agent-onboarding.js");
+    const session = getAgentOnboardingSession(sessionId);
+    if (!session) {
+      writeSSEEvent(res, "error", JSON.stringify({ message: "Session not found or expired" }));
+      res.end();
+      return;
+    }
+
+
+    if (session.summary) {
+      writeSSEEvent(res, "summary", JSON.stringify(session.summary));
+      writeSSEEvent(res, "complete", JSON.stringify({}));
+      res.end();
+      return;
+    }
+
+    if (session.currentQuestion) {
+      writeSSEEvent(res, "question", JSON.stringify(session.currentQuestion));
+    }
+
+    const unsubscribe = agentOnboardingStreamManager.subscribe(sessionId, (event, eventId) => {
+      const data = (event as { data?: unknown }).data;
+      if (!writeSSEEvent(res, event.type, JSON.stringify(data ?? {}), eventId)) {
+        unsubscribe();
+        return;
+      }
+      if (event.type === "complete" || event.type === "error") {
+        unsubscribe();
+        res.end();
+      }
+    });
+
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded) {
+        clearInterval(heartbeat);
+        return;
+      }
+      res.write(": heartbeat\n\n");
+    }, 30_000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  });
+
+  router.post("/agents/onboarding/respond", async (req, res) => {
+    try {
+      const { sessionId, responses } = req.body as { sessionId?: string; responses?: Record<string, unknown> };
+      if (!sessionId || typeof sessionId !== "string") throw badRequest("sessionId is required");
+      if (!responses || typeof responses !== "object") throw badRequest("responses is required and must be an object");
+
+      const { respondToAgentOnboarding, getAgentOnboardingSummary, getAgentOnboardingSession } = await import("../agent-onboarding.js");
+      await respondToAgentOnboarding(sessionId, responses);
+      const summary = getAgentOnboardingSummary(sessionId);
+      if (summary) {
+        res.json({ type: "complete", data: summary });
+        return;
+      }
+      const session = getAgentOnboardingSession(sessionId);
+      if (!session?.currentQuestion) throw badRequest("Session did not produce a question");
+      res.json({ type: "question", data: session.currentQuestion });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      if (err instanceof Error && err.name === "SessionNotFoundError") throw notFound(err.message);
+      if (err instanceof Error && err.name === "InvalidSessionStateError") throw badRequest(err.message);
+      rethrowAsApiError(err, "Failed to process agent onboarding response");
+    }
+  });
+
+  router.post("/agents/onboarding/:sessionId/retry", async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { retryAgentOnboardingSession } = await import("../agent-onboarding.js");
+      await retryAgentOnboardingSession(sessionId);
+      res.json({ success: true, sessionId });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      if (err instanceof Error && err.name === "SessionNotFoundError") throw notFound(err.message);
+      if (err instanceof Error && err.name === "InvalidSessionStateError") throw badRequest(err.message);
+      rethrowAsApiError(err, "Failed to retry agent onboarding session");
+    }
+  });
+
+  router.post("/agents/onboarding/:sessionId/stop", async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { stopAgentOnboardingGeneration } = await import("../agent-onboarding.js");
+      const stopped = stopAgentOnboardingGeneration(sessionId);
+      if (!stopped) throw notFound(`Agent onboarding session ${sessionId} not found or inactive`);
+      res.json({ success: true });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to stop agent onboarding generation");
+    }
+  });
+
+  router.post("/agents/onboarding/cancel", async (req, res) => {
+    try {
+      const { sessionId } = req.body as { sessionId?: string };
+      if (!sessionId || typeof sessionId !== "string") throw badRequest("sessionId is required");
+      const { cancelAgentOnboardingSession } = await import("../agent-onboarding.js");
+      await cancelAgentOnboardingSession(sessionId);
+      res.json({ success: true });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      if (err instanceof Error && err.name === "SessionNotFoundError") throw notFound(err.message);
+      rethrowAsApiError(err, "Failed to cancel agent onboarding session");
+    }
+  });
 
   /**
    * POST /api/agents/generate/start
