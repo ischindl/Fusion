@@ -358,6 +358,10 @@ Implemented in `agent-heartbeat.ts`:
 ### Node/mesh runtime services
 - `NodeHealthMonitor` (`node-health-monitor.ts`) — remote node liveness/metrics checks
 - `PeerExchangeService` (`peer-exchange-service.ts`) — peer sync orchestration
+- Process lifecycle ownership:
+  - `fn serve` / `fn dashboard` start a single process-level `PeerExchangeService` and stop it during shutdown.
+  - `CentralCore.startDiscovery()` is invoked from CLI startup only after HTTP bind completes so discovery advertises the actual listening port.
+  - `InProcessRuntime` stays project-scoped and intentionally does not own mesh startup/shutdown.
 
 ### Remote access runtime
 

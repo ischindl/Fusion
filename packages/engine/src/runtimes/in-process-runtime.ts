@@ -48,6 +48,12 @@ import { TriageProcessor } from "../triage.js";
  * - Graceful shutdown with configurable timeout
  * - Automatic orphaned task recovery on startup
  *
+ * Lifecycle boundary:
+ * - Mesh networking services (PeerExchangeService + mDNS discovery) are process-level
+ *   concerns owned by CLI startup paths (`runServe`/`runDashboard`) because discovery
+ *   requires the final bound HTTP port. InProcessRuntime remains project-scoped and
+ *   intentionally does not start process-level mesh services.
+ *
  * @example
  * ```typescript
  * const config: ProjectRuntimeConfig = {

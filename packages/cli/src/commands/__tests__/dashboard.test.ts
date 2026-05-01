@@ -293,6 +293,7 @@ vi.mock("@fusion/dashboard", () => ({
   getCliPackageVersion: mockGetCliPackageVersion,
   getProjectSettingsPath: vi.fn().mockReturnValue("/tmp/project/.fusion/settings.json"),
   loadTlsCredentialsFromEnv: vi.fn().mockReturnValue(undefined),
+  stopAllDevServers: vi.fn().mockResolvedValue(undefined),
 }));
 
 // ── Mock node:readline ──────────────────────────────────────────────
@@ -681,6 +682,10 @@ vi.mock("@fusion/engine", async (importOriginal) => {
       getPluginRoutes: vi.fn().mockReturnValue([]),
       getPlugin: vi.fn(),
       getLoadedPlugins: vi.fn().mockReturnValue([]),
+    })),
+    PeerExchangeService: vi.fn().mockImplementation(() => ({
+      start: vi.fn(),
+      stop: vi.fn().mockResolvedValue(undefined),
     })),
     scanIdleWorktrees: vi.fn().mockResolvedValue([]),
     cleanupOrphanedWorktrees: vi.fn().mockResolvedValue(0),
@@ -2441,6 +2446,97 @@ describe("runDashboard — lifecycle listener cleanup", () => {
 
     expect(process.listenerCount("SIGINT")).toBe(baselineSigint);
     expect(process.listenerCount("SIGTERM")).toBe(baselineSigterm);
+  });
+});
+
+describe("runDashboard — mesh lifecycle ownership", () => {
+  function getNewSignalHandler(
+    signal: "SIGINT" | "SIGTERM",
+    baseline: Array<(...args: any[]) => unknown>,
+  ): () => void {
+    const added = process.listeners(signal).find((listener) => !baseline.includes(listener as (...args: any[]) => unknown));
+    expect(added).toBeDefined();
+    return added as () => void;
+  }
+
+  it("starts peer exchange and discovery after the dashboard binds a port", async () => {
+    const { CentralCore } = await import("@fusion/core");
+    const { PeerExchangeService } = await import("@fusion/engine");
+
+    const startDiscovery = vi.fn().mockResolvedValue(undefined);
+    const updateNode = vi.fn().mockResolvedValue(undefined);
+
+    (CentralCore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      getProjectByPath: vi.fn().mockResolvedValue({ id: "project-1" }),
+      listProjects: vi.fn().mockResolvedValue([{ id: "project-1", path: process.cwd() }]),
+      listNodes: vi.fn().mockResolvedValue([{ id: "node-local", type: "local", status: "offline" }]),
+      updateNode,
+      startDiscovery,
+      stopDiscovery: vi.fn(),
+    }));
+
+    const peerExchangeCtor = PeerExchangeService as unknown as ReturnType<typeof vi.fn>;
+    const baselineCalls = peerExchangeCtor.mock.calls.length;
+
+    const { dispose } = await runDashboard(0, { open: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(peerExchangeCtor.mock.calls.length).toBeGreaterThan(baselineCalls);
+    const peerExchangeInstance = peerExchangeCtor.mock.results.at(-1)?.value;
+    expect(peerExchangeInstance.start).toHaveBeenCalledTimes(1);
+    expect(startDiscovery).toHaveBeenCalledWith(expect.objectContaining({
+      broadcast: true,
+      listen: true,
+      serviceType: "_fusion._tcp",
+      port: 0,
+    }));
+    expect(updateNode).toHaveBeenCalledWith("node-local", { status: "online" });
+
+    dispose();
+  });
+
+  it("stops peer exchange and discovery during shutdown", async () => {
+    const { CentralCore } = await import("@fusion/core");
+    const { PeerExchangeService } = await import("@fusion/engine");
+
+    const stopDiscovery = vi.fn();
+    const updateNode = vi.fn().mockResolvedValue(undefined);
+
+    (CentralCore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      getProjectByPath: vi.fn().mockResolvedValue({ id: "project-1" }),
+      listProjects: vi.fn().mockResolvedValue([{ id: "project-1", path: process.cwd() }]),
+      listNodes: vi.fn().mockResolvedValue([{ id: "node-local", type: "local", status: "offline" }]),
+      updateNode,
+      startDiscovery: vi.fn().mockResolvedValue(undefined),
+      stopDiscovery,
+    }));
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const baselineSigintHandlers = process.listeners("SIGINT");
+
+    try {
+      await runDashboard(0, { open: false });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      const sigintHandler = getNewSignalHandler("SIGINT", baselineSigintHandlers);
+      sigintHandler();
+
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const peerExchangeInstance = (PeerExchangeService as unknown as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value;
+      expect(peerExchangeInstance.stop).toHaveBeenCalledTimes(1);
+      expect(stopDiscovery).toHaveBeenCalledTimes(1);
+      expect(updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 });
 

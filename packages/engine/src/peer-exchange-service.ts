@@ -48,7 +48,7 @@ export class PeerExchangeService {
   private syncIntervalMs: number;
   private interval: ReturnType<typeof setInterval> | null = null;
   private activeSync: Promise<void> | null = null;
-  private stopped = false;
+  private running = false;
   /** Whether settings sync is enabled. Default: false. */
   private settingsSyncEnabled: boolean;
   /** Minimum interval between settings syncs with the same node in ms. Default: 5 minutes. */
@@ -94,10 +94,12 @@ export class PeerExchangeService {
    * Begins periodic gossip with all online remote nodes.
    */
   start(): void {
-    if (this.stopped) {
-      peerExchangeLog.warn("Cannot start - service has been stopped");
+    if (this.running) {
+      peerExchangeLog.log("Peer exchange service already running");
       return;
     }
+
+    this.running = true;
 
     // Get initial peer count for logging (async call)
     this.centralCore.listNodes().then((nodes) => {
@@ -112,6 +114,7 @@ export class PeerExchangeService {
 
     // Start periodic sync
     this.interval = setInterval(() => {
+      if (!this.running) return;
       void this.syncWithAllPeers();
     }, this.syncIntervalMs);
   }
@@ -120,13 +123,28 @@ export class PeerExchangeService {
    * Stop the peer exchange service.
    * Clears the sync interval and prevents further syncs.
    */
-  stop(): void {
+  async stop(): Promise<void> {
+    if (!this.running) {
+      return;
+    }
+
+    this.running = false;
+
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
     }
 
-    this.stopped = true;
+    // If a sync cycle is already in flight, wait for it to settle so shutdown
+    // does not leave partially completed gossip work behind.
+    if (this.activeSync) {
+      try {
+        await this.activeSync;
+      } catch {
+        // best-effort shutdown; sync errors are already logged by run loop
+      }
+    }
+
     peerExchangeLog.log("Stopped peer exchange service");
   }
 

@@ -31,9 +31,14 @@ Core tables:
 
 Per-project task data remains in each repo’s `.fusion/fusion.db`.
 
-Peer/mesh coordination spans core + engine:
-- `NodeDiscovery` and `NodeConnection` in `@fusion/core` handle discovery and remote node connectivity/auth.
+Peer/mesh coordination spans core + engine, with startup ownership in CLI process entrypoints:
+- `NodeDiscovery` and `NodeConnection` in `@fusion/core` handle discovery and remote node connectivity/auth primitives.
 - `PeerExchangeService` in `@fusion/engine` coordinates node-to-node sync/exchange workflows.
+- `runServe()` and `runDashboard()` (CLI) own process-level mesh service lifecycle:
+  - start one process-wide `PeerExchangeService` instance
+  - call `CentralCore.startDiscovery()` only after the HTTP server is listening and the real bound port is known
+  - stop peer exchange + discovery on shutdown
+- `InProcessRuntime` remains project-scoped (scheduler/executor/heartbeat/missions) and does **not** start mesh services, which avoids one peer-exchange instance per project.
 
 ## Registering and Managing Projects
 
