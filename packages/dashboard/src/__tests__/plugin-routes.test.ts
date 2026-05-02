@@ -769,6 +769,7 @@ describe("GET /api/plugins/ui-slots", () => {
           slotId: "task-detail-tab",
           label: "Task Details",
           componentPath: "./components/TaskDetailTab.js",
+          order: 10,
         },
       },
       {
@@ -778,6 +779,7 @@ describe("GET /api/plugins/ui-slots", () => {
           label: "Header Action",
           icon: "Plus",
           componentPath: "./components/HeaderAction.js",
+          order: 1,
         },
       },
     ];
@@ -786,11 +788,13 @@ describe("GET /api/plugins/ui-slots", () => {
     const res = await performGet(buildApp(), "/api/plugins/ui-slots");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(mockSlots);
     expect(res.body).toHaveLength(2);
     expect(res.body[0].pluginId).toBe("test-plugin");
-    expect(res.body[0].slot.slotId).toBe("task-detail-tab");
-    expect(res.body[1].slot.icon).toBe("Plus");
+    expect(res.body[0].slot.slotId).toBe("header-action");
+    expect(res.body[0].slot.surface).toBe("header-action");
+    expect(res.body[1].slot.slotId).toBe("task-detail-tab");
+    expect(res.body[1].slot.surface).toBe("task-detail-tab");
+    expect(res.body[1].slot.order).toBe(10);
   });
 
   it("response shape is Array<{ pluginId: string; slot: PluginUiSlotDefinition }>", async () => {
@@ -817,6 +821,8 @@ describe("GET /api/plugins/ui-slots", () => {
     expect(res.body[0].slot).toHaveProperty("slotId");
     expect(res.body[0].slot).toHaveProperty("label");
     expect(res.body[0].slot).toHaveProperty("componentPath");
+    expect(res.body[0].slot).toHaveProperty("surface");
+    expect(res.body[0].slot).toHaveProperty("order");
   });
 
   it("returns empty array when pluginLoader is not available", async () => {

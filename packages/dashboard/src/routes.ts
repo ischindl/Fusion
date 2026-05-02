@@ -3028,7 +3028,23 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
    */
   router.get("/plugins/ui-slots", async (_req: Request, res: Response) => {
     const slots = options?.pluginLoader?.getPluginUiSlots() ?? [];
-    res.json(slots);
+    const normalizedSlots = slots
+      .map((entry) => ({
+        pluginId: entry.pluginId,
+        slot: {
+          ...entry.slot,
+          surface: entry.slot.surface ?? (typeof entry.slot.slotId === "string" ? entry.slot.slotId : undefined),
+          order: entry.slot.order ?? null,
+        },
+      }))
+      .sort((a, b) => {
+        const orderA = typeof a.slot.order === "number" ? a.slot.order : Number.MAX_SAFE_INTEGER;
+        const orderB = typeof b.slot.order === "number" ? b.slot.order : Number.MAX_SAFE_INTEGER;
+        if (orderA !== orderB) return orderA - orderB;
+        if (a.pluginId !== b.pluginId) return a.pluginId.localeCompare(b.pluginId);
+        return String(a.slot.slotId).localeCompare(String(b.slot.slotId));
+      });
+    res.json(normalizedSlots);
   });
 
 

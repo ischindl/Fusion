@@ -769,11 +769,24 @@ export class PluginLoader extends EventEmitter<{
     for (const [pluginId, plugin] of this.plugins) {
       if (plugin.uiSlots) {
         for (const slot of plugin.uiSlots) {
-          slots.push({ pluginId, slot });
+          slots.push({
+            pluginId,
+            slot: {
+              ...slot,
+              surface: slot.surface ?? (typeof slot.slotId === "string" ? slot.slotId as PluginUiSlotDefinition["surface"] : undefined),
+            },
+          });
         }
       }
     }
-    return slots;
+
+    return slots.sort((a, b) => {
+      const orderA = a.slot.order ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.slot.order ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      if (a.pluginId !== b.pluginId) return a.pluginId.localeCompare(b.pluginId);
+      return String(a.slot.slotId).localeCompare(String(b.slot.slotId));
+    });
   }
 
 

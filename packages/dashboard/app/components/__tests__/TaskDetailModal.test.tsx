@@ -6191,13 +6191,15 @@ describe("TaskDetailModal", () => {
       expect(screen.getByText("Plugin B Tab")).toBeDefined();
     });
 
-    it("shows plugin tab content when plugin tab is clicked", async () => {
+    it("shows only the selected plugin tab content when plugin tab is clicked", async () => {
       mockUsePluginUiSlots.mockReturnValue({
         slots: [
           { pluginId: "plugin-a", slot: { slotId: "task-detail-tab", label: "Plugin A Tab", componentPath: "./a.js" } },
+          { pluginId: "plugin-b", slot: { slotId: "task-detail-tab", label: "Plugin B Tab", componentPath: "./b.js" } },
         ],
         getSlotsForId: (id: string) => id === "task-detail-tab" ? [
           { pluginId: "plugin-a", slot: { slotId: "task-detail-tab", label: "Plugin A Tab", componentPath: "./a.js" } },
+          { pluginId: "plugin-b", slot: { slotId: "task-detail-tab", label: "Plugin B Tab", componentPath: "./b.js" } },
         ] : [],
         loading: false,
         error: null,
@@ -6215,13 +6217,12 @@ describe("TaskDetailModal", () => {
         />
       );
 
-      // Click the plugin tab
-      await userEvent.click(screen.getByText("Plugin A Tab"));
+      await userEvent.click(screen.getByText("Plugin B Tab"));
 
-      // Verify plugin slot renders with task-detail-tab slotId
-      const slot = container.querySelector('[data-slot-id="task-detail-tab"]');
-      expect(slot).not.toBeNull();
-      expect(slot).toHaveAttribute("data-plugin-id", "plugin-a");
+      const slots = container.querySelectorAll('[data-slot-id="task-detail-tab"]');
+      expect(slots).toHaveLength(1);
+      expect(slots[0]).toHaveAttribute("data-plugin-id", "plugin-b");
+      expect(container.querySelector('[data-plugin-id="plugin-a"]')).toBeNull();
     });
 
     it("renders no extra tabs when no plugins register", () => {

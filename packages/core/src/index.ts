@@ -139,6 +139,7 @@ export type {
   PluginToolResult,
   PluginRouteDefinition,
   PluginRouteMethod,
+  PluginUiSurface,
   PluginUiSlotDefinition,
   PluginDashboardViewDefinition,
   PluginRuntimeManifestMetadata,

@@ -1177,6 +1177,7 @@ describe("PluginLoader", () => {
       expect(slots).toHaveLength(1);
       expect(slots[0].pluginId).toBe("slots-a");
       expect(slots[0].slot.slotId).toBe("task-detail-tab");
+      expect(slots[0].slot.surface).toBe("task-detail-tab");
       expect(slots[0].slot.label).toBe("Task Details");
       expect(slots[0].slot.componentPath).toBe("./components/TaskDetailTab.js");
     });
@@ -1235,6 +1236,52 @@ describe("PluginLoader", () => {
         "header-action",
       );
       expect(slots.filter((s) => s.pluginId === "slots-b")).toHaveLength(2);
+      expect(slots.map((slot) => slot.pluginId)).toEqual(["slots-a", "slots-b", "slots-b"]);
+    });
+
+    it("sorts slots by order and then pluginId/slotId", async () => {
+      await pluginStore.init();
+
+      const loader = new PluginLoader({
+        pluginStore,
+        taskStore: mockTaskStore,
+      });
+
+      (loader as any).plugins.set("plugin-b", {
+        manifest: makeManifest({ id: "plugin-b" }),
+        state: "started",
+        hooks: {},
+        uiSlots: [
+          {
+            slotId: "onboarding-provider-card",
+            label: "B",
+            componentPath: "./B.js",
+            order: 10,
+          },
+        ],
+      } as FusionPlugin);
+
+      (loader as any).plugins.set("plugin-a", {
+        manifest: makeManifest({ id: "plugin-a" }),
+        state: "started",
+        hooks: {},
+        uiSlots: [
+          {
+            slotId: "onboarding-provider-card",
+            label: "A-first",
+            componentPath: "./A.js",
+            order: 1,
+          },
+          {
+            slotId: "settings-section",
+            label: "A-second",
+            componentPath: "./A2.js",
+          },
+        ],
+      } as FusionPlugin);
+
+      const slots = loader.getPluginUiSlots();
+      expect(slots.map((slot) => slot.slot.label)).toEqual(["A-first", "B", "A-second"]);
     });
 
     it("each slot includes correct pluginId", async () => {

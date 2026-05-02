@@ -708,12 +708,30 @@ describe("PluginUiSlotDefinition", () => {
       label: "Task Details",
       icon: "FileText",
       componentPath: "./components/TaskDetailTab.js",
+      surface: "task-detail-tab",
+      order: 5,
+      placement: "after-default",
     };
 
     expect(slot.slotId).toBe("task-detail-tab");
     expect(slot.label).toBe("Task Details");
     expect(slot.icon).toBe("FileText");
     expect(slot.componentPath).toBe("./components/TaskDetailTab.js");
+    expect(slot.surface).toBe("task-detail-tab");
+    expect(slot.order).toBe(5);
+    expect(slot.placement).toBe("after-default");
+  });
+
+  it("accepts new host-owned onboarding/settings surfaces", () => {
+    const slot = {
+      slotId: "onboarding-setup-help",
+      label: "Setup help",
+      componentPath: "./components/SetupHelp.js",
+      surface: "onboarding-setup-help",
+    };
+
+    expect(slot.slotId).toBe("onboarding-setup-help");
+    expect(slot.surface).toBe("onboarding-setup-help");
   });
 
   it("accepts a valid PluginUiSlotDefinition without optional icon field", () => {

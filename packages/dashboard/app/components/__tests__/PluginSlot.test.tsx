@@ -38,7 +38,7 @@ describe("PluginSlot", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders placeholder div for single matching slot", () => {
+  it("renders fallback shell for single matching slot", () => {
     const entry = createSlotEntry("task-detail-tab", "plugin-a");
     vi.mocked(usePluginUiSlots).mockReturnValue({
       slots: [entry],
@@ -49,16 +49,18 @@ describe("PluginSlot", () => {
 
     const { container } = render(<PluginSlot slotId="task-detail-tab" />);
 
-    const divs = container.querySelectorAll("[data-plugin-slot]");
-    expect(divs).toHaveLength(1);
-    const div = divs[0];
-    expect(div).toHaveAttribute("data-slot-id", "task-detail-tab");
-    expect(div).toHaveAttribute("data-plugin-id", "plugin-a");
-    expect(div).toHaveAttribute("data-component-path", "./components/task-detail-tab.js");
-    expect(div).toHaveAttribute("aria-label", "Test slot task-detail-tab");
+    const shells = container.querySelectorAll("[data-plugin-slot]");
+    expect(shells).toHaveLength(1);
+    const shell = shells[0];
+    expect(shell).toHaveAttribute("data-slot-id", "task-detail-tab");
+    expect(shell).toHaveAttribute("data-plugin-id", "plugin-a");
+    expect(shell).toHaveAttribute("data-component-path", "./components/task-detail-tab.js");
+    expect(shell).toHaveAttribute("aria-label", "Test slot task-detail-tab");
+    expect(shell.textContent).toContain("Test slot task-detail-tab");
+    expect(shell.textContent).toContain("plugin-a");
   });
 
-  it("renders multiple placeholders for multiple plugins registered for same slotId", () => {
+  it("renders multiple fallback shells for multiple plugins registered for same slotId", () => {
     const entryA = createSlotEntry("board-column-footer", "plugin-x");
     const entryB = createSlotEntry("board-column-footer", "plugin-y");
     vi.mocked(usePluginUiSlots).mockReturnValue({
@@ -70,14 +72,14 @@ describe("PluginSlot", () => {
 
     const { container } = render(<PluginSlot slotId="board-column-footer" />);
 
-    const divs = container.querySelectorAll("[data-plugin-slot]");
-    expect(divs).toHaveLength(2);
+    const shells = container.querySelectorAll("[data-plugin-slot]");
+    expect(shells).toHaveLength(2);
 
-    // Verify both divs have correct attributes
-    expect(divs[0]).toHaveAttribute("data-plugin-id", "plugin-x");
-    expect(divs[0]).toHaveAttribute("data-slot-id", "board-column-footer");
-    expect(divs[1]).toHaveAttribute("data-plugin-id", "plugin-y");
-    expect(divs[1]).toHaveAttribute("data-slot-id", "board-column-footer");
+    // Verify both shells have correct attributes
+    expect(shells[0]).toHaveAttribute("data-plugin-id", "plugin-x");
+    expect(shells[0]).toHaveAttribute("data-slot-id", "board-column-footer");
+    expect(shells[1]).toHaveAttribute("data-plugin-id", "plugin-y");
+    expect(shells[1]).toHaveAttribute("data-slot-id", "board-column-footer");
   });
 
   it("returns null when loading", () => {
@@ -132,7 +134,20 @@ describe("PluginSlot", () => {
     expect(getSlotsForId).not.toHaveBeenCalled();
   });
 
-  // NOTE: Error boundary testing should be added when dynamic component loading
-  // is implemented. The ErrorBoundary wraps the rendered divs and catches any
-  // rendering errors from future plugin components.
+  it("filters rendered slots by pluginIds when provided", () => {
+    const entryA = createSlotEntry("task-detail-tab", "plugin-a");
+    const entryB = createSlotEntry("task-detail-tab", "plugin-b");
+    vi.mocked(usePluginUiSlots).mockReturnValue({
+      slots: [entryA, entryB],
+      getSlotsForId: vi.fn(() => [entryA, entryB]),
+      loading: false,
+      error: null,
+    });
+
+    const { container } = render(<PluginSlot slotId="task-detail-tab" pluginIds={["plugin-b"]} />);
+
+    const shells = container.querySelectorAll("[data-plugin-slot]");
+    expect(shells).toHaveLength(1);
+    expect(shells[0]).toHaveAttribute("data-plugin-id", "plugin-b");
+  });
 });

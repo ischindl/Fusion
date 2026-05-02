@@ -444,6 +444,14 @@ export function TaskDetailModal({
   // Plugin UI slots for task-detail-tab
   const { getSlotsForId: getPluginSlots } = usePluginUiSlots(projectId);
   const pluginTabSlots = getPluginSlots("task-detail-tab");
+  const pluginTabs = pluginTabSlots.map((entry, index) => ({
+    entry,
+    tabId: `plugin-${entry.pluginId}-${index}` as TabId,
+  }));
+  const activePluginTab =
+    typeof activeTab === "string" && activeTab.startsWith("plugin-")
+      ? pluginTabs.find((tab) => tab.tabId === activeTab) ?? null
+      : null;
 
   // Track mount state to avoid setting state on unmounted component
   useEffect(() => {
@@ -1712,13 +1720,12 @@ export function TaskDetailModal({
               Routing
             </button>
             {/* Plugin tabs */}
-            {pluginTabSlots.map((entry, index) => {
-              const pluginTabId = `plugin-${index}` as TabId;
+            {pluginTabs.map(({ entry, tabId }) => {
               return (
                 <button
-                  key={`plugin-tab-${entry.pluginId}`}
-                  className={`detail-tab${activeTab === pluginTabId ? " detail-tab-active" : ""}`}
-                  onClick={() => setActiveTab(pluginTabId)}
+                  key={`plugin-tab-${entry.pluginId}-${tabId}`}
+                  className={`detail-tab${activeTab === tabId ? " detail-tab-active" : ""}`}
+                  onClick={() => setActiveTab(tabId)}
                 >
                   {entry.slot.label}
                 </button>
@@ -1812,9 +1819,13 @@ export function TaskDetailModal({
               onTaskUpdated={onTaskUpdated}
               canEdit={canEdit}
             />
-          ) : typeof activeTab === "string" && activeTab.startsWith("plugin-") ? (
+          ) : activePluginTab ? (
             <div className="detail-section">
-              <PluginSlot slotId="task-detail-tab" projectId={projectId} />
+              <PluginSlot
+                slotId="task-detail-tab"
+                projectId={projectId}
+                pluginIds={[activePluginTab.entry.pluginId]}
+              />
             </div>
           ) : activeTab === "stats" ? (
             <div className="detail-section">

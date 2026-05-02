@@ -160,23 +160,47 @@ export interface PluginRouteDefinition {
 // ── Plugin UI Slots ─────────────────────────────────────────────────
 
 /**
+ * Host-defined dashboard UI surfaces that plugins can contribute to.
+ * Existing generic surfaces remain supported for backward compatibility.
+ */
+export type PluginUiSurface =
+  | "header-action"
+  | "task-detail-tab"
+  | "task-card-badge"
+  | "board-column-footer"
+  | "settings-section"
+  | "settings-provider-card"
+  | "settings-integration-card"
+  | "onboarding-provider-card"
+  | "onboarding-recommendation-card"
+  | "onboarding-setup-help"
+  | "post-onboarding-recommendation";
+
+/**
  * UI slot definition for plugin-provided dashboard components.
- * Each slot represents a mount point where a plugin can render UI.
+ * Each slot represents a host-owned mount point where a plugin can render UI.
  */
 export interface PluginUiSlotDefinition {
-  /** Unique slot identifier (e.g., "task-detail-tab", "header-action", "settings-section") */
-  slotId: string;
+  /**
+   * Unique slot identifier. Should match one of the known host surfaces above,
+   * but string is retained for compatibility with legacy plugins.
+   */
+  slotId: PluginUiSurface | string;
   /** Human-readable label for the UI slot */
   label: string;
   /** Optional icon name (lucide-react icon name or custom icon identifier) */
   icon?: string;
   /**
    * Path to the JS module that exports the component.
-   * This should be a web component or a function component descriptor
-   * that the dashboard can render in the slot.
    * Path is relative to the plugin's root directory.
    */
   componentPath: string;
+  /** Optional explicit surface metadata (defaults to slotId). */
+  surface?: PluginUiSurface;
+  /** Optional deterministic render order; lower values render first. */
+  order?: number;
+  /** Optional host placement hint for the surface. */
+  placement?: "before-default" | "after-default" | "replace-default";
 }
 
 /**
