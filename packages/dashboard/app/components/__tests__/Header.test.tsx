@@ -157,23 +157,32 @@ describe("Header", () => {
       expect(screen.getByTestId("view-overflow-todos")).toBeInTheDocument();
     });
 
-    it("renders plugin dashboard views in desktop view overflow only", () => {
+    it("renders plugin dashboard views by placement and uses manifest icon metadata", () => {
       const onChangeView = vi.fn();
       renderHeader({
         onChangeView,
         pluginDashboardViews: [
           {
             pluginId: "fusion-plugin-dependency-graph",
-            view: { viewId: "graph", label: "Graph", componentPath: "./GraphView" },
+            view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", icon: "Map", placement: "primary" },
+          },
+          {
+            pluginId: "fusion-plugin-dependency-graph",
+            view: { viewId: "queue", label: "Queue", componentPath: "./QueueView", icon: "Workflow" },
           },
         ],
       });
 
-      fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
-      const graphItem = screen.getByTestId("view-overflow-plugin-fusion-plugin-dependency-graph-graph");
-      expect(graphItem).toBeInTheDocument();
-      fireEvent.click(graphItem);
+      const graphPrimary = screen.getByTestId("view-toggle-plugin-fusion-plugin-dependency-graph-graph");
+      expect(graphPrimary.querySelector(".lucide-map")).toBeTruthy();
+      fireEvent.click(graphPrimary);
       expect(onChangeView).toHaveBeenCalledWith("plugin:fusion-plugin-dependency-graph:graph");
+
+      fireEvent.click(screen.getByTestId("view-toggle-overflow-trigger"));
+      const queueItem = screen.getByTestId("view-overflow-plugin-fusion-plugin-dependency-graph-queue");
+      expect(queueItem.querySelector(".lucide-workflow")).toBeTruthy();
+      fireEvent.click(queueItem);
+      expect(onChangeView).toHaveBeenCalledWith("plugin:fusion-plugin-dependency-graph:queue");
     });
 
     it("renders view overflow trigger when an experimental overflow feature is enabled", () => {

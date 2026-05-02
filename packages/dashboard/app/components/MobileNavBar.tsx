@@ -34,6 +34,7 @@ import type { PluginDashboardViewEntry } from "../api";
 import { useViewportMode } from "./Header";
 import type { TaskView } from "../hooks/useViewState";
 import { buildPluginTaskViewId } from "../plugins/pluginViewRegistry";
+import { getPluginNavIcon } from "./pluginNavIcon";
 
 export interface MobileNavBarProps {
   /** Current task view mode */
@@ -196,6 +197,9 @@ export function MobileNavBar({
   const showRoadmapsTopLevel = roadmapEnabled && (!skillsEnabled || view === "roadmaps");
   const showSkillsTopLevel = skillsEnabled && (!roadmapEnabled || view !== "roadmaps");
   const showSkillsInMore = skillsEnabled && !showSkillsTopLevel;
+  const primaryPluginViews = pluginDashboardViews
+    .filter((entry) => entry.view.placement === "primary")
+    .sort((a, b) => (a.view.order ?? Number.MAX_SAFE_INTEGER) - (b.view.order ?? Number.MAX_SAFE_INTEGER));
 
   const isMoreActive =
     view === "documents"
@@ -207,7 +211,7 @@ export function MobileNavBar({
     || (todosOpen && todoViewEnabled)
     || (view === "roadmaps" && !showRoadmapsTopLevel)
     || (view === "skills" && !showSkillsTopLevel)
-    || view.startsWith("plugin:");
+    || (view.startsWith("plugin:") && !primaryPluginViews.some((entry) => buildPluginTaskViewId(entry.pluginId, entry.view.viewId) === view));
 
   return (
     <>
@@ -314,6 +318,25 @@ export function MobileNavBar({
             <span className="mobile-nav-tab-label">Roadmaps</span>
           </button>
         )}
+
+        {primaryPluginViews.map((entry) => {
+          const pluginTaskView = buildPluginTaskViewId(entry.pluginId, entry.view.viewId);
+          const PluginIcon = getPluginNavIcon(entry.view.icon);
+          return (
+            <button
+              key={`${entry.pluginId}:${entry.view.viewId}`}
+              type="button"
+              className={`mobile-nav-tab${view === pluginTaskView ? " mobile-nav-tab--active" : ""}`}
+              data-testid={`mobile-nav-tab-plugin-${entry.pluginId}-${entry.view.viewId}`}
+              role="tab"
+              aria-selected={view === pluginTaskView}
+              onClick={() => onChangeView(pluginTaskView)}
+            >
+              <PluginIcon />
+              <span className="mobile-nav-tab-label">{entry.view.label}</span>
+            </button>
+          );
+        })}
 
         <button
           type="button"
@@ -641,6 +664,7 @@ export function MobileNavBar({
               .sort((a, b) => (a.view.order ?? Number.MAX_SAFE_INTEGER) - (b.view.order ?? Number.MAX_SAFE_INTEGER))
               .map((entry) => {
                 const pluginTaskView = buildPluginTaskViewId(entry.pluginId, entry.view.viewId);
+                const PluginIcon = getPluginNavIcon(entry.view.icon);
                 return (
                   <button
                     key={`${entry.pluginId}:${entry.view.viewId}`}
@@ -649,7 +673,7 @@ export function MobileNavBar({
                     data-testid={`mobile-more-item-plugin-${entry.pluginId}-${entry.view.viewId}`}
                     onClick={() => handleMoreAction(() => onChangeView(pluginTaskView))}
                   >
-                    <Grid3X3 />
+                    <PluginIcon />
                     <span>{entry.view.label}</span>
                   </button>
                 );

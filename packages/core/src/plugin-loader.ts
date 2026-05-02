@@ -23,6 +23,7 @@ import type {
   PluginRouteDefinition,
   PluginUiSlotDefinition,
   PluginDashboardViewDefinition,
+  PluginOnSchemaInit,
   PluginRuntimeRegistration,
   PluginInstallation,
   PluginSkillContribution,
@@ -803,6 +804,19 @@ export class PluginLoader extends EventEmitter<{
       }
     }
     return views;
+  }
+
+  /**
+   * Get all schema initialization hooks from loaded plugins.
+   */
+  getPluginSchemaInitHooks(): Array<{ pluginId: string; hook: PluginOnSchemaInit }> {
+    const hooks: Array<{ pluginId: string; hook: PluginOnSchemaInit }> = [];
+    for (const [pluginId, plugin] of this.plugins) {
+      if (plugin.hooks.onSchemaInit) {
+        hooks.push({ pluginId, hook: plugin.hooks.onSchemaInit });
+      }
+    }
+    return hooks;
   }
 
   /**

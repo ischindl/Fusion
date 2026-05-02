@@ -131,6 +131,7 @@ export type {
   PluginSettingType,
   PluginOnLoad,
   PluginOnUnload,
+  PluginOnSchemaInit,
   PluginOnTaskCreated,
   PluginOnTaskMoved,
   PluginOnTaskCompleted,

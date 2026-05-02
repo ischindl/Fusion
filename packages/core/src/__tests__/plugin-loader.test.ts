@@ -1344,6 +1344,26 @@ describe("PluginLoader", () => {
       expect(loader.getPluginDashboardViews()).toEqual([]);
     });
 
+    it("returns aggregated views from a single plugin", async () => {
+      await pluginStore.init();
+      const loader = new PluginLoader({ pluginStore, taskStore: mockTaskStore });
+      (loader as any).plugins.set("views-a", {
+        manifest: makeManifest({ id: "views-a" }),
+        state: "started",
+        hooks: {},
+        dashboardViews: [
+          { viewId: "graph", label: "Graph", componentPath: "./graph.js", placement: "more" },
+          { viewId: "timeline", label: "Timeline", componentPath: "./timeline.js", placement: "overflow" },
+        ],
+      } as FusionPlugin);
+
+      const views = loader.getPluginDashboardViews();
+      expect(views.map((entry) => entry.pluginId + ":" + entry.view.viewId)).toEqual([
+        "views-a:graph",
+        "views-a:timeline",
+      ]);
+    });
+
     it("aggregates dashboard views from multiple plugins and keeps uiSlots separate", async () => {
       await pluginStore.init();
       const loader = new PluginLoader({ pluginStore, taskStore: mockTaskStore });
@@ -1368,6 +1388,48 @@ describe("PluginLoader", () => {
         "views-b:timeline",
       ]);
       expect(loader.getPluginUiSlots()).toHaveLength(1);
+    });
+  });
+
+  describe("getPluginSchemaInitHooks", () => {
+    it("returns empty array when no plugins define onSchemaInit", async () => {
+      await pluginStore.init();
+      const loader = new PluginLoader({ pluginStore, taskStore: mockTaskStore });
+      (loader as any).plugins.set("no-hook", {
+        manifest: makeManifest({ id: "no-hook" }),
+        state: "started",
+        hooks: {},
+      } as FusionPlugin);
+
+      expect(loader.getPluginSchemaInitHooks()).toEqual([]);
+    });
+
+    it("returns hooks only from plugins that define onSchemaInit", async () => {
+      await pluginStore.init();
+      const loader = new PluginLoader({ pluginStore, taskStore: mockTaskStore });
+      const hookA = async () => {};
+      const hookB = () => {};
+
+      (loader as any).plugins.set("schema-a", {
+        manifest: makeManifest({ id: "schema-a" }),
+        state: "started",
+        hooks: { onSchemaInit: hookA },
+      } as FusionPlugin);
+      (loader as any).plugins.set("schema-b", {
+        manifest: makeManifest({ id: "schema-b" }),
+        state: "started",
+        hooks: { onLoad: async () => {} },
+      } as FusionPlugin);
+      (loader as any).plugins.set("schema-c", {
+        manifest: makeManifest({ id: "schema-c" }),
+        state: "started",
+        hooks: { onSchemaInit: hookB },
+      } as FusionPlugin);
+
+      const hooks = loader.getPluginSchemaInitHooks();
+      expect(hooks.map((entry) => entry.pluginId)).toEqual(["schema-a", "schema-c"]);
+      expect(hooks[0]?.hook).toBe(hookA);
+      expect(hooks[1]?.hook).toBe(hookB);
     });
   });
 

@@ -104,7 +104,7 @@ describe("MobileNavBar", () => {
     expect(screen.queryByTestId("mobile-nav-tab-skills")).toBeNull();
   });
 
-  it("renders plugin dashboard views in More sheet and not top-level tabs", () => {
+  it("renders primary plugin dashboard views as top-level tabs and keeps overflow views in More", () => {
     const props = createDefaultProps();
     render(
       <MobileNavBar
@@ -112,16 +112,26 @@ describe("MobileNavBar", () => {
         pluginDashboardViews={[
           {
             pluginId: "fusion-plugin-dependency-graph",
-            view: { viewId: "graph", label: "Graph", componentPath: "./GraphView" },
+            view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", icon: "Map", placement: "primary" },
+          },
+          {
+            pluginId: "fusion-plugin-dependency-graph",
+            view: { viewId: "queue", label: "Queue", componentPath: "./QueueView", icon: "Workflow" },
           },
         ]}
       />,
     );
 
-    expect(screen.queryByTestId("mobile-nav-tab-graph")).toBeNull();
-    fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
-    fireEvent.click(screen.getByTestId("mobile-more-item-plugin-fusion-plugin-dependency-graph-graph"));
+    const primaryTab = screen.getByTestId("mobile-nav-tab-plugin-fusion-plugin-dependency-graph-graph");
+    expect(primaryTab.querySelector(".lucide-map")).toBeTruthy();
+    fireEvent.click(primaryTab);
     expect(props.onChangeView).toHaveBeenCalledWith("plugin:fusion-plugin-dependency-graph:graph");
+
+    fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
+    const overflowItem = screen.getByTestId("mobile-more-item-plugin-fusion-plugin-dependency-graph-queue");
+    expect(overflowItem.querySelector(".lucide-workflow")).toBeTruthy();
+    fireEvent.click(overflowItem);
+    expect(props.onChangeView).toHaveBeenCalledWith("plugin:fusion-plugin-dependency-graph:queue");
   });
 
   it("active tab is highlighted for mailbox", () => {

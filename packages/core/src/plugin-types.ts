@@ -11,6 +11,7 @@
  * - PluginInstallation: persisted plugin record
  */
 
+import type { Database } from "./db.js";
 import type { TaskStore } from "./store.js";
 import type { Task, WorkflowStepMode, WorkflowStepToolMode } from "./types.js";
 
@@ -108,6 +109,8 @@ export interface PluginLogger {
 export type PluginOnLoad = (ctx: PluginContext) => Promise<void> | void;
 /** Lifecycle hook: called when plugin is unloaded */
 export type PluginOnUnload = () => Promise<void> | void;
+/** Lifecycle hook: called during database schema initialization */
+export type PluginOnSchemaInit = (db: Database) => Promise<void> | void;
 /** Lifecycle hook: called when a task is created */
 export type PluginOnTaskCreated = (task: Task, ctx: PluginContext) => Promise<void> | void;
 /** Lifecycle hook: called when a task moves between columns */
@@ -222,7 +225,9 @@ export interface PluginDashboardViewDefinition {
   /** Optional sort order for nav presentation. Lower numbers appear first. */
   order?: number;
   /** Preferred navigation placement for this top-level view. */
-  placement?: "primary" | "more";
+  placement?: "primary" | "overflow" | "more";
+  /** Optional short description used by navigation/help UI. */
+  description?: string;
 }
 
 // ── Plugin Runtimes ─────────────────────────────────────────────────
@@ -398,6 +403,7 @@ export interface FusionPlugin {
     onTaskMoved?: PluginOnTaskMoved;
     onTaskCompleted?: PluginOnTaskCompleted;
     onError?: PluginOnError;
+    onSchemaInit?: PluginOnSchemaInit;
   };
   tools?: PluginToolDefinition[];
   routes?: PluginRouteDefinition[];

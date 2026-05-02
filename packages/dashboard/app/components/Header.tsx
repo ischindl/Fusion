@@ -14,6 +14,7 @@ import { getTrailingPath } from "../utils/pathDisplay";
 import type { TaskView } from "../hooks/useViewState";
 import type { PluginDashboardViewEntry } from "../api";
 import { buildPluginTaskViewId } from "../plugins/pluginViewRegistry";
+import { getPluginNavIcon } from "./pluginNavIcon";
 
 export { useViewportMode };
 
@@ -1119,6 +1120,26 @@ export function Header({
             >
               <Mail size={16} />
             </button>
+            {pluginDashboardViews
+              .filter((entry) => entry.view.placement === "primary")
+              .sort((a, b) => (a.view.order ?? Number.MAX_SAFE_INTEGER) - (b.view.order ?? Number.MAX_SAFE_INTEGER))
+              .map((entry) => {
+                const pluginTaskView = buildPluginTaskViewId(entry.pluginId, entry.view.viewId);
+                const PluginIcon = getPluginNavIcon(entry.view.icon);
+                return (
+                  <button
+                    key={`${entry.pluginId}:${entry.view.viewId}`}
+                    className={`view-toggle-btn${view === pluginTaskView ? " active" : ""}`}
+                    onClick={() => onChangeView(pluginTaskView)}
+                    title={`${entry.view.label} view`}
+                    aria-label={`${entry.view.label} view`}
+                    aria-pressed={view === pluginTaskView}
+                    data-testid={`view-toggle-plugin-${entry.pluginId}-${entry.view.viewId}`}
+                  >
+                    <PluginIcon size={16} />
+                  </button>
+                );
+              })}
             {hasViewOverflowItems && (
               <>
                 <button
@@ -1244,6 +1265,7 @@ export function Header({
                       .sort((a, b) => (a.view.order ?? Number.MAX_SAFE_INTEGER) - (b.view.order ?? Number.MAX_SAFE_INTEGER))
                       .map((entry) => {
                         const pluginTaskView = buildPluginTaskViewId(entry.pluginId, entry.view.viewId);
+                        const PluginIcon = getPluginNavIcon(entry.view.icon);
                         return (
                           <button
                             key={`${entry.pluginId}:${entry.view.viewId}`}
@@ -1255,7 +1277,7 @@ export function Header({
                             role="menuitem"
                             data-testid={`view-overflow-plugin-${entry.pluginId}-${entry.view.viewId}`}
                           >
-                            <Grid3X3 size={14} />
+                            <PluginIcon size={14} />
                             <span>{entry.view.label}</span>
                           </button>
                         );

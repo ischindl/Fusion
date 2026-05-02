@@ -274,12 +274,32 @@ const plugin: FusionPlugin = {
 | `onTaskMoved` | `(task: Task, fromColumn: string, toColumn: string, ctx: PluginContext) => Promise<void> \| void` | Task moved between columns |
 | `onTaskCompleted` | `(task: Task, ctx: PluginContext) => Promise<void> \| void` | Task reached "done" |
 | `onError` | `(error: Error, ctx: PluginContext) => Promise<void> \| void` | Error occurred in plugin execution |
+| `onSchemaInit` | `(db: Database) => Promise<void> \| void` | During DB schema initialization (before core migrations complete) |
 
 ### Hook Behavior
 
 - **Timeout**: 5 seconds per invocation (logged and skipped if exceeded)
 - **Error Isolation**: Hook failures never block the host system
 - **Optional**: Only define the hooks you need
+- **Schema hook constraints**: `onSchemaInit` is intended for idempotent DDL only (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`). Avoid data backfills or long-running logic.
+
+### Example: Schema initialization hook
+
+```typescript
+hooks: {
+  onSchemaInit: async (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS plugin_roadmaps (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_plugin_roadmaps_created_at
+      ON plugin_roadmaps(created_at);
+    `);
+  },
+},
+```
 
 ### Example: Notification on Task Completion
 
@@ -505,10 +525,23 @@ const dashboardViews: PluginDashboardViewDefinition[] = [
     componentPath: "./src/DependencyGraphView.tsx",
     icon: "Network",
     order: 40,
-    placement: "more",
+    placement: "overflow",
+    description: "Explore task dependency links",
   },
 ];
 ```
+
+### PluginDashboardViewDefinition fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `viewId` | `string` | Yes | Unique slug-like ID within your plugin namespace |
+| `label` | `string` | Yes | Human-readable nav label |
+| `componentPath` | `string` | Yes | Module path for the view component, relative to plugin root |
+| `icon` | `string` | No | Lucide icon name |
+| `order` | `number` | No | Lower values appear earlier in nav |
+| `placement` | `"primary" \| "overflow" \| "more"` | No | Navigation placement hint (default is host-defined overflow behavior) |
+| `description` | `string` | No | Short summary for nav/help surfaces |
 
 Current host constraints:
 - Discovery API: `GET /api/plugins/dashboard-views`

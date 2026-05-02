@@ -779,6 +779,24 @@ describe("PluginUiSlotDefinition", () => {
 
 // ── FusionPlugin with uiSlots ──────────────────────────────────────────
 
+describe("PluginDashboardViewDefinition", () => {
+  it("accepts a valid PluginDashboardViewDefinition with optional fields", () => {
+    const view = {
+      viewId: "roadmap-planner",
+      label: "Roadmap Planner",
+      componentPath: "./views/RoadmapPlanner.js",
+      icon: "Map",
+      order: 10,
+      placement: "overflow",
+      description: "Plan milestones and slices",
+    };
+
+    expect(view.viewId).toBe("roadmap-planner");
+    expect(view.placement).toBe("overflow");
+    expect(view.description).toContain("milestones");
+  });
+});
+
 describe("FusionPlugin with uiSlots", () => {
   it("accepts a FusionPlugin with uiSlots array", () => {
     const plugin = {
@@ -817,6 +835,27 @@ describe("FusionPlugin with uiSlots", () => {
     };
 
     expect((plugin as any).uiSlots).toBeUndefined();
+  });
+
+  it("accepts a FusionPlugin with dashboardViews and onSchemaInit hook", () => {
+    const plugin: FusionPlugin = {
+      manifest: { id: "test-plugin", name: "Test Plugin", version: "1.0.0" },
+      state: "started",
+      hooks: {
+        onSchemaInit: async () => {},
+      },
+      dashboardViews: [
+        {
+          viewId: "dependencies",
+          label: "Dependencies",
+          componentPath: "./views/Dependencies.js",
+          placement: "primary",
+        },
+      ],
+    };
+
+    expect(plugin.hooks.onSchemaInit).toBeTypeOf("function");
+    expect(plugin.dashboardViews?.[0]?.viewId).toBe("dependencies");
   });
 });
 
