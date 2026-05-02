@@ -269,11 +269,14 @@ export class AutomationStore extends EventEmitter<AutomationStoreEvents> {
         schedule.description = updates.description?.trim() || undefined;
       }
       if (updates.command !== undefined) {
-        if (!updates.command.trim()) throw new Error("Command cannot be empty");
         schedule.command = updates.command.trim();
       }
       if (updates.steps !== undefined) {
         schedule.steps = updates.steps.length > 0 ? updates.steps : undefined;
+      }
+      const willHaveSteps = schedule.steps && schedule.steps.length > 0;
+      if (!willHaveSteps && !schedule.command) {
+        throw new Error("Command is required and cannot be empty");
       }
       if (updates.timeoutMs !== undefined) {
         schedule.timeoutMs = updates.timeoutMs;
