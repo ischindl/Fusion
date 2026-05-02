@@ -44,10 +44,11 @@ const mockCentralListProjects = vi.fn().mockResolvedValue([]);
 const mockCentralInit = vi.fn().mockResolvedValue(undefined);
 const mockCentralClose = vi.fn().mockResolvedValue(undefined);
 const mockCentralReconcileProjectStatuses = vi.fn().mockResolvedValue(undefined);
-const { mockPerformUpdateCheck, mockClearUpdateCheckCache, mockExecSync } = vi.hoisted(() => ({
+const { mockPerformUpdateCheck, mockClearUpdateCheckCache, mockExecSync, mockExecFile } = vi.hoisted(() => ({
   mockPerformUpdateCheck: vi.fn(),
   mockClearUpdateCheckCache: vi.fn(),
   mockExecSync: vi.fn(),
+  mockExecFile: vi.fn(),
 }));
 
 vi.mock("../update-check.js", async () => {
@@ -62,9 +63,32 @@ vi.mock("../update-check.js", async () => {
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   mockExecSync.mockImplementation(((...args: Parameters<typeof actual.execSync>) => actual.execSync(...args)) as typeof actual.execSync);
+  // Default execFile mock blocks host-process pgrep calls used by /kill-vitest
+  // but passes through all other commands (including git) to preserve route
+  // behavior for integration-style API tests in this file.
+  mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+    const [file, argsOrCb, maybeOptions, maybeCb] = callArgs as [string, unknown, unknown, unknown];
+    const args = Array.isArray(argsOrCb) ? argsOrCb : [];
+    const cb =
+      typeof maybeCb === "function"
+        ? (maybeCb as (err: unknown, stdout?: string, stderr?: string) => void)
+        : typeof maybeOptions === "function"
+          ? (maybeOptions as (err: unknown, stdout?: string, stderr?: string) => void)
+          : typeof argsOrCb === "function"
+            ? (argsOrCb as (err: unknown, stdout?: string, stderr?: string) => void)
+            : null;
+
+    if (file === "pgrep" && args[0] === "-f" && args[1] === "vitest") {
+      if (cb) queueMicrotask(() => cb(null, "", ""));
+      return;
+    }
+
+    return (actual.execFile as (...innerArgs: unknown[]) => unknown)(...callArgs);
+  });
   return {
     ...actual,
     execSync: mockExecSync,
+    execFile: mockExecFile,
   };
 });
 
@@ -306,7 +330,10 @@ describe("GET /api/system-stats", () => {
       getFusionDir: vi.fn().mockReturnValue("/fake/default"),
     });
 
-    mockExecSync.mockReturnValue(`${process.pid}\n111\n222\n` as never);
+    mockExecFile.mockImplementationOnce((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string, stderr?: string) => void;
+      cb(null, `${process.pid}\n111\n222\n`, "");
+    });
 
     vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
     vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([
@@ -357,7 +384,7 @@ describe("GET /api/system-stats", () => {
     });
     expect(res.body.vitestProcessCount).toBe(2);
     expect(res.body.vitestLastAutoKillAt).toBeNull();
-    mockExecSync.mockReset();
+    mockExecFile.mockClear();
   });
 
   it("includes last auto-kill timestamp when available in global settings", async () => {
@@ -458,18 +485,24 @@ describe("POST /api/kill-vitest", () => {
 
   it("returns killed: 0 when no vitest processes are found", async () => {
     const store = createMockStore();
-    mockExecSync.mockReturnValue("" as never);
+    mockExecFile.mockImplementationOnce((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string, stderr?: string) => void;
+      cb(null, "", "");
+    });
 
     const res = await REQUEST(buildApp(store), "POST", "/api/kill-vitest");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ killed: 0, pids: [] });
-    mockExecSync.mockReset();
+    mockExecFile.mockClear();
   });
 
   it("kills all matched vitest pids except the current dashboard process", async () => {
     const store = createMockStore();
-    mockExecSync.mockReturnValue(`${process.pid}\n1001\n1002\nnot-a-pid\n` as never);
+    mockExecFile.mockImplementationOnce((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string, stderr?: string) => void;
+      cb(null, `${process.pid}\n1001\n1002\nnot-a-pid\n`, "");
+    });
     const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
     const res = await REQUEST(buildApp(store), "POST", "/api/kill-vitest");
@@ -481,20 +514,22 @@ describe("POST /api/kill-vitest", () => {
     expect(res.body).toEqual({ killed: 2, pids: [1001, 1002] });
 
     killSpy.mockRestore();
-    mockExecSync.mockReset();
+    mockExecFile.mockClear();
   });
 
   it("returns killed: 0 when pgrep exits with no matches", async () => {
     const store = createMockStore();
-    mockExecSync.mockImplementation(() => {
-      throw new Error("pgrep exited 1");
+    mockExecFile.mockImplementationOnce((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as (err: unknown, stdout?: string, stderr?: string) => void;
+      const err = Object.assign(new Error("pgrep exited 1"), { code: 1 });
+      cb(err);
     });
 
     const res = await REQUEST(buildApp(store), "POST", "/api/kill-vitest");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ killed: 0, pids: [] });
-    mockExecSync.mockReset();
+    mockExecFile.mockClear();
   });
 });
 

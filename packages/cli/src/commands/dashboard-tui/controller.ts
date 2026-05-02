@@ -1,6 +1,6 @@
 import os from "node:os";
 import v8 from "node:v8";
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
 // `os.freemem()` on macOS only counts truly-free pages and excludes the large
@@ -287,13 +287,14 @@ export class DashboardTUI {
         // both take a few seconds; firing every 2s would flap.
         if (usedRatio > this.vitestKillThreshold && now - this.lastAutoKillAt > 30_000) {
           this.lastAutoKillAt = now;
-          const result = this.killVitestProcesses();
-          if (result.killed > 0) {
-            this.warn(
-              `Auto-killed ${result.killed} vitest process${result.killed === 1 ? "" : "es"} (system memory at ${Math.round(usedRatio * 100)}%, threshold ${Math.round(this.vitestKillThreshold * 100)}%)`,
-              "memory-guard",
-            );
-          }
+          void this.killVitestProcesses().then((result) => {
+            if (result.killed > 0) {
+              this.warn(
+                `Auto-killed ${result.killed} vitest process${result.killed === 1 ? "" : "es"} (system memory at ${Math.round(usedRatio * 100)}%, threshold ${Math.round(this.vitestKillThreshold * 100)}%)`,
+                "memory-guard",
+              );
+            }
+          }).catch(() => {});
         }
       }
     }
@@ -304,25 +305,25 @@ export class DashboardTUI {
    * itself. Returns a count of pids signalled (best-effort — a pid may be
    * gone by the time we send the signal).
    */
-  killVitestProcesses(): { killed: number; pids: number[] } {
+  async killVitestProcesses(): Promise<{ killed: number; pids: number[] }> {
     // pgrep is POSIX-only; Windows path is a no-op above.
     if (process.platform === "win32") {
       return { killed: 0, pids: [] };
     }
     const selfPid = process.pid;
-    let pids: number[] = [];
-    try {
-      // pgrep -f matches against the full command line. -a would include the
-      // command, but we only need pids. macOS and Linux both support -f.
-      const out = execSync("pgrep -f vitest", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-      pids = out
-        .split("\n")
-        .map((s) => Number.parseInt(s.trim(), 10))
-        .filter((n) => Number.isFinite(n) && n > 0 && n !== selfPid);
-    } catch {
-      // pgrep exits non-zero when no matches — treat as "nothing to kill".
-      return { killed: 0, pids: [] };
-    }
+    // execFile (not execSync) so the TUI render loop stays responsive while
+    // pgrep walks the process table — that walk can take 100ms+ on a busy
+    // machine and previously froze the UI on every memory-pressure check.
+    const stdout: string = await new Promise((resolve) => {
+      execFile("pgrep", ["-f", "vitest"], { encoding: "utf8" }, (err, out) => {
+        // pgrep exits non-zero when no matches — treat as empty result.
+        resolve(err ? "" : (typeof out === "string" ? out : ""));
+      });
+    });
+    const pids = stdout
+      .split("\n")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== selfPid);
 
     let killed = 0;
     for (const pid of pids) {
@@ -572,7 +573,7 @@ export class DashboardTUI {
         }
         break;
       case "k": {
-        const result = this.killVitestProcesses();
+        const result = await this.killVitestProcesses();
         if (result.killed === 0) {
           this.log("No vitest processes found.", "kill-vitest");
         } else {

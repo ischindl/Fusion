@@ -188,16 +188,26 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
-function readJsonObject(path: string): Record<string, unknown> {
-  if (!nodeFs.existsSync(path)) {
-    return {};
-  }
-
+// Async variants — sync fs.* on a settings route blocks every concurrent
+// request. discoverDashboardPiExtensions is called from 3 settings endpoints,
+// and the previous sync implementation paid 6+ blocking syscalls per call.
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
   try {
-    const parsed = JSON.parse(nodeFs.readFileSync(path, "utf-8"));
+    const raw = await nodeFs.promises.readFile(path, "utf-8");
+    const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
   } catch {
+    // ENOENT, parse errors, etc. — treat as missing/empty.
     return {};
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await nodeFs.promises.access(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -205,19 +215,23 @@ function hasPackageManagerSettings(settings: Record<string, unknown>): boolean {
   return Array.isArray(settings.packages) || Array.isArray(settings.npmCommand);
 }
 
-function getPiPackageManagerAgentDir(): string {
+async function getPiPackageManagerAgentDir(): Promise<string> {
   const fusionAgentDir = getFusionAgentDir();
   const legacyAgentDir = getLegacyPiAgentDir();
-  const fusionSettings = readJsonObject(join(fusionAgentDir, "settings.json"));
-  const legacySettings = readJsonObject(join(legacyAgentDir, "settings.json"));
+  const [fusionSettings, legacySettings, legacyExists, fusionExists] = await Promise.all([
+    readJsonObject(join(fusionAgentDir, "settings.json")),
+    readJsonObject(join(legacyAgentDir, "settings.json")),
+    pathExists(legacyAgentDir),
+    pathExists(fusionAgentDir),
+  ]);
 
-  if (hasPackageManagerSettings(fusionSettings) || !nodeFs.existsSync(legacyAgentDir)) {
+  if (hasPackageManagerSettings(fusionSettings) || !legacyExists) {
     return fusionAgentDir;
   }
   if (hasPackageManagerSettings(legacySettings)) {
     return legacyAgentDir;
   }
-  return nodeFs.existsSync(fusionAgentDir) ? fusionAgentDir : legacyAgentDir;
+  return fusionExists ? fusionAgentDir : legacyAgentDir;
 }
 
 function packageExtensionName(extensionPath: string, source: string): string {
@@ -235,11 +249,13 @@ async function discoverDashboardPiExtensions(cwd: string): Promise<PiExtensionSe
 
   try {
     const { DefaultPackageManager } = await import("@mariozechner/pi-coding-agent");
-    const agentDir = getPiPackageManagerAgentDir();
-    const legacyGlobalSettings = readJsonObject(join(getLegacyPiAgentDir(), "settings.json"));
-    const fusionGlobalSettings = readJsonObject(join(getFusionAgentDir(), "settings.json"));
+    const [agentDir, legacyGlobalSettings, fusionGlobalSettings, projectSettings] = await Promise.all([
+      getPiPackageManagerAgentDir(),
+      readJsonObject(join(getLegacyPiAgentDir(), "settings.json")),
+      readJsonObject(join(getFusionAgentDir(), "settings.json")),
+      readJsonObject(join(cwd, ".fusion", "settings.json")),
+    ]);
     const globalSettings = { ...legacyGlobalSettings, ...fusionGlobalSettings };
-    const projectSettings = readJsonObject(join(cwd, ".fusion", "settings.json"));
     const mergedSettings = { ...globalSettings, ...projectSettings };
     const packageManager = new DefaultPackageManager({
       cwd,
@@ -1256,21 +1272,22 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   });
 
   const getVitestProcessIds = async (): Promise<number[]> => {
-    const { execSync } = await import("node:child_process");
+    // execFile (not execSync) so the dashboard's event loop stays responsive
+    // while pgrep walks the process table — that walk can take 100ms+ on a
+    // busy machine and previously froze every concurrent request.
+    const { execFile } = await import("node:child_process");
 
-    try {
-      const output = execSync("pgrep -f vitest", {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
+    const stdout: string = await new Promise((resolve) => {
+      execFile("pgrep", ["-f", "vitest"], { encoding: "utf8" }, (err, out) => {
+        // pgrep exits non-zero when no matches — treat as empty result.
+        resolve(err ? "" : (typeof out === "string" ? out : ""));
       });
+    });
 
-      return output
-        .split(/\r?\n/)
-        .map((line) => Number.parseInt(line.trim(), 10))
-        .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
-    } catch {
-      return [];
-    }
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
   };
 
   /**
