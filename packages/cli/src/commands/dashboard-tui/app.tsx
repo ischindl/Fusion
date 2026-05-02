@@ -1,4 +1,4 @@
-import React, { useState, useSyncExternalStore, useCallback, useEffect } from "react";
+import React, { useState, useSyncExternalStore, useCallback, useEffect, useRef } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import TextInput from "ink-text-input";
@@ -1202,10 +1202,12 @@ function TaskDetailScreen({
   task,
   projectPath,
   interactiveData,
+  controller,
 }: {
   task: TaskItem;
   projectPath: string | null;
   interactiveData: DashboardState["interactiveData"];
+  controller: DashboardTUI;
 }) {
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
@@ -1289,6 +1291,35 @@ function TaskDetailScreen({
   useEffect(() => {
     if (autoFollow) setLogScrollOffset(0);
   }, [autoFollow, logCount]);
+
+  // ── Mouse wheel: scroll logs by WHEEL_STEP lines per tick ──
+  // Subscribes to controller wheel events; the controller decodes xterm SGR
+  // mouse sequences off stdin. Mirrors the keyboard arrow behavior including
+  // auto-follow toggling.
+  const WHEEL_STEP = 3;
+  // Latest log count + pane size in refs so the subscription doesn't need
+  // to re-register on every render (which would also miss wheel ticks
+  // arriving between renders).
+  const logCountRef = useRef(logCount);
+  const logPaneRowsRef = useRef(logPaneRows);
+  logCountRef.current = logCount;
+  logPaneRowsRef.current = logPaneRows;
+  useEffect(() => {
+    return controller.onWheel((dir) => {
+      const maxOffset = Math.max(0, logCountRef.current - logPaneRowsRef.current);
+      if (maxOffset === 0) return;
+      if (dir === "up") {
+        setAutoFollow(false);
+        setLogScrollOffset((o) => Math.min(maxOffset, o + WHEEL_STEP));
+      } else {
+        setLogScrollOffset((o) => {
+          const next = Math.max(0, o - WHEEL_STEP);
+          if (next === 0) setAutoFollow(true);
+          return next;
+        });
+      }
+    });
+  }, [controller]);
 
   // ── Keyboard: ↑↓ / j/k scroll logs; G = jump to bottom; g = jump to top ──
   useInput((input, key) => {
@@ -1756,6 +1787,7 @@ function BoardView({ state, controller }: { state: DashboardState; controller: D
             task={selectedTask}
             projectPath={selectedProject?.path ?? null}
             interactiveData={state.interactiveData}
+            controller={controller}
           />
         </Box>
       ) : tasksState.loading ? (
@@ -2782,7 +2814,7 @@ function PushModal({
   );
 }
 
-function GitView({ state }: { state: DashboardState }) {
+function GitView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
@@ -2949,6 +2981,27 @@ function GitView({ state }: { state: DashboardState }) {
       if (key.downArrow || input === "j") { setWorktreeIndex((i) => Math.min(worktrees.length - 1, i + 1)); return; }
     }
   });
+
+  // ── Mouse-wheel scrolling for the active list pane ──────────────────────
+  // Wheel moves selection by 3 rows in the focused list. Only active when
+  // the Git view is mounted (interactiveView === "git").
+  const gitWheelRef = useRef({ activePane, commits, branches, worktrees });
+  gitWheelRef.current = { activePane, commits, branches, worktrees };
+  useEffect(() => {
+    if (state.interactiveView !== "git") return;
+    return controller.onWheel((dir) => {
+      const { activePane: pane, commits: cs, branches: bs, worktrees: ws } = gitWheelRef.current;
+      const STEP = 3;
+      const delta = dir === "up" ? -STEP : STEP;
+      if (pane === "commits") {
+        setCommitIndex((i) => Math.max(0, Math.min(cs.length - 1, i + delta)));
+      } else if (pane === "branches") {
+        setBranchIndex((i) => Math.max(0, Math.min(bs.length - 1, i + delta)));
+      } else if (pane === "worktrees") {
+        setWorktreeIndex((i) => Math.max(0, Math.min(ws.length - 1, i + delta)));
+      }
+    });
+  }, [controller, state.interactiveView]);
 
   // Narrow mode: collapse multi-pane layout to a single full-width pane so
   // the stacked left+right columns don't overflow on small terminals.
@@ -3379,7 +3432,7 @@ function entriesToNodes(entries: FileEntry[], depth: number): TreeNode[] {
   return [...dirs, ...files].map((e) => ({ entry: e, depth, expanded: false, children: undefined }));
 }
 
-function FilesView({ state }: { state: DashboardState }) {
+function FilesView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
@@ -3614,6 +3667,28 @@ function FilesView({ state }: { state: DashboardState }) {
     }
   }, { isActive: state.interactiveView === "files" });
 
+  // ── Mouse-wheel scrolling for the focused pane ──────────────────────────
+  // Tree pane: wheel moves the selection cursor. Preview pane: wheel
+  // scrolls the file viewport. Active only on the Files view.
+  const filesWheelRef = useRef({ focusedPane, flatNodes, previewResult, previewHeight });
+  filesWheelRef.current = { focusedPane, flatNodes, previewResult, previewHeight };
+  useEffect(() => {
+    if (state.interactiveView !== "files") return;
+    return controller.onWheel((dir) => {
+      const { focusedPane: pane, flatNodes: nodes, previewResult: pr, previewHeight: ph } =
+        filesWheelRef.current;
+      const STEP = 3;
+      const delta = dir === "up" ? -STEP : STEP;
+      if (pane === "tree") {
+        setSelectedIndex((i) => Math.max(0, Math.min(nodes.length - 1, i + delta)));
+      } else {
+        const lineCount = pr?.lineCount ?? 0;
+        const maxScroll = Math.max(0, lineCount - ph);
+        setPreviewScroll((s) => Math.max(0, Math.min(maxScroll, s + delta)));
+      }
+    });
+  }, [controller, state.interactiveView]);
+
   // Narrow mode: collapse tree+preview side-by-side to a single pane so the
   // two columns don't overflow on terminals below the threshold.
   const isNarrow = cols < NARROW_THRESHOLD;
@@ -3837,8 +3912,8 @@ function InteractiveMode({ state, controller }: { state: DashboardState; control
         {state.interactiveView === "board" && <BoardView state={state} controller={controller} />}
         {state.interactiveView === "agents" && <AgentsView state={state} />}
         {state.interactiveView === "settings" && <SettingsInteractiveView state={state} controller={controller} />}
-        {state.interactiveView === "git" && <GitView state={state} />}
-        {state.interactiveView === "files" && <FilesView state={state} />}
+        {state.interactiveView === "git" && <GitView state={state} controller={controller} />}
+        {state.interactiveView === "files" && <FilesView state={state} controller={controller} />}
       </Box>
     </Box>
   );
@@ -3888,6 +3963,27 @@ export function DashboardApp({ controller }: DashboardAppProps) {
     useCallback((cb) => controller.subscribe(cb), [controller]),
     useCallback(() => controller.getSnapshot(), [controller]),
   );
+
+  // ── Mouse-wheel scrolling for the main logs section ─────────────────────
+  // Only active when the logs panel is focused. Uses a ref for `state` so
+  // the subscription doesn't need to re-register on every render.
+  const wheelStateRef = useRef(state);
+  wheelStateRef.current = state;
+  useEffect(() => {
+    return controller.onWheel((dir) => {
+      const s = wheelStateRef.current;
+      if (s.activeSection !== "logs") return;
+      const filtered = controller.getFilteredLogEntries();
+      if (filtered.length === 0) return;
+      const WHEEL_STEP = 3;
+      const cur = s.selectedLogIndex;
+      if (dir === "up") {
+        controller.setSelectedLogIndex(Math.max(0, cur - WHEEL_STEP));
+      } else {
+        controller.setSelectedLogIndex(Math.min(filtered.length - 1, cur + WHEEL_STEP));
+      }
+    });
+  }, [controller]);
 
   // Global QR overlay state — populated when the user hits Ctrl+Q on a
   // running tunnel. `loading` covers the network request; `error` surfaces

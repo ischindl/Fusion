@@ -135,6 +135,16 @@ export class DashboardTUI {
   private remoteStatus: RemoteStatus | null = null;
   private remoteStatusTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Mouse-wheel handling. We enable xterm SGR mouse mode in start() so the
+  // terminal sends button reports for wheel up/down (buttons 64/65). A
+  // parallel `data` listener parses those reports and dispatches to wheel
+  // handlers. Ink's own keypress parser ignores SGR mouse sequences so
+  // long as the full sequence (including the leading ESC) arrives in one
+  // chunk — which it does once raw mode is enabled before mouse mode is
+  // requested. (See ink#222 / @zenobius/ink-mouse for prior art.)
+  private wheelHandlers: Set<(direction: "up" | "down") => void> = new Set();
+  private mouseStdinListener: ((chunk: Buffer | string) => void) | null = null;
+
   constructor() {
     this.logBuffer = new LogRingBuffer();
   }
@@ -144,6 +154,16 @@ export class DashboardTUI {
   subscribe(callback: () => void): () => void {
     this.subscribers.add(callback);
     return () => this.subscribers.delete(callback);
+  }
+
+  /**
+   * Subscribe to mouse-wheel events. Direction is "up" (scroll back/older
+   * content) or "down" (scroll forward/newer content). Only fires while the
+   * dashboard is running and the terminal supports xterm mouse reporting.
+   */
+  onWheel(handler: (direction: "up" | "down") => void): () => void {
+    this.wheelHandlers.add(handler);
+    return () => this.wheelHandlers.delete(handler);
   }
 
   getSnapshot(): DashboardState {
@@ -614,6 +634,27 @@ export class DashboardTUI {
       createElement(DashboardApp, { controller: this }),
     );
 
+    // Mouse mode must be enabled AFTER Ink mounts (which calls
+    // setRawMode(true) and resumes stdin). If we write the enable sequence
+    // before raw mode is on, the terminal can deliver the first wheel
+    // report's leading ESC byte alone, which Ink would parse as a bare
+    // Esc keypress (closing modals on every wheel tick).
+    if (process.stdin?.isTTY) {
+      // Enable xterm mouse reporting with SGR-encoded coordinates.
+      //   ?1000h = button press/release reports (includes wheel as
+      //            buttons 64/65)
+      //   ?1006h = SGR encoding (handles wide terminals; the legacy form
+      //            caps coords at 223 columns/rows)
+      // We deliberately do NOT enable ?1002h (button-event tracking with
+      // motion) or ?1003h (any-event tracking). Without motion reporting
+      // the terminal still owns drag gestures, so Shift+drag (and on most
+      // terminals plain click+drag) keeps doing native text selection.
+      // Holding Shift always works as a hard override even on terminals
+      // that grab the bare drag gesture.
+      process.stdout.write("\x1b[?1000h\x1b[?1006h");
+      this.installMouseListener();
+    }
+
     // Reset Ink's internal frame buffer (log-update line tracking) on every
     // terminal resize. Without this Ink keeps treating the previous frame's
     // line count as the clear region, leaving stale rows above/below the
@@ -770,11 +811,56 @@ export class DashboardTUI {
     // Leave the alt-screen buffer last so the user's shell scrollback
     // is restored cleanly. \x1b[?1049l = leave alt-screen.
     if (process.stdout?.isTTY && typeof process.stdout.write === "function") {
+      this.uninstallMouseListener();
+      // Disable mouse reporting before leaving the alt-screen so the
+      // user's shell isn't left with mouse mode active.
+      process.stdout.write("\x1b[?1006l\x1b[?1000l");
       process.stdout.write("\x1b[?1049l");
     }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
+
+  // Attach a parallel `data` listener that decodes xterm SGR mouse
+  // sequences and dispatches wheel events. Ink's own listener is also
+  // attached; SGR sequences arrive as a single chunk that Ink's keypress
+  // parser silently ignores, so we don't need to (and shouldn't) strip
+  // them from the stream.
+  private installMouseListener(): void {
+    if (this.mouseStdinListener) return;
+    const mouseRe = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
+    const listener = (chunk: Buffer | string): void => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      if (text.indexOf("\x1b[<") === -1) return;
+      mouseRe.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = mouseRe.exec(text)) !== null) {
+        const btn = Number.parseInt(m[1] ?? "", 10);
+        // Buttons 64/65 are wheel up/down. Higher codes (66/67) are
+        // wheel left/right on some terminals — ignored here.
+        if (btn === 64) this.dispatchWheel("up");
+        else if (btn === 65) this.dispatchWheel("down");
+      }
+    };
+    this.mouseStdinListener = listener;
+    process.stdin.on("data", listener);
+  }
+
+  private uninstallMouseListener(): void {
+    if (!this.mouseStdinListener) return;
+    process.stdin.off("data", this.mouseStdinListener);
+    this.mouseStdinListener = null;
+  }
+
+  private dispatchWheel(direction: "up" | "down"): void {
+    for (const handler of this.wheelHandlers) {
+      try {
+        handler(direction);
+      } catch (err) {
+        tuiDebug("wheel-handler-error", { err: String(err) });
+      }
+    }
+  }
 
   private clampSelectedLogIndex(entries: LogEntry[]): void {
     if (entries.length === 0) {
