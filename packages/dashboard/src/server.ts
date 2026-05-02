@@ -688,9 +688,9 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     // - With projectId: use scoped store from engine or resolver (ensures multi-project isolation)
     // - Without projectId: use default store (preserves existing single-project behavior)
     //
-    // Per-entry text and detail fields are serialized in full — there is no
-    // SSE-level truncation.  The 500-entry cap is applied client-side in the
-    // React hooks (useAgentLogs / useMultiAgentLogs).
+    // Tool-oriented detail payloads may already be clipped in storage to keep
+    // live log streaming responsive. The 500-entry cap is applied client-side
+    // in the React hooks (useAgentLogs / useMultiAgentLogs).
     let scopedStore: TaskStore;
     try {
       scopedStore = await resolveProjectScopedStore(projectId);

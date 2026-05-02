@@ -698,8 +698,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   });
 
   // Get historical agent logs for a task.
-  // Per-entry text and detail fields are returned in full — no truncation.
-  // The 500-entry cap (MAX_LOG_ENTRIES) is a client-side whole-list limit.
+  // Tool-oriented detail payloads may be clipped server-side to keep the
+  // dashboard responsive when agents emit very large command results.
+  // The 500-entry cap (MAX_LOG_ENTRIES) is still a client-side whole-list limit.
   // When limit is provided, includes X-Total-Count and X-Has-More headers for pagination.
   router.get("/tasks/:id/logs", async (req, res) => {
     try {

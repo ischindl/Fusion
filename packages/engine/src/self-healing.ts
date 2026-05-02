@@ -1844,12 +1844,12 @@ export class SelfHealingManager {
     }
   }
 
-  /** Run SQLite WAL checkpoint to reclaim disk space. */
+  /** Run a best-effort passive WAL checkpoint without forcing live writers to truncate. */
   private checkpointWal(): void {
     try {
-      const result = this.store.walCheckpoint();
+      const result = this.store.walCheckpoint("PASSIVE");
       if (result.log > 0) {
-        log.log(`WAL checkpoint: ${result.checkpointed}/${result.log} pages checkpointed` +
+        log.log(`WAL checkpoint (passive): ${result.checkpointed}/${result.log} pages checkpointed` +
           (result.busy > 0 ? ` (${result.busy} busy)` : ""));
       }
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);

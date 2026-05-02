@@ -179,7 +179,8 @@ export class AgentLogger {
    *
    * @param name - The tool name
    * @param isError - Whether the tool execution resulted in an error
-   * @param result - Optional result value (persisted in full)
+   * @param result - Optional result value. Downstream storage may clip very
+   * large tool payloads to keep dashboard log views responsive.
    */
   onToolEnd(name: string, isError: boolean, result?: unknown): void {
     const type = isError ? "tool_error" : "tool_result";

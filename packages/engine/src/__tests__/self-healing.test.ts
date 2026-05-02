@@ -2912,6 +2912,30 @@ describe("maintenance cycle concurrency", () => {
     expect((manager as any).maintenanceRunning).toBe(false);
   });
 
+  it("uses a passive WAL checkpoint during maintenance", async () => {
+    (vi.spyOn(manager as any, "pruneWorktrees").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphans").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "cleanupOrphanedBranches").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "enforceWorktreeCap").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverCompletedTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverStaleIncompleteReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverInterruptedMergingTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMergeableReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMergedReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverMisclassifiedFailures").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverNoProgressNoTaskDoneFailures").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverPartialProgressNoTaskDoneFailures").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverOrphanedExecutions").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverApprovedTriageTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverOrphanedPlanningTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "recoverGhostReviewTasks").mockResolvedValue(0) as any);
+    (vi.spyOn(manager as any, "archiveStaleDoneTasks").mockResolvedValue(0) as any);
+
+    await (manager as any).runMaintenance();
+
+    expect(store.walCheckpoint).toHaveBeenCalledWith("PASSIVE");
+  });
+
   it("runs batch 1 operations in sequence (with isolation — one failure doesn't block others)", async () => {
     let runningCount = 0;
     let maxConcurrent = 0;

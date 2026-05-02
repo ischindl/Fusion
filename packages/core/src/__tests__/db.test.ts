@@ -57,7 +57,7 @@ describe("Database", () => {
       const journalSizeLimit = db.prepare("PRAGMA journal_size_limit").get() as { journal_size_limit: number };
 
       expect(synchronous.synchronous).toBe(1); // NORMAL
-      expect(autoCheckpoint.wal_autocheckpoint).toBe(100);
+      expect(autoCheckpoint.wal_autocheckpoint).toBe(1000);
       expect(journalSizeLimit.journal_size_limit).toBe(4_194_304);
     });
 
@@ -266,6 +266,13 @@ describe("Database", () => {
       expect(typeof result.busy).toBe("number");
       expect(typeof result.log).toBe("number");
       expect(typeof result.checkpointed).toBe("number");
+    });
+
+    it("supports explicit truncate checkpoints when requested", () => {
+      const result = db.walCheckpoint("TRUNCATE");
+      expect(result).toHaveProperty("busy");
+      expect(result).toHaveProperty("log");
+      expect(result).toHaveProperty("checkpointed");
     });
   });
 

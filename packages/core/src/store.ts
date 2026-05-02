@@ -168,6 +168,10 @@ const TASK_ACTIVITY_LOG_ENTRY_LIMIT = 1_000;
 const TASK_ACTIVITY_LOG_OUTCOME_LIMIT = 4_000;
 const ARCHIVE_AGENT_LOG_SNAPSHOT_LIMIT = 25;
 const ARCHIVE_AGENT_LOG_SNIPPET_LIMIT = 160;
+const AGENT_LOG_TOOL_DETAIL_LIMIT = 4_096;
+const AGENT_LOG_TOOL_DETAIL_TRUNCATION_NOTICE =
+  "\n\n[tool output truncated to keep dashboard log views responsive]";
+const AGENT_LOG_TOOL_TYPES = new Set<AgentLogEntry["type"]>(["tool", "tool_result", "tool_error"]);
 const storeLog = createLogger("task-store");
 
 /**
@@ -222,6 +226,16 @@ function truncateTaskLogOutcome(outcome: string | undefined): string | undefined
     return outcome;
   }
   return `${outcome.slice(0, TASK_ACTIVITY_LOG_OUTCOME_LIMIT)}\n... outcome truncated to ${TASK_ACTIVITY_LOG_OUTCOME_LIMIT} characters ...`;
+}
+
+function truncateAgentLogDetail(
+  detail: string | null | undefined,
+  type: AgentLogEntry["type"],
+): string | undefined {
+  if (detail == null) return undefined;
+  if (!AGENT_LOG_TOOL_TYPES.has(type)) return detail;
+  if (detail.length <= AGENT_LOG_TOOL_DETAIL_LIMIT) return detail;
+  return `${detail.slice(0, AGENT_LOG_TOOL_DETAIL_LIMIT)}${AGENT_LOG_TOOL_DETAIL_TRUNCATION_NOTICE}`;
 }
 
 function compactTaskActivityLog(entries: TaskLogEntry[]): TaskLogEntry[] {
@@ -4507,19 +4521,20 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     agent?: AgentLogEntry["agent"],
   ): Promise<void> {
     const timestamp = new Date().toISOString();
+    const normalizedDetail = truncateAgentLogDetail(detail, type);
     const entry: AgentLogEntry = {
       timestamp,
       taskId,
       text,
       type,
-      ...(detail !== undefined && { detail }),
+      ...(normalizedDetail !== undefined && { detail: normalizedDetail }),
       ...(agent !== undefined && { agent }),
     };
 
     this.db.prepare(`
       INSERT INTO agentLogEntries (taskId, timestamp, text, type, detail, agent)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(taskId, timestamp, text, type, detail ?? null, agent ?? null);
+    `).run(taskId, timestamp, text, type, normalizedDetail ?? null, agent ?? null);
 
     this.db.bumpLastModified();
     this.emit("agent:log", entry);
@@ -4539,13 +4554,17 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
 
     const timestamp = new Date().toISOString();
+    const normalizedEntries = entries.map((entry) => ({
+      ...entry,
+      detail: truncateAgentLogDetail(entry.detail, entry.type),
+    }));
     const stmt = this.db.prepare(`
       INSERT INTO agentLogEntries (taskId, timestamp, text, type, detail, agent)
       VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     this.db.transaction(() => {
-      for (const entry of entries) {
+      for (const entry of normalizedEntries) {
         stmt.run(
           entry.taskId,
           timestamp,
@@ -4558,7 +4577,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     });
 
     this.db.bumpLastModified();
-    for (const entry of entries) {
+    for (const entry of normalizedEntries) {
       this.emit("agent:log", {
         timestamp,
         taskId: entry.taskId,
@@ -4571,14 +4590,34 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
 
   private mapAgentLogRow(row: Record<string, unknown>): AgentLogEntry {
+    const type = row.type as AgentLogEntry["type"];
+    const detail = row.detail != null ? String(row.detail) : undefined;
     return {
       timestamp: row.timestamp as string,
       taskId: row.taskId as string,
       text: row.text as string,
-      type: row.type as AgentLogEntry["type"],
-      ...(row.detail != null && { detail: row.detail as string }),
+      type,
+      ...(detail !== undefined && { detail }),
       ...(row.agent != null && { agent: row.agent as AgentLogEntry["agent"] }),
     };
+  }
+
+  private getAgentLogSelectClause(): string {
+    const escapedNotice = AGENT_LOG_TOOL_DETAIL_TRUNCATION_NOTICE.replace(/'/g, "''");
+    return `
+      taskId,
+      timestamp,
+      text,
+      type,
+      CASE
+        WHEN type IN ('tool', 'tool_result', 'tool_error')
+          AND detail IS NOT NULL
+          AND LENGTH(detail) > ${AGENT_LOG_TOOL_DETAIL_LIMIT}
+        THEN SUBSTR(detail, 1, ${AGENT_LOG_TOOL_DETAIL_LIMIT}) || '${escapedNotice}'
+        ELSE detail
+      END AS detail,
+      agent
+    `;
   }
 
   async addTaskComment(id: string, text: string, author: string): Promise<Task> {
@@ -5180,9 +5219,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
    * Read historical agent log entries for a task from SQLite.
    * Returns entries in chronological order (oldest first).
    *
-   * Each entry's `text` and `detail` fields are returned in full — there is
-   * no per-entry truncation at the persistence layer. The 500-entry cap
-   * (`MAX_LOG_ENTRIES`) in the dashboard hooks is a whole-list limit only.
+   * Tool-oriented detail payloads are clipped server-side to keep historical
+   * log reads responsive even when agents emit very large command results.
+   * The 500-entry cap (`MAX_LOG_ENTRIES`) in the dashboard hooks remains a
+   * whole-list limit only.
    *
    * @param taskId - The task ID (e.g. "KB-001")
    * @param options - Optional pagination options
@@ -5203,10 +5243,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     if (limit === 0) return [];
 
+    const selectClause = this.getAgentLogSelectClause();
+
     if (limit !== undefined) {
       const readCount = offset > 0 ? limit + offset : limit;
       const rows = this.db.prepare(`
-        SELECT * FROM agentLogEntries
+        SELECT ${selectClause} FROM agentLogEntries
         WHERE taskId = ?
         ORDER BY timestamp DESC, id DESC
         LIMIT ?
@@ -5219,7 +5261,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
 
     const rows = this.db.prepare(`
-      SELECT * FROM agentLogEntries
+      SELECT ${selectClause} FROM agentLogEntries
       WHERE taskId = ?
       ORDER BY timestamp ASC, id ASC
     `).all(taskId) as Array<Record<string, unknown>>;
@@ -5257,8 +5299,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     endIso: string | null,
   ): Promise<AgentLogEntry[]> {
     const end = endIso ?? new Date().toISOString();
+    const selectClause = this.getAgentLogSelectClause();
     const rows = this.db.prepare(`
-      SELECT * FROM agentLogEntries
+      SELECT ${selectClause} FROM agentLogEntries
       WHERE taskId = ? AND timestamp >= ? AND timestamp <= ?
       ORDER BY timestamp ASC, id ASC
     `).all(taskId, startIso, end) as Array<Record<string, unknown>>;
@@ -5296,8 +5339,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
             const text = typeof parsed.text === "string" ? parsed.text : "";
             const detail = typeof parsed.detail === "string" ? parsed.detail : null;
             const agent = typeof parsed.agent === "string" ? parsed.agent : null;
+            const normalizedDetail = truncateAgentLogDetail(
+              detail,
+              type as AgentLogEntry["type"],
+            );
 
-            insertStmt.run(parsedTaskId, timestamp, text, type, detail, agent);
+            insertStmt.run(parsedTaskId, timestamp, text, type, normalizedDetail ?? null, agent);
             imported += 1;
           } catch {
             // Skip malformed JSONL lines.
@@ -5866,11 +5913,15 @@ ${stepsSection}`;
   }
 
   /**
-   * Run a WAL checkpoint to truncate the WAL file and reclaim disk space.
-   * Safe to call periodically from the self-healing maintenance timer.
+   * Run a WAL checkpoint and return checkpoint stats.
+   *
+   * The default preserves SQLite's aggressive TRUNCATE behavior for explicit
+   * maintenance/compaction calls. Live engine maintenance should request
+   * PASSIVE explicitly to avoid forcing a blocking truncate on the shared
+   * event loop.
    */
-  walCheckpoint(): { busy: number; log: number; checkpointed: number } {
-    return this.db.walCheckpoint();
+  walCheckpoint(mode?: "PASSIVE" | "TRUNCATE"): { busy: number; log: number; checkpointed: number } {
+    return this.db.walCheckpoint(mode);
   }
 
   getRootDir(): string {

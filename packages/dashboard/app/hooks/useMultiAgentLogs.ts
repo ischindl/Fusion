@@ -10,9 +10,9 @@ const INITIAL_LOAD_LIMIT = 100;
  * Cap the total number of log entries to `MAX_LOG_ENTRIES`.
  *
  * This is a **whole-list cap** — it limits how many entries are kept
- * in memory, not the content of any individual entry.  Per-entry `text`
- * and `detail` fields are never truncated anywhere in the pipeline
- * (persistence → API → SSE → hook → rendering).
+ * in memory, not the content of any individual entry. Tool-oriented
+ * `detail` payloads may still be clipped server-side to keep the live
+ * dashboard responsive when agents emit very large command results.
  */
 function capLogEntries(entries: AgentLogEntry[]): AgentLogEntry[] {
   return entries.length > MAX_LOG_ENTRIES

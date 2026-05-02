@@ -4158,6 +4158,25 @@ Task with acceptance criteria
       expect(events[1]).toMatchObject({ text: "tool", type: "tool", detail: "read file", agent: "executor" });
     });
 
+    it("truncates oversized tool detail before persisting and emitting", async () => {
+      const task = await createTestTask();
+      const events: any[] = [];
+      const oversizedDetail = "X".repeat(5000);
+      const truncationMarker = "[tool output truncated to keep dashboard log views responsive]";
+      store.on("agent:log", (entry) => events.push(entry));
+
+      await store.appendAgentLogBatch([
+        { taskId: task.id, text: "Bash", type: "tool_result", detail: oversizedDetail, agent: "executor" },
+      ]);
+
+      const logs = await store.getAgentLogs(task.id);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].detail).toContain(truncationMarker);
+      expect(logs[0].detail!.match(/\[tool output truncated to keep dashboard log views responsive\]/g)).toHaveLength(1);
+      expect(logs[0].detail!.length).toBeLessThan(oversizedDetail.length);
+      expect(events[0].detail).toBe(logs[0].detail);
+    });
+
     it("appendAgentLogBatch with empty entries is a no-op", async () => {
       const task = await createTestTask();
 
@@ -4302,6 +4321,28 @@ Task with acceptance criteria
       expect(logs[0].agent).toBe("executor");
       expect(logs[0].text.length).toBe(longText.length);
       expect(logs[0].detail!.length).toBe(longDetail.length);
+    });
+
+    it("clips oversized historical tool detail at read time", async () => {
+      const task = await createTestTask();
+      const oversizedDetail = "Y".repeat(7000);
+      const truncationMarker = "[tool output truncated to keep dashboard log views responsive]";
+
+      insertLogEntryWithTimestamp(
+        store,
+        task.id,
+        "Bash",
+        "tool_result",
+        "2026-04-24T12:00:00.000Z",
+        oversizedDetail,
+        "executor",
+      );
+
+      const logs = await store.getAgentLogs(task.id);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].detail).toContain(truncationMarker);
+      expect(logs[0].detail!.match(/\[tool output truncated to keep dashboard log views responsive\]/g)).toHaveLength(1);
+      expect(logs[0].detail!.length).toBeLessThan(oversizedDetail.length);
     });
 
     it("appendAgentLog persists and reads back the agent field", async () => {

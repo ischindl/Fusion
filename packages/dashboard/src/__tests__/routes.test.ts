@@ -4481,6 +4481,34 @@ describe("Attachment routes", () => {
     expect(res.body[1].detail).toBe(longDetail);
     expect(res.body[1].detail.length).toBe(5000);
   });
+
+  it("GET /activity — defaults to a bounded limit when none is provided", async () => {
+    const fakeEntries = [
+      {
+        id: "activity-1",
+        timestamp: "2026-01-01T00:00:00Z",
+        type: "task:created",
+        details: "Created task",
+      },
+    ];
+    const activityStore = createMockStore({
+      getActivityLog: vi.fn().mockResolvedValue(fakeEntries),
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(activityStore));
+
+    const res = await GET(app, "/api/activity");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(fakeEntries);
+    expect(activityStore.getActivityLog).toHaveBeenCalledWith({
+      limit: 100,
+      since: undefined,
+      type: undefined,
+    });
+  });
 });
 
 // --- Models route tests ---

@@ -2414,8 +2414,9 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       const sinceParam = req.query.since;
       const typeParam = req.query.type;
 
-      // Parse and validate limit
-      let limit: number | undefined;
+      // Parse and validate limit. Omitted limit intentionally defaults to 100
+      // to match the documented API contract and avoid unbounded history reads.
+      let limit = 100;
       if (limitParam !== undefined) {
         const parsed = Number.parseInt(limitParam as string, 10);
         if (!Number.isFinite(parsed) || parsed < 0) {

@@ -754,8 +754,9 @@ export class Database {
       this.db.exec("PRAGMA busy_timeout = 5000");
       // In WAL mode NORMAL is nearly as durable as FULL with much lower fsync cost.
       this.db.exec("PRAGMA synchronous = NORMAL");
-      // Checkpoint aggressively to avoid large WAL growth under bursty writes.
-      this.db.exec("PRAGMA wal_autocheckpoint = 100");
+      // Let WAL grow to roughly the journal size limit before auto-checkpointing.
+      // This avoids frequent synchronous checkpoints on log-heavy workloads.
+      this.db.exec("PRAGMA wal_autocheckpoint = 1000");
       // Bound WAL growth between checkpoints/maintenance cycles.
       this.db.exec("PRAGMA journal_size_limit = 4194304");
     } else {
@@ -2334,11 +2335,15 @@ export class Database {
   }
 
   /**
-   * Run a WAL checkpoint to truncate the WAL file and reclaim disk space.
-   * Safe to call periodically. Returns checkpoint stats.
+   * Run a WAL checkpoint and return checkpoint stats.
+   *
+   * TRUNCATE remains the default so explicit maintenance/compaction calls keep
+   * reclaiming disk space as before. Live engine maintenance should opt into
+   * PASSIVE to avoid forcing a blocking truncate on the shared event loop
+   * while tasks are actively writing logs.
    */
-  walCheckpoint(): { busy: number; log: number; checkpointed: number } {
-    const row = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+  walCheckpoint(mode: "PASSIVE" | "TRUNCATE" = "TRUNCATE"): { busy: number; log: number; checkpointed: number } {
+    const row = this.db.prepare(`PRAGMA wal_checkpoint(${mode})`).get() as
       | { busy?: number; log?: number; checkpointed?: number }
       | undefined;
     return { busy: row?.busy ?? 0, log: row?.log ?? 0, checkpointed: row?.checkpointed ?? 0 };

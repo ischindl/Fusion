@@ -1898,6 +1898,7 @@ export function SettingsModal({
               </label>
               <div className="settings-field-help">
                 When disabled, tool rows are still logged but detailed tool payloads are omitted.
+                Very large tool payloads may still be clipped even when this stays enabled.
               </div>
             </div>
             <div className="form-group">
