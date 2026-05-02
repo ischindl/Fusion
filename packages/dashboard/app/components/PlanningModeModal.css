@@ -1206,6 +1206,12 @@
     margin-left: 0;
   }
 
+  .planning-summary-actions-right {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+
   .planning-example-chips {
     flex-direction: column;
     align-items: stretch;
