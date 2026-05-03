@@ -2,6 +2,7 @@ import "./PostOnboardingRecommendations.css";
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import { GitPullRequest, Key, Lightbulb, X, Zap } from "lucide-react";
 import { fetchAuthStatus, fetchGlobalSettings } from "../api";
+import { PluginSlot } from "./PluginSlot";
 import {
   dismissPostOnboardingRecommendations,
   isOnboardingCompleted,
@@ -195,6 +196,7 @@ export function PostOnboardingRecommendations({
               );
             })}
           </ul>
+          <PluginSlot slotId="post-onboarding-recommendation" />
         </div>
       </div>
       <button

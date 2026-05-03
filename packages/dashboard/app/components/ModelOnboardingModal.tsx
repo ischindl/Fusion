@@ -26,6 +26,7 @@ import { DroidCliProviderCard } from "./DroidCliProviderCard";
 import { LoginInstructions } from "./LoginInstructions";
 import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { CustomProviderForm } from "./CustomProviderForm";
+import { PluginSlot } from "./PluginSlot";
 import { appendTokenQuery } from "../auth";
 import { filterVisibleOnboardingAndSettingsProviders } from "./providerVisibility";
 
@@ -1992,6 +1993,8 @@ export function ModelOnboardingModal({
                 })()
               )}
 
+              <PluginSlot slotId="onboarding-recommendation-card" projectId={projectId} />
+
               {/* Provider explanation disclosure */}
               <OnboardingDisclosure summary="What are AI providers?">
                 <p className="onboarding-helper-text">
@@ -2019,6 +2022,8 @@ export function ModelOnboardingModal({
                 </div>
               ) : (
                 <>
+                  <PluginSlot slotId="onboarding-provider-card" projectId={projectId} />
+
                   <section className="onboarding-provider-section" data-testid="onboarding-quick-start-providers">
                     <h3 className="onboarding-section-title">Quick start providers</h3>
                     {quickStartProviders.length > 0 ? (
@@ -2145,6 +2150,8 @@ export function ModelOnboardingModal({
                       </p>
                     </OnboardingDisclosure>
                   )}
+
+                  <PluginSlot slotId="onboarding-setup-help" projectId={projectId} />
 
                 </>
               )}
