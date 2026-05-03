@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import { computeMaxWorkers } from "../core/src/__test-utils__/vitest-workers";
 
-const maxWorkers = computeMaxWorkers({ defaultCap: 1 });
+const maxWorkers = computeMaxWorkers({ defaultCap: 3 });
 
 export default defineConfig({
   plugins: [react()],
@@ -24,9 +24,10 @@ export default defineConfig({
     environmentMatchGlobs: [
       ["app/**", "jsdom"],
     ],
-    // Process CSS imports so jsdom-based tests that assert on getComputedStyle
-    // see the actual rules from co-located component CSS files.
-    css: { include: [/.+/] },
+    // Process CSS imports only for jsdom-based tests that assert on
+    // getComputedStyle. Node-env tests under src/** don't need CSS rules and
+    // skipping the transform there cuts a large slice of total wall time.
+    css: { include: [/app\//] },
     globals: true,
     include: ["app/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     setupFiles: [
