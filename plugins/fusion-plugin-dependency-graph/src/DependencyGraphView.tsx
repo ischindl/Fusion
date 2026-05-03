@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
 import type { Task } from "@fusion/core";
 import { loadPositions, savePositions } from "./storage";
 import "./DependencyGraphView.css";
@@ -14,6 +14,8 @@ const SCENE_PADDING_REM = 2;
 const FIT_PADDING_REM = 2;
 const MIN_SCALE = 0.4;
 const MAX_SCALE = 2;
+const WHEEL_ZOOM_FACTOR = 0.002;
+const MOBILE_BREAKPOINT = 768;
 
 export interface DependencyGraphHostContext {
   projectId?: string;
@@ -29,9 +31,12 @@ export interface PluginDashboardViewComponentProps {
 type Position = { x: number; y: number };
 
 function getDistance(a: Position, b: Position): number {
-  const deltaX = a.x - b.x;
-  const deltaY = a.y - b.y;
-  return Math.hypot(deltaX, deltaY);
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function isMobileViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`).matches;
 }
 
 export function DependencyGraphView({ context }: PluginDashboardViewComponentProps) {
@@ -42,11 +47,16 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null);
   const persisted = useMemo(() => loadPositions(context.projectId), [context.projectId]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  // Multi-pointer tracking (no setPointerCapture — it breaks two-finger gestures)
+  const pointersRef = useRef<Map<number, Position>>(new Map());
   const interactionRef = useRef<
     | { kind: "node"; taskId: string; startPointer: Position; startNode: Position; moved: boolean }
     | { kind: "pan"; startPointer: Position; startPan: Position; moved: boolean }
     | null
   >(null);
+  const pinchRef = useRef<{ startDistance: number; startScale: number } | null>(null);
+  const autoFitDoneRef = useRef(false);
 
   const tasks = useMemo(
     () => context.tasks.filter((task) => ACTIVE_COLUMNS.has(task.column)),
@@ -162,7 +172,7 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
     return related;
   }, [dependencyGraph.downstream, dependencyGraph.upstream, focusTaskId]);
 
-  const fitToGraph = () => {
+  const fitToGraph = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -179,7 +189,26 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
 
     setScale(nextScale);
     setPan({ x: centeredPanX, y: centeredPanY });
-  };
+  }, [bounds.width, bounds.height]);
+
+  // Auto-fit on initial mobile load
+  useEffect(() => {
+    if (autoFitDoneRef.current) return;
+    if (!isMobileViewport()) return;
+    if (positioned.length === 0) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Ensure the canvas has non-zero dimensions before fitting
+    if (canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
+
+    autoFitDoneRef.current = true;
+    // Use rAF to ensure layout is settled
+    requestAnimationFrame(() => {
+      fitToGraph();
+    });
+  }, [fitToGraph, positioned.length]);
 
   const persistPosition = (taskId: string, next: Position) => {
     setNodeOverrides((current) => ({ ...current, [taskId]: next }));
@@ -193,6 +222,10 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
     event.stopPropagation();
     const hit = map.get(taskId);
     if (!hit) return;
+
+    // Track this pointer in the global map
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
     interactionRef.current = {
       kind: "node",
       taskId,
@@ -200,21 +233,48 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
       startNode: { x: hit.x, y: hit.y },
       moved: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handleCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+
+    // Track this pointer
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    // If we already have another pointer, this is the start of a pinch gesture
+    if (pointersRef.current.size === 2) {
+      // Cancel any ongoing pan interaction
+      interactionRef.current = null;
+      const [p1, p2] = Array.from(pointersRef.current.values());
+      const distance = getDistance(p1, p2);
+      pinchRef.current = { startDistance: distance, startScale: scale };
+      return;
+    }
+
     interactionRef.current = {
       kind: "pan",
       startPointer: { x: event.clientX, y: event.clientY },
       startPan: pan,
       moved: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // Update tracked pointer position
+    if (pointersRef.current.has(event.pointerId)) {
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    // Handle pinch gesture when two pointers are active
+    if (pointersRef.current.size >= 2 && pinchRef.current) {
+      const [p1, p2] = Array.from(pointersRef.current.values());
+      const currentDistance = getDistance(p1, p2);
+      const scaleFactor = currentDistance / pinchRef.current.startDistance;
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchRef.current.startScale * scaleFactor));
+      setScale(newScale);
+      return;
+    }
+
     const current = interactionRef.current;
     if (!current) return;
 
@@ -241,6 +301,16 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(event.pointerId);
+
+    // If we had a pinch and one finger remains, end pinch mode
+    if (pinchRef.current) {
+      if (pointersRef.current.size < 2) {
+        pinchRef.current = null;
+      }
+      return;
+    }
+
     const current = interactionRef.current;
     interactionRef.current = null;
     if (!current) return;
@@ -256,8 +326,38 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
 
       persistPosition(current.taskId, { x: hit.x, y: hit.y });
     }
+  };
 
-    event.currentTarget.releasePointerCapture(event.pointerId);
+  const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    pinchRef.current = null;
+    interactionRef.current = null;
+  };
+
+  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rootFontSize = Number.parseFloat(globalThis.getComputedStyle(document.documentElement).fontSize) || 16;
+    const delta = -event.deltaY * WHEEL_ZOOM_FACTOR;
+    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * (1 + delta)));
+
+    // Zoom toward the pointer position
+    const rect = canvas.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+
+    // How much the point under the cursor should shift in rem
+    const scaleRatio = newScale / scale;
+    const panOffsetX = (pointerX / rootFontSize) * (1 - scaleRatio) / scale;
+    const panOffsetY = (pointerY / rootFontSize) * (1 - scaleRatio) / scale;
+
+    setScale(newScale);
+    setPan((prev) => ({
+      x: prev.x + panOffsetX * newScale / scale,
+      y: prev.y + panOffsetY * newScale / scale,
+    }));
   };
 
   return (
@@ -274,46 +374,54 @@ export function DependencyGraphView({ context }: PluginDashboardViewComponentPro
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onWheel={handleWheel}
       >
-        <div
-          className="dependency-graph-scene"
-          style={{
-            width: `${bounds.width}rem`,
-            height: `${bounds.height}rem`,
-            transform: `translate(${pan.x}rem, ${pan.y}rem) scale(${scale})`,
-            transformOrigin: "top left",
-          }}
-        >
-          <svg className="dependency-graph-edges" viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
-            {edgesForRender.map((edge) => (
-              <line
-                key={`${edge.from}-${edge.to}`}
-                x1={edge.renderX1}
-                y1={edge.renderY1}
-                x2={edge.renderX2}
-                y2={edge.renderY2}
-                className={`dependency-graph-edge${relatedTaskIds ? relatedTaskIds.has(edge.from) && relatedTaskIds.has(edge.to) ? " is-related" : " is-dimmed" : ""}`}
-              />
-            ))}
-          </svg>
+        {tasks.length === 0 ? (
+          <div className="dependency-graph-empty">
+            <p>No tasks to display. Tasks in Triage, Todo, In Progress, or In Review columns will appear here.</p>
+          </div>
+        ) : (
+          <div
+            className="dependency-graph-scene"
+            style={{
+              width: `${bounds.width}rem`,
+              height: `${bounds.height}rem`,
+              transform: `translate(${pan.x}rem, ${pan.y}rem) scale(${scale})`,
+              transformOrigin: "top left",
+            }}
+          >
+            <svg className="dependency-graph-edges" viewBox={`0 0 ${bounds.width} ${bounds.height}`}>
+              {edgesForRender.map((edge) => (
+                <line
+                  key={`${edge.from}-${edge.to}`}
+                  x1={edge.renderX1}
+                  y1={edge.renderY1}
+                  x2={edge.renderX2}
+                  y2={edge.renderY2}
+                  className={`dependency-graph-edge${relatedTaskIds ? relatedTaskIds.has(edge.from) && relatedTaskIds.has(edge.to) ? " is-related" : " is-dimmed" : ""}`}
+                />
+              ))}
+            </svg>
 
-          {positionedForRender.map((node) => (
-            <div
-              key={node.task.id}
-              className={`dependency-graph-node${selectedTaskId === node.task.id ? " is-selected" : ""}${relatedTaskIds ? relatedTaskIds.has(node.task.id) ? " is-related" : " is-dimmed" : ""}`}
-              style={{
-                width: `${NODE_WIDTH_REM}rem`,
-                minHeight: `${NODE_HEIGHT_REM}rem`,
-                transform: `translate(${node.renderX}rem, ${node.renderY}rem)`,
-              }}
-              onPointerDown={(event) => handlePointerDownOnNode(node.task.id, event)}
-              onPointerEnter={() => setHoveredTaskId(node.task.id)}
-              onPointerLeave={() => setHoveredTaskId((current) => (current === node.task.id ? null : current))}
-            >
-              {context.renderTaskCard(node.task)}
-            </div>
-          ))}
-        </div>
+            {positionedForRender.map((node) => (
+              <div
+                key={node.task.id}
+                className={`dependency-graph-node${selectedTaskId === node.task.id ? " is-selected" : ""}${relatedTaskIds ? relatedTaskIds.has(node.task.id) ? " is-related" : " is-dimmed" : ""}`}
+                style={{
+                  width: `${NODE_WIDTH_REM}rem`,
+                  minHeight: `${NODE_HEIGHT_REM}rem`,
+                  transform: `translate(${node.renderX}rem, ${node.renderY}rem)`,
+                }}
+                onPointerDown={(event) => handlePointerDownOnNode(node.task.id, event)}
+                onPointerEnter={() => setHoveredTaskId(node.task.id)}
+                onPointerLeave={() => setHoveredTaskId((current) => (current === node.task.id ? null : current))}
+              >
+                {context.renderTaskCard(node.task)}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

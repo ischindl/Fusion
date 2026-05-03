@@ -23,6 +23,7 @@
   background: var(--surface);
   min-height: var(--dependency-graph-canvas-min-height);
   cursor: grab;
+  touch-action: none;
 }
 
 .dependency-graph-canvas:active {
@@ -86,16 +87,46 @@
   filter: saturate(0.8);
 }
 
+.dependency-graph-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: var(--dependency-graph-canvas-min-height);
+  padding: var(--space-xl);
+  color: var(--text-muted);
+  text-align: center;
+}
+
 @media (max-width: 768px) {
   .dependency-graph-view {
     padding: var(--space-md);
   }
 
+  .dependency-graph-controls {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    padding: var(--space-sm) 0;
+  }
+
+  .dependency-graph-controls .btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
   .dependency-graph-canvas {
+    flex: 1;
+    min-height: 0;
     min-height: var(--dependency-graph-canvas-min-height-mobile);
   }
 
   .dependency-graph-node {
     width: min(100%, var(--dependency-graph-node-max-width-mobile)) !important;
+  }
+
+  .dependency-graph-empty {
+    min-height: var(--dependency-graph-canvas-min-height-mobile);
   }
 }
