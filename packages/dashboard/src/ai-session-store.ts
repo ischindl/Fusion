@@ -231,6 +231,47 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
   }
 
   /**
+   * Atomically replace a draft session's title AND record the `initialPlan`
+   * text the title was summarized from. Lets the start path skip a redundant
+   * summarize when the persisted `summarizedFor` still matches the user's
+   * final text. Existing inputPayload fields (initialPlan, model override)
+   * are preserved by merge — this method only touches `summarizedFor`.
+   */
+  markDraftSummarized(id: string, title: string, summarizedFor: string): boolean {
+    const existing = this.get(id);
+    if (!existing || existing.type !== "planning") return false;
+
+    let payload: Record<string, unknown> = {};
+    if (existing.inputPayload) {
+      try {
+        const parsed = JSON.parse(existing.inputPayload);
+        if (parsed && typeof parsed === "object") payload = parsed as Record<string, unknown>;
+      } catch {
+        // Fall through with empty payload — better to lose stale fields than
+        // to refuse the update and leave the title out of sync with reality.
+      }
+    }
+    payload.summarizedFor = summarizedFor;
+    const inputPayload = JSON.stringify(payload);
+
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE ai_sessions
+         SET title = ?, inputPayload = ?, updatedAt = ?
+         WHERE id = ? AND type = 'planning'`,
+      )
+      .run(title, inputPayload, now, id) as { changes?: number };
+
+    const changed = Number(result.changes ?? 0) > 0;
+    if (!changed) return false;
+
+    const row = this.get(id);
+    if (row) this.emit("ai_session:updated", toSummary(row, row.updatedAt));
+    return true;
+  }
+
+  /**
    * Update persisted draft metadata for a planning session.
    * Persists the in-progress initialPlan so it survives reload; the sidebar
    * title is intentionally left alone (set once at creation, replaced when
@@ -249,9 +290,28 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
     const now = new Date().toISOString();
     const trimmedPlan = draft.initialPlan.trim();
     const hasModelOverride = Boolean(draft.modelProvider && draft.modelId);
+
+    // Preserve the prior `summarizedFor` field so summarize results aren't
+    // wiped on every draft sync. It only stays valid if it still matches the
+    // new initialPlan; otherwise the previous summary is stale and the start
+    // path will re-summarize against the current text.
+    const existing = this.get(id);
+    let preservedSummarizedFor: string | undefined;
+    if (existing?.inputPayload) {
+      try {
+        const prev = JSON.parse(existing.inputPayload) as { summarizedFor?: unknown };
+        if (typeof prev.summarizedFor === "string" && prev.summarizedFor === trimmedPlan) {
+          preservedSummarizedFor = prev.summarizedFor;
+        }
+      } catch {
+        // Ignore malformed prior payloads — treat as no summary on file.
+      }
+    }
+
     const inputPayload = JSON.stringify({
       initialPlan: trimmedPlan,
       ...(hasModelOverride ? { modelProvider: draft.modelProvider, modelId: draft.modelId } : {}),
+      ...(preservedSummarizedFor ? { summarizedFor: preservedSummarizedFor } : {}),
     });
     const result = this.db
       .prepare(

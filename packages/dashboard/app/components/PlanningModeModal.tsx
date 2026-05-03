@@ -2610,15 +2610,17 @@ function PlanningSessionList({
                 <span className="planning-sidebar-item-body">
                   <span className="planning-sidebar-item-title">
                     {/*
-                      For draft rows the persisted title is intentionally a
-                      generic placeholder so the sidebar doesn't leak raw
-                      keystrokes. Surface the inputPayload-derived preview
-                      instead so multiple drafts are distinguishable; once
-                      the user starts the session, summarizeTitle replaces
-                      `title` and `preview` is no longer present.
+                      Drafts hold a generic placeholder as their persisted
+                      title until the user blurs/closes (which fires
+                      summarizeTitle) or starts the session. While the title
+                      is still the placeholder, surface the inputPayload-
+                      derived preview so multiple drafts are distinguishable.
+                      Once a real title has been summarized, prefer it —
+                      otherwise the blur/close summarize would do model work
+                      that the user never sees in the sidebar.
                     */}
-                    {session.status === "draft" && session.preview
-                      ? session.preview
+                    {session.status === "draft" && (!session.title || session.title === "New planning session")
+                      ? (session.preview ?? "New planning session")
                       : session.title || "Untitled session"}
                   </span>
                   <span className="planning-sidebar-item-meta">

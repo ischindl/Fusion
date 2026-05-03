@@ -215,11 +215,17 @@ export const DRAFT_PLACEHOLDER_TITLE = "New planning session";
  * model override so reopening a draft restores the model selection the user
  * picked at create time, and so summarizeDraftTitle calls hit that same
  * model rather than silently falling back to project defaults.
+ *
+ * `summarizedFor` records the exact `initialPlan` string the current
+ * persisted title was summarized from. The start-existing path uses it to
+ * skip re-summarizing when blur/close already produced a title for the
+ * final text, avoiding a redundant model call.
  */
 export interface DraftInputPayload {
   initialPlan?: string;
   modelProvider?: string;
   modelId?: string;
+  summarizedFor?: string;
 }
 
 /** Session TTL in milliseconds (7 days) */
@@ -291,6 +297,8 @@ interface Session {
   /** Model override the user picked at draft-create time. Persisted in inputPayload so reopen restores it. */
   draftModelProvider?: string;
   draftModelId?: string;
+  /** Plan text the current title was summarized from; lets startExistingSession skip a redundant re-summarize when blur/close already covered the final text. */
+  draftSummarizedFor?: string;
   ntfyConfig?: PlanningNtfyConfig;
   /** Last planning question notified via ntfy, keyed as `${sessionId}:${questionId}` for dedupe across reconnect/replay. */
   lastNotifiedQuestionKey?: string;
@@ -405,6 +413,7 @@ function persistSession(session: Session, status: "generating" | "awaiting_input
       initialPlan: session.initialPlan,
       ...(session.draftModelProvider ? { modelProvider: session.draftModelProvider } : {}),
       ...(session.draftModelId ? { modelId: session.draftModelId } : {}),
+      ...(session.draftSummarizedFor ? { summarizedFor: session.draftSummarizedFor } : {}),
     }),
     conversationHistory: JSON.stringify(session.history),
     currentQuestion: session.currentQuestion ? JSON.stringify(session.currentQuestion) : null,
@@ -461,6 +470,7 @@ function buildSessionFromRow(row: AiSessionRow): Session {
     projectId: row.projectId ?? undefined,
     draftModelProvider: payload.modelProvider,
     draftModelId: payload.modelId,
+    draftSummarizedFor: payload.summarizedFor,
     history: safeParseJson<PlanningHistoryEntry[]>(
       row.conversationHistory,
       [],
@@ -1007,9 +1017,12 @@ export async function summarizeDraftTitle(
     return latest?.title ?? null;
   }
 
-  _aiSessionStore.updateTitle(sessionId, finalTitle);
+  _aiSessionStore.markDraftSummarized(sessionId, finalTitle, trimmed);
   const session = sessions.get(sessionId);
-  if (session) session.title = finalTitle;
+  if (session) {
+    session.title = finalTitle;
+    session.draftSummarizedFor = trimmed;
+  }
   return finalTitle;
 }
 
@@ -1047,12 +1060,14 @@ export async function startExistingSession(
   }
 
   // Drafts are sync'd via aiSessionStore.updateDraft, which only writes
-  // SQLite. Pull the latest initialPlan + persisted model override from the
-  // row so the agent receives everything the user typed, and so the title
-  // summary uses the model the draft was originally created under (rather
-  // than silently switching to whatever the project default happens to be).
+  // SQLite. Pull the latest initialPlan + persisted model override + the
+  // text the current title was already summarized from. Lets the agent
+  // see everything the user typed, lets summarize use the original model,
+  // and lets us skip a redundant model call when blur/close already
+  // summarized this exact text.
   let persistedProvider: string | undefined;
   let persistedModelId: string | undefined;
+  let persistedSummarizedFor: string | undefined;
   let cameFromDraft = false;
   if (_aiSessionStore) {
     const row = _aiSessionStore.get(sessionId);
@@ -1064,31 +1079,37 @@ export async function startExistingSession(
       }
       persistedProvider = payload.modelProvider;
       persistedModelId = payload.modelId;
+      persistedSummarizedFor = payload.summarizedFor;
     }
   }
 
-  // Always re-summarize when transitioning out of draft so the title reflects
-  // the FINAL text the user typed, even if a previous blur-fired summarize
-  // already replaced the placeholder against an older snapshot.
+  // Re-summarize when transitioning out of draft so the title reflects the
+  // FINAL text — but skip the model call when blur/close already produced a
+  // summary for this exact text and the user hasn't edited since. Saves
+  // tokens when the user blurs the textarea then immediately clicks Start.
   if (cameFromDraft) {
     const trimmed = session.initialPlan.trim();
-    const fallback = trimmed.slice(0, 60).trim();
-    if (session.title === DRAFT_PLACEHOLDER_TITLE) {
-      session.title = fallback || DRAFT_PLACEHOLDER_TITLE;
-    }
-    const summarizeProvider = modelProvider ?? persistedProvider;
-    const summarizeModelId = modelId ?? persistedModelId;
-    void (async () => {
-      try {
-        const generated = await summarizeTitle(trimmed, rootDir, summarizeProvider, summarizeModelId);
-        const finalTitle = generated?.trim() || fallback;
-        if (!finalTitle) return;
-        session.title = finalTitle;
-        _aiSessionStore?.updateTitle(sessionId, finalTitle);
-      } catch {
-        // Keep fallback title
+    const alreadySummarized =
+      session.title !== DRAFT_PLACEHOLDER_TITLE && persistedSummarizedFor === trimmed;
+    if (!alreadySummarized) {
+      const fallback = trimmed.slice(0, 60).trim();
+      if (session.title === DRAFT_PLACEHOLDER_TITLE) {
+        session.title = fallback || DRAFT_PLACEHOLDER_TITLE;
       }
-    })();
+      const summarizeProvider = modelProvider ?? persistedProvider;
+      const summarizeModelId = modelId ?? persistedModelId;
+      void (async () => {
+        try {
+          const generated = await summarizeTitle(trimmed, rootDir, summarizeProvider, summarizeModelId);
+          const finalTitle = generated?.trim() || fallback;
+          if (!finalTitle) return;
+          session.title = finalTitle;
+          _aiSessionStore?.updateTitle(sessionId, finalTitle);
+        } catch {
+          // Keep fallback title
+        }
+      })();
+    }
   }
 
   persistSession(session, "generating");

@@ -201,7 +201,12 @@ describe("PlanningModeModal", () => {
     
     // Default mock for streaming
     mockStartPlanningStreaming.mockResolvedValue({ sessionId: "session-123" });
-    mockCreatePlanningDraft.mockResolvedValue({ sessionId: "draft-123", title: "Test Plan" });
+    // Server's createDraftSession always returns the placeholder title; the
+    // real summarized title only arrives later via blur/close summarize or
+    // when the session transitions out of draft. Mirror that in the mock so
+    // the sidebar render rule (preview while title === placeholder) behaves
+    // realistically in tests.
+    mockCreatePlanningDraft.mockResolvedValue({ sessionId: "draft-123", title: "New planning session" });
     mockRetryPlanningSession.mockResolvedValue({ success: true, sessionId: "session-123" });
     mockStartPlanningBreakdown.mockResolvedValue({ sessionId: "session-123", subtasks: [] });
     mockFetchAiSession.mockResolvedValue(null);

@@ -2667,6 +2667,116 @@ describe("planning routes lock enforcement", () => {
     expect(clearedPayload.modelId).toBeUndefined();
   });
 
+  it("skips re-summarize on start when blur/close already summarized the same final text", async () => {
+    // Sequence the bug guards:
+    //  1. Create a draft.
+    //  2. Blur → summarizeDraftTitle runs against the persisted text and
+    //     records `summarizedFor` so the start path knows the title is
+    //     up-to-date for that exact text.
+    //  3. Click Start with the same text → startExistingSession should
+    //     skip its own summarize and leave the title from step 2 intact.
+    const draft = await request(
+      app,
+      "POST",
+      "/api/planning/create-draft",
+      JSON.stringify({ initialPlan: "Stable plan body the user already finished writing" }),
+      { "content-type": "application/json" },
+    );
+    const draftSessionId = draft.body.sessionId as string;
+
+    const blur = await request(
+      app,
+      "POST",
+      `/api/planning/${draftSessionId}/summarize-draft-title`,
+      JSON.stringify({}),
+      { "content-type": "application/json" },
+    );
+    expect(blur.status).toBe(200);
+    const titleAfterBlur = blur.body.title as string;
+    expect(titleAfterBlur).not.toBe("New planning session");
+
+    setupMockStreamingAgent({ responses: STANDARD_QUESTION_RESPONSES });
+    const start = await request(
+      app,
+      "POST",
+      "/api/planning/start-streaming",
+      JSON.stringify({
+        initialPlan: "Stable plan body the user already finished writing",
+        existingSessionId: draftSessionId,
+      }),
+      { "content-type": "application/json" },
+    );
+    expect(start.status).toBe(201);
+
+    // Title is preserved exactly — no overwrite from a second summarize call.
+    expect(aiSessionStore.get(draftSessionId)?.title).toBe(titleAfterBlur);
+
+    // And the persisted summarizedFor still equals the final initialPlan
+    // so a future restart wouldn't re-summarize either.
+    const payload = JSON.parse(aiSessionStore.get(draftSessionId)?.inputPayload ?? "{}");
+    expect(payload.summarizedFor).toBe("Stable plan body the user already finished writing");
+  });
+
+  it("re-summarizes on start when the user typed more after the last blur", async () => {
+    // Counterpart to the dedup test: if the persisted text is now different
+    // from what was last summarized, the start path must re-summarize so
+    // the sidebar doesn't show a stale title once the session is running.
+    const draft = await request(
+      app,
+      "POST",
+      "/api/planning/create-draft",
+      JSON.stringify({ initialPlan: "Initial plan body before the late edits" }),
+      { "content-type": "application/json" },
+    );
+    const draftSessionId = draft.body.sessionId as string;
+
+    await request(
+      app,
+      "POST",
+      `/api/planning/${draftSessionId}/summarize-draft-title`,
+      JSON.stringify({}),
+      { "content-type": "application/json" },
+    );
+    const blurredPayload = JSON.parse(aiSessionStore.get(draftSessionId)?.inputPayload ?? "{}");
+    expect(blurredPayload.summarizedFor).toBe("Initial plan body before the late edits");
+
+    // User keeps typing — sync the new text via PATCH /draft. This must
+    // preserve summarizedFor only if it still equals the new initialPlan;
+    // since the text just changed, summarizedFor becomes stale.
+    await request(
+      app,
+      "PATCH",
+      `/api/ai-sessions/${draftSessionId}/draft`,
+      JSON.stringify({ initialPlan: "Initial plan body before the late edits and now with extra detail" }),
+      { "content-type": "application/json" },
+    );
+    const updatedPayload = JSON.parse(aiSessionStore.get(draftSessionId)?.inputPayload ?? "{}");
+    expect(updatedPayload.summarizedFor).toBeUndefined();
+
+    setupMockStreamingAgent({ responses: STANDARD_QUESTION_RESPONSES });
+    await request(
+      app,
+      "POST",
+      "/api/planning/start-streaming",
+      JSON.stringify({
+        initialPlan: "Initial plan body before the late edits and now with extra detail",
+        existingSessionId: draftSessionId,
+      }),
+      { "content-type": "application/json" },
+    );
+
+    // Start path summarized again (or fell back to truncation) against the
+    // new text. summarizeTitle returns null for short text so the fallback
+    // is the first 60 chars of the trimmed plan; the key assertion is that
+    // the title now reflects the post-edit text, not the stale prefix it
+    // had after the original blur.
+    const finalTitle = aiSessionStore.get(draftSessionId)?.title ?? "";
+    const expectedFallback =
+      "Initial plan body before the late edits and now with extra detail".slice(0, 60).trim();
+    expect(finalTitle).toBe(expectedFallback);
+    expect(finalTitle).not.toBe("Initial plan body before the late edits");
+  });
+
   it("starts a draft that survived a backend restart by lazily rebuilding from SQLite", async () => {
     // Recreate the post-restart state: draft persisted in SQLite but the
     // in-memory sessions map is empty (rehydrateFromStore skips drafts since
