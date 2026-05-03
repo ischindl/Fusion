@@ -10,7 +10,7 @@
  */
 
 import type { AddressInfo } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CentralCore,
   PluginStore,
@@ -413,7 +413,7 @@ export async function runServe(
   const pluginStoreRootDir =
     typeof (store as { getRootDir?: () => string }).getRootDir === "function"
       ? store.getRootDir()
-      : store.getFusionDir();
+      : dirname(store.getFusionDir());
   const pluginStore = new PluginStore(pluginStoreRootDir);
   await pluginStore.init();
 

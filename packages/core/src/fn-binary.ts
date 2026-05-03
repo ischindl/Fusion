@@ -7,13 +7,15 @@
  *   2. `fusion`  — long alias name
  *   3. `npx -y runfusion.ai` — zero-install fallback that always works
  *
- * The npm bin name on disk varies by install path and platform; the version
- * is read by spawning `<bin> --version` so we report the actually-runnable
- * binary, not just the first match on PATH.
+ * The npm bin name on disk varies by install path and platform. Prefer
+ * reading the installed package manifest from the resolved binary path so we
+ * don't execute older buggy global installs just to discover their version.
  */
 
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
+import { posix, win32 } from "node:path";
 
 interface ProbeResult {
   exitCode: number | null;
@@ -70,6 +72,9 @@ export const FN_NPX_INVOCATION = `npx -y ${FN_NPM_PACKAGE}`;
 
 /** Candidate binary names checked, in preference order. */
 const CANDIDATES = ["fn", "fusion"] as const;
+const FUSION_PACKAGE_NAMES = new Set(["runfusion.ai", "@runfusion/fusion"]);
+
+type PathApi = Pick<typeof posix, "dirname" | "resolve" | "sep">;
 
 export type FnBinaryName = (typeof CANDIDATES)[number];
 
@@ -102,6 +107,97 @@ async function whichBinary(name: string): Promise<string | undefined> {
   return firstLine || undefined;
 }
 
+function getPathApi(pathValue: string): PathApi {
+  return /^[A-Za-z]:[\\/]/.test(pathValue) || pathValue.includes("\\")
+    ? win32
+    : posix;
+}
+
+function readPackageVersionFromPath(startPath: string): string | undefined {
+  const pathApi = getPathApi(startPath);
+  let dir = pathApi.dirname(startPath);
+
+  for (let i = 0; i < 8; i += 1) {
+    const packageJsonPath = pathApi.resolve(dir, "package.json");
+    if (existsSync(packageJsonPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+          name?: string;
+          version?: string;
+        };
+        if (
+          typeof parsed.name === "string"
+          && typeof parsed.version === "string"
+          && FUSION_PACKAGE_NAMES.has(parsed.name)
+        ) {
+          return parsed.version;
+        }
+      } catch {
+        // Ignore malformed manifests and keep walking upward.
+      }
+    }
+
+    const parent = pathApi.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return undefined;
+}
+
+function resolveShimTargets(resolvedPath: string): string[] {
+  const pathApi = getPathApi(resolvedPath);
+  const basedir = pathApi.dirname(resolvedPath);
+  let contents: string;
+
+  try {
+    contents = readFileSync(resolvedPath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  const targets = new Set<string>();
+  const pattern = /([^\r\n"'`]*node_modules[\\/](?:runfusion\.ai|@runfusion[\\/](?:fusion))[^\r\n"'`]*(?:\.js|package\.json))/gi;
+
+  for (const match of contents.matchAll(pattern)) {
+    const raw = match[1];
+    if (!raw) continue;
+
+    const trimmed = raw.trim().replace(/^['"]|['"]$/g, "");
+    const normalized = trimmed
+      .replace(/^%~?dp0%?/i, "")
+      .replace(/^\$basedir/i, "")
+      .replace(/^\$PSScriptRoot/i, "")
+      .replace(/^[\\/]+/, "")
+      .replace(/[\\/]/g, pathApi.sep);
+
+    targets.add(pathApi.resolve(basedir, normalized));
+  }
+
+  return Array.from(targets);
+}
+
+function readVersionFromResolvedBinaryPath(resolvedPath: string): string | undefined {
+  const candidatePaths = new Set<string>([resolvedPath]);
+
+  try {
+    candidatePaths.add(realpathSync(resolvedPath));
+  } catch {
+    // Fall back to the original resolved path.
+  }
+
+  for (const shimTarget of resolveShimTargets(resolvedPath)) {
+    candidatePaths.add(shimTarget);
+  }
+
+  for (const candidatePath of candidatePaths) {
+    const version = readPackageVersionFromPath(candidatePath);
+    if (version) return version;
+  }
+
+  return undefined;
+}
+
 /**
  * Best-effort version probe. Returns undefined if the binary refuses the
  * flag or produces no parseable output — the caller should treat undefined
@@ -129,7 +225,7 @@ export async function detectFnBinary(): Promise<FnBinaryStatus> {
     try {
       const resolvedPath = await whichBinary(candidate);
       if (!resolvedPath) continue;
-      const version = await probeVersion(candidate);
+      const version = readVersionFromResolvedBinaryPath(resolvedPath) ?? await probeVersion(candidate);
       return {
         installed: true,
         binary: candidate,

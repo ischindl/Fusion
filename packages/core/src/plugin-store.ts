@@ -14,6 +14,7 @@ import type {
   PluginState,
 } from "./plugin-types.js";
 import { validatePluginManifest } from "./plugin-types.js";
+import { assertProjectRootDir } from "./project-root-guard.js";
 
 export interface PluginStoreEvents {
   "plugin:registered": [plugin: PluginInstallation];
@@ -69,6 +70,7 @@ export class PluginStore extends EventEmitter<PluginStoreEvents> {
 
   constructor(private rootDir: string, options?: { inMemoryDb?: boolean }) {
     super();
+    assertProjectRootDir(rootDir, "PluginStore");
     this.inMemoryDb = options?.inMemoryDb === true;
   }
 

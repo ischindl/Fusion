@@ -72,6 +72,7 @@ const mocks = vi.hoisted(() => {
       init: vi.fn().mockResolvedValue(undefined),
       watch: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
+      getRootDir: vi.fn().mockReturnValue(`/repo${projectId ? `/${projectId}` : ""}`),
       getFusionDir: vi.fn().mockReturnValue(`/repo${projectId ? `/${projectId}` : ""}/.fusion`),
       getGlobalSettingsStore: vi.fn(() => ({
         getSettings: vi.fn().mockResolvedValue({}),
@@ -879,12 +880,12 @@ describe("runServe — Plugin wiring", () => {
     await triggerSignal("SIGINT");
   });
 
-  it("initializes PluginStore with the task store's fusion directory", async () => {
+  it("initializes PluginStore with the task store's project root", async () => {
     const { PluginStore } = await import("@fusion/core");
 
     await runServe(4040, {});
 
-    expect(PluginStore).toHaveBeenCalledWith("/repo/.fusion");
+    expect(PluginStore).toHaveBeenCalledWith("/repo");
 
     await triggerSignal("SIGINT");
   });

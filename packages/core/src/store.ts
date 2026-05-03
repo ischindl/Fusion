@@ -24,6 +24,7 @@ import { runCommandAsync } from "./run-command.js";
 import { createLogger } from "./logger.js";
 import { validateNodeOverrideChange } from "./node-override-guard.js";
 import { sanitizeTitle } from "./ai-summarize.js";
+import { assertProjectRootDir } from "./project-root-guard.js";
 
 /** Database row shape for the tasks table (all columns). */
 interface TaskRow {
@@ -523,6 +524,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   ) {
     super();
     this.setMaxListeners(100);
+    assertProjectRootDir(rootDir, "TaskStore");
     this.fusionDir = join(rootDir, ".fusion");
     this.tasksDir = join(this.fusionDir, "tasks");
     this.configPath = join(this.fusionDir, "config.json");

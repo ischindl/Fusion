@@ -1,5 +1,5 @@
 import type { AddressInfo } from "node:net";
-import { join, resolve as pathResolve } from "node:path";
+import { dirname, join, resolve as pathResolve } from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { stat, readdir, readFile as fsReadFile } from "node:fs/promises";
@@ -1062,7 +1062,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   const pluginStoreRootDir =
     typeof (store as { getRootDir?: () => string }).getRootDir === "function"
       ? store.getRootDir()
-      : store.getFusionDir();
+      : dirname(store.getFusionDir());
   const pluginStore = new PluginStore(pluginStoreRootDir);
   await pluginStore.init();
 
