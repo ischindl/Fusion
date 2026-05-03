@@ -25,6 +25,7 @@ import {
   type RoutineManualTrigger,
   MAX_ROUTINE_RUN_HISTORY,
 } from "./routine.js";
+import { assertProjectRootDir } from "./project-root-guard.js";
 
 const CRON_TIMEZONE = "UTC";
 
@@ -71,6 +72,7 @@ export class RoutineStore extends EventEmitter<RoutineStoreEvents> {
 
   constructor(private rootDir: string, options?: { inMemoryDb?: boolean }) {
     super();
+    assertProjectRootDir(rootDir, "RoutineStore");
     this.inMemoryDb = options?.inMemoryDb === true;
   }
 

@@ -11,6 +11,7 @@ import type {
 import { AUTOMATION_PRESETS, MAX_RUN_HISTORY } from "./automation.js";
 import type { ScheduleType } from "./automation.js";
 import { Database, fromJson } from "./db.js";
+import { assertProjectRootDir } from "./project-root-guard.js";
 
 const CRON_TIMEZONE = "UTC";
 
@@ -52,6 +53,7 @@ export class AutomationStore extends EventEmitter<AutomationStoreEvents> {
 
   constructor(private rootDir: string, options?: { inMemoryDb?: boolean }) {
     super();
+    assertProjectRootDir(rootDir, "AutomationStore");
     this.inMemoryDb = options?.inMemoryDb === true;
   }
 
