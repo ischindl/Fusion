@@ -88,6 +88,28 @@ describe("isContextLimitError", () => {
     expect(isContextLimitError("Context Window Exceeds limit")).toBe(true);
   });
 
+  // ── Anthropic model_context_window_exceeded stop_reason ──────────────
+
+  it("matches full pi-ai error 'Unhandled stop reason: model_context_window_exceeded'", () => {
+    expect(isContextLimitError("Unhandled stop reason: model_context_window_exceeded")).toBe(true);
+  });
+
+  it("matches standalone 'model_context_window_exceeded'", () => {
+    expect(isContextLimitError("model_context_window_exceeded")).toBe(true);
+  });
+
+  it("matches 'model_context_window_exceeded' case-insensitively", () => {
+    expect(isContextLimitError("Model_Context_Window_Exceeded")).toBe(true);
+  });
+
+  it("does NOT match 'model_context_window' without 'exceeded'", () => {
+    expect(isContextLimitError("model_context_window")).toBe(false);
+  });
+
+  it("does NOT match 'context_window' alone", () => {
+    expect(isContextLimitError("context_window")).toBe(false);
+  });
+
   // ── Negative matches: must NOT trigger ─────────────────────────────
 
   it("returns false for empty string", () => {

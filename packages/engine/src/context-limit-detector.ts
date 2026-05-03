@@ -42,6 +42,9 @@ const CONTEXT_OVERFLOW_PATTERNS: RegExp[] = [
   // Provider JSON error envelope variant: "context window exceeds limit (2013)"
   // Matches when "context window" and "exceeds" appear together (order-flexible)
   /context\s+window\s+exceeds/i,
+  // Anthropic API stop_reason: model_context_window_exceeded
+  // Surfaces as "Unhandled stop reason: model_context_window_exceeded" from pi-ai's mapStopReason()
+  /model_context_window_exceeded/i,
 ];
 
 /**
