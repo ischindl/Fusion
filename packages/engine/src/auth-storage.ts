@@ -146,7 +146,7 @@ export function createFusionAuthStorage(): AuthStorage {
     // underlying AuthStorage. Without this trap, writes land on the Proxy
     // object itself and the target's fallbackResolver stays undefined.
     set(target: AuthStorage, prop: string | symbol, value: unknown) {
-      (target as Record<string | symbol, unknown>)[prop] = value;
+      (target as unknown as Record<string | symbol, unknown>)[prop] = value;
       return true;
     },
 
