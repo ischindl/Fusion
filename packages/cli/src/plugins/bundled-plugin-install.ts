@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validatePluginManifest, type PluginLoader, type PluginManifest, type PluginStore } from "@fusion/core";
+import { validatePluginManifest, type PluginInstallation, type PluginLoader, type PluginManifest, type PluginStore } from "@fusion/core";
 
 const DEPENDENCY_GRAPH_PLUGIN_ID = "fusion-plugin-dependency-graph";
 
@@ -40,10 +40,10 @@ function resolveBundledDependencyGraphPath(): string | null {
 export async function ensureBundledDependencyGraphPluginInstalled(
   pluginStore: PluginStore,
   pluginLoader: PluginLoader,
-): Promise<"installed" | "already-installed" | "missing-bundle"> {
+): Promise<"installed" | "updated" | "already-installed" | "missing-bundle"> {
+  let existingPlugin: PluginInstallation | null = null;
   try {
-    await pluginStore.getPlugin(DEPENDENCY_GRAPH_PLUGIN_ID);
-    return "already-installed";
+    existingPlugin = await pluginStore.getPlugin(DEPENDENCY_GRAPH_PLUGIN_ID);
   } catch {
     // Continue; plugin not installed yet.
   }
@@ -54,6 +54,31 @@ export async function ensureBundledDependencyGraphPluginInstalled(
   }
 
   const manifest = await loadManifest(bundledPath);
+
+  if (existingPlugin) {
+    // Check if stored path or version is stale compared to the bundled copy
+    const pathChanged = existingPlugin.path !== bundledPath;
+    const versionChanged = existingPlugin.version !== manifest.version;
+
+    if (!pathChanged && !versionChanged) {
+      return "already-installed";
+    }
+
+    // Update the stored record to match the current bundled copy
+    await pluginStore.updatePlugin(DEPENDENCY_GRAPH_PLUGIN_ID, {
+      ...(pathChanged ? { path: bundledPath } : {}),
+      ...(versionChanged ? { version: manifest.version } : {}),
+    });
+
+    // If the plugin is enabled, load it so it picks up the new path/version
+    if (existingPlugin.enabled) {
+      await pluginLoader.loadPlugin(existingPlugin.id);
+    }
+
+    return "updated";
+  }
+
+  // Fresh install
   const plugin = await pluginStore.registerPlugin({
     manifest,
     path: bundledPath,

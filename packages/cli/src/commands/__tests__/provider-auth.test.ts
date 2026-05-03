@@ -147,4 +147,67 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
 
     expect(await storage.getApiKey("openai-codex")).toBe("legacy-access-token");
   });
+
+  describe("Anthropic reclassification from OAuth to API key", () => {
+    it("filters anthropic out of getOAuthProviders even when upstream reports it as OAuth", () => {
+      const fusionAuth = makeAuthStorage();
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+        { id: "github-copilot", name: "GitHub Copilot" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      const oauthProviders = wrapped.getOAuthProviders();
+
+      const oauthIds = oauthProviders.map((p) => p.id);
+      expect(oauthIds).not.toContain("anthropic");
+      expect(oauthIds).toContain("github-copilot");
+    });
+
+    it("includes anthropic in getApiKeyProviders with correct display name", () => {
+      const fusionAuth = makeAuthStorage();
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      const apiKeyProviders = wrapped.getApiKeyProviders();
+
+      const anthropic = apiKeyProviders.find((p) => p.id === "anthropic");
+      expect(anthropic).toBeDefined();
+      expect(anthropic!.name).toBe("Anthropic");
+    });
+
+    it("stores anthropic credentials as api_key type", () => {
+      const fusionAuth = makeAuthStorage();
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      wrapped.setApiKey("anthropic", "sk-ant-api03-test-key");
+
+      expect(fusionAuth.set).toHaveBeenCalledWith("anthropic", {
+        type: "api_key",
+        key: "sk-ant-api03-test-key",
+      });
+    });
+
+    it("detects anthropic as authenticated via hasApiKey after storing API key", () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: { type: "api_key", key: "sk-ant-api03-test" },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+
+      expect(wrapped.hasApiKey("anthropic")).toBe(true);
+    });
+  });
 });
