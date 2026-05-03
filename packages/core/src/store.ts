@@ -248,6 +248,86 @@ function compactTaskActivityLog(entries: TaskLogEntry[]): TaskLogEntry[] {
 }
 
 /**
+ * Build the exact PROMPT.md bytes that `createTask` writes for a triage task.
+ * Single source of truth so the stub-detection comparison below stays in sync
+ * with the bootstrap shape.
+ */
+function buildBootstrapPrompt(taskId: string, title: string | undefined, description: string): string {
+  const heading = title ? `${taskId}: ${title}` : taskId;
+  return `# ${heading}\n\n${description}\n`;
+}
+
+/**
+ * Detect whether a PROMPT.md body is the auto-generated bootstrap stub
+ * (`# heading\n\n<description>\n`) that `createTask` writes for triage tasks,
+ * versus a real specification produced by triage or planning.
+ *
+ * Detection is wrapper-shape-exact: the on-disk content is compared against
+ * the exact bytes `createTask` would have written for the *pre-update*
+ * title/description. Earlier heuristic detectors (size caps, `##` header
+ * presence, `**Created:**` / `**Size:**` markers) misfired on imported issue
+ * bodies that contain `## Repro`, `**Created:** ...`, etc. — those are real
+ * stubs but look like real specs to a content-inspecting check. By matching
+ * against the wrapper produced from the previous title/description, we are
+ * robust to anything the description itself contains.
+ */
+function isBootstrapPromptStub(
+  content: string,
+  taskId: string,
+  preUpdateTitle: string | undefined,
+  preUpdateDescription: string,
+): boolean {
+  return content === buildBootstrapPrompt(taskId, preUpdateTitle, preUpdateDescription);
+}
+
+/**
+ * Replace just the leading `# ...` heading line of a PROMPT.md body, leaving
+ * every other section untouched. Used when a metadata edit (title or
+ * description change) needs to keep the displayed heading in sync without
+ * disturbing the rest of a real specification.
+ *
+ * If the file does not start with a `#` heading, it is returned verbatim —
+ * the caller has no clean place to splice the heading and the spec's content
+ * is more important to preserve than the displayed title (task.json is the
+ * canonical source for title/description anyway).
+ */
+function rewriteHeadingLine(content: string, newHeading: string): string {
+  const match = content.match(/^#[^\n]*\n?/);
+  if (!match) {
+    return content;
+  }
+  const trailingNewline = match[0].endsWith("\n") ? "\n" : "";
+  return `# ${newHeading}${trailingNewline}${content.slice(match[0].length)}`;
+}
+
+/**
+ * Replace the body of the `## Mission` section with `newDescription`, leaving
+ * every other section untouched. Used to propagate `task.description` edits
+ * into a real spec without disturbing custom sections (Review Level, Frontend
+ * UX Criteria, File Scope, Acceptance Criteria, etc.) that a section-whitelist
+ * regen would silently drop.
+ *
+ * Returns the original content unchanged if there is no `## Mission` section.
+ */
+function rewriteMissionSection(content: string, newDescription: string): string {
+  const missionMatch = content.match(/^##\s+Mission\s*$/m);
+  if (!missionMatch || missionMatch.index === undefined) {
+    return content;
+  }
+  const headerEnd = missionMatch.index + missionMatch[0].length;
+  const rest = content.slice(headerEnd);
+  // Find the next `## ` heading (start of next section). The match position is
+  // relative to `rest`, so we re-anchor to the absolute offset.
+  const nextHeading = rest.search(/\n##\s/);
+  const sectionEndAbsolute = nextHeading === -1 ? content.length : headerEnd + nextHeading;
+  const before = content.slice(0, headerEnd);
+  const after = content.slice(sectionEndAbsolute);
+  // Reconstruct: header line + blank line + new description + blank line +
+  // trailing content (which begins with the newline before the next heading).
+  return `${before}\n\n${newDescription}\n${after}`;
+}
+
+/**
  * Canonicalizes a settings object by stripping legacy fields that are no longer valid
  * and rewriting legacy path values left over from the kb → fn rename.
  */
@@ -2179,9 +2259,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     // Update cache if watcher is active
     if (this.isWatching) this.taskCache.set(id, { ...task });
 
-    const heading = task.title ? `${id}: ${task.title}` : id;
     const prompt = task.column === "triage"
-      ? `# ${heading}\n\n${task.description}\n`
+      ? buildBootstrapPrompt(id, task.title, task.description)
       : this.generateSpecifiedPrompt(task);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "PROMPT.md"), prompt);
@@ -2848,6 +2927,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
+      // Capture title/description before mutation so the PROMPT.md stub
+      // detector below can compare against the exact wrapper bytes that the
+      // pre-edit task would have produced. This is what makes detection
+      // robust to descriptions that contain `##` headings or `**Created:**`
+      // text (e.g. imported GitHub issue bodies) — we never inspect the
+      // description content, only the wrapper shape.
+      const preUpdateTitle = task.title;
+      const preUpdateDescription = task.description;
+
       if (updates.nodeId !== undefined) {
         const validation = validateNodeOverrideChange(task, updates.nodeId ?? null);
         if (!validation.allowed) {
@@ -3122,23 +3210,57 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         await writeFile(join(dir, "PROMPT.md"), updates.prompt);
       }
 
-      // Regenerate PROMPT.md when title or description changes (but not when explicit prompt update)
+      // Sync PROMPT.md when title or description changes (but not when explicit
+      // prompt update — that already wrote the new content above).
+      //
+      // Two distinct cases:
+      //
+      // (a) Bootstrap stub — the auto-generated `# heading\n\n<desc>\n` block
+      //     `createTask` writes. Rewrite the whole file from the new title +
+      //     description so the human-visible stub stays in sync.
+      //
+      // (b) Real specification (any `##` section header, or the `**Created:**`
+      //     / `**Size:**` metadata the triage prompt format requires). Do NOT
+      //     rebuild the file from a section whitelist — earlier regressions
+      //     either clobbered the spec entirely (FN-3056 + the previous
+      //     `regeneratePrompt` path while column='triage') or silently dropped
+      //     `## Review Level` / `## Frontend UX Criteria` and other custom
+      //     sections (the same regen call on column!='triage'), which left the
+      //     executor with reset review levels and missing UX guidance. Instead
+      //     just splice the leading `#` heading line so the displayed title
+      //     stays in sync with task.json; the body is preserved verbatim.
+      //
+      // task.json remains the canonical source for title/description fields.
+      // PROMPT.md is only ever fully rewritten via explicit `updates.prompt`.
       if (updates.prompt === undefined && (updates.title !== undefined || updates.description !== undefined)) {
         const promptPath = join(dir, "PROMPT.md");
         if (existsSync(promptPath)) {
           const existingPrompt = await readFile(promptPath, "utf-8");
-          let newPrompt: string;
-          
-          if (task.column === "triage") {
-            // Simple format for triage tasks: # heading\n\ndescription
-            const heading = task.title ? `${task.id}: ${task.title}` : task.id;
-            newPrompt = `# ${heading}\n\n${task.description}\n`;
+
+          if (isBootstrapPromptStub(existingPrompt, task.id, preUpdateTitle, preUpdateDescription)) {
+            const newPrompt = buildBootstrapPrompt(task.id, task.title, task.description);
+            await writeFile(promptPath, newPrompt);
           } else {
-            // Structured format for other columns - preserve sections
-            newPrompt = this.regeneratePrompt(task, existingPrompt);
+            // Real spec — surgical edits only. Each section we propagate to is
+            // edited in place; everything else (Review Level, Frontend UX
+            // Criteria, custom sections from triage) is preserved verbatim.
+            let next = existingPrompt;
+            if (updates.title !== undefined) {
+              // Match the existing heading style: triage emits
+              // `# Task: {id} - {title}`; createTask uses `# {id}: {title}`.
+              const triageStyle = /^#\s+Task:\s+[A-Z]+-\d+\s+-\s+/m.test(existingPrompt);
+              const heading = triageStyle
+                ? (task.title ? `Task: ${task.id} - ${task.title}` : `Task: ${task.id}`)
+                : (task.title ? `${task.id}: ${task.title}` : task.id);
+              next = rewriteHeadingLine(next, heading);
+            }
+            if (updates.description !== undefined) {
+              next = rewriteMissionSection(next, task.description);
+            }
+            if (next !== existingPrompt) {
+              await writeFile(promptPath, next);
+            }
           }
-          
-          await writeFile(promptPath, newPrompt);
         }
       }
 
@@ -6023,62 +6145,6 @@ ${deps}
 - [ ] All steps complete
 - [ ] All tests passing
 ${notificationsSection}`;
-  }
-
-  /**
-   * Regenerate PROMPT.md when task title or description changes.
-   * Preserves existing sections (Dependencies, Steps, File Scope, etc.) from the original prompt,
-   * while updating the heading and Mission section with new values.
-   */
-  private regeneratePrompt(task: Task, existingPrompt: string): string {
-    // Generate the new heading
-    const heading = task.title ? `${task.id}: ${task.title}` : task.id;
-
-    // Helper to extract a section by heading name
-    const extractSection = (sectionName: string): string | null => {
-      const regex = new RegExp(`^##\\s+${sectionName}\\s*$`, "m");
-      const match = existingPrompt.match(regex);
-      if (!match) return null;
-
-      const startIdx = match.index! + match[0].length;
-      const rest = existingPrompt.slice(startIdx);
-      // Find next ## heading (any level) or end of string
-      const nextHeading = rest.search(/\n##\\s/);
-      const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-      return section.trim();
-    };
-
-    // Extract preserved sections
-    const depsSection = extractSection("Dependencies");
-    const stepsSection = extractSection("Steps");
-    const fileScopeSection = extractSection("File Scope");
-    const acceptanceSection = extractSection("Acceptance Criteria");
-    const notificationsSection = extractSection("Notifications");
-
-    // Reconstruct PROMPT.md with preserved sections
-    let result = `# ${heading}\n\n**Created:** ${task.createdAt.split("T")[0]}\n**Size:** ${task.size || "M"}\n\n## Mission\n\n${task.description}\n`;
-
-    if (depsSection !== null) {
-      result += `\n## Dependencies\n\n${depsSection}\n`;
-    }
-
-    if (stepsSection !== null) {
-      result += `\n## Steps\n\n${stepsSection}\n`;
-    }
-
-    if (fileScopeSection !== null) {
-      result += `\n## File Scope\n\n${fileScopeSection}\n`;
-    }
-
-    if (acceptanceSection !== null) {
-      result += `\n## Acceptance Criteria\n\n${acceptanceSection}\n`;
-    }
-
-    if (notificationsSection !== null) {
-      result += `\n## Notifications\n\n${notificationsSection}\n`;
-    }
-
-    return result;
   }
 
   /**

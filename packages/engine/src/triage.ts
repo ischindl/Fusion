@@ -1974,15 +1974,23 @@ export class TriageProcessor {
       taskUpdates.reviewLevel = parseInt(reviewMatch[1], 10);
     }
 
+    // Apply non-title metadata first. The title is held back and applied AFTER
+    // the column transition (see below) because store.updateTask regenerates
+    // PROMPT.md when title/description change, and the triage-stub regen path
+    // would overwrite the freshly-written specification while column='triage'.
+    // The store now also guards that regen against real specs, but we keep this
+    // ordering as defense in depth so a future change to the guard can't
+    // resurrect the regression.
     const promptDeclaredTitle = extractPromptDeclaredTitle(written, task.id);
-    if (promptDeclaredTitle) {
-      taskUpdates.title = promptDeclaredTitle;
-    }
 
     await this.store.updateTask(task.id, taskUpdates);
 
     if (settings.requirePlanApproval) {
-      await this.store.updateTask(task.id, { status: "awaiting-approval" });
+      const approvalUpdates: Record<string, unknown> = { status: "awaiting-approval" };
+      if (promptDeclaredTitle) {
+        approvalUpdates.title = promptDeclaredTitle;
+      }
+      await this.store.updateTask(task.id, approvalUpdates);
       await this.store.logEntry(
         task.id,
         options.recoveryLogAction ?? "Specification approved by AI — awaiting manual approval",
@@ -1992,6 +2000,10 @@ export class TriageProcessor {
     }
 
     await this.store.moveTask(task.id, "todo");
+
+    if (promptDeclaredTitle) {
+      await this.store.updateTask(task.id, { title: promptDeclaredTitle });
+    }
 
     if (options.recoveryLogAction) {
       await this.store.logEntry(task.id, options.recoveryLogAction);

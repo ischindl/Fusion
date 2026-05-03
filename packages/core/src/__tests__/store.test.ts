@@ -3659,6 +3659,198 @@ describe("TaskStore", () => {
       expect(updated.title).toBe("Updated title");
     });
 
+    it("does not clobber a real PROMPT.md spec when title changes on a triage task", async () => {
+      // Regression: triage finalization called updateTask({title}) while column
+      // was still 'triage', and the regen path rewrote PROMPT.md back to the
+      // bootstrap stub — shipping empty specs to the executor.
+      const task = await createTestTask();
+      const realSpec = [
+        `# Task: ${task.id} - Some refactor`,
+        "",
+        "**Created:** 2026-05-02",
+        "**Size:** M",
+        "",
+        "## Mission",
+        "",
+        "Do the thing.",
+        "",
+        "## Steps",
+        "",
+        "- [ ] Step 1",
+        "- [ ] Step 2",
+        "",
+      ].join("\n");
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(join(dir, "PROMPT.md"), realSpec);
+
+      await store.updateTask(task.id, { title: "Some refactor" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toBe(realSpec);
+    });
+
+    it("still rewrites the bootstrap stub when title changes on a triage task", async () => {
+      const task = await createTestTask();
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      // Confirm createTask seeded the bootstrap stub.
+      const initial = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(initial.startsWith(`# ${task.id}`)).toBe(true);
+      expect(/^##\s/m.test(initial)).toBe(false);
+
+      await store.updateTask(task.id, { title: "New Title" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toBe(`# ${task.id}: New Title\n\n${task.description}\n`);
+    });
+
+    it("rewrites a long bootstrap stub when title changes (structural detection, not size-based)", async () => {
+      // Regression: a length-based stub detector treated stubs from long
+      // descriptions (e.g. imported issue bodies) as real specs, so subsequent
+      // edits left the displayed heading stale.
+      const longDescription = "Lorem ipsum dolor sit amet. ".repeat(40); // ~1100 bytes
+      const created = await store.createTask({ description: longDescription });
+      const dir = join(rootDir, ".fusion", "tasks", created.id);
+      const initial = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(initial.length).toBeGreaterThan(1000);
+      expect(/^##\s/m.test(initial)).toBe(false);
+
+      await store.updateTask(created.id, { title: "Now With Title" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toBe(`# ${created.id}: Now With Title\n\n${longDescription}\n`);
+    });
+
+    it("rewrites a stub whose description body contains markdown headings or metadata-like text", async () => {
+      // Regression: a content-inspecting detector (rejecting any body with
+      // `##` headers or `**Created:**` / `**Size:**` markers) misclassified
+      // imported GitHub issue bodies as real specs. Detection must compare to
+      // the bootstrap wrapper shape, not inspect the description content.
+      const importedDescription = [
+        "## Repro",
+        "",
+        "1. Open the dashboard.",
+        "2. Click the thing.",
+        "",
+        "## Expected",
+        "",
+        "Thing happens.",
+        "",
+        "**Created:** 2026-04-01 by automation",
+        "**Size:** unspecified",
+      ].join("\n");
+      const created = await store.createTask({ description: importedDescription });
+      const dir = join(rootDir, ".fusion", "tasks", created.id);
+
+      await store.updateTask(created.id, { title: "Issue with markdown body" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      // The stub was rewritten — heading reflects the new title and the body
+      // is the (markdown-containing) description verbatim.
+      expect(onDisk).toBe(`# ${created.id}: Issue with markdown body\n\n${importedDescription}\n`);
+    });
+
+    it("survives the triage finalize sequence end-to-end (move-to-todo + title sync)", async () => {
+      // Mirrors what TriageProcessor.finalizeApprovedTask does on a real
+      // TaskStore: spec lands on disk, non-title metadata is applied with the
+      // task still in triage, the task moves to todo, and finally the prompt-
+      // declared title is synced. A regression in either the bootstrap stub
+      // detector or the real-spec edit path would surface as a corrupted or
+      // truncated PROMPT.md after this sequence.
+      const created = await store.createTask({
+        description: "raw user description containing ## a markdown heading",
+      });
+      const dir = join(rootDir, ".fusion", "tasks", created.id);
+      const realSpec = [
+        `# Task: ${created.id} - Refactor the renderer`,
+        "",
+        "**Created:** 2026-05-02",
+        "**Size:** M",
+        "",
+        "## Review Level: 2 (Plan and Code)",
+        "",
+        "**Score:** 5/8",
+        "",
+        "## Mission",
+        "",
+        "Refactor the renderer to use the new pipeline.",
+        "",
+        "## Frontend UX Criteria",
+        "",
+        "- Component must remain accessible at 320px width",
+        "",
+        "## Steps",
+        "",
+        "- [ ] Extract pipeline",
+        "",
+      ].join("\n");
+      // Triage agent would have written this via the `write` tool.
+      await writeFile(join(dir, "PROMPT.md"), realSpec);
+
+      // Reproduce finalizeApprovedTask's exact sequence:
+      // 1. Apply non-title metadata while still in triage.
+      await store.updateTask(created.id, { status: null });
+      // 2. Move to todo.
+      await store.moveTask(created.id, "todo");
+      // 3. Sync prompt-declared title.
+      await store.updateTask(created.id, { title: "Refactor the renderer" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toContain("## Review Level: 2 (Plan and Code)");
+      expect(onDisk).toContain("## Frontend UX Criteria");
+      expect(onDisk).toContain("- Component must remain accessible at 320px width");
+      expect(onDisk).toContain("## Steps");
+      expect(onDisk).toContain("- [ ] Extract pipeline");
+      expect(onDisk.split("\n")[0]).toBe(`# Task: ${created.id} - Refactor the renderer`);
+
+      const reloaded = await store.getTask(created.id);
+      expect(reloaded.column).toBe("todo");
+      expect(reloaded.title).toBe("Refactor the renderer");
+    });
+
+    it("preserves Review Level / Frontend UX Criteria sections when title changes on a non-triage task", async () => {
+      // Regression: the previous regenerate-from-whitelist path quietly dropped
+      // any section not in {Dependencies, Steps, File Scope, Acceptance,
+      // Notifications}. Triage emits `## Review Level: N` and may emit
+      // `## Frontend UX Criteria`; both must survive a metadata edit.
+      const task = await createTestTask();
+      await store.moveTask(task.id, "todo");
+      const realSpec = [
+        `# Task: ${task.id} - Original title`,
+        "",
+        "**Created:** 2026-05-02",
+        "**Size:** M",
+        "",
+        "## Review Level: 2 (Plan and Code)",
+        "",
+        "**Score:** 5/8",
+        "",
+        "## Mission",
+        "",
+        "Do the thing.",
+        "",
+        "## Frontend UX Criteria",
+        "",
+        "- Component must remain accessible at 320px width",
+        "",
+        "## Steps",
+        "",
+        "- [ ] Step 1",
+        "",
+      ].join("\n");
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(join(dir, "PROMPT.md"), realSpec);
+
+      await store.updateTask(task.id, { title: "Renamed task" });
+
+      const onDisk = await readFile(join(dir, "PROMPT.md"), "utf-8");
+      expect(onDisk).toContain("## Review Level: 2 (Plan and Code)");
+      expect(onDisk).toContain("## Frontend UX Criteria");
+      expect(onDisk).toContain("- Component must remain accessible at 320px width");
+      expect(onDisk).toContain("## Steps");
+      // Heading is rewritten in the original triage style.
+      expect(onDisk.split("\n")[0]).toBe(`# Task: ${task.id} - Renamed task`);
+    });
+
     it("persists sourceIssue on create and reload", async () => {
       const sourceIssue = createSourceIssueFixture();
       const created = await store.createTask({
