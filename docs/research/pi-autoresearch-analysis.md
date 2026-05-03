@@ -367,3 +367,15 @@ Should be replaced with Fusion-native equivalents:
 2. Keep DB as source of truth; use filesystem only for oversized artifacts.
 3. Build a single orchestrator service used by API, CLI, and extension tools.
 4. Add explicit attribution notes if any upstream code is directly copied.
+
+## 10. Addendum (FN-3012): Planned target vs current landed state
+
+This document captures the original porting plan. As of FN-3012 preflight, the repository now has a landed research subsystem in concrete files including:
+- `packages/core/src/research-types.ts`, `research-store.ts`, `research-settings.ts`
+- `packages/dashboard/src/research-routes.ts` and `packages/dashboard/app/components/ResearchView.tsx`
+- `packages/engine/src/research-orchestrator.ts` and `research-step-runner.ts`
+- `packages/cli/src/commands/research.ts` and extension tools `fn_research_*`
+
+Important boundary clarification:
+- The research subsystem and the insights subsystem are both present and remain separate/parallel (`research_runs`/`research_exports` vs `project_insights`/`project_insight_runs`).
+- Follow-on hardening tasks should target current landed files, not the historical placeholder path examples in the original FN-299x chain.

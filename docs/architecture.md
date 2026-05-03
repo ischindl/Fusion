@@ -160,6 +160,14 @@ Concrete references:
 - Uses fingerprint-based deduplication and run tracking
 - Backed by `project_insights` and `project_insight_runs`
 
+### Research Runs
+
+- `ResearchStore` (`research-store.ts`, `research-types.ts`, `research-settings.ts`) persists bounded research runs, sources/events, and exports
+- Backed by `research_runs` and `research_exports`
+- Engine orchestration is implemented in `packages/engine/src/research-orchestrator.ts` + `research-step-runner.ts`
+- Dashboard/API surface is implemented under `/api/research` (`packages/dashboard/src/research-routes.ts`) with `ResearchView.tsx` in the app
+- **Boundary note:** research and insights are parallel subsystems sharing host infrastructure, not one table/store family
+
 ### Plugin System
 
 - `PluginStore` (`plugin-store.ts`) stores plugin installation state and settings (`plugins` table)
