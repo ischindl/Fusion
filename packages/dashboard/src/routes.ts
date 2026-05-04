@@ -999,6 +999,30 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   }
 
   /**
+   * Resolve the HeartbeatMonitor for the engine that owns the given scopedStore.
+   *
+   * In multi-project setups each ProjectEngine has its own HeartbeatMonitor.
+   * This function walks all engines in the engineManager and returns the one
+   * whose working directory matches the scopedStore's root.
+   * Returns undefined when no matching engine is found.
+   */
+  function resolveHeartbeatMonitor(scopedStore: TaskStore): ServerOptions["heartbeatMonitor"] {
+    const engineManager = options?.engineManager;
+    if (!engineManager) return undefined;
+    try {
+      const storeRoot = resolve(scopedStore.getRootDir());
+      for (const engine of engineManager.getAllEngines().values()) {
+        if (resolve(engine.getWorkingDirectory()) === storeRoot) {
+          return engine.getHeartbeatMonitor() ?? undefined;
+        }
+      }
+    } catch {
+      // path resolution failure — fall through
+    }
+    return undefined;
+  }
+
+  /**
    * Trigger a heartbeat wake for an assigned agent based on a comment event.
    *
    * UTILITY PATH: This function is on the heartbeat control-plane lane and is
@@ -1026,9 +1050,14 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       return;
     }
 
-    // Guard: heartbeatMonitor is bound to a specific project root directory.
-    // Skip the wake when the scoped store belongs to a different project.
-    if (!isHeartbeatMonitorForProject(scopedStore)) {
+    // Resolve the correct HeartbeatMonitor for this project.
+    const resolvedMonitor =
+      isHeartbeatMonitorForProject(scopedStore)
+        ? heartbeatMonitor
+        : resolveHeartbeatMonitor(scopedStore);
+
+    // Skip: no heartbeat executor available for this project
+    if (!resolvedMonitor) {
       return;
     }
 
@@ -1063,7 +1092,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       triggeringCommentType: wake.triggeringCommentType,
     };
 
-    await heartbeatMonitor.executeHeartbeat({
+    await resolvedMonitor.executeHeartbeat({
       agentId: assignedAgent.id,
       source: "on_demand",
       triggerDetail: wake.triggerDetail,
@@ -2987,6 +3016,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     hasHeartbeatExecutor,
     heartbeatMonitor,
     isHeartbeatMonitorForProject,
+    resolveHeartbeatMonitor,
     runExcerptToAgentLogs,
     parseRunAuditFilters,
     normalizeRunAuditEvent,
