@@ -82,6 +82,28 @@ vi.mock("../../hooks/useConfirm", () => ({
   useConfirm: () => ({ confirm: mockConfirm }),
 }));
 
+const mockUseViewportMode = vi.fn<() => "mobile" | "tablet" | "desktop">(() => "desktop");
+
+vi.mock("../../hooks/useViewportMode", () => ({
+  useViewportMode: () => mockUseViewportMode(),
+}));
+
+const mockUseMobileKeyboard = vi.fn<() => {
+  keyboardOverlap: number;
+  viewportHeight: number | null;
+  viewportOffsetTop: number;
+  keyboardOpen: boolean;
+}>(() => ({
+  keyboardOverlap: 0,
+  viewportHeight: null,
+  viewportOffsetTop: 0,
+  keyboardOpen: false,
+}));
+
+vi.mock("../../hooks/useMobileKeyboard", () => ({
+  useMobileKeyboard: (...args: any[]) => mockUseMobileKeyboard(...args),
+}));
+
 const mockTasks: Task[] = [
   {
     id: "FN-001",
@@ -216,6 +238,7 @@ function getMediaBlocks(css: string, mediaQuery: string): string[] {
 }
 
 function mockViewport(mode: "mobile" | "desktop" | "tablet") {
+  mockUseViewportMode.mockReturnValue(mode);
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => {
@@ -3335,6 +3358,83 @@ describe("useSessionLock", () => {
     expect(sendBeaconSpy).toHaveBeenCalledWith(
       "/api/ai-sessions/session-3/lock/beacon?tabId=tab-self",
     );
+  });
+
+  describe("Mobile keyboard behavior (FN-3337)", () => {
+    beforeEach(() => {
+      mockUseViewportMode.mockReturnValue("desktop");
+      mockUseMobileKeyboard.mockReturnValue({
+        keyboardOverlap: 0,
+        viewportHeight: null,
+        viewportOffsetTop: 0,
+        keyboardOpen: false,
+      });
+    });
+
+    it("applies keyboard CSS variables when keyboard is open on mobile", () => {
+      mockUseViewportMode.mockReturnValue("mobile");
+      mockUseMobileKeyboard.mockReturnValue({
+        keyboardOverlap: 300,
+        viewportHeight: 400,
+        viewportOffsetTop: 50,
+        keyboardOpen: true,
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      const modal = screen.getByRole("dialog").querySelector(".planning-modal");
+      expect(modal).toBeTruthy();
+      expect(modal!.getAttribute("style")).toContain("--keyboard-overlap");
+      expect(modal!.getAttribute("style")).toContain("--vv-height");
+      expect(modal!.getAttribute("style")).toContain("--vv-offset-top");
+    });
+
+    it("does not apply keyboard CSS variables when keyboard is closed", () => {
+      mockUseViewportMode.mockReturnValue("mobile");
+      mockUseMobileKeyboard.mockReturnValue({
+        keyboardOverlap: 0,
+        viewportHeight: null,
+        viewportOffsetTop: 0,
+        keyboardOpen: false,
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      const modal = screen.getByRole("dialog").querySelector(".planning-modal");
+      expect(modal).toBeTruthy();
+      expect(modal!.getAttribute("style")).toBeNull();
+    });
+
+    it("does not apply keyboard CSS variables on desktop", () => {
+      mockUseViewportMode.mockReturnValue("desktop");
+      mockUseMobileKeyboard.mockReturnValue({
+        keyboardOverlap: 0,
+        viewportHeight: null,
+        viewportOffsetTop: 0,
+        keyboardOpen: false,
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={vi.fn()}
+        />,
+      );
+
+      const modal = screen.getByRole("dialog").querySelector(".planning-modal");
+      expect(modal).toBeTruthy();
+      expect(modal!.getAttribute("style")).toBeNull();
+    });
   });
 
 });

@@ -1,5 +1,5 @@
 import "./PlanningModeModal.css";
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from "react";
 import type { Task, PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
@@ -43,6 +43,7 @@ import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { useSessionLock } from "../hooks/useSessionLock";
 import { useAiSessionSync } from "../hooks/useAiSessionSync";
 import { useViewportMode } from "../hooks/useViewportMode";
+import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { getSessionTabId } from "../utils/getSessionTabId";
 
 interface PlanningModeModalProps {
@@ -185,6 +186,17 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
   useModalResizePersist(modalRef, isOpen, "fusion:planning-modal-size");
   const viewportMode = useViewportMode();
+
+  const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } =
+    useMobileKeyboard({ enabled: viewportMode === "mobile" });
+
+  const modalKeyboardStyle: CSSProperties = keyboardOpen
+    ? ({
+        "--keyboard-overlap": `${keyboardOverlap}px`,
+        "--vv-offset-top": `${viewportOffsetTop}px`,
+        ...(viewportHeight !== null ? { "--vv-height": `${viewportHeight}px` } : {}),
+      } as CSSProperties)
+    : {};
 
   // Mirror streamingOutput into a ref so SSE handlers can read the latest
   // value without stale closure issues.
@@ -1508,7 +1520,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       role="dialog"
       aria-modal="true"
     >
-      <div className="modal modal-lg planning-modal" ref={modalRef}>
+      <div className="modal modal-lg planning-modal" ref={modalRef} style={modalKeyboardStyle}>
         <div className="modal-header">
           <div className="detail-title-row">
             {mobileShowDetail && (
