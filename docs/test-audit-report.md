@@ -4,6 +4,15 @@ _Date: 2026-04-08_
 
 ## 1) Executive Summary
 
+### FN-3293 stabilization update (2026-05-04)
+
+- Replaced ad-hoc frame sleeps in `packages/cli/src/commands/dashboard-tui/__tests__/app.test.tsx` with deterministic `vi.waitFor`-based frame assertions and microtask flush helpers.
+- Updated settings remote-action handling so `C/V/X/P/L/U/K/R` shortcuts are exercised deterministically in tests without timing races on pane focus transitions.
+- Removed the blanket `{ timeout: 90_000 }` suite override in `packages/droid-cli/src/__tests__/provider.test.ts`; lifecycle coverage now relies on fake timers and event-driven completion.
+- Tightened dashboard GitHub route tests (`packages/dashboard/src/__tests__/routes-github.test.ts`) by reducing synthetic retry delays and removing explicit long per-test timeouts.
+- Confirmed `packages/core/src/__tests__/memory-backend.test.ts` remains fast while still asserting `installQmd()`/`ensureQmdInstalled()` forward the intended `timeout: 120_000` to `execFileAsync`.
+- Restored deterministic CLI bundle-output verification by resolving the droid-runtime probe export path to source entries in workspace tests, eliminating build-order flake from missing `dist/probe.js`.
+
 **Overall test health: _Good (with targeted high-risk gaps)_**
 
 - Total executed tests across audited packages (`core`, `engine`, `cli`, `dashboard`): **8,188 passing**
@@ -153,10 +162,10 @@ Interpretation:
 
 Notable timer/retry/race hotspots:
 
-- **Known flaky path (confirmed):** `packages/dashboard/src/routes.test.ts:3992-4016` (429 retry path with explicit 30s timeout).
 - `packages/engine/src/stuck-task-detector.test.ts` (heavy timer simulation)
 - `packages/engine/src/agent-heartbeat.test.ts` (timer-heavy heartbeat behavior)
 - `packages/cli/src/commands/dashboard.test.ts` (many timeout-driven behavioral checks)
+- **Resolved in FN-3293:** `packages/dashboard/src/__tests__/routes-github.test.ts` batch-import 429/diff-path coverage now runs with deterministic mocked throttling and no explicit per-test 10s/30s timeout overrides.
 
 Observed during test runs:
 - recurring `MaxListenersExceededWarning` in CLI dashboard test runs
@@ -220,7 +229,7 @@ One prelisted item is no longer untested:
 From `.fusion/memory/MEMORY.md` testing pitfalls:
 
 - **Engine pool setting must remain threads** — config currently reflects this (`packages/engine/vitest.config.ts:10`), but there is no dedicated regression test guarding accidental config drift.
-- **Dashboard 429 retry test requires 30s timeout** — still covered (`packages/dashboard/src/routes.test.ts:3992-4016`).
+- **FN-3293 update:** dashboard GitHub batch-import retry/diff-path tests no longer rely on explicit long timeout gates; deterministic mocked throttling + reduced delay parameters keep default-lane coverage fast.
 - **Build-before-test/workspace hydration pitfalls** — operationally reproducible; not represented by explicit dedicated regression tests as standalone safeguards.
 
 ---

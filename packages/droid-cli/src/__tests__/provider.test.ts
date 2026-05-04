@@ -147,7 +147,7 @@ describe("provider registration (default export)", () => {
   });
 });
 
-describe("streamViaCli", { timeout: 90_000 }, () => {
+describe("streamViaCli", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

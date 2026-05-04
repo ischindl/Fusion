@@ -2375,19 +2375,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       return;
     }
 
-    if (!detailFocused) {
-      if (key.upArrow || input === "k") {
-        setSelectedIndex((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (key.downArrow || input === "j") {
-        setSelectedIndex((i) => Math.min(SETTING_DEFS.length - 1, i + 1));
-        return;
-      }
-      return;
-    }
-
-    if (!selectedDef || !localSettings) return;
+    const inputUpper = input.toUpperCase();
 
     if (ttlInputMode) {
       if (key.escape) {
@@ -2397,13 +2385,13 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       return;
     }
 
-    const inputUpper = input.toUpperCase();
-
     if (inputUpper === "R") {
       void refreshRemoteStatus();
       setStatusMsg("Remote status refreshed");
       return;
     }
+
+    if (!localSettings) return;
 
     if (data?.remote && inputUpper === "C") {
       const provider = localSettings.remoteActiveProvider;
@@ -2460,6 +2448,20 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
+
+    if (!detailFocused) {
+      if (key.upArrow || input === "k") {
+        setSelectedIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setSelectedIndex((i) => Math.min(SETTING_DEFS.length - 1, i + 1));
+        return;
+      }
+      return;
+    }
+
+    if (!selectedDef) return;
 
     if (selectedDef.type === "boolean" && input === " ") {
       const current = localSettings[selectedDef.key] as boolean;

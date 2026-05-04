@@ -725,7 +725,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -776,7 +776,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -803,7 +803,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -872,7 +872,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -896,7 +896,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -915,7 +915,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -924,7 +924,7 @@ describe("POST /github/issues/batch-import", () => {
     expect(res.body.results[0].success).toBe(true);
     expect(res.body.results[0].taskId).toBeDefined();
     expect(throttledSpy).toHaveBeenCalledTimes(1);
-  }, 10000); // Increase timeout for retry delay
+  });
 
   it("returns error after max retries exceeded on 429", async () => {
     const throttledSpy = vi.spyOn(GitHubClient.prototype, "fetchThrottled").mockResolvedValueOnce({
@@ -969,7 +969,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 50 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1, 2, 3], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -1025,7 +1025,7 @@ describe("POST /github/issues/batch-import", () => {
       buildApp(),
       "POST",
       "/api/github/issues/batch-import",
-      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 10 }),
+      JSON.stringify({ owner: "owner", repo: "repo", issueNumbers: [1], delayMs: 1 }),
       { "Content-Type": "application/json" }
     );
 
@@ -1954,7 +1954,7 @@ describe("GET /tasks/:id/diff", () => {
   });
 
   describe("done tasks with commit SHA", () => {
-    it("attempts git diff when commitSha is present", { timeout: 30_000 }, async () => {
+    it("attempts git diff when commitSha is present", async () => {
       const gitRepo = getSharedGitTestRepo();
       const localStore = createMockStore({
         getRootDir: vi.fn().mockReturnValue(gitRepo.repoDir),
