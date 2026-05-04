@@ -45,6 +45,7 @@ type MockTask = {
 
 type MockTaskStore = {
   getSettings: ReturnType<typeof vi.fn>;
+  listTasks: ReturnType<typeof vi.fn>;
   getTask: ReturnType<typeof vi.fn>;
   updateTask: ReturnType<typeof vi.fn>;
   addTaskComment: ReturnType<typeof vi.fn>;
@@ -90,6 +91,7 @@ function makeStore({
       pollIntervalMs: 15_000,
       ...settings,
     })),
+    listTasks: vi.fn(async () => taskSequence.filter((task): task is MockTask => Boolean(task))),
     getTask: vi.fn(async () => {
       const value = taskSequence[Math.min(taskIdx, taskSequence.length - 1)] ?? null;
       taskIdx += 1;
@@ -150,6 +152,7 @@ function hasErrorLog(errorSpy: MockInstance, text: string): boolean {
 
 describe("ProjectEngine merge error recovery", () => {
   let errorSpy: MockInstance;
+  let warnSpy: MockInstance;
   let logSpy: MockInstance;
 
   beforeEach(() => {
@@ -158,7 +161,99 @@ describe("ProjectEngine merge error recovery", () => {
     testState.currentStore = null;
 
     errorSpy = vi.spyOn(runtimeLog, "error").mockImplementation(() => undefined);
+    warnSpy = vi.spyOn(runtimeLog, "warn").mockImplementation(() => undefined);
     logSpy = vi.spyOn(runtimeLog, "log").mockImplementation(() => undefined);
+  });
+
+  it("keeps merge retry timer chain alive after sweep settings read failure", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const store = makeStore();
+    const settingsError = new Error("settings unavailable");
+    store.getSettings
+      .mockRejectedValueOnce(settingsError)
+      .mockResolvedValueOnce({ pollIntervalMs: 7000 });
+
+    const engine = createEngine(store);
+    const privateEngine = engine as unknown as {
+      scheduleMergeRetry: (taskStore: MockTaskStore) => void;
+      mergeRetryTimer: ReturnType<typeof setTimeout> | null;
+    };
+
+    privateEngine.scheduleMergeRetry(store);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.runAllTicks();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Auto-merge periodic sweep failed: settings unavailable"),
+    );
+    expect(privateEngine.mergeRetryTimer).toBeTruthy();
+    expect(vi.getTimerCount()).toBe(1);
+    expect(setTimeoutSpy.mock.calls.some(([, interval]) => interval === 7000)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("uses default retry interval when interval settings retrieval fails", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const store = makeStore();
+    store.getSettings
+      .mockResolvedValueOnce({ autoMerge: true, globalPause: false, enginePaused: false })
+      .mockRejectedValueOnce(new Error("interval unavailable"));
+
+    const engine = createEngine(store);
+    const privateEngine = engine as unknown as {
+      scheduleMergeRetry: (taskStore: MockTaskStore) => void;
+      mergeRetryTimer: ReturnType<typeof setTimeout> | null;
+    };
+
+    privateEngine.scheduleMergeRetry(store);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.runAllTicks();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Auto-merge retry: failed to read pollIntervalMs, using default 15s: interval unavailable"),
+    );
+    expect(privateEngine.mergeRetryTimer).toBeTruthy();
+    expect(setTimeoutSpy.mock.calls.some(([, interval]) => interval === 15_000)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("does not schedule merge retry timer when engine is shutting down", () => {
+    vi.useFakeTimers();
+    const store = makeStore();
+    const engine = createEngine(store);
+    const privateEngine = engine as unknown as {
+      scheduleMergeRetry: (taskStore: MockTaskStore) => void;
+      shuttingDown: boolean;
+      mergeRetryTimer: ReturnType<typeof setTimeout> | null;
+    };
+
+    privateEngine.shuttingDown = true;
+    privateEngine.scheduleMergeRetry(store);
+
+    expect(privateEngine.mergeRetryTimer).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("catches and logs unexpected drainMergeQueue failures from enqueue path", async () => {
+    const engine = createEngine(makeStore());
+    testState.currentStore = null;
+
+    const privateEngine = engine as unknown as {
+      internalEnqueueMerge: (taskId: string) => void;
+      mergeRunning: boolean;
+    };
+
+    privateEngine.internalEnqueueMerge(TASK_ID);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Merge queue drain failed unexpectedly"),
+    );
+    expect(privateEngine.mergeRunning).toBe(false);
   });
 
   it("bounces task to in-progress when conflict retries are exhausted (under bounce cap)", async () => {

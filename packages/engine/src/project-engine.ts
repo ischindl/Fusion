@@ -1082,7 +1082,11 @@ export class ProjectEngine {
     if (this.mergeActive.has(taskId)) return;
     this.mergeActive.add(taskId);
     this.mergeQueue.push(taskId);
-    void this.drainMergeQueue();
+    void this.drainMergeQueue().catch((err: unknown) => {
+      runtimeLog.error(
+        `Merge queue drain failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   /**
@@ -1773,19 +1777,19 @@ export class ProjectEngine {
         runtimeLog.warn(
           `Auto-merge periodic sweep failed: ${err instanceof Error ? err.message : String(err)}`,
         );
-      }
-
-      if (!this.shuttingDown) {
-        const interval = await store
-          .getSettings()
-          .then((s) => s.pollIntervalMs ?? 15_000)
-          .catch((err: unknown) => {
+      } finally {
+        if (!this.shuttingDown) {
+          let interval = 15_000;
+          try {
+            const settings = await store.getSettings();
+            interval = settings.pollIntervalMs ?? 15_000;
+          } catch (err: unknown) {
             runtimeLog.warn(
               `Auto-merge retry: failed to read pollIntervalMs, using default 15s: ${err instanceof Error ? err.message : String(err)}`,
             );
-            return 15_000;
-          });
-        this.mergeRetryTimer = setTimeout(() => void schedule(), interval);
+          }
+          this.mergeRetryTimer = setTimeout(() => void schedule(), interval);
+        }
       }
     };
 
