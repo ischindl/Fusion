@@ -6374,6 +6374,60 @@ ${notificationsSection}`;
     return this.todoStore;
   }
 
+  // ── Verification Cache ────────────────────────────────────────────────────
+
+  /**
+   * Look up a previously recorded verification cache pass for a given tree sha
+   * and command pair. Returns null when no cached pass exists.
+   *
+   * @param treeSha - The git tree SHA of the merged commit.
+   * @param testCommand - The test command string (normalized to empty string when absent).
+   * @param buildCommand - The build command string (normalized to empty string when absent).
+   */
+  getVerificationCacheHit(
+    treeSha: string,
+    testCommand: string,
+    buildCommand: string,
+  ): { recordedAt: string; taskId: string | null } | null {
+    const normalizedTest = testCommand ?? "";
+    const normalizedBuild = buildCommand ?? "";
+    const row = this.db
+      .prepare(
+        `SELECT recordedAt, taskId FROM verification_cache
+         WHERE treeSha = ? AND testCommand = ? AND buildCommand = ?`,
+      )
+      .get(treeSha, normalizedTest, normalizedBuild) as
+      | { recordedAt: string; taskId: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Record a successful verification pass for the given tree sha and commands.
+   * Uses INSERT OR REPLACE so a re-run of the same tree updates the timestamp.
+   *
+   * @param treeSha - The git tree SHA of the merged commit.
+   * @param testCommand - The test command string (normalized to empty string when absent).
+   * @param buildCommand - The build command string (normalized to empty string when absent).
+   * @param taskId - The task ID that triggered the pass (for telemetry).
+   */
+  recordVerificationCachePass(
+    treeSha: string,
+    testCommand: string,
+    buildCommand: string,
+    taskId: string,
+  ): void {
+    const normalizedTest = testCommand ?? "";
+    const normalizedBuild = buildCommand ?? "";
+    const recordedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO verification_cache (treeSha, testCommand, buildCommand, recordedAt, taskId)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(treeSha, normalizedTest, normalizedBuild, recordedAt, taskId);
+  }
+
   // ── Backward Compatibility (Multi-Project Support) ────────────────────────
 
 }

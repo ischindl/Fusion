@@ -20,6 +20,8 @@ export interface VerificationCommandResult {
   stdout: string;
   stderr: string;
   success: boolean;
+  /** True when this result was satisfied from the verification cache rather than running the command. */
+  cached?: boolean;
 }
 
 /** Result of running all verification commands */
@@ -40,7 +42,7 @@ export interface VerificationResult {
  */
 export async function execWithProcessGroup(
   command: string,
-  options: { cwd: string; timeout: number; maxBuffer: number; signal?: AbortSignal },
+  options: { cwd: string; timeout: number; maxBuffer: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv },
 ): Promise<{ stdout: string; stderr: string; bufferOverflow: boolean; aborted?: boolean }> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
@@ -58,6 +60,7 @@ export async function execWithProcessGroup(
       shell: true,
       detached: useProcessGroup,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(options.env !== undefined && { env: { ...process.env, ...options.env } }),
     });
 
     let stdout = "";
@@ -310,6 +313,8 @@ export async function runVerificationCommand(
   log?: { log: (message: string, ...args: unknown[]) => void; error: (message: string, ...args: unknown[]) => void; warn: (message: string, ...args: unknown[]) => void },
   /** Optional agent label for store log entries (e.g. "merger", "executor") */
   agentLabel?: string,
+  /** Optional extra environment variables to inject into the child process (merged over process.env). */
+  extraEnv?: NodeJS.ProcessEnv,
 ): Promise<VerificationCommandResult> {
   const logger = log ?? { log: console.log, error: console.error, warn: console.warn };
   const label = (agentLabel ?? "merger") as AgentRole;
@@ -340,6 +345,7 @@ export async function runVerificationCommand(
       timeout: VERIFICATION_COMMAND_TIMEOUT_MS,
       maxBuffer: VERIFICATION_COMMAND_MAX_BUFFER,
       signal,
+      ...(extraEnv !== undefined && { env: extraEnv }),
     });
 
     if (signal?.aborted) {

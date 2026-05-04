@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Database, createDatabase, toJson, toJsonNullable, fromJson, normalizeTaskComments } from "../db.js";
 import { DEFAULT_PROJECT_SETTINGS } from "../types.js";
+import { TaskStore } from "../store.js";
 import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -109,6 +110,8 @@ describe("Database", () => {
       expect(tableNames).toContain("roadmaps");
       expect(tableNames).toContain("roadmap_milestones");
       expect(tableNames).toContain("roadmap_features");
+      // Verification cache (migration 61)
+      expect(tableNames).toContain("verification_cache");
     });
 
     it("creates all expected indexes", () => {
@@ -152,10 +155,12 @@ describe("Database", () => {
       // Roadmap indexes
       expect(indexNames).toContain("idxRoadmapMilestonesRoadmapOrder");
       expect(indexNames).toContain("idxRoadmapFeaturesMilestoneOrder");
+      // Verification cache index (migration 61)
+      expect(indexNames).toContain("idxVerificationCacheRecordedAt");
     });
 
     it("seeds schema version", () => {
-      expect(db.getSchemaVersion()).toBe(60);
+      expect(db.getSchemaVersion()).toBe(61);
     });
 
     it("seeds lastModified", () => {
@@ -178,7 +183,7 @@ describe("Database", () => {
 
     it("is idempotent - calling init() twice does not fail", () => {
       expect(() => db.init()).not.toThrow();
-      expect(db.getSchemaVersion()).toBe(60);
+      expect(db.getSchemaVersion()).toBe(61);
     });
 
     it("does not overwrite existing config on re-init", () => {
@@ -899,7 +904,7 @@ describe("schema migrations", () => {
     db.init();
 
     // Verify version bumped to 29 (includes v1→v2 through v26→v29)
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     // Verify new columns exist and existing data is intact
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
@@ -924,11 +929,11 @@ describe("schema migrations", () => {
     const db = new Database(fusionDir);
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     // Re-init should not fail
     db.init();
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     db.close();
   });
@@ -963,7 +968,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     expect(cols.map((col) => col.name)).toContain("priority");
@@ -1004,7 +1009,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     const colNames = cols.map((col) => col.name);
@@ -1073,7 +1078,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     const colNames = cols.map((col) => col.name);
@@ -1176,7 +1181,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const cols = db.prepare("PRAGMA table_info(chat_messages)").all() as Array<{ name: string }>;
     expect(cols.map((col) => col.name)).toContain("attachments");
@@ -1250,7 +1255,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'agentRatings'").all() as Array<{ name: string }>;
     expect(tables).toEqual([{ name: "agentRatings" }]);
@@ -1274,7 +1279,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'mission_events'").all() as Array<{ name: string }>;
     expect(tables).toEqual([{ name: "mission_events" }]);
@@ -1378,7 +1383,7 @@ describe("schema migrations", () => {
     db.init();
 
     // Verify version bumped to 29
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
 
     // Verify new columns exist and existing data is intact
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
@@ -1847,7 +1852,7 @@ describe("createDatabase factory", () => {
     const db = createDatabase(fusionDir);
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(60);
+    expect(db.getSchemaVersion()).toBe(61);
     expect(db.getLastModified()).toBeGreaterThan(0);
 
     db.close();
@@ -1879,5 +1884,84 @@ describe("createDatabase factory", () => {
     const row = db2.prepare("SELECT nextId FROM config WHERE id = 1").get() as any;
     expect(row.nextId).toBe(99);
     db2.close();
+  });
+});
+
+// ── TaskStore — verification cache methods ────────────────────────────────
+
+describe("TaskStore — verification cache", () => {
+  let rootDir: string;
+  let globalDir: string;
+  let store: TaskStore;
+
+  beforeEach(async () => {
+    rootDir = mkdtempSync(join(tmpdir(), "kb-vc-test-"));
+    globalDir = mkdtempSync(join(tmpdir(), "kb-vc-global-"));
+    store = new TaskStore(rootDir, globalDir, { inMemoryDb: true });
+    await store.init();
+  });
+
+  afterEach(async () => {
+    store.close();
+    await rm(rootDir, { recursive: true, force: true });
+    await rm(globalDir, { recursive: true, force: true });
+  });
+
+  it("returns null when no cache entry exists", () => {
+    const hit = store.getVerificationCacheHit("abc1234", "pnpm test", "pnpm build");
+    expect(hit).toBeNull();
+  });
+
+  it("records a pass and retrieves it as a cache hit", () => {
+    const treeSha = "deadbeef1234567890";
+    store.recordVerificationCachePass(treeSha, "pnpm test", "pnpm build", "FN-001");
+
+    const hit = store.getVerificationCacheHit(treeSha, "pnpm test", "pnpm build");
+    expect(hit).not.toBeNull();
+    expect(hit!.taskId).toBe("FN-001");
+    expect(new Date(hit!.recordedAt).toISOString()).toBe(hit!.recordedAt);
+  });
+
+  it("returns null for a different tree sha", () => {
+    store.recordVerificationCachePass("sha-a", "pnpm test", "", "FN-001");
+
+    const hit = store.getVerificationCacheHit("sha-b", "pnpm test", "");
+    expect(hit).toBeNull();
+  });
+
+  it("distinguishes entries by testCommand", () => {
+    const treeSha = "aabbccdd";
+    store.recordVerificationCachePass(treeSha, "pnpm test", "", "FN-001");
+
+    expect(store.getVerificationCacheHit(treeSha, "pnpm test", "")).not.toBeNull();
+    expect(store.getVerificationCacheHit(treeSha, "vitest run", "")).toBeNull();
+  });
+
+  it("distinguishes entries by buildCommand", () => {
+    const treeSha = "11223344";
+    store.recordVerificationCachePass(treeSha, "", "pnpm build", "FN-002");
+
+    expect(store.getVerificationCacheHit(treeSha, "", "pnpm build")).not.toBeNull();
+    expect(store.getVerificationCacheHit(treeSha, "", "tsc --noEmit")).toBeNull();
+  });
+
+  it("normalizes undefined to empty string for stable primary key", () => {
+    const treeSha = "normtest";
+    // Pass undefined-ish values (coerced via nullish fallback in impl)
+    store.recordVerificationCachePass(treeSha, "", "", "FN-003");
+
+    const hit = store.getVerificationCacheHit(treeSha, "", "");
+    expect(hit).not.toBeNull();
+    expect(hit!.taskId).toBe("FN-003");
+  });
+
+  it("overwrites an existing entry on re-record (INSERT OR REPLACE)", () => {
+    const treeSha = "upserttest";
+    store.recordVerificationCachePass(treeSha, "pnpm test", "", "FN-010");
+    store.recordVerificationCachePass(treeSha, "pnpm test", "", "FN-020");
+
+    const hit = store.getVerificationCacheHit(treeSha, "pnpm test", "");
+    expect(hit).not.toBeNull();
+    expect(hit!.taskId).toBe("FN-020");
   });
 });

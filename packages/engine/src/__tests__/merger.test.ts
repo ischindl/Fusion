@@ -157,6 +157,8 @@ function createMockStore(taskOverrides: Partial<Task> = {}, allTasks: Task[] = [
     emit: vi.fn(),
     on: vi.fn(),
     clearStaleBaseBranchReferences: vi.fn().mockReturnValue([]),
+    getVerificationCacheHit: vi.fn().mockReturnValue(null),
+    recordVerificationCachePass: vi.fn(),
   } as unknown as TaskStore;
 }
 
@@ -4249,6 +4251,178 @@ describe("aiMergeTask — deterministic merge verification", () => {
     );
     expect(verificationCalls).toHaveLength(0);
   });
+
+  it("skips test and build commands when a cache hit is found for the current tree sha", async () => {
+    const treeSha = "cachedtreeshaabc1234567890";
+    mockedExecSync.mockImplementation((cmd: any) => {
+      const cmdStr = String(cmd);
+      if (cmdStr.includes("rev-parse --verify")) return Buffer.from("abc123");
+      if (cmdStr === "git rev-parse HEAD" || cmdStr.startsWith("git rev-parse HEAD ")) return "mergedcommit123";
+      if (cmdStr.includes("git log")) return "- feat: something" as any;
+      if (cmdStr.includes("merge-base")) return Buffer.from("abc123");
+      if (cmdStr.includes("git diff") && cmdStr.includes("--stat")) return "1 file changed" as any;
+      if (cmdStr.includes("merge --squash")) return Buffer.from("");
+      if (cmdStr.includes("diff --cached --quiet")) return "1" as any;
+      if (cmdStr.includes("diff --cached")) return "0" as any;
+      if (cmdStr.includes("show --shortstat")) return "3 files changed, 10 insertions(+), 2 deletions(-)" as any;
+      if (cmdStr.includes("branch -d") || cmdStr.includes("branch -D")) return Buffer.from("");
+      if (cmdStr.includes("worktree remove")) return Buffer.from("");
+      // Return the fake tree sha when rev-parse HEAD^{tree} is called
+      if (cmdStr.includes("HEAD^{tree}")) return Buffer.from(treeSha + "\n");
+      return Buffer.from("");
+    });
+
+    mockedCreateFnAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+      },
+    } as any);
+
+    const store = createMockStore(
+      { id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050" },
+      [{ id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050", column: "in-review" } as Task],
+    );
+    // Simulate a cache hit for this tree sha
+    const cacheHit = { recordedAt: "2026-05-01T00:00:00.000Z", taskId: "FN-049" };
+    (store.getVerificationCacheHit as ReturnType<typeof vi.fn>).mockReturnValue(cacheHit);
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      testCommand: "vitest run",
+      buildCommand: "pnpm build",
+    });
+
+    const result = await aiMergeTask(store, "/tmp/root", "FN-050");
+
+    expect(result.merged).toBe(true);
+
+    // No actual test/build commands should have run
+    const runCalls = mockedExecSync.mock.calls.filter(
+      (call) => String(call[0]).includes("vitest run") || String(call[0]).includes("pnpm build"),
+    );
+    expect(runCalls).toHaveLength(0);
+
+    // The cache skip message should appear in the task log
+    const logCalls = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls;
+    const cacheMsg = logCalls.find((call: any[]) =>
+      typeof call[1] === "string" && call[1].includes("Skipping deterministic verification — cached pass"),
+    );
+    expect(cacheMsg).toBeTruthy();
+    expect(cacheMsg![1]).toContain(treeSha.slice(0, 7));
+    expect(cacheMsg![1]).toContain("FN-049");
+
+    // getVerificationCacheHit should have been called with the tree sha and commands
+    expect(store.getVerificationCacheHit).toHaveBeenCalledWith(treeSha, "vitest run", "pnpm build");
+  });
+
+  it("runs commands and records a cache pass when no cache hit exists", async () => {
+    const treeSha = "freshtreedead0000beef";
+    mockedExecSync.mockImplementation((cmd: any) => {
+      const cmdStr = String(cmd);
+      if (cmdStr.includes("rev-parse --verify")) return Buffer.from("abc123");
+      if (cmdStr === "git rev-parse HEAD" || cmdStr.startsWith("git rev-parse HEAD ")) return "mergedcommit123";
+      if (cmdStr.includes("git log")) return "- feat: something" as any;
+      if (cmdStr.includes("merge-base")) return Buffer.from("abc123");
+      if (cmdStr.includes("git diff") && cmdStr.includes("--stat")) return "1 file changed" as any;
+      if (cmdStr.includes("merge --squash")) return Buffer.from("");
+      if (cmdStr.includes("vitest run")) return Buffer.from("");
+      if (cmdStr.includes("diff --cached --quiet")) return "1" as any;
+      if (cmdStr.includes("diff --cached")) return "0" as any;
+      if (cmdStr.includes("show --shortstat")) return "3 files changed, 10 insertions(+), 2 deletions(-)" as any;
+      if (cmdStr.includes("branch -d") || cmdStr.includes("branch -D")) return Buffer.from("");
+      if (cmdStr.includes("worktree remove")) return Buffer.from("");
+      if (cmdStr.includes("HEAD^{tree}")) return Buffer.from(treeSha + "\n");
+      return Buffer.from("");
+    });
+
+    mockedCreateFnAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+      },
+    } as any);
+
+    const store = createMockStore(
+      { id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050" },
+      [{ id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050", column: "in-review" } as Task],
+    );
+    // No cache hit — returns null (default mock)
+    (store.getVerificationCacheHit as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      testCommand: "vitest run",
+    });
+
+    const result = await aiMergeTask(store, "/tmp/root", "FN-050");
+
+    expect(result.merged).toBe(true);
+
+    // The test command should have been executed
+    const testRuns = mockedExecSync.mock.calls.filter(
+      (call) => String(call[0]).includes("vitest run"),
+    );
+    expect(testRuns.length).toBeGreaterThan(0);
+
+    // recordVerificationCachePass should have been called with the tree sha
+    expect(store.recordVerificationCachePass).toHaveBeenCalledWith(
+      treeSha, "vitest run", "", "FN-050",
+    );
+  });
+
+  it("gracefully skips cache lookup when git rev-parse HEAD^{tree} fails", async () => {
+    mockedExecSync.mockImplementation((cmd: any) => {
+      const cmdStr = String(cmd);
+      if (cmdStr.includes("rev-parse --verify")) return Buffer.from("abc123");
+      if (cmdStr === "git rev-parse HEAD" || cmdStr.startsWith("git rev-parse HEAD ")) return "mergedcommit123";
+      if (cmdStr.includes("git log")) return "- feat: something" as any;
+      if (cmdStr.includes("merge-base")) return Buffer.from("abc123");
+      if (cmdStr.includes("git diff") && cmdStr.includes("--stat")) return "1 file changed" as any;
+      if (cmdStr.includes("merge --squash")) return Buffer.from("");
+      if (cmdStr.includes("vitest run")) return Buffer.from("");
+      if (cmdStr.includes("diff --cached --quiet")) return "1" as any;
+      if (cmdStr.includes("diff --cached")) return "0" as any;
+      if (cmdStr.includes("show --shortstat")) return "3 files changed, 10 insertions(+), 2 deletions(-)" as any;
+      if (cmdStr.includes("branch -d") || cmdStr.includes("branch -D")) return Buffer.from("");
+      if (cmdStr.includes("worktree remove")) return Buffer.from("");
+      // Simulate git failure for tree sha resolution
+      if (cmdStr.includes("HEAD^{tree}")) {
+        const err = new Error("not a git repository") as any;
+        err.status = 128;
+        throw err;
+      }
+      return Buffer.from("");
+    });
+
+    mockedCreateFnAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+      },
+    } as any);
+
+    const store = createMockStore(
+      { id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050" },
+      [{ id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050", column: "in-review" } as Task],
+    );
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      testCommand: "vitest run",
+    });
+
+    // Should not throw — merge should complete normally
+    const result = await aiMergeTask(store, "/tmp/root", "FN-050");
+    expect(result.merged).toBe(true);
+
+    // Cache methods should never have been called
+    expect(store.getVerificationCacheHit).not.toHaveBeenCalled();
+    expect(store.recordVerificationCachePass).not.toHaveBeenCalled();
+
+    // The test command should still have run
+    const testRuns = mockedExecSync.mock.calls.filter(
+      (call) => String(call[0]).includes("vitest run"),
+    );
+    expect(testRuns.length).toBeGreaterThan(0);
+  });
 });
 
 describe("shouldSyncDependenciesForMerge", () => {
@@ -6672,8 +6846,8 @@ describe("aiMergeTask — in-merge verification fix", () => {
       name: "VerificationError",
     });
 
-    // Verify that fix agent was spawned (2 calls: merger + fix)
-    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(2);
+    // Verify that fix agent was spawned (3 calls: summarizer + merger + fix)
+    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(3);
 
     // Verify the fix agent was called with correct options
     const fixAgentCall = mockedCreateFnAgent.mock.calls[1];
@@ -6897,8 +7071,8 @@ describe("aiMergeTask — in-merge verification fix", () => {
       name: "VerificationError",
     });
 
-    // Verify fix agent was NOT spawned (only merger)
-    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(1);
+    // Verify fix agent was NOT spawned (summarizer + merger only)
+    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(2);
 
     // Verify no fix attempt was logged
     const logCalls = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls;
@@ -7123,8 +7297,8 @@ describe("aiMergeTask — in-merge verification fix", () => {
       name: "VerificationError",
     });
 
-    // Should have 3 fix attempts (capped at 3) + 1 merger = 4 calls
-    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(4);
+    // Should have 3 fix attempts (capped at 3) + summarizer + merger = 5 calls
+    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(5);
   });
 
   it("default verificationFixRetries (omitted) results in 3 fix attempts", async () => {
@@ -7174,8 +7348,8 @@ describe("aiMergeTask — in-merge verification fix", () => {
       name: "VerificationError",
     });
 
-    // Should have 3 fix attempts (default) + 1 merger = 4 calls
-    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(4);
+    // Should have 3 fix attempts (default) + summarizer + merger = 5 calls
+    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(5);
 
     // Verify the log shows 3 fix attempts (2 log entries per attempt: start + failure)
     const logCalls = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls;

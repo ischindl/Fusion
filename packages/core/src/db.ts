@@ -88,7 +88,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 60;
+const SCHEMA_VERSION = 61;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -2355,6 +2355,22 @@ export class Database {
       this.applyMigration(60, () => {
         this.addColumnIfMissing("tasks", "pausedByAgentId", "TEXT");
         this.db.exec(`CREATE INDEX IF NOT EXISTS idxTasksPausedByAgentId ON tasks(pausedByAgentId)`);
+      });
+    }
+
+    if (version < 61) {
+      this.applyMigration(61, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS verification_cache (
+            treeSha TEXT NOT NULL,
+            testCommand TEXT NOT NULL DEFAULT '',
+            buildCommand TEXT NOT NULL DEFAULT '',
+            recordedAt TEXT NOT NULL,
+            taskId TEXT,
+            PRIMARY KEY (treeSha, testCommand, buildCommand)
+          )
+        `);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxVerificationCacheRecordedAt ON verification_cache(recordedAt)`);
       });
     }
 

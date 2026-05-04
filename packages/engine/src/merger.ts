@@ -361,6 +361,30 @@ function rethrowIfMergeAborted(error: unknown): void {
   }
 }
 
+/**
+ * Run execSync and always return a trimmed UTF-8 string.
+ * execSync may return a Buffer, string, or null depending on the encoding option;
+ * this helper normalises all three cases.
+ */
+function execSyncText(command: string, options: Parameters<typeof execSync>[1]): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const output: any = execSync(command, options);
+  if (output == null) return "";
+  if (typeof output === "string") return output.trim();
+  return (output as Buffer).toString("utf-8").trim();
+}
+
+/** Extra environment variables injected into verification child processes to boost concurrency. */
+const VERIFICATION_EXTRA_ENV: NodeJS.ProcessEnv = Object.fromEntries(
+  (
+    [
+      ["FUSION_TEST_TOTAL_WORKERS", "8"],
+      ["FUSION_TEST_CONCURRENCY", "4"],
+      ["FUSION_TEST_WORKSPACE_CONCURRENCY", "4"],
+    ] as [string, string][]
+  ).filter(([key]) => !(key in process.env)),
+);
+
 async function runDeterministicVerification(
   store: TaskStore,
   rootDir: string,
@@ -383,6 +407,41 @@ async function runDeterministicVerification(
   const normalizedBuildCommand = buildCommand?.trim();
   const hasTestCommand = !!normalizedTestCommand;
   const hasBuildCommand = !!normalizedBuildCommand;
+
+  // ── Tree-hash verification cache (Layer 1) ─────────────────────────────
+  const effectiveTestCommand = normalizedTestCommand ?? "";
+  const effectiveBuildCommand = normalizedBuildCommand ?? "";
+  let treeSha: string | null = null;
+  try {
+    treeSha = execSync("git rev-parse HEAD^{tree}", { cwd: rootDir, stdio: "pipe" })
+      .toString()
+      .trim();
+  } catch (err) {
+    mergerLog.warn(`${taskId}: could not resolve tree sha — skipping verification cache: ${String(err)}`);
+  }
+
+  if (treeSha) {
+    const cacheHit = store.getVerificationCacheHit(treeSha, effectiveTestCommand, effectiveBuildCommand);
+    if (cacheHit) {
+      const sha7 = treeSha.slice(0, 7);
+      const msg = `Skipping deterministic verification — cached pass for tree ${sha7} (recorded at ${cacheHit.recordedAt}, by ${cacheHit.taskId ?? "unknown"})`;
+      mergerLog.log(`${taskId}: ${msg}`);
+      await store.logEntry(taskId, msg);
+      await store.appendAgentLog(taskId, msg, "text", undefined, "merger");
+      const syntheticResult: VerificationCommandResult = {
+        command: "",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        success: true,
+        cached: true,
+      };
+      if (hasTestCommand) result.testResult = { ...syntheticResult, command: effectiveTestCommand };
+      if (hasBuildCommand) result.buildResult = { ...syntheticResult, command: effectiveBuildCommand };
+      return result;
+    }
+  }
+  // ── End cache lookup ───────────────────────────────────────────────────
 
   // Build source indicator for logging
   const testSourceLabel = testSource === "inferred" ? " [inferred]" : "";
@@ -461,6 +520,18 @@ async function runDeterministicVerification(
   mergerLog.log(`${taskId}: deterministic verification passed`);
   await store.logEntry(taskId, "Deterministic merge verification passed");
   await store.appendAgentLog(taskId, "Deterministic merge verification passed", "text", undefined, "merger");
+
+  // ── Record cache pass ──────────────────────────────────────────────────
+  if (treeSha) {
+    try {
+      store.recordVerificationCachePass(treeSha, effectiveTestCommand, effectiveBuildCommand, taskId);
+      mergerLog.log(`${taskId}: Recorded verification pass for tree ${treeSha.slice(0, 7)}`);
+      await store.logEntry(taskId, `Recorded verification pass for tree ${treeSha.slice(0, 7)}`);
+    } catch (err) {
+      mergerLog.warn(`${taskId}: could not record verification cache pass: ${String(err)}`);
+    }
+  }
+
   return result;
 }
 
@@ -473,7 +544,7 @@ async function runVerificationCommand(
   signal?: AbortSignal,
 ): Promise<VerificationCommandResult> {
   throwIfAborted(signal, taskId);
-  return runVerificationCommandShared(store, rootDir, taskId, command, type, signal, mergerLog, "merger");
+  return runVerificationCommandShared(store, rootDir, taskId, command, type, signal, mergerLog, "merger", VERIFICATION_EXTRA_ENV);
 }
 
 /**
@@ -1887,7 +1958,7 @@ function parsePushRemoteTarget(rootDir: string, pushRemote?: string): { remote: 
 
   let branch = branchTokens.join(" ").trim();
   if (!branch) {
-    branch = execSync("git symbolic-ref --short HEAD", {
+    branch = execSyncText("git symbolic-ref --short HEAD", {
       cwd: rootDir,
       encoding: "utf-8",
       stdio: "pipe",
@@ -2331,7 +2402,7 @@ export async function aiMergeTask(
     result.error = `Branch '${branch}' not found — moving to done without merge`;
     // Best-effort: try to capture current HEAD commitSha even though branch is missing
     try {
-      const commitSha = execSync("git rev-parse HEAD", {
+      const commitSha = execSyncText("git rev-parse HEAD", {
         cwd: rootDir,
         stdio: "pipe",
         encoding: "utf-8",
@@ -2360,12 +2431,12 @@ export async function aiMergeTask(
   // causing feature code to be committed to the wrong lineage.
   try {
     throwIfAborted(options.signal, taskId);
-    const currentBranch = execSync("git symbolic-ref --short HEAD", {
+    const currentBranch = execSyncText("git symbolic-ref --short HEAD", {
       cwd: rootDir,
       encoding: "utf-8",
       stdio: "pipe",
     }).trim();
-    const mainBranch = execSync("git rev-parse --abbrev-ref origin/HEAD", {
+    const mainBranch = execSyncText("git rev-parse --abbrev-ref origin/HEAD", {
       cwd: rootDir,
       encoding: "utf-8",
       stdio: "pipe",
@@ -3371,7 +3442,7 @@ export async function aiMergeTask(
 
   // 5b. Collect merge details and store on task
   try {
-    const commitSha = execSync("git rev-parse HEAD", {
+    const commitSha = execSyncText("git rev-parse HEAD", {
       cwd: rootDir,
       stdio: "pipe",
       encoding: "utf-8",
@@ -3644,7 +3715,7 @@ export async function aiMergeTask(
 async function tryFastForwardFromOrigin(rootDir: string, taskId: string): Promise<void> {
   let currentBranch: string;
   try {
-    currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+    currentBranch = execSyncText("git rev-parse --abbrev-ref HEAD", {
       cwd: rootDir,
       encoding: "utf-8",
       stdio: "pipe",
@@ -3665,7 +3736,7 @@ async function tryFastForwardFromOrigin(rootDir: string, taskId: string): Promis
   let behind = 0;
   let ahead = 0;
   try {
-    const counts = execSync(`git rev-list --left-right --count "origin/${currentBranch}...HEAD"`, {
+    const counts = execSyncText(`git rev-list --left-right --count "origin/${currentBranch}...HEAD"`, {
       cwd: rootDir,
       encoding: "utf-8",
       stdio: "pipe",
@@ -3903,7 +3974,7 @@ async function executeMergeAttempt(
         // If only auto-resolvable conflicts (or all were resolved), commit directly
         if (complex.length === 0) {
           // All conflicts auto-resolved, commit with fallback message
-          const staged = execSync("git diff --cached --quiet 2>&1; echo $?", {
+          const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
             cwd: rootDir,
             encoding: "utf-8",
           }).trim();
@@ -4025,7 +4096,7 @@ async function executeMergeAttempt(
       }
 
       // Check for conflicts
-      const conflictedOutput = execSync("git diff --name-only --diff-filter=U", {
+      const conflictedOutput = execSyncText("git diff --name-only --diff-filter=U", {
         cwd: rootDir,
         encoding: "utf-8",
       }).trim();
@@ -4206,7 +4277,7 @@ async function attemptWithSideStrategy(
     });
 
     // Check if there are still conflicts (some types can't be auto-resolved)
-    const conflictedOutput = execSync("git diff --name-only --diff-filter=U", {
+    const conflictedOutput = execSyncText("git diff --name-only --diff-filter=U", {
       cwd: rootDir,
       encoding: "utf-8",
     }).trim();
@@ -4217,7 +4288,7 @@ async function attemptWithSideStrategy(
     }
 
     // Check if there's anything staged
-    const staged = execSync("git diff --cached --quiet 2>&1; echo $?", {
+    const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
       cwd: rootDir,
       encoding: "utf-8",
     }).trim();
@@ -4584,7 +4655,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     }
 
     // Verify commit happened
-    const staged = execSync("git diff --cached --quiet 2>&1; echo $?", {
+    const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
       cwd: rootDir,
       encoding: "utf-8",
     }).trim();
