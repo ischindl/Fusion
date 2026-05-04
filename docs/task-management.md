@@ -171,6 +171,8 @@ Example API payload:
 
 ## Task provenance and research enrichment
 
+Agent-created tasks now show a compact **Created by agent** marker directly on dashboard task cards when creation provenance indicates agent/automation origin (`sourceType: agent_heartbeat` or `sourceType: automation`, with legacy fallback to populated `sourceAgentId`). Where available, displays should prefer `sourceMetadata.agentName` over raw `sourceAgentId`.
+
 Research-created tasks show provenance as **Created via Research** in the task detail header and `Source: Research` in `fn task show` output.
 
 When `sourceMetadata.findingLabel` is present, the UI/CLI include it as context; otherwise they fall back to `runId` when available.

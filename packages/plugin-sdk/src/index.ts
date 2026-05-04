@@ -71,9 +71,41 @@ export type {
   PluginInstallation,
 } from "@fusion/core";
 
-export { validatePluginManifest } from "@fusion/core";
-
 import type { FusionPlugin } from "@fusion/core";
+
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function validatePluginManifest(manifest: unknown): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (manifest === null || manifest === undefined) {
+    return { valid: false, errors: ["Manifest is required"] };
+  }
+
+  if (typeof manifest !== "object" || Array.isArray(manifest)) {
+    return { valid: false, errors: ["Manifest must be an object"] };
+  }
+
+  const m = manifest as Record<string, unknown>;
+
+  if (!m.id || typeof m.id !== "string" || m.id.trim() === "") {
+    errors.push("id is required and must be a non-empty string");
+  } else if (!SLUG_PATTERN.test(m.id)) {
+    errors.push("id must be a valid slug (lowercase, alphanumeric, hyphens only, cannot start or end with hyphen)");
+  }
+
+  if (!m.name || typeof m.name !== "string" || m.name.trim() === "") {
+    errors.push("name is required and must be a non-empty string");
+  }
+
+  if (!m.version || typeof m.version !== "string" || m.version.trim() === "") {
+    errors.push("version is required and must be a non-empty string");
+  } else if (!/^\d+\.\d+\.\d+$/.test(m.version)) {
+    errors.push("version must be a valid semver string (e.g., 1.0.0)");
+  }
+
+  return { valid: errors.length === 0, errors };
+}
 
 /**
  * Type-safe helper for defining a Fusion plugin.

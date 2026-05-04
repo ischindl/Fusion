@@ -79,6 +79,23 @@ function abbreviateBadge(text: string, max: number): string {
   return text.slice(0, max - 3) + "...";
 }
 
+function getSourceAgentName(task: Task): string | undefined {
+  const metadataAgentName = task.sourceMetadata?.agentName;
+  if (typeof metadataAgentName === "string" && metadataAgentName.trim().length > 0) {
+    return metadataAgentName.trim();
+  }
+
+  if (typeof task.sourceAgentId === "string" && task.sourceAgentId.trim().length > 0) {
+    return task.sourceAgentId.trim();
+  }
+
+  return undefined;
+}
+
+function isAgentCreatedTask(task: Task): boolean {
+  return task.sourceType === "agent_heartbeat" || task.sourceType === "automation" || Boolean(getSourceAgentName(task));
+}
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const EDITABLE_COLUMNS: Set<Column> = new Set(["triage", "todo"]);
@@ -441,7 +458,9 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previousTask.assignedAgentId === nextTask.assignedAgentId &&
     previousTask.mergeRetries === nextTask.mergeRetries &&
     previousTask.sourceType === nextTask.sourceType &&
+    previousTask.sourceAgentId === nextTask.sourceAgentId &&
     previousTask.sourceMetadata?.issueUrl === nextTask.sourceMetadata?.issueUrl &&
+    previousTask.sourceMetadata?.agentName === nextTask.sourceMetadata?.agentName &&
     areAttachmentsEqual(previousTask.attachments, nextTask.attachments) &&
     areCommentsEqual(previousTask.comments, nextTask.comments) &&
     areTaskDependenciesEqual(previousTask.dependencies, nextTask.dependencies) &&
@@ -728,6 +747,9 @@ function TaskCardComponent({
   const hasGitHubBadge = Boolean(task.prInfo || task.issueInfo);
   const isGitHubImportedTask = task.sourceType === "github_import";
   const sourceIssueUrl = getIssueUrlFromMetadata(task.sourceMetadata);
+  const isAgentCreated = isAgentCreatedTask(task);
+  const sourceAgentName = getSourceAgentName(task);
+  const agentCreatedTitle = sourceAgentName ? `Created by agent: ${sourceAgentName}` : "Created by agent";
   const isAgentNameLoading = Boolean(task.assignedAgentId && agentName === null);
   const taskProviders = useMemo(() => {
     const providers: string[] = [];
@@ -1341,6 +1363,17 @@ function TaskCardComponent({
             prInfo={livePrInfo}
             issueInfo={liveIssueInfo}
           />
+        )}
+        {isAgentCreated && (
+          <span
+            className="card-agent-created-badge"
+            title={agentCreatedTitle}
+            aria-label={agentCreatedTitle}
+          >
+            <Bot size={11} aria-hidden="true" />
+            <span className="visually-hidden">{agentCreatedTitle}</span>
+            <span aria-hidden="true">Agent</span>
+          </span>
         )}
         {showPriorityBadge && (
           <span className={`card-priority-badge card-priority-badge--${normalizedPriority}`}>

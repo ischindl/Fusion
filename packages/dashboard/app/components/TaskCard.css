@@ -451,6 +451,20 @@
   white-space: nowrap;
 }
 
+.card-agent-created-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  border: var(--btn-border-width) solid color-mix(in srgb, var(--text-muted) 35%, transparent);
+  padding: calc(var(--space-xs) / 4) calc(var(--space-sm) - (var(--space-xs) / 4));
+  border-radius: var(--radius-pill);
+  line-height: 1;
+}
+
 .card-agent-badge-text {
   min-width: 0;
   overflow: hidden;
@@ -1059,6 +1073,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .card-agent-created-badge {
+    font-size: 0.5625rem;
+    padding: calc(var(--space-xs) / 4) var(--space-sm);
   }
 
   /* Card: wrap dependency badges */

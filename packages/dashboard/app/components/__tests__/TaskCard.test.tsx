@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { TaskCard, formatElapsedDurationDone } from "../TaskCard";
+import { TaskCard, formatElapsedDurationDone, __test_areTaskCardPropsEqual } from "../TaskCard";
 import type { Task } from "@fusion/core";
 
 // Mock lucide-react to avoid SVG rendering issues in test env
@@ -730,12 +730,86 @@ describe("TaskCard", () => {
     expect(screen.queryByTestId("provider-icon-github")).toBeNull();
   });
 
+  it("renders agent-created provenance badge for automation tasks and prefers sourceMetadata.agentName", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceType: "automation",
+          sourceAgentId: "agent-123",
+          sourceMetadata: { agentName: "Task Robot" },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const badge = container.querySelector(".card-agent-created-badge");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("title")).toBe("Created by agent: Task Robot");
+  });
+
+  it("renders agent-created provenance badge for agent_heartbeat tasks", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceType: "agent_heartbeat",
+          sourceAgentId: "heartbeat-agent-1",
+          sourceMetadata: { agentName: "Scheduler Bot" },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const badge = container.querySelector(".card-agent-created-badge");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("title")).toBe("Created by agent: Scheduler Bot");
+    expect(badge?.getAttribute("aria-label")).toBe("Created by agent: Scheduler Bot");
+  });
+
+  it("renders agent-created provenance badge for legacy sourceAgentId-only tasks", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceAgentId: "legacy-agent-1",
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const badge = container.querySelector(".card-agent-created-badge");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("title")).toBe("Created by agent: legacy-agent-1");
+  });
+
+  it("does not render agent-created provenance badge for non-agent task sources", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceType: "dashboard_ui",
+          sourceAgentId: undefined,
+          sourceMetadata: undefined,
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(container.querySelector(".card-agent-created-badge")).toBeNull();
+  });
+
   it("coexists with GitHub badge and timer metadata", () => {
     const { container } = render(
       <TaskCard
         task={makeTask({
           column: "done",
           sourceType: "github_import",
+          sourceAgentId: "agent-42",
           sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/7" },
           issueInfo: {
             owner: "owner",
@@ -754,6 +828,7 @@ describe("TaskCard", () => {
 
     expect(container.querySelector(".card-github-badge")).not.toBeNull();
     expect(container.querySelector(".card-source-provenance")).not.toBeNull();
+    expect(container.querySelector(".card-agent-created-badge")).not.toBeNull();
     expect(container.querySelector(".card-time-indicator")).not.toBeNull();
   });
 
@@ -1169,6 +1244,50 @@ describe("TaskCard provider icons on agent row", () => {
     );
 
     expect(screen.queryByTestId("card-provider-icons")).toBeNull();
+  });
+});
+
+describe("TaskCard memo comparator provenance behavior", () => {
+  it("returns false when sourceMetadata.agentName changes", () => {
+    const previousTask = makeTask({ sourceType: "automation", sourceMetadata: { agentName: "Agent One" } });
+    const nextTask = makeTask({ sourceType: "automation", sourceMetadata: { agentName: "Agent Two" } });
+
+    const previousProps = {
+      task: previousTask,
+      onOpenDetail: noop,
+      addToast: noop,
+    };
+    const nextProps = {
+      task: nextTask,
+      onOpenDetail: noop,
+      addToast: noop,
+    };
+
+    expect(__test_areTaskCardPropsEqual(previousProps as any, nextProps as any)).toBe(false);
+  });
+
+  it("returns false when sourceType changes", () => {
+    const previousTask = makeTask({ sourceType: "automation", sourceMetadata: { agentName: "Agent" } });
+    const nextTask = makeTask({ sourceType: "dashboard_ui", sourceMetadata: { agentName: "Agent" } });
+
+    expect(
+      __test_areTaskCardPropsEqual(
+        { task: previousTask, onOpenDetail: noop, addToast: noop } as any,
+        { task: nextTask, onOpenDetail: noop, addToast: noop } as any,
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when sourceAgentId changes", () => {
+    const previousTask = makeTask({ sourceType: "automation", sourceAgentId: "agent-a" });
+    const nextTask = makeTask({ sourceType: "automation", sourceAgentId: "agent-b" });
+
+    expect(
+      __test_areTaskCardPropsEqual(
+        { task: previousTask, onOpenDetail: noop, addToast: noop } as any,
+        { task: nextTask, onOpenDetail: noop, addToast: noop } as any,
+      ),
+    ).toBe(false);
   });
 });
 
