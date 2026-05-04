@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 import { getErrorMessage } from "@fusion/core";
 import { fetchScripts, addScript, removeScript, type ScriptEntry } from "../api";
 import type { ToastType } from "../hooks/useToast";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import {
   X,
@@ -44,6 +45,7 @@ function truncateCommand(command: string, maxLength: number = 60): string {
 }
 
 export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript }: ScriptsModalProps) {
+  useMobileScrollLock(isOpen);
   const [scripts, setScripts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);

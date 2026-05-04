@@ -29,6 +29,7 @@ import {
 } from "../api";
 import { MessageComposer } from "./MessageComposer";
 import type { Agent } from "../api";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { subscribeSse } from "../sse-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ export function MailboxModal({
   addToast,
   agents = [],
 }: MailboxModalProps) {
+  useMobileScrollLock(isOpen);
   const [activeTab, setActiveTab] = useState<MailboxTab>("inbox");
   const [inbox, setInbox] = useState<InboxResponse | null>(null);
   const [outbox, setOutbox] = useState<OutboxResponse | null>(null);

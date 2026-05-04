@@ -39,6 +39,7 @@ import { CustomProvidersSection } from "./CustomProvidersSection";
 import { applyPresetToSelection, generateUniquePresetId } from "../utils/modelPresets";
 import { appendTokenQuery } from "../auth";
 import { useConfirm } from "../hooks/useConfirm";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useNodes } from "../hooks/useNodes";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { filterVisibleOnboardingAndSettingsProviders } from "./providerVisibility";
@@ -351,6 +352,7 @@ export function SettingsModal({
   onReopenOnboarding,
 }: SettingsModalProps) {
   const { confirm } = useConfirm();
+  useMobileScrollLock(true);
   const modalRef = useRef<HTMLDivElement>(null);
   const settingsContentRef = useRef<HTMLDivElement>(null);
   useModalResizePersist(modalRef, true, "fusion:settings-modal-size");

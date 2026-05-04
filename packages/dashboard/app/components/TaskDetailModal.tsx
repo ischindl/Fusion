@@ -2,6 +2,7 @@ import "./TaskDetailModal.css";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft } from "lucide-react";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -2696,6 +2697,7 @@ export function TaskDetailContent({
 export function TaskDetailModal({ onClose, ...props }: TaskDetailModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
   useModalResizePersist(modalRef, true, "task-detail-modal-size");
+  useMobileScrollLock(true);
   const overlayDismissProps = useOverlayDismiss(onClose);
 
   return (

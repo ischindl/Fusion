@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { AgentGenerationSpec } from "../api";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import {
   startAgentGeneration,
   generateAgentSpec,
@@ -37,6 +38,7 @@ export function AgentGenerationModal({
   onGenerated,
   projectId,
 }: AgentGenerationModalProps) {
+  useMobileScrollLock(isOpen);
   const [roleDescription, setRoleDescription] = useState("");
   const [view, setView] = useState<ViewState>({ type: "input" });
   const [error, setError] = useState<string | null>(null);

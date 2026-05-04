@@ -22,6 +22,7 @@ import { ConversationHistory } from "./ConversationHistory";
 import { useSessionLock } from "../hooks/useSessionLock";
 import { useAiSessionSync } from "../hooks/useAiSessionSync";
 import { useConfirm } from "../hooks/useConfirm";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { getSessionTabId } from "../utils/getSessionTabId";
 
 interface SubtaskBreakdownModalProps {
@@ -72,6 +73,7 @@ function hasDependencyCycle(subtasks: SubtaskItem[]): boolean {
 }
 
 export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onTasksCreated, parentTaskId, projectId, resumeSessionId }: SubtaskBreakdownModalProps) {
+  useMobileScrollLock(isOpen);
   const [view, setView] = useState<ViewState>({ type: "initial" });
   const [subtasks, setSubtasks] = useState<SubtaskItem[]>([]);
   const [conversationHistory, setConversationHistory] = useState<ConversationHistoryEntry[]>([]);

@@ -2,6 +2,7 @@ import "./AgentImportModal.css";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, FileText, CheckCircle, AlertTriangle, X, Loader2, FolderOpen, Globe, Search, RefreshCw } from "lucide-react";
 import { fetchCompanies, type CompanyEntry } from "../api";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 
 export interface AgentImportModalProps {
   isOpen: boolean;
@@ -126,6 +127,7 @@ function parseDirectoryAgentManifest(content: string): DirectoryAgentInput {
  * Flow: Input → Preview parsed agents → Import → Show results
  */
 export function AgentImportModal({ isOpen, onClose, onImported, projectId }: AgentImportModalProps) {
+  useMobileScrollLock(isOpen);
   const [step, setStep] = useState<ModalStep>("input");
   const [inputMethod, setInputMethod] = useState<InputMethod>("paste");
   const [manifestContent, setManifestContent] = useState("");

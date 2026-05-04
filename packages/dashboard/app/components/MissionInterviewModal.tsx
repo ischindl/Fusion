@@ -49,6 +49,7 @@ import { CustomModelDropdown } from "./CustomModelDropdown";
 import { useSessionLock } from "../hooks/useSessionLock";
 import { useAiSessionSync } from "../hooks/useAiSessionSync";
 import { useConfirm } from "../hooks/useConfirm";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { getSessionTabId } from "../utils/getSessionTabId";
 
 // Helper functions for model selection
@@ -107,6 +108,7 @@ export function MissionInterviewModal({
   initialGoal: initialGoalProp,
   resumeSessionId,
 }: MissionInterviewModalProps) {
+  useMobileScrollLock(isOpen);
   const [missionGoal, setMissionGoal] = useState("");
   const [view, setView] = useState<ViewState>({ type: "initial" });
   const [error, setError] = useState<string | null>(null);

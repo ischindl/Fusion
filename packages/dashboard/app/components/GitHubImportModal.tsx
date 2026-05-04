@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { Loader2, RefreshCw, ArrowLeft, GitPullRequest, CircleDot } from "lucide-react";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 
 interface GitHubImportModalProps {
@@ -30,6 +31,7 @@ const MOBILE_BREAKPOINT = 640;
 type TabType = "issues" | "pulls";
 
 export function GitHubImportModal({ isOpen, onClose, onImport, tasks, projectId }: GitHubImportModalProps) {
+  useMobileScrollLock(isOpen);
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [labels, setLabels] = useState("");

@@ -44,6 +44,7 @@ import { useSessionLock } from "../hooks/useSessionLock";
 import { useAiSessionSync } from "../hooks/useAiSessionSync";
 import { useViewportMode } from "../hooks/useViewportMode";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { getSessionTabId } from "../utils/getSessionTabId";
 
 interface PlanningModeModalProps {
@@ -189,6 +190,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } =
     useMobileKeyboard({ enabled: viewportMode === "mobile" });
+  useMobileScrollLock(viewportMode === "mobile" && isOpen);
 
   const modalKeyboardStyle: CSSProperties = keyboardOpen
     ? ({

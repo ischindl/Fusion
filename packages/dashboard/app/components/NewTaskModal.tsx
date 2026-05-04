@@ -10,6 +10,7 @@ import { useSetupReadiness } from "../hooks/useSetupReadiness";
 import { SetupWarningBanner } from "./SetupWarningBanner";
 import { TaskForm, type PendingImage } from "./TaskForm";
 import { useConfirm } from "../hooks/useConfirm";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useNodes } from "../hooks/useNodes";
 
 interface NewTaskModalProps {
@@ -25,6 +26,7 @@ interface NewTaskModalProps {
 
 export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, addToast, onPlanningMode, onSubtaskBreakdown }: NewTaskModalProps) {
   const { confirm } = useConfirm();
+  useMobileScrollLock(isOpen);
   const [description, setDescription] = useState("");
   const [dependencies, setDependencies] = useState<string[]>([]);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);

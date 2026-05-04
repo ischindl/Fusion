@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Task, TaskPriority } from "@fusion/core";
 import { fetchTasks } from "../api";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import type { ResearchRunDetail } from "../research-types";
 import "./ResearchTaskActionModal.css";
 
@@ -17,6 +18,7 @@ interface ResearchTaskActionModalProps {
 }
 
 export function ResearchTaskActionModal({ open, mode, run, finding, projectId, onClose, onConfirm }: ResearchTaskActionModalProps) {
+  useMobileScrollLock(open);
   const [attachExport, setAttachExport] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");

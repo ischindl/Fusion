@@ -31,6 +31,7 @@ import { AgentMentionPopup } from "./AgentMentionPopup";
 import { FileMentionPopup } from "./FileMentionPopup";
 import { useFileMention } from "../hooks/useFileMention";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 
 export interface ChatViewProps {
   projectId?: string;
@@ -784,14 +785,32 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
     enabled: isMobile && !!activeSession,
   });
 
-  const threadKeyboardStyle: CSSProperties =
-    keyboardOpen
-      ? ({
+  // Suppresses keyboard-following styles for ~450ms after blur so the
+  // composer snaps to full height immediately instead of crawling down with
+  // iOS's keyboard-dismiss animation. See `handleInputBlur` below for where
+  // this is set, and QuickChatFAB's `suppressVvShrinkRef` for the same trick
+  // applied to the FAB panel.
+  const [suppressKeyboardStyle, setSuppressKeyboardStyle] = useState(false);
+  const suppressKeyboardStyleTimeoutRef = useRef<number | null>(null);
+
+  const threadKeyboardStyle: CSSProperties = keyboardOpen
+    ? suppressKeyboardStyle
+      ? // Suppress window: snap composer to the final post-keyboard height
+        // immediately, but reserve space for the MobileNavBar that is about
+        // to reappear once App-level keyboardOpen settles to false. Without
+        // the reservation the composer briefly extends below the nav bar
+        // position, then jumps up when the nav reappears.
+        ({
+          "--keyboard-overlap":
+            "calc(var(--mobile-nav-height, 44px) + env(safe-area-inset-bottom, 0px))",
+          "--vv-offset-top": "0px",
+        } as CSSProperties)
+      : ({
           "--keyboard-overlap": `${keyboardOverlap}px`,
           "--vv-offset-top": `${viewportOffsetTop}px`,
           ...(viewportHeight !== null ? { "--vv-height": `${viewportHeight}px` } : {}),
         } as CSSProperties)
-      : {};
+    : {};
 
   const filteredSkills = useMemo(() => {
     const normalizedFilter = skillFilter.trim().toLowerCase();
@@ -858,20 +877,9 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
   }, [keyboardOverlap]);
 
   // Lock body scroll on mobile while the keyboard is up so iOS can't shift
-  // the visual viewport (offsetTop > 0). Avoid forcing window.scrollTo(0, 0),
-  // which can jump the page when send briefly toggles focus.
-  useEffect(() => {
-    if (!isMobile || !keyboardOpen) return;
-    const html = document.documentElement;
-    const body = document.body;
-    const prev = { htmlOverflow: html.style.overflow, bodyOverflow: body.style.overflow };
-    html.style.overflow = "hidden";
-    body.style.overflow = "hidden";
-    return () => {
-      html.style.overflow = prev.htmlOverflow;
-      body.style.overflow = prev.bodyOverflow;
-    };
-  }, [isMobile, keyboardOpen]);
+  // the visual viewport (offsetTop > 0). Shared hook also restores
+  // window.scrollTo(0, 0) on cleanup to recover from any iOS drift.
+  useMobileScrollLock(isMobile && keyboardOpen);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -1326,6 +1334,22 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
       return;
     }
 
+    // Pre-grow the composer ahead of iOS's keyboard-dismiss animation so it
+    // snaps to full height immediately instead of crawling down with the
+    // keyboard. The suppress window covers the iOS slide-out duration
+    // (~250ms with margin) during which visualViewport keeps reporting
+    // mid-dismiss heights that would otherwise drag the panel back down.
+    if (isMobile) {
+      setSuppressKeyboardStyle(true);
+      if (suppressKeyboardStyleTimeoutRef.current !== null) {
+        window.clearTimeout(suppressKeyboardStyleTimeoutRef.current);
+      }
+      suppressKeyboardStyleTimeoutRef.current = window.setTimeout(() => {
+        setSuppressKeyboardStyle(false);
+        suppressKeyboardStyleTimeoutRef.current = null;
+      }, 450);
+    }
+
     if (hideSkillMenuTimeoutRef.current !== null) {
       window.clearTimeout(hideSkillMenuTimeoutRef.current);
     }
@@ -1339,9 +1363,16 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
       fileMention.dismissMention();
       hideSkillMenuTimeoutRef.current = null;
     }, 120);
-  }, [fileMention, focusComposerInput]);
+  }, [fileMention, focusComposerInput, isMobile]);
 
   const handleInputFocus = useCallback(() => {
+    // If the user re-focuses inside the post-blur suppress window, lift it
+    // immediately so the keyboard-aware sizing kicks back in.
+    if (suppressKeyboardStyleTimeoutRef.current !== null) {
+      window.clearTimeout(suppressKeyboardStyleTimeoutRef.current);
+      suppressKeyboardStyleTimeoutRef.current = null;
+    }
+    setSuppressKeyboardStyle(false);
     if (hideSkillMenuTimeoutRef.current !== null) {
       window.clearTimeout(hideSkillMenuTimeoutRef.current);
       hideSkillMenuTimeoutRef.current = null;

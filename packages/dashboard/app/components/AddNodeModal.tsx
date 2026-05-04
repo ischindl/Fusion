@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ToastType } from "../hooks/useToast";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import "./AddNodeModal.css";
 
 export interface AddNodeInput {
@@ -59,6 +60,7 @@ function validateInput(input: AddNodeInput): FormErrors {
 }
 
 export function AddNodeModal({ isOpen, onClose, onSubmit, addToast }: AddNodeModalProps) {
+  useMobileScrollLock(isOpen);
   const [name, setName] = useState("");
   const [type, setType] = useState<"local" | "remote">("local");
   const [url, setUrl] = useState("");

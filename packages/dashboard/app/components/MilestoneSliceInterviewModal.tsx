@@ -29,6 +29,7 @@ import {
 import { ConversationHistory } from "./ConversationHistory";
 import { useSessionLock } from "../hooks/useSessionLock";
 import { useAiSessionSync } from "../hooks/useAiSessionSync";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { getSessionTabId } from "../utils/getSessionTabId";
 
 interface MilestoneSliceInterviewModalProps {
@@ -73,6 +74,7 @@ export function MilestoneSliceInterviewModal({
   projectId,
   resumeSessionId,
 }: MilestoneSliceInterviewModalProps) {
+  useMobileScrollLock(isOpen);
   const [view, setView] = useState<ViewState>({ type: "initial" });
   const [error, setError] = useState<string | null>(null);
   const [responseHistory, setResponseHistory] = useState<QuestionResponse[]>([]);

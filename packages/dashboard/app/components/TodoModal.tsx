@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { ListChecks, X } from "lucide-react";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
+import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useViewportMode } from "./Header";
 import { TodoView } from "./TodoView";
 
@@ -21,6 +22,7 @@ export function TodoModal({ onClose, projectId, addToast, onPlanningMode }: Todo
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
     enabled: isMobile,
   });
+  useMobileScrollLock(isMobile);
 
   const modalKeyboardStyle: React.CSSProperties =
     keyboardOpen
