@@ -75,7 +75,13 @@ function categorize(name) {
   ) {
     return "Mission";
   }
-  if (name.startsWith("fn_agent_")) return "Agent";
+  if (
+    name.startsWith("fn_agent_") ||
+    name === "fn_list_agents" ||
+    name === "fn_delegate_task"
+  ) {
+    return "Agent";
+  }
   if (name.startsWith("fn_skills_")) return "Skills";
   if (name.startsWith("fn_insight_")) return "Insight";
   return "Other";

@@ -185,6 +185,10 @@ describe.skipIf(!SHOULD_RUN_EXTENSION_INTEGRATION)("fn pi extension", () => {
         "fn_feature_link_task",
         "fn_agent_stop",
         "fn_agent_start",
+        "fn_list_agents",
+        "fn_delegate_task",
+        "fn_agent_show",
+        "fn_agent_org_chart",
         "fn_skills_search",
         "fn_skills_install",
       ] as const;
@@ -1261,5 +1265,249 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
 
     expect(result.details.error).toContain("ephemeral/runtime agent");
     expect(result.content[0].text).toContain(ephemeralId);
+  });
+
+  describe("fn_list_agents", () => {
+    it("returns agent list", async () => {
+      await seedAgent(tmpDir, { name: "alpha-agent" });
+      await seedAgent(tmpDir, { name: "beta-agent" });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-1", {}, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("alpha-agent");
+      expect(result.content[0].text).toContain("beta-agent");
+      expect(result.details.count).toBeGreaterThanOrEqual(2);
+    });
+
+    it("filters by role", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      await agentStore.createAgent({ name: "exec-agent", role: "executor", metadata: {} });
+      await agentStore.createAgent({ name: "review-agent", role: "reviewer", metadata: {} });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-2", { role: "executor" }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("exec-agent");
+      expect(result.content[0].text).not.toContain("review-agent");
+    });
+
+    it("filters by state", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const active = await agentStore.createAgent({ name: "active-agent", role: "executor", metadata: {} });
+      await agentStore.updateAgentState(active.id, "active");
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-3", { state: "active" }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("active-agent");
+      expect(result.details.agents.every((a: any) => a.state === "active")).toBe(true);
+    });
+
+    it("excludes ephemeral agents by default", async () => {
+      const ephemeralId = await seedAgent(tmpDir, { ephemeral: true, name: "eph-agent" });
+      await seedAgent(tmpDir, { name: "real-agent" });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-4", {}, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).not.toContain("eph-agent");
+      expect(result.content[0].text).toContain("real-agent");
+      expect(result.details.agents.every((a: any) => a.id !== ephemeralId)).toBe(true);
+    });
+
+    it("returns empty list message when no agents", async () => {
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-5", {}, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("No agents found");
+      expect(result.details.count).toBe(0);
+    });
+  });
+
+  describe("fn_delegate_task", () => {
+    it("delegates task to agent", async () => {
+      const agentId = await seedAgent(tmpDir, { name: "delegate-target" });
+
+      const tool = api.tools.get("fn_delegate_task")!;
+      const result = await tool.execute(
+        "dt-1",
+        { agent_id: agentId, description: "Do important work" },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      expect(result.content[0].text).toContain("delegate-target");
+      expect(result.content[0].text).toContain(agentId);
+      expect(result.details.agentId).toBe(agentId);
+      expect(result.details.agentName).toBe("delegate-target");
+      expect(result.details.taskId).toBeTruthy();
+
+      // Verify task was actually created
+      const store = new TaskStore(tmpDir);
+      await store.init();
+      const task = await store.getTask(result.details.taskId);
+      expect(task).toBeTruthy();
+      expect(task!.assignedAgentId).toBe(agentId);
+      expect(task!.column).toBe("todo");
+    });
+
+    it("rejects unknown agent", async () => {
+      const tool = api.tools.get("fn_delegate_task")!;
+      const result = await tool.execute(
+        "dt-2",
+        { agent_id: "agent-no-such", description: "Will fail" },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("not found");
+    });
+
+    it("rejects ephemeral agent", async () => {
+      const ephemeralId = await seedAgent(tmpDir, { ephemeral: true, name: "eph-delegate" });
+
+      const tool = api.tools.get("fn_delegate_task")!;
+      const result = await tool.execute(
+        "dt-3",
+        { agent_id: ephemeralId, description: "Will fail" },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("ephemeral/runtime agent");
+    });
+
+    it("wires dependencies correctly", async () => {
+      const agentId = await seedAgent(tmpDir, { name: "dep-agent" });
+
+      // Create a real task to use as a dependency
+      const store = new TaskStore(tmpDir);
+      await store.init();
+      const depTask = await store.createTask({ description: "Prerequisite", column: "todo" });
+
+      const tool = api.tools.get("fn_delegate_task")!;
+      const result = await tool.execute(
+        "dt-4",
+        { agent_id: agentId, description: "Dependent work", dependencies: [depTask.id] },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      expect(result.content[0].text).toContain(depTask.id);
+
+      const task = await store.getTask(result.details.taskId);
+      expect(task!.dependencies).toEqual([depTask.id]);
+    });
+  });
+
+  describe("fn_agent_show", () => {
+    it("shows agent by ID", async () => {
+      const agentId = await seedAgent(tmpDir, { name: "show-agent" });
+
+      const tool = api.tools.get("fn_agent_show")!;
+      const result = await tool.execute("as-1", { id: agentId }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("show-agent");
+      expect(result.content[0].text).toContain(agentId);
+      expect(result.details.agent.id).toBe(agentId);
+    });
+
+    it("shows agent by name", async () => {
+      await seedAgent(tmpDir, { name: "resolve-by-name" });
+
+      const tool = api.tools.get("fn_agent_show")!;
+      const result = await tool.execute("as-2", { id: "resolve-by-name" }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("resolve-by-name");
+      expect(result.details.agent.name).toBe("resolve-by-name");
+    });
+
+    it("returns error for unknown agent", async () => {
+      const tool = api.tools.get("fn_agent_show")!;
+      const result = await tool.execute("as-3", { id: "no-such-agent" }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("not found");
+    });
+
+    it("shows reports-to and direct reports", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const manager = await agentStore.createAgent({ name: "the-manager", role: "executor", metadata: {} });
+      const report = await agentStore.createAgent({
+        name: "the-report",
+        role: "executor",
+        reportsTo: manager.id,
+        metadata: {},
+      });
+
+      const tool = api.tools.get("fn_agent_show")!;
+
+      // Check manager sees direct reports
+      const mgrResult = await tool.execute("as-4a", { id: manager.id }, undefined, undefined, makeCtx(tmpDir));
+      expect(mgrResult.content[0].text).toContain("the-report");
+      expect(mgrResult.details.directReports.length).toBeGreaterThan(0);
+
+      // Check report sees reports-to
+      const rptResult = await tool.execute("as-4b", { id: report.id }, undefined, undefined, makeCtx(tmpDir));
+      expect(rptResult.content[0].text).toContain("the-manager");
+    });
+  });
+
+  describe("fn_agent_org_chart", () => {
+    it("returns full tree", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      await agentStore.createAgent({ name: "ceo", role: "executor", metadata: {} });
+      await agentStore.createAgent({ name: "worker", role: "executor", metadata: {} });
+
+      const tool = api.tools.get("fn_agent_org_chart")!;
+      const result = await tool.execute("oc-1", {}, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("ceo");
+      expect(result.content[0].text).toContain("worker");
+      expect(result.details.count).toBeGreaterThanOrEqual(2);
+    });
+
+    it("returns subtree by root agent", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const manager = await agentStore.createAgent({ name: "org-manager", role: "executor", metadata: {} });
+      await agentStore.createAgent({ name: "org-report", role: "executor", reportsTo: manager.id, metadata: {} });
+
+      const tool = api.tools.get("fn_agent_org_chart")!;
+      const result = await tool.execute("oc-2", { root_agent_id: manager.id }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("org-manager");
+      expect(result.content[0].text).toContain("org-report");
+    });
+
+    it("returns empty message when no agents", async () => {
+      const tool = api.tools.get("fn_agent_org_chart")!;
+      const result = await tool.execute("oc-3", {}, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("No agents found");
+      expect(result.details.count).toBe(0);
+    });
+
+    it("returns single agent for lone agent", async () => {
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion") });
+      await agentStore.init();
+      const lone = await agentStore.createAgent({ name: "lone-agent", role: "executor", metadata: {} });
+
+      const tool = api.tools.get("fn_agent_org_chart")!;
+      const result = await tool.execute("oc-4", { root_agent_id: lone.id }, undefined, undefined, makeCtx(tmpDir));
+
+      expect(result.content[0].text).toContain("lone-agent");
+    });
   });
 });

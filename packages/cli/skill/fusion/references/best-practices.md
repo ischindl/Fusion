@@ -89,3 +89,36 @@ For work larger than L, use missions to break it into phases.
 2. `fn_task_import_github_issue` for high-priority issues
 3. Tasks enter triage and get AI-specified
 4. Monitor board as AI works through them
+
+## Agent Management and Delegation
+
+Agents are AI workers in the Fusion system. Each agent has a role, state, and position in an organizational hierarchy. Use the agent management tools to discover, inspect, delegate to, and manage agents.
+
+**Discovering available agents:**
+1. `fn_list_agents` — see all agents, optionally filter by role or state
+2. `fn_agent_show` — get full details about a specific agent (including hierarchy)
+3. `fn_delegate_task` — create and assign a task to the chosen agent
+
+**Checking team structure before delegation:**
+1. `fn_agent_org_chart` — visualize the full org tree
+2. `fn_agent_show` — inspect a specific agent's capabilities and reports
+3. `fn_delegate_task` — assign work to the appropriate agent
+
+**Delegation patterns:**
+- **Delegate to reports** — an agent delegates to agents that report to it (downward delegation)
+- **Delegate to peers** — an agent delegates to another agent at the same level (lateral delegation)
+- **Delegate to other teams** — use `fn_agent_org_chart` to understand cross-team structure
+- Always verify the target agent is not ephemeral/runtime before delegating
+
+**Recovery — re-delegating stalled work:**
+1. `fn_agent_stop` — pause the stalled agent
+2. `fn_list_agents` — find an available agent to take over
+3. `fn_delegate_task` — create a new task for the replacement agent
+4. The original task can be refined or the new task can depend on it
+
+**Agent lifecycle states:**
+- `idle` — agent is available for work
+- `active` — agent is running and available for heartbeat cycles
+- `running` — agent is currently executing a task
+- `paused` — agent has been stopped (use `fn_agent_start` to resume)
+- `error` — agent encountered an error

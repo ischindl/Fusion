@@ -48,6 +48,10 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_feature_link_task` | Link a feature to a fn task for implementation. Updates the feature status to 'triaged' and associates it with the task. |
 | `fn_agent_stop` | Stop a running agent — pauses its execution. Transitions the agent from running/active to paused state. |
 | `fn_agent_start` | Start a stopped agent — resumes its execution. Transitions the agent from paused to active state. |
+| `fn_list_agents` | List all available agents in the system. Shows each agent's name, role, state, personality (soul), and current assignment. Use this to discover which agents exist and what they specialize in before delegating work. |
+| `fn_delegate_task` | Create a new task and assign it to a specific agent for execution. The task goes to 'todo' and will be picked up by the target agent on their next heartbeat cycle. Use fn_list_agents first to find available agents and their capabilities. |
+| `fn_agent_show` | Show detailed information about a single agent, including their role, state, position in the org hierarchy (reports-to, direct reports), skills, and current assignment. |
+| `fn_agent_org_chart` | Show the organizational tree of agents, displaying the role hierarchy. Optionally filter to a subtree rooted at a specific agent. |
 | `fn_skills_search` | Search the skills.sh directory for agent skills. Returns matching skills with names, sources (owner/repo), install counts, and install commands. Use fn_skills_install to install a selected skill. |
 | `fn_skills_install` | Install an agent skill from skills.sh into the current project. Downloads skill files into the project's skill directories (.fusion/skills/, legacy .pi/skills/, .agents/skills/). The skill becomes available to AI agents in subsequent sessions. |
 <!-- END: fusion-capabilities-tool-table -->

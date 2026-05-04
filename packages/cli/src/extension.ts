@@ -2143,6 +2143,345 @@ export default function kbExtension(pi: ExtensionAPI) {
     },
   });
 
+  // ── fn_list_agents ───────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "fn_list_agents",
+    label: "fn: List Agents",
+    description:
+      "List all available agents in the system. Shows each agent's name, role, state, " +
+      "personality (soul), and current assignment. Use this to discover which agents exist " +
+      "and what they specialize in before delegating work.",
+    promptSnippet: "List all available Fusion agents",
+    promptGuidelines: [
+      "Use fn_list_agents to discover which agents exist before delegating work",
+      "Filter by role or state to narrow results",
+      "Ephemeral/runtime agents are excluded by default",
+    ],
+    parameters: Type.Object({
+      role: Type.Optional(
+        Type.String({ description: "Filter by agent role/capability (e.g., 'executor', 'reviewer', 'qa')" }),
+      ),
+      state: Type.Optional(
+        Type.String({ description: "Filter by agent state (e.g., 'idle', 'active', 'running')" }),
+      ),
+      includeEphemeral: Type.Optional(
+        Type.Boolean({ description: "Include ephemeral/runtime agents (default: false)" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { AgentStore } = await import("@fusion/core");
+
+      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      await agentStore.init();
+
+      const filter: Record<string, unknown> = {};
+      if (params.role) filter.role = params.role;
+      if (params.state) filter.state = params.state;
+      if (params.includeEphemeral !== undefined) filter.includeEphemeral = params.includeEphemeral;
+
+      const agents = await agentStore.listAgents(filter as Parameters<typeof agentStore.listAgents>[0]);
+
+      if (agents.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No agents found matching the specified filters." }],
+          details: { agents: [], count: 0 },
+        };
+      }
+
+      const lines = agents.map((agent) => {
+        const parts: string[] = [
+          `ID: ${agent.id}`,
+          `Name: ${agent.name}`,
+          `Role: ${agent.role}`,
+          `State: ${agent.state}`,
+        ];
+
+        if (agent.title) parts.push(`Title: ${agent.title}`);
+        if (agent.soul) parts.push(`Soul: ${agent.soul.slice(0, 200)}`);
+        if (agent.instructionsText) {
+          const snippet = agent.instructionsText.slice(0, 100);
+          parts.push(`Custom Instructions: ${snippet}${agent.instructionsText.length > 100 ? "…" : ""}`);
+        }
+        if (agent.taskId) parts.push(`Current Task: ${agent.taskId}`);
+
+        return parts.join("\n");
+      });
+
+      return {
+        content: [{ type: "text" as const, text: `Available agents (${agents.length}):\n\n${lines.join("\n\n")}` }],
+        details: { agents, count: agents.length },
+      };
+    },
+  });
+
+  // ── fn_delegate_task ──────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "fn_delegate_task",
+    label: "fn: Delegate Task",
+    description:
+      "Create a new task and assign it to a specific agent for execution. The task goes to " +
+      "'todo' and will be picked up by the target agent on their next heartbeat cycle. " +
+      "Use fn_list_agents first to find available agents and their capabilities.",
+    promptSnippet: "Delegate a task to a specific Fusion agent",
+    promptGuidelines: [
+      "Use fn_list_agents first to find available agents and their capabilities",
+      "The task is created in 'todo' and assigned to the target agent",
+      "Cannot delegate to ephemeral/runtime agents",
+      "Optionally specify dependencies on other tasks",
+    ],
+    parameters: Type.Object({
+      agent_id: Type.String({ description: "The agent ID to delegate work to" }),
+      description: Type.String({ description: "What needs to be done" }),
+      dependencies: Type.Optional(
+        Type.Array(Type.String(), { description: "Task IDs this new task depends on (e.g. [\"KB-001\"]" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      // Validate target agent exists and is not ephemeral
+      const agentError = await validateAssignableAgentId(ctx.cwd, params.agent_id);
+      if (agentError) {
+        return {
+          content: [{ type: "text", text: `ERROR: ${agentError}` }],
+          isError: true,
+          details: { error: agentError },
+        };
+      }
+
+      const { AgentStore } = await import("@fusion/core");
+      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      await agentStore.init();
+      const agent = await agentStore.getAgent(params.agent_id);
+
+      // Create task assigned to the target agent
+      const store = await getStore(ctx.cwd);
+      const task = await store.createTask({
+        description: params.description,
+        dependencies: params.dependencies,
+        column: "todo",
+        assignedAgentId: params.agent_id,
+        source: { sourceType: "api" },
+      });
+
+      const deps = task.dependencies.length ? ` (depends on: ${task.dependencies.join(", ")})` : "";
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Delegated to ${agent!.name} (${agent!.id}): Created ${task.id}${deps}. ` +
+            `The task will be picked up by ${agent!.name} on their next heartbeat cycle.`,
+        }],
+        details: { taskId: task.id, agentId: agent!.id, agentName: agent!.name },
+      };
+    },
+  });
+
+  // ── fn_agent_show ─────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "fn_agent_show",
+    label: "fn: Show Agent",
+    description:
+      "Show detailed information about a single agent, including their role, state, " +
+      "position in the org hierarchy (reports-to, direct reports), skills, and current assignment.",
+    promptSnippet: "Show details of a specific Fusion agent",
+    promptGuidelines: [
+      "Use to get full details about a specific agent",
+      "Provide agent ID or a resolvable name",
+      "Shows the agent's position in the org hierarchy",
+    ],
+    parameters: Type.Object({
+      id: Type.String({ description: "Agent ID or resolvable name" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { AgentStore } = await import("@fusion/core");
+
+      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      await agentStore.init();
+
+      const agent = await agentStore.resolveAgent(params.id);
+      if (!agent) {
+        return {
+          content: [{ type: "text", text: `Agent '${params.id}' not found` }],
+          isError: true,
+          details: { error: "Agent not found" },
+        };
+      }
+
+      // Get direct reports
+      const directReports = await agentStore.getAgentsByReportsTo(agent.id);
+
+      const parts: string[] = [
+        `ID: ${agent.id}`,
+        `Name: ${agent.name}`,
+        `Role: ${agent.role}`,
+        `State: ${agent.state}`,
+      ];
+
+      if (agent.title) parts.push(`Title: ${agent.title}`);
+      if (agent.icon) parts.push(`Icon: ${agent.icon}`);
+
+      if (agent.reportsTo) {
+        const manager = await agentStore.getAgent(agent.reportsTo);
+        if (manager) {
+          parts.push(`Reports To: ${manager.name} (${manager.id})`);
+        } else {
+          parts.push(`Reports To: ${agent.reportsTo}`);
+        }
+      }
+
+      if (directReports.length > 0) {
+        parts.push(`Direct Reports: ${directReports.map((r) => `${r.name} (${r.id})`).join(", ")}`);
+      }
+
+      if (agent.taskId) parts.push(`Current Task: ${agent.taskId}`);
+
+      if (agent.instructionsText) {
+        const snippet = agent.instructionsText.slice(0, 100);
+        parts.push(`Custom Instructions: ${snippet}${agent.instructionsText.length > 100 ? "…" : ""}`);
+      }
+
+      if (agent.soul) {
+        const snippet = agent.soul.slice(0, 200);
+        parts.push(`Soul: ${snippet}${agent.soul.length > 200 ? "…" : ""}`);
+      }
+
+      if (agent.metadata?.skills) {
+        parts.push(`Skills: ${JSON.stringify(agent.metadata.skills)}`);
+      }
+
+      return {
+        content: [{ type: "text" as const, text: parts.join("\n") }],
+        details: {
+          agent,
+          directReports: directReports.map((r) => ({ id: r.id, name: r.name, role: r.role })),
+        },
+      };
+    },
+  });
+
+  // ── fn_agent_org_chart ────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "fn_agent_org_chart",
+    label: "fn: Agent Org Chart",
+    description:
+      "Show the organizational tree of agents, displaying the role hierarchy. " +
+      "Optionally filter to a subtree rooted at a specific agent.",
+    promptSnippet: "Show the Fusion agent org chart",
+    promptGuidelines: [
+      "Use to understand the team structure and reporting hierarchy",
+      "Optionally specify a root agent to see only their subtree",
+      "Ephemeral/runtime agents are excluded by default",
+    ],
+    parameters: Type.Object({
+      root_agent_id: Type.Optional(
+        Type.String({ description: "If provided, show only the subtree rooted at this agent" }),
+      ),
+      include_ephemeral: Type.Optional(
+        Type.Boolean({ description: "Include ephemeral/runtime agents (default: false)" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { AgentStore } = await import("@fusion/core");
+      type OrgTreeNode = { agent: { id: string; icon?: string; name: string; role: string; state: string; taskId?: string }; children: OrgTreeNode[] };
+
+      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      await agentStore.init();
+
+      const includeEphemeral = params.include_ephemeral ?? false;
+
+      // If root_agent_id specified, show subtree via chain-of-command + reports
+      if (params.root_agent_id) {
+        const rootAgent = await agentStore.resolveAgent(params.root_agent_id);
+        if (!rootAgent) {
+          return {
+            content: [{ type: "text", text: `Agent '${params.root_agent_id}' not found` }],
+            isError: true,
+            details: { error: "Root agent not found" },
+          };
+        }
+
+        // Get the full tree, then find the subtree
+        const fullTree = await agentStore.getOrgTree({ includeEphemeral });
+
+        // Find the subtree rooted at the specified agent
+        const findSubtree = (nodes: OrgTreeNode[]): OrgTreeNode | null => {
+          for (const node of nodes) {
+            if (node.agent.id === rootAgent.id) return node;
+            const found = findSubtree(node.children);
+            if (found) return found;
+          }
+          return null;
+        };
+
+        const subtree = findSubtree(fullTree);
+        if (!subtree) {
+          // Agent exists but has no tree position — show just that agent
+          return {
+            content: [{
+              type: "text" as const,
+              text: `${rootAgent.icon ?? "🤖"} ${rootAgent.name} (${rootAgent.role}) — ${rootAgent.state}${rootAgent.taskId ? ` [${rootAgent.taskId}]` : ""}`,
+            }],
+            details: { tree: [{ agent: rootAgent, children: [] }] },
+          };
+        }
+
+        const lines: string[] = [];
+        const renderNode = (node: OrgTreeNode, indent: string) => {
+          const a = node.agent;
+          lines.push(
+            `${indent}${a.icon ?? "🤖"} ${a.name} (${a.role}) — ${a.state}${a.taskId ? ` [${a.taskId}]` : ""}`,
+          );
+          for (const child of node.children) {
+            renderNode(child, indent + "  ");
+          }
+        };
+        renderNode(subtree, "");
+
+        return {
+          content: [{ type: "text" as const, text: `Agent Org Tree (subtree: ${rootAgent.name}):\n${lines.join("\n")}` }],
+          details: { tree: [subtree] },
+        };
+      }
+
+      // Full tree
+      const tree = await agentStore.getOrgTree({ includeEphemeral });
+
+      if (tree.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No agents found." }],
+          details: { tree: [], count: 0 },
+        };
+      }
+
+      const lines: string[] = [];
+      let count = 0;
+      const renderNode = (node: OrgTreeNode, indent: string) => {
+        const a = node.agent;
+        lines.push(
+          `${indent}${a.icon ?? "🤖"} ${a.name} (${a.role}) — ${a.state}${a.taskId ? ` [${a.taskId}]` : ""}`,
+        );
+        count++;
+        for (const child of node.children) {
+          renderNode(child, indent + "  ");
+        }
+      };
+      for (const root of tree) {
+        renderNode(root, "");
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Agent Org Tree (${count} agents):\n${lines.join("\n")}` }],
+        details: { tree, count },
+      };
+    },
+  });
+
   // ── fn_skills_search ─────────────────────────────────────────────
 
   pi.registerTool({

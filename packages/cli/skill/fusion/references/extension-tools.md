@@ -263,6 +263,43 @@ Start a stopped agent — resumes its execution. Transitions the agent from paus
 |-----------|------|----------|-------------|
 | `id` | string | ✓ | Agent ID to start (e.g., agent-abc123) |
 
+### fn_list_agents
+
+List all available agents in the system. Shows each agent's name, role, state, personality (soul), and current assignment. Use this to discover which agents exist and what they specialize in before delegating work.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `role` | string | — | Filter by agent role/capability (e.g., 'executor', 'reviewer', 'qa') |
+| `state` | string | — | Filter by agent state (e.g., 'idle', 'active', 'running') |
+| `includeEphemeral` | boolean | — | Include ephemeral/runtime agents (default: false) |
+
+### fn_delegate_task
+
+Create a new task and assign it to a specific agent for execution. The task goes to 'todo' and will be picked up by the target agent on their next heartbeat cycle. Use fn_list_agents first to find available agents and their capabilities.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | ✓ | The agent ID to delegate work to |
+| `description` | string | ✓ | What needs to be done |
+| `dependencies` | array | — | Task IDs this new task depends on (e.g. [\"KB-001\"] |
+
+### fn_agent_show
+
+Show detailed information about a single agent, including their role, state, position in the org hierarchy (reports-to, direct reports), skills, and current assignment.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | ✓ | Agent ID or resolvable name |
+
+### fn_agent_org_chart
+
+Show the organizational tree of agents, displaying the role hierarchy. Optionally filter to a subtree rooted at a specific agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `root_agent_id` | string | — | If provided, show only the subtree rooted at this agent |
+| `include_ephemeral` | boolean | — | Include ephemeral/runtime agents (default: false) |
+
 ## Skills Tools
 
 ### fn_skills_search
