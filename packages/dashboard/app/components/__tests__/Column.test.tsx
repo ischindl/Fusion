@@ -324,7 +324,7 @@ describe("Column in-progress/in-review bulk actions", () => {
     expect(screen.getByRole("menuitem", { name: /Move All to Todo/i })).toBeTruthy();
   });
 
-  it.each(["in-progress", "in-review"] as const)("Stop All pauses only non-paused tasks in %s", async (column) => {
+  it.each(["in-progress", "in-review"] as const)("Stop All pauses only manually-pausable tasks in %s", async (column) => {
     const user = userEvent.setup();
     const onPauseTask = vi.fn().mockResolvedValue({} as Task);
 
@@ -335,7 +335,8 @@ describe("Column in-progress/in-review bulk actions", () => {
         tasks={[
           { ...makeTask("FN-001"), column, paused: false },
           { ...makeTask("FN-002"), column, paused: true },
-          { ...makeTask("FN-003"), column, paused: false },
+          { ...makeTask("FN-003"), column, paused: false, assignedAgentId: "agent-1" },
+          { ...makeTask("FN-004"), column, paused: false },
         ]}
         onPauseTask={onPauseTask}
       />,
@@ -348,7 +349,8 @@ describe("Column in-progress/in-review bulk actions", () => {
       expect(onPauseTask).toHaveBeenCalledTimes(2);
     });
     expect(onPauseTask).toHaveBeenCalledWith("FN-001");
-    expect(onPauseTask).toHaveBeenCalledWith("FN-003");
+    expect(onPauseTask).toHaveBeenCalledWith("FN-004");
+    expect(onPauseTask).not.toHaveBeenCalledWith("FN-003");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(mockConfirm).toHaveBeenCalledWith({
       title: "Stop All Tasks",
@@ -374,7 +376,7 @@ describe("Column in-progress/in-review bulk actions", () => {
     expect(screen.getByText("No tasks in this column")).toBeTruthy();
   });
 
-  it.each(["in-progress", "in-review"] as const)("disables Stop All when all %s tasks are already paused", async (column) => {
+  it.each(["in-progress", "in-review"] as const)("disables Stop All when no %s tasks are manually pausable", async (column) => {
     const user = userEvent.setup();
 
     render(
@@ -383,7 +385,7 @@ describe("Column in-progress/in-review bulk actions", () => {
         column={column}
         tasks={[
           { ...makeTask("FN-010"), column, paused: true },
-          { ...makeTask("FN-011"), column, paused: true },
+          { ...makeTask("FN-011"), column, paused: false, assignedAgentId: "agent-1" },
         ]}
         onPauseTask={vi.fn().mockResolvedValue({} as Task)}
       />,
@@ -391,7 +393,7 @@ describe("Column in-progress/in-review bulk actions", () => {
 
     await user.click(screen.getByRole("button", { name: `${column === "in-progress" ? "In Progress" : "In Review"} column actions` }));
     expect(screen.getByRole("menuitem", { name: /Stop All/i })).toBeDisabled();
-    expect(screen.getByText("All tasks are already paused")).toBeTruthy();
+    expect(screen.getByText("No manually pausable tasks")).toBeTruthy();
   });
 
   it.each(["in-progress", "in-review"] as const)("Move All to Todo moves every task in %s", async (column) => {

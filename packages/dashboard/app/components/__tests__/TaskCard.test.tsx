@@ -93,6 +93,23 @@ describe("TaskCard", () => {
     expect(container.querySelector(".card-status-badge")).toBeNull();
   });
 
+  it("shows paused by agent label when pausedByAgentId is set", () => {
+    render(
+      <TaskCard task={makeTask({ paused: true, pausedByAgentId: "agent-1" })} onOpenDetail={noop} addToast={noop} />,
+    );
+
+    expect(screen.getByText("paused by agent")).toBeDefined();
+  });
+
+  it("shows plain paused label when pausedByAgentId is not set", () => {
+    render(
+      <TaskCard task={makeTask({ paused: true })} onOpenDetail={noop} addToast={noop} />,
+    );
+
+    expect(screen.getByText("paused")).toBeDefined();
+    expect(screen.queryByText("paused by agent")).toBeNull();
+  });
+
   it("renders fast-mode indicator only when executionMode is fast", () => {
     const { container, rerender } = render(
       <TaskCard task={makeTask({ executionMode: "fast" })} onOpenDetail={noop} addToast={noop} />,

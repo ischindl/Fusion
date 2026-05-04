@@ -879,6 +879,8 @@ export interface Task {
   blockedBy?: string;
   /** When true, all automated agent and scheduler interaction is suspended. */
   paused?: boolean;
+  /** When set, this task was paused because the agent with this ID was paused. Cleared when the agent resumes. Distinct from user-initiated pause. */
+  pausedByAgentId?: string;
   /** Git branch name (or task ID) to use as the starting point when
    *  creating this task's worktree. Set by the scheduler when a task's
    *  explicit dependency or `blockedBy` task is in-review with an

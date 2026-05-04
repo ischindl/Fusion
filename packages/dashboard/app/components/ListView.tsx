@@ -1257,7 +1257,9 @@ export function ListView({
                                   </span>
                                 )}
                                 <span className="list-card-spacer" />
-                                {isStuckState ? (
+                                {isPaused && task.pausedByAgentId ? (
+                                  <span className="list-status-badge paused">paused by agent</span>
+                                ) : isStuckState ? (
                                   <span className="list-status-badge stuck">Stuck</span>
                                 ) : hasStatus ? (
                                   <span className={`list-status-badge list-status-badge--${task.column}${isFailed ? " failed" : ""}${isAgentActive ? " pulsing" : ""}`}>
@@ -1451,7 +1453,9 @@ export function ListView({
                                 )}
                                 {visibleColumns.has("status") && (
                                   <td className="list-cell">
-                                    {isStuckState ? (
+                                    {isPaused && task.pausedByAgentId ? (
+                                      <span className="list-status-badge paused">paused by agent</span>
+                                    ) : isStuckState ? (
                                       <span className="list-status-badge stuck">
                                         Stuck
                                       </span>

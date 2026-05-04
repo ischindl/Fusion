@@ -480,6 +480,33 @@ describe("TaskStore", () => {
     });
   });
 
+  describe("pausedByAgentId persistence", () => {
+    it("creates and lists a task with pausedByAgentId", async () => {
+      const task = await store.createTask({ description: "Agent paused task" });
+      const updated = await store.updateTask(task.id, { pausedByAgentId: "agent-1" });
+
+      expect(updated.pausedByAgentId).toBe("agent-1");
+
+      const detail = await store.getTask(task.id);
+      expect(detail.pausedByAgentId).toBe("agent-1");
+
+      const tasks = await store.listTasks();
+      const listed = tasks.find((t) => t.id === task.id);
+      expect(listed?.pausedByAgentId).toBe("agent-1");
+    });
+
+    it("clears pausedByAgentId with null via updateTask", async () => {
+      const task = await store.createTask({ description: "Clear agent pause marker" });
+      await store.updateTask(task.id, { pausedByAgentId: "agent-2" });
+
+      const cleared = await store.updateTask(task.id, { pausedByAgentId: null });
+      expect(cleared.pausedByAgentId).toBeUndefined();
+
+      const detail = await store.getTask(task.id);
+      expect(detail.pausedByAgentId).toBeUndefined();
+    });
+  });
+
   describe("nodeId persistence", () => {
     it("creates a task with nodeId when provided", async () => {
       const task = await store.createTask({
@@ -589,6 +616,36 @@ describe("TaskStore", () => {
       const updated = await store.updateTask(task.id, { priority: "high" });
       expect(updated.priority).toBe("high");
       expect(updated.nodeId).toBe("node-keep");
+    });
+  });
+
+  describe("getTasksByAssignedAgent", () => {
+    it("returns only tasks assigned to the requested agent", async () => {
+      const mine = await store.createTask({ description: "mine", assignedAgentId: "agent-1" });
+      await store.createTask({ description: "other", assignedAgentId: "agent-2" });
+      await store.createTask({ description: "unassigned" });
+
+      const tasks = await store.getTasksByAssignedAgent("agent-1");
+      expect(tasks.map((task) => task.id)).toEqual([mine.id]);
+    });
+
+    it("supports pausedOnly filter", async () => {
+      const paused = await store.createTask({ description: "paused", assignedAgentId: "agent-1" });
+      const active = await store.createTask({ description: "active", assignedAgentId: "agent-1" });
+      await store.updateTask(paused.id, { paused: true });
+
+      const tasks = await store.getTasksByAssignedAgent("agent-1", { pausedOnly: true });
+      expect(tasks.map((task) => task.id)).toEqual([paused.id]);
+      expect(tasks.some((task) => task.id === active.id)).toBe(false);
+    });
+
+    it("supports excludeArchived filter", async () => {
+      const active = await store.createTask({ description: "active", assignedAgentId: "agent-1" });
+      const archived = await store.createTask({ description: "archived", assignedAgentId: "agent-1", column: "done" });
+      await store.archiveTask(archived.id, false);
+
+      const tasks = await store.getTasksByAssignedAgent("agent-1", { excludeArchived: true });
+      expect(tasks.map((task) => task.id)).toEqual([active.id]);
     });
   });
 
@@ -3545,6 +3602,39 @@ describe("TaskStore", () => {
       await store.pauseTask(task.id, true);
       fetched = await store.getTask(task.id);
       expect(fetched.paused).toBe(true);
+    });
+
+    it("sets pausedByAgentId and logs agent pause reason", async () => {
+      const task = await createTestTask();
+      const paused = await store.pauseTask(task.id, true, undefined, { pausedByAgentId: "agent-1" });
+
+      expect(paused.pausedByAgentId).toBe("agent-1");
+      expect(paused.log.at(-1)?.action).toBe("Task paused (agent agent-1 paused)");
+    });
+
+    it("clears pausedByAgentId and logs agent resume reason", async () => {
+      const task = await createTestTask();
+      await store.pauseTask(task.id, true, undefined, { pausedByAgentId: "agent-2" });
+
+      const unpaused = await store.pauseTask(task.id, false);
+      expect(unpaused.pausedByAgentId).toBeUndefined();
+      expect(unpaused.log.at(-1)?.action).toBe("Task unpaused (agent agent-2 resumed)");
+    });
+
+    it("uses standard unpause log when task was not paused by an agent", async () => {
+      const task = await createTestTask();
+      await store.pauseTask(task.id, true);
+
+      const unpaused = await store.pauseTask(task.id, false);
+      expect(unpaused.pausedByAgentId).toBeUndefined();
+      expect(unpaused.log.at(-1)?.action).toBe("Task unpaused");
+    });
+
+    it("keeps pausedByAgentId undefined when pausing without agent options", async () => {
+      const task = await createTestTask();
+      const paused = await store.pauseTask(task.id, true);
+
+      expect(paused.pausedByAgentId).toBeUndefined();
     });
   });
 

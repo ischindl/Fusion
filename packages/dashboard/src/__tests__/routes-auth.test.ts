@@ -1623,6 +1623,7 @@ describe("Pause/Unpause endpoints", () => {
 
   beforeEach(() => {
     store = createMockStore({
+      getTask: vi.fn().mockResolvedValue({ id: "FN-001" }),
       pauseTask: vi.fn().mockResolvedValue({ id: "FN-001", paused: true }),
     });
   });
@@ -1642,7 +1643,7 @@ describe("Pause/Unpause endpoints", () => {
   });
 
   it("POST /tasks/:id/pause — returns 500 on error", async () => {
-    (store.pauseTask as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not found"));
+    (store.getTask as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not found"));
     const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/pause");
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("not found");

@@ -61,6 +61,9 @@ class MockStore extends EventEmitter {
   getRunAuditEvents = mockGetRunAuditEvents;
   getMutationsForRun = vi.fn().mockResolvedValue([]);
   getAgentLogsByTimeRange = vi.fn().mockResolvedValue([]);
+  getTasksByAssignedAgent = vi.fn().mockResolvedValue([]);
+  getTask = vi.fn().mockResolvedValue({ id: "FN-1" });
+  pauseTask = vi.fn().mockImplementation(async (id: string, paused: boolean) => ({ id, paused }));
 
   getRootDir(): string {
     return "/tmp/fn-1059-test";
@@ -135,6 +138,70 @@ describe("Agent runs routes (without HeartbeatMonitor)", () => {
       expect(response.body).toEqual({ id: "agent-001", state: "paused" });
       expect(mockUpdateAgentState).toHaveBeenCalledWith("agent-001", "paused");
       expect(mockGetActiveHeartbeatRun).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("POST /api/tasks/:id/pause and /unpause", () => {
+    it("returns 409 for pause on agent-assigned task", async () => {
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: "FN-1", assignedAgentId: "agent-1" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/tasks/FN-1/pause",
+        JSON.stringify({}),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(409);
+      expect((response.body as any).error).toContain("Cannot manually pause/unpause task assigned to agent agent-1");
+      expect(store.pauseTask).not.toHaveBeenCalled();
+    });
+
+    it("allows pause for unassigned task", async () => {
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: "FN-2" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/tasks/FN-2/pause",
+        JSON.stringify({}),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect(store.pauseTask).toHaveBeenCalledWith("FN-2", true);
+    });
+
+    it("returns 409 for unpause on agent-assigned task", async () => {
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: "FN-3", assignedAgentId: "agent-2" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/tasks/FN-3/unpause",
+        JSON.stringify({}),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(409);
+      expect((response.body as any).error).toContain("Cannot manually pause/unpause task assigned to agent agent-2");
+      expect(store.pauseTask).not.toHaveBeenCalled();
+    });
+
+    it("allows unpause for unassigned task", async () => {
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ id: "FN-4" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/tasks/FN-4/unpause",
+        JSON.stringify({}),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      expect(store.pauseTask).toHaveBeenCalledWith("FN-4", false);
     });
   });
 
@@ -445,6 +512,55 @@ describe("Agent runs routes (with HeartbeatMonitor)", () => {
       });
     });
 
+    it("pausing agent auto-pauses only non-paused assigned tasks", async () => {
+      (store.getTasksByAssignedAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { id: "FN-1", paused: false },
+        { id: "FN-2", paused: true },
+        { id: "FN-3" },
+      ]);
+      mockUpdateAgentState.mockResolvedValue({ id: "agent-001", state: "paused" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/agents/agent-001/state",
+        JSON.stringify({ state: "paused" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(store.pauseTask).toHaveBeenCalledTimes(2);
+      });
+      expect(store.pauseTask).toHaveBeenCalledWith("FN-1", true, undefined, { pausedByAgentId: "agent-001" });
+      expect(store.pauseTask).toHaveBeenCalledWith("FN-3", true, undefined, { pausedByAgentId: "agent-001" });
+    });
+
+    it("resuming agent only unpauses tasks paused by that same agent", async () => {
+      (store.getTasksByAssignedAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { id: "FN-1", paused: true, pausedByAgentId: "agent-001" },
+        { id: "FN-2", paused: true, pausedByAgentId: "agent-002" },
+        { id: "FN-3", paused: true },
+      ]);
+      mockGetAgent.mockResolvedValue({ id: "agent-001", state: "paused" });
+      mockUpdateAgentState.mockResolvedValue({ id: "agent-001", state: "active" });
+      mockExecuteHeartbeat.mockResolvedValue(createMockRun({ id: "run-resume-1", status: "completed" }));
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/agents/agent-001/state",
+        JSON.stringify({ state: "active" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(store.pauseTask).toHaveBeenCalledWith("FN-1", false);
+      });
+      expect(store.pauseTask).toHaveBeenCalledTimes(1);
+    });
+
     it("resuming to active triggers on-demand heartbeat exactly once", async () => {
       mockGetAgent.mockResolvedValue({ id: "agent-001", state: "paused" });
       mockUpdateAgentState.mockResolvedValue({ id: "agent-001", state: "active" });
@@ -472,6 +588,26 @@ describe("Agent runs routes (with HeartbeatMonitor)", () => {
           triggerDetail: "Triggered from state resume",
           triggerSource: "state-resume",
         },
+      });
+    });
+
+    it("terminated agent also unpauses tasks paused by that agent", async () => {
+      (store.getTasksByAssignedAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { id: "FN-9", paused: true, pausedByAgentId: "agent-001" },
+      ]);
+      mockUpdateAgentState.mockResolvedValue({ id: "agent-001", state: "terminated" });
+
+      const response = await request(
+        app,
+        "POST",
+        "/api/agents/agent-001/state",
+        JSON.stringify({ state: "terminated" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(store.pauseTask).toHaveBeenCalledWith("FN-9", false);
       });
     });
 

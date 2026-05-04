@@ -95,6 +95,7 @@ interface TaskRow {
   missionId: string | null;
   sliceId: string | null;
   assignedAgentId: string | null;
+  pausedByAgentId: string | null;
   assigneeUserId: string | null;
   nodeId: string | null;
   effectiveNodeId: string | null;
@@ -728,6 +729,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       missionId: row.missionId || undefined,
       sliceId: row.sliceId || undefined,
       assignedAgentId: row.assignedAgentId || undefined,
+      pausedByAgentId: row.pausedByAgentId || undefined,
       assigneeUserId: row.assigneeUserId || undefined,
       nodeId: row.nodeId || undefined,
       effectiveNodeId: row.effectiveNodeId || undefined,
@@ -965,7 +967,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "dependencies", "steps", "comments", "workflowStepResults", "steeringComments",
       "attachments", "prInfo", "issueInfo", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "enabledWorkflowSteps", "modifiedFiles",
-      "missionId", "sliceId", "assignedAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
+      "missionId", "sliceId", "assignedAgentId", "pausedByAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
       "sourceType", "sourceAgentId", "sourceRunId", "sourceSessionId", "sourceMessageId", "sourceParentTaskId", "sourceMetadata",
       "checkedOutBy", "checkedOutAt",
       // `log` is fetched in slim mode so the server can aggregate
@@ -1014,7 +1016,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "dependencies", "steps", "attachments", "steeringComments",
       "comments", "workflowStepResults", "prInfo", "issueInfo", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "enabledWorkflowSteps", "modifiedFiles",
-      "missionId", "sliceId", "assignedAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
+      "missionId", "sliceId", "assignedAgentId", "pausedByAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
       "sourceType", "sourceAgentId", "sourceRunId", "sourceSessionId", "sourceMessageId", "sourceParentTaskId", "sourceMetadata",
       "checkedOutBy", "checkedOutAt",
     ];
@@ -1057,9 +1059,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         dependencies, steps, log, attachments, steeringComments,
         comments, workflowStepResults, prInfo, issueInfo,
         sourceIssueProvider, sourceIssueRepository, sourceIssueExternalIssueId, sourceIssueNumber, sourceIssueUrl,
-        mergeDetails, breakIntoSubtasks, enabledWorkflowSteps, modifiedFiles, missionId, sliceId, assignedAgentId, assigneeUserId, nodeId, effectiveNodeId, effectiveNodeSource, sourceType, sourceAgentId, sourceRunId, sourceSessionId, sourceMessageId, sourceParentTaskId, sourceMetadata, checkedOutBy, checkedOutAt
+        mergeDetails, breakIntoSubtasks, enabledWorkflowSteps, modifiedFiles, missionId, sliceId, assignedAgentId, pausedByAgentId, assigneeUserId, nodeId, effectiveNodeId, effectiveNodeSource, sourceType, sourceAgentId, sourceRunId, sourceSessionId, sourceMessageId, sourceParentTaskId, sourceMetadata, checkedOutBy, checkedOutAt
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
@@ -1128,6 +1130,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         missionId = excluded.missionId,
         sliceId = excluded.sliceId,
         assignedAgentId = excluded.assignedAgentId,
+        pausedByAgentId = excluded.pausedByAgentId,
         assigneeUserId = excluded.assigneeUserId,
         nodeId = excluded.nodeId,
         effectiveNodeId = excluded.effectiveNodeId,
@@ -1209,6 +1212,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.missionId ?? null,
       task.sliceId ?? null,
       task.assignedAgentId ?? null,
+      task.pausedByAgentId ?? null,
       task.assigneeUserId ?? null,
       task.nodeId ?? null,
       task.effectiveNodeId ?? null,
@@ -2652,6 +2656,31 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return limit >= 0 ? matches.slice(0, limit) : matches;
   }
 
+  async getTasksByAssignedAgent(
+    agentId: string,
+    options?: { pausedOnly?: boolean; excludeArchived?: boolean },
+  ): Promise<Task[]> {
+    const whereClauses = ["assignedAgentId = ?"];
+    const params: Array<string | number> = [agentId];
+
+    if (options?.pausedOnly) {
+      whereClauses.push("paused = 1");
+    }
+
+    if (options?.excludeArchived) {
+      whereClauses.push('"column" != \'archived\'');
+    }
+
+    const selectClause = this.getTaskSelectClause(false);
+    const rows = this.db.prepare(`
+      SELECT ${selectClause} FROM tasks
+      WHERE ${whereClauses.join(" AND ")}
+      ORDER BY createdAt ASC
+    `).all(...params) as TaskRow[];
+
+    return rows.map((row) => this.rowToTask(row));
+  }
+
   async selectNextTaskForAgent(agentId: string): Promise<InboxTask | null> {
     const tasks = await this.listTasks({ slim: true });
     if (tasks.length === 0) {
@@ -2917,7 +2946,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async updateTask(
     id: string,
-    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; currentStep?: number; blockedBy?: string | null; assignedAgentId?: string | null; assigneeUserId?: string | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
+    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; currentStep?: number; blockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; assigneeUserId?: string | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
     runContext?: RunMutationContext,
   ): Promise<Task> {
     return this.withTaskLock(id, async () => {
@@ -3000,6 +3029,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.assignedAgentId = undefined;
       } else if (updates.assignedAgentId !== undefined) {
         task.assignedAgentId = updates.assignedAgentId;
+      }
+      if (updates.pausedByAgentId === null) {
+        task.pausedByAgentId = undefined;
+      } else if (updates.pausedByAgentId !== undefined) {
+        task.pausedByAgentId = updates.pausedByAgentId;
       }
       if (updates.assigneeUserId === null) {
         task.assigneeUserId = undefined;
@@ -3278,7 +3312,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
    * Pause or unpause a task. Paused tasks are excluded from all automated
    * agent and scheduler interaction. Logs the action and emits `task:updated`.
    */
-  async pauseTask(id: string, paused: boolean, runContext?: RunMutationContext): Promise<Task> {
+  async pauseTask(
+    id: string,
+    paused: boolean,
+    runContext?: RunMutationContext,
+    agentOptions?: { pausedByAgentId?: string },
+  ): Promise<Task> {
     return this.withTaskLock(id, async () => {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
@@ -3288,7 +3327,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.log = [];
       }
 
+      const previousPausedByAgentId = task.pausedByAgentId;
       task.paused = paused || undefined;
+      if (paused && agentOptions?.pausedByAgentId) {
+        task.pausedByAgentId = agentOptions.pausedByAgentId;
+      }
+      if (!paused) {
+        task.pausedByAgentId = undefined;
+      }
       // When pausing an in-progress/in-review task, set status so the UI can show the state.
       // When unpausing, clear the "paused" status.
       if (task.column === "in-progress" || task.column === "in-review") {
@@ -3298,7 +3344,13 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.updatedAt = now;
       const logEntry: TaskLogEntry = {
         timestamp: now,
-        action: paused ? "Task paused" : "Task unpaused",
+        action: paused
+          ? (agentOptions?.pausedByAgentId
+            ? `Task paused (agent ${agentOptions.pausedByAgentId} paused)`
+            : "Task paused")
+          : (previousPausedByAgentId
+            ? `Task unpaused (agent ${previousPausedByAgentId} resumed)`
+            : "Task unpaused"),
       };
       if (runContext) {
         logEntry.runContext = runContext;

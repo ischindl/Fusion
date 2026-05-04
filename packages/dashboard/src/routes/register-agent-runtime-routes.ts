@@ -432,6 +432,35 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
             }
           }
 
+          if (nextState === "paused") {
+            const assignedTasks = await scopedStore.getTasksByAssignedAgent(agentId, { excludeArchived: true });
+            const toPause = assignedTasks.filter((task) => task.paused !== true);
+            const results = await Promise.allSettled(
+              toPause.map((task) => scopedStore.pauseTask(task.id, true, undefined, { pausedByAgentId: agentId })),
+            );
+            results.forEach((result, index) => {
+              if (result.status === "rejected") {
+                console.error(`[agent-state] failed to pause assigned task ${toPause[index]?.id} for ${agentId}:`, result.reason);
+              }
+            });
+          }
+
+          if (nextState === "active" || nextState === "terminated") {
+            const pausedTasks = await scopedStore.getTasksByAssignedAgent(agentId, {
+              pausedOnly: true,
+              excludeArchived: true,
+            });
+            const toUnpause = pausedTasks.filter((task) => task.pausedByAgentId === agentId);
+            const results = await Promise.allSettled(
+              toUnpause.map((task) => scopedStore.pauseTask(task.id, false)),
+            );
+            results.forEach((result, index) => {
+              if (result.status === "rejected") {
+                console.error(`[agent-state] failed to unpause assigned task ${toUnpause[index]?.id} for ${agentId}:`, result.reason);
+              }
+            });
+          }
+
           const isHeartbeatEnabled = currentAgent.runtimeConfig?.enabled !== false;
           if (nextState === "active" && isHeartbeatEnabled && projectHeartbeatMonitor) {
             await projectHeartbeatMonitor.executeHeartbeat({

@@ -4090,6 +4090,49 @@ describe("TaskDetailModal", () => {
       expect(screen.getByRole("menuitem", { name: "Unpause" })).toBeTruthy();
     });
 
+    it("hides Pause/Unpause button for agent-assigned tasks", async () => {
+      const { fetchAgent } = await import("../../api");
+      vi.mocked(fetchAgent).mockResolvedValue({ id: "agent-1", name: "Agent 1", role: "executor", state: "active" } as any);
+
+      render(
+        <TaskDetailModal
+          task={makeTask({ column: "triage", paused: true, assignedAgentId: "agent-1" })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+
+      expect(screen.queryByRole("menuitem", { name: "Pause" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Unpause" })).toBeNull();
+    });
+
+    it("shows paused-by-agent indicator for agent-paused tasks", async () => {
+      const { fetchAgent } = await import("../../api");
+      vi.mocked(fetchAgent).mockResolvedValue({ id: "agent-1", name: "Agent 1", role: "executor", state: "paused" } as any);
+
+      render(
+        <TaskDetailModal
+          task={makeTask({ column: "triage", paused: true, assignedAgentId: "agent-1", pausedByAgentId: "agent-1" })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+
+      expect(screen.getByText("Paused by agent")).toBeTruthy();
+    });
+
     it("does NOT render Actions dropdown for a non-paused, non-awaiting-approval, non-retryable triage task", () => {
       render(
         <TaskDetailModal

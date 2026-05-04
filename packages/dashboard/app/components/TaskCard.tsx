@@ -709,6 +709,7 @@ function TaskCardComponent({
 
   const isFailed = task.status === "failed";
   const isPaused = task.paused === true;
+  const pausedByAgent = Boolean(task.paused && task.pausedByAgentId);
   const normalizedPriority = normalizeTaskPriorityValue(task.priority);
   const showPriorityBadge = normalizedPriority !== DEFAULT_TASK_PRIORITY;
   const isStuck = isTaskStuck(task, taskStuckTimeoutMs, lastFetchTimeMs);
@@ -1315,7 +1316,7 @@ function TaskCardComponent({
           <span
             className="card-status-badge paused"
           >
-            paused
+            {pausedByAgent ? "paused by agent" : "paused"}
           </span>
         )}
         {!isPaused && task.status && task.status !== "queued" && (

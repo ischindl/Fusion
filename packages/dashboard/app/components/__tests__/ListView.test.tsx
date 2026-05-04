@@ -210,6 +210,26 @@ describe("ListView", () => {
     expect(standardRow.querySelector(".list-execution-mode-badge")).toBeNull();
   });
 
+  it("shows paused by agent status in table view", () => {
+    const tasks = [
+      createMockTask({ id: "FN-001", column: "in-progress", paused: true, pausedByAgentId: "agent-1" }),
+    ];
+
+    renderListView({ tasks });
+    expect(screen.getByText("paused by agent")).toBeDefined();
+  });
+
+  it("shows paused by agent status in mobile card view", () => {
+    const matchMediaSpy = mockMobileViewport();
+    const tasks = [
+      createMockTask({ id: "FN-001", column: "in-progress", paused: true, pausedByAgentId: "agent-1" }),
+    ];
+
+    renderListView({ tasks });
+    expect(screen.getByText("paused by agent")).toBeDefined();
+    matchMediaSpy.mockRestore();
+  });
+
   it("shows empty state when no tasks", () => {
     renderListView({ tasks: [] });
     expect(screen.getByText("No tasks yet")).toBeDefined();

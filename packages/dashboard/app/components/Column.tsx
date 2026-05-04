@@ -221,7 +221,10 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     }
   }, [tasks, onMoveTask, addToast, confirm]);
 
-  const pauseEligibleTasks = useMemo(() => tasks.filter((task) => !task.paused), [tasks]);
+  const pauseEligibleTasks = useMemo(
+    () => tasks.filter((task) => !task.paused && !task.assignedAgentId),
+    [tasks],
+  );
   const pauseEligibleCount = pauseEligibleTasks.length;
   const hasColumnBulkActions = column === "todo" || column === "in-progress" || column === "in-review";
   const isMenuBusy = isReplanning || isPausingAll || isMovingAllToTodo;
@@ -422,8 +425,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                         {tasks.length === 0
                           ? "No tasks in this column"
                           : pauseEligibleCount === 0
-                            ? "All tasks are already paused"
-                            : `Pause ${pauseEligibleCount} active task${pauseEligibleCount === 1 ? "" : "s"}`}
+                            ? "No manually pausable tasks"
+                            : `Pause ${pauseEligibleCount} active unassigned task${pauseEligibleCount === 1 ? "" : "s"}`}
                       </span>
                     </button>
                     <button

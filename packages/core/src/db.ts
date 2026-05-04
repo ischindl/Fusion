@@ -88,7 +88,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 59;
+const SCHEMA_VERSION = 60;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   missionId TEXT,
   sliceId TEXT,
   assignedAgentId TEXT,
+  pausedByAgentId TEXT,
   assigneeUserId TEXT,
   sourceType TEXT,
   sourceAgentId TEXT,
@@ -2347,6 +2348,13 @@ export class Database {
           this.addColumnIfMissing("project_insight_run_events", "seq", "INTEGER NOT NULL DEFAULT 0");
         }
         this.db.exec(`CREATE INDEX IF NOT EXISTS idxInsightRunEventsRunIdSeq ON project_insight_run_events(runId, seq)`);
+      });
+    }
+
+    if (version < 60) {
+      this.applyMigration(60, () => {
+        this.addColumnIfMissing("tasks", "pausedByAgentId", "TEXT");
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxTasksPausedByAgentId ON tasks(pausedByAgentId)`);
       });
     }
 

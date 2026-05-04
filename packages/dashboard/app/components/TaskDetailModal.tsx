@@ -2521,7 +2521,7 @@ export function TaskDetailContent({
                       )}
 
                       {/* Pause/Unpause */}
-                      {task.column !== "done" && (
+                      {task.column !== "done" && !task.assignedAgentId && (
                         <button
                           className="detail-actions-menu-item"
                           role="menuitem"
@@ -2529,6 +2529,14 @@ export function TaskDetailContent({
                         >
                           {task.paused ? "Unpause" : "Pause"}
                         </button>
+                      )}
+                      {task.column !== "done" && task.paused && task.pausedByAgentId && (
+                        <span
+                          className="detail-actions-menu-item detail-actions-menu-note"
+                          role="note"
+                        >
+                          Paused by agent
+                        </span>
                       )}
                     </div>
                   )}
