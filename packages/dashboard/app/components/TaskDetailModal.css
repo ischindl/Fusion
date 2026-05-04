@@ -39,23 +39,23 @@
   letter-spacing: 0.5px;
 }
 .badge-triage {
-  background: rgba(210, 153, 34, 0.15);
+  background: var(--status-triage-bg);
   color: var(--triage);
 }
 .badge-todo {
-  background: rgba(88, 166, 255, 0.15);
+  background: var(--status-todo-bg);
   color: var(--todo);
 }
 .badge-in-progress {
-  background: rgba(188, 140, 255, 0.15);
+  background: var(--status-in-progress-bg);
   color: var(--in-progress);
 }
 .badge-in-review {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--status-in-review-bg);
   color: var(--in-review);
 }
 .badge-done {
-  background: rgba(139, 148, 158, 0.15);
+  background: var(--status-done-bg);
   color: var(--done);
 }
 
@@ -448,8 +448,8 @@
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  background: color-mix(in srgb, var(--bg) 65%, var(--text));
+  color: var(--text);
   cursor: pointer;
   font-size: 12px;
   line-height: 20px;
@@ -561,13 +561,13 @@
 
 .detail-actions-menu-item:hover,
 .detail-move-menu-item:hover {
-  background: var(--surface-hover);
+  background: var(--surface-hover, color-mix(in srgb, var(--text) 6%, transparent));
 }
 
 .detail-actions-menu-item:focus,
 .detail-move-menu-item:focus {
   outline: none;
-  background: var(--surface-hover);
+  background: var(--surface-hover, color-mix(in srgb, var(--text) 6%, transparent));
 }
 
 .detail-actions-menu-note {
@@ -617,7 +617,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.7);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
   z-index: 100;
 }
 
@@ -843,19 +843,19 @@
 
 /* Semantic status colors for changed-file entries — theme-aware via CSS variables */
 .changes-file-status--added {
-  color: var(--status-color-added, #3fb950);
+  color: var(--color-success);
 }
 
 .changes-file-status--modified {
-  color: var(--status-color-modified, #58a6ff);
+  color: var(--color-info);
 }
 
 .changes-file-status--deleted {
-  color: var(--status-color-deleted, #f85149);
+  color: var(--color-error-dark);
 }
 
 .changes-file-status--unknown {
-  color: var(--status-color-unknown, #8b949e);
+  color: var(--text-muted);
 }
 
 /* Stat summary in changes header */
@@ -869,11 +869,11 @@
 }
 
 .changes-stat-summary .diff-add {
-  color: var(--status-color-added, #3fb950);
+  color: var(--color-success);
 }
 
 .changes-stat-summary .diff-del {
-  color: var(--status-color-deleted, #f85149);
+  color: var(--color-error-dark);
 }
 
 /* Task-specific changes header: stacked title + stats layout */
@@ -919,7 +919,7 @@
 .changes-diff-patch {
   margin: 0;
   padding: var(--space-sm) 0;
-  background: rgba(0, 0, 0, 0.14);
+  background: color-mix(in srgb, var(--bg) 86%, var(--text));
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
@@ -940,14 +940,14 @@
 
 /* Summary section - styled for done tasks with success accent */
 .detail-summary {
-  background: rgba(63, 185, 80, 0.08);
-  border: 1px solid rgba(63, 185, 80, 0.25);
+  background: color-mix(in srgb, var(--color-success) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 25%, transparent);
   border-radius: var(--radius-md);
   padding: var(--space-lg);
 }
 
 .detail-summary h4 {
-  color: var(--color-success, #3fb950);
+  color: var(--color-success);
   margin-bottom: var(--space-md);
 }
 
@@ -1248,9 +1248,9 @@
   color: var(--text);
 }
 
-.modal-edit-btn:focus {
-  outline: 1px solid var(--todo);
-  outline-offset: 1px;
+.modal-edit-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-strong);
 }
 
 .modal-edit-form {
