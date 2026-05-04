@@ -16,6 +16,10 @@ interface AgentRuntimeRouteDeps {
   hasHeartbeatExecutor: boolean;
   heartbeatMonitor: import("../server.js").ServerOptions["heartbeatMonitor"];
   isHeartbeatMonitorForProject: (scopedStore: import("@fusion/core").TaskStore) => boolean;
+  /** Resolve the HeartbeatMonitor for the engine backing a scoped store.
+   *  Used for multi-project setups where each engine has its own monitor.
+   *  Returns undefined when no matching engine is found. */
+  resolveHeartbeatMonitor: (scopedStore: import("@fusion/core").TaskStore) => import("../server.js").ServerOptions["heartbeatMonitor"];
   runExcerptToAgentLogs: (run: import("@fusion/core").AgentHeartbeatRun) => import("@fusion/core").AgentLogEntry[];
   parseRunAuditFilters: (query: Record<string, unknown>) => {
     taskId?: string;
@@ -42,6 +46,7 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
     hasHeartbeatExecutor,
     heartbeatMonitor,
     isHeartbeatMonitorForProject,
+    resolveHeartbeatMonitor,
     runExcerptToAgentLogs,
     parseRunAuditFilters,
     normalizeRunAuditEvent,
@@ -794,16 +799,22 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
 
       // Optionally trigger execution
       let run: import("@fusion/core").AgentHeartbeatRun | undefined;
-      if (triggerExecution && hasHeartbeatExecutor && heartbeatMonitor && isHeartbeatMonitorForProject(scopedStore)) {
-        run = await heartbeatMonitor.executeHeartbeat({
-          agentId: req.params.id,
-          source: "on_demand",
-          triggerDetail: "Triggered from heartbeat",
-          contextSnapshot: {
-            wakeReason: "on_demand",
+      if (triggerExecution && hasHeartbeatExecutor && heartbeatMonitor) {
+        const resolvedMonitor =
+          isHeartbeatMonitorForProject(scopedStore)
+            ? heartbeatMonitor
+            : resolveHeartbeatMonitor(scopedStore);
+        if (resolvedMonitor) {
+          run = await resolvedMonitor.executeHeartbeat({
+            agentId: req.params.id,
+            source: "on_demand",
             triggerDetail: "Triggered from heartbeat",
-          },
-        });
+            contextSnapshot: {
+              wakeReason: "on_demand",
+              triggerDetail: "Triggered from heartbeat",
+            },
+          });
+        }
       }
 
       res.json(run ? { event, run } : event);
@@ -939,10 +950,15 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
         // Check for existing active run
         const { store: scopedStore } = await getProjectContext(req);
 
-        // Guard: heartbeatMonitor is bound to a specific project root directory.
-        // Reject when the scoped store belongs to a different project.
-        if (!isHeartbeatMonitorForProject(scopedStore)) {
-          throw new ApiError(400, "Agent execution is only available for the server's primary project. The heartbeat monitor is not bound to this project.");
+        // Resolve the correct HeartbeatMonitor for this project.
+        // In multi-project setups, each engine has its own monitor.
+        const resolvedMonitor =
+          isHeartbeatMonitorForProject(scopedStore)
+            ? heartbeatMonitor
+            : resolveHeartbeatMonitor(scopedStore);
+
+        if (!resolvedMonitor) {
+          throw new ApiError(400, "No heartbeat executor available for this project.");
         }
 
         const { AgentStore: AgentStoreClass } = await import("@fusion/core");
@@ -960,7 +976,7 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
         }
 
         // Execute heartbeat end-to-end (single run record, no duplicate startRun call)
-        const run = await heartbeatMonitor.executeHeartbeat({
+        const run = await resolvedMonitor.executeHeartbeat({
           agentId: req.params.id,
           source: invocationSource,
           triggerDetail: trigger,
@@ -1033,8 +1049,32 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
         return;
       }
 
-      if (hasHeartbeatExecutor && heartbeatMonitor && isHeartbeatMonitorForProject(scopedStore)) {
-        await heartbeatMonitor.stopRun(req.params.id);
+      if (hasHeartbeatExecutor && heartbeatMonitor) {
+        const resolvedMonitor =
+          isHeartbeatMonitorForProject(scopedStore)
+            ? heartbeatMonitor
+            : resolveHeartbeatMonitor(scopedStore);
+        if (resolvedMonitor) {
+          await resolvedMonitor.stopRun(req.params.id);
+        } else {
+          const existingRun = await agentStore.getRunDetail(req.params.id, activeRun.id);
+          if (existingRun) {
+            await agentStore.saveRun({
+              ...existingRun,
+              endedAt: new Date().toISOString(),
+              status: "terminated",
+              stderrExcerpt: existingRun.stderrExcerpt ?? "Run stopped by user",
+            });
+          }
+
+          await agentStore.endHeartbeatRun(activeRun.id, "terminated");
+
+          try {
+            await agentStore.updateAgentState(req.params.id, "active");
+          } catch {
+            // Best effort to restore an idle/active state for follow-up runs.
+          }
+        }
       } else {
         const existingRun = await agentStore.getRunDetail(req.params.id, activeRun.id);
         if (existingRun) {
