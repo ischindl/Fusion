@@ -25,6 +25,9 @@
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*"
   },
+  "dependencies": {
+    "@fusion-plugin-examples/droid-runtime": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",

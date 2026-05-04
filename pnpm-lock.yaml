@@ -181,6 +181,9 @@ importers:
       '@fusion-plugin-examples/dependency-graph':
         specifier: workspace:*
         version: link:../../plugins/fusion-plugin-dependency-graph
+      '@fusion-plugin-examples/droid-runtime':
+        specifier: workspace:*
+        version: link:../../plugins/fusion-plugin-droid-runtime
       '@fusion-plugin-examples/hermes-runtime':
         specifier: workspace:*
         version: link:../../plugins/fusion-plugin-hermes-runtime
@@ -366,6 +369,9 @@ importers:
 
   packages/droid-cli:
     dependencies:
+      '@fusion-plugin-examples/droid-runtime':
+        specifier: workspace:*
+        version: link:../../plugins/fusion-plugin-droid-runtime
       '@mariozechner/pi-ai':
         specifier: '*'
         version: 0.70.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
@@ -580,6 +586,28 @@ importers:
       react-dom:
         specifier: ^19.2.4
         version: 19.2.4(react@19.2.4)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.6.1)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  plugins/fusion-plugin-droid-runtime:
+    dependencies:
+      '@fusion/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+      '@mariozechner/pi-ai':
+        specifier: '*'
+        version: 0.72.1(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@mariozechner/pi-coding-agent':
+        specifier: '*'
+        version: 0.72.1(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.2
+        version: 25.5.2
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

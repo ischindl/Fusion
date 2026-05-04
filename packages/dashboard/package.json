@@ -52,6 +52,7 @@
     "@fusion-plugin-examples/dependency-graph": "workspace:*",
     "@fusion-plugin-examples/hermes-runtime": "workspace:*",
     "@fusion-plugin-examples/openclaw-runtime": "workspace:*",
+    "@fusion-plugin-examples/droid-runtime": "workspace:*",
     "@fusion-plugin-examples/paperclip-runtime": "workspace:*",
     "@fusion/core": "workspace:*",
     "@fusion/engine": "workspace:*",

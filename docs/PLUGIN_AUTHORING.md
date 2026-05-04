@@ -1006,6 +1006,13 @@ Polls CI status for branches and provides custom API endpoints.
 - Demonstrates: Custom routes, periodic background work, route handlers, UI slot registration
 - Features: `onLoad`/`onUnload` lifecycle, `setInterval` polling, REST API, UI slots for task cards and task detail tabs
 
+### [Droid Runtime Plugin](../../plugins/fusion-plugin-droid-runtime/)
+
+Reference runtime plugin that migrates a CLI-backed provider into the plugin system.
+
+- Demonstrates: runtime adapter pattern (`runtime-adapter.ts`), dashboard UI slot contributions for settings/onboarding surfaces, and dashboard probe delegation (`probeDroidBinary`)
+- Preserves provider id `droid-cli` via `@fusion/droid-cli` compatibility shim
+
 ### [Settings Demo Plugin](../../plugins/examples/fusion-plugin-settings-demo/)
 
 Example plugin demonstrating settings schema and runtime configuration with all four setting types.

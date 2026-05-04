@@ -1,18 +1,18 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { streamViaCli } from "./src/provider.js";
+import { streamViaCli } from "../../plugins/fusion-plugin-droid-runtime/src/provider.js";
 import {
+  discoverDroidModels,
   validateCliPresenceAsync,
   validateCliAuthAsync,
   killAllProcesses,
-  discoverDroidModels,
-} from "./src/process-manager.js";
+} from "../../plugins/fusion-plugin-droid-runtime/src/process-manager.js";
 import { createHash } from "node:crypto";
 import {
   getCustomToolDefs,
   toolsFromContext,
   writeMcpConfig,
   type McpToolDef,
-} from "./src/mcp-config.js";
+} from "../../plugins/fusion-plugin-droid-runtime/src/mcp-config.js";
 
 process.on("exit", killAllProcesses);
 
@@ -117,7 +117,11 @@ export default function (pi: ExtensionAPI) {
             pi,
             (context as { tools?: ReadonlyArray<{ name: string; description: string; parameters: Record<string, unknown> }> }).tools,
           );
-          return streamViaCli(model, context, { ...options, mcpConfigPath: configPath });
+          return streamViaCli(
+            model,
+            context as never,
+            { ...(options ?? {}), mcpConfigPath: configPath } as never,
+          );
         },
       });
     } catch (err) {
