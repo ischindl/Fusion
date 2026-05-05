@@ -11,16 +11,17 @@ A comprehensive guide to creating Fusion plugins that extend the task board with
 5. [Registering Tools](#5-registering-tools)
 6. [Registering Routes](#6-registering-routes)
 7. [Registering UI Slots](#7-registering-ui-slots)
-8. [Registering Agent Runtimes](#8-registering-agent-runtimes)
-9. [Plugin Context API Reference](#9-plugin-context-api-reference)
-10. [Plugin Lifecycle States](#10-plugin-lifecycle-states)
-11. [Testing Plugins](#11-testing-plugins)
-12. [Publishing Plugins](#12-publishing-plugins)
-13. [Example Plugins](#13-example-plugins)
-14. [Registering Skills](#14-registering-skills)
-15. [Registering Workflow Steps](#15-registering-workflow-steps)
-16. [Plugin Prompt Contributions](#16-plugin-prompt-contributions)
-17. [Plugin Binary Setup Hooks](#17-plugin-binary-setup-hooks)
+8. [Registering Top-Level Dashboard Views](#8-registering-top-level-dashboard-views)
+9. [Registering Agent Runtimes](#9-registering-agent-runtimes)
+10. [Plugin Context API Reference](#10-plugin-context-api-reference)
+11. [Plugin Lifecycle States](#11-plugin-lifecycle-states)
+12. [Testing Plugins](#12-testing-plugins)
+13. [Publishing Plugins](#13-publishing-plugins)
+14. [Example Plugins](#14-example-plugins)
+15. [Registering Skills](#15-registering-skills)
+16. [Registering Workflow Steps](#16-registering-workflow-steps)
+17. [Plugin Prompt Contributions](#17-plugin-prompt-contributions)
+18. [Plugin Binary Setup Hooks](#18-plugin-binary-setup-hooks)
 
 ---
 
@@ -711,7 +712,7 @@ export default definePlugin({
 
 ---
 
-## 9. Plugin Context API Reference
+## 10. Plugin Context API Reference
 
 The context object is passed to hooks, tools, and route handlers:
 
@@ -815,7 +816,7 @@ hooks: {
 
 ---
 
-## 10. Plugin Lifecycle States
+## 11. Plugin Lifecycle States
 
 Plugins transition through these states:
 
@@ -852,7 +853,7 @@ Any state can transition to:
 
 ---
 
-## 11. Testing Plugins
+## 12. Testing Plugins
 
 Use Vitest for unit testing your plugins:
 
@@ -950,7 +951,7 @@ This keeps regressions durable while preserving clear ownership boundaries acros
 
 ---
 
-## 12. Publishing Plugins
+## 13. Publishing Plugins
 
 ### Package Requirements
 
@@ -1006,7 +1007,7 @@ cp -r fusion-plugin-my-plugin ~/.fusion/plugins/
 
 ---
 
-## 13. Example Plugins
+## 14. Example Plugins
 
 Explore these reference implementations:
 
@@ -1165,7 +1166,7 @@ For more information, see the [Plugin SDK Reference](../packages/plugin-sdk/src/
 
 ---
 
-## 14. Registering Skills
+## 15. Registering Skills
 
 Plugins can contribute reusable skills that are surfaced in agent sessions through Fusion's skill-selection flow.
 
@@ -1186,7 +1187,7 @@ const skills: PluginSkillContribution[] = [
 
 `skillFiles` are relative to the plugin root. `skillId` must be kebab-case.
 
-## 15. Registering Workflow Steps
+## 16. Registering Workflow Steps
 
 Plugins can ship workflow step templates that users can enable like built-in quality gates.
 
@@ -1217,7 +1218,7 @@ const workflowSteps: PluginWorkflowStepContribution[] = [
 
 Use `mode: "prompt" | "script"` and `toolMode: "readonly" | "coding"`.
 
-## 16. Plugin Prompt Contributions
+## 17. Plugin Prompt Contributions
 
 Prompt contributions let a plugin inject additional instructions into specific prompt surfaces.
 
@@ -1246,7 +1247,7 @@ const promptContributions: PluginPromptContributions = {
 
 Use `enabledByDefault: false` when contributions should require explicit opt-in.
 
-## 17. Plugin Binary Setup Hooks
+## 18. Plugin Binary Setup Hooks
 
 Plugins can expose setup metadata and lifecycle hooks for optional binaries or runtimes.
 
