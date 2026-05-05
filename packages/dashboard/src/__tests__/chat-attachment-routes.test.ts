@@ -17,7 +17,7 @@ const mockGetMessages = vi.fn();
 const mockGetMessage = vi.fn();
 const mockGetLastMessageForSessions = vi.fn().mockReturnValue(new Map());
 const mockDeleteMessage = vi.fn();
-const { mockChatStreamManager, mockSendMessage, mockCancelGeneration, mockBeginGeneration } = vi.hoisted(() => {
+const { mockChatStreamManager, mockSendMessage, mockCancelGeneration } = vi.hoisted(() => {
   const subscribers = new Map<string, Set<(event: any, eventId?: number) => void>>();
   const chatStreamManager = {
     subscribe: vi.fn((sessionId: string, callback: (event: any, eventId?: number) => void) => {
@@ -39,7 +39,6 @@ const { mockChatStreamManager, mockSendMessage, mockCancelGeneration, mockBeginG
       chatStreamManager.broadcast(sessionId, { type: "done", data: { messageId: "msg-1" } });
     }),
     mockCancelGeneration: vi.fn().mockReturnValue(false),
-    mockBeginGeneration: vi.fn(() => ({ generationId: 1, abortController: new AbortController() })),
   };
 });
 
@@ -58,7 +57,7 @@ const mockGetOrCreateProjectStore = vi.fn();
 vi.mock("../project-store-resolver.js", () => ({ getOrCreateProjectStore: mockGetOrCreateProjectStore, invalidateAllGlobalSettingsCaches: vi.fn() }));
 
 vi.mock("../chat.js", () => ({
-  ChatManager: class MockChatManager { sendMessage = mockSendMessage; cancelGeneration = mockCancelGeneration; beginGeneration = mockBeginGeneration; },
+  ChatManager: class MockChatManager { sendMessage = mockSendMessage; cancelGeneration = mockCancelGeneration; },
   chatStreamManager: mockChatStreamManager,
   checkRateLimit: vi.fn().mockReturnValue(true),
   getRateLimitResetTime: vi.fn().mockReturnValue(null),
@@ -126,7 +125,7 @@ describe("chat attachment routes", () => {
     const { createServer } = await import("../server.js");
     app = createServer(store as any, { chatStore: {
       init: mockInit, createSession: mockCreateSession, getSession: mockGetSession, listSessions: mockListSessions, updateSession: mockUpdateSession, deleteSession: mockDeleteSession, addMessage: mockAddMessage, getMessages: mockGetMessages, getMessage: mockGetMessage, getLastMessageForSessions: mockGetLastMessageForSessions, deleteMessage: mockDeleteMessage,
-    } as any, chatManager: { sendMessage: mockSendMessage, cancelGeneration: mockCancelGeneration, beginGeneration: mockBeginGeneration } as any });
+    } as any, chatManager: { sendMessage: mockSendMessage, cancelGeneration: mockCancelGeneration } as any });
   });
 
   it("uploads a valid attachment", async () => {
@@ -188,7 +187,7 @@ describe("chat attachment routes", () => {
     const body = JSON.stringify({ content: "hello", attachments });
     const response = await request(app, "POST", `/api/chat/sessions/${session.id}/messages`, body, { "content-type": "application/json" });
     expect(response.status).toBe(200);
-    expect(mockSendMessage).toHaveBeenCalledWith(session.id, "hello", undefined, undefined, attachments, { generationId: 1 });
+    expect(mockSendMessage).toHaveBeenCalledWith(session.id, "hello", undefined, undefined, attachments);
   });
 
   afterEach(() => {

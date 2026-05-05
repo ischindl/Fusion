@@ -536,13 +536,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         }
       }
 
-      // Allocate a generation up front so subscription and sendMessage broadcasts
-      // share the same id. This filters out stragglers from a prior, just-cancelled
-      // generation that would otherwise hit this fresh subscriber and falsely look
-      // like an error/done for this request.
-      const { generationId } = chatManager.beginGeneration(sessionId);
-
-      // Subscribe to session events for this generation only.
+      // Subscribe to session events
       const unsubscribe = chatStreamManager.subscribe(sessionId, (event, eventId) => {
         const data = (event as { data?: unknown }).data;
         if (!writeSSEEvent(res, event.type, JSON.stringify(data ?? {}), eventId)) {
@@ -555,7 +549,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
           unsubscribe();
           res.end();
         }
-      }, { generationId });
+      });
 
       // Handle client disconnect
       req.on("close", () => {
@@ -583,7 +577,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         chatStreamManager.broadcast(sessionId, {
           type: "error",
           data: "modelProvider and modelId must both be provided or neither",
-        }, { generationId });
+        });
         unsubscribe();
         res.end();
         return;
@@ -596,7 +590,6 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         normalizedProvider,
         normalizedModelId,
         Array.isArray(attachments) ? attachments : undefined,
-        { generationId },
       ).catch((err: Error) => {
         chatLogger.error("Error in sendMessage", {
           error: err.message,
@@ -604,7 +597,7 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         chatStreamManager.broadcast(sessionId, {
           type: "error",
           data: err.message || "Failed to process message",
-        }, { generationId });
+        });
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
