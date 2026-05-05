@@ -87,6 +87,7 @@ These fields can only be set during update (not on create):
 The agents surface provides:
 
 - Agent-first list/board/tree/org collection in the left pane (primary content appears first)
+- Org chart nodes intentionally stay compact (role/state/health hierarchy signal only) and do not enumerate per-agent skill badges; detailed skills remain in list/board/detail surfaces
 - A cross-pane **Overview** strip above the split layout with summary metrics and a disclosure to expand active/running live cards
 - A compact **Controls** popup for secondary actions (state filter, Show system agents toggle, Import, and global Heartbeat Speed)
 - Detail/config panels

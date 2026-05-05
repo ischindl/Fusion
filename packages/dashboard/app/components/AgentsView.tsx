@@ -154,14 +154,12 @@ function OrgChartNode({
   onSelect,
   getHealthStatus,
   getRoleIcon,
-  getSkillBadges,
   selectedAgentId,
 }: {
   node: OrgTreeNode;
   onSelect: (id: string) => void;
   getHealthStatus: (agent: Agent) => AgentHealthStatus;
   getRoleIcon: (role: AgentCapability) => string;
-  getSkillBadges: (agent: Agent) => string[];
   selectedAgentId: string | null;
 }) {
   const { agent, children } = node;
@@ -204,21 +202,6 @@ function OrgChartNode({
             {health.icon}
             {!health.stateDerived && <span className="text-secondary">{health.label}</span>}
           </span>
-          {/* Org chart: up to 2 skill badges */}
-          {(() => {
-            const skills = getSkillBadges(agent);
-            if (skills.length === 0) return null;
-            const displaySkills = skills.slice(0, 2);
-            const extraCount = skills.length - 2;
-            return (
-              <>
-                {displaySkills.map((skillId) => (
-                  <span key={skillId} className="org-chart-node__skill">{formatAgentSkillBadgeLabel(skillId)}</span>
-                ))}
-                {extraCount > 0 && <span className="org-chart-node__skill">+{extraCount}</span>}
-              </>
-            );
-          })()}
         </div>
       </div>
       {children.length > 0 && (
@@ -230,7 +213,6 @@ function OrgChartNode({
               onSelect={onSelect}
               getHealthStatus={getHealthStatus}
               getRoleIcon={getRoleIcon}
-              getSkillBadges={getSkillBadges}
               selectedAgentId={selectedAgentId}
             />
           ))}
@@ -1025,7 +1007,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         onSelect={openAgentDetail}
                         getHealthStatus={getHealthStatus}
                         getRoleIcon={getRoleIcon}
-                        getSkillBadges={getSkillBadges}
                         selectedAgentId={selectedAgentId}
                       />
                     ))
