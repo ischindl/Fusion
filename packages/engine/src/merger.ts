@@ -1770,9 +1770,13 @@ function getCommitAuthorArg(settings: {
 }
 
 export function buildSourceIssueRef(sourceIssue?: TaskSourceIssue | null): string {
-  if (!sourceIssue || sourceIssue.provider !== "github") return "";
-  if (!sourceIssue.repository || !sourceIssue.issueNumber) return "";
-  return `${sourceIssue.repository}#${sourceIssue.issueNumber}`;
+  if (!sourceIssue || sourceIssue.provider !== "github" || !sourceIssue.repository) return "";
+
+  const issueNumber = sourceIssue.issueNumber
+    ?? Number.parseInt(sourceIssue.externalIssueId ?? "", 10);
+
+  if (!Number.isInteger(issueNumber) || issueNumber < 1) return "";
+  return `${sourceIssue.repository}#${issueNumber}`;
 }
 
 /**

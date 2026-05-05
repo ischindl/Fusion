@@ -935,6 +935,19 @@ export function createBatchImportRateLimiter(): (req: Request, res: Response, ne
   };
 }
 
+function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
+  return {
+    sourceIssue: {
+      provider: "github" as const,
+      repository: `${owner}/${repo}`,
+      externalIssueId: String(issue.number),
+      issueNumber: issue.number,
+      url: issue.html_url,
+    },
+    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+  };
+}
+
 export function getDefaultGitHubRepo(store: TaskStore): { owner: string; repo: string } | null {
   const envRepo = process.env.GITHUB_REPOSITORY;
   if (envRepo) {
@@ -2082,21 +2095,16 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       const body = issue.body?.trim() || "(no description)";
       const description = `${body}\n\nSource: ${sourceUrl}`;
 
+      const source = buildGitHubIssueSource(owner, repo, issue);
       const task = await scopedStore.createTask({
         title: title || undefined,
         description,
         column: "triage",
         dependencies: [],
-        sourceIssue: {
-          provider: "github",
-          repository: `${owner}/${repo}`,
-          externalIssueId: String(issue.number),
-          issueNumber: issue.number,
-          url: issue.html_url,
-        },
+        sourceIssue: source.sourceIssue,
         source: {
           sourceType: "github_import",
-          sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+          sourceMetadata: source.sourceMetadata,
         },
       });
 
@@ -2222,21 +2230,16 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
         const description = `${body}\n\nSource: ${sourceUrl}`;
 
         try {
+          const source = buildGitHubIssueSource(owner, repo, issue);
           const task = await scopedStore.createTask({
             title: title || undefined,
             description,
             column: "triage",
             dependencies: [],
-            sourceIssue: {
-              provider: "github",
-              repository: `${owner}/${repo}`,
-              externalIssueId: String(issue.number),
-              issueNumber: issue.number,
-              url: issue.html_url,
-            },
+            sourceIssue: source.sourceIssue,
             source: {
               sourceType: "github_import",
-              sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+              sourceMetadata: source.sourceMetadata,
             },
           });
 

@@ -170,7 +170,7 @@ describe("runTaskShow", () => {
     [{ sourceType: "task_refine", sourceParentTaskId: "FN-2904" }, "Source: Refinement of FN-2904"],
     [{ sourceType: "task_duplicate", sourceParentTaskId: "FN-2905" }, "Source: Duplicate of FN-2905"],
     [
-      { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/42" } },
+      { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/42", issueNumber: 42 } },
       "Source: GitHub Import (https://github.com/owner/repo/issues/42)",
     ],
     [
@@ -1115,7 +1115,7 @@ describe("runTaskImportGitHubInteractive", () => {
         issueNumber: 1,
         url: "https://github.com/owner/repo/issues/1",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1", issueNumber: 1 } },
     });
     expect(mockCreateTask).toHaveBeenCalledWith({
       title: "Third Issue",
@@ -1129,7 +1129,7 @@ describe("runTaskImportGitHubInteractive", () => {
         issueNumber: 3,
         url: "https://github.com/owner/repo/issues/3",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/3" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/3", issueNumber: 3 } },
     });
   });
 
@@ -1187,7 +1187,7 @@ describe("runTaskImportGitHubInteractive", () => {
         issueNumber: 2,
         url: "https://github.com/owner/repo/issues/2",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/2" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/2", issueNumber: 2 } },
     });
 
     const skipLine = logSpy.mock.calls.find(
@@ -1441,7 +1441,7 @@ describe("runTaskImportFromGitHub", () => {
         issueNumber: 1,
         url: "https://github.com/owner/repo/issues/1",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1", issueNumber: 1 } },
     });
 
     const successLine = logSpy.mock.calls.find(
@@ -1524,7 +1524,7 @@ describe("runTaskImportFromGitHub", () => {
         issueNumber: 1,
         url: "https://github.com/owner/repo/issues/1",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1", issueNumber: 1 } },
     });
   });
 
@@ -1546,7 +1546,7 @@ describe("runTaskImportFromGitHub", () => {
         issueNumber: 1,
         url: "https://github.com/owner/repo/issues/1",
       },
-      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1" } },
+      source: { sourceType: "github_import", sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/1", issueNumber: 1 } },
     });
   });
 });

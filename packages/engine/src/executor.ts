@@ -6890,6 +6890,21 @@ function scopePromptToWorktree(prompt: string, rootDir?: string, worktreePath?: 
     .replaceAll(`${worktreePath}/.fusion/`, `${rootDir}/.fusion/`);
 }
 
+function buildSourceIssueRef(sourceIssue: TaskDetail["sourceIssue"]): string {
+  if (!sourceIssue || sourceIssue.provider !== "github" || !sourceIssue.repository) {
+    return "";
+  }
+
+  const issueNumber = sourceIssue.issueNumber
+    ?? Number.parseInt(sourceIssue.externalIssueId ?? "", 10);
+
+  if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+    return "";
+  }
+
+  return `${sourceIssue.repository}#${issueNumber}`;
+}
+
 export function buildExecutionPrompt(task: TaskDetail, rootDir?: string, settings?: Settings, worktreePath?: string): string {
   const prompt = scopePromptToWorktree(task.prompt, rootDir, worktreePath);
   const reviewMatch = prompt.match(/##\s*Review Level[:\s]*(\d)/);
@@ -6900,9 +6915,7 @@ export function buildExecutionPrompt(task: TaskDetail, rootDir?: string, setting
     ? ` --author="${settings?.commitAuthorName || "Fusion"} <${settings?.commitAuthorEmail || "noreply@runfusion.ai"}>"`
     : "";
 
-  const sourceIssueRef = task.sourceIssue?.provider === "github" && task.sourceIssue.repository && task.sourceIssue.issueNumber
-    ? `${task.sourceIssue.repository}#${task.sourceIssue.issueNumber}`
-    : "";
+  const sourceIssueRef = buildSourceIssueRef(task.sourceIssue);
 
   // Build step progress for resume
   const hasProgress = task.steps.length > 0 && task.steps.some((s) => s.status !== "pending");

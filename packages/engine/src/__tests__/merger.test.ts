@@ -5582,6 +5582,15 @@ describe("buildSourceIssueRef", () => {
     })).toBe("runfusion/fusion#123");
   });
 
+  it("falls back to externalIssueId when issueNumber is missing", async () => {
+    const { buildSourceIssueRef } = await import("../merger.js");
+    expect(buildSourceIssueRef({
+      provider: "github",
+      repository: "runfusion/fusion",
+      externalIssueId: "321",
+    } as any)).toBe("runfusion/fusion#321");
+  });
+
   it("returns empty string for non-GitHub providers", async () => {
     const { buildSourceIssueRef } = await import("../merger.js");
     expect(buildSourceIssueRef({
@@ -5596,6 +5605,11 @@ describe("buildSourceIssueRef", () => {
     const { buildSourceIssueRef } = await import("../merger.js");
     expect(buildSourceIssueRef(undefined)).toBe("");
     expect(buildSourceIssueRef(null)).toBe("");
+    expect(buildSourceIssueRef({
+      provider: "github",
+      repository: "runfusion/fusion",
+      externalIssueId: "not-a-number",
+    } as any)).toBe("");
   });
 });
 

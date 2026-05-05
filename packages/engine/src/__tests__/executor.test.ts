@@ -2505,6 +2505,19 @@ describe("buildExecutionPrompt", () => {
     expect(result).toContain('git commit -m "feat(FN-001): complete Step N — description" -m "Ref: runfusion/fusion#2915"');
   });
 
+  it("falls back to externalIssueId for commit source issue reference when issueNumber is missing", () => {
+    const task = createMockTaskDetail({
+      sourceIssue: {
+        provider: "github",
+        repository: "runfusion/fusion",
+        externalIssueId: "2915",
+      },
+    } as any);
+
+    const result = buildExecutionPrompt(task, "/home/user/project");
+    expect(result).toContain('git commit -m "feat(FN-001): complete Step N — description" -m "Ref: runfusion/fusion#2915"');
+  });
+
   it("omits source issue reference from commit instruction when sourceIssue is missing", () => {
     const task = createMockTaskDetail();
     const result = buildExecutionPrompt(task, "/home/user/project");

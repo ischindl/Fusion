@@ -1185,6 +1185,10 @@ describe.skipIf(!SHOULD_RUN_EXTENSION_INTEGRATION)("fn pi extension", () => {
         issueNumber: 1,
         url: "https://github.com/acme/demo/issues/1",
       });
+      expect(issueOneTask?.source?.sourceMetadata).toEqual({
+        issueUrl: "https://github.com/acme/demo/issues/1",
+        issueNumber: 1,
+      });
     });
 
     it("fn_task_browse_github_issues lists issues via gh api", async () => {

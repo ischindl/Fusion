@@ -290,6 +290,8 @@ Archive entries preserve key metadata needed for restoration, including:
 
 Import issues:
 
+- GitHub-imported tasks retain typed source issue metadata (`sourceIssue.provider/repository/externalIssueId/issueNumber/url`), which executor and merger flows use to include `Ref: owner/repo#N` in commit bodies.
+
 ```bash
 fn task import owner/repo --labels bug --limit 20
 fn task import owner/repo --interactive

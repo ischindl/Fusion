@@ -251,6 +251,19 @@ async function fetchGitHubIssuesViaGh(
   }
 }
 
+function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
+  return {
+    sourceIssue: {
+      provider: "github" as const,
+      repository: `${owner}/${repo}`,
+      externalIssueId: String(issue.number),
+      issueNumber: issue.number,
+      url: issue.html_url,
+    },
+    sourceMetadata: { issueUrl: issue.html_url, issueNumber: issue.number },
+  };
+}
+
 async function fetchGitHubIssueViaGh(
   owner: string,
   repo: string,
@@ -988,21 +1001,16 @@ export default function kbExtension(pi: ExtensionAPI) {
         const body = issue.body?.trim() || "(no description)";
         const description = `${body}\n\nSource: ${sourceUrl}`;
 
+        const source = buildGitHubIssueSource(owner, repo, issue);
         const task = await store.createTask({
           title: title || undefined,
           description,
           column: "triage",
           dependencies: [],
-          sourceIssue: {
-            provider: "github",
-            repository: `${owner}/${repo}`,
-            externalIssueId: String(issue.number),
-            issueNumber: issue.number,
-            url: issue.html_url,
-          },
+          sourceIssue: source.sourceIssue,
           source: {
             sourceType: "github_import",
-            sourceMetadata: { issueUrl: issue.html_url },
+            sourceMetadata: source.sourceMetadata,
           },
         });
 
@@ -1085,21 +1093,16 @@ export default function kbExtension(pi: ExtensionAPI) {
       const body = issue.body?.trim() || "(no description)";
       const description = `${body}\n\nSource: ${sourceUrl}`;
 
+      const source = buildGitHubIssueSource(owner, repo, issue);
       const task = await store.createTask({
         title: title || undefined,
         description,
         column: "triage",
         dependencies: [],
-        sourceIssue: {
-          provider: "github",
-          repository: `${owner}/${repo}`,
-          externalIssueId: String(issue.number),
-          issueNumber: issue.number,
-          url: issue.html_url,
-        },
+        sourceIssue: source.sourceIssue,
         source: {
           sourceType: "github_import",
-          sourceMetadata: { issueUrl: issue.html_url },
+          sourceMetadata: source.sourceMetadata,
         },
       });
 
