@@ -6,6 +6,8 @@ import { TaskDetailModal } from "../TaskDetailModal";
 import { useSessionLock } from "../../hooks/useSessionLock";
 import { getSessionTabId } from "../../utils/getSessionTabId";
 import type { MergeResult } from "@fusion/core";
+const mockUseAiSessionSync = vi.fn();
+
 import {
   mockStartPlanning,
   mockStartPlanningStreaming,
@@ -99,6 +101,10 @@ vi.mock("../../hooks/useMobileKeyboard", () => ({
   useMobileKeyboard: (...args: any[]) => mockUseMobileKeyboard(...args),
 }));
 
+vi.mock("../../hooks/useAiSessionSync", () => ({
+  useAiSessionSync: (...args: any[]) => mockUseAiSessionSync(...args),
+}));
+
 describe("PlanningModeModal", () => {
   const mockOnClose = vi.fn();
   const mockOnTaskCreated = vi.fn();
@@ -147,6 +153,14 @@ describe("PlanningModeModal", () => {
     mockCancelPlanning.mockResolvedValue(undefined);
     mockUpdatePlanningSessionDraft.mockResolvedValue({ ok: true });
     mockStopPlanningGeneration.mockResolvedValue({ success: true });
+    mockUseAiSessionSync.mockReturnValue({
+      activeTabMap: new Map(),
+      broadcastUpdate: vi.fn(),
+      broadcastCompleted: vi.fn(),
+      broadcastLock: vi.fn(),
+      broadcastUnlock: vi.fn(),
+      broadcastHeartbeat: vi.fn(),
+    });
 
     // Default: simulate receiving a question after a brief delay
     mockConnectPlanningStream.mockImplementation((_sessionId: string, _projectId: string | undefined, handlers: any) => {
@@ -226,6 +240,50 @@ describe("PlanningModeModal", () => {
       await waitFor(() => {
         expect(screen.queryByTestId("session-lock-overlay")).toBeNull();
       });
+    });
+
+    it("does not render duplicate inline lock text while takeover overlay handles lock state", async () => {
+      window.sessionStorage.setItem("fusion-tab-id", "tab-self");
+      mockAcquireSessionLock.mockResolvedValueOnce({ acquired: false, currentHolder: "tab-other" });
+      mockUseAiSessionSync.mockReturnValueOnce({
+        activeTabMap: new Map([
+          [
+            "session-123",
+            {
+              tabId: "tab-other",
+              stale: false,
+            },
+          ],
+        ]),
+        broadcastUpdate: vi.fn(),
+        broadcastCompleted: vi.fn(),
+        broadcastLock: vi.fn(),
+        broadcastUnlock: vi.fn(),
+        broadcastHeartbeat: vi.fn(),
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Build auth system" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("session-lock-overlay")).toBeDefined();
+      });
+
+      expect(screen.getByText("This session is active in another tab")).toBeDefined();
+      expect(screen.queryByText("Session is active in another tab.")).toBeNull();
+      expect(screen.getByRole("button", { name: "Take Control" })).toBeDefined();
     });
 
     it("allows normal question interaction when lock is acquired", async () => {

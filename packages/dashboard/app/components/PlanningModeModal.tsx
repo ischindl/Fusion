@@ -1519,7 +1519,6 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
   const activeLockInfo = lockSessionId ? activeTabMap.get(lockSessionId) : null;
   const activeRemoteTab = activeLockInfo && activeLockInfo.tabId !== sessionTabId;
-  const activeInAnotherTab = Boolean(activeRemoteTab && !activeLockInfo.stale);
   const allowTakeover = isLockedByOther && (!activeRemoteTab || activeLockInfo.stale);
 
   if (!isOpen) return null;
@@ -1585,11 +1584,6 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           <div className="planning-detail">
           {error && <div className="form-error planning-error">{error}</div>}
           {isReconnecting && <div className="form-hint text-muted">Reconnecting…</div>}
-          {activeInAnotherTab && (
-            <div className="form-hint text-muted" data-testid="session-active-another-tab-banner">
-              Session is active in another tab.
-            </div>
-          )}
 
           {view.type === "initial" && (
             <div className="planning-initial">
