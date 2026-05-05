@@ -16,7 +16,7 @@ These tools are **not** part of the user-invokable extension surface. They are i
 | `fn_task_document_read` | triage, executor, heartbeat | Read one task document or list all | `key?` (string) |
 | `fn_memory_search` | triage, executor, heartbeat | Search project memory plus per-agent layered memory snippets | `query` (string), `limit?` (number) |
 | `fn_memory_get` | triage, executor, heartbeat | Read a bounded memory file window (including bounded per-agent layered paths) | `path` (string), `startLine?` (number), `lineCount?` (number) |
-| `fn_memory_append` | executor, heartbeat (when writable backend enabled) | Append long-term/daily memory notes | `scope?` (`project` \| `agent`), `layer` (`long-term` \| `daily`), `content` (string) |
+| `fn_memory_append` | executor, heartbeat (when writable backend enabled) | Append memory notes with explicit scope: `scope="agent"` for private operating context, `scope="project"` for workspace-wide durable knowledge | `scope?` (`project` \| `agent`), `layer` (`long-term` \| `daily`), `content` (string) |
 | `fn_research_run` | triage, executor | Start a bounded research run (optionally wait for completion) and return structured findings metadata | `query` (string), `wait_for_completion?` (boolean), `max_wait_ms?` (number) |
 | `fn_research_list` | triage, executor | List recent research runs with status/summary metadata | `status?` (`pending` \| `running` \| `completed` \| `failed` \| `cancelled`), `limit?` (number) |
 | `fn_research_get` | triage, executor | Read one research run's structured findings/citations payload | `id` (string) |

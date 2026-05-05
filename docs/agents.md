@@ -167,6 +167,9 @@ When engine sessions include per-agent memory context, the memory tools operate 
 
 Runtime behavior:
 
+- `fn_memory_append` supports dual scope writes:
+  - `scope="agent"` for private per-agent operating context (personal playbooks/checklists, self-management notes)
+  - `scope="project"` for shared repo-wide durable knowledge (architecture constraints, conventions, pitfalls)
 - `fn_memory_search` can surface snippets from:
   - `.fusion/agent-memory/{agentId}/MEMORY.md` (long-term)
   - `.fusion/agent-memory/{agentId}/DREAMS.md` (synthesized patterns)

@@ -455,20 +455,17 @@ This project has OpenClaw-style memory files:
 
 **At the end of execution (before calling \`fn_task_done()\`):**
 1. Review what you learned during this task that would genuinely benefit future runs
-2. Write durable decisions, conventions, and pitfalls to \`.fusion/memory/MEMORY.md\`
-3. Write running observations, unresolved context, and open loops to today's \`.fusion/memory/YYYY-MM-DD.md\`
-4. **If nothing durable was learned, skip the memory update entirely** — do not append trivial or task-specific notes
-5. Only write when you have genuinely durable, reusable insights such as:
-   - New architectural patterns or module boundaries discovered
-   - Conventions or standards that should be followed
-   - Pitfalls or anti-patterns to avoid in future work
-   - Important constraints or context that affects implementation decisions
-6. **Avoid** writing task-specific trivia such as:
-   - Per-task implementation logs or changelog entries
-   - Transient failures resolved without broader lessons
-   - One-off file paths, variable names, or minor code changes
-   - Notes about what you did rather than what future agents should know
-7. **Consolidate when possible**: If an existing entry already covers a concept, update or refine it rather than adding a duplicate. Delete entries that are no longer accurate.
+2. Choose scope intentionally:
+   - Use \`fn_memory_append(scope="agent")\` for your private operating context (personal checklists, delegation habits, temporary playbooks, self-improvement notes)
+   - Use \`fn_memory_append(scope="project")\` for repository-wide durable knowledge any future agent should know
+3. Choose layer intentionally:
+   - \`layer="long-term"\` for durable conventions/decisions/pitfalls
+   - \`layer="daily"\` for running observations, unresolved context, and open loops
+4. If using project scope with file backend, write long-term memory to \`.fusion/memory/MEMORY.md\` and daily notes to today's \`.fusion/memory/YYYY-MM-DD.md\`
+5. **If nothing durable was learned, skip the memory update entirely** — do not append trivial or task-specific notes
+6. Only write to **project** memory when the insight is genuinely reusable across the workspace (architecture patterns, shared conventions, durable pitfalls, cross-task constraints)
+7. **Do not** write private/ephemeral items to project memory, such as personal TODOs, one-off scratch notes, or preferences that only help you as an individual agent
+8. **Consolidate when possible**: If an existing entry already covers a concept, update or refine it rather than adding a duplicate. Delete entries that are no longer accurate.
 
 **Format for additions:** Add bullet points under the relevant section heading:
 - Use \`- \` prefix for list items
@@ -490,18 +487,15 @@ This project has a memory system that stores durable project learnings accumulat
 
 **At the end of execution (before calling \`fn_task_done()\`):**
 1. Review what you learned during this task that would genuinely benefit future runs
-2. **If nothing durable was learned, skip the memory update entirely** — do not append trivial or task-specific notes
-3. Only write when you have genuinely durable, reusable insights such as:
-   - New architectural patterns or module boundaries discovered
-   - Conventions or standards that should be followed
-   - Pitfalls or anti-patterns to avoid in future work
-   - Important constraints or context that affects implementation decisions
-4. **Avoid** writing task-specific trivia such as:
-   - Per-task implementation logs or changelog entries
-   - Transient failures resolved without broader lessons
-   - One-off file paths, variable names, or minor code changes
-   - Notes about what you did rather than what future agents should know
-5. Consolidate when possible: refine an existing memory entry instead of adding duplicates.
+2. Choose scope intentionally:
+   - Use \`fn_memory_append(scope="agent")\` for your private operating context
+   - Use \`fn_memory_append(scope="project")\` only for repo-wide durable knowledge
+3. Choose layer intentionally:
+   - \`layer="long-term"\` for durable conventions/decisions/pitfalls
+   - \`layer="daily"\` for running observations and open loops
+4. **If nothing durable was learned, skip the memory update entirely** — do not append trivial or task-specific notes
+5. **Avoid task-specific trivia** in project scope (for example: personal reminders, one-off scratch thoughts, individual communication preferences)
+6. Consolidate when possible: refine an existing memory entry instead of adding duplicates.
 `;
 }
 

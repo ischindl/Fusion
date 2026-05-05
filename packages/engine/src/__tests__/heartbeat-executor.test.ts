@@ -622,6 +622,8 @@ describe("executeHeartbeat", () => {
       expect(systemPrompt).toContain("fn_send_message");
       expect(systemPrompt).toContain("fn_memory_search");
       expect(systemPrompt).toContain("fn_memory_append");
+      expect(systemPrompt).toContain('scope="agent"');
+      expect(systemPrompt).toContain('scope="project"');
       expect(systemPrompt).toContain("fn_heartbeat_done");
     });
 
