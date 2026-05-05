@@ -55,6 +55,7 @@ export {
   type SkillDiagnostic,
 } from "./skill-resolver.js";
 export { AgentReflectionService, type AgentReflectionServiceOptions } from "./agent-reflection.js";
+export { AgentSelfImproveService, type AgentSelfImproveServiceOptions } from "./agent-self-improve.js";
 export {
   buildAgentChatPrompt,
   resolveAgentInstructionsWithRatings,

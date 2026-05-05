@@ -741,7 +741,21 @@ To clear all overrides, set `promptOverrides` to `null`:
 
 ### 4) Agent runtime configuration (example agent config)
 
-Runtime selection is configured at the agent level via `runtimeConfig`. These examples show agents configured to use Paperclip, Hermes, and OpenClaw runtime hints:
+Runtime selection is configured at the agent level via `runtimeConfig`. These examples show agents configured to use Paperclip, Hermes, and OpenClaw runtime hints.
+
+Common heartbeat/runtime keys on `runtimeConfig` include:
+
+| Field | Type | Description |
+|---|---|---|
+| `heartbeatIntervalMs` | `number` | Per-agent heartbeat interval |
+| `heartbeatTimeoutMs` | `number` | Per-agent heartbeat timeout |
+| `maxConcurrentRuns` | `number` | Per-agent concurrent heartbeat limit |
+| `messageResponseMode` | `"immediate" \| "on-heartbeat"` | Wake on message immediately or process during periodic heartbeat |
+| `selfImproveEnabled` | `boolean` | Enables periodic self-improvement prompts |
+| `selfImproveIntervalMs` | `number` | Delay between self-improvement cycles (default 4h, minimum 1h) |
+| `lastSelfImproveAt` | `string` | Last self-improvement checkpoint timestamp (managed by heartbeat monitor) |
+
+These examples show agents configured to use Paperclip, Hermes, and OpenClaw runtime hints:
 
 ```json
 {

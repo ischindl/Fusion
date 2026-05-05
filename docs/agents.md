@@ -223,6 +223,9 @@ The `runtimeConfig` field on agents supports the following options:
 | `heartbeatTimeoutMs` | `number` | — | Time without heartbeat before agent is considered unresponsive (ms) |
 | `maxConcurrentRuns` | `number` | `1` | Max concurrent heartbeat runs for this agent |
 | `messageResponseMode` | `"immediate" \| "on-heartbeat"` | `"immediate"` | Whether agent wakes immediately on message (immediate) or processes during heartbeat (on-heartbeat). See [Heartbeat Run Mailbox Checking](#heartbeat-run-mailbox-checking) |
+| `selfImproveEnabled` | `boolean` | `true` | Enable periodic self-improvement reflection prompts during heartbeat runs |
+| `selfImproveIntervalMs` | `number` | `14400000` (4h) | Minimum delay between self-improvement cycles (minimum enforced: 3600000 ms) |
+| `lastSelfImproveAt` | `string` (ISO timestamp) | — | Last recorded self-improvement checkpoint timestamp |
 | `modelProvider` | `string` | — | AI provider override for heartbeat session |
 | `modelId` | `string` | — | AI model ID override for heartbeat session |
 | `budgetConfig` | `AgentBudgetConfig` | — | Token budget governance settings |
@@ -241,6 +244,17 @@ Guardrails:
 - On successful claim, the same heartbeat run switches into task-scoped execution (no nested run re-entry)
 
 Operators can disable this per agent in **Agent Detail → Settings → Heartbeat Settings → Auto-Claim Relevant Tasks**.
+
+### Self-improvement cycle
+
+When `selfImproveEnabled !== false`, heartbeat runs periodically enter a self-improvement phase once `selfImproveIntervalMs` has elapsed since `lastSelfImproveAt` (or first run with available ratings). During that phase the agent is prompted to:
+
+1. Call `fn_read_evaluations` to inspect ratings/reflections
+2. Identify recurring quality issues and trends
+3. Call `fn_update_identity` to adjust its own `soul`, `instructionsText`, or `memory`
+4. Record concise improvement decisions
+
+After a successful run, the monitor records `lastSelfImproveAt` in `runtimeConfig`.
 
 ## Agent Instructions (Dashboard)
 

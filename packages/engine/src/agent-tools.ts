@@ -11,7 +11,7 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative, resolve } from "node:path";
-import type { AgentStore, AgentState, AgentCapability, AgentUpdateInput, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput } from "@fusion/core";
+import type { AgentStore, AgentState, AgentCapability, AgentUpdateInput, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore } from "@fusion/core";
 import { dailyMemoryPath, ensureOpenClawMemoryFiles, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, resolveMemoryBackend, resolveResearchSettings, resolveTitleSummarizerSettingsModel, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, summarizeTitle } from "@fusion/core";
 import { ResearchOrchestrator } from "./research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -19,6 +19,7 @@ import { ResearchStepRunner } from "./research-step-runner.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@mariozechner/pi-ai";
 import type { AgentReflectionService } from "./agent-reflection.js";
+import { MAX_INSTRUCTIONS_TEXT_LENGTH, MAX_MEMORY_LENGTH, MAX_SOUL_LENGTH } from "./agent-instructions.js";
 import { createLogger } from "./logger.js";
 
 // ── Tool parameter schemas (canonical definitions) ────────────────────────
@@ -53,6 +54,14 @@ export const reflectOnPerformanceParams = Type.Object({
   focus_area: Type.Optional(
     Type.String({ description: "Optional focus area for reflection (e.g., 'code quality', 'speed', 'testing')" }),
   ),
+});
+
+export const readEvaluationsParams = Type.Object({});
+
+export const updateIdentityParams = Type.Object({
+  soul: Type.Optional(Type.String({ description: "Updated soul/personality text" })),
+  instructionsText: Type.Optional(Type.String({ description: "Updated operating instructions" })),
+  memory: Type.Optional(Type.String({ description: "Updated agent memory text" })),
 });
 
 export const listAgentsParams = Type.Object({
@@ -957,6 +966,162 @@ export function createReflectOnPerformanceTool(
  * @param agentStore - AgentStore for agent discovery
  * @returns ToolDefinition for the `fn_list_agents` tool
  */
+function formatScore(score: number | null | undefined): string {
+  if (typeof score !== "number" || !Number.isFinite(score)) return "n/a";
+  return score.toFixed(2);
+}
+
+function buildPreview(value: string, limit = 100): string {
+  const trimmed = value.trim();
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+export function createReadEvaluationsTool(
+  agentStore: AgentStore,
+  reflectionStore: ReflectionStore | undefined,
+  agentId: string,
+): ToolDefinition {
+  return {
+    name: "fn_read_evaluations",
+    label: "Read Evaluations",
+    description: "Read your ratings, recent feedback, and reflection history to support self-improvement.",
+    parameters: readEvaluationsParams,
+    execute: async (_id: string, _params: Static<typeof readEvaluationsParams>) => {
+      const [summary, ratings] = await Promise.all([
+        agentStore.getRatingSummary(agentId),
+        agentStore.getRatings(agentId, { limit: 10 }),
+      ]);
+
+      const latestReflection = reflectionStore
+        ? await reflectionStore.getLatestReflection(agentId)
+        : null;
+      const reflections = reflectionStore
+        ? await reflectionStore.getReflections(agentId, 5)
+        : [];
+
+      const hasRatings = ratings.length > 0 || summary.totalRatings > 0;
+      const hasReflections = Boolean(latestReflection) || reflections.length > 0;
+
+      if (!hasRatings && !hasReflections) {
+        return {
+          content: [{ type: "text" as const, text: "No evaluation data available yet." }],
+          details: {},
+        };
+      }
+
+      const lines: string[] = [
+        "Evaluation Summary",
+        `- Average score: ${formatScore(summary.averageScore)}`,
+        `- Trend: ${summary.trend}`,
+        `- Total ratings: ${summary.totalRatings}`,
+      ];
+
+      const categoryEntries = Object.entries(summary.categoryAverages ?? {});
+      if (categoryEntries.length > 0) {
+        lines.push("", "Category averages:");
+        for (const [category, score] of categoryEntries) {
+          lines.push(`- ${category}: ${formatScore(score)}`);
+        }
+      }
+
+      const commentedRatings = ratings.filter((rating) => rating.comment?.trim());
+      if (commentedRatings.length > 0) {
+        lines.push("", "Recent rating comments:");
+        for (const rating of commentedRatings.slice(0, 5)) {
+          lines.push(`- [${rating.score}/5] ${rating.comment!.trim()}`);
+        }
+      }
+
+      if (latestReflection) {
+        lines.push("", "Latest reflection:", `- Summary: ${latestReflection.summary}`);
+        if (latestReflection.insights.length > 0) {
+          lines.push("- Insights:");
+          latestReflection.insights.forEach((insight) => lines.push(`  - ${insight}`));
+        }
+        if (latestReflection.suggestedImprovements.length > 0) {
+          lines.push("- Suggested improvements:");
+          latestReflection.suggestedImprovements.forEach((item) => lines.push(`  - ${item}`));
+        }
+      }
+
+      if (reflections.length > 0) {
+        lines.push("", "Recent reflection history:");
+        for (const reflection of reflections.slice(0, 5)) {
+          lines.push(`- ${reflection.timestamp}: ${reflection.summary}`);
+        }
+      }
+
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: {},
+      };
+    },
+  };
+}
+
+export function createUpdateIdentityTool(agentStore: AgentStore, agentId: string): ToolDefinition {
+  return {
+    name: "fn_update_identity",
+    label: "Update Identity",
+    description: "Update your own soul, instructionsText, or memory fields based on evaluation feedback.",
+    parameters: updateIdentityParams,
+    execute: async (_id: string, params: Static<typeof updateIdentityParams>) => {
+      const updates: AgentUpdateInput = {};
+
+      if (params.soul !== undefined) {
+        const soul = params.soul.trim();
+        if (soul.length > MAX_SOUL_LENGTH) {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: soul exceeds ${MAX_SOUL_LENGTH} character limit` }],
+            details: {},
+          };
+        }
+        updates.soul = soul;
+      }
+
+      if (params.instructionsText !== undefined) {
+        const instructionsText = params.instructionsText.trim();
+        if (instructionsText.length > MAX_INSTRUCTIONS_TEXT_LENGTH) {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: instructionsText exceeds ${MAX_INSTRUCTIONS_TEXT_LENGTH} character limit` }],
+            details: {},
+          };
+        }
+        updates.instructionsText = instructionsText;
+      }
+
+      if (params.memory !== undefined) {
+        const memory = params.memory.trim();
+        if (memory.length > MAX_MEMORY_LENGTH) {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: memory exceeds ${MAX_MEMORY_LENGTH} character limit` }],
+            details: {},
+          };
+        }
+        updates.memory = memory;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "ERROR: Provide at least one field to update" }],
+          details: {},
+        };
+      }
+
+      await agentStore.updateAgent(agentId, updates);
+
+      const confirmations = Object.entries(updates).map(([key, value]) => `- ${key}: ${buildPreview(String(value))}`);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Updated identity fields:\n${confirmations.join("\n")}`,
+        }],
+        details: { updatedFields: Object.keys(updates) },
+      };
+    },
+  };
+}
+
 export function createListAgentsTool(agentStore: AgentStore): ToolDefinition {
   return {
     name: "fn_list_agents",

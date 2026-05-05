@@ -358,6 +358,21 @@ export class InProcessRuntime
         }
       }
 
+      let selfImproveService: import("../agent-self-improve.js").AgentSelfImproveService | undefined;
+      if (agentStoreForReflection && reflectionStoreForService) {
+        try {
+          const { AgentSelfImproveService: AgentSelfImproveServiceClass } = await import("../agent-self-improve.js");
+          selfImproveService = new AgentSelfImproveServiceClass({
+            agentStore: agentStoreForReflection,
+            reflectionStore: reflectionStoreForService,
+            rootDir: this.config.workingDirectory,
+          });
+          runtimeLog.log("AgentSelfImproveService initialized");
+        } catch (selfImproveErr) {
+          runtimeLog.warn(`AgentSelfImproveService initialization failed:`, selfImproveErr instanceof Error ? selfImproveErr.message : selfImproveErr);
+        }
+      }
+
       const executorOptions: TaskExecutorOptions = {
         semaphore: this.globalSemaphore,
         pool: this.worktreePool,
@@ -537,6 +552,9 @@ export class InProcessRuntime
           rootDir: this.config.workingDirectory,
           messageStore: this.messageStore,
           pluginRunner: this.pluginRunner,
+          reflectionStore: reflectionStoreForService,
+          reflectionService,
+          selfImproveService,
           onMissed: (agentId, reason) => {
             runtimeLog.warn(`Agent ${agentId} missed heartbeat: ${reason}`);
           },

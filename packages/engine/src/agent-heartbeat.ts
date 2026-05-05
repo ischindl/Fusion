@@ -17,17 +17,24 @@
  * - onTerminated: Called when an unresponsive agent is terminated
  */
 
-import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, AgentBudgetStatus, Message, MessageStore, TaskStore, TaskDetail, AgentRole, Agent, InboxTask, BlockedStateSnapshot, RunMutationContext, Settings, AgentConfigRevision } from "@fusion/core";
+import type { AgentStore, AgentHeartbeatRun, HeartbeatInvocationSource, AgentHeartbeatConfig, AgentBudgetStatus, Message, MessageStore, TaskStore, TaskDetail, AgentRole, Agent, InboxTask, BlockedStateSnapshot, RunMutationContext, Settings, AgentConfigRevision, ReflectionStore } from "@fusion/core";
 import { buildExecutionMemoryInstructions, isEphemeralAgent, hasAgentIdentity } from "@fusion/core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@mariozechner/pi-ai";
 import { createHash } from "node:crypto";
-import { createTaskCreateTool, createTaskLogToolWithContext, createTaskDocumentWriteTool, createTaskDocumentReadTool, createListAgentsTool, createDelegateTaskTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createSendMessageTool, createReadMessagesTool, createMemoryTools, taskCreateParams } from "./agent-tools.js";
+import { createTaskCreateTool, createTaskLogToolWithContext, createTaskDocumentWriteTool, createTaskDocumentReadTool, createListAgentsTool, createDelegateTaskTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createSendMessageTool, createReadMessagesTool, createMemoryTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agent-logger.js";
 import { resolveAgentInstructionsWithRatings, buildSystemPromptWithInstructions, resolveAgentHeartbeatProcedure } from "./agent-instructions.js";
 import { heartbeatLog, formatError } from "./logger.js";
 import { createRunAuditor, type EngineRunContext } from "./run-audit.js";
 import { promptWithFallback } from "./pi.js";
+import type { AgentReflectionService } from "./agent-reflection.js";
+
+interface SelfImproveServiceLike {
+  shouldRunSelfImprove(agentId: string): Promise<boolean>;
+  getSelfImprovePrompt(agentId: string): Promise<string>;
+  recordSelfImprove(agentId: string): Promise<void>;
+}
 
 /** Resolved per-agent heartbeat config after validation and fallback */
 interface ResolvedHeartbeatConfig {
@@ -69,6 +76,12 @@ export interface HeartbeatMonitorOptions {
   rootDir?: string;
   /** Plugin runner for runtime selection. When provided, enables plugin runtime lookup. */
   pluginRunner?: import("./plugin-runner.js").PluginRunner;
+  /** Optional ReflectionStore for evaluation-reading tools */
+  reflectionStore?: ReflectionStore;
+  /** Optional AgentReflectionService for fn_reflect_on_performance tool */
+  reflectionService?: AgentReflectionService;
+  /** Optional self-improvement service for periodic self-improve injection */
+  selfImproveService?: SelfImproveServiceLike;
 }
 
 /** Options for waking up an agent */
@@ -491,6 +504,9 @@ export class HeartbeatMonitor {
   private rootDir?: string;
   private messageStore?: MessageStore;
   private pluginRunner?: import("./plugin-runner.js").PluginRunner;
+  private reflectionStore?: ReflectionStore;
+  private reflectionService?: AgentReflectionService;
+  private selfImproveService?: SelfImproveServiceLike;
 
   private trackedAgents: Map<string, TrackedAgent> = new Map();
   private agentStartLocks: Map<string, Promise<unknown>> = new Map();
@@ -515,6 +531,9 @@ export class HeartbeatMonitor {
     this.rootDir = options.rootDir;
     this.messageStore = options.messageStore;
     this.pluginRunner = options.pluginRunner;
+    this.reflectionStore = options.reflectionStore;
+    this.reflectionService = options.reflectionService;
+    this.selfImproveService = options.selfImproveService;
   }
 
   /**
@@ -1460,6 +1479,12 @@ export class HeartbeatMonitor {
             heartbeatTools.push(createSendMessageTool(this.messageStore, agentId));
             heartbeatTools.push(createReadMessagesTool(this.messageStore, agentId));
           }
+
+          heartbeatTools.push(createReadEvaluationsTool(this.store, this.reflectionStore, agentId));
+          heartbeatTools.push(createUpdateIdentityTool(this.store, agentId));
+          if (this.reflectionService) {
+            heartbeatTools.push(createReflectOnPerformanceTool(this.reflectionService, agentId));
+          }
         } else {
           // Task-scoped runs: full tool set including fn_task_log and document tools
           // taskId is guaranteed to be defined here because isNoTaskRun = !taskId
@@ -1504,9 +1529,23 @@ export class HeartbeatMonitor {
           }
         }
 
+        let selfImprovePrompt = "";
+        let shouldRecordSelfImprove = false;
+        if (this.selfImproveService) {
+          try {
+            const shouldSelfImprove = await this.selfImproveService.shouldRunSelfImprove(agentId);
+            if (shouldSelfImprove) {
+              selfImprovePrompt = await this.selfImproveService.getSelfImprovePrompt(agentId);
+              shouldRecordSelfImprove = true;
+            }
+          } catch (selfImproveErr) {
+            heartbeatLog.warn(`Failed to resolve self-improvement prompt for ${agentId}: ${selfImproveErr instanceof Error ? selfImproveErr.message : String(selfImproveErr)}`);
+          }
+        }
+
         const systemPrompt = buildSystemPromptWithInstructions(
           baseHeartbeatSystemPrompt,
-          [resolvedInstructionsForIdentity, memoryInstructions].filter((part) => part.trim()).join("\n\n"),
+          [resolvedInstructionsForIdentity, memoryInstructions, selfImprovePrompt].filter((part) => part.trim()).join("\n\n"),
         );
 
         // fn_heartbeat_done must be the last tool in the array (stable terminal signal)
@@ -1852,6 +1891,14 @@ export class HeartbeatMonitor {
             stdoutExcerpt: stdoutExcerpt || undefined,
           });
 
+          if (shouldRecordSelfImprove && this.selfImproveService) {
+            try {
+              await this.selfImproveService.recordSelfImprove(agentId);
+            } catch (selfImproveRecordErr) {
+              heartbeatLog.warn(`Failed to record self-improvement checkpoint for ${agentId}: ${selfImproveRecordErr instanceof Error ? selfImproveRecordErr.message : String(selfImproveRecordErr)}`);
+            }
+          }
+
           heartbeatLog.log(`Heartbeat completed for ${agentId} (${toolCallCount} tool calls, ${usageInput} input + ${usageOutput} output + ${usageCached} cached tokens)`);
         } catch (err) {
           const errorDetail = formatError(err).detail;
@@ -2074,6 +2121,12 @@ export class HeartbeatMonitor {
     if (messageStore) {
       tools.push(createSendMessageTool(messageStore, agentId));
       tools.push(createReadMessagesTool(messageStore, agentId));
+    }
+
+    tools.push(createReadEvaluationsTool(this.store, this.reflectionStore, agentId));
+    tools.push(createUpdateIdentityTool(this.store, agentId));
+    if (this.reflectionService) {
+      tools.push(createReflectOnPerformanceTool(this.reflectionService, agentId));
     }
 
     return tools;

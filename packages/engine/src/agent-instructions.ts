@@ -12,9 +12,9 @@ import { createLogger } from "./logger.js";
 const log = createLogger("agent-instructions");
 
 const MAX_INSTRUCTIONS_PATH_LENGTH = 500;
-const MAX_INSTRUCTIONS_TEXT_LENGTH = 50_000;
-const MAX_SOUL_LENGTH = 10_000;
-const MAX_MEMORY_LENGTH = 50_000;
+export const MAX_INSTRUCTIONS_TEXT_LENGTH = 50_000;
+export const MAX_SOUL_LENGTH = 10_000;
+export const MAX_MEMORY_LENGTH = 50_000;
 
 function trimAndClamp(value: string, maxLength: number, label: string, agentId: string): string {
   const trimmed = value.trim();

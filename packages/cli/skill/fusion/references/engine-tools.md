@@ -21,7 +21,9 @@ These tools are **not** part of the user-invokable extension surface. They are i
 | `fn_research_list` | triage, executor | List recent research runs with status/summary metadata | `status?` (`pending` \| `running` \| `completed` \| `failed` \| `cancelled`), `limit?` (number) |
 | `fn_research_get` | triage, executor | Read one research run's structured findings/citations payload | `id` (string) |
 | `fn_research_cancel` | triage, executor | Cancel an active research run via orchestrator cancellation path | `id` (string) |
-| `fn_reflect_on_performance` | executor | Generate reflection insights from prior runs | `focus_area?` (string) |
+| `fn_read_evaluations` | heartbeat | Read the current agent's rating summaries, recent comments, and reflections | none |
+| `fn_update_identity` | heartbeat | Update the current agent's own `soul`, `instructionsText`, or `memory` fields | `soul?` (string), `instructionsText?` (string), `memory?` (string) |
+| `fn_reflect_on_performance` | executor, heartbeat (when reflection service enabled) | Generate reflection insights from prior runs | `focus_area?` (string) |
 | `fn_list_agents` | triage, executor, heartbeat | List agents (optionally filtered) | `role?` (string), `state?` (string), `includeEphemeral?` (boolean) |
 | `fn_delegate_task` | triage, executor, heartbeat | Create and assign a new task to a specific agent | `agent_id` (string), `description` (string), `dependencies?` (string[]) |
 | `fn_get_agent_config` | executor, heartbeat | Read full config for a direct-report agent | `agent_id` (string) |

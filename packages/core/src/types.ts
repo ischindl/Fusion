@@ -3580,6 +3580,12 @@ export interface AgentHeartbeatConfig {
   heartbeatTimeoutMs?: number;
   /** Max concurrent heartbeat runs per agent (default: 1). Min: 1 */
   maxConcurrentRuns?: number;
+  /** Whether periodic self-improvement is enabled (default: true) */
+  selfImproveEnabled?: boolean;
+  /** Interval between self-improvement cycles in ms (default: 14400000 = 4h). Min: 3600000 (1h) */
+  selfImproveIntervalMs?: number;
+  /** ISO timestamp of last self-improvement run */
+  lastSelfImproveAt?: string;
   /**
    * How this agent responds to incoming messages.
    * "immediate" triggers a heartbeat run when a message arrives.
