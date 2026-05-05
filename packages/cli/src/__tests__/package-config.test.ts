@@ -118,9 +118,8 @@ describe("CLI package.json publishing config", () => {
     const TRANSITIVE_EXTERNALS: Record<string, string> = {
       ssh2: "transitive dep of dockerode",
       "cpu-features": "transitive dep of dockerode (via ssh2)",
-      "node-pty": "only loaded by the Bun-compiled binary from dist/runtime/",
       "@homebridge/node-pty-prebuilt-multiarch":
-        "only loaded by the Bun-compiled binary from dist/runtime/",
+        "aliased as node-pty in dependencies; the alias entry satisfies the import",
     };
 
     it("parses externals from tsup.config.ts", () => {
