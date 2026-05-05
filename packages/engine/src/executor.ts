@@ -603,6 +603,10 @@ export class TaskExecutor {
   private completedTaskWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
   /** One-shot watchdogs for workflow reruns that should have bounced back to in-progress. */
   private workflowRerunWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Set of ephemeral spawned agent IDs with scheduled cleanup (prevents duplicate deletion attempts). */
+  private pendingEphemeralDeletions = new Set<string>();
+  /** Map of spawned agent IDs to scheduled cleanup timer handles for shutdown disposal. */
+  private ephemeralCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private async finalizeAlreadyReviewedTask(taskId: string): Promise<"merged" | "blocked" | "missing"> {
     const latestTask = await this.store.getTask(taskId);
@@ -725,6 +729,32 @@ export class TaskExecutor {
   /** Returns the set of task IDs currently being executed. */
   getExecutingTaskIds(): Set<string> {
     return new Set([...this.executing, ...this.recoveringCompleted, ...this.resumingUnpaused]);
+  }
+
+  isEphemeralDeletionPending(agentId: string): boolean {
+    return this.pendingEphemeralDeletions.has(agentId);
+  }
+
+  disposeEphemeralTimers(): void {
+    const timerCount = this.ephemeralCleanupTimers.size;
+    for (const timerId of this.ephemeralCleanupTimers.values()) {
+      clearTimeout(timerId);
+    }
+    this.ephemeralCleanupTimers.clear();
+    this.pendingEphemeralDeletions.clear();
+    if (timerCount > 0) {
+      executorLog.log(`Cleared ${timerCount} pending spawned-agent cleanup timer(s)`);
+    }
+  }
+
+  private isBenignEphemeralDeleteRaceError(agentId: string, err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
+    if (lower.includes("not found") || lower.includes("already deleted") || lower.includes("does not exist")) {
+      executorLog.log(`Skip spawned-agent cleanup for ${agentId}: already deleted by another pathway`);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -6618,12 +6648,21 @@ and show an appropriate message to the user.\`
 
     // Auto-delete the child agent after a short delay so the UI can observe
     // the terminal state before the agent is removed.
-    void setTimeout(() => {
-      this.options.agentStore?.deleteAgent(childId).catch((err: unknown) => {
+    this.pendingEphemeralDeletions.add(childId);
+    const timerId = setTimeout(async () => {
+      this.ephemeralCleanupTimers.delete(childId);
+      this.pendingEphemeralDeletions.delete(childId);
+      try {
+        await this.options.agentStore?.deleteAgent(childId);
+      } catch (err: unknown) {
+        if (this.isBenignEphemeralDeleteRaceError(childId, err)) {
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         executorLog.warn(`Failed to delete spawned agent ${childId}: ${msg}`);
-      });
+      }
     }, 5000);
+    this.ephemeralCleanupTimers.set(childId, timerId);
 
     this.totalSpawnedCount = Math.max(0, this.totalSpawnedCount - 1);
   }

@@ -17,6 +17,7 @@ const {
   mockExecutorCtor,
   mockResumeOrphaned,
   mockTaskStoreSettings,
+  mockTaskStoreGetTask,
   mockMessageStoreSetHook,
   mockSchedulerConfigurePrMonitoring,
 } = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const {
   mockExecutorCtor: vi.fn(),
   mockResumeOrphaned: vi.fn().mockResolvedValue(undefined),
   mockTaskStoreSettings: {} as Record<string, unknown>,
+  mockTaskStoreGetTask: vi.fn().mockResolvedValue(null),
   mockMessageStoreSetHook: vi.fn(),
   mockSchedulerConfigurePrMonitoring: vi.fn(),
 }));
@@ -52,6 +54,7 @@ vi.mock("@fusion/core", async () => {
       self.getDatabase = vi.fn().mockReturnValue(mockDatabase);
       self.init = vi.fn().mockResolvedValue(undefined);
       self.listTasks = vi.fn().mockResolvedValue([]);
+      self.getTask = mockTaskStoreGetTask;
       self.getSettings = vi.fn().mockImplementation(async () => structuredClone(mockTaskStoreSettings));
       self.getMissionStore = vi.fn().mockReturnValue({
         getMissionWithHierarchy: vi.fn().mockReturnValue(null),
@@ -153,6 +156,9 @@ vi.mock("../../executor.js", async () => {
       self.getExecutingTaskIds = vi.fn().mockReturnValue(new Set());
       self.handleLoopDetected = vi.fn().mockResolvedValue(false);
       self.markStuckAborted = vi.fn();
+      self.abortAllSessionBash = vi.fn().mockResolvedValue(undefined);
+      self.isEphemeralDeletionPending = vi.fn().mockReturnValue(false);
+      self.disposeEphemeralTimers = vi.fn();
       self.activeWorktrees = new Map();
       return self;
     }),
@@ -194,6 +200,8 @@ describe("InProcessRuntime", () => {
     for (const key of Object.keys(mockTaskStoreSettings)) {
       delete mockTaskStoreSettings[key];
     }
+    mockTaskStoreGetTask.mockReset();
+    mockTaskStoreGetTask.mockResolvedValue(null);
     // Create a unique temp directory for this test run
     testDir = mkdtempSync(join(tmpdir(), `fn-test-${randomUUID().slice(0, 8)}-`));
 
@@ -1427,6 +1435,129 @@ describe("InProcessRuntime", () => {
         expect(deleteAgentSpy).toHaveBeenCalledWith(agent.id);
       } finally {
         vi.useRealTimers();
+      }
+    }, 30000);
+
+    it("does not double-delete when onComplete already scheduled cleanup", async () => {
+      vi.useFakeTimers();
+      try {
+        await runtime.start();
+        const store = getAgentStore(runtime);
+        const deleteAgentSpy = vi.spyOn(store, "deleteAgent").mockResolvedValue(undefined);
+
+        const executorOptions = mockExecutorCtor.mock.calls.at(-1)?.[0] as {
+          onStart?: (task: Task, worktreePath: string) => void;
+          onComplete?: (task: Task) => void;
+        };
+        executorOptions.onStart?.({ id: "FN-DUP-COMPLETE" } as Task, join(testDir, "worktree-FN-DUP-COMPLETE"));
+
+        let worker: Agent | undefined;
+        await vi.waitFor(async () => {
+          worker = (await store.listAgents({ includeEphemeral: true }))
+            .find((a: Agent) => a.name === "executor-FN-DUP-COMPLETE");
+          expect(worker).toBeDefined();
+        });
+
+        executorOptions.onComplete?.({ id: "FN-DUP-COMPLETE" } as Task);
+        store.emit("agent:stateChanged", worker!.id, "running", "terminated");
+
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(deleteAgentSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    }, 30000);
+
+    it("clears onComplete cleanup timer on stop", async () => {
+      vi.useFakeTimers();
+      try {
+        await runtime.start();
+        const store = getAgentStore(runtime);
+        const deleteAgentSpy = vi.spyOn(store, "deleteAgent").mockResolvedValue(undefined);
+
+        const executorOptions = mockExecutorCtor.mock.calls.at(-1)?.[0] as {
+          onStart?: (task: Task, worktreePath: string) => void;
+          onComplete?: (task: Task) => void;
+        };
+        executorOptions.onStart?.({ id: "FN-STOP-COMPLETE" } as Task, join(testDir, "worktree-FN-STOP-COMPLETE"));
+        executorOptions.onComplete?.({ id: "FN-STOP-COMPLETE" } as Task);
+
+        await runtime.stop();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(deleteAgentSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    }, 30000);
+  });
+
+  describe("startup ephemeral sweep", () => {
+    it("cleans terminated ephemeral agents on startup", async () => {
+      const { AgentStore } = await import("@fusion/core");
+      const preStore = new AgentStore({ rootDir: join(testDir, ".fusion") });
+      await preStore.init();
+      const orphan = await preStore.createAgent({
+        name: "orphan-terminated",
+        role: "executor",
+        metadata: { agentKind: "task-worker" },
+        runtimeConfig: { enabled: false },
+      });
+      await preStore.updateAgentState(orphan.id, "active");
+      await preStore.updateAgentState(orphan.id, "terminated");
+
+      await runtime.start();
+      const store = getAgentStore(runtime);
+      expect(await store.getAgent(orphan.id)).toBeNull();
+    }, 30000);
+
+    it("cleans ephemeral agents assigned to non-in-progress tasks", async () => {
+      mockTaskStoreGetTask.mockResolvedValue({ id: "FN-DONE", column: "done" });
+      const { AgentStore } = await import("@fusion/core");
+      const preStore = new AgentStore({ rootDir: join(testDir, ".fusion") });
+      await preStore.init();
+      const orphan = await preStore.createAgent({
+        name: "orphan-stale-task",
+        role: "executor",
+        metadata: { agentKind: "task-worker" },
+        runtimeConfig: { enabled: false },
+      });
+      await preStore.assignTask(orphan.id, "FN-DONE");
+
+      await runtime.start();
+      const store = getAgentStore(runtime);
+      expect(await store.getAgent(orphan.id)).toBeNull();
+    }, 30000);
+
+    it("continues startup sweep when one delete fails", async () => {
+      const warnSpy = vi.spyOn(runtimeLog, "warn");
+      const { AgentStore } = await import("@fusion/core");
+      const originalDeleteAgent = AgentStore.prototype.deleteAgent;
+      const deleteProtoSpy = vi
+        .spyOn(AgentStore.prototype, "deleteAgent")
+        .mockRejectedValueOnce(new Error("delete failed"))
+        .mockImplementation(async function(this: AgentStore, agentId: string) {
+          return originalDeleteAgent.call(this, agentId);
+        });
+
+      try {
+        const preStore = new AgentStore({ rootDir: join(testDir, ".fusion") });
+        await preStore.init();
+        const a1 = await preStore.createAgent({ name: "orphan-a1", role: "executor", metadata: { agentKind: "task-worker" }, runtimeConfig: { enabled: false } });
+        const a2 = await preStore.createAgent({ name: "orphan-a2", role: "executor", metadata: { agentKind: "task-worker" }, runtimeConfig: { enabled: false } });
+        await preStore.updateAgentState(a1.id, "active");
+        await preStore.updateAgentState(a1.id, "terminated");
+        await preStore.updateAgentState(a2.id, "active");
+        await preStore.updateAgentState(a2.id, "terminated");
+
+        await runtime.start();
+        const store = getAgentStore(runtime);
+        expect(runtime.getStatus()).toBe("active");
+        const remaining = await store.listAgents({ includeEphemeral: true });
+        expect(remaining.filter((a: Agent) => a.id === a1.id || a.id === a2.id)).toHaveLength(1);
+        expect(warnSpy).toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+        deleteProtoSpy.mockRestore();
       }
     }, 30000);
   });
