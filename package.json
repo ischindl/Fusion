@@ -14,6 +14,8 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "local": "node scripts/start-local.mjs",
+    "start:local": "node scripts/start-local.mjs",
     "dev": "node scripts/dev-with-memory.mjs",
     "dev:ui": "pnpm --filter @fusion/dashboard dev",
     "dev:hmr": "node scripts/dev-hmr.mjs",

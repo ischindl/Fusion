@@ -428,6 +428,8 @@ fn skills install firebase/agent-skills               # Install agent skills
 
 ```bash
 pnpm install                  # Install dependencies
+pnpm local                    # Start local dashboard/API on a non-4040 port
+pnpm local -- --engine        # Start local dashboard with the AI engine
 pnpm build                    # Build default workspace packages (excludes desktop/mobile)
 pnpm build:all                # Build all packages (including desktop/mobile)
 pnpm dev dashboard            # Run dashboard + AI engine
