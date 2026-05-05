@@ -723,6 +723,85 @@ describe("FileBrowserModal", () => {
     });
   });
 
+  describe("line number toggle", () => {
+    it("renders a header toggle and persists preference per project", async () => {
+      render(
+        <FileBrowserModal
+          initialWorkspace="project"
+          isOpen={true}
+          onClose={mockOnClose}
+          projectId="proj-1"
+        />,
+      );
+
+      const toggle = screen.getByRole("button", { name: /toggle line numbers/i });
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      expect(localStorage.getItem("kb:proj-1:kb-files-line-numbers")).toBe("true");
+    });
+
+    it("loads persisted preference when project changes", () => {
+      localStorage.setItem("kb:proj-a:kb-files-line-numbers", "true");
+      localStorage.setItem("kb:proj-b:kb-files-line-numbers", "false");
+
+      const { rerender } = render(
+        <FileBrowserModal
+          initialWorkspace="project"
+          isOpen={true}
+          onClose={mockOnClose}
+          projectId="proj-a"
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("aria-pressed", "true");
+
+      rerender(
+        <FileBrowserModal
+          initialWorkspace="project"
+          isOpen={true}
+          onClose={mockOnClose}
+          projectId="proj-b"
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("only shows gutter for editable text files", async () => {
+      mockUseWorkspaceFileBrowser.mockReturnValue({
+        ...defaultBrowserState,
+        entries: [
+          { name: "editable.ts", type: "file" as const, size: 64, mtime: "2024-01-01" },
+          { name: "readme.pdf", type: "file" as const, size: 64, mtime: "2024-01-01" },
+        ],
+      });
+
+      render(
+        <FileBrowserModal
+          initialWorkspace="project"
+          isOpen={true}
+          onClose={mockOnClose}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /toggle line numbers/i }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("editable.ts"));
+      });
+
+      expect(document.querySelector(".file-editor-line-numbers")).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("readme.pdf"));
+      });
+
+      expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();
+    });
+  });
+
   describe("modal height constraint regression", () => {
     it("max-height uses calc() to stay within viewport padding", async () => {
       const { loadAllAppCss } = await import("../../test/cssFixture");

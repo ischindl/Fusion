@@ -1,6 +1,6 @@
 import "./FileBrowser.css";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { X, Save, RotateCcw, Folder, FileType, ArrowLeft } from "lucide-react";
+import { X, Save, RotateCcw, Folder, FileType, ArrowLeft, ListOrdered } from "lucide-react";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { useWorkspaceFileEditor } from "../hooks/useWorkspaceFileEditor";
 import { useWorkspaces } from "../hooks/useWorkspaces";
@@ -10,12 +10,14 @@ import { downloadFileUrl } from "../api";
 import { FileBrowser } from "./FileBrowser";
 import { FileEditor } from "./FileEditor";
 import { WorkspaceSelector } from "./WorkspaceSelector";
+import { getScopedItem, setScopedItem } from "../utils/projectStorage";
 
 const MOBILE_BREAKPOINT = 768;
 const SIDEBAR_DEFAULT_WIDTH = 280;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 500;
 const SIDEBAR_STORAGE_KEY = "fusion:file-browser-sidebar-width";
+const FILES_LINE_NUMBERS_STORAGE_KEY = "kb-files-line-numbers";
 
 /**
  * Image file extensions that should be rendered as image previews.
@@ -74,6 +76,7 @@ export function FileBrowserModal({
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "editor">("list");
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [showLineNumbers, setShowLineNumbers] = useState(false);
 
   const {
     entries,
@@ -129,6 +132,11 @@ export function FileBrowserModal({
       // Ignore storage errors.
     }
   }, []);
+
+  useEffect(() => {
+    const savedPreference = getScopedItem(FILES_LINE_NUMBERS_STORAGE_KEY, projectId);
+    setShowLineNumbers(savedPreference === "true");
+  }, [projectId]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -236,6 +244,14 @@ export function FileBrowserModal({
     persistSidebarWidth(nextWidth);
   }, [isMobile, persistSidebarWidth, sidebarWidth]);
 
+  const handleToggleLineNumbers = useCallback(() => {
+    setShowLineNumbers((previousValue) => {
+      const nextValue = !previousValue;
+      setScopedItem(FILES_LINE_NUMBERS_STORAGE_KEY, String(nextValue), projectId);
+      return nextValue;
+    });
+  }, [projectId]);
+
   const workspaceLabel = useMemo(() => {
     if (currentWorkspace === "project") {
       return "Project";
@@ -272,6 +288,16 @@ export function FileBrowserModal({
             )}
           </div>
           <div className="file-browser-header-actions">
+            <button
+              className={`btn btn-sm file-browser-line-numbers-toggle ${showLineNumbers ? "btn-primary" : ""}`}
+              onClick={handleToggleLineNumbers}
+              aria-label="Toggle line numbers"
+              aria-pressed={showLineNumbers}
+              title="Toggle line numbers"
+            >
+              <ListOrdered size={14} />
+              <span>Line #</span>
+            </button>
             <WorkspaceSelector
               currentWorkspace={currentWorkspace}
               projectName={projectName}
@@ -392,6 +418,7 @@ export function FileBrowserModal({
                       onChange={setContent}
                       filePath={selectedFile}
                       readOnly={isBinaryFile(selectedFile)}
+                      showLineNumbers={showLineNumbers && !isBinaryFile(selectedFile)}
                     />
                   </div>
                 )}

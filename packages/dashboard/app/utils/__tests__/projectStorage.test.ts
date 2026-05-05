@@ -93,9 +93,10 @@ describe("projectStorage", () => {
         "kb-usage-modal-size",
         "kb-usage-provider-order",
         "kb-chat-active-session",
+        "kb-files-line-numbers",
       ]),
     );
-    expect(PROJECT_STORAGE_KEYS).toHaveLength(19);
+    expect(PROJECT_STORAGE_KEYS).toHaveLength(20);
   });
 
   it("has no overlap between global and project-scoped keys", () => {

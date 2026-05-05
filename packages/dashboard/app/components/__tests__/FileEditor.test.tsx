@@ -242,6 +242,42 @@ describe("FileEditor", () => {
     });
   });
 
+  describe("line numbers", () => {
+    it("shows line numbers for editable text mode when enabled", () => {
+      render(
+        <FileEditor
+          content={"first\nsecond\nthird"}
+          onChange={vi.fn()}
+          filePath="src/app.ts"
+          showLineNumbers
+        />,
+      );
+
+      const gutter = document.querySelector(".file-editor-line-numbers");
+      expect(gutter).toBeInTheDocument();
+      expect(screen.getByText("1")).toBeInTheDocument();
+      expect(screen.getByText("2")).toBeInTheDocument();
+      expect(screen.getByText("3")).toBeInTheDocument();
+    });
+
+    it("hides line numbers in markdown preview mode", () => {
+      render(
+        <FileEditor content="# Heading" onChange={vi.fn()} filePath="readme.md" showLineNumbers />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /preview mode/i }));
+      expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();
+    });
+
+    it("hides line numbers for read-only files", () => {
+      render(
+        <FileEditor content={"one\ntwo"} onChange={vi.fn()} filePath="file.bin" readOnly showLineNumbers />,
+      );
+
+      expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();
+    });
+  });
+
   describe("markdown preview scrollability", () => {
     it("preview container has correct CSS classes for scrolling", () => {
       render(<FileEditor content="# Hello World" onChange={vi.fn()} filePath="readme.md" />);

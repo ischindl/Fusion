@@ -417,6 +417,35 @@
   padding: var(--space-lg);
 }
 
+.file-editor-textarea-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.file-editor-textarea-shell--line-numbers {
+  background: var(--surface);
+}
+
+.file-editor-line-numbers {
+  width: calc(var(--space-xl) * 2);
+  padding: var(--space-lg) var(--space-sm);
+  border-right: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.file-editor-line-number {
+  min-height: calc(var(--space-xl) - var(--space-xs));
+}
+
 /* Textarea-based file editor */
 .file-editor-textarea {
   flex: 1;
@@ -625,6 +654,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-md);
+}
+
+.file-browser-line-numbers-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
 }
 
 .file-browser-modal-header .modal-close {
@@ -918,6 +953,12 @@
 
 /* Mobile responsive */
 @media (max-width: 768px) {
+  .file-editor-line-numbers {
+    width: calc(var(--space-xl) * 1.75);
+    padding-left: var(--space-xs);
+    padding-right: var(--space-xs);
+  }
+
   /* On mobile the file browser is presented as a full-screen sheet — drop
      the overlay's default top padding so the modal actually fills the
      viewport instead of being pushed below it. */
@@ -967,6 +1008,11 @@
   .file-browser-header-actions {
     flex-shrink: 0;
     justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .file-browser-line-numbers-toggle {
+    min-height: var(--mobile-nav-height);
   }
 
   .file-browser-modal-header .modal-close {

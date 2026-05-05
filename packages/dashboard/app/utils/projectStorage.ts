@@ -26,6 +26,7 @@ export const PROJECT_STORAGE_KEYS: string[] = [
   "kb-usage-modal-size",
   "kb-usage-provider-order",
   "kb-chat-active-session",
+  "kb-files-line-numbers",
 ];
 
 export function scopedKey(baseKey: string, projectId?: string): string {

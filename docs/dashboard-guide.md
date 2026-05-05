@@ -153,6 +153,13 @@ Navigation:
 
 For the full research workflow, provider setup, CLI commands, API reference, and agent integration, see the canonical [Research guide](./research.md).
 
+## Files Modal
+
+The Files modal provides a workspace-aware file browser and editor.
+
+- Source/text editing supports a **Line #** header toggle to show or hide line numbers in the editor gutter
+- The line-number preference is saved per project and restored automatically when you switch projects
+
 ## Memory View
 
 Memory view provides a multi-file editor for project and daily memory files.
