@@ -167,6 +167,10 @@
   flex-shrink: 0;
 }
 
+.agent-detail-import-btn {
+  min-height: calc(var(--space-lg) + var(--space-md) + var(--space-xs));
+}
+
 /* Legacy class for backward compatibility */
 .agent-detail-title {
   display: flex;
@@ -1496,6 +1500,10 @@
   .agent-detail-utility-actions .btn-icon {
     min-height: calc(var(--space-lg) + var(--space-md) + var(--space-xs));
     min-width: calc(var(--space-lg) + var(--space-md) + var(--space-xs));
+  }
+
+  .agent-detail-import-btn {
+    min-width: calc(var(--space-xl) * 3 + var(--space-xs));
   }
 
   /* Legacy selectors for backward compatibility */

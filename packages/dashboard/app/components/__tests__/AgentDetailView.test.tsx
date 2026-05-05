@@ -38,6 +38,7 @@ vi.mock("../../api", () => ({
   fetchPluginRuntimes: vi.fn(),
   upgradeAgentHeartbeatProcedure: vi.fn(),
   updateGlobalSettings: vi.fn(),
+  fetchCompanies: vi.fn(),
 }));
 
 vi.mock("../AgentLogViewer", () => ({
@@ -118,7 +119,7 @@ vi.mock("../../hooks/useConfirm", () => ({
   useConfirm: () => ({ confirm: mockConfirm }),
 }));
 
-import { fetchAgent, fetchAgents, updateAgent, updateAgentState, deleteAgent, fetchAgentChildren, fetchAgentRunLogs, fetchAgentRuns, fetchAgentRunDetail, fetchAgentTasks, fetchChainOfCommand, fetchAgentBudgetStatus, resetAgentBudget, updateAgentInstructions, updateAgentSoul, updateAgentMemory, fetchWorkspaceFileContent, saveWorkspaceFileContent, fetchDiscoveredSkills, fetchSkillContent, fetchModels, fetchPluginRuntimes, fetchAgentLogsWithMeta, upgradeAgentHeartbeatProcedure, updateGlobalSettings } from "../../api";
+import { fetchAgent, fetchAgents, updateAgent, updateAgentState, deleteAgent, fetchAgentChildren, fetchAgentRunLogs, fetchAgentRuns, fetchAgentRunDetail, fetchAgentTasks, fetchChainOfCommand, fetchAgentBudgetStatus, resetAgentBudget, updateAgentInstructions, updateAgentSoul, updateAgentMemory, fetchWorkspaceFileContent, saveWorkspaceFileContent, fetchDiscoveredSkills, fetchSkillContent, fetchModels, fetchPluginRuntimes, fetchAgentLogsWithMeta, upgradeAgentHeartbeatProcedure, updateGlobalSettings, fetchCompanies } from "../../api";
 import { subscribeSse } from "../../sse-bus";
 
 const mockFetchAgent = vi.mocked(fetchAgent);
@@ -146,6 +147,7 @@ const mockFetchPluginRuntimes = vi.mocked(fetchPluginRuntimes);
 const mockFetchAgentLogsWithMeta = vi.mocked(fetchAgentLogsWithMeta);
 const mockUpgradeAgentHeartbeatProcedure = vi.mocked(upgradeAgentHeartbeatProcedure);
 const mockUpdateGlobalSettings = vi.mocked(updateGlobalSettings);
+const mockFetchCompanies = vi.mocked(fetchCompanies);
 const mockSubscribeSse = vi.mocked(subscribeSse);
 
 const MOCK_SKILLS = [
@@ -249,6 +251,7 @@ describe("AgentDetailView", () => {
       procedureFileSeeded: true,
     });
     mockUpdateGlobalSettings.mockResolvedValue({} as any);
+    mockFetchCompanies.mockResolvedValue({ companies: [] });
   });
 
   it("shows loading state initially", () => {
@@ -936,8 +939,29 @@ describe("AgentDetailView", () => {
 
       const utilityContainer = headerActions?.querySelector(".agent-detail-utility-actions");
       expect(utilityContainer).toBeTruthy();
+      expect(utilityContainer?.querySelector('[aria-label="Import agents"]')).toBeTruthy();
       expect(utilityContainer?.querySelector('[title="Refresh"]')).toBeTruthy();
       expect(utilityContainer?.querySelector('[title="Close"]')).toBeTruthy();
+    });
+  });
+
+  it("opens the import modal from agent detail in browse mode", async () => {
+    const user = userEvent.setup();
+    mockFetchCompanies.mockResolvedValue({ companies: [{ slug: "acme", name: "Acme AI" }] });
+
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Import agents" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Import agents" })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Search companies...")).toBeInTheDocument();
     });
   });
 

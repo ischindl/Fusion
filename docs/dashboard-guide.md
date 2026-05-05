@@ -526,6 +526,12 @@ Possible error codes:
 
 The Agent Import feature allows you to import agents from Agent Companies packages. When importing agents from companies.sh or local directories, Fusion now also persists any skill definitions from the package.
 
+### Launch Points
+
+You can open Agent Import from:
+- **Agents view → Controls popup → Import**
+- **Agent Detail header → Import** (opens directly to the companies.sh browse catalog)
+
 ### How It Works
 
 1. **Select Source**: Choose to import from:

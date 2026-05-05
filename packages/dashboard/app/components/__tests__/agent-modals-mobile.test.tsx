@@ -42,6 +42,7 @@ vi.mock("../../api", () => ({
   fetchAgentBudgetStatus: vi.fn(),
   resetAgentBudget: vi.fn(),
   upgradeAgentHeartbeatProcedure: vi.fn(),
+  fetchCompanies: vi.fn(),
 }));
 
 vi.mock("../AgentLogViewer", () => ({
@@ -80,6 +81,7 @@ const mockGenerateAgentSpec = vi.mocked(api.generateAgentSpec);
 const mockCancelAgentGeneration = vi.mocked(api.cancelAgentGeneration);
 const mockFetchAgentBudgetStatus = vi.mocked(api.fetchAgentBudgetStatus);
 const mockResetAgentBudget = vi.mocked(api.resetAgentBudget);
+const mockFetchCompanies = vi.mocked(api.fetchCompanies);
 
 const originalFetch = globalThis.fetch;
 
@@ -172,6 +174,7 @@ describe("agent modal mobile CSS structure", () => {
     mockCancelAgentGeneration.mockResolvedValue({ success: true });
     mockFetchAgentBudgetStatus.mockResolvedValue({ agentId: "agent-001", currentUsage: 0, budgetLimit: null, usagePercent: null, thresholdPercent: null, isOverBudget: false, isOverThreshold: false, lastResetAt: null, nextResetAt: null });
     mockResetAgentBudget.mockResolvedValue(undefined);
+    mockFetchCompanies.mockResolvedValue({ companies: [] });
 
     globalThis.fetch = vi.fn(async () =>
       ({
@@ -271,6 +274,12 @@ describe("agent modal mobile CSS structure", () => {
       render(<AgentImportModal isOpen={true} onClose={vi.fn()} onImported={vi.fn()} />);
 
       expect(document.querySelector(".agent-import-dialog")).toBeTruthy();
+    });
+
+    it("supports browse-first launch mode", () => {
+      render(<AgentImportModal isOpen={true} onClose={vi.fn()} onImported={vi.fn()} initialInputMethod="browse" />);
+
+      expect(screen.getByPlaceholderText("Search companies...")).toBeInTheDocument();
     });
 
     it("file upload area has targetable class", () => {

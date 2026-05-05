@@ -184,4 +184,11 @@ describe("AgentImportModal", () => {
     // The browse mode should render the search input (the fetch for companies is async)
     expect(screen.getByPlaceholderText("Search companies...")).toBeTruthy();
   });
+
+  it("opens directly in browse mode when initialInputMethod is browse", () => {
+    render(<AgentImportModal isOpen={true} onClose={onClose} onImported={onImported} initialInputMethod="browse" />);
+
+    expect(screen.getByPlaceholderText("Search companies...")).toBeTruthy();
+    expect(screen.queryByLabelText("Manifest content")).toBeNull();
+  });
 });

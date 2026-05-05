@@ -5,7 +5,7 @@ import {
   Settings, FileText, ActivitySquare, X, Copy, 
   ExternalLink, CheckCircle, XCircle, Loader2, GitBranch, ListChecks,
   AlertCircle,
-  ChevronDown, ChevronRight, ChevronLeft, BarChart3, BookOpen, Eye, FileEdit
+  ChevronDown, ChevronRight, ChevronLeft, BarChart3, BookOpen, Eye, FileEdit, Upload
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -25,6 +25,7 @@ import { formatAgentSkillBadgeLabel } from "../utils/agentSkills";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { useConfirm } from "../hooks/useConfirm";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
+import { AgentImportModal } from "./AgentImportModal";
 
 /**
  * Simple className utility - joins class names conditionally
@@ -131,6 +132,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const { confirm } = useConfirm();
   const [logs, setLogs] = useState<AgentLogEntry[]>([]);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>(initialTab ?? "dashboard");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -613,6 +615,15 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
             {/* Utility actions: refresh + close */}
             <div className="agent-detail-utility-actions">
+              <button
+                type="button"
+                className="btn btn--compact agent-detail-import-btn"
+                onClick={() => setIsImportModalOpen(true)}
+                aria-label="Import agents"
+              >
+                <Upload size={14} />
+                Import
+              </button>
               <button className="btn-icon" onClick={() => void loadAgent()} title="Refresh" aria-label="Refresh">
                 <RefreshCw size={16} />
               </button>
@@ -757,6 +768,15 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
           </div>
         )}
       </div>
+      <AgentImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImported={() => {
+          void handleSavedMutation();
+        }}
+        projectId={projectId}
+        initialInputMethod="browse"
+      />
     </div>
   );
 }

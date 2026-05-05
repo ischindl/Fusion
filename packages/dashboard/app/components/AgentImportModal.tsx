@@ -9,6 +9,7 @@ export interface AgentImportModalProps {
   onClose: () => void;
   onImported: () => void;
   projectId?: string;
+  initialInputMethod?: InputMethod;
 }
 
 /** Parsed agent preview item for display before import */
@@ -126,10 +127,10 @@ function parseDirectoryAgentManifest(content: string): DirectoryAgentInput {
  *
  * Flow: Input → Preview parsed agents → Import → Show results
  */
-export function AgentImportModal({ isOpen, onClose, onImported, projectId }: AgentImportModalProps) {
+export function AgentImportModal({ isOpen, onClose, onImported, projectId, initialInputMethod = "paste" }: AgentImportModalProps) {
   useMobileScrollLock(isOpen);
   const [step, setStep] = useState<ModalStep>("input");
-  const [inputMethod, setInputMethod] = useState<InputMethod>("paste");
+  const [inputMethod, setInputMethod] = useState<InputMethod>(initialInputMethod);
   const [manifestContent, setManifestContent] = useState("");
   const [directoryAgents, setDirectoryAgents] = useState<DirectoryAgentInput[]>([]);
   const [companyName, setCompanyName] = useState("Unknown");
@@ -207,7 +208,7 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
 
   const reset = useCallback(() => {
     setStep("input");
-    setInputMethod("paste");
+    setInputMethod(initialInputMethod);
     setManifestContent("");
     setDirectoryAgents([]);
     setCompanyName("Unknown");
@@ -226,7 +227,7 @@ export function AgentImportModal({ isOpen, onClose, onImported, projectId }: Age
     setIsLoadingCompanies(false);
     setCompaniesError(null);
     fetchAttemptedRef.current = false;
-  }, []);
+  }, [initialInputMethod]);
 
   const handleClose = useCallback(() => {
     reset();
