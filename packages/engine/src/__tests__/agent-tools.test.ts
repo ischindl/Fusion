@@ -237,11 +237,15 @@ describe("createMemoryTools", () => {
   });
 
   it("includes fn_memory_append for writable memory backends", () => {
-    expect(createMemoryTools("/repo", { memoryBackendType: "file" }).map((tool) => tool.name)).toEqual([
+    const tools = createMemoryTools("/repo", { memoryBackendType: "file" });
+    expect(tools.map((tool) => tool.name)).toEqual([
       "fn_memory_search",
       "fn_memory_get",
       "fn_memory_append",
     ]);
+    const appendTool = tools.find((tool) => tool.name === "fn_memory_append");
+    expect(appendTool?.description).toContain('scope="agent"');
+    expect(appendTool?.description).toContain('scope="project"');
   });
 
   it("searches per-agent memory through the fn_memory_search tool", async () => {

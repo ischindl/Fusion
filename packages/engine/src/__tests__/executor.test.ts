@@ -2751,6 +2751,9 @@ describe("buildExecutionPrompt", () => {
       // Should instruct selective writes, not unconditional appends
       expect(result).toMatch(/skip.*memory.*update|selectively|durable.*learnings/i);
       expect(result).toMatch(/end of execution|before calling.*fn_task_done/i);
+      // Should distinguish agent-private vs project-shared memory scope
+      expect(result).toContain('fn_memory_append(scope="agent")');
+      expect(result).toContain('fn_memory_append(scope="project")');
       // Should forbid task-specific trivia
       expect(result).toMatch(/avoid.*trivia|task-specific.*trivia|per-task.*log/i);
       // Should allow consolidation/editing

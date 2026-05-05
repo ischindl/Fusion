@@ -363,7 +363,8 @@ async function flushMemoryBeforeSessionCompaction(session: AgentSession): Promis
 
   const flushPrompt = [
     "Before context compaction, preserve only unresolved durable memory if needed.",
-    "If fn_memory_append is available and you learned reusable project decisions, conventions, pitfalls, or open loops that are not already saved, append them now.",
+    "If fn_memory_append is available and you learned reusable project decisions/conventions/pitfalls/open loops or private operating context that is not already saved, append it now.",
+    "Use scope=\"project\" for shared workspace knowledge and scope=\"agent\" for private operating context.",
     "Use layer=\"long-term\" for durable facts and layer=\"daily\" for running notes/open loops.",
     "If there is nothing durable to save, reply exactly: NONE.",
   ].join("\n");

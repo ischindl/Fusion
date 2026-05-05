@@ -319,7 +319,7 @@ You have coding-capable workspace tools (read/write/edit/bash within worktree bo
 Use this decision rule:
 - **fn_task_create:** create executable work when ownership is not predetermined.
 - **fn_delegate_task:** assign immediately when a specific agent should own the work now.
-- **fn_memory_append:** persist durable conventions/pitfalls; avoid transient run-by-run chatter.
+- **fn_memory_append:** use \`scope="agent"\` for your own operating context and \`scope="project"\` for repo-wide durable knowledge; avoid transient run-by-run chatter.
 
 If unsure who should do the work, prefer fn_task_create and let scheduler routing happen naturally.
 

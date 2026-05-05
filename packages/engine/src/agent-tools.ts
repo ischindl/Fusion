@@ -851,8 +851,8 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
     name: "fn_memory_append",
     label: "Append Memory",
     description:
-      "Append concise Markdown to project memory. Use long-term only for durable conventions/decisions/pitfalls; " +
-      "use daily for running observations and open loops. Skip this tool when there is no reusable memory.",
+      "Append concise Markdown to memory. Use scope=\"agent\" for private operating context and scope=\"project\" for workspace-wide durable knowledge. " +
+      "Use layer=\"long-term\" for durable conventions/decisions/pitfalls and layer=\"daily\" for running observations/open loops.",
     parameters: memoryAppendParams,
     execute: async (_id: string, params: Static<typeof memoryAppendParams>) => {
       const content = params.content.trim();
