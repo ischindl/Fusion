@@ -164,6 +164,17 @@ html {
   --transition-normal: 0.2s ease;
   --transition-slow: 0.3s ease;
 
+/* Global spinner animation — used by 25+ components via className="animate-spin"
+   or inline animation: "spin ...". Must live here (not in TaskCard.css) so the
+   keyframes and utility class are available before any task cards are loaded. */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
   /* Backward-compatible aliases */
   --radius: var(--radius-md);
   --shadow: var(--shadow-lg);
