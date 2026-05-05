@@ -13,6 +13,7 @@ describe("droid runtime plugin index", () => {
     const slots = plugin.uiSlots?.map((s) => s.slotId) ?? [];
     expect(slots).toEqual(expect.arrayContaining([
       "settings-provider-card",
+      "settings-integration-card",
       "onboarding-provider-card",
       "onboarding-setup-help",
       "post-onboarding-recommendation",
@@ -25,6 +26,7 @@ describe("droid runtime plugin index", () => {
       slotId: "settings-provider-card",
       label: "Droid CLI Provider",
       componentPath: "./components/settings-provider-card.js",
+      order: 10,
     });
   });
 

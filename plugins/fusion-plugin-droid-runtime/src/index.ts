@@ -32,10 +32,36 @@ const plugin: FusionPlugin = definePlugin({
     },
   },
   uiSlots: [
-    { slotId: "settings-provider-card", label: "Droid CLI Provider", componentPath: "./components/settings-provider-card.js" },
-    { slotId: "onboarding-provider-card", label: "Droid CLI Provider", componentPath: "./components/onboarding-provider-card.js" },
-    { slotId: "onboarding-setup-help", label: "Droid CLI Setup Help", componentPath: "./components/onboarding-setup-help.js" },
-    { slotId: "post-onboarding-recommendation", label: "Droid CLI Recommendation", componentPath: "./components/post-onboarding-recommendation.js" }
+    {
+      slotId: "settings-provider-card",
+      label: "Droid CLI Provider",
+      componentPath: "./components/settings-provider-card.js",
+      order: 10,
+    },
+    {
+      slotId: "settings-integration-card",
+      label: "Droid CLI Integration",
+      componentPath: "./components/settings-integration-card.js",
+      order: 20,
+    },
+    {
+      slotId: "onboarding-provider-card",
+      label: "Droid CLI Provider",
+      componentPath: "./components/onboarding-provider-card.js",
+      order: 10,
+    },
+    {
+      slotId: "onboarding-setup-help",
+      label: "Droid CLI Setup Help",
+      componentPath: "./components/onboarding-setup-help.js",
+      order: 20,
+    },
+    {
+      slotId: "post-onboarding-recommendation",
+      label: "Droid CLI Recommendation",
+      componentPath: "./components/post-onboarding-recommendation.js",
+      order: 10,
+    },
   ],
   runtime: {
     metadata: droidRuntimeMetadata,

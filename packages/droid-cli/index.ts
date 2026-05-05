@@ -1,18 +1,16 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { streamViaCli } from "../../plugins/fusion-plugin-droid-runtime/src/provider.js";
 import {
+  streamViaCli,
   discoverDroidModels,
   validateCliPresenceAsync,
   validateCliAuthAsync,
   killAllProcesses,
-} from "../../plugins/fusion-plugin-droid-runtime/src/process-manager.js";
-import { createHash } from "node:crypto";
-import {
   getCustomToolDefs,
   toolsFromContext,
   writeMcpConfig,
   type McpToolDef,
-} from "../../plugins/fusion-plugin-droid-runtime/src/mcp-config.js";
+} from "@fusion-plugin-examples/droid-runtime";
+import { createHash } from "node:crypto";
 
 process.on("exit", killAllProcesses);
 

@@ -1034,7 +1034,9 @@ Polls CI status for branches and provides custom API endpoints.
 
 Reference runtime plugin that migrates a CLI-backed provider into the plugin system.
 
-- Demonstrates: runtime adapter pattern (`runtime-adapter.ts`), dashboard UI slot contributions for settings/onboarding surfaces, and dashboard probe delegation (`probeDroidBinary`)
+- Demonstrates: runtime adapter pattern (`runtime-adapter.ts`) and plugin-owned streaming/provider orchestration (`provider.ts`, `process-manager.ts`)
+- Demonstrates UI slot registration for `settings-provider-card`, `settings-integration-card`, `onboarding-provider-card`, `onboarding-setup-help`, and `post-onboarding-recommendation`
+- Demonstrates dashboard probe delegation through plugin-owned `probeDroidBinary`
 - Preserves provider id `droid-cli` via `@fusion/droid-cli` compatibility shim
 
 ### [Settings Demo Plugin](../../plugins/examples/fusion-plugin-settings-demo/)

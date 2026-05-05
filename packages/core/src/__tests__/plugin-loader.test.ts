@@ -362,12 +362,16 @@ describe("PluginLoader", () => {
       const slots = loader
         .getPluginUiSlots()
         .filter((entry) => entry.pluginId === "fusion-plugin-droid-runtime");
-      expect(slots.map((entry) => entry.slot.slotId)).toEqual([
-        "onboarding-provider-card",
-        "onboarding-setup-help",
-        "post-onboarding-recommendation",
-        "settings-provider-card",
-      ]);
+      expect(slots.map((entry) => entry.slot.slotId)).toEqual(
+        expect.arrayContaining([
+          "onboarding-provider-card",
+          "onboarding-setup-help",
+          "post-onboarding-recommendation",
+          "settings-provider-card",
+          "settings-integration-card",
+        ]),
+      );
+      expect(slots).toHaveLength(5);
       expect(slots[0]?.slot).toHaveProperty("label");
       expect(slots[0]?.slot).toHaveProperty("componentPath");
 
