@@ -83,12 +83,67 @@ Fusion supports multiple projects with a central registry at `~/.fusion/fusion-c
 
 ## Testing
 
+Tests are required. Typechecks and manual verification are not substitutes for real tests with assertions.
+
+Use the narrowest command that exercises the behavior you changed, then broaden before reporting completion. Prefer local verification over waiting for GitHub Actions.
+
 ```bash
-VITEST_MAX_WORKERS=4 pnpm test  # run all tests
-pnpm build         # build all packages
+pnpm test              # changed-only workspace tests; falls back to the workspace quality gate in safety contexts
+pnpm test:full         # full workspace quality gate, clean-worktree compatible
+pnpm lint              # lint all packages
+pnpm build             # build workspace packages, excluding desktop/mobile
+pnpm verify:workspace  # canonical pre-merge gate: lint -> test:full -> build
 ```
 
-Tests are required. Typechecks and manual verification are not substitutes for real tests with assertions.
+`pnpm test:full` is the default broad local gate. It runs each package's default test script with capped worker fanout:
+
+```bash
+FUSION_TEST_TOTAL_WORKERS=4 FUSION_TEST_CONCURRENCY=2 pnpm -r --workspace-concurrency=2 test
+```
+
+Do not casually raise worker counts to make a run faster; dashboard/jsdom and integration-heavy packages can become slower or unstable when oversubscribed. Use `VITEST_MAX_WORKERS=<n>` only for targeted package-level investigation.
+
+### Dashboard Test Lanes
+
+Dashboard has a curated default gate plus explicit exhaustive lanes:
+
+```bash
+pnpm --filter @fusion/dashboard test                # curated app/API quality gate
+pnpm --filter @fusion/dashboard test:deep           # exhaustive app + API suite
+pnpm --filter @fusion/dashboard test:app            # exhaustive React/jsdom app tests
+pnpm --filter @fusion/dashboard test:api            # exhaustive Node API/server tests
+pnpm --filter @fusion/dashboard test:browser-smoke  # local browser CSS/layout smoke
+pnpm --filter @fusion/dashboard test:build          # built client output contract
+```
+
+Run the default dashboard gate for ordinary dashboard work. Run `test:deep` when changing broad dashboard architecture, shared modal/view infrastructure, route registration, or anything that could invalidate the curated selection. Run `test:browser-smoke` for layout, responsive, navigation, modal, or CSS changes. Run `test:build` for Vite/build output, lazy-loading, chunking, static asset, or client-dist changes.
+
+### Package-Specific Test Commands
+
+Common targeted lanes:
+
+```bash
+pnpm --filter @fusion/core test
+pnpm --filter @fusion/engine test
+pnpm --filter @runfusion/fusion test
+pnpm test:scripts
+node --test scripts/__tests__/*.test.mjs
+```
+
+For a single Vitest file, prefer package-local `exec vitest` so argument forwarding does not accidentally run the whole package:
+
+```bash
+pnpm --filter @fusion/core exec vitest run src/__tests__/central-db.test.ts --silent=passed-only --reporter=dot
+pnpm --filter @fusion/dashboard exec vitest run --project dashboard-app-quality app/components/__tests__/TaskCard.test.tsx --silent=passed-only --reporter=dot
+```
+
+### Before Reporting Done
+
+- For code changes: run the affected package tests and any directly relevant browser/build lane.
+- For cross-package, shared test infrastructure, or CI changes: run `pnpm test:full`.
+- For production/bundling-sensitive changes: run `pnpm build`.
+- For final verification on substantial work: run `pnpm verify:workspace` unless there is a clear reason to split the commands and report them separately.
+- If you intentionally do not run a relevant lane, say why.
 
 ### Test File Organization
 
