@@ -33,6 +33,8 @@ import {
 import { heartbeatLog, formatError } from "./logger.js";
 import { createRunAuditor, type EngineRunContext } from "./run-audit.js";
 import { promptWithFallback } from "./pi.js";
+import { createResolvedAgentSession, extractRuntimeHint, extractRuntimeModel } from "./agent-session-helpers.js";
+import { buildSessionSkillContextSync } from "./session-skill-context.js";
 import type { AgentReflectionService } from "./agent-reflection.js";
 
 interface SelfImproveServiceLike {
@@ -1597,9 +1599,6 @@ export class HeartbeatMonitor {
             };
           },
         };
-
-        const { createResolvedAgentSession, extractRuntimeHint, extractRuntimeModel } = await import("./agent-session-helpers.js");
-        const { buildSessionSkillContextSync } = await import("./session-skill-context.js");
 
         // Build tools with task creation tracking and run context for mutation correlation
         // For no-task runs, exclude fn_task_log and document tools (they require a taskId)
