@@ -4,6 +4,7 @@ import type { Agent } from "../../api";
 import type { ChatSession } from "@fusion/core";
 import * as apiModule from "../../api";
 import { useAgents } from "../../hooks/useAgents";
+import { useViewportMode } from "../../hooks/useViewportMode";
 import { QuickChatFAB } from "../QuickChatFAB";
 
 vi.mock("../../api", () => ({
@@ -19,6 +20,7 @@ vi.mock("../../api", () => ({
 }));
 
 vi.mock("../../hooks/useAgents", () => ({ useAgents: vi.fn() }));
+vi.mock("../../hooks/useViewportMode", () => ({ useViewportMode: vi.fn() }));
 
 const mockFetchResumeChatSession = vi.mocked(apiModule.fetchResumeChatSession);
 const mockFetchChatSessions = vi.mocked(apiModule.fetchChatSessions);
@@ -29,6 +31,7 @@ const mockFetchDiscoveredSkills = vi.mocked(apiModule.fetchDiscoveredSkills);
 const mockStreamChatResponse = vi.mocked(apiModule.streamChatResponse);
 const mockCancelChatResponse = vi.mocked(apiModule.cancelChatResponse);
 const mockUseAgents = vi.mocked(useAgents);
+const mockUseViewportMode = vi.mocked(useViewportMode);
 
 const agents: Agent[] = [
   { id: "agent-001", name: "Agent One", role: "executor", state: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), metadata: {} },
@@ -76,6 +79,7 @@ describe("QuickChatFAB session-first UX", () => {
     window.dispatchEvent(new Event("resize"));
     localStorage.clear();
     mockUseAgents.mockReturnValue({ agents, activeAgents: agents, stats: null, isLoading: false, loadAgents: vi.fn(), loadStats: vi.fn() });
+    mockUseViewportMode.mockReturnValue("desktop");
     mockFetchResumeChatSession.mockResolvedValue({ session: modelSession });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
     mockFetchChatSessions.mockResolvedValue({ sessions: [modelSession, agentSession] });
@@ -181,6 +185,32 @@ describe("QuickChatFAB session-first UX", () => {
     fireEvent.click(screen.getByTestId("quick-chat-fab"));
 
     expect(await screen.findByRole("option", { name: "Model thread — GPT-4o [openai/gpt-4o]" })).toBeInTheDocument();
+  });
+
+  it("uses icon-only model tag without pill styling when mobile header fallback is active", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    window.dispatchEvent(new Event("resize"));
+    mockUseViewportMode.mockReturnValue("mobile");
+
+    mockFetchModels.mockResolvedValueOnce({
+      models: [{ provider: "openai", id: "gpt-4o", name: "Extremely Long Model Name", reasoning: true, contextWindow: 128000 }],
+      favoriteProviders: [],
+      favoriteModels: [],
+      defaultProvider: "openai",
+      defaultModelId: "gpt-4o",
+    });
+
+    render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
+    fireEvent.click(screen.getByTestId("quick-chat-fab"));
+
+    const modelTag = await screen.findByTestId("quick-chat-model-tag");
+    expect(modelTag).toHaveClass("quick-chat-model-tag--icon");
+
+    const styles = window.getComputedStyle(modelTag);
+    expect(styles.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(styles.borderTopStyle).toBe("none");
+    expect(styles.paddingLeft).toBe("0px");
+    expect(styles.paddingRight).toBe("0px");
   });
 
   it("intercepts exact /clear and starts a fresh session for the active target", async () => {

@@ -247,7 +247,10 @@
 /* Icon-only fallback when the model name is too long for the header. */
 .quick-chat-model-tag--icon {
   max-width: none;
-  padding: var(--space-xs);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   justify-content: center;
 }
 
