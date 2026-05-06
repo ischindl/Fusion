@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Task, Column, TaskCreateInput, MergeResult } from "@fusion/core";
+import { normalizeColumn } from "@fusion/core";
 import * as api from "../api";
 import { subscribeSse } from "../sse-bus";
 
 function normalizeTask(task: Task): Task {
   return {
     ...task,
+    column: normalizeColumn((task as Task & { column?: unknown }).column),
     dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
     steps: Array.isArray(task.steps) ? task.steps : [],
     log: Array.isArray((task as Task & { log?: unknown }).log)
@@ -255,7 +257,7 @@ export function useTasks(options?: UseTasksOptions) {
       const normalizedTask = normalizeTask(task);
       setTasks((prev) =>
         prev.map((t) =>
-          t.id === normalizedTask.id ? { ...normalizedTask, column: to } : t
+          t.id === normalizedTask.id ? { ...normalizedTask, column: normalizeColumn(to, normalizedTask.column) } : t
         )
       );
       lastFetchTimeMs.current = Date.now();

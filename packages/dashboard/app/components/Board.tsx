@@ -1,5 +1,5 @@
 import type { Task, TaskDetail, Column as ColumnType, TaskCreateInput, TaskPriority } from "@fusion/core";
-import { COLUMNS } from "@fusion/core";
+import { COLUMNS, DEFAULT_COLUMN, isColumn } from "@fusion/core";
 import { Column } from "./Column";
 import type { ToastType } from "../hooks/useToast";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
@@ -188,12 +188,19 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
   // Keep per-column array identities stable for unchanged columns so React.memo(Column)
   // can skip sibling rerenders during unrelated task updates.
   const tasksByColumn = useMemo(() => {
-    const nextGrouped = Object.fromEntries(
-      COLUMNS.map((column) => [column, [] as Task[]]),
-    ) as Record<ColumnType, Task[]>;
+    const nextGrouped: Record<ColumnType, Task[]> = {
+      triage: [],
+      todo: [],
+      "in-progress": [],
+      "in-review": [],
+      done: [],
+      archived: [],
+    };
 
     for (const task of tasks) {
-      nextGrouped[task.column].push(task);
+      const column = isColumn(task.column) ? task.column : DEFAULT_COLUMN;
+      const bucket = nextGrouped[column] ?? nextGrouped[DEFAULT_COLUMN];
+      bucket.push(task);
     }
 
     const previousGrouped = tasksByColumnCacheRef.current;

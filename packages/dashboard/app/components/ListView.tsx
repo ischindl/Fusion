@@ -2,7 +2,7 @@ import "./ListView.css";
 import { useState, useCallback, useMemo, Fragment, useEffect, useRef } from "react";
 import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRight, Zap } from "lucide-react";
 import type { Task, TaskDetail, Column, TaskCreateInput, MergeResult } from "@fusion/core";
-import { COLUMN_LABELS, COLUMNS, getErrorMessage } from "@fusion/core";
+import { COLUMN_LABELS, COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
 import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
 import type { ModelInfo, NodeInfo } from "../api";
@@ -530,7 +530,10 @@ export function ListView({
       done: [],
       archived: []
     };
-    sorted.forEach(task => groups[task.column].push(task));
+    sorted.forEach((task) => {
+      const column = isColumn(task.column) ? task.column : DEFAULT_COLUMN;
+      groups[column].push(task);
+    });
     return groups;
   }, [tasks, searchQuery, sortField, sortDirection, hideDoneTasks, selectedColumn]);
 

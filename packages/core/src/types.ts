@@ -5,6 +5,16 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const COLUMNS = ["triage", "todo", "in-progress", "in-review", "done", "archived"] as const;
 export type Column = (typeof COLUMNS)[number];
 
+export const DEFAULT_COLUMN: Column = "triage";
+
+export function isColumn(value: unknown): value is Column {
+  return typeof value === "string" && (COLUMNS as readonly string[]).includes(value);
+}
+
+export function normalizeColumn(value: unknown, fallback: Column = DEFAULT_COLUMN): Column {
+  return isColumn(value) ? value : fallback;
+}
+
 /** Ordered task-priority levels for the core task domain contract. */
 export const TASK_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];

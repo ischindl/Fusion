@@ -79,6 +79,26 @@ describe("Board", () => {
     }
   });
 
+  it("falls back malformed task columns to triage instead of crashing", () => {
+    const malformedTask = {
+      id: "FN-404",
+      description: "Malformed",
+      column: "impossible-column",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    } as unknown as Task;
+
+    expect(() => renderBoard({ tasks: [malformedTask] })).not.toThrow();
+
+    const triageTasks = JSON.parse(screen.getByTestId("column-triage").getAttribute("data-tasks") || "[]") as Task[];
+    expect(triageTasks).toHaveLength(1);
+    expect(triageTasks[0]?.id).toBe("FN-404");
+  });
+
   it("forwards board-level workflow name lookup to columns", async () => {
     renderBoard();
 

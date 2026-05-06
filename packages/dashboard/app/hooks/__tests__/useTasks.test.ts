@@ -140,6 +140,22 @@ describe("useTasks", () => {
     expect(result.current.tasks[0].id).toBe("FN-001");
   });
 
+  it("normalizes invalid column values from initial fetch to triage", async () => {
+    const malformedTask = {
+      ...createMockTask({ id: "FN-099" }),
+      column: "unknown-column",
+    } as unknown as Task;
+    mockFetchTasks.mockResolvedValueOnce([malformedTask]);
+
+    const { result } = renderHook(() => useTasks());
+
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(1);
+    });
+
+    expect(result.current.tasks[0].column).toBe("triage");
+  });
+
   describe("SSE event: task:created", () => {
     it("adds new task to the list", async () => {
       mockFetchTasks.mockResolvedValueOnce([]);
@@ -157,6 +173,27 @@ describe("useTasks", () => {
 
       expect(result.current.tasks).toHaveLength(1);
       expect(result.current.tasks[0].id).toBe("FN-002");
+    });
+
+    it("normalizes invalid column values from SSE created events", async () => {
+      mockFetchTasks.mockResolvedValueOnce([]);
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => {
+        expect(MockEventSource.instances).toHaveLength(1);
+      });
+
+      const malformedTask = {
+        ...createMockTask({ id: "FN-003" }),
+        column: "bad-column",
+      } as unknown as Task;
+
+      act(() => {
+        MockEventSource.instances[0]._emit("task:created", malformedTask);
+      });
+
+      expect(result.current.tasks).toHaveLength(1);
+      expect(result.current.tasks[0].column).toBe("triage");
     });
   });
 

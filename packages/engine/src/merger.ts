@@ -26,7 +26,8 @@ export {
   type VerificationResult,
 } from "./verification-utils.js";
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   getTaskMergeBlocker,
@@ -215,6 +216,40 @@ function getDependencySyncCommand(rootDir: string): string | null {
   return null;
 }
 
+const INSTALL_MARKER_RELPATH = join("node_modules", ".fusion-install-marker");
+const LOCKFILE_CANDIDATES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb", "bun.lock"];
+
+function computeLockfileHash(rootDir: string): string | null {
+  for (const name of LOCKFILE_CANDIDATES) {
+    const p = join(rootDir, name);
+    if (existsSync(p)) {
+      try {
+        return createHash("sha256").update(readFileSync(p)).digest("hex");
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function readInstallMarker(rootDir: string): string | null {
+  try {
+    const value = readFileSync(join(rootDir, INSTALL_MARKER_RELPATH), "utf-8").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeInstallMarker(rootDir: string, hash: string): void {
+  try {
+    writeFileSync(join(rootDir, INSTALL_MARKER_RELPATH), hash);
+  } catch {
+    // Best-effort: a missing marker just means the next merge re-runs install.
+  }
+}
+
 async function syncDependenciesForMerge(
   store: TaskStore,
   rootDir: string,
@@ -223,6 +258,21 @@ async function syncDependenciesForMerge(
 ): Promise<void> {
   const installCommand = getDependencySyncCommand(rootDir);
   if (!installCommand) return;
+
+  // Skip the install if node_modules is present and the lockfile content
+  // matches the hash recorded after the last successful install. Caller's
+  // shouldSyncDependenciesForMerge gate already filters most no-ops; this
+  // covers the case where package.json (but not the lockfile) is staged, and
+  // the case where multiple merge attempts hit the same worktree in a row.
+  const lockHash = computeLockfileHash(rootDir);
+  if (lockHash && hasInstallState(rootDir) && readInstallMarker(rootDir) === lockHash) {
+    mergerLog.log(`${taskId}: skipping dependency sync (lockfile unchanged since last install)`);
+    await store.logEntry(
+      taskId,
+      `Skipping dependency sync: lockfile hash matches last successful ${installCommand}`,
+    );
+    return;
+  }
 
   throwIfAborted(signal, taskId);
   mergerLog.log(`${taskId}: syncing dependencies before merge build verification`);
@@ -235,6 +285,7 @@ async function syncDependenciesForMerge(
       timeout: 300_000,
     });
     throwIfAborted(signal, taskId);
+    if (lockHash) writeInstallMarker(rootDir, lockHash);
   } catch (error: any) {
     throwIfAborted(signal, taskId);
     const details = error?.stderr || error?.stdout || error?.message || String(error);
@@ -475,6 +526,32 @@ export async function snapshotDirtyFiles(rootDir: string): Promise<Set<string>> 
   return paths;
 }
 
+/**
+ * Hash the working tree's dirty content (full diff against HEAD plus porcelain
+ * status). Returns "" on failure or when nothing is dirty. Used to detect
+ * whether an in-merge fix agent actually changed anything before paying for
+ * a verification re-run.
+ */
+async function gitDirtyFingerprint(rootDir: string): Promise<string> {
+  try {
+    const [diffOut, statusOut] = await Promise.all([
+      execFileAsync("git", ["diff", "HEAD"], {
+        cwd: rootDir,
+        encoding: "utf-8",
+        maxBuffer: 64 * 1024 * 1024,
+      }).then((r) => r.stdout, () => ""),
+      execFileAsync("git", ["status", "-z", "--porcelain"], { cwd: rootDir, encoding: "utf-8" }).then(
+        (r) => r.stdout,
+        () => "",
+      ),
+    ]);
+    if (!diffOut && !statusOut) return "";
+    return createHash("sha256").update(diffOut).update("\0").update(statusOut).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
 function rethrowIfMergeAborted(error: unknown): void {
   if (error instanceof Error && error.name === "MergeAbortedError") {
     throw error;
@@ -698,6 +775,7 @@ async function attemptInMergeVerificationFix(
   // Snapshot the working tree before doing anything so the diff reflects only
   // what the fix agent touched, not pre-existing dirty state.
   const preFixSnapshot = await snapshotDirtyFiles(rootDir);
+  const preFixFingerprint = await gitDirtyFingerprint(rootDir);
   try {
     mergerLog.log(`${taskId}: spawning in-merge verification fix agent`);
 
@@ -838,12 +916,39 @@ ${failureContext.output.slice(0, VERIFICATION_LOG_MAX_CHARS)}
       // Compute which paths the fix agent introduced or modified, then
       // accumulate them into the caller's mutable set.
       const postFixSnapshot = await snapshotDirtyFiles(rootDir);
+      const newlyTouched: string[] = [];
+      for (const p of postFixSnapshot) {
+        if (!preFixSnapshot.has(p)) newlyTouched.push(p);
+      }
       if (fixModifiedFiles) {
-        for (const p of postFixSnapshot) {
-          if (!preFixSnapshot.has(p)) {
-            fixModifiedFiles.add(p);
-          }
-        }
+        for (const p of newlyTouched) fixModifiedFiles.add(p);
+      }
+
+      // If the fix agent didn't actually edit anything, re-running the same
+      // failing verification can only yield the same failure — skip the
+      // multi-minute test/build cycle and report the attempt as unsuccessful.
+      // Use a git content fingerprint (diff + porcelain status) so we also
+      // catch in-place edits to already-dirty files, not just newly added
+      // paths. Only skip when we have a non-empty fingerprint to compare
+      // against; an empty pre-fingerprint means the snapshot tool failed and
+      // we should fall back to actually re-running verification.
+      const postFixFingerprint = await gitDirtyFingerprint(rootDir);
+      const fingerprintsMatch =
+        preFixFingerprint.length > 0 && preFixFingerprint === postFixFingerprint;
+      if (newlyTouched.length === 0 && fingerprintsMatch) {
+        mergerLog.warn(`${taskId}: in-merge fix agent made no changes — skipping verification re-run`);
+        await store.logEntry(
+          taskId,
+          `In-merge fix agent made no changes — skipping verification re-run (attempt ${fixAttemptNumber ?? "unknown"})`,
+        );
+        await store.appendAgentLog(
+          taskId,
+          `Fix agent made no changes — skipping verification re-run`,
+          "text",
+          undefined,
+          "merger",
+        );
+        return false;
       }
 
       // Re-run deterministic verification command after the fix attempt.

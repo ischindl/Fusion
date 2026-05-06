@@ -157,6 +157,21 @@ describe("ListView", () => {
     expect(screen.getByText("View options")).toBeDefined();
   });
 
+  it("falls back malformed task columns to Planning group instead of crashing", () => {
+    const malformedTask = {
+      ...createMockTask({ id: "FN-404" }),
+      column: "impossible-column",
+    } as unknown as Task;
+
+    expect(() => renderListView({ tasks: [malformedTask] })).not.toThrow();
+    expect(screen.getByText("FN-404")).toBeInTheDocument();
+
+    const planningSection = screen
+      .getAllByRole("row")
+      .find((row) => row.className.includes("list-section-header") && row.textContent?.includes("Planning"));
+    expect(planningSection?.textContent).toContain("1");
+  });
+
   it("keeps view options collapsed by default on desktop", () => {
     renderListView({}, { openViewOptions: false });
 
