@@ -138,6 +138,12 @@ export function mergeAuthStorageReads(
   readFallbackAuthStorages: ReadFallbackAuthStorage[] = [],
 ): AuthStorage {
   const readAuthStorages = [authStorage, ...readFallbackAuthStorages];
+
+  // Providers the user has explicitly logged out from. These should not be
+  // "resurrected" from supplemental credential files (e.g. ~/.claude/.credentials.json).
+  // Cleared when the user re-authenticates via set().
+  const loggedOutProviders = new Set<string>();
+
   const selectCredential = (
     providerId: string,
     storages: Array<Pick<ReadFallbackAuthStorage, "get">>,
@@ -149,11 +155,19 @@ export function mergeAuthStorageReads(
     return best;
   };
 
-  const getCredential = (providerId: string) => selectCredential(providerId, readAuthStorages);
+  const getCredential = (providerId: string) => {
+    if (loggedOutProviders.has(providerId)) {
+      return authStorage.get(providerId) as StoredCredential | undefined;
+    }
+    return selectCredential(providerId, readAuthStorages);
+  };
 
   const syncFallbackOauthCredentials = () => {
     const providerIds = new Set(readFallbackAuthStorages.flatMap((storage) => storage.list()));
     for (const providerId of providerIds) {
+      if (loggedOutProviders.has(providerId)) {
+        continue;
+      }
       const current = authStorage.get(providerId) as StoredCredential | undefined;
       const candidate = selectCredential(providerId, readFallbackAuthStorages);
       if (!shouldHydrateStoredCredential(current, candidate)) {
@@ -169,6 +183,20 @@ export function mergeAuthStorageReads(
 
   return new Proxy(authStorage, {
     get(target, prop, receiver) {
+      if (prop === "logout") {
+        return (provider: string) => {
+          loggedOutProviders.add(provider);
+          target.logout(provider);
+        };
+      }
+
+      if (prop === "set") {
+        return (provider: string, credential: AuthCredential) => {
+          loggedOutProviders.delete(provider);
+          target.set(provider, credential);
+        };
+      }
+
       if (prop === "reload") {
         return () => {
           for (const storage of readAuthStorages) {
@@ -183,11 +211,21 @@ export function mergeAuthStorageReads(
       }
 
       if (prop === "has") {
-        return (provider: string) => readAuthStorages.some((storage) => Boolean(storage.get(provider)));
+        return (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return false;
+          }
+          return readAuthStorages.some((storage) => Boolean(storage.get(provider)));
+        };
       }
 
       if (prop === "hasAuth") {
-        return (provider: string) => readAuthStorages.some((storage) => storage.hasAuth(provider));
+        return (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return false;
+          }
+          return readAuthStorages.some((storage) => storage.hasAuth(provider));
+        };
       }
 
       if (prop === "getAll") {
@@ -195,6 +233,9 @@ export function mergeAuthStorageReads(
           const providerIds = new Set(readAuthStorages.flatMap((storage) => storage.list()));
           const merged: Record<string, StoredCredential> = {};
           for (const providerId of providerIds) {
+            if (loggedOutProviders.has(providerId)) {
+              continue;
+            }
             const credential = getCredential(providerId);
             if (credential) {
               merged[providerId] = credential;
@@ -205,11 +246,17 @@ export function mergeAuthStorageReads(
       }
 
       if (prop === "list") {
-        return () => Array.from(new Set(readAuthStorages.flatMap((storage) => storage.list())));
+        return () => {
+          const providers = readAuthStorages.flatMap((storage) => storage.list());
+          return Array.from(new Set(providers.filter((p) => !loggedOutProviders.has(p))));
+        };
       }
 
       if (prop === "getApiKey") {
         return async (providerId: string) => {
+          if (loggedOutProviders.has(providerId)) {
+            return undefined;
+          }
           for (const storage of readAuthStorages) {
             const apiKey = await storage.getApiKey(providerId);
             if (apiKey) return apiKey;

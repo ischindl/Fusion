@@ -396,4 +396,161 @@ describe("createFusionAuthStorage", () => {
       expect(authStorage.hasAuth("dynamic-provider")).toBe(true);
     });
   });
+
+  describe("logout with supplemental credentials", () => {
+    it("hides supplemental Claude credentials after logout", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+
+      // Before logout, supplemental credentials are visible
+      expect(authStorage.has("anthropic")).toBe(true);
+      expect(authStorage.hasAuth("anthropic")).toBe(true);
+      expect(await authStorage.getApiKey("anthropic")).toBe("claude-access-token");
+
+      // Log out
+      authStorage.logout("anthropic");
+
+      // After logout, supplemental credentials are hidden
+      expect(authStorage.has("anthropic")).toBe(false);
+      expect(authStorage.hasAuth("anthropic")).toBe(false);
+      expect(authStorage.get("anthropic")).toBeUndefined();
+      expect(await authStorage.getApiKey("anthropic")).toBeUndefined();
+    });
+
+    it("does not resurrect supplemental credentials on reload after logout", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+      authStorage.logout("anthropic");
+
+      // reload() should NOT bring back the supplemental credential
+      authStorage.reload();
+
+      expect(authStorage.has("anthropic")).toBe(false);
+      expect(authStorage.hasAuth("anthropic")).toBe(false);
+      expect(await authStorage.getApiKey("anthropic")).toBeUndefined();
+    });
+
+    it("excludes logged-out providers from getAll()", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+      authStorage.logout("anthropic");
+
+      const all = authStorage.getAll();
+      expect("anthropic" in all).toBe(false);
+    });
+
+    it("excludes logged-out providers from list()", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+      authStorage.logout("anthropic");
+
+      expect(authStorage.list()).not.toContain("anthropic");
+    });
+
+    it("re-enables supplemental credentials after re-authentication via set()", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+      authStorage.logout("anthropic");
+
+      // Re-authenticate
+      authStorage.set("anthropic", { type: "api_key", key: "new-key" });
+
+      // Provider is visible again
+      expect(authStorage.has("anthropic")).toBe(true);
+      expect(await authStorage.getApiKey("anthropic")).toBe("new-key");
+    });
+
+    it("only hides the logged-out provider, not other supplemental providers", async () => {
+      const claudeDir = join(homeDir, ".claude");
+      const legacyDir = join(homeDir, ".pi", "agent");
+      mkdirSync(claudeDir, { recursive: true });
+      mkdirSync(legacyDir, { recursive: true });
+
+      writeFileSync(
+        join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "claude-access-token",
+            refreshToken: "claude-refresh-token",
+            expiresAt: Date.now() + 3_600_000,
+          },
+        }),
+      );
+      writeFileSync(
+        join(legacyDir, "auth.json"),
+        JSON.stringify({
+          openrouter: { type: "api_key", key: "legacy-openrouter-key" },
+        }),
+      );
+
+      const authStorage = createFusionAuthStorage();
+      authStorage.logout("anthropic");
+
+      // anthropic is hidden
+      expect(authStorage.hasAuth("anthropic")).toBe(false);
+      // openrouter is still visible
+      expect(authStorage.hasAuth("openrouter")).toBe(true);
+      expect(await authStorage.getApiKey("openrouter")).toBe("legacy-openrouter-key");
+    });
+  });
 });

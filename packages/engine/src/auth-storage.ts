@@ -143,8 +143,16 @@ export function createFusionAuthStorage(): AuthStorage {
   // models.json provider API keys — final fallback after primary auth and supplemental auth.json files
   let modelsJsonApiKeys = readModelsJsonApiKeys();
 
+  // Providers the user has explicitly logged out from. These should not be
+  // "resurrected" from supplemental credential files (e.g. ~/.claude/.credentials.json).
+  // Cleared when the user re-authenticates via set().
+  const loggedOutProviders = new Set<string>();
+
   const syncSupplementalOauthCredentials = () => {
     for (const [provider, credential] of Object.entries(supplementalCredentials)) {
+      if (loggedOutProviders.has(provider)) {
+        continue;
+      }
       const current = primary.get(provider) as StoredCredential | undefined;
       if (!shouldHydrateStoredCredential(current, credential)) {
         continue;
@@ -168,6 +176,20 @@ export function createFusionAuthStorage(): AuthStorage {
     },
 
     get(target, prop, receiver) {
+      if (prop === "logout") {
+        return (provider: string) => {
+          loggedOutProviders.add(provider);
+          target.logout(provider);
+        };
+      }
+
+      if (prop === "set") {
+        return (provider: string, credential: AuthCredential) => {
+          loggedOutProviders.delete(provider);
+          target.set(provider, credential);
+        };
+      }
+
       if (prop === "reload") {
         return () => {
           target.reload();
@@ -178,32 +200,48 @@ export function createFusionAuthStorage(): AuthStorage {
       }
 
       if (prop === "get") {
-        return (provider: string) =>
-          choosePreferredStoredCredential(
+        return (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return target.get(provider);
+          }
+          return choosePreferredStoredCredential(
             target.get(provider) as StoredCredential | undefined,
             supplementalCredentials[provider],
           );
+        };
       }
 
       if (prop === "has") {
-        return (provider: string) => target.has(provider) || provider in supplementalCredentials || modelsJsonApiKeys.has(provider);
+        return (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return false;
+          }
+          return target.has(provider) || provider in supplementalCredentials || modelsJsonApiKeys.has(provider);
+        };
       }
 
       if (prop === "hasAuth") {
-        return (provider: string) => target.hasAuth(provider) || Boolean(supplementalCredentials[provider]) || modelsJsonApiKeys.has(provider);
+        return (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return false;
+          }
+          return target.hasAuth(provider) || Boolean(supplementalCredentials[provider]) || modelsJsonApiKeys.has(provider);
+        };
       }
 
       if (prop === "getAll") {
         return () => {
           const providerIds = new Set([
-            ...Object.keys(supplementalCredentials),
             ...Object.keys(target.getAll() as Record<string, StoredCredential>),
+            ...(loggedOutProviders.size > 0
+              ? Object.keys(supplementalCredentials).filter((p) => !loggedOutProviders.has(p))
+              : Object.keys(supplementalCredentials)),
           ]);
           const merged: Record<string, StoredCredential> = {};
           for (const providerId of providerIds) {
             const credential = choosePreferredStoredCredential(
               (target.get(providerId) as StoredCredential | undefined),
-              supplementalCredentials[providerId],
+              loggedOutProviders.has(providerId) ? undefined : supplementalCredentials[providerId],
             );
             if (credential) {
               merged[providerId] = credential;
@@ -214,11 +252,23 @@ export function createFusionAuthStorage(): AuthStorage {
       }
 
       if (prop === "list") {
-        return () => Array.from(new Set([...Object.keys(supplementalCredentials), ...target.list(), ...modelsJsonApiKeys.keys()]));
+        return () => {
+          const providers = new Set([...target.list(), ...modelsJsonApiKeys.keys()]);
+          for (const p of Object.keys(supplementalCredentials)) {
+            if (!loggedOutProviders.has(p)) {
+              providers.add(p);
+            }
+          }
+          return Array.from(providers);
+        };
       }
 
       if (prop === "getApiKey") {
         return async (provider: string) => {
+          if (loggedOutProviders.has(provider)) {
+            return undefined;
+          }
+
           // 1. Primary Fusion auth
           const primaryKey = await target.getApiKey(provider);
           if (primaryKey) return primaryKey;

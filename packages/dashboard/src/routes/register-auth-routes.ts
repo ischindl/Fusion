@@ -899,6 +899,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
 
       const storage = getAuthStorage();
       storage.logout(provider);
+      clearUsageCache();
       res.json({ success: true });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
