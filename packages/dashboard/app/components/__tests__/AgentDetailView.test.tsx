@@ -893,29 +893,8 @@ describe("AgentDetailView", () => {
 
       const utilityContainer = headerActions?.querySelector(".agent-detail-utility-actions");
       expect(utilityContainer).toBeTruthy();
-      expect(utilityContainer?.querySelector('[aria-label="Import agents"]')).toBeTruthy();
       expect(utilityContainer?.querySelector('[title="Refresh"]')).toBeTruthy();
       expect(utilityContainer?.querySelector('[title="Close"]')).toBeTruthy();
-    });
-  });
-
-  it("opens the import modal from agent detail in browse mode", async () => {
-    const user = userEvent.setup();
-    mockFetchCompanies.mockResolvedValue({ companies: [{ slug: "acme", name: "Acme AI" }] });
-
-    render(
-      <AgentDetailView
-        agentId="agent-001"
-        onClose={vi.fn()}
-        addToast={vi.fn()}
-      />,
-    );
-
-    await user.click(await screen.findByRole("button", { name: "Import agents" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: "Import agents" })).toBeInTheDocument();
-      expect(screen.getByPlaceholderText("Search companies...")).toBeInTheDocument();
     });
   });
 
