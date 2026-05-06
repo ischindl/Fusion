@@ -148,6 +148,21 @@ describe("validatePluginManifest", () => {
       expect(result.valid).toBe(true);
       expect(result.errors).toEqual([]);
     });
+
+    it("accepts settings schema entries with optional group metadata", () => {
+      const manifest = {
+        id: "test",
+        name: "Test",
+        version: "1.0.0",
+        settingsSchema: {
+          enabled: { type: "boolean", group: "General" },
+          timeoutMs: { type: "number", group: "Browser" },
+        },
+      };
+      const result = validatePluginManifest(manifest);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
   });
 
   // ── Missing Required Fields ─────────────────────────────────────────

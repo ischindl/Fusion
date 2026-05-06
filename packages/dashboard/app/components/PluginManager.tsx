@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Package, Settings, Trash2, Plus, X, RefreshCw, RotateCcw, ExternalLink } from "lucide-react";
 import { fetchPlugins, installPlugin, enablePlugin, disablePlugin, uninstallPlugin, fetchPluginSettings, updatePluginSettings, reloadPlugin } from "../api";
 import { DirectoryPicker } from "./DirectoryPicker";
-import type { PluginInstallation, PluginState } from "@fusion/core";
+import type { PluginInstallation, PluginState, PluginSettingSchema } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
 import { useConfirm } from "../hooks/useConfirm";
 import { subscribeSse } from "../sse-bus";
@@ -46,9 +46,42 @@ interface BundledPlugin {
   experimental?: boolean;
 }
 
+export const DEFAULT_AGENT_BROWSER_PLUGIN_ID = "fusion-plugin-agent-browser-runtime";
+
+export const AGENT_BROWSER_SETTINGS_SCHEMA: Record<string, PluginSettingSchema> = {
+  enabled: { type: "boolean", label: "Enable Agent Browser", group: "General" },
+  installChannel: {
+    type: "enum",
+    label: "Install Channel",
+    enumValues: ["stable", "beta", "nightly"],
+    defaultValue: "stable",
+    group: "General",
+  },
+  commandTimeoutMs: {
+    type: "number",
+    label: "Command Timeout (ms)",
+    defaultValue: 120000,
+    group: "General",
+  },
+  headlessMode: { type: "boolean", label: "Headless Mode", defaultValue: true, group: "Browser" },
+  allowedDomains: { type: "array", label: "Allowed Domains", itemType: "string", group: "Browser" },
+  promptExecutorSystem: { type: "string", label: "Executor System Prompt", multiline: true, group: "Prompt Contributions" },
+  promptExecutorTask: { type: "string", label: "Executor Task Prompt", multiline: true, group: "Prompt Contributions" },
+  promptTriage: { type: "string", label: "Triage Prompt", multiline: true, group: "Prompt Contributions" },
+  promptReviewer: { type: "string", label: "Reviewer Prompt", multiline: true, group: "Prompt Contributions" },
+  promptHeartbeat: { type: "string", label: "Heartbeat Prompt", multiline: true, group: "Prompt Contributions" },
+  skillExposure: {
+    type: "enum",
+    label: "Skill Exposure",
+    enumValues: ["none", "selected", "all"],
+    defaultValue: "selected",
+    group: "Skills",
+  },
+};
+
 const BUNDLED_PLUGINS: BundledPlugin[] = [
   {
-    id: "fusion-plugin-agent-browser-runtime",
+    id: DEFAULT_AGENT_BROWSER_PLUGIN_ID,
     name: "Agent Browser Runtime",
     path: "./plugins/fusion-plugin-agent-browser-runtime",
     experimental: true,
@@ -90,6 +123,25 @@ export const STATE_COLORS: Record<string, string> = {
   stopped: "var(--color-muted)",
   installed: "var(--color-info)",
 };
+
+function groupSettingsSchema(settingsSchema: Record<string, PluginSettingSchema>) {
+  const grouped = new Map<string, Array<[string, PluginSettingSchema]>>();
+  const ungrouped: Array<[string, PluginSettingSchema]> = [];
+
+  for (const [key, schema] of Object.entries(settingsSchema)) {
+    if (schema.group) {
+      const groupItems = grouped.get(schema.group) ?? [];
+      groupItems.push([key, schema]);
+      grouped.set(schema.group, groupItems);
+    } else {
+      ungrouped.push([key, schema]);
+    }
+  }
+
+  return { grouped, ungrouped };
+}
+
+
 
 export function PluginManager({ addToast, projectId }: PluginManagerProps) {
   const [plugins, setPlugins] = useState<PluginInstallation[]>([]);
@@ -358,9 +410,29 @@ export function PluginManager({ addToast, projectId }: PluginManagerProps) {
               <p className="text-muted">Loading...</p>
             ) : selectedPlugin.settingsSchema && Object.keys(selectedPlugin.settingsSchema).length > 0 ? (
               <div className="plugin-settings-form">
-                {Object.entries(selectedPlugin.settingsSchema).map(([key, schema]) => {
-                  const helpId = `setting-${key}-help`;
-                  return (
+                {(() => {
+                  const { grouped, ungrouped } = groupSettingsSchema(selectedPlugin.settingsSchema);
+                  const sections: Array<{ title: string | null; entries: Array<[string, PluginSettingSchema]> }> = [];
+
+                  if (ungrouped.length > 0) {
+                    sections.push({ title: null, entries: ungrouped });
+                  }
+
+                  for (const [groupName, entries] of grouped.entries()) {
+                    sections.push({ title: groupName, entries });
+                  }
+
+                  return sections.map((section) => (
+                    <div
+                      key={section.title ?? "ungrouped"}
+                      className={section.title ? "plugin-settings-group" : undefined}
+                    >
+                      {section.title && (
+                        <h6 className="plugin-settings-group-heading">{section.title}</h6>
+                      )}
+                      {section.entries.map(([key, schema]) => {
+                        const helpId = `setting-${key}-help`;
+                        return (
                     <div key={key} className="form-group">
                       <label htmlFor={`setting-${key}`}>
                         {schema.label || key}
@@ -479,8 +551,11 @@ export function PluginManager({ addToast, projectId }: PluginManagerProps) {
                         <span id={helpId} className="form-help">{schema.description}</span>
                       )}
                     </div>
-                  );
-                })}
+                        );
+                      })}
+                    </div>
+                  ));
+                })()}
                 <button className="btn btn-primary" onClick={handleSaveSettings}>
                   Save Settings
                 </button>

@@ -105,7 +105,12 @@ vi.mock("../../hooks/useConfirm", () => ({
 }));
 
 // Import after vi.mock so the mock is in place
-import { PluginManager, STATE_COLORS } from "../PluginManager";
+import {
+  AGENT_BROWSER_SETTINGS_SCHEMA,
+  DEFAULT_AGENT_BROWSER_PLUGIN_ID,
+  PluginManager,
+  STATE_COLORS,
+} from "../PluginManager";
 import {
   fetchPlugins,
   installPlugin,
@@ -216,6 +221,24 @@ describe("PluginManager", () => {
     render(<PluginManager addToast={addToast} />);
 
     expect(screen.getByText("Loading plugins...")).toBeTruthy();
+  });
+
+  it("exports AGENT_BROWSER_SETTINGS_SCHEMA with expected grouped keys", () => {
+    expect(Object.keys(AGENT_BROWSER_SETTINGS_SCHEMA)).toEqual([
+      "enabled",
+      "installChannel",
+      "commandTimeoutMs",
+      "headlessMode",
+      "allowedDomains",
+      "promptExecutorSystem",
+      "promptExecutorTask",
+      "promptTriage",
+      "promptReviewer",
+      "promptHeartbeat",
+      "skillExposure",
+    ]);
+    expect(AGENT_BROWSER_SETTINGS_SCHEMA.promptExecutorSystem?.group).toBe("Prompt Contributions");
+    expect(AGENT_BROWSER_SETTINGS_SCHEMA.skillExposure?.group).toBe("Skills");
   });
 
   it("renders empty state when no plugins are installed", async () => {
@@ -527,6 +550,32 @@ describe("PluginManager", () => {
     });
   });
 
+  it("shows Manage for bundled agent browser runtime when already installed", async () => {
+    vi.mocked(fetchPlugins).mockResolvedValueOnce([
+      {
+        ...mockPlugins[0],
+        id: DEFAULT_AGENT_BROWSER_PLUGIN_ID,
+        name: "Agent Browser Runtime",
+      },
+    ]);
+
+    render(<PluginManager addToast={addToast} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Agent Browser Runtime").length).toBeGreaterThanOrEqual(2);
+    });
+
+    const runtimeCard = screen.getAllByText("Agent Browser Runtime")[1]?.closest(".plugin-bundled-runtime-item");
+    expect(runtimeCard).toBeTruthy();
+
+    const manageButton = within(runtimeCard as HTMLElement).getByRole("button", { name: /^Manage$/i });
+    await userEvent.click(manageButton);
+
+    await waitFor(() => {
+      expect(fetchPluginSettings).toHaveBeenCalledWith(DEFAULT_AGENT_BROWSER_PLUGIN_ID, undefined);
+    });
+  });
+
   it("shows Manage for bundled dependency graph when already installed", async () => {
     vi.mocked(fetchPlugins).mockResolvedValueOnce([
       {
@@ -781,6 +830,35 @@ describe("PluginManager", () => {
       unmount();
 
       expect(eventSourceInstance?.close).toHaveBeenCalled();
+    });
+  });
+
+  describe("grouped settings rendering", () => {
+    it("renders grouped headings and preserves ungrouped settings", async () => {
+      const groupedPlugin: PluginInstallation = {
+        ...mockPlugins[0],
+        id: "plugin-grouped",
+        name: "Grouped Plugin",
+        settingsSchema: {
+          enabled: { type: "boolean", label: "Enabled", group: "General" },
+          prompt: { type: "string", label: "Prompt", multiline: true, group: "Prompt Contributions" },
+          legacySetting: { type: "string", label: "Legacy Setting" },
+        },
+      };
+      vi.mocked(fetchPlugins).mockResolvedValueOnce([groupedPlugin]);
+      vi.mocked(fetchPluginSettings).mockResolvedValueOnce({ enabled: true, prompt: "x", legacySetting: "y" });
+
+      render(<PluginManager addToast={addToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Grouped Plugin")).toBeTruthy();
+      });
+
+      await userEvent.click(screen.getAllByTitle("Settings")[0]);
+
+      expect(await screen.findByRole("heading", { name: "General", level: 6 })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Prompt Contributions", level: 6 })).toBeTruthy();
+      expect(screen.getByLabelText("Legacy Setting")).toBeTruthy();
     });
   });
 
