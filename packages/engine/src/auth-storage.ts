@@ -183,6 +183,13 @@ export function createFusionAuthStorage(): AuthStorage {
         };
       }
 
+      if (prop === "remove") {
+        return (provider: string) => {
+          target.remove(provider);
+          loggedOutProviders.add(provider);
+        };
+      }
+
       if (prop === "set") {
         return (provider: string, credential: AuthCredential) => {
           target.set(provider, credential);
