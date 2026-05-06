@@ -14,14 +14,19 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
     () => shellState.profiles.find((profile) => profile.id === shellState.activeProfileId) ?? null,
     [shellState.activeProfileId, shellState.profiles],
   );
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Partial<ShellConnectionProfile>>({});
   const [error, setError] = useState<string | null>(null);
 
   if (!open) return null;
 
-  const workingName = draft.name ?? activeProfile?.name ?? "";
-  const workingUrl = draft.serverUrl ?? activeProfile?.serverUrl ?? "";
-  const workingToken = draft.authToken ?? activeProfile?.authToken ?? "";
+  const isAddingConnection = editingProfileId === "__new__";
+  const editingProfile = isAddingConnection
+    ? null
+    : shellState.profiles.find((profile) => profile.id === editingProfileId) ?? activeProfile;
+  const workingName = draft.name ?? editingProfile?.name ?? "";
+  const workingUrl = draft.serverUrl ?? editingProfile?.serverUrl ?? "";
+  const workingToken = draft.authToken ?? editingProfile?.authToken ?? "";
 
   const saveCurrent = async () => {
     setError(null);
@@ -32,12 +37,13 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
         throw new Error("Server URL must use http or https");
       }
       const saved = await shellApi.saveProfile({
-        id: activeProfile?.id,
+        id: isAddingConnection ? undefined : (editingProfileId ?? editingProfile?.id),
         name: workingName || "Remote Server",
         serverUrl: workingUrl,
         authToken: workingToken || null,
       });
       await shellApi.setActiveProfile(saved.id);
+      setEditingProfileId(saved.id);
       setDraft({});
     } catch (nextError) {
       setError((nextError as Error).message);
@@ -69,12 +75,41 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
                 <div className="settings-muted">{profile.serverUrl}</div>
               </div>
               <div className="native-shell-connection-manager__profile-actions">
-                <button type="button" className="btn btn-sm" aria-label={`Edit ${profile.name}`} onClick={() => setDraft(profile)}>Edit</button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  aria-label={`Edit ${profile.name}`}
+                  onClick={() => {
+                    setEditingProfileId(profile.id);
+                    setDraft(profile);
+                  }}
+                >
+                  Edit
+                </button>
                 <button type="button" className="btn btn-sm" aria-label={`Use ${profile.name}`} onClick={() => void shellApi.setActiveProfile(profile.id)}>Use</button>
                 <button type="button" className="btn btn-sm btn-danger" aria-label={`Delete ${profile.name}`} onClick={() => void shellApi.deleteProfile(profile.id)}>Delete</button>
               </div>
             </div>
           ))}
+        </div>
+
+        <div className="native-shell-connection-manager__mode-row">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              setEditingProfileId("__new__");
+              setDraft({ name: "", serverUrl: "", authToken: "" });
+              setError(null);
+            }}
+          >
+            Add connection
+          </button>
+          {shellState.host === "mobile-shell" && (
+            <button type="button" className="btn" onClick={() => void shellApi.startQrScan()}>
+              Scan QR
+            </button>
+          )}
         </div>
 
         <div className="form-group native-shell-connection-manager__editor">

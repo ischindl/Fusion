@@ -6,7 +6,13 @@ function createShellApi() {
   return {
     getState: vi.fn(),
     listProfiles: vi.fn(),
-    saveProfile: vi.fn(async () => ({ id: "p1", name: "Prod", serverUrl: "https://fusion.example.com", createdAt: "", updatedAt: "" })),
+    saveProfile: vi.fn(async (input?: { id?: string }) => ({
+      id: input?.id ?? "p2",
+      name: "Prod",
+      serverUrl: "https://fusion.example.com",
+      createdAt: "",
+      updatedAt: "",
+    })),
     deleteProfile: vi.fn(async () => undefined),
     setActiveProfile: vi.fn(async () => ({ host: "mobile-shell", activeProfileId: "p1", profiles: [] })),
     setDesktopMode: vi.fn(async () => ({ host: "desktop-shell", desktopMode: "remote", activeProfileId: null, profiles: [] })),
@@ -67,8 +73,30 @@ describe("NativeShellConnectionManager", () => {
     fireEvent.click(screen.getByText("Save"));
 
     await waitFor(() => {
-      expect(shellApi.saveProfile).toHaveBeenCalled();
+      expect(shellApi.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ id: "p1", serverUrl: "https://next.example.com" }));
       expect(shellApi.setActiveProfile).toHaveBeenCalledWith("p1");
+    });
+  });
+
+  it("adds a new connection", async () => {
+    const shellApi = createShellApi();
+    render(
+      <NativeShellConnectionManager
+        open={true}
+        shellApi={shellApi}
+        shellState={{ host: "mobile-shell", activeProfileId: "p1", profiles: [{ id: "p1", name: "Prod", serverUrl: "https://fusion.example.com", authToken: null, createdAt: "", updatedAt: "" }] }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Add connection"));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Staging" } });
+    fireEvent.change(screen.getByLabelText("Server URL"), { target: { value: "https://staging.example.com" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(shellApi.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ id: undefined, name: "Staging", serverUrl: "https://staging.example.com" }));
+      expect(shellApi.setActiveProfile).toHaveBeenCalledWith("p2");
     });
   });
 });
