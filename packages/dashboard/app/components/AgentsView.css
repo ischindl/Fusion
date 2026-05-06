@@ -745,17 +745,17 @@
   border: 1px solid var(--state-idle-border);
 }
 
-.agent-badge--active,
 .agent-badge--running {
   background: var(--state-active-bg);
   color: var(--state-active-text);
   border: 1px solid var(--state-active-border);
 }
 
+.agent-badge--active,
 .agent-badge--paused {
-  background: var(--state-paused-bg);
-  color: var(--state-paused-text);
-  border: 1px solid var(--state-paused-border);
+  background: var(--state-idle-bg);
+  color: var(--state-idle-text);
+  border: 1px solid var(--state-idle-border);
 }
 
 .agent-badge--error,
@@ -765,28 +765,27 @@
   border: 1px solid var(--state-error-border);
 }
 
-.agent-board-card--idle { border-top-color: var(--state-idle-border); }
+.agent-board-card--idle,
 .agent-board-card--active,
+.agent-board-card--paused { border-top-color: var(--state-idle-border); }
 .agent-board-card--running {
   border-top-color: var(--state-active-border);
   background: var(--state-active-bg);
 }
-.agent-board-card--paused { border-top-color: var(--state-paused-border); }
 .agent-board-card--error,
 .agent-board-card--terminated { border-top-color: var(--state-error-border); }
 
-.agent-card--idle { border-left-color: var(--state-idle-border); }
+.agent-card--idle,
 .agent-card--active,
+.agent-card--paused { border-left-color: var(--state-idle-border); }
 .agent-card--running {
   border-left-color: var(--state-active-border);
   background: var(--state-active-bg);
 }
 
-.agent-card--active:hover,
 .agent-card--running:hover {
   background: color-mix(in srgb, var(--state-active-border) 20%, var(--card-hover));
 }
-.agent-card--paused { border-left-color: var(--state-paused-border); }
 .agent-card--error,
 .agent-card--terminated { border-left-color: var(--state-error-border); }
 
@@ -916,7 +915,6 @@
   box-shadow: var(--focus-ring-strong);
 }
 
-.org-chart-node-card--active,
 .org-chart-node-card--running {
   background: var(--state-active-bg);
 }
