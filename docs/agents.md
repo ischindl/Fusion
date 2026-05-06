@@ -237,6 +237,7 @@ The `runtimeConfig` field on agents supports the following options:
 | `autoClaimRelevantTasks` | `boolean` | `true` | During no-task heartbeats, opportunistically claim unowned relevant todo tasks that align with the agent's role/soul |
 | `heartbeatTimeoutMs` | `number` | — | Time without heartbeat before agent is considered unresponsive (ms) |
 | `maxConcurrentRuns` | `number` | `1` | Max concurrent heartbeat runs for this agent |
+| `runMissedHeartbeatOnStartup` | `boolean` | `false` | When enabled, if the server was down across this agent's scheduled heartbeat tick, fire one catch-up heartbeat at startup (only when `lastHeartbeatAt` is older than the resolved interval) |
 | `allowParallelExecution` | `boolean` | `true` (when unset) | Permanent agents only. When `false`, heartbeat and executor paths serialize symmetrically: a heartbeat will not start while the agent's bound task has an active executor session, and an executor session will not start while the agent has an active heartbeat run |
 | `messageResponseMode` | `"immediate" \| "on-heartbeat"` | `"immediate"` | Whether agent wakes immediately on message (immediate) or processes during heartbeat (on-heartbeat). See [Heartbeat Run Mailbox Checking](#heartbeat-run-mailbox-checking) |
 | `selfImproveEnabled` | `boolean` | `true` | Enable periodic self-improvement reflection prompts during heartbeat runs |
@@ -249,7 +250,9 @@ The `runtimeConfig` field on agents supports the following options:
 Heartbeat values are validated and minimum-clamped to 5 minutes (300,000 ms).
 Project setting `heartbeatMultiplier` (default `1`) scales resolved heartbeat intervals globally; per-agent `heartbeatIntervalMs` remains the base interval before multiplier scaling. This setting is configured from the **Agents** screen's **Controls** popup under "Heartbeat Speed".
 
-`allowParallelExecution` defaults to `true` when unset; setting it to `false` is serialized explicitly so operators can enforce non-parallel heartbeat/executor behavior for that permanent agent.
+`runMissedHeartbeatOnStartup` defaults to `false` and is configured in **Agent Detail → Settings → Heartbeat Settings → Run Missed Heartbeat On Startup**.
+
+`allowParallelExecution` defaults to `true` when unset; setting it to `false` is serialized explicitly so operators can enforce non-parallel heartbeat/executor behavior for that permanent agent. Configure it in **Agent Detail → Settings → Heartbeat Settings → Allow Parallel Execution**.
 
 ### No-task auto-claim behavior
 
@@ -548,6 +551,19 @@ Expected behavior for both manual and automatic triggers:
 - Finish with `fn_heartbeat_done`
 
 Messages remain an important input signal, but they do not replace the heartbeat procedure.
+
+### Heartbeat/Executor Separation (Current Behavior)
+
+For permanent agents, heartbeat runs now continue as an ambient coordination loop even when the currently bound task is blocked from normal task progress.
+
+- **Heartbeat path**: coordination, wake processing, mailbox/delegation/memory/task-creation actions, and lightweight ambient follow-through.
+- **Executor path**: task-body implementation work from task steps/prompts.
+
+When `allowParallelExecution` is set to `false` on a permanent agent, the two paths serialize symmetrically:
+- Heartbeat does not start while the bound task has an active executor session.
+- Executor does not start while the agent has an active heartbeat run.
+
+When `allowParallelExecution` is `true` (default), both paths may run concurrently.
 
 ## Heartbeat Run Mailbox Checking
 

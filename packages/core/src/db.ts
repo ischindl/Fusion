@@ -88,7 +88,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 62;
+const SCHEMA_VERSION = 63;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -793,6 +793,59 @@ CREATE TABLE IF NOT EXISTS todo_items (
 CREATE INDEX IF NOT EXISTS idxTodoListsProjectId ON todo_lists(projectId);
 CREATE INDEX IF NOT EXISTS idxTodoItemsListId ON todo_items(listId);
 CREATE INDEX IF NOT EXISTS idxTodoItemsSortOrder ON todo_items(listId, sortOrder);
+
+-- Project-scoped auth domain tables (FN-3515)
+CREATE TABLE IF NOT EXISTS project_auth_users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  displayName TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_auth_memberships (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL,
+  role TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_auth_providers (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  providerUserId TEXT NOT NULL,
+  metadata TEXT,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE,
+  UNIQUE(provider, providerUserId)
+);
+
+CREATE TABLE IF NOT EXISTS project_auth_sessions (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL,
+  membershipId TEXT NOT NULL,
+  sessionToken TEXT NOT NULL UNIQUE,
+  expiresAt TEXT NOT NULL,
+  revokedAt TEXT,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE,
+  FOREIGN KEY (membershipId) REFERENCES project_auth_memberships(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idxProjectAuthUsersEmail ON project_auth_users(email);
+CREATE INDEX IF NOT EXISTS idxProjectAuthMembershipsUserId ON project_auth_memberships(userId);
+CREATE INDEX IF NOT EXISTS idxProjectAuthMembershipsRole ON project_auth_memberships(role);
+CREATE INDEX IF NOT EXISTS idxProjectAuthProvidersUserId ON project_auth_providers(userId);
+CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsUserId ON project_auth_sessions(userId);
+CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsMembershipId ON project_auth_sessions(membershipId);
+CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsExpiry ON project_auth_sessions(expiresAt);
 `;
 
 // ── Database Class ───────────────────────────────────────────────────
@@ -2574,6 +2627,66 @@ export class Database {
           )
         `);
         this.db.exec(`CREATE INDEX IF NOT EXISTS idxEvalRunEventsRunIdSeq ON eval_run_events(runId, seq)`);
+      });
+    }
+
+    if (version < 63) {
+      this.applyMigration(63, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS project_auth_users (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            displayName TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS project_auth_memberships (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            role TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE
+          )
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS project_auth_providers (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            providerUserId TEXT NOT NULL,
+            metadata TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE,
+            UNIQUE(provider, providerUserId)
+          )
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS project_auth_sessions (
+            id TEXT PRIMARY KEY,
+            userId TEXT NOT NULL,
+            membershipId TEXT NOT NULL,
+            sessionToken TEXT NOT NULL UNIQUE,
+            expiresAt TEXT NOT NULL,
+            revokedAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            FOREIGN KEY (userId) REFERENCES project_auth_users(id) ON DELETE CASCADE,
+            FOREIGN KEY (membershipId) REFERENCES project_auth_memberships(id) ON DELETE CASCADE
+          )
+        `);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthUsersEmail ON project_auth_users(email)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthMembershipsUserId ON project_auth_memberships(userId)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthMembershipsRole ON project_auth_memberships(role)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthProvidersUserId ON project_auth_providers(userId)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsUserId ON project_auth_sessions(userId)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsMembershipId ON project_auth_sessions(membershipId)`);
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idxProjectAuthSessionsExpiry ON project_auth_sessions(expiresAt)`);
       });
     }
 

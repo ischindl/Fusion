@@ -112,6 +112,10 @@ describe("Database", () => {
       expect(tableNames).toContain("roadmap_features");
       // Verification cache (migration 61)
       expect(tableNames).toContain("verification_cache");
+      expect(tableNames).toContain("project_auth_users");
+      expect(tableNames).toContain("project_auth_memberships");
+      expect(tableNames).toContain("project_auth_providers");
+      expect(tableNames).toContain("project_auth_sessions");
     });
 
     it("creates all expected indexes", () => {
@@ -157,12 +161,18 @@ describe("Database", () => {
       expect(indexNames).toContain("idxRoadmapFeaturesMilestoneOrder");
       // Verification cache index (migration 61)
       expect(indexNames).toContain("idxVerificationCacheRecordedAt");
+      expect(indexNames).toContain("idxProjectAuthUsersEmail");
+      expect(indexNames).toContain("idxProjectAuthMembershipsUserId");
+      expect(indexNames).toContain("idxProjectAuthMembershipsRole");
+      expect(indexNames).toContain("idxProjectAuthProvidersUserId");
+      expect(indexNames).toContain("idxProjectAuthSessionsUserId");
+      expect(indexNames).toContain("idxProjectAuthSessionsMembershipId");
+      expect(indexNames).toContain("idxProjectAuthSessionsExpiry");
     });
 
     it("seeds schema version", () => {
-      expect(db.getSchemaVersion()).toBe(62);
+      expect(db.getSchemaVersion()).toBe(63);
     });
-
     it("seeds lastModified", () => {
       const ts = db.getLastModified();
       expect(ts).toBeGreaterThan(0);
@@ -183,9 +193,8 @@ describe("Database", () => {
 
     it("is idempotent - calling init() twice does not fail", () => {
       expect(() => db.init()).not.toThrow();
-      expect(db.getSchemaVersion()).toBe(62);
+      expect(db.getSchemaVersion()).toBe(63);
     });
-
     it("does not overwrite existing config on re-init", () => {
       // Update the config
       db.prepare("UPDATE config SET nextId = 42 WHERE id = 1").run();
@@ -957,7 +966,7 @@ describe("schema migrations", () => {
     db.init();
 
     // Verify version bumped to 29 (includes v1→v2 through v26→v29)
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     // Verify new columns exist and existing data is intact
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
@@ -982,11 +991,11 @@ describe("schema migrations", () => {
     const db = new Database(fusionDir);
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     // Re-init should not fail
     db.init();
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     db.close();
   });
@@ -1021,7 +1030,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     expect(cols.map((col) => col.name)).toContain("priority");
@@ -1062,7 +1071,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     const colNames = cols.map((col) => col.name);
@@ -1131,7 +1140,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
     const colNames = cols.map((col) => col.name);
@@ -1234,7 +1243,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const cols = db.prepare("PRAGMA table_info(chat_messages)").all() as Array<{ name: string }>;
     expect(cols.map((col) => col.name)).toContain("attachments");
@@ -1308,7 +1317,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'agentRatings'").all() as Array<{ name: string }>;
     expect(tables).toEqual([{ name: "agentRatings" }]);
@@ -1332,7 +1341,7 @@ describe("schema migrations", () => {
 
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'mission_events'").all() as Array<{ name: string }>;
     expect(tables).toEqual([{ name: "mission_events" }]);
@@ -1436,7 +1445,7 @@ describe("schema migrations", () => {
     db.init();
 
     // Verify version bumped to 29
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
 
     // Verify new columns exist and existing data is intact
     const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
@@ -1905,7 +1914,7 @@ describe("createDatabase factory", () => {
     const db = createDatabase(fusionDir);
     db.init();
 
-    expect(db.getSchemaVersion()).toBe(62);
+    expect(db.getSchemaVersion()).toBe(63);
     expect(db.getLastModified()).toBeGreaterThan(0);
 
     db.close();
@@ -2016,5 +2025,35 @@ describe("TaskStore — verification cache", () => {
     const hit = store.getVerificationCacheHit(treeSha, "pnpm test", "");
     expect(hit).not.toBeNull();
     expect(hit!.taskId).toBe("FN-020");
+  });
+});
+
+describe("migration v63 project auth tables", () => {
+  it("migrates from v62 and creates project auth tables", () => {
+    const temp = makeTmpDir();
+    const fusion = join(temp, ".fusion");
+    const localDb = new Database(fusion);
+    localDb.init();
+    localDb.prepare("UPDATE __meta SET value = '62' WHERE key = 'schemaVersion'").run();
+    localDb.prepare("DROP TABLE IF EXISTS project_auth_sessions").run();
+    localDb.prepare("DROP TABLE IF EXISTS project_auth_providers").run();
+    localDb.prepare("DROP TABLE IF EXISTS project_auth_memberships").run();
+    localDb.prepare("DROP TABLE IF EXISTS project_auth_users").run();
+    localDb.close();
+
+    const migrated = new Database(fusion);
+    migrated.init();
+    expect(migrated.getSchemaVersion()).toBe(63);
+    const tables = migrated
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'project_auth_%' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    expect(tables.map((t) => t.name)).toEqual([
+      "project_auth_memberships",
+      "project_auth_providers",
+      "project_auth_sessions",
+      "project_auth_users",
+    ]);
+    migrated.close();
+    rmSync(temp, { recursive: true, force: true });
   });
 });

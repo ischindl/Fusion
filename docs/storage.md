@@ -6,7 +6,7 @@
 - **Backend settings keys defined in `@fusion/core`:** **78** total
   - **Global settings:** 17 (`GlobalSettings`)
   - **Project settings:** 61 (`ProjectSettings`)
-- **SQLite tables in project DB schema (`packages/core/src/db.ts`):** **39** (including migration-created tables)
+- **SQLite tables in project DB schema (`packages/core/src/db.ts`):** **43** (including migration-created tables)
 - **Issues identified:** **9**
   - High: 2
   - Medium: 5
@@ -195,6 +195,10 @@ Additional backend notes:
 | `project_insight_run_events` | Append-only per-run lifecycle trail (`seq`, `type`, `message`, optional `status`/`classification`/`metadata`) used by cancel/retry/timeout auditing and API inspection. |
 | `todo_lists` | Project-scoped todo list metadata (`projectId`, title, created/updated timestamps). |
 | `todo_items` | Todo list items (`listId` FK) with completion state, completion timestamp, and deterministic `sortOrder`. |
+| `project_auth_users` | Project-scoped user identities (email/display name/active state) used for membership and session relationships. |
+| `project_auth_memberships` | Project-scoped membership records linking users to fixed v1 roles (`owner`, `admin`, `editor`, `viewer`). |
+| `project_auth_providers` | Per-project external auth-provider links for users (provider + external user ID + metadata). |
+| `project_auth_sessions` | Project-scoped auth sessions tied to a user + membership with expiry and revocation timestamps. |
 | `ai_sessions` *(migration-created)* | Persisted AI interactive sessions (planning/interview/subtask) with status and conversation history. |
 | `messages` *(migration-created)* | Inter-agent/user message mailbox storage. |
 | `agentRatings` *(migration-created)* | Agent performance ratings (1-5), optional reviewer metadata, and run/task attribution. |
@@ -212,6 +216,8 @@ Additional backend notes:
 | `eval_runs` | Eval run lifecycle state (status, trigger, scope, evaluation window boundaries, evaluated task IDs/counts, aggregate scores, provenance). |
 | `eval_task_results` | Per-task eval outcomes linked to runs (`runId` FK cascade), including durable task snapshots, category scores, evidence references, deterministic/AI signal payloads, rationale, and follow-up suggestions. |
 | `eval_run_events` | Append-only eval run event trail (`runId` FK cascade, ordered by `seq`) for orchestration/debug auditing and downstream API/UI drill-down. |
+
+Scope boundary note: the `project_auth_*` tables are strictly project-database membership/auth domain data. They do **not** replace or migrate global remote-access credentials/tokens, daemon auth, or model-provider credential settings (which remain in their existing global/project settings stores).
 
 ---
 

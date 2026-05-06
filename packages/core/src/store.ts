@@ -17,6 +17,7 @@ import { InsightStore } from "./insight-store.js";
 import { ResearchStore } from "./research-store.js";
 import { TodoStore } from "./todo-store.js";
 import { EvalStore } from "./eval-store.js";
+import { ProjectAuthStore } from "./project-auth-store.js";
 import { BackwardCompat, ProjectRequiredError } from "./migration.js";
 import { CentralCore } from "./central-core.js";
 import { getTaskMergeBlocker } from "./task-merge.js";
@@ -516,6 +517,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   private todoStore: TodoStore | null = null;
   /** Cached EvalStore instance */
   private evalStore: EvalStore | null = null;
+  /** Cached ProjectAuthStore instance */
+  private projectAuthStore: ProjectAuthStore | null = null;
 
   /** Buffer for batching agent log writes to reduce WAL pressure. */
   private agentLogBuffer: Array<{
@@ -6635,6 +6638,17 @@ ${notificationsSection}`;
       this.evalStore = new EvalStore(this.db);
     }
     return this.evalStore;
+  }
+
+  /**
+   * Get the ProjectAuthStore instance for project-scoped auth domain operations.
+   * Lazily initializes the ProjectAuthStore on first access.
+   */
+  getProjectAuthStore(): ProjectAuthStore {
+    if (!this.projectAuthStore) {
+      this.projectAuthStore = new ProjectAuthStore(this.db);
+    }
+    return this.projectAuthStore;
   }
 
   // ── Verification Cache ────────────────────────────────────────────────────

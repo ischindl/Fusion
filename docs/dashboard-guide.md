@@ -288,6 +288,8 @@ The **Logs** tab includes an **Agent Log** subview designed for debugging long-r
 - The initial load fetches a recent page, then **Load More** progressively prepends older history.
 - Live streaming appends new entries in chronological order while preserving your scroll position when loading older pages.
 - The **Markdown / Plain** toggle lets you switch between formatted markdown and literal/raw text rendering.
+- The **Tools: On/Off** toggle shows or hides tool-call rows (`tool`, `tool_result`, `tool_error`) so you can focus on narrative/thinking output when needed.
+- Both display preferences persist across sessions via local storage (`fn-agent-log-markdown` and `fn-agent-log-tool-output`).
 
 The **Routing** tab shows:
 - effective node

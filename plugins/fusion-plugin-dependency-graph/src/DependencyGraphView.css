@@ -121,8 +121,8 @@
   }
 
   .dependency-graph-controls .btn {
-    min-height: 44px;
-    min-width: 44px;
+    min-height: calc(var(--space-xs) * 11);
+    min-width: calc(var(--space-xs) * 11);
   }
 
   .dependency-graph-canvas {

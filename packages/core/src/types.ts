@@ -1179,6 +1179,76 @@ export interface TodoListWithItems extends TodoList {
   items: TodoItem[];
 }
 
+// ── Project Auth Types ───────────────────────────────────────────────────
+
+export const PROJECT_AUTH_ROLES = ["owner", "admin", "editor", "viewer"] as const;
+export type ProjectAuthRole = (typeof PROJECT_AUTH_ROLES)[number];
+
+export interface ProjectAuthUser {
+  id: string;
+  email: string;
+  displayName: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAuthMembership {
+  id: string;
+  userId: string;
+  role: ProjectAuthRole;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAuthProvider {
+  id: string;
+  userId: string;
+  provider: string;
+  providerUserId: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAuthSession {
+  id: string;
+  userId: string;
+  membershipId: string;
+  sessionToken: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAuthUserCreateInput {
+  email: string;
+  displayName?: string | null;
+  active?: boolean;
+}
+
+export interface ProjectAuthMembershipCreateInput {
+  userId: string;
+  role: ProjectAuthRole;
+  active?: boolean;
+}
+
+export interface ProjectAuthProviderCreateInput {
+  userId: string;
+  provider: string;
+  providerUserId: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProjectAuthSessionCreateInput {
+  userId: string;
+  membershipId: string;
+  sessionToken: string;
+  expiresAt: string;
+}
+
 // ── Settings Scope Types ────────────────────────────────────────────────
 //
 // Settings are split into two scopes:

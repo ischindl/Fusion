@@ -11295,4 +11295,42 @@ describe("RunMutationContext", () => {
       expect(cReloaded.executionStartBranch).toBe("fusion/still-alive");
     });
   });
+
+  describe("project auth store getter", () => {
+    it("lazily returns a stable ProjectAuthStore instance", () => {
+      const authStoreA = store.getProjectAuthStore();
+      const authStoreB = store.getProjectAuthStore();
+
+      expect(authStoreA).toBe(authStoreB);
+      const user = authStoreA.createUser({ email: "store-getter@example.com" });
+      expect(authStoreB.getUser(user.id)?.email).toBe("store-getter@example.com");
+    });
+
+    it("does not regress task CRUD behavior after auth store initialization", async () => {
+      const authStore = store.getProjectAuthStore();
+      const user = authStore.createUser({ email: "compat@example.com" });
+      expect(user.id).toMatch(/^PAU-/);
+
+      const task = await store.createTask({ description: "auth-compat task", assigneeUserId: "user:dashboard" });
+      expect(task.assigneeUserId).toBe("user:dashboard");
+
+      const updated = await store.updateTask(task.id, { title: "updated" });
+      expect(updated?.title).toBe("updated");
+
+      const movedToTodo = await store.moveTask(task.id, "todo");
+      expect(movedToTodo?.column).toBe("todo");
+    });
+
+    it("persists project auth records across TaskStore reinitialization", async () => {
+      store = new TaskStore(rootDir, globalDir);
+      const authStore = store.getProjectAuthStore();
+      const user = authStore.createUser({ email: "persist@example.com" });
+
+      store.close();
+      store = new TaskStore(rootDir, globalDir);
+
+      const reloaded = store.getProjectAuthStore().getUser(user.id);
+      expect(reloaded?.email).toBe("persist@example.com");
+    });
+  });
 });

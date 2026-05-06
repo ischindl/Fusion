@@ -556,6 +556,8 @@ fn plugin install ./plugins/fusion-plugin-openclaw-runtime
 ```
 
 > 💡 In the dashboard, go to **Settings → Plugins → Fusion Plugins**. The **Bundled Plugins** section surfaces Agent Browser, Hermes, Paperclip, OpenClaw, Droid, and Dependency Graph directly from shipped manifests, shows install status, and provides one-click install actions for plugins that are not yet installed.
+>
+> ℹ️ Bundled runtime plugins (`fusion-plugin-paperclip-runtime`, `fusion-plugin-hermes-runtime`, `fusion-plugin-openclaw-runtime`) are also auto-installed on the first settings save for that bundled plugin card (lazy install on first `PUT /api/plugins/:id/settings`). They are **not** auto-installed at app boot or npm install time.
 
 2. Create agents with the appropriate `runtimeConfig`:
 
@@ -757,11 +759,13 @@ Common heartbeat/runtime keys on `runtimeConfig` include:
 | `heartbeatTimeoutMs` | `number` | Per-agent heartbeat timeout |
 | `maxConcurrentRuns` | `number` | Per-agent concurrent heartbeat limit |
 | `messageResponseMode` | `"immediate" \| "on-heartbeat"` | Wake on message immediately or process during periodic heartbeat |
-| `runMissedHeartbeatOnStartup` | `boolean` | Fire one startup catch-up heartbeat when the last tick was missed while the server was down (default `false`) |
-| `allowParallelExecution` | `boolean` | Permanent agents only. Default `true` when unset. Set `false` to serialize heartbeat and executor sessions symmetrically (heartbeat won't start while executor is active, and executor won't start while heartbeat is active); `false` is explicitly persisted while unset/`true` keeps parallel behavior |
+| `runMissedHeartbeatOnStartup` | `boolean` | Default `false`. When enabled, startup triggers one catch-up heartbeat if the agent's `lastHeartbeatAt` is older than its resolved heartbeat interval (server was down across a scheduled tick). |
+| `allowParallelExecution` | `boolean` | Permanent agents only. Default `true` when unset. Set `false` to serialize heartbeat and executor sessions symmetrically (heartbeat won't start while executor is active, and executor won't start while heartbeat is active); `false` is explicitly persisted while unset/`true` keeps parallel behavior. |
 | `selfImproveEnabled` | `boolean` | Enables periodic self-improvement prompts |
 | `selfImproveIntervalMs` | `number` | Delay between self-improvement cycles (default 4h, minimum 1h) |
 | `lastSelfImproveAt` | `string` | Last self-improvement checkpoint timestamp (managed by heartbeat monitor) |
+
+Configure these per agent in **Agents → Agent Detail → Settings → Heartbeat Settings** (dashboard), or by updating agent `runtimeConfig` via the Agents API/CLI config flows.
 
 These examples show agents configured to use Paperclip, Hermes, and OpenClaw runtime hints:
 
