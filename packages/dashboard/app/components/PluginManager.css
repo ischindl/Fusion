@@ -204,6 +204,21 @@
   margin: 0;
 }
 
+.plugin-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.plugin-settings-group-heading {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 .plugin-settings-array {
   display: flex;
   flex-direction: column;

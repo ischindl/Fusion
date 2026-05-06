@@ -149,6 +149,13 @@ const settingsSchema: Record<string, PluginSettingSchema> = {
 
 ### Setting Types
 
+Common optional fields on all setting types:
+
+- `group?: string` — Optional heading used by the dashboard to render settings in grouped sections (for example: `"General"`, `"Browser"`, `"Prompt Contributions"`, `"Skills"`).
+- `description?: string` — Helper text shown below the setting label.
+- `required?: boolean` — Marks the field as required.
+- `defaultValue?: unknown` — Default value used when no user value is provided.
+
 | Type | Description | Extra Fields |
 |------|-------------|--------------|
 | `"string"` | Text input | `multiline?: boolean` (renders textarea) |
@@ -196,6 +203,7 @@ const settingsSchema: Record<string, PluginSettingSchema> = {
   enabled: {
     type: "boolean",
     label: "Enable Feature",
+    group: "General",
     defaultValue: true,
   },
   
@@ -212,6 +220,7 @@ const settingsSchema: Record<string, PluginSettingSchema> = {
     type: "array",
     label: "Tags",
     description: "Tags to track",
+    group: "Skills",
     itemType: "string",
     defaultValue: ["bug", "feature"],
   },

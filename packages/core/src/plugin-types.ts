@@ -73,6 +73,8 @@ export interface PluginSettingSchema {
   enumValues?: string[];
   /** Only when type is "string" - renders as textarea when true */
   multiline?: boolean;
+  /** Optional UI grouping label used by settings forms */
+  group?: string;
   /** Only when type is "array" - type of items in the array */
   itemType?: "string" | "number";
 }
