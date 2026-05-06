@@ -805,8 +805,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                 setIsImporting(true);
                 setIsControlsPanelOpen(false);
               }}
-              aria-label="Import agents"
-              title="Import agents"
+              aria-label="Import"
+              title="Import"
             >
               <Upload size={16} />
               Import
@@ -868,7 +868,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
           </div>
 
-          <div className="agent-global-controls">
+          <div className="agent-global-controls agent-controls-actions">
             <div className="heartbeat-multiplier-group">
               <div className="heartbeat-multiplier-controls">
                 <label htmlFor="globalHeartbeatMultiplier" className="heartbeat-multiplier-label">
