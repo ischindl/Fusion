@@ -39,7 +39,7 @@ describe("CentralDatabase", () => {
 
     it("should initialize schema version", () => {
       db.init();
-      expect(db.getSchemaVersion()).toBe(7);
+      expect(db.getSchemaVersion()).toBe(8);
     });
 
     it("should seed lastModified on init", () => {
@@ -94,6 +94,7 @@ describe("CentralDatabase", () => {
       expect(tableNames).toContain("globalConcurrency");
       expect(tableNames).toContain("nodes");
       expect(tableNames).toContain("peerNodes");
+      expect(tableNames).toContain("projectNodePathMappings");
       expect(tableNames).toContain("__meta");
     });
 
@@ -166,6 +167,8 @@ describe("CentralDatabase", () => {
       expect(indexNames).toContain("idxNodesStatus");
       expect(indexNames).toContain("idxNodesType");
       expect(indexNames).toContain("idxPeerNodesNodeId");
+      expect(indexNames).toContain("idxProjectNodePathMappingsProjectId");
+      expect(indexNames).toContain("idxProjectNodePathMappingsNodeId");
     });
   });
 
@@ -214,7 +217,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(7);
+      expect(db.getSchemaVersion()).toBe(8);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       const nodeColumnNames = nodeColumns.map((column) => column.name);
@@ -279,7 +282,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(7);
+      expect(db.getSchemaVersion()).toBe(8);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       const nodeColumnNames = nodeColumns.map((column) => column.name);
@@ -367,7 +370,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(7);
+      expect(db.getSchemaVersion()).toBe(8);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       expect(nodeColumns.map((column) => column.name)).toContain("dockerConfig");
@@ -444,6 +447,89 @@ describe("CentralDatabase", () => {
         dockerConfig: string | null;
       } | undefined;
       expect(insertedNode?.dockerConfig).toBeTruthy();
+    });
+
+    it("should migrate from v7 to v8 and backfill local node path mappings from projects.path", () => {
+      const now = new Date().toISOString();
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'active',
+          isolationMode TEXT NOT NULL DEFAULT 'in-process',
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL,
+          lastActivityAt TEXT,
+          nodeId TEXT,
+          settings TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS nodes (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          type TEXT NOT NULL CHECK (type IN ('local', 'remote')),
+          url TEXT,
+          apiKey TEXT,
+          status TEXT NOT NULL DEFAULT 'offline',
+          capabilities TEXT,
+          systemMetrics TEXT,
+          knownPeers TEXT,
+          versionInfo TEXT,
+          pluginVersions TEXT,
+          dockerConfig TEXT,
+          maxConcurrent INTEGER NOT NULL DEFAULT 2,
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS __meta (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+      `);
+
+      db.prepare("INSERT INTO nodes (id, name, type, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)").run(
+        "node_local",
+        "local",
+        "local",
+        now,
+        now,
+      );
+      db.prepare("INSERT INTO projects (id, name, path, status, isolationMode, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        "proj_1",
+        "Project One",
+        "/tmp/proj-1",
+        "active",
+        "in-process",
+        now,
+        now,
+      );
+      db.prepare("INSERT INTO projects (id, name, path, status, isolationMode, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        "proj_2",
+        "Project Two",
+        "/tmp/proj-2",
+        "active",
+        "in-process",
+        now,
+        now,
+      );
+      db.prepare("INSERT INTO __meta (key, value) VALUES ('schemaVersion', '7')").run();
+      db.prepare("INSERT INTO __meta (key, value) VALUES ('lastModified', ?)").run(String(Date.now()));
+
+      db.init();
+
+      expect(db.getSchemaVersion()).toBe(8);
+
+      const mappings = db
+        .prepare("SELECT projectId, nodeId, path FROM projectNodePathMappings ORDER BY projectId")
+        .all() as Array<{ projectId: string; nodeId: string; path: string }>;
+
+      expect(mappings).toEqual([
+        { projectId: "proj_1", nodeId: "node_local", path: "/tmp/proj-1" },
+        { projectId: "proj_2", nodeId: "node_local", path: "/tmp/proj-2" },
+      ]);
     });
   });
 

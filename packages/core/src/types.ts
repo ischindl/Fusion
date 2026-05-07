@@ -3282,6 +3282,20 @@ export interface RegisteredProject {
 /** @deprecated Use RegisteredProject instead */
 export type ProjectInfo = RegisteredProject;
 
+/** A persisted per-project, per-node working directory path mapping. */
+export interface ProjectNodePathMapping {
+  /** Project ID reference */
+  projectId: string;
+  /** Node ID reference */
+  nodeId: string;
+  /** Absolute working-directory path for this project on this node */
+  path: string;
+  /** ISO-8601 timestamp of creation */
+  createdAt: string;
+  /** ISO-8601 timestamp of last update */
+  updatedAt: string;
+}
+
 /** Health metrics for a registered project */
 export interface ProjectHealth {
   /** Project ID reference */

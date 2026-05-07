@@ -23,7 +23,7 @@ export { toJson, toJsonNullable, fromJson };
 
 // ── Schema Definition ───────────────────────────────────────────────────
 
-const CENTRAL_SCHEMA_VERSION = 7;
+const CENTRAL_SCHEMA_VERSION = 8;
 
 const CENTRAL_SCHEMA_SQL = `
 -- Projects table (project registry)
@@ -41,6 +41,20 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idxProjectsPath ON projects(path);
 CREATE INDEX IF NOT EXISTS idxProjectsStatus ON projects(status);
+
+-- Per-project, per-node working directory mappings
+CREATE TABLE IF NOT EXISTS projectNodePathMappings (
+  projectId TEXT NOT NULL,
+  nodeId TEXT NOT NULL,
+  path TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  PRIMARY KEY (projectId, nodeId),
+  FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (nodeId) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idxProjectNodePathMappingsProjectId ON projectNodePathMappings(projectId);
+CREATE INDEX IF NOT EXISTS idxProjectNodePathMappingsNodeId ON projectNodePathMappings(nodeId);
 
 -- Project health table (mutable state, updated frequently)
 CREATE TABLE IF NOT EXISTS projectHealth (
@@ -256,6 +270,21 @@ CREATE INDEX IF NOT EXISTS idxManagedDockerNodesNodeId ON managedDockerNodes(nod
 
 // V7 migration adds dockerConfig persistence to nodes for Docker-managed runtime config updates.
 
+const CENTRAL_SCHEMA_V8_MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS projectNodePathMappings (
+  projectId TEXT NOT NULL,
+  nodeId TEXT NOT NULL,
+  path TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  PRIMARY KEY (projectId, nodeId),
+  FOREIGN KEY (projectId) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (nodeId) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idxProjectNodePathMappingsProjectId ON projectNodePathMappings(projectId);
+CREATE INDEX IF NOT EXISTS idxProjectNodePathMappingsNodeId ON projectNodePathMappings(nodeId);
+`;
+
 // ── Central Database Class ────────────────────────────────────────────────
 
 export class CentralDatabase {
@@ -342,6 +371,39 @@ export class CentralDatabase {
       if (!this.hasColumn("nodes", "dockerConfig")) {
         this.db.exec("ALTER TABLE nodes ADD COLUMN dockerConfig TEXT");
       }
+      migrated = true;
+    }
+
+    if (currentVersion < 8) {
+      this.db.exec(CENTRAL_SCHEMA_V8_MIGRATION_SQL);
+
+      const localNodeRow = this.db
+        .prepare("SELECT id FROM nodes WHERE type = 'local' ORDER BY createdAt ASC LIMIT 1")
+        .get() as { id: string } | undefined;
+
+      if (localNodeRow) {
+        this.db.prepare(
+          `INSERT OR IGNORE INTO projectNodePathMappings (projectId, nodeId, path, createdAt, updatedAt)
+           SELECT id, ?, path, createdAt, updatedAt
+           FROM projects`
+        ).run(localNodeRow.id);
+
+        this.db.prepare(
+          `UPDATE projectNodePathMappings
+           SET path = (
+             SELECT projects.path
+             FROM projects
+             WHERE projects.id = projectNodePathMappings.projectId
+           ),
+           updatedAt = (
+             SELECT projects.updatedAt
+             FROM projects
+             WHERE projects.id = projectNodePathMappings.projectId
+           )
+           WHERE nodeId = ?`
+        ).run(localNodeRow.id);
+      }
+
       migrated = true;
     }
 

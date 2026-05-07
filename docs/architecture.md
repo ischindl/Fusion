@@ -803,7 +803,7 @@ SQLite schema is initialized in `packages/core/src/db.ts` and uses:
 ### Central storage (multi-project)
 - **Central DB**: `~/.fusion/fusion-central.db`
 - Schema in `packages/core/src/central-db.ts`
-  - `projects`, `projectHealth`, `centralActivityLog`, `globalConcurrency`, `nodes`, `peerNodes`, `settingsSyncState`, `__meta`
+  - `projects`, `projectHealth`, `centralActivityLog`, `globalConcurrency`, `nodes`, `peerNodes`, `projectNodePathMappings`, `settingsSyncState`, `__meta`
 
 ### Memory files
 - OpenClaw-style memory workspace:
@@ -923,6 +923,7 @@ Multi-project orchestration spans core + engine.
   - Unified central activity feed
   - Global concurrency state
   - Node registry (`local` / `remote`)
+  - Per-project/per-node working-directory mappings (`projectNodePathMappings`)
 
 ### Engine orchestration
 - `HybridExecutor` (`packages/engine/src/hybrid-executor.ts`) is the top-level orchestrator

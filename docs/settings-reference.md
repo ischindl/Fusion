@@ -343,8 +343,11 @@ Routing precedence for task dispatch is:
 
 Fusion also stores `projects.nodeId` in the **central registry database** (`~/.fusion/fusion-central.db`). That value is a multi-project runtime placement field used by `ProjectManager` (for selecting remote vs local project runtime), not the same setting as `defaultNodeId` task dispatch routing.
 
+Node-specific project working directories are persisted separately in central DB table `projectNodePathMappings` (`projectId` + `nodeId` + `path`). Do not treat `projects.nodeId` as the path source of truth.
+
 - `defaultNodeId` (project settings): task-level dispatch default
 - `projects.nodeId` (central registry): which node hosts the project runtime in multi-project mode
+- `projectNodePathMappings.path` (central registry): working-directory path for that project on that specific node
 
 See also:
 - [Task Management → Node Routing](./task-management.md#node-routing)

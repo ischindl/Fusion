@@ -488,6 +488,7 @@ export type {
   PluginSyncEntry,
   PluginSyncAction,
   ProjectHealth,
+  ProjectNodePathMapping,
   ProviderAuthEntry,
   /** @deprecated Use RegisteredProject instead */
   ProjectInfo,

@@ -89,11 +89,14 @@ Projects can run with:
 
 ## Node Routing
 
-Multi-project deployments use two related node fields at different layers:
+Multi-project deployments use three related node/path records at different layers:
 
 1. **Project runtime placement** (`projects.nodeId` in `~/.fusion/fusion-central.db`)
    - Decides where a project runtime is hosted in multi-project orchestration.
-2. **Task dispatch default** (`defaultNodeId` in project settings)
+2. **Project working-directory mapping** (`projectNodePathMappings` in `~/.fusion/fusion-central.db`)
+   - Stores the absolute path for a project on each node (`projectId` + `nodeId` key).
+   - Local mappings are auto-created from `projects.path` at registration and kept in sync when local canonical path changes.
+3. **Task dispatch default** (`defaultNodeId` in project settings)
    - Decides where tasks route when they do not have a per-task override.
 
 These fields are intentionally distinct.
@@ -106,7 +109,7 @@ These fields are intentionally distinct.
 - `isolationMode: "in-process"` + remote `projects.nodeId` → `RemoteNodeRuntime`
 - `isolationMode: "in-process"` + local/unset/missing node assignment → `InProcessRuntime`
 
-So `projects.nodeId` is a **project host-node assignment**, not a per-task override.
+So `projects.nodeId` is a **project host-node assignment**, not a per-task override, and not the node-specific working-directory source of truth (that lives in `projectNodePathMappings`).
 
 ### Task routing defaults (`defaultNodeId` + `Task.nodeId`)
 
