@@ -59,6 +59,12 @@ describe("TaskCard", () => {
     expect(screen.getByText("FN-001")).toBeDefined();
   });
 
+  it("keeps native card dragging enabled by default", () => {
+    const { container } = render(<TaskCard task={makeTask()} onOpenDetail={noop} addToast={noop} />);
+    const card = container.querySelector(".card") as HTMLElement;
+    expect(card.getAttribute("draggable")).toBe("true");
+  });
+
   it("disables native card dragging when disableDrag is true", () => {
     const { container } = render(<TaskCard task={makeTask()} onOpenDetail={noop} addToast={noop} disableDrag={true} />);
     const card = container.querySelector(".card") as HTMLElement;
@@ -1385,6 +1391,17 @@ describe("TaskCard provider icons on agent row", () => {
 });
 
 describe("TaskCard memo comparator provenance behavior", () => {
+  it("returns false when disableDrag changes", () => {
+    const task = makeTask();
+
+    expect(
+      __test_areTaskCardPropsEqual(
+        { task, onOpenDetail: noop, addToast: noop, disableDrag: false } as any,
+        { task, onOpenDetail: noop, addToast: noop, disableDrag: true } as any,
+      ),
+    ).toBe(false);
+  });
+
   it("returns false when sourceMetadata.agentName changes", () => {
     const previousTask = makeTask({ sourceType: "automation", sourceMetadata: { agentName: "Agent One" } });
     const nextTask = makeTask({ sourceType: "automation", sourceMetadata: { agentName: "Agent Two" } });

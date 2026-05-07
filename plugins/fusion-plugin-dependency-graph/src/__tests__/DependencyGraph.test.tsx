@@ -6,8 +6,8 @@ import { DependencyGraph } from "../DependencyGraph";
 const fitToGraph = vi.fn();
 
 vi.mock("@fusion/dashboard/app/components/TaskCard", () => ({
-  TaskCard: ({ task, onOpenDetail }: { task: Task; onOpenDetail: () => void }) => (
-    <button data-testid={`task-${task.id}`} onClick={() => onOpenDetail(task)}>{task.id}</button>
+  TaskCard: ({ task, onOpenDetail, disableDrag }: { task: Task; onOpenDetail: (task: Task) => void; disableDrag?: boolean }) => (
+    <button data-testid={`task-${task.id}`} draggable={!disableDrag} onClick={() => onOpenDetail(task)}>{task.id}</button>
   ),
 }));
 
@@ -71,6 +71,11 @@ describe("DependencyGraph", () => {
     expect(screen.getByTestId("graph-task-node-A")).toBeTruthy();
     expect(screen.queryByTestId("graph-task-node-B")).toBeNull();
     expect(screen.queryByTestId("graph-task-node-C")).toBeNull();
+  });
+
+  it("renders embedded cards with native dragging disabled", () => {
+    render(<DependencyGraph tasks={[createTask("A", "in-progress")]} onOpenTaskDetail={vi.fn()} />);
+    expect(screen.getByTestId("task-A").getAttribute("draggable")).toBe("false");
   });
 
   it("clicking a card triggers onOpenDetail", () => {
