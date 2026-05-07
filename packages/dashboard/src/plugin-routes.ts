@@ -23,7 +23,7 @@ import type {
   PluginStore,
   PluginContext,
 } from "@fusion/core";
-import { validatePluginManifest } from "@fusion/core";
+import { getCreateAiSessionFactory, validatePluginManifest } from "@fusion/core";
 import {
   ApiError,
   badRequest,
@@ -547,12 +547,34 @@ export function createPluginRouter(
             ? (req.body as { projectId: string }).projectId
             : undefined);
         const scopedStore = projectId ? await getOrCreateProjectStore(projectId) : null;
+        const taskStore = scopedStore ?? defaultTaskStore ?? ({} as import("@fusion/core").TaskStore);
+
+        let settings: Record<string, unknown> = {};
+        const scopedPluginStore = scopedStore?.getPluginStore?.();
+        if (scopedPluginStore) {
+          try {
+            const scopedPlugin = await scopedPluginStore.getPlugin(pluginId);
+            settings = scopedPlugin.settings;
+          } catch {
+            // Fall back to default store plugin settings when project-scoped plugin record is unavailable.
+          }
+        }
+        if (!scopedPluginStore || Object.keys(settings).length === 0) {
+          try {
+            const pluginRecord = await pluginStore.getPlugin(pluginId);
+            settings = pluginRecord.settings;
+          } catch {
+            // Keep empty settings when plugin store record isn't available.
+          }
+        }
+
+        const createAiSession = await getCreateAiSessionFactory();
 
         // Create a minimal context for the handler
         const ctx: PluginContext = {
           pluginId,
-          taskStore: scopedStore ?? defaultTaskStore ?? ({} as import("@fusion/core").TaskStore),
-          settings: {},
+          taskStore,
+          settings,
           logger: {
             info: (...args: unknown[]) => console.log(`[plugin:${pluginId}]`, ...args),
             warn: (...args: unknown[]) => console.warn(`[plugin:${pluginId}]`, ...args),
@@ -564,6 +586,7 @@ export function createPluginRouter(
             },
           },
           emitEvent: () => {},
+          createAiSession,
         };
 
         // Call the route handler with Express Request cast to unknown

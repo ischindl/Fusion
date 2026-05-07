@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import type { TaskStore, PluginStore, PluginLoader, PluginInstallation } from "@fusion/core";
+import * as fusionCore from "@fusion/core";
 import { createApiRoutes } from "../routes.js";
 import { createPluginRouter } from "../plugin-routes.js";
 import { get as performGet, request as performRequest } from "../test-request.js";
@@ -1175,12 +1176,25 @@ describe("createPluginRouter plugin setup routes", () => {
 });
 
 describe("createPluginRouter plugin-defined route responses", () => {
-  it("injects request-scoped taskStore and supports explicit status/body responses", async () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(fusionCore, "getCreateAiSessionFactory").mockResolvedValue(undefined);
+  });
+
+  it("injects request-scoped taskStore and scoped plugin settings", async () => {
     const defaultTaskStore = createMockTaskStore();
-    const scopedTaskStore = createMockTaskStore({ getRootDir: vi.fn().mockReturnValue("/scoped") });
+    const scopedPluginStore = createMockPluginStore({
+      getPlugin: vi.fn().mockResolvedValue({ ...INSTALLED_PLUGIN, id: "demo", settings: { mode: "scoped" } }),
+    });
+    const scopedTaskStore = createMockTaskStore({
+      getRootDir: vi.fn().mockReturnValue("/scoped"),
+      getPluginStore: vi.fn().mockReturnValue(scopedPluginStore),
+    });
     mockGetOrCreateProjectStore.mockResolvedValue(scopedTaskStore);
 
-    const pluginStore = createMockPluginStore();
+    const pluginStore = createMockPluginStore({
+      getPlugin: vi.fn().mockResolvedValue({ ...INSTALLED_PLUGIN, id: "demo", settings: { mode: "global" } }),
+    });
     const pluginLoader = createMockPluginLoader({
       getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
     });
@@ -1193,7 +1207,7 @@ describe("createPluginRouter plugin-defined route responses", () => {
             path: "/status",
             handler: vi.fn(async (_req: unknown, ctx: import("@fusion/core").PluginContext) => ({
               status: 201,
-              body: { scoped: ctx.taskStore.getRootDir() },
+              body: { scoped: ctx.taskStore.getRootDir(), mode: ctx.settings.mode },
             })),
           },
         },
@@ -1206,7 +1220,103 @@ describe("createPluginRouter plugin-defined route responses", () => {
 
     const res = await REQUEST(app, "POST", "/plugins/demo/status?projectId=p1", { projectId: "p1" });
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ scoped: "/scoped" });
+    expect(res.body).toEqual({ scoped: "/scoped", mode: "scoped" });
+  });
+
+  it("falls back to global plugin settings when scoped plugin record is unavailable", async () => {
+    const scopedPluginStore = createMockPluginStore({
+      getPlugin: vi.fn().mockRejectedValue(new Error("missing")),
+    });
+    const scopedTaskStore = createMockTaskStore({
+      getPluginStore: vi.fn().mockReturnValue(scopedPluginStore),
+    });
+    mockGetOrCreateProjectStore.mockResolvedValue(scopedTaskStore);
+
+    const pluginStore = createMockPluginStore({
+      getPlugin: vi.fn().mockResolvedValue({ ...INSTALLED_PLUGIN, id: "demo", settings: { mode: "global" } }),
+    });
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/settings",
+            handler: vi.fn(async (_req: unknown, ctx: import("@fusion/core").PluginContext) => ({ mode: ctx.settings.mode })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await REQUEST(app, "GET", "/plugins/demo/settings?projectId=p1");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ mode: "global" });
+  });
+
+  it("includes createAiSession in plugin route context when engine has registered a factory", async () => {
+    const createAiSession = vi.fn();
+    vi.spyOn(fusionCore, "getCreateAiSessionFactory").mockResolvedValue(createAiSession as unknown as import("@fusion/core").CreateAiSessionFactory);
+
+    const pluginStore = createMockPluginStore();
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/ai",
+            handler: vi.fn(async (_req: unknown, ctx: import("@fusion/core").PluginContext) => ({ hasFactory: Boolean(ctx.createAiSession) })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await REQUEST(app, "GET", "/plugins/demo/ai");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hasFactory: true });
+  });
+
+  it("leaves createAiSession undefined when engine factory is unavailable", async () => {
+    vi.spyOn(fusionCore, "getCreateAiSessionFactory").mockResolvedValue(undefined);
+
+    const pluginStore = createMockPluginStore();
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/ai-none",
+            handler: vi.fn(async (_req: unknown, ctx: import("@fusion/core").PluginContext) => ({ hasFactory: Boolean(ctx.createAiSession) })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await REQUEST(app, "GET", "/plugins/demo/ai-none");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ hasFactory: false });
   });
 
   it("maps plugin-defined non-2xx status responses", async () => {

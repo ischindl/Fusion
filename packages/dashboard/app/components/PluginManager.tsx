@@ -123,6 +123,13 @@ const BUILTIN_PLUGINS: BuiltinPlugin[] = [
     path: "./plugins/fusion-plugin-dependency-graph",
   },
   {
+    id: "fusion-plugin-whatsapp-chat",
+    name: "WhatsApp Chat",
+    description: "Connects WhatsApp Cloud webhooks to a Fusion agent conversation; requires Meta webhook and API credentials.",
+    category: "integration",
+    path: "./plugins/fusion-plugin-whatsapp-chat",
+  },
+  {
     id: BUILTIN_AGENT_BROWSER_PLUGIN_ID,
     name: "Agent Browser",
     description: "Built-in integration metadata. Package install support lands in FN-3101.",

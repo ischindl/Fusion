@@ -26,6 +26,8 @@ const llamaCppSrc = join(__dirname, "..", "pi-llama-cpp");
 const llamaCppDest = join(__dirname, "dist", "pi-llama-cpp");
 const dependencyGraphPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-dependency-graph");
 const dependencyGraphPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-dependency-graph");
+const whatsappChatPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-whatsapp-chat");
+const whatsappChatPluginDest = join(__dirname, "dist", "plugins", "fusion-plugin-whatsapp-chat");
 const dashboardClientStub = `<!doctype html>
 <html lang="en">
   <head>
@@ -137,6 +139,21 @@ export default defineConfig({
     } else {
       console.warn(
         `WARNING: Dependency graph plugin source not found at ${dependencyGraphPluginSrc}; bundled auto-install will be unavailable.`,
+      );
+    }
+
+    if (existsSync(whatsappChatPluginDest)) {
+      rmSync(whatsappChatPluginDest, { recursive: true, force: true });
+    }
+    if (existsSync(whatsappChatPluginSrc)) {
+      mkdirSync(whatsappChatPluginDest, { recursive: true });
+      cpSync(join(whatsappChatPluginSrc, "manifest.json"), join(whatsappChatPluginDest, "manifest.json"));
+      cpSync(join(whatsappChatPluginSrc, "package.json"), join(whatsappChatPluginDest, "package.json"));
+      cpSync(join(whatsappChatPluginSrc, "src"), join(whatsappChatPluginDest, "src"), { recursive: true });
+      console.log("Copied WhatsApp chat plugin to dist/plugins/fusion-plugin-whatsapp-chat/");
+    } else {
+      console.warn(
+        `WARNING: WhatsApp chat plugin source not found at ${whatsappChatPluginSrc}; bundled auto-install will be unavailable.`,
       );
     }
 

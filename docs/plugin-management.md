@@ -48,6 +48,8 @@ Setup-capable plugins (for example **Agent Browser**) expose an additional **set
 2. Review bundled entries in **Bundled Plugins** and currently installed entries.
 3. Check each plugin’s status/state in the manager.
 
+First-party bundled entries include runtime plugins plus integrations like **Dependency Graph** and **WhatsApp Chat**.
+
 Expected outcome: You can see what is already installed, what is bundled and available, and each plugin’s current lifecycle state.
 
 ### CLI
@@ -68,6 +70,8 @@ Expected outcome: You have a terminal view of installed plugins for scripting/re
 2. In **Bundled Plugins**, click **Install** for the plugin.
 
 Expected outcome: Plugin is registered and appears with an initial state (typically `installed` then `started` when enabled/loaded).
+
+> WhatsApp Chat plugin note: You must configure Meta WhatsApp Cloud credentials (`verifyToken`, `appSecret`, `accessToken`, `phoneNumberId`) and point Meta webhooks at `/api/plugins/fusion-plugin-whatsapp-chat/webhook`. Only configured/allowed senders will receive agent replies, and message IDs are deduplicated for webhook retry safety.
 
 ### Install from local path (dashboard)
 

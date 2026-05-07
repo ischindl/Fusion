@@ -267,6 +267,7 @@ describe("PluginManager", () => {
     expect(screen.getByText("OpenClaw Runtime")).toBeTruthy();
     expect(screen.getByText("Droid Runtime")).toBeTruthy();
     expect(screen.getByText("Dependency Graph")).toBeTruthy();
+    expect(screen.getByText("WhatsApp Chat")).toBeTruthy();
   });
 
   it("renders built-in agent browser metadata-only entry when uninstalled", async () => {

@@ -12,7 +12,13 @@ export {
 } from "./agent-prompts.js";
 
 // ── Engine wiring (set by @fusion/engine at module load) ────────────
-export { setCreateFnAgent, getFnAgent, type AgentMessage } from "./ai-engine-loader.js";
+export {
+  setCreateFnAgent,
+  getFnAgent,
+  setCreateAiSessionFactory,
+  getCreateAiSessionFactory,
+  type AgentMessage,
+} from "./ai-engine-loader.js";
 
 // ── Prompt Overrides ─────────────────────────────────────────────────
 export {
