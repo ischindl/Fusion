@@ -33,7 +33,9 @@ function run(command, commandArgs, options = {}) {
   });
 
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    const error = new Error(`${command} ${commandArgs.join(" ")} failed with exit code ${result.status ?? 1}`);
+    error.exitCode = result.status ?? 1;
+    throw error;
   }
 }
 
@@ -624,5 +626,12 @@ export function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === currentFilePath) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    if (error?.exitCode) {
+      process.exit(error.exitCode);
+    }
+    throw error;
+  }
 }
