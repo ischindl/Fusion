@@ -68,4 +68,9 @@
     transform: translateY(var(--vv-offset-top, 0px));
     will-change: transform;
   }
+
+  .modal.todo-modal[style*="--keyboard-overlap"] .todo-modal-body {
+    min-height: 0;
+    overflow: hidden;
+  }
 }

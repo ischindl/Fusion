@@ -26,13 +26,20 @@ interface TodoViewProps {
   onPlanningMode?: (initialPlan: string) => void;
   onTaskCreated?: (task: Task) => void;
   onClose?: () => void;
+  mobileKeyboardActive?: boolean;
 }
 
 function sortItems(items: TodoItem[]): TodoItem[] {
   return [...items].sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function TodoView({ projectId, addToast, onPlanningMode, onTaskCreated }: TodoViewProps) {
+export function TodoView({
+  projectId,
+  addToast,
+  onPlanningMode,
+  onTaskCreated,
+  mobileKeyboardActive = false,
+}: TodoViewProps) {
   const {
     lists,
     items,
@@ -307,7 +314,10 @@ export function TodoView({ projectId, addToast, onPlanningMode, onTaskCreated }:
   }
 
   return (
-    <div className="todo-view">
+    <div
+      className={`todo-view${mobileKeyboardActive ? " todo-view--mobile-keyboard-active" : ""}`}
+      data-testid="todo-view-root"
+    >
       <div className="todo-view-layout">
         <aside className="todo-view-sidebar" aria-label="Todo lists sidebar">
           <div className="todo-sidebar-header">

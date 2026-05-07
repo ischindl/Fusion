@@ -91,6 +91,7 @@ describe("TodoModal", () => {
       expect(style.getPropertyValue("--keyboard-overlap")).toBe("250px");
       expect(style.getPropertyValue("--vv-offset-top")).toBe("40px");
       expect(style.getPropertyValue("--vv-height")).toBe("450px");
+      expect(mockTodoView).toHaveBeenCalledWith(expect.objectContaining({ mobileKeyboardActive: true }));
     });
 
     it("does not apply keyboard CSS variables when keyboard is closed", () => {
@@ -110,6 +111,7 @@ describe("TodoModal", () => {
       expect(style.getPropertyValue("--keyboard-overlap")).toBe("");
       expect(style.getPropertyValue("--vv-offset-top")).toBe("");
       expect(style.getPropertyValue("--vv-height")).toBe("");
+      expect(mockTodoView).toHaveBeenCalledWith(expect.objectContaining({ mobileKeyboardActive: false }));
     });
   });
 });

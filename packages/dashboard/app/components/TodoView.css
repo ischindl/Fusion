@@ -369,10 +369,14 @@
 @media (max-width: 768px) {
   .todo-view {
     padding: var(--space-md);
+    min-height: 0;
   }
 
   .todo-view-layout {
     flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
   }
 
   .todo-view-sidebar {
@@ -386,6 +390,8 @@
 
   .todo-view-main {
     width: 100%;
+    flex: 1;
+    min-height: 0;
   }
 
   .todo-list-item,
@@ -437,5 +443,21 @@
 
   .todo-agent-picker-item {
     min-height: calc(var(--space-2xl) + var(--space-xs));
+  }
+
+  .todo-view--mobile-keyboard-active {
+    padding-bottom: 0;
+  }
+
+  .todo-view--mobile-keyboard-active .todo-view-layout {
+    height: 100%;
+  }
+
+  .todo-view--mobile-keyboard-active .todo-view-sidebar {
+    max-height: calc(var(--space-2xl) * 4);
+  }
+
+  .todo-view--mobile-keyboard-active .todo-view-main {
+    overscroll-behavior: contain;
   }
 }

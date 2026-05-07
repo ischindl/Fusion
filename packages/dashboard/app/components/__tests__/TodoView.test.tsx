@@ -83,6 +83,11 @@ describe("TodoView", () => {
     expect(screen.getByTestId("todo-list-list-2")).toHaveTextContent("Work Tasks");
   });
 
+  it("applies keyboard-active root class when mobileKeyboardActive is true", () => {
+    render(<TodoView addToast={addToast} mobileKeyboardActive />);
+    expect(screen.getByTestId("todo-view-root")).toHaveClass("todo-view--mobile-keyboard-active");
+  });
+
   it("renders only items for the selected list", () => {
     render(<TodoView addToast={addToast} />);
     expect(screen.getByText("Buy groceries")).toBeInTheDocument();

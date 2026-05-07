@@ -66,6 +66,7 @@ export function TodoModal({ onClose, projectId, addToast, onPlanningMode }: Todo
             addToast={addToast}
             onPlanningMode={onPlanningMode}
             onClose={onClose}
+            mobileKeyboardActive={isMobile && keyboardOpen}
           />
         </div>
       </div>
