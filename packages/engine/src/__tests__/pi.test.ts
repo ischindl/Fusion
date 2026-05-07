@@ -662,10 +662,52 @@ describe("session failure diagnostics", () => {
     await expect((session as any).promptWithFallback("Run task")).resolves.toBeUndefined();
 
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to dispose session during model fallback swap: dispose failed"),
+      expect.stringContaining("Failed to dispose session during swap: dispose failed"),
     );
 
     warnSpy.mockRestore();
+  });
+
+  it("retries prompt on thinking/reasoning conflict without switching fallback models", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+
+    const firstSession = {
+      model: { provider: "test", id: "primary-model" },
+      prompt: vi.fn().mockRejectedValue(new Error("400 cannot specify both 'thinking' and 'reasoning_effort'")),
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+
+    const retrySession = {
+      model: { provider: "test", id: "primary-model" },
+      prompt: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock
+      .mockResolvedValueOnce({ session: firstSession } as any)
+      .mockResolvedValueOnce({ session: retrySession } as any);
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test thinking compatibility",
+      defaultProvider: "test",
+      defaultModelId: "primary-model",
+      fallbackProvider: "test",
+      fallbackModelId: "fallback-model",
+      defaultThinkingLevel: "high",
+    });
+
+    await expect((session as any).promptWithFallback("Run review")).resolves.toBeUndefined();
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect((retrySession.setThinkingLevel as any).mock.calls.length).toBe(0);
   });
 });
 

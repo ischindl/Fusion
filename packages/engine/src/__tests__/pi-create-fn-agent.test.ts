@@ -993,6 +993,36 @@ describe("createFnAgent", () => {
     }));
   });
 
+  it("continues session creation when setting thinking level hits reasoning conflict", async () => {
+    const { piLog } = await import("../logger.js");
+    const warnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
+    const setThinkingLevel = vi.fn(() => {
+      throw new Error("400 cannot specify both 'thinking' and 'reasoning_effort'");
+    });
+
+    createAgentSessionMock.mockResolvedValueOnce({
+      session: {
+        prompt: vi.fn(),
+        subscribe: vi.fn(),
+        dispose: vi.fn(),
+        setThinkingLevel,
+      },
+    });
+
+    const { createFnAgent } = await import("../pi.js");
+
+    await expect(createFnAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultThinkingLevel: "high",
+    })).resolves.toBeTruthy();
+
+    expect(setThinkingLevel).toHaveBeenCalledWith("high");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Disabling explicit thinking level"));
+    warnSpy.mockRestore();
+  });
+
   describe("skill selection", () => {
     beforeEach(() => {
       // Reset modules to ensure fresh imports for each test

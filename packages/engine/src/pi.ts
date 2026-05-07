@@ -130,6 +130,10 @@ function clearSessionStateError(session: AgentSession): void {
   }
 }
 
+function isThinkingReasoningConflictError(message: string): boolean {
+  return /cannot specify both\s+['"]?thinking['"]?\s+and\s+['"]?reasoning_effort['"]?/i.test(message);
+}
+
 async function promptSessionAndCheck(session: AgentSession, prompt: string, options?: unknown): Promise<void> {
   clearSessionStateError(session);
   if (options === undefined) {
@@ -1283,21 +1287,83 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     piLog.log("Fallback session created successfully");
   }
 
-  const { session } = sessionResult;
-  installToolResultContentGuard(session as AgentToolHookSession);
-  installMessageContentGuard(session as AgentToolHookSession, sessionManager as unknown as SessionManagerLike);
-  (session as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
-  const promptableSession = session as PromptableSession;
+  let activeSession = sessionResult.session;
+  installToolResultContentGuard(activeSession as AgentToolHookSession);
+  installMessageContentGuard(activeSession as AgentToolHookSession, sessionManager as unknown as SessionManagerLike);
+  (activeSession as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
+  const promptableSession = activeSession as PromptableSession;
+
+  let thinkingCompatibilityDisabled = false;
+  const applyThinkingLevelIfSupported = (targetSession: AgentSession, sourceModel: string): void => {
+    if (!options.defaultThinkingLevel || thinkingCompatibilityDisabled) {
+      return;
+    }
+    try {
+      (targetSession as PromptableSession).setThinkingLevel(options.defaultThinkingLevel as any);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isThinkingReasoningConflictError(message)) {
+        throw err;
+      }
+      thinkingCompatibilityDisabled = true;
+      piLog.warn(`Disabling explicit thinking level for model ${sourceModel}: ${message}`);
+    }
+  };
+
+  const wireFallbackHooks = (targetSession: PromptableSession): void => {
+    installToolResultContentGuard(targetSession as unknown as AgentToolHookSession);
+    installMessageContentGuard(
+      targetSession as unknown as AgentToolHookSession,
+      sessionManager as unknown as SessionManagerLike,
+    );
+    (targetSession as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
+    targetSession.subscribe((event) => {
+      if (event.type === "message_update") {
+        const msgEvent = event.assistantMessageEvent;
+        if (msgEvent.type === "text_delta") {
+          options.onText?.(msgEvent.delta);
+        } else if (msgEvent.type === "thinking_delta") {
+          options.onThinking?.(msgEvent.delta);
+        }
+      }
+      if (event.type === "tool_execution_start") {
+        options.onToolStart?.(event.toolName, event.args as Record<string, unknown> | undefined);
+      }
+      if (event.type === "tool_execution_end") {
+        options.onToolEnd?.(event.toolName, event.isError, event.result);
+      }
+    });
+  };
+
+  const swapPromptSession = async (modelToUse: typeof selectedModel): Promise<PromptableSession> => {
+    if (!modelToUse) {
+      throw new Error("Cannot swap session without a resolved model");
+    }
+    try {
+      activeSession.dispose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      piLog.warn(`Failed to dispose session during swap: ${msg}`);
+    }
+    const next = (await createSessionWithModel(modelToUse)).session as PromptableSession;
+    wireFallbackHooks(next);
+    applyThinkingLevelIfSupported(next, `${modelToUse.provider}/${modelToUse.id}`);
+    Object.setPrototypeOf(promptableSession, Object.getPrototypeOf(next));
+    Object.assign(promptableSession, next);
+    promptableSession.promptWithFallback = next.promptWithFallback ?? promptableSession.promptWithFallback;
+    activeSession = next;
+    return next;
+  };
 
   promptableSession.promptWithFallback = async (prompt: string, promptOptions?: unknown) => {
     try {
-      await promptSessionAndCheck(session, prompt, promptOptions);
+      await promptSessionAndCheck(activeSession, prompt, promptOptions);
       return;
     } catch (err: any) {
       const errorMessage = err?.message || "";
       if (isContextLimitError(errorMessage)) {
         // Context limit error — attempt auto-compaction and retry once
-        const promptMemoryRetry = await retryWithCompactedPromptMemory(session, prompt, promptOptions);
+        const promptMemoryRetry = await retryWithCompactedPromptMemory(activeSession, prompt, promptOptions);
         if (promptMemoryRetry.recovered) {
           return;
         }
@@ -1309,12 +1375,12 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
         }
 
         piLog.warn("promptWithFallback: context limit error — attempting auto-compaction");
-        await flushMemoryBeforeSessionCompaction(session);
-        const compactResult = await compactSessionContext(session);
+        await flushMemoryBeforeSessionCompaction(activeSession);
+        const compactResult = await compactSessionContext(activeSession);
         if (compactResult) {
           piLog.log(`promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
           try {
-            await promptSessionAndCheck(session, prompt, promptOptions);
+            await promptSessionAndCheck(activeSession, prompt, promptOptions);
             return;
           } catch (retryErr: any) {
             const retryErrorMessage = retryErr?.message || "";
@@ -1328,52 +1394,21 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
         }
       }
 
+      if (!usingFallback && options.defaultThinkingLevel && !thinkingCompatibilityDisabled && isThinkingReasoningConflictError(errorMessage)) {
+        thinkingCompatibilityDisabled = true;
+        piLog.warn(`Prompt failed with thinking/reasoning conflict; retrying without explicit thinking level: ${errorMessage}`);
+        const recoveredSession = await swapPromptSession(selectedModel);
+        await promptSessionAndCheck(recoveredSession, prompt, promptOptions);
+        return;
+      }
+
       if (!fallbackModel || usingFallback || !isRetryableModelSelectionError(errorMessage)) {
         throw err;
       }
 
       usingFallback = true;
-      try {
-        session.dispose();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        piLog.warn(`Failed to dispose session during model fallback swap: ${msg}`);
-      }
-
-      const fallbackSessionResult = await createSessionWithModel(fallbackModel);
+      const fallbackSession = await swapPromptSession(fallbackModel);
       await emitFallbackUsed("prompt-time");
-      const fallbackSession = fallbackSessionResult.session as PromptableSession;
-      installToolResultContentGuard(fallbackSession as unknown as AgentToolHookSession);
-      installMessageContentGuard(
-        fallbackSession as unknown as AgentToolHookSession,
-        sessionManager as unknown as SessionManagerLike,
-      );
-      (fallbackSession as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
-
-      if (options.defaultThinkingLevel) {
-        fallbackSession.setThinkingLevel(options.defaultThinkingLevel as any);
-      }
-
-      fallbackSession.subscribe((event) => {
-        if (event.type === "message_update") {
-          const msgEvent = event.assistantMessageEvent;
-          if (msgEvent.type === "text_delta") {
-            options.onText?.(msgEvent.delta);
-          } else if (msgEvent.type === "thinking_delta") {
-            options.onThinking?.(msgEvent.delta);
-          }
-        }
-        if (event.type === "tool_execution_start") {
-          options.onToolStart?.(event.toolName, event.args as Record<string, unknown> | undefined);
-        }
-        if (event.type === "tool_execution_end") {
-          options.onToolEnd?.(event.toolName, event.isError, event.result);
-        }
-      });
-
-      Object.setPrototypeOf(promptableSession, Object.getPrototypeOf(fallbackSession));
-      Object.assign(promptableSession, fallbackSession);
-      promptableSession.promptWithFallback = fallbackSession.promptWithFallback ?? promptableSession.promptWithFallback;
 
       // Retry with fallback model, also with auto-compaction support
       try {
@@ -1416,10 +1451,11 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     }
   };
 
-  // Apply thinking level if specified
-  if (options.defaultThinkingLevel) {
-    promptableSession.setThinkingLevel(options.defaultThinkingLevel as any);
-  }
+  // Apply thinking level if specified (with compatibility fallback).
+  applyThinkingLevelIfSupported(
+    promptableSession,
+    selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : describeModel(promptableSession),
+  );
 
   // Wire up event listeners
   promptableSession.subscribe((event) => {
