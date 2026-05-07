@@ -6,6 +6,8 @@ import {
   isTaskPriority,
   normalizeTaskPriority,
   sortTasksByPriorityThenAgeAndId,
+  compareTaskIdNumeric,
+  sortTasksForDisplayColumn,
 } from "../task-priority.js";
 import {
   DEFAULT_TASK_PRIORITY,
@@ -55,9 +57,42 @@ describe("task-priority", () => {
     expect(compareTasksByPriorityThenAgeAndId(tasks[0], tasks[1])).toBeGreaterThan(0);
   });
 
+  it("compares numeric IDs with locale fallback", () => {
+    expect(compareTaskIdNumeric("FN-2", "FN-10")).toBeLessThan(0);
+    expect(compareTaskIdNumeric("TASK-B", "TASK-A")).toBeGreaterThan(0);
+  });
+
+  it("applies board/list default ordering semantics by column", () => {
+    const base = {
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      columnMovedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const todoSorted = sortTasksForDisplayColumn([
+      { ...base, id: "FN-003", column: "todo", priority: "low" as TaskPriority, createdAt: "2026-01-01T00:00:00.000Z" },
+      { ...base, id: "FN-001", column: "todo", priority: "urgent" as TaskPriority, createdAt: "2026-01-02T00:00:00.000Z" },
+      { ...base, id: "FN-002", column: "todo", priority: "high" as TaskPriority, createdAt: "2026-01-01T12:00:00.000Z" },
+    ], "todo");
+    expect(todoSorted.map((task) => task.id)).toEqual(["FN-001", "FN-002", "FN-003"]);
+
+    const inReviewSorted = sortTasksForDisplayColumn([
+      { ...base, id: "FN-010", column: "in-review", status: "review-ready", priority: "urgent" as TaskPriority },
+      { ...base, id: "FN-011", column: "in-review", status: "merging-fix", priority: "high" as TaskPriority },
+    ], "in-review");
+    expect(inReviewSorted.map((task) => task.id)).toEqual(["FN-011", "FN-010"]);
+
+    const doneSorted = sortTasksForDisplayColumn([
+      { ...base, id: "FN-020", column: "done", priority: "urgent" as TaskPriority, columnMovedAt: "2026-01-01T08:00:00.000Z" },
+      { ...base, id: "FN-021", column: "done", priority: "low" as TaskPriority, columnMovedAt: "2026-01-01T09:00:00.000Z" },
+    ], "done");
+    expect(doneSorted.map((task) => task.id)).toEqual(["FN-021", "FN-020"]);
+  });
+
   it("re-exports priority helpers from the core index", () => {
     expect(core.TASK_PRIORITIES).toEqual(TASK_PRIORITIES);
     expect(core.DEFAULT_TASK_PRIORITY).toBe("normal");
     expect(core.normalizeTaskPriority("bogus")).toBe(DEFAULT_TASK_PRIORITY);
+    expect(typeof core.sortTasksForDisplayColumn).toBe("function");
   });
 });

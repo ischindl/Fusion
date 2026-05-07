@@ -3,6 +3,7 @@ import { useState, useCallback, useMemo, Fragment, useEffect, useRef } from "rea
 import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRight, Zap } from "lucide-react";
 import type { Task, TaskDetail, Column, TaskCreateInput, MergeResult } from "@fusion/core";
 import { COLUMN_LABELS, COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
+import { sortTasksForDisplayColumn } from "./taskSorting";
 import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
 import type { ModelInfo, NodeInfo } from "../api";
@@ -27,7 +28,7 @@ const COLUMN_COLOR_MAP: Record<Column, string> = {
 
 const ACTIVE_STATUSES = new Set(["planning", "researching", "executing", "finalizing", "merging", "merging-fix"]);
 
-type SortField = "id" | "title" | "status" | "column";
+type SortField = "title" | "status" | "column";
 
 function getTaskStatusLabel(status: string): string {
   if (status === "merging-fix") return "Merging fixes…";
@@ -250,8 +251,8 @@ export function ListView({
   lastFetchTimeMs,
   prAuthAvailable,
 }: ListViewProps) {
-  const [sortField, setSortField] = useState<SortField>("id");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<Column | null>(null);
   const [selectedColumn, setSelectedColumn] = useState<Column | null>(null);
@@ -454,10 +455,11 @@ export function ListView({
   const handleSort = useCallback((field: SortField) => {
     if (sortField === field) {
       setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
+      return;
     }
+
+    setSortField(field);
+    setSortDirection("asc");
   }, [sortField]);
 
   const handleColumnFilter = useCallback((column: Column) => {
@@ -502,38 +504,43 @@ export function ListView({
       ? filtered.filter((t) => t.column === selectedColumn)
       : filtered;
 
-    const sorted = [...columnFiltered].sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case "id":
-          comparison = a.id.localeCompare(b.id);
-          break;
-        case "title":
-          comparison = (a.title || a.description).localeCompare(b.title || b.description);
-          break;
-        case "status":
-          comparison = (a.status || "").localeCompare(b.status || "");
-          break;
-        case "column":
-          comparison = a.column.localeCompare(b.column);
-          break;
-      }
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-
-    // Group by column while preserving sort order within each group
     const groups: Record<Column, Task[]> = {
       triage: [],
       todo: [],
       "in-progress": [],
       "in-review": [],
       done: [],
-      archived: []
+      archived: [],
     };
-    sorted.forEach((task) => {
+
+    columnFiltered.forEach((task) => {
       const column = isColumn(task.column) ? task.column : DEFAULT_COLUMN;
       groups[column].push(task);
     });
+
+    for (const column of COLUMNS) {
+      if (!sortField) {
+        groups[column] = sortTasksForDisplayColumn(groups[column], column);
+        continue;
+      }
+
+      groups[column] = [...groups[column]].sort((a, b) => {
+        let comparison = 0;
+        switch (sortField) {
+          case "title":
+            comparison = (a.title || a.description).localeCompare(b.title || b.description);
+            break;
+          case "status":
+            comparison = (a.status || "").localeCompare(b.status || "");
+            break;
+          case "column":
+            comparison = a.column.localeCompare(b.column);
+            break;
+        }
+        return sortDirection === "asc" ? comparison : -comparison;
+      });
+    }
+
     return groups;
   }, [tasks, searchQuery, sortField, sortDirection, hideDoneTasks, selectedColumn]);
 
@@ -933,7 +940,7 @@ export function ListView({
   );
 
   const getSortIcon = (field: SortField) => {
-    if (sortField !== field) return <ArrowUpDown size={14} className="sort-icon" />;
+    if (!sortField || sortField !== field) return <ArrowUpDown size={14} className="sort-icon" />;
     return sortDirection === "asc" ? (
       <ArrowUp size={14} className="sort-icon active" />
     ) : (

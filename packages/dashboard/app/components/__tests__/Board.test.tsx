@@ -311,7 +311,7 @@ describe("Board", () => {
       expect(columnRenderCounts.done).toBeGreaterThanOrEqual(initialDoneRenders);
     });
 
-    describe("sortTasksForColumn priority ordering", () => {
+    describe("column default ordering priority semantics", () => {
       it("orders done tasks by most recent completion regardless of priority", () => {
         const tasks: Task[] = [
           createTask({
@@ -491,7 +491,7 @@ describe("Board", () => {
       });
     });
 
-    describe("sortTasksForColumn merging pinning", () => {
+    describe("column default ordering merging pinning", () => {
       it("pins merging tasks to top of in-review even when newer non-merging tasks exist", () => {
         const tasks: Task[] = [
           createTask({

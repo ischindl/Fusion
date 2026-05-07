@@ -309,8 +309,10 @@ export {
   compareTaskPriority,
   compareTasksByPriorityThenAgeAndId,
   sortTasksByPriorityThenAgeAndId,
+  compareTaskIdNumeric,
+  sortTasksForDisplayColumn,
 } from "./task-priority.js";
-export type { TaskPrioritySortable } from "./task-priority.js";
+export type { TaskPrioritySortable, TaskColumnSortable } from "./task-priority.js";
 export {
   mapFeatureToTaskHandoff,
   mapRoadmapToMissionHandoff,

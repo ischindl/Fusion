@@ -1,5 +1,6 @@
-import type { Task, TaskDetail, Column as ColumnType, TaskCreateInput, TaskPriority } from "@fusion/core";
+import type { Task, TaskDetail, Column as ColumnType, TaskCreateInput } from "@fusion/core";
 import { COLUMNS, DEFAULT_COLUMN, isColumn } from "@fusion/core";
+import { sortTasksForDisplayColumn } from "./taskSorting";
 import { Column } from "./Column";
 import type { ToastType } from "../hooks/useToast";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
@@ -53,92 +54,6 @@ interface BoardProps {
   lastFetchTimeMs?: number;
 }
 
-const PRIORITY_RANK: Record<TaskPriority, number> = {
-  low: 0,
-  normal: 1,
-  high: 2,
-  urgent: 3,
-};
-
-function getTaskPriorityRank(priority: Task["priority"] | null | undefined): number {
-  if (!priority || !(priority in PRIORITY_RANK)) {
-    return PRIORITY_RANK.normal;
-  }
-  return PRIORITY_RANK[priority];
-}
-
-function compareTaskPriority(a: Task["priority"] | null | undefined, b: Task["priority"] | null | undefined): number {
-  return getTaskPriorityRank(b) - getTaskPriorityRank(a);
-}
-
-function compareTaskIdNumeric(a: string, b: string): number {
-  const aNum = Number.parseInt(a.slice(a.lastIndexOf("-") + 1), 10);
-  const bNum = Number.parseInt(b.slice(b.lastIndexOf("-") + 1), 10);
-
-  if (Number.isFinite(aNum) && Number.isFinite(bNum) && aNum !== bNum) {
-    return aNum - bNum;
-  }
-
-  return a.localeCompare(b);
-}
-
-function sortTasksByPriorityThenAgeAndId(tasks: Task[]): Task[] {
-  return [...tasks].sort((a, b) => {
-    const priorityCmp = compareTaskPriority(a.priority, b.priority);
-    if (priorityCmp !== 0) {
-      return priorityCmp;
-    }
-
-    if (a.createdAt !== b.createdAt) {
-      return a.createdAt.localeCompare(b.createdAt);
-    }
-
-    return compareTaskIdNumeric(a.id, b.id);
-  });
-}
-
-function getDoneSortTimestamp(task: Task): number {
-  const timestamp = task.columnMovedAt ?? task.updatedAt ?? task.createdAt;
-  const parsed = Date.parse(timestamp);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function sortTasksForColumn(tasks: Task[], column: ColumnType): Task[] {
-  if (column === "todo") {
-    // Match scheduler pickup order: priority DESC, createdAt ASC, id ASC.
-    return sortTasksByPriorityThenAgeAndId(tasks);
-  }
-
-  return [...tasks].sort((a, b) => {
-    if (column === "done") {
-      const timestampCmp = getDoneSortTimestamp(b) - getDoneSortTimestamp(a);
-      if (timestampCmp !== 0) {
-        return timestampCmp;
-      }
-
-      // Deterministic tie-breaker when completion timestamps match.
-      return compareTaskIdNumeric(a.id, b.id);
-    }
-
-    // In the in-review column, merging tasks stay pinned above non-merging tasks.
-    if (column === "in-review") {
-      const aIsMerging = a.status === "merging" || a.status === "merging-pr" || a.status === "merging-fix";
-      const bIsMerging = b.status === "merging" || b.status === "merging-pr" || b.status === "merging-fix";
-      if (aIsMerging !== bIsMerging) {
-        return aIsMerging ? -1 : 1;
-      }
-    }
-
-    // Primary sort for non-done/non-todo columns: priority descending.
-    const priorityCmp = compareTaskPriority(a.priority, b.priority);
-    if (priorityCmp !== 0) {
-      return priorityCmp;
-    }
-
-    // Secondary sort: numeric task ID ascending (lower number first).
-    return compareTaskIdNumeric(a.id, b.id);
-  });
-}
 
 function areTaskArraysEqual(previous: Task[], next: Task[]): boolean {
   if (previous.length !== next.length) return false;
@@ -207,7 +122,7 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
     const stableGrouped = {} as Record<ColumnType, Task[]>;
 
     for (const column of COLUMNS) {
-      const sortedTasks = sortTasksForColumn(nextGrouped[column], column);
+      const sortedTasks = sortTasksForDisplayColumn(nextGrouped[column], column);
       stableGrouped[column] = areTaskArraysEqual(previousGrouped[column], sortedTasks)
         ? previousGrouped[column]
         : sortedTasks;

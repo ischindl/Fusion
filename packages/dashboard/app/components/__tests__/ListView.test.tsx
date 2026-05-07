@@ -90,6 +90,24 @@ const showAllColumnsByDefault = () => {
   );
 };
 
+const getSectionTaskIds = (sectionName: string): string[] => {
+  const allRows = screen.getAllByRole("row");
+  const sectionStart = allRows.findIndex(
+    (row) => row.className.includes("list-section-header") && row.textContent?.includes(sectionName),
+  );
+  if (sectionStart < 0) return [];
+
+  const ids: string[] = [];
+  for (let index = sectionStart + 1; index < allRows.length; index += 1) {
+    const row = allRows[index];
+    if (row.className.includes("list-section-header")) break;
+    const id = row.getAttribute("data-id");
+    if (id) ids.push(id);
+  }
+
+  return ids;
+};
+
 function ensureMatchMedia() {
   if (!window.matchMedia) {
     Object.defineProperty(window, "matchMedia", {
@@ -1186,6 +1204,40 @@ describe("ListView", () => {
     expect(screen.queryByText("FN-002")).toBeNull();
   });
 
+  it("defaults todo section to board-consistent priority then oldest ordering", () => {
+    const tasks = [
+      createMockTask({ id: "FN-100", column: "todo", priority: "low", createdAt: "2024-01-01T08:00:00.000Z" }),
+      createMockTask({ id: "FN-101", column: "todo", priority: "urgent", createdAt: "2024-01-01T10:00:00.000Z" }),
+      createMockTask({ id: "FN-102", column: "todo", priority: "high", createdAt: "2024-01-01T07:00:00.000Z" }),
+    ];
+
+    renderListView({ tasks });
+
+    expect(getSectionTaskIds("Todo")).toEqual(["FN-101", "FN-102", "FN-100"]);
+  });
+
+  it("defaults done section to board-consistent completion recency", () => {
+    const tasks = [
+      createMockTask({ id: "FN-200", column: "done", priority: "urgent", columnMovedAt: "2024-01-01T08:00:00.000Z" }),
+      createMockTask({ id: "FN-201", column: "done", priority: "low", columnMovedAt: "2024-01-01T10:00:00.000Z" }),
+    ];
+
+    renderListView({ tasks });
+
+    expect(getSectionTaskIds("Done")).toEqual(["FN-201", "FN-200"]);
+  });
+
+  it("defaults in-review section to board-consistent merge-active pinning", () => {
+    const tasks = [
+      createMockTask({ id: "FN-300", column: "in-review", status: "review-ready", priority: "urgent" }),
+      createMockTask({ id: "FN-301", column: "in-review", status: "merging-fix", priority: "normal" }),
+    ];
+
+    renderListView({ tasks });
+
+    expect(getSectionTaskIds("In Review")).toEqual(["FN-301", "FN-300"]);
+  });
+
   it("maintains sort order within each section", () => {
     const tasks = [
       createMockTask({ id: "FN-003", title: "Charlie", column: "triage" }),
@@ -1195,20 +1247,10 @@ describe("ListView", () => {
 
     renderListView({ tasks });
 
-    // Sort by title
     const titleHeader = screen.getByRole("columnheader", { name: /title/i });
     fireEvent.click(titleHeader);
 
-    // Get only data rows within the triage section
-    const allRows = screen.getAllByRole("row");
-    const triageSectionStart = allRows.findIndex(r => r.className.includes("list-section-header") && r.textContent?.includes("Planning"));
-    
-    // The next 3 rows after the section header should be the sorted tasks
-    const dataRows = allRows.slice(triageSectionStart + 1, triageSectionStart + 4).filter(r => r.getAttribute("data-id"));
-    
-    expect(dataRows[0].textContent).toContain("FN-001"); // Alpha
-    expect(dataRows[1].textContent).toContain("FN-002"); // Bravo
-    expect(dataRows[2].textContent).toContain("FN-003"); // Charlie
+    expect(getSectionTaskIds("Planning")).toEqual(["FN-001", "FN-002", "FN-003"]);
   });
 });
 

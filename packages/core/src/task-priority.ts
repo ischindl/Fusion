@@ -7,6 +7,13 @@ export interface TaskPrioritySortable {
   priority?: TaskPriority | null;
 }
 
+export interface TaskColumnSortable extends TaskPrioritySortable {
+  column: string;
+  status?: string | null;
+  columnMovedAt?: string;
+  updatedAt?: string;
+}
+
 const PRIORITY_RANK: Record<TaskPriority, number> = {
   low: 0,
   normal: 1,
@@ -40,7 +47,7 @@ export function compareTaskPriority(a: unknown, b: unknown): number {
   return getTaskPriorityRank(b) - getTaskPriorityRank(a);
 }
 
-function compareTaskId(a: string, b: string): number {
+export function compareTaskIdNumeric(a: string, b: string): number {
   const aNum = Number.parseInt(a.slice(a.lastIndexOf("-") + 1), 10);
   const bNum = Number.parseInt(b.slice(b.lastIndexOf("-") + 1), 10);
 
@@ -65,7 +72,7 @@ export function compareTasksByPriorityThenAgeAndId<T extends TaskPrioritySortabl
     return a.createdAt.localeCompare(b.createdAt);
   }
 
-  return compareTaskId(a.id, b.id);
+  return compareTaskIdNumeric(a.id, b.id);
 }
 
 /**
@@ -75,4 +82,48 @@ export function sortTasksByPriorityThenAgeAndId<T extends TaskPrioritySortable>(
   tasks: readonly T[],
 ): T[] {
   return [...tasks].sort(compareTasksByPriorityThenAgeAndId);
+}
+
+function getDoneSortTimestamp(task: TaskColumnSortable): number {
+  const timestamp = task.columnMovedAt ?? task.updatedAt ?? task.createdAt;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isMergeActiveStatus(status: string | null | undefined): boolean {
+  return status === "merging" || status === "merging-pr" || status === "merging-fix";
+}
+
+/**
+ * Column-aware default ordering shared by board and list surfaces.
+ */
+export function sortTasksForDisplayColumn<T extends TaskColumnSortable>(tasks: readonly T[], column: string): T[] {
+  if (column === "todo") {
+    return sortTasksByPriorityThenAgeAndId(tasks);
+  }
+
+  return [...tasks].sort((a, b) => {
+    if (column === "done") {
+      const timestampCmp = getDoneSortTimestamp(b) - getDoneSortTimestamp(a);
+      if (timestampCmp !== 0) {
+        return timestampCmp;
+      }
+      return compareTaskIdNumeric(a.id, b.id);
+    }
+
+    if (column === "in-review") {
+      const aIsMerging = isMergeActiveStatus(a.status);
+      const bIsMerging = isMergeActiveStatus(b.status);
+      if (aIsMerging !== bIsMerging) {
+        return aIsMerging ? -1 : 1;
+      }
+    }
+
+    const priorityCmp = compareTaskPriority(a.priority, b.priority);
+    if (priorityCmp !== 0) {
+      return priorityCmp;
+    }
+
+    return compareTaskIdNumeric(a.id, b.id);
+  });
 }

@@ -95,6 +95,7 @@ Board ordering behavior:
 - `todo` mirrors scheduler dispatch order: priority first (`urgent` → `low`), then oldest `createdAt` within a priority tier, then task ID as deterministic tie-break.
 - `triage`, `in-progress`, and `in-review` remain priority-first with task-ID tie-breaks (`in-review` still pins merge-active statuses above non-merging tasks).
 - The `done` column is recency-ordered by completion time (newest first), using `columnMovedAt` as primary and falling back to `updatedAt` then `createdAt` for legacy tasks.
+- The dashboard **list view default ordering matches these same per-column semantics** until a user clicks a sortable header (manual list sorting still overrides defaults).
 
 ### Lifecycle commands
 
