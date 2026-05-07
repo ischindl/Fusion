@@ -1,0 +1,70 @@
+.dependency-graph {
+  position: relative;
+  height: 100%;
+  padding: var(--space-md);
+}
+
+.dependency-graph__viewport {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  min-height: calc(var(--space-2xl) * 10);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  touch-action: none;
+}
+
+.dependency-graph__canvas {
+  position: relative;
+  transform-origin: top left;
+}
+
+.dependency-graph-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.dependency-graph__node {
+  position: absolute;
+}
+
+.dependency-graph__node .card {
+  height: 100%;
+}
+
+.dependency-graph__empty {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.dependency-graph__toolbar {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  display: flex;
+  gap: var(--space-xs);
+}
+
+@media (max-width: 768px) {
+  .dependency-graph {
+    padding: var(--space-sm);
+  }
+
+  .dependency-graph__toolbar {
+    right: var(--space-sm);
+    bottom: var(--space-sm);
+  }
+
+  .dependency-graph__toolbar .btn-icon {
+    min-width: calc(var(--space-xs) * 11);
+    min-height: calc(var(--space-xs) * 11);
+  }
+}

@@ -51,8 +51,9 @@ Navigation:
 Behavior:
 - Shows only tasks in `triage`, `todo`, `in-progress`, and `in-review`
 - Excludes `done` and `archived`
-- Supports pan/zoom, fit-to-graph, dependency-chain highlight, and drag-to-position
-- Persists node layout per project using plugin-scoped storage key `fusion-plugin-dependency-graph:positions`
+- Uses Sugiyama-style layered auto-layout to place nodes by dependency depth
+- Renders directed bezier dependency edges (dependent → dependency) with arrowheads
+- Supports pan/zoom and fit-to-graph controls via floating toolbar actions
 
 ## Chat View
 

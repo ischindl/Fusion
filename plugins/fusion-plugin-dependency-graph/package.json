@@ -10,8 +10,8 @@
       "import": "./src/index.ts"
     },
     "./dashboard-view": {
-      "types": "./src/DependencyGraphView.tsx",
-      "import": "./src/DependencyGraphView.tsx"
+      "types": "./src/DependencyGraph.tsx",
+      "import": "./src/DependencyGraph.tsx"
     }
   },
   "scripts": {
@@ -20,7 +20,9 @@
   },
   "dependencies": {
     "@fusion/core": "workspace:*",
-    "@fusion/plugin-sdk": "workspace:*"
+    "@fusion/dashboard": "workspace:*",
+    "@fusion/plugin-sdk": "workspace:*",
+    "lucide-react": "^0.542.0"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",

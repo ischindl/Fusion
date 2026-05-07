@@ -13,7 +13,7 @@ const plugin = definePlugin({
     {
       viewId: "graph",
       label: "Graph",
-      componentPath: "./src/DependencyGraphView.tsx",
+      componentPath: "./src/DependencyGraph.tsx",
       icon: "Network",
       placement: "more",
       order: 40,
@@ -22,4 +22,4 @@ const plugin = definePlugin({
 });
 
 export default plugin;
-export { DependencyGraphView } from "./DependencyGraphView";
+export { DependencyGraph } from "./DependencyGraph";
