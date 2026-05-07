@@ -1784,6 +1784,48 @@ describe("App view switching", () => {
     localStorage.removeItem("kb-dashboard-view-mode");
   });
 
+  it("restores board and plugin routes when persisted taskView changes across remounts", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+
+    localStorage.setItem(taskViewStorageKey(), "plugin:fusion-plugin-dependency-graph:graph");
+    (fetchPluginDashboardViews as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        pluginId: "fusion-plugin-dependency-graph",
+        view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", placement: "more" },
+      },
+    ]);
+
+    const first = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Plugin view unavailable")).toBeInTheDocument();
+    });
+    first.unmount();
+
+    localStorage.setItem(taskViewStorageKey(), "board");
+    const second = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTitle("Board view").className).toContain("active");
+    });
+    second.unmount();
+
+    localStorage.setItem(taskViewStorageKey(), "plugin:fusion-plugin-dependency-graph:graph");
+    (fetchPluginDashboardViews as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        pluginId: "fusion-plugin-dependency-graph",
+        view: { viewId: "graph", label: "Graph", componentPath: "./GraphView", placement: "more" },
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Plugin view unavailable")).toBeInTheDocument();
+    });
+
+    localStorage.removeItem(taskViewStorageKey());
+    localStorage.removeItem("kb-dashboard-view-mode");
+  });
+
+
   it("opens planning mode when TodoView triggers planning from todo item", async () => {
     localStorage.setItem("kb-dashboard-view-mode", "project");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

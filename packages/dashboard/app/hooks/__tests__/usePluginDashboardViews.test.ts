@@ -101,4 +101,19 @@ describe("usePluginDashboardViews", () => {
     await waitFor(() => expect(second.result.current.loading).toBe(false));
     expect(mockFetch).toHaveBeenCalledWith("project-b");
   });
+
+  it("supports filtering view entries by pluginId in consumers", async () => {
+    mockFetch.mockResolvedValueOnce([
+      { pluginId: "fusion-plugin-dependency-graph", view: { viewId: "graph", label: "Graph", componentPath: "./Graph.js" } },
+      { pluginId: "fusion-plugin-queue", view: { viewId: "queue", label: "Queue", componentPath: "./Queue.js" } },
+    ]);
+
+    const { result } = renderHook(() => usePluginDashboardViews("project-a"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const graphViews = result.current.views.filter((entry) => entry.pluginId === "fusion-plugin-dependency-graph");
+    expect(graphViews).toEqual([
+      { pluginId: "fusion-plugin-dependency-graph", view: { viewId: "graph", label: "Graph", componentPath: "./Graph.js" } },
+    ]);
+  });
 });

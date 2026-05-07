@@ -367,6 +367,34 @@ describe("useViewState", () => {
     });
   });
 
+  it("round-trips between built-in and plugin task views", async () => {
+    localStorage.setItem("kb:proj_123:kb-dashboard-task-view", "board");
+
+    const { result } = renderHook(() =>
+      useViewState(
+        createOptions({
+          currentProject: PROJECT,
+        }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(result.current.taskView).toBe("board");
+    });
+
+    await act(async () => {
+      result.current.handleChangeTaskView("plugin:fusion-plugin-dependency-graph:graph");
+    });
+    expect(result.current.taskView).toBe("plugin:fusion-plugin-dependency-graph:graph");
+    expect(localStorage.getItem("kb:proj_123:kb-dashboard-task-view")).toBe("plugin:fusion-plugin-dependency-graph:graph");
+
+    await act(async () => {
+      result.current.handleChangeTaskView("board");
+    });
+    expect(result.current.taskView).toBe("board");
+    expect(localStorage.getItem("kb:proj_123:kb-dashboard-task-view")).toBe("board");
+  });
+
   it("restores legacy views (board/list/agents/missions/chat) from scoped storage", async () => {
     const legacyViews = ["board", "list", "agents", "missions", "chat"] as const;
 

@@ -784,6 +784,8 @@ describe("GET /api/plugins/dashboard-views", () => {
           componentPath: "./views/Graph.js",
           icon: "Network",
           placement: "more",
+          order: 40,
+          description: "Dependency graph",
         },
       },
     ];
@@ -793,6 +795,28 @@ describe("GET /api/plugins/dashboard-views", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(mockViews);
+  });
+
+  it("returns exactly pluginLoader dashboard-view entries (no synthesized plugin rows)", async () => {
+    (pluginLoader.getPluginDashboardViews as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        pluginId: "with-view",
+        view: {
+          viewId: "graph",
+          label: "Graph",
+          componentPath: "./Graph.js",
+        },
+      },
+    ]);
+
+    const res = await performGet(buildApp(), "/api/plugins/dashboard-views");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      pluginId: "with-view",
+      view: { viewId: "graph", label: "Graph", componentPath: "./Graph.js" },
+    });
   });
 });
 

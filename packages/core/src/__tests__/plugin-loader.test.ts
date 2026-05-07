@@ -1730,6 +1730,44 @@ export default plugin;
         "views-b:timeline",
       ]);
       expect(loader.getPluginUiSlots()).toHaveLength(1);
+      expect(loader.getPluginTools()).toEqual([]);
+      expect(loader.getPluginRoutes()).toEqual([]);
+    });
+
+    it("returns pluginId and complete view payload for each dashboard view entry", async () => {
+      await pluginStore.init();
+      const loader = new PluginLoader({ pluginStore, taskStore: mockTaskStore });
+      (loader as any).plugins.set("views-shape", {
+        manifest: makeManifest({ id: "views-shape" }),
+        state: "started",
+        hooks: {},
+        dashboardViews: [
+          {
+            viewId: "graph",
+            label: "Graph",
+            componentPath: "./graph.js",
+            icon: "Network",
+            placement: "more",
+            description: "Task dependency graph",
+            order: 40,
+          },
+        ],
+      } as FusionPlugin);
+
+      expect(loader.getPluginDashboardViews()).toEqual([
+        {
+          pluginId: "views-shape",
+          view: {
+            viewId: "graph",
+            label: "Graph",
+            componentPath: "./graph.js",
+            icon: "Network",
+            placement: "more",
+            description: "Task dependency graph",
+            order: 40,
+          },
+        },
+      ]);
     });
   });
 
