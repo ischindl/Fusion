@@ -1790,6 +1790,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const selectedSet = new Set(itemIds);
       const selectedSummaries: string[] = [];
       const selectedItems = task.reviewState.items.filter((item) => selectedSet.has(item.id));
+      if (selectedItems.length !== selectedSet.size) {
+        throw badRequest("itemIds must reference existing review items");
+      }
       for (const item of selectedItems) {
         const excerpt = item.body.length > 140 ? `${item.body.slice(0, 140)}…` : item.body;
         selectedSummaries.push(`- [${item.id}] @${item.author.login}${item.path ? ` (${item.path})` : ""}: ${excerpt}`);
@@ -1831,12 +1834,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         }
       }
 
+      let steeringCommentId: string | null = null;
       if (selectedSummaries.length > 0) {
-        await scopedStore.addTaskComment(
+        const steeringComment = await scopedStore.addSteeringComment(
           task.id,
           `**PR Review Revision Request**\n\nReview revision requested for selected items:\n\n${selectedSummaries.join("\n")}`,
           "user",
         );
+        steeringCommentId = steeringComment.id;
       }
 
       const lastDoneStep = [...task.steps]
@@ -1848,6 +1853,13 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       const moved = await scopedStore.moveTask(task.id, "todo", { preserveProgress: true });
+      if (steeringCommentId) {
+        await triggerCommentWakeForAssignedAgent(scopedStore, moved, {
+          triggeringCommentType: "steering",
+          triggeringCommentIds: [steeringCommentId],
+          triggerDetail: "review-address",
+        });
+      }
       await scopedStore.logEntry(task.id, "Review revision requested", `${itemIds.length} item(s) queued for same-task revision`);
       res.json({ task: moved, reviewState });
     } catch (err: unknown) {

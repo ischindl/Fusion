@@ -213,6 +213,12 @@ describe("PrCommentHandler", () => {
               expect.objectContaining({ source: "github-pr", status: "queued" }),
             ]),
           }),
+          reviewState: expect.objectContaining({
+            source: "pull-request",
+            items: expect.arrayContaining([
+              expect.objectContaining({ source: "github-pr", body: "Please add tests" }),
+            ]),
+          }),
         }),
       );
       expect(mockStore.moveTask).toHaveBeenCalledWith("FN-001", "in-progress");

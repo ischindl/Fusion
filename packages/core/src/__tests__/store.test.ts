@@ -4181,6 +4181,21 @@ describe("TaskStore", () => {
       expect(cleared.review).toBeUndefined();
     });
 
+    it("persists reviewState independently from legacy review", async () => {
+      const created = await store.createTask({ description: "Task with review state" });
+      const reviewState: NonNullable<Task["reviewState"]> = {
+        source: "pull-request",
+        summary: { reviewDecision: "CHANGES_REQUESTED", reviewers: [], blockingReasons: [], checks: [] },
+        items: [{ id: "ri-1", body: "Fix this", author: { login: "octocat" }, createdAt: new Date().toISOString() }],
+        addressing: [{ itemId: "ri-1", status: "queued", selectedAt: new Date().toISOString() }],
+      };
+
+      await store.updateTask(created.id, { reviewState });
+      const reloaded = await store.getTask(created.id);
+      expect(reloaded.reviewState).toEqual(reviewState);
+      expect(reloaded.review).toBeUndefined();
+    });
+
     it("preserves review metadata through archive and unarchive", async () => {
       const review: NonNullable<Task["review"]> = {
         mode: "pull-request",

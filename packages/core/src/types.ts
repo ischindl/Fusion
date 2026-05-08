@@ -885,7 +885,6 @@ export interface TaskReviewStateItem {
   verdict?: TaskReviewVerdict;
   step?: number;
   summary?: string;
-  addressingStatus?: TaskReviewItemStatus;
 }
 
 export interface ReviewAddressingRecord {
