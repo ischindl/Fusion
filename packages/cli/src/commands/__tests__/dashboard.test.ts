@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const { mockSyncStartupModels } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
@@ -53,7 +55,7 @@ const {
     mockSelfHealingStop: vi.fn(),
     mockCheckStuckBudget: vi.fn().mockResolvedValue(true),
     mockStuckCheckNow: vi.fn().mockResolvedValue(undefined),
-    mockResolveGlobalDir: vi.fn().mockReturnValue(`/tmp/test-global-dashboard-${process.pid}`),
+    mockResolveGlobalDir: vi.fn(),
     mockGlobalSettingsGetSettings: vi.fn().mockResolvedValue({}),
     mockGlobalSettingsUpdateSettings: vi.fn().mockResolvedValue({}),
     mockDaemonTokenGetOrCreate: vi.fn().mockResolvedValue("fn_test_dashboard_token"),
@@ -804,12 +806,11 @@ function resetGitHubMocks() {
   });
 }
 
-const updateCacheDir = `/tmp/test-global-dashboard-${process.pid}`;
-const updateCachePath = `${updateCacheDir}/update-check.json`;
+let updateCacheDir = "";
 
 function writeUpdateCache(payload: { updateAvailable: boolean; latestVersion: string; currentVersion: string }): void {
   mkdirSync(updateCacheDir, { recursive: true });
-  writeFileSync(updateCachePath, JSON.stringify(payload), "utf-8");
+  writeFileSync(`${updateCacheDir}/update-check.json`, JSON.stringify(payload), "utf-8");
 }
 
 beforeEach(() => {
@@ -823,6 +824,10 @@ beforeEach(() => {
   mockExec.mockClear();
   mockStuckCheckNow.mockReset();
   mockStuckCheckNow.mockResolvedValue(undefined);
+  if (updateCacheDir) {
+    rmSync(updateCacheDir, { recursive: true, force: true });
+  }
+  updateCacheDir = mkdtempSync(join(tmpdir(), "fusion-dashboard-test-"));
   mockResolveGlobalDir.mockReset();
   mockResolveGlobalDir.mockReturnValue(updateCacheDir);
   mockGlobalSettingsGetSettings.mockReset();
@@ -833,12 +838,14 @@ beforeEach(() => {
   mockDaemonTokenGetOrCreate.mockResolvedValue("fn_test_dashboard_token");
   mockGetCliPackageVersion.mockReset();
   mockGetCliPackageVersion.mockReturnValue(CLI_PACKAGE_VERSION);
-  rmSync(updateCacheDir, { recursive: true, force: true });
 });
 
 afterEach(() => {
   disposeTrackedDashboards();
-  rmSync(updateCacheDir, { recursive: true, force: true });
+  if (updateCacheDir) {
+    rmSync(updateCacheDir, { recursive: true, force: true });
+  }
+  updateCacheDir = "";
 });
 
 describe("PR merge helpers", () => {
