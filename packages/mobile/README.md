@@ -14,6 +14,14 @@ Mobile uses a shell-level onboarding flow for first-run connection setup before 
 
 Native wrappers are isolated under `src/plugins/native-shell.ts`, `src/plugins/connection-profiles.ts`, and `src/plugins/qr-scanner.ts` so dashboard code never calls vendor-specific APIs directly.
 
+### Regression coverage locked by tests
+
+`packages/mobile/src/__tests__/connection-profiles.test.ts`, `native-shell.test.ts`, and `qr-scanner.test.ts` now lock these contracts:
+- first-run remote setup via QR/manual payloads (including optional auth token handling)
+- saved-profile edit, active-profile switching, and persisted-state restore across module reinit/relaunch
+- bridge reads (`getState`, `listProfiles`) plus connection-manager event dispatch
+- malformed/empty QR payload handling and unavailable-scanner fallback behavior
+
 ## Push Notifications
 
 `PushNotificationManager` supports two complementary notification channels:

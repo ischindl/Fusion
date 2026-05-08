@@ -28,6 +28,7 @@ describe("ShellConnectionStatus", () => {
     expect(screen.getByText("Desktop")).toBeInTheDocument();
     expect(screen.getByText("Prod · https://fusion.example.com")).toBeInTheDocument();
     expect(screen.getByText("Switch server")).toBeInTheDocument();
+    expect(screen.getByTestId("shell-connection-status-button")).toHaveAttribute("type", "button");
   });
 
   it("renders remote mobile mode summary", () => {

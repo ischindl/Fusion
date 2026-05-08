@@ -190,6 +190,14 @@ Desktop local mode uses an in-process runtime manager (`src/local-runtime.ts`) t
 
 All preload typings are declared in `src/types.d.ts`.
 
+### Regression coverage locked by tests
+
+Desktop tests under `src/__tests__/` now explicitly lock:
+- first-run mode projection and last-used mode restore (`choose`/`local`/`remote`)
+- local runtime startup only when local mode is active (and no unexpected startup in remote mode)
+- remote mode handoff persistence across relaunch behavior
+- preload `fusionShell` bridge channel wiring (`shell:getState`, profile CRUD/switching, mode state, QR, and connection-manager open)
+
 ## Module Integration Overview
 
 ```text

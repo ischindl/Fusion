@@ -28,7 +28,7 @@ describe("shell-native", () => {
     expect(openConnectionManager).toHaveBeenCalledTimes(1);
   });
 
-  it("uses mobile fusionShell capability and extracts metadata", async () => {
+  it("uses mobile fusionShell capability and extracts metadata without exposing auth token", async () => {
     const openConnectionManager = vi.fn(async () => undefined);
     const target = {
       ...window,
@@ -37,7 +37,7 @@ describe("shell-native", () => {
         getState: vi.fn(async () => ({
           host: "mobile-shell",
           activeProfileId: "p1",
-          profiles: [{ id: "p1", name: "Remote 1", serverUrl: "https://fusion.example.com/root", createdAt: "", updatedAt: "" }],
+          profiles: [{ id: "p1", name: "Remote 1", serverUrl: "https://fusion.example.com/root", authToken: "secret", createdAt: "", updatedAt: "" }],
         })),
       },
     } as unknown as Window & typeof globalThis;
@@ -51,7 +51,26 @@ describe("shell-native", () => {
     expect(result.profileId).toBe("p1");
     expect(result.profileLabel).toBe("Remote 1");
     expect(result.serverOrigin).toBe("https://fusion.example.com");
+    expect((result as unknown as { authToken?: string }).authToken).toBeUndefined();
     await expect(result.openConnectionManager()).resolves.toEqual({ ok: true });
+  });
+
+  it("falls back to host connection id when shell state has no active profile", async () => {
+    const target = {
+      ...window,
+      fusionShell: {
+        openConnectionManager: vi.fn(async () => undefined),
+        getState: vi.fn(async () => ({ host: "mobile-shell", activeProfileId: null, profiles: [] })),
+      },
+    } as unknown as Window & typeof globalThis;
+
+    const result = await getShellConnectionNativeResult(
+      { kind: "mobile-shell", mode: "remote", connectionId: "host-profile", serverUrl: "https://remote.example.com/base" },
+      target,
+    );
+
+    expect(result.profileId).toBe("host-profile");
+    expect(result.serverOrigin).toBe("https://remote.example.com");
   });
 
   it("surfaces invocation failures", async () => {

@@ -22,6 +22,12 @@ For dashboard chrome, use the centralized helper/component path:
 
 Desktop connection-management actions must go through `window.fusionAPI.openConnectionManager()` (wrapped by `shell-native.ts`), not ad-hoc renderer IPC calls.
 
+Regression tests lock shell-aware placement and fallback behavior:
+- desktop renders a single header connection-status entry point
+- mobile renders a single More-sheet connection-status entry point
+- browser/no-shell mode renders no shell-only controls and does not throw
+- `ShellConnectionStatus` action control remains a non-submit button (`type="button"`) for form safety
+
 ## Canonical dashboard host-context contract
 
 Dashboard host detection is centralized in `app/shell-host.ts` and exposed to React via `ShellHostProvider` (`app/context/ShellHostContext.tsx`).

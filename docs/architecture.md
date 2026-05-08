@@ -67,6 +67,14 @@ Persistence ownership by host:
 
 These are shell-owned persistence layers, intentionally separate from Fusion project/global settings.
 
+### Shell contract regression matrix (FN-3409)
+
+Cross-package automated tests now lock:
+- **Mobile shell**: first-run remote onboarding inputs (QR/manual + optional token), saved-profile edit/switch, and restore-on-reinit persistence.
+- **Desktop shell**: first-run/last-used mode restore, local-vs-remote startup behavior, and preload bridge channel compatibility for connection management.
+- **Dashboard shell awareness**: canonical per-viewport connection-manager entry placement, browser-safe fallback (no shell-only controls), and host-context/native-helper resolution without ad-hoc window bridge access.
+- **Sensitive data handling**: dashboard-facing native status surfaces expose profile label/origin metadata only; auth tokens are not surfaced.
+
 ### High-level runtime diagram
 
 ```text

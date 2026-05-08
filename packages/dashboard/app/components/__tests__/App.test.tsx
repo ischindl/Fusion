@@ -3686,7 +3686,8 @@ describe("App shell connection status plumbing", () => {
     expect(screen.queryByTestId("shell-connection-status-button")).toBeNull();
   });
 
-  it("renders shell connection status for mobile shell host", async () => {
+  it("renders shell connection status for mobile shell host in mobile More sheet only", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
     mockShellHostContextValue.host = { kind: "mobile-shell", mode: "remote", connectionId: "p1", serverUrl: "https://fusion.example.com" };
     mockGetShellConnectionNativeResult.mockResolvedValueOnce({
       hostKind: "mobile-shell",
@@ -3701,7 +3702,32 @@ describe("App shell connection status plumbing", () => {
 
     await waitFor(() => {
       expect(mockGetShellConnectionNativeResult).toHaveBeenCalledWith(mockShellHostContextValue.host);
-      expect(screen.getByTestId("shell-connection-status-button")).toBeInTheDocument();
     });
+
+    expect(screen.queryByTestId("shell-connection-status-button")).toBeNull();
+    fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
+    expect(screen.getAllByTestId("shell-connection-status-button")).toHaveLength(1);
+    expect(screen.getByTestId("mobile-more-shell-connection")).toBeInTheDocument();
+  });
+
+  it("keeps desktop shell connection status in header and out of mobile sheet", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    mockShellHostContextValue.host = { kind: "desktop-shell", mode: "remote", connectionId: "p1", serverUrl: "https://fusion.example.com" };
+    mockGetShellConnectionNativeResult.mockResolvedValueOnce({
+      hostKind: "desktop-shell",
+      available: true,
+      mode: "remote",
+      profileLabel: "Prod",
+      serverOrigin: "https://fusion.example.com",
+      openConnectionManager: async () => ({ ok: true }),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("shell-connection-status-button")).toHaveLength(1);
+    });
+
+    expect(screen.queryByTestId("mobile-more-shell-connection")).toBeNull();
   });
 });
