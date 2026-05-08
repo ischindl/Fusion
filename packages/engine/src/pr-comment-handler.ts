@@ -281,6 +281,29 @@ Please review the PR comments and address any remaining issues.`;
       nextItems.push(nextItem);
     }
 
+    const currentReviewState = task.reviewState ?? {
+      source: "pull-request" as const,
+      items: [],
+      addressing: [],
+    };
+    const existingReviewStateIndex = currentReviewState.items.findIndex((item) => item.id === itemId);
+    const nextReviewStateItem = {
+      id: itemId,
+      githubCommentId: comment.id,
+      body: comment.body,
+      author: { login: comment.user.login },
+      createdAt: comment.created_at,
+      updatedAt: now,
+      htmlUrl: comment.html_url,
+      source: "github-pr" as const,
+    };
+    const nextReviewStateItems = [...currentReviewState.items];
+    if (existingReviewStateIndex >= 0) {
+      nextReviewStateItems[existingReviewStateIndex] = { ...nextReviewStateItems[existingReviewStateIndex], ...nextReviewStateItem };
+    } else {
+      nextReviewStateItems.push(nextReviewStateItem);
+    }
+
     await this.store.updateTask(taskId, {
       review: {
         ...current,
@@ -289,6 +312,12 @@ Please review the PR comments and address any remaining issues.`;
         summary: `PR #${prInfo.number} feedback items: ${nextItems.length}`,
         latestRefreshAt: now,
         items: nextItems,
+      },
+      reviewState: {
+        ...currentReviewState,
+        source: "pull-request",
+        summary: currentReviewState.summary,
+        items: nextReviewStateItems,
       },
     });
   }

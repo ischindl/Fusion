@@ -28,16 +28,8 @@ function formatRefreshSource(source?: "manual" | "auto" | "initial-load"): strin
 
 type ReviewItem = NonNullable<TaskDetail["reviewState"]>["items"][number];
 
-function getItemStatus(item: ReviewItem): "queued" | "in-progress" | "addressed" | "failed" {
-  if (
-    item.addressingStatus === "queued" ||
-    item.addressingStatus === "in-progress" ||
-    item.addressingStatus === "addressed" ||
-    item.addressingStatus === "failed"
-  ) {
-    return item.addressingStatus;
-  }
-  return "queued";
+function getItemStatus(review: NonNullable<TaskDetail["reviewState"]>, item: ReviewItem): "queued" | "in-progress" | "addressed" | "failed" {
+  return review.addressing.find((record) => record.itemId === item.id)?.status ?? "queued";
 }
 
 export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Props) {
@@ -211,7 +203,7 @@ export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Prop
             .slice()
             .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
             .map((item) => {
-              const status = getItemStatus(item);
+              const status = getItemStatus(review, item);
               return (
                 <li key={item.id} className="task-review-tab__item card">
                   <div className="task-review-tab__direct-item">

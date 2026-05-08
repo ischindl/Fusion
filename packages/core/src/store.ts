@@ -91,6 +91,7 @@ interface TaskRow {
   steeringComments: string | null;
   comments: string | null;
   review: string | null;
+  reviewState: string | null;
   workflowStepResults: string | null;
   prInfo: string | null;
   issueInfo: string | null;
@@ -753,7 +754,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         return deduped.length > 0 ? deduped : undefined;
       })(),
       review: fromJson<import("./types.js").TaskReview>(row.review) ?? undefined,
-      reviewState: fromJson<import("./types.js").TaskReviewState>(row.review) ?? undefined,
+      reviewState: fromJson<import("./types.js").TaskReviewState>(row.reviewState) ?? undefined,
       workflowStepResults: (() => { const w = fromJson<import("./types.js").WorkflowStepResult[]>(row.workflowStepResults); return w && w.length > 0 ? w : undefined; })(),
       prInfo: fromJson<import("./types.js").PrInfo>(row.prInfo),
       issueInfo: fromJson<import("./types.js").IssueInfo>(row.issueInfo),
@@ -1020,7 +1021,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "error", "summary", "thinkingLevel", "executionMode",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt",
       "createdAt", "updatedAt", "columnMovedAt", "executionStartedAt", "executionCompletedAt",
-      "dependencies", "steps", "comments", "review", "workflowStepResults", "steeringComments",
+      "dependencies", "steps", "comments", "review", "reviewState", "workflowStepResults", "steeringComments",
       "attachments", "prInfo", "issueInfo", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "enabledWorkflowSteps", "modifiedFiles",
       "missionId", "sliceId", "assignedAgentId", "pausedByAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
@@ -1070,7 +1071,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt",
       "createdAt", "updatedAt", "columnMovedAt", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "attachments", "steeringComments",
-      "comments", "review", "workflowStepResults", "prInfo", "issueInfo", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
+      "comments", "review", "reviewState", "workflowStepResults", "prInfo", "issueInfo", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "enabledWorkflowSteps", "modifiedFiles",
       "missionId", "sliceId", "assignedAgentId", "pausedByAgentId", "assigneeUserId", "nodeId", "effectiveNodeId", "effectiveNodeSource",
       "sourceType", "sourceAgentId", "sourceRunId", "sourceSessionId", "sourceMessageId", "sourceParentTaskId", "sourceMetadata",
@@ -1113,11 +1114,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         tokenUsageTotalTokens, tokenUsageFirstUsedAt, tokenUsageLastUsedAt, createdAt, updatedAt, columnMovedAt,
         executionStartedAt, executionCompletedAt,
         dependencies, steps, log, attachments, steeringComments,
-        comments, review, workflowStepResults, prInfo, issueInfo,
+        comments, review, reviewState, workflowStepResults, prInfo, issueInfo,
         sourceIssueProvider, sourceIssueRepository, sourceIssueExternalIssueId, sourceIssueNumber, sourceIssueUrl,
         mergeDetails, breakIntoSubtasks, enabledWorkflowSteps, modifiedFiles, missionId, sliceId, assignedAgentId, pausedByAgentId, assigneeUserId, nodeId, effectiveNodeId, effectiveNodeSource, sourceType, sourceAgentId, sourceRunId, sourceSessionId, sourceMessageId, sourceParentTaskId, sourceMetadata, checkedOutBy, checkedOutAt
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
@@ -1173,6 +1174,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         steeringComments = excluded.steeringComments,
         comments = excluded.comments,
         review = excluded.review,
+        reviewState = excluded.reviewState,
         workflowStepResults = excluded.workflowStepResults,
         prInfo = excluded.prInfo,
         issueInfo = excluded.issueInfo,
@@ -1256,7 +1258,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       toJson(task.attachments || []),
       toJson(task.steeringComments || []),
       toJson(task.comments || []),
-      toJsonNullable(task.reviewState ?? task.review),
+      toJsonNullable(task.review),
+      toJsonNullable(task.reviewState),
       toJson(task.workflowStepResults || []),
       toJsonNullable(task.prInfo),
       toJsonNullable(task.issueInfo),

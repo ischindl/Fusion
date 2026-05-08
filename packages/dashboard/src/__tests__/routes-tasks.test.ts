@@ -2173,6 +2173,7 @@ describe("POST /tasks/:id/review/address", () => {
       },
     };
     (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(taskWithReview);
+    (store.addSteeringComment as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "sc-1" });
     (store.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...taskWithReview, column: "todo" });
 
     const res = await REQUEST(
@@ -2189,5 +2190,30 @@ describe("POST /tasks/:id/review/address", () => {
       expect.objectContaining({ reviewState: expect.objectContaining({ addressing: expect.arrayContaining([expect.objectContaining({ itemId: "ri-1", status: "queued" })]) }) }),
     );
     expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo", { preserveProgress: true });
+  });
+
+  it("rejects empty selection", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...FAKE_TASK_DETAIL, id: "FN-001", reviewState: { source: "reviewer-agent", items: [], addressing: [] } });
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/FN-001/review/address", JSON.stringify({ itemIds: [] }), { "Content-Type": "application/json" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("itemIds must be a non-empty array");
+  });
+
+  it("rejects missing reviewState", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...FAKE_TASK_DETAIL, id: "FN-001", reviewState: undefined });
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/FN-001/review/address", JSON.stringify({ itemIds: ["ri-1"] }), { "Content-Type": "application/json" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Task has no reviewState payload");
+  });
+
+  it("rejects unknown item IDs", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      id: "FN-001",
+      reviewState: { source: "reviewer-agent", items: [{ id: "ri-1", body: "x", author: { login: "reviewer" }, createdAt: new Date().toISOString() }], addressing: [] },
+    });
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/FN-001/review/address", JSON.stringify({ itemIds: ["ri-missing"] }), { "Content-Type": "application/json" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("must reference existing review items");
   });
 });

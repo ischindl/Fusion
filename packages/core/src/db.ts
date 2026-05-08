@@ -88,7 +88,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 68;
+const SCHEMA_VERSION = 69;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   steeringComments TEXT DEFAULT '[]',
   comments TEXT DEFAULT '[]',
   review TEXT,
+  reviewState TEXT,
   workflowStepResults TEXT DEFAULT '[]',
   prInfo TEXT,
   issueInfo TEXT,
@@ -2626,6 +2627,12 @@ export class Database {
           )
         `);
         this.db.exec(`CREATE INDEX IF NOT EXISTS idxApprovalRequestAuditRequestCreatedAt ON approval_request_audit_events(requestId, createdAt, id)`);
+      });
+    }
+
+    if (version < 69) {
+      this.applyMigration(69, () => {
+        this.addColumnIfMissing("tasks", "reviewState", "TEXT");
       });
     }
 
