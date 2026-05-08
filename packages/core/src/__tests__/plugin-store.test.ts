@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PluginStore } from "../plugin-store.js";
 import { Database, toJson } from "../db.js";
+import { CentralDatabase } from "../central-db.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
@@ -142,7 +143,7 @@ describe("PluginStore", () => {
       }
     });
 
-    it("is idempotent when init runs multiple times", async () => {
+    it("is idempotent across repeated init and store rehydration", async () => {
       const migrationProject = makeTmpDir();
       const migrationCentral = makeTmpDir();
       try {
@@ -157,11 +158,56 @@ describe("PluginStore", () => {
         await migrationStore.init();
         await migrationStore.init();
 
-        const plugins = await migrationStore.listPlugins();
+        const reopenedStore = new PluginStore(migrationProject, { centralGlobalDir: migrationCentral });
+        await reopenedStore.init();
+
+        const plugins = await reopenedStore.listPlugins();
         expect(plugins.filter((plugin) => plugin.id === "legacy-idempotent")).toHaveLength(1);
+
+        const centralDb = new CentralDatabase(migrationCentral);
+        centralDb.init();
+        const installCount = centralDb
+          .prepare("SELECT COUNT(*) as count FROM plugin_installs WHERE id = ?")
+          .get("legacy-idempotent") as { count: number };
+        expect(installCount.count).toBe(1);
+
+        const localDb = new Database(join(migrationProject, ".fusion"));
+        localDb.init();
+        const marker = localDb
+          .prepare("SELECT value FROM __meta WHERE key = 'pluginCentralMigrationV1'")
+          .get() as { value: string } | undefined;
+        expect(marker?.value).toBe("done");
       } finally {
         await rm(migrationProject, { recursive: true, force: true });
         await rm(migrationCentral, { recursive: true, force: true });
+      }
+    });
+
+    it("shows globally installed plugin in another project as disabled until explicitly enabled", async () => {
+      const projectA = makeTmpDir();
+      const projectB = makeTmpDir();
+      const sharedCentral = makeTmpDir();
+      try {
+        const storeA = new PluginStore(projectA, { centralGlobalDir: sharedCentral });
+        const storeB = new PluginStore(projectB, { centralGlobalDir: sharedCentral });
+        await storeA.init();
+        await storeB.init();
+
+        await storeA.registerPlugin({
+          manifest: makeManifest({ id: "shared-global", name: "Shared Global" }),
+          path: "/plugins/shared-global",
+        });
+
+        const inProjectB = await storeB.getPlugin("shared-global");
+        expect(inProjectB.enabled).toBe(false);
+
+        await storeB.enablePlugin("shared-global");
+        const enabledInProjectB = await storeB.getPlugin("shared-global");
+        expect(enabledInProjectB.enabled).toBe(true);
+      } finally {
+        await rm(projectA, { recursive: true, force: true });
+        await rm(projectB, { recursive: true, force: true });
+        await rm(sharedCentral, { recursive: true, force: true });
       }
     });
 

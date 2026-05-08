@@ -13,9 +13,13 @@
 
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import express from "express";
-import type { TaskStore, PluginStore, PluginLoader, PluginInstallation } from "@fusion/core";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { Database, CentralDatabase, type TaskStore, type PluginStore, type PluginLoader, type PluginInstallation } from "@fusion/core";
 import * as fusionCore from "@fusion/core";
 import { createApiRoutes } from "../routes.js";
 import { createPluginRouter } from "../plugin-routes.js";
@@ -343,6 +347,109 @@ describe("POST /api/plugins mode:install — package root path", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
+describe("POST /api/plugins central persistence integration", () => {
+  let projectDir: string;
+  let centralDir: string;
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "plugin-route-project-"));
+    centralDir = mkdtempSync(join(tmpdir(), "plugin-route-central-"));
+  });
+
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true });
+    await rm(centralDir, { recursive: true, force: true });
+  });
+
+  function buildRealApp(pluginStore: PluginStore) {
+    const pluginLoader = createMockPluginLoader();
+    const store = createMockTaskStore({
+      getRootDir: vi.fn().mockReturnValue(projectDir),
+      getPluginStore: vi.fn().mockReturnValue(pluginStore),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, { pluginStore, pluginLoader }));
+    return app;
+  }
+
+  it("writes register mode installs to central tables and not project-local plugins", async () => {
+    const pluginStore = new fusionCore.PluginStore(projectDir, { centralGlobalDir: centralDir });
+    await pluginStore.init();
+
+    const app = buildRealApp(pluginStore);
+    const res = await REQUEST(app, "POST", "/api/plugins", {
+      mode: "register",
+      id: "central-register",
+      name: "Central Register",
+      version: "1.0.0",
+      path: "/tmp/central-register.js",
+    });
+
+    expect(res.status).toBe(201);
+
+    const centralDb = new CentralDatabase(centralDir);
+    centralDb.init();
+    const installCount = centralDb
+      .prepare("SELECT COUNT(*) as count FROM plugin_installs WHERE id = ?")
+      .get("central-register") as { count: number };
+    const stateCount = centralDb
+      .prepare("SELECT COUNT(*) as count FROM project_plugin_states WHERE pluginId = ?")
+      .get("central-register") as { count: number };
+
+    const localDb = new Database(join(projectDir, ".fusion"));
+    localDb.init();
+    const legacyCount = localDb
+      .prepare("SELECT COUNT(*) as count FROM plugins WHERE id = ?")
+      .get("central-register") as { count: number };
+
+    expect(installCount.count).toBe(1);
+    expect(stateCount.count).toBe(1);
+    expect(legacyCount.count).toBe(0);
+
+    centralDb.close();
+    localDb.close();
+  });
+
+  it("writes install mode installs to central tables and not project-local plugins", async () => {
+    const pluginStore = new fusionCore.PluginStore(projectDir, { centralGlobalDir: centralDir });
+    await pluginStore.init();
+
+    const pluginPath = "/tmp/my-plugin";
+    mockAccess.mockImplementation((p: string) => {
+      if (p === pluginPath || p === `${pluginPath}/manifest.json`) return Promise.resolve();
+      return Promise.reject(new Error("not found"));
+    });
+    mockReadFile.mockResolvedValueOnce(JSON.stringify(VALID_MANIFEST));
+
+    const app = buildRealApp(pluginStore);
+    const res = await REQUEST(app, "POST", "/api/plugins", {
+      mode: "install",
+      path: pluginPath,
+    });
+
+    expect(res.status).toBe(201);
+
+    const centralDb = new CentralDatabase(centralDir);
+    centralDb.init();
+    const installCount = centralDb
+      .prepare("SELECT COUNT(*) as count FROM plugin_installs WHERE id = ?")
+      .get("my-plugin") as { count: number };
+
+    const localDb = new Database(join(projectDir, ".fusion"));
+    localDb.init();
+    const legacyCount = localDb
+      .prepare("SELECT COUNT(*) as count FROM plugins WHERE id = ?")
+      .get("my-plugin") as { count: number };
+
+    expect(installCount.count).toBe(1);
+    expect(legacyCount.count).toBe(0);
+
+    centralDb.close();
+    localDb.close();
+  });
+});
+
 describe("POST /api/plugins mode:install — negative paths", () => {
   let pluginStore: PluginStore;
   let pluginLoader: PluginLoader;

@@ -1,5 +1,5 @@
 import type { AddressInfo } from "node:net";
-import { dirname, join, resolve as pathResolve } from "node:path";
+import { join, resolve as pathResolve } from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { stat, readdir, readFile as fsReadFile } from "node:fs/promises";
@@ -8,7 +8,6 @@ import {
   AutomationStore,
   CentralCore,
   AgentStore,
-  PluginStore,
   PluginLoader,
   getTaskMergeBlocker,
   getEnabledPiExtensionPaths,
@@ -1067,11 +1066,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // Enables the PluginManager UI to list, install, enable, disable, and
   // configure plugins via the /api/plugins REST endpoints.
   //
-  const pluginStoreRootDir =
-    typeof (store as { getRootDir?: () => string }).getRootDir === "function"
-      ? store.getRootDir()
-      : dirname(store.getFusionDir());
-  const pluginStore = new PluginStore(pluginStoreRootDir);
+  const pluginStore = store.getPluginStore();
   await pluginStore.init();
 
   // ── PluginLoader: plugin lifecycle management ───────────────────────

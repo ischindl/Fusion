@@ -342,11 +342,11 @@ export class PluginStore extends EventEmitter<PluginStoreEvents> {
             row.updatedAt,
           );
       }
-
-      this.localDb
-        .prepare("INSERT INTO __meta (key, value) VALUES ('pluginCentralMigrationV1', 'done') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .run();
     });
+
+    this.localDb
+      .prepare("INSERT INTO __meta (key, value) VALUES ('pluginCentralMigrationV1', 'done') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run();
   }
 
   async registerPlugin(input: PluginRegistrationInput): Promise<PluginInstallation> {

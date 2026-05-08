@@ -55,6 +55,7 @@ const mocks = vi.hoisted(() => {
     const missionStore = {
       listMissions: vi.fn().mockResolvedValue([]),
     };
+    const pluginStore = pluginStoreCtor();
 
     return {
       init: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +64,7 @@ const mocks = vi.hoisted(() => {
       getFusionDir: vi.fn().mockReturnValue("/repo/.fusion"),
       getRootDir: vi.fn().mockReturnValue("/repo"),
       getMissionStore: vi.fn().mockReturnValue(missionStore),
+      getPluginStore: vi.fn().mockReturnValue(pluginStore),
       getSettings: vi.fn().mockResolvedValue({
         maxConcurrent: 2,
         recycleWorktrees: false,

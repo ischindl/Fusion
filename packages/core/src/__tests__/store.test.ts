@@ -25,6 +25,7 @@ const mockedRunCommandAsync = vi.mocked(runCommandAsync);
 
 import { TaskStore, TaskHasDependentsError } from "../store.js";
 import { AgentStore } from "../agent-store.js";
+import { CentralDatabase } from "../central-db.js";
 import { appendFile, readFile, writeFile, mkdir, rm, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { mkdtempSync, existsSync } from "node:fs";
@@ -133,6 +134,37 @@ describe("TaskStore", () => {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(taskId, timestamp, text, type, detail ?? null, agent ?? null);
   }
+
+  describe("plugin store routing", () => {
+    it("routes plugin writes to the configured central global dir", async () => {
+      const pluginStore = store.getPluginStore();
+      await pluginStore.init();
+
+      await pluginStore.registerPlugin({
+        manifest: {
+          id: "taskstore-plugin",
+          name: "TaskStore Plugin",
+          version: "1.0.0",
+        },
+        path: "/tmp/taskstore-plugin",
+      });
+
+      const centralDb = new CentralDatabase(globalDir);
+      centralDb.init();
+      const installCount = centralDb
+        .prepare("SELECT COUNT(*) as count FROM plugin_installs WHERE id = ?")
+        .get("taskstore-plugin") as { count: number };
+      expect(installCount.count).toBe(1);
+
+      const localCount = store
+        .getDatabase()
+        .prepare("SELECT COUNT(*) as count FROM plugins WHERE id = ?")
+        .get("taskstore-plugin") as { count: number };
+      expect(localCount.count).toBe(0);
+
+      centralDb.close();
+    });
+  });
 
   // ── Prompt generation (no duplicate description) ───────────────
 

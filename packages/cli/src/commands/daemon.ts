@@ -12,7 +12,6 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import {
   CentralCore,
-  PluginStore,
   PluginLoader,
   getTaskMergeBlocker,
   INSIGHT_EXTRACTION_SCHEDULE_NAME,
@@ -367,12 +366,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   }
 
   // ── PluginStore: plugin installation management ─────────────────────
-  // Some mocked stores used in tests may not implement getRootDir(); fall
-  // back to the resolved runtime cwd in that case.
-  const storeRootDir = typeof (store as { getRootDir?: () => string }).getRootDir === "function"
-    ? (store as { getRootDir: () => string }).getRootDir()
-    : cwd;
-  const pluginStore = new PluginStore(storeRootDir);
+  const pluginStore = store.getPluginStore();
   await pluginStore.init();
 
   // ── PluginLoader: plugin lifecycle management ───────────────────────

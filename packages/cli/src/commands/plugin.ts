@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import * as readline from "node:readline";
-import { PluginStore, PluginLoader, validatePluginManifest } from "@fusion/core";
+import { PluginStore, PluginLoader, validatePluginManifest, resolveGlobalDir } from "@fusion/core";
 import { resolveProject } from "../project-context.js";
 
 export interface BuiltinPluginCatalogEntry {
@@ -92,11 +92,23 @@ async function getProjectPath(projectName?: string): Promise<string> {
 /**
  * Create a PluginStore for the given project.
  */
-async function createPluginStore(projectName?: string): Promise<PluginStore> {
-  const projectPath = await getProjectPath(projectName);
-  const pluginStore = new PluginStore(projectPath);
-  await pluginStore.init();
-  return pluginStore;
+async function createPluginStore(
+  projectName?: string,
+  options?: { centralGlobalDir?: string },
+): Promise<PluginStore> {
+  try {
+    const context = await resolveProject(projectName, process.cwd(), options?.centralGlobalDir);
+    const pluginStore = context.store.getPluginStore();
+    await pluginStore.init();
+    return pluginStore;
+  } catch {
+    const projectPath = await getProjectPath(projectName);
+    const pluginStore = new PluginStore(projectPath, {
+      centralGlobalDir: options?.centralGlobalDir ?? resolveGlobalDir(),
+    });
+    await pluginStore.init();
+    return pluginStore;
+  }
 }
 
 /**

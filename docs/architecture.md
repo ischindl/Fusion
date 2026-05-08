@@ -327,6 +327,8 @@ Hybrid evaluator pipeline (FN-3389/FN-3391):
   - **Global install metadata** in central DB table `plugin_installs` (`~/.fusion/fusion-central.db`) including manifest/path/settings/schema/dependencies
   - **Per-project runtime state** in central DB table `project_plugin_states` keyed by normalized project path (`enabled`, `state`, `error`)
 - Legacy project-local `plugins` rows in `.fusion/fusion.db` are migrated lazily on plugin-store init/read; migration is idempotent and keeps newest `updatedAt` install metadata as global canonical data while preserving per-project enablement rows
+- Post-FN-3722, the project-local `plugins` table is legacy read-only migration input; any new install writer targeting it is a bug
+- `TaskStore.getPluginStore()` now propagates the configured `globalSettingsDir`/central directory so all CLI and dashboard install paths resolve the same central DB
 - `PluginLoader` (`plugin-loader.ts`) loads/unloads plugin modules using the effective per-project plugin state
 - Plugin contributions now include both embedded `uiSlots` and top-level `dashboardViews`
 - Discovery endpoints:

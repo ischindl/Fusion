@@ -10,10 +10,9 @@
  */
 
 import type { AddressInfo } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   CentralCore,
-  PluginStore,
   PluginLoader,
   getTaskMergeBlocker,
   INSIGHT_EXTRACTION_SCHEDULE_NAME,
@@ -425,11 +424,7 @@ export async function runServe(
   // internally for task-execution plugin hooks. These instances here serve the
   // HTTP plugin-management API routes and are intentionally separate.
   //
-  const pluginStoreRootDir =
-    typeof (store as { getRootDir?: () => string }).getRootDir === "function"
-      ? store.getRootDir()
-      : dirname(store.getFusionDir());
-  const pluginStore = new PluginStore(pluginStoreRootDir);
+  const pluginStore = store.getPluginStore();
   await pluginStore.init();
 
   // ── PluginLoader: plugin lifecycle management ───────────────────────

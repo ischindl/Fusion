@@ -75,6 +75,7 @@ const mocks = vi.hoisted(() => {
     const missionStore = {
       listMissions: vi.fn().mockResolvedValue([]),
     };
+    const pluginStore = pluginStoreCtor();
 
     return {
       init: vi.fn().mockResolvedValue(undefined),
@@ -86,6 +87,7 @@ const mocks = vi.hoisted(() => {
         getSettings: vi.fn().mockResolvedValue({}),
       })),
       getMissionStore: vi.fn().mockReturnValue(missionStore),
+      getPluginStore: vi.fn().mockReturnValue(pluginStore),
       getSettings: vi.fn().mockResolvedValue({
         maxConcurrent: 2,
         recycleWorktrees: false,
@@ -907,13 +909,14 @@ describe("runServe — Plugin wiring", () => {
     process.exit = originalExit;
   });
 
-  it("creates PluginStore and PluginLoader instances", async () => {
+  it("gets PluginStore from TaskStore and creates PluginLoader", async () => {
     const { PluginStore, PluginLoader } = await import("@fusion/core");
 
     await runServe(4040, {});
 
-    expect(PluginStore).toHaveBeenCalledTimes(1);
+    expect(mocks.taskStores[0].getPluginStore).toHaveBeenCalledTimes(1);
     expect(PluginLoader).toHaveBeenCalledTimes(1);
+    expect(PluginStore).toHaveBeenCalled();
 
     await triggerSignal("SIGINT");
   });
@@ -933,12 +936,12 @@ describe("runServe — Plugin wiring", () => {
     await triggerSignal("SIGINT");
   });
 
-  it("initializes PluginStore with the task store's project root", async () => {
-    const { PluginStore } = await import("@fusion/core");
-
+  it("initializes the TaskStore-provided PluginStore", async () => {
     await runServe(4040, {});
 
-    expect(PluginStore).toHaveBeenCalledWith("/repo");
+    expect(mocks.taskStores[0].getPluginStore).toHaveBeenCalledTimes(1);
+    const taskStorePluginStore = mocks.taskStores[0].getPluginStore.mock.results[0]?.value as { init: ReturnType<typeof vi.fn> };
+    expect(taskStorePluginStore?.init).toHaveBeenCalledTimes(1);
 
     await triggerSignal("SIGINT");
   });

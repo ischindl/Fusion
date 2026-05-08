@@ -1635,6 +1635,10 @@ export class Database {
 
     if (version < 24) {
       this.applyMigration(24, () => {
+        // Legacy project-local plugin table (introduced in v24) is retained for
+        // one-shot migration reads by PluginStore.migrateLegacyProjectRows().
+        // Post-FN-3722 all new plugin install writes must go to central
+        // plugin_installs + project_plugin_states tables; writes here are a bug.
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS plugins (
             id TEXT PRIMARY KEY,

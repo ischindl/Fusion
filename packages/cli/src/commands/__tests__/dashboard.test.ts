@@ -75,6 +75,17 @@ function makeMockStore() {
     listMilestones: vi.fn().mockReturnValue([]),
     listFeatures: vi.fn().mockReturnValue([]),
   };
+  const mockPluginStore = {
+    init: vi.fn().mockResolvedValue(undefined),
+    listPlugins: vi.fn().mockResolvedValue([]),
+    getPlugin: vi.fn(),
+    registerPlugin: vi.fn(),
+    enablePlugin: vi.fn(),
+    disablePlugin: vi.fn(),
+    updatePluginSettings: vi.fn(),
+    unregisterPlugin: vi.fn(),
+    updatePluginState: vi.fn(),
+  };
   return {
     init: vi.fn().mockResolvedValue(undefined),
     watch: vi.fn().mockResolvedValue(undefined),
@@ -101,6 +112,7 @@ function makeMockStore() {
     })),
     getActiveMergingTask: vi.fn().mockReturnValue(undefined),
     getMissionStore: vi.fn().mockReturnValue(mockMissionStore),
+    getPluginStore: vi.fn().mockReturnValue(mockPluginStore),
     close: vi.fn(),
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       emitter.on(event, handler);

@@ -86,6 +86,7 @@ Plugin persistence is split across global and project scopes:
 
 - Global installation metadata is shared across projects in `~/.fusion/fusion-central.db` (`plugin_installs`)
 - Per-project activation/runtime state is tracked separately per normalized project path (`project_plugin_states`)
+- Project-local `.fusion/fusion.db` `plugins` rows are legacy migration-only input and are no longer a write target for installs
 
 Operationally:
 - `install` / `uninstall` are global actions

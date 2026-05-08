@@ -550,6 +550,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   // Tests that need cross-instance persistence (open store A, close,
   // open store B on the same dir, expect data) must leave this false.
   private readonly inMemoryDb: boolean;
+  private readonly globalSettingsDir?: string;
 
   constructor(
     private rootDir: string,
@@ -565,6 +566,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     this.inMemoryDb = options?.inMemoryDb === true;
     const resolvedGlobalSettingsDir = globalSettingsDir
       ?? (process.env.VITEST === "true" ? join(rootDir, ".fusion-global-settings") : undefined);
+    this.globalSettingsDir = resolvedGlobalSettingsDir;
     this.globalSettingsStore = new GlobalSettingsStore(resolvedGlobalSettingsDir);
   }
 
@@ -6804,7 +6806,9 @@ ${notificationsSection}`;
    */
   getPluginStore(): PluginStore {
     if (!this.pluginStore) {
-      this.pluginStore = new PluginStore(this.rootDir);
+      // PluginStore persists install/state rows in central DB, so it must use
+      // the same resolved global settings directory as TaskStore.
+      this.pluginStore = new PluginStore(this.rootDir, { centralGlobalDir: this.globalSettingsDir });
     }
     return this.pluginStore;
   }

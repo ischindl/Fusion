@@ -68,6 +68,7 @@ vi.mock("@fusion/core", () => ({
   PluginStore: mocks.PluginStore,
   PluginLoader: mocks.PluginLoader,
   validatePluginManifest: vi.fn().mockReturnValue({ valid: true, errors: [] }),
+  resolveGlobalDir: vi.fn().mockReturnValue("/tmp/fusion-global"),
 }));
 
 vi.mock("../../project-context.js", () => ({
@@ -130,6 +131,100 @@ describe("plugin commands", () => {
     tempDirs.push(pluginDir);
 
     await expect(resolvePluginEntryFile(pluginDir)).resolves.toBe(resolve(pluginDir, "dist/index.js"));
+  });
+
+  it("uses resolved TaskStore plugin store when available", async () => {
+    const contextStore = {
+      getPluginStore: vi.fn().mockReturnValue({
+        init: vi.fn().mockResolvedValue(undefined),
+        registerPlugin: vi.fn().mockResolvedValue({ id: "paperclip-runtime", enabled: true }),
+        listPlugins: vi.fn().mockResolvedValue([]),
+        getPlugin: vi.fn(),
+        updatePluginSettings: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    vi.mocked(resolveProject).mockResolvedValue({
+      projectPath: "/tmp/fn-project",
+      store: contextStore,
+    } as never);
+
+    const pluginDir = await createTempPluginFixture([
+      {
+        path: "manifest.json",
+        content: JSON.stringify({ id: "paperclip-runtime", name: "Paperclip Runtime", version: "1.0.0" }),
+      },
+      {
+        path: "package.json",
+        content: JSON.stringify({ exports: { ".": { import: "./dist/index.js" } } }),
+      },
+      {
+        path: "dist/index.js",
+        content:
+          "export default { manifest: { id: 'paperclip-runtime', name: 'Paperclip Runtime', version: '1.0.0' }, async onLoad() {}, async onUnload() {} };",
+      },
+    ]);
+    tempDirs.push(pluginDir);
+
+    await expect(runPluginInstall(pluginDir)).resolves.toBeUndefined();
+
+    expect(contextStore.getPluginStore).toHaveBeenCalledTimes(1);
+    expect(mocks.PluginStore).not.toHaveBeenCalled();
+  });
+
+  it("writes runPluginInstall metadata to central tables only", async () => {
+    const actualCore = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
+    const projectDir = await mkdtemp(join(tmpdir(), "fn-plugin-project-"));
+    const centralDir = await mkdtemp(join(tmpdir(), "fn-plugin-central-"));
+    tempDirs.push(projectDir, centralDir);
+
+    const realStore = new actualCore.PluginStore(projectDir, { centralGlobalDir: centralDir });
+    await realStore.init();
+
+    vi.mocked(resolveProject).mockResolvedValue({
+      projectPath: projectDir,
+      store: { getPluginStore: () => realStore },
+    } as never);
+
+    const pluginDir = await createTempPluginFixture([
+      {
+        path: "manifest.json",
+        content: JSON.stringify({ id: "paperclip-runtime", name: "Paperclip Runtime", version: "1.0.0" }),
+      },
+      {
+        path: "package.json",
+        content: JSON.stringify({ exports: { ".": { import: "./dist/index.js" } } }),
+      },
+      {
+        path: "dist/index.js",
+        content:
+          "export default { manifest: { id: 'paperclip-runtime', name: 'Paperclip Runtime', version: '1.0.0' }, async onLoad() {}, async onUnload() {} };",
+      },
+    ]);
+    tempDirs.push(pluginDir);
+
+    await expect(runPluginInstall(pluginDir)).resolves.toBeUndefined();
+
+    const centralDb = new actualCore.CentralDatabase(centralDir);
+    centralDb.init();
+    const installCount = centralDb
+      .prepare("SELECT COUNT(*) as count FROM plugin_installs WHERE id = ?")
+      .get("paperclip-runtime") as { count: number };
+    const stateCount = centralDb
+      .prepare("SELECT COUNT(*) as count FROM project_plugin_states WHERE pluginId = ? AND projectPath = ?")
+      .get("paperclip-runtime", projectDir) as { count: number };
+
+    const localDb = new actualCore.Database(join(projectDir, ".fusion"));
+    localDb.init();
+    const legacyCount = localDb
+      .prepare("SELECT COUNT(*) as count FROM plugins WHERE id = ?")
+      .get("paperclip-runtime") as { count: number };
+
+    expect(installCount.count).toBe(1);
+    expect(stateCount.count).toBe(1);
+    expect(legacyCount.count).toBe(0);
+
+    centralDb.close();
+    localDb.close();
   });
 
   it("includes getRootDir on the plugin loader taskStore mock (FN-2687)", async () => {
