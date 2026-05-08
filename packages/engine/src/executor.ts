@@ -2880,11 +2880,14 @@ export class TaskExecutor {
       // Build custom tools for the worker
       // Track the last code review verdict per step so we can enforce REVISE
       // (block fn_task_update status="done" until the agent re-reviews and gets APPROVE).
+      // Keyed by 0-indexed step (stepIndex). fn_task_update translates from
+      // its 1-indexed `step` parameter via `stepIndex = step - 1` (FN-3757).
       const codeReviewVerdicts = new Map<number, ReviewVerdict>();
 
       let wasPaused = false;
       // Mutable ref — populated after createFnAgent, tools access lazily via closure
       const sessionRef: { current: AgentSession | null } = { current: null };
+      // Keyed by 0-indexed step (stepIndex) to match fn_review_step.
       const stepCheckpoints = new Map<number, string>();
 
       const stuckDetector = this.options.stuckTaskDetector;
@@ -3900,10 +3903,23 @@ export class TaskExecutor {
           stuckDetector?.recordProgress(taskId);
         }
 
+        if (!Number.isInteger(step) || step < 1) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Invalid step number: ${step}. Steps are 1-indexed.`,
+            }],
+            details: {},
+          };
+        }
+
+        const stepIndex = step - 1;
+
         // Enforce code review REVISE: block advancing to "done" when the last
         // code review for this step returned REVISE. The agent must fix the
         // issues and call fn_review_step(type="code") again before proceeding.
-        if (status === "done" && codeReviewVerdicts.get(step) === "REVISE") {
+        // FN-3757: verdict/checkpoint maps are keyed by 0-indexed stepIndex.
+        if (status === "done" && codeReviewVerdicts.get(stepIndex) === "REVISE") {
           return {
             content: [{
               type: "text" as const,
@@ -3916,17 +3932,6 @@ export class TaskExecutor {
           };
         }
 
-        if (!Number.isInteger(step) || step < 1) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Invalid step number: ${step}. Steps are 1-indexed.`,
-            }],
-            details: {},
-          };
-        }
-
-        const stepIndex = step - 1;
         const task = await store.updateStep(taskId, stepIndex, status as StepStatus);
         const stepInfo = task.steps[stepIndex];
         if (!stepInfo) {
@@ -3953,7 +3958,8 @@ export class TaskExecutor {
         ) {
           const leafId = sessionRef.current.sessionManager.getLeafId();
           if (leafId) {
-            stepCheckpoints.set(step, leafId);
+            // FN-3757: verdict/checkpoint maps are keyed by 0-indexed stepIndex.
+            stepCheckpoints.set(stepIndex, leafId);
           }
         }
 
