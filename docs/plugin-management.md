@@ -40,6 +40,16 @@ Setup-capable plugins (for example **Agent Browser**) expose an additional **set
 | Bundled plugin manifests (shipped with Fusion) | Discoverable/installable from Plugin Manager |
 | Custom local path (absolute path) | Install plugin from a local directory |
 
+### Plugin scope
+
+Plugin persistence is split across global and project scopes:
+
+- Plugin installs are **global**. Installation metadata is registered in `~/.fusion/fusion-central.db` and shared across all projects on this machine.
+- Enable/disable is **project-scoped**. The same globally installed plugin can be enabled in one project and disabled in another. Per-project activation/runtime state is tracked in `project_plugin_states`.
+- `fn plugin list` shows the global install set plus enabled/disabled state for the current project context.
+
+For full multi-project details, see [Plugin Scope in Multi-Project Mode](./multi-project.md#plugin-scope-in-multi-project-mode).
+
 ## 2) Discover available plugins
 
 ### Dashboard
@@ -69,6 +79,8 @@ Expected outcome: You have a terminal view of installed plugins for scripting/re
 1. Go to **Settings → Plugins → Fusion Plugins**.
 2. In **Bundled Plugins**, click **Install** for the plugin.
 
+> Install/uninstall are global operations and affect plugin availability for every project on this machine.
+
 Expected outcome: Plugin is registered and appears with an initial state (typically `installed` then `started` when enabled/loaded).
 
 > WhatsApp Chat plugin note: Pair it directly to WhatsApp Web (multi-device) via QR (`/api/plugins/fusion-plugin-whatsapp-chat/qr`) or pairing code (`/api/plugins/fusion-plugin-whatsapp-chat/pair-code`). No public webhook endpoint or Meta Cloud credentials are required. Keep `allowedSenders` populated (empty list blocks all inbound messages), and use `/logout` to force re-pairing.
@@ -78,6 +90,8 @@ Expected outcome: Plugin is registered and appears with an initial state (typica
 1. Go to **Settings → Plugins → Fusion Plugins**.
 2. Use **Install** and provide an absolute plugin path.
 3. Confirm installation.
+
+> Install/uninstall are global operations and affect plugin availability for every project on this machine.
 
 Expected outcome: Plugin is added to your local plugin set and appears in the manager.
 
@@ -92,6 +106,8 @@ Expected outcome: Plugin is added to your local plugin set and appears in the ma
    fn plugin list
    ```
 
+> `fn plugin install` and `fn plugin uninstall` are global operations and affect every project on this machine.
+
 Expected outcome: Plugin is installed from the specified path and visible in plugin listings.
 
 ## 4) Enable, disable, and reload plugins
@@ -102,6 +118,8 @@ Expected outcome: Plugin is installed from the specified path and visible in plu
 2. Toggle plugin enable/disable controls.
 3. Use reload controls when available.
 
+> Enable/disable is project-scoped and only affects the current project.
+
 Expected outcome: Plugin transitions between runtime states (`started` / `stopped`) and reflects transitions in the manager.
 
 ### CLI
@@ -110,6 +128,8 @@ Expected outcome: Plugin transitions between runtime states (`started` / `stoppe
 fn plugin enable <id>
 fn plugin disable <id>
 ```
+
+> `fn plugin enable` and `fn plugin disable` are project-scoped operations and only affect the current project context.
 
 Expected outcome: Plugin is enabled or disabled by ID.
 

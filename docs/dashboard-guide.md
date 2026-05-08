@@ -125,6 +125,7 @@ Features:
 - Branch/worktree visibility
 - Commit and diff browsing
 - Push/pull/fetch actions
+- Pull with rebase option (split-button chooses between `git pull` and `git pull --rebase`)
 - Remote editing controls
 - Stash inspection (view stat + patch) before apply/pop/drop actions
 - Remotes tab keeps "Recent commits on {remote}" in sync immediately after successful push/pull actions
