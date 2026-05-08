@@ -10,8 +10,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { dirname, extname, join, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import * as readline from "node:readline";
 import { PluginStore, PluginLoader, validatePluginManifest } from "@fusion/core";
 import { resolveProject } from "../project-context.js";
@@ -123,13 +123,111 @@ async function createPluginLoader(
   return { store: pluginStore, loader };
 }
 
+const JS_ENTRY_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
+const TS_SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts"]);
+
+function isJsEntryFile(path: string): boolean {
+  return JS_ENTRY_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+function isTypeScriptSource(path: string): boolean {
+  return TS_SOURCE_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+async function statPath(path: string): Promise<import("node:fs").Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch {
+    return undefined;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Resolve plugin installation source to a compiled JavaScript entry file.
+ */
+export async function resolvePluginEntryFile(pluginDir: string): Promise<string> {
+  const absoluteInputPath = resolve(pluginDir);
+  const inputStats = await statPath(absoluteInputPath);
+
+  if (inputStats?.isFile()) {
+    if (isTypeScriptSource(absoluteInputPath)) {
+      throw new Error(
+        `Plugin entry must be compiled JavaScript, but got TypeScript source: ${absoluteInputPath}. Build the plugin first (for example: pnpm build in the plugin directory).`,
+      );
+    }
+    if (isJsEntryFile(absoluteInputPath)) {
+      return absoluteInputPath;
+    }
+    throw new Error(`Plugin entry file must end with .js, .mjs, or .cjs: ${absoluteInputPath}`);
+  }
+
+  const packageJsonPath = join(absoluteInputPath, "package.json");
+  let selectedCandidate: string | undefined;
+
+  if (existsSync(packageJsonPath)) {
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf-8")) as Record<string, unknown>;
+    const exportsRecord = asRecord(packageJson.exports);
+    const dotExport = exportsRecord?.["."];
+
+    const dotExportRecord = asRecord(dotExport);
+    if (typeof dotExportRecord?.import === "string") {
+      selectedCandidate = dotExportRecord.import;
+    } else if (typeof dotExportRecord?.default === "string") {
+      selectedCandidate = dotExportRecord.default;
+    } else if (typeof dotExport === "string") {
+      selectedCandidate = dotExport;
+    } else if (typeof packageJson.main === "string") {
+      selectedCandidate = packageJson.main;
+    }
+  }
+
+  if (selectedCandidate) {
+    const absoluteCandidate = resolve(absoluteInputPath, selectedCandidate);
+    if (isTypeScriptSource(absoluteCandidate)) {
+      throw new Error(
+        `Plugin entry resolves to TypeScript source (${absoluteCandidate}). Build the plugin first (for example: pnpm build in the plugin directory).`,
+      );
+    }
+    const candidateStats = await statPath(absoluteCandidate);
+    if (!candidateStats?.isFile()) {
+      throw new Error(
+        `Plugin entry file not found: ${absoluteCandidate}. Build the plugin first (for example: pnpm build in the plugin directory).`,
+      );
+    }
+    return absoluteCandidate;
+  }
+
+  const distIndexPath = resolve(absoluteInputPath, "dist/index.js");
+  const distStats = await statPath(distIndexPath);
+  if (distStats?.isFile()) {
+    return distIndexPath;
+  }
+
+  const indexPath = resolve(absoluteInputPath, "index.js");
+  const indexStats = await statPath(indexPath);
+  if (indexStats?.isFile()) {
+    return indexPath;
+  }
+
+  throw new Error(
+    `Could not resolve a plugin JavaScript entry file in ${absoluteInputPath}. Tried package.json exports/main, dist/index.js, and index.js. Build the plugin first (for example: pnpm build in the plugin directory).`,
+  );
+}
+
 /**
  * Load plugin manifest from a local path.
  */
 async function loadManifestFromPath(
   pluginPath: string,
 ): Promise<{ manifest: import("@fusion/core").PluginManifest; path: string }> {
-  const manifestPath = join(pluginPath, "manifest.json");
+  const absoluteInputPath = resolve(pluginPath);
+  const inputStats = await statPath(absoluteInputPath);
+  const manifestDir = inputStats?.isFile() ? dirname(absoluteInputPath) : absoluteInputPath;
+  const manifestPath = join(manifestDir, "manifest.json");
 
   if (!existsSync(manifestPath)) {
     throw new Error(`Plugin manifest not found at: ${manifestPath}`);
@@ -143,7 +241,7 @@ async function loadManifestFromPath(
     throw new Error(`Invalid plugin manifest: ${validation.errors.join(", ")}`);
   }
 
-  return { manifest, path: pluginPath };
+  return { manifest, path: manifestDir };
 }
 
 /**
@@ -218,7 +316,8 @@ export async function runPluginInstall(
   }
 
   try {
-    const { manifest, path } = await loadManifestFromPath(source);
+    const entryPath = await resolvePluginEntryFile(source);
+    const { manifest } = await loadManifestFromPath(source);
 
     console.log();
     console.log(`  Installing ${manifest.name} v${manifest.version} globally...`);
@@ -226,7 +325,7 @@ export async function runPluginInstall(
     // Register the plugin
     const plugin = await store.registerPlugin({
       manifest,
-      path,
+      path: entryPath,
       aiScanOnLoad: options?.aiScan ?? false,
     });
 

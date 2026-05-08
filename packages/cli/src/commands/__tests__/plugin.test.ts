@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -12,29 +15,37 @@ const mocks = vi.hoisted(() => {
   let loaderTaskStore: { getRootDir?: () => string } | undefined;
   let loaderRootDir: string | undefined;
 
-  const PluginStore = vi.fn().mockImplementation(() => {
-    const instance = {
-      init: vi.fn().mockResolvedValue(undefined),
-      registerPlugin: vi.fn().mockResolvedValue({
-        id: "paperclip-runtime",
-        enabled: true,
-      }),
-      listPlugins: vi.fn().mockResolvedValue([]),
-      getPlugin: vi.fn(),
-      updatePluginSettings: vi.fn().mockResolvedValue(undefined),
-    };
-    pluginStoreInstances.push(instance);
-    return instance;
-  });
+  const PluginStore = vi.fn();
 
-  const PluginLoader = vi.fn().mockImplementation((options: { taskStore: { getRootDir?: () => string } }) => {
-    loaderTaskStore = options.taskStore;
-    return {
-      loadPlugin: vi.fn().mockImplementation(async () => {
-        loaderRootDir = options.taskStore.getRootDir?.();
-      }),
-    };
-  });
+  const PluginLoader = vi.fn();
+
+  const setupDefaults = () => {
+    PluginStore.mockImplementation(() => {
+      const instance = {
+        init: vi.fn().mockResolvedValue(undefined),
+        registerPlugin: vi.fn().mockResolvedValue({
+          id: "paperclip-runtime",
+          enabled: true,
+        }),
+        listPlugins: vi.fn().mockResolvedValue([]),
+        getPlugin: vi.fn(),
+        updatePluginSettings: vi.fn().mockResolvedValue(undefined),
+      };
+      pluginStoreInstances.push(instance);
+      return instance;
+    });
+
+    PluginLoader.mockImplementation((options: { taskStore: { getRootDir?: () => string } }) => {
+      loaderTaskStore = options.taskStore;
+      return {
+        loadPlugin: vi.fn().mockImplementation(async () => {
+          loaderRootDir = options.taskStore.getRootDir?.();
+        }),
+      };
+    });
+  };
+
+  setupDefaults();
 
   return {
     PluginStore,
@@ -46,8 +57,9 @@ const mocks = vi.hoisted(() => {
       loaderTaskStore = undefined;
       loaderRootDir = undefined;
       pluginStoreInstances.length = 0;
-      PluginStore.mockClear();
-      PluginLoader.mockClear();
+      PluginStore.mockReset();
+      PluginLoader.mockReset();
+      setupDefaults();
     },
   };
 });
@@ -62,24 +74,38 @@ vi.mock("../../project-context.js", () => ({
   resolveProject: vi.fn().mockResolvedValue({ projectPath: "/tmp/fn-project" }),
 }));
 
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn().mockReturnValue(true),
-}));
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    existsSync: vi.fn((path: Parameters<typeof actual.existsSync>[0]) => actual.existsSync(path)),
+  };
+});
 
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn().mockResolvedValue(
-    JSON.stringify({
-      id: "paperclip-runtime",
-      name: "Paperclip Runtime",
-      version: "1.0.0",
-    }),
-  ),
-}));
-
-import { runPluginAvailable, runPluginInstall, runPluginSettings, runPluginRescan } from "../plugin.js";
+import {
+  resolvePluginEntryFile,
+  runPluginAvailable,
+  runPluginInstall,
+  runPluginSettings,
+  runPluginRescan,
+} from "../plugin.js";
 import { resolveProject } from "../../project-context.js";
 
+async function createTempPluginFixture(
+  files: Array<{ path: string; content: string }>,
+): Promise<string> {
+  const pluginDir = await mkdtemp(join(tmpdir(), "fn-plugin-test-"));
+  for (const file of files) {
+    const target = join(pluginDir, file.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, file.content, "utf-8");
+  }
+  return pluginDir;
+}
+
 describe("plugin commands", () => {
+  const tempDirs: string[] = [];
+
   beforeEach(() => {
     mocks.reset();
     vi.mocked(resolveProject).mockResolvedValue({ projectPath: "/tmp/fn-project" } as never);
@@ -87,18 +113,82 @@ describe("plugin commands", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    tempDirs.length = 0;
+  });
+
+  it("resolves package exports import entry to dist/index.js", async () => {
+    const pluginDir = await createTempPluginFixture([
+      {
+        path: "package.json",
+        content: JSON.stringify({ exports: { ".": { import: "./dist/index.js" } } }),
+      },
+      { path: "dist/index.js", content: "export default {};" },
+    ]);
+    tempDirs.push(pluginDir);
+
+    await expect(resolvePluginEntryFile(pluginDir)).resolves.toBe(resolve(pluginDir, "dist/index.js"));
   });
 
   it("includes getRootDir on the plugin loader taskStore mock (FN-2687)", async () => {
-    await expect(runPluginInstall("/plugins/paperclip-runtime")).resolves.toBeUndefined();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+    const pluginDir = await createTempPluginFixture([
+      {
+        path: "manifest.json",
+        content: JSON.stringify({ id: "paperclip-runtime", name: "Paperclip Runtime", version: "1.0.0" }),
+      },
+      {
+        path: "package.json",
+        content: JSON.stringify({ exports: { ".": { import: "./dist/index.js" } } }),
+      },
+      {
+        path: "dist/index.js",
+        content:
+          "export default { manifest: { id: 'paperclip-runtime', name: 'Paperclip Runtime', version: '1.0.0' }, async onLoad() {}, async onUnload() {} };",
+      },
+    ]);
+    tempDirs.push(pluginDir);
+
+    await expect(runPluginInstall(pluginDir)).resolves.toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    const registerCall = mocks.pluginStoreInstances[0]?.registerPlugin.mock.calls[0]?.[0];
+    expect(registerCall.path).toBe(resolve(pluginDir, "dist/index.js"));
 
     const taskStore = mocks.getLoaderTaskStore();
     expect(taskStore).toBeDefined();
     expect(taskStore?.getRootDir).toBeTypeOf("function");
     expect(taskStore?.getRootDir?.()).toBe("/tmp/fn-project");
     expect(mocks.getLoaderRootDir()).toBe("/tmp/fn-project");
+  });
+
+  it("exits non-zero when plugin entry cannot resolve to built JavaScript", async () => {
+    const pluginDir = await createTempPluginFixture([
+      {
+        path: "manifest.json",
+        content: JSON.stringify({ id: "paperclip-runtime", name: "Paperclip Runtime", version: "1.0.0" }),
+      },
+      {
+        path: "package.json",
+        content: JSON.stringify({ exports: { ".": { import: "./src/index.ts" } } }),
+      },
+      { path: "src/index.ts", content: "export default {};" },
+    ]);
+    tempDirs.push(pluginDir);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+
+    await expect(runPluginInstall(pluginDir)).rejects.toThrow("exit:1");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("Build the plugin first"),
+    );
   });
 
   it("prints built-in plugin catalog", async () => {
