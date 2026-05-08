@@ -54,6 +54,9 @@ const electronApi = {
   getDesktopRuntimeStatus: (): Promise<ShellConnectionState["localRuntime"]> => ipcRenderer.invoke("desktopRuntime:getStatus"),
   startDesktopLocalRuntime: (): Promise<ShellConnectionState["localRuntime"]> => ipcRenderer.invoke("desktopRuntime:startLocal"),
   stopDesktopLocalRuntime: (): Promise<ShellConnectionState["localRuntime"]> => ipcRenderer.invoke("desktopRuntime:stopLocal"),
+  getDesktopLaunchMode: (): Promise<"choose" | "local" | "remote"> => ipcRenderer.invoke("desktopLaunchMode:getMode"),
+  setDesktopLaunchMode: (mode: "choose" | "local" | "remote"): Promise<"choose" | "local" | "remote"> =>
+    ipcRenderer.invoke("desktopLaunchMode:setMode", mode),
 
   // Tray status
   updateTrayStatus: (status: string): Promise<void> => ipcRenderer.invoke("tray:updateStatus", status),

@@ -18,6 +18,8 @@ export interface WindowState {
   isMaximized: boolean;
 }
 
+export type DesktopLaunchMode = "choose" | "local" | "remote";
+
 export const DEFAULT_WINDOW_STATE: WindowState = {
   width: 1280,
   height: 900,
@@ -42,6 +44,10 @@ function generateSettingsExportFilename(date: Date = new Date()): string {
 
 function getWindowStatePath(): string {
   return join(app.getPath("userData"), "window-state.json");
+}
+
+function getDesktopLaunchModePath(): string {
+  return join(app.getPath("userData"), "desktop-launch-mode.json");
 }
 
 function isValidWindowState(value: unknown): value is WindowState {
@@ -158,6 +164,38 @@ export function setupAutoUpdater(mainWindow?: BrowserWindow): void {
   } catch (error) {
     console.error("[desktop/native] Auto-updater unavailable", error);
   }
+}
+
+function isValidDesktopLaunchMode(value: unknown): value is DesktopLaunchMode {
+  return value === "choose" || value === "local" || value === "remote";
+}
+
+export async function loadDesktopLaunchMode(): Promise<DesktopLaunchMode> {
+  const launchModePath = getDesktopLaunchModePath();
+
+  try {
+    const raw = await readFile(launchModePath, "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+
+    if (parsed && typeof parsed === "object" && "mode" in parsed) {
+      const mode = (parsed as { mode?: unknown }).mode;
+      if (isValidDesktopLaunchMode(mode)) {
+        return mode;
+      }
+    }
+
+    return "choose";
+  } catch {
+    return "choose";
+  }
+}
+
+export async function saveDesktopLaunchMode(mode: DesktopLaunchMode): Promise<void> {
+  const launchModePath = getDesktopLaunchModePath();
+  const tempPath = `${launchModePath}.tmp`;
+
+  await writeFile(tempPath, JSON.stringify({ mode }, null, 2), "utf-8");
+  await rename(tempPath, launchModePath);
 }
 
 export async function loadWindowState(): Promise<WindowState | null> {

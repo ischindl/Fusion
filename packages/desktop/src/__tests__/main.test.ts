@@ -105,6 +105,8 @@ const mainDeps = vi.hoisted(() => {
   const stopLocal = vi.fn(async () => ({ source: "none", state: "stopped" }));
   const getStatus = vi.fn(() => ({ source: "none", state: "stopped" }));
   const getServerPort = vi.fn(() => 0);
+  const loadDesktopLaunchMode = vi.fn(async () => "choose");
+  const saveDesktopLaunchMode = vi.fn(async () => undefined);
   return {
     registerIpcHandlers: vi.fn(),
     buildAppMenu: vi.fn(),
@@ -113,6 +115,8 @@ const mainDeps = vi.hoisted(() => {
     setupDeepLinkHandler: vi.fn(),
     setupAutoUpdater: vi.fn(),
     loadWindowState: vi.fn(async () => null),
+    loadDesktopLaunchMode,
+    saveDesktopLaunchMode,
     saveWindowState: vi.fn(),
     LocalRuntimeManager: vi.fn(() => ({ startLocal, stopLocal, getStatus, getServerPort })),
     startLocal,
@@ -129,6 +133,8 @@ vi.mock("../deep-link.js", () => ({
 vi.mock("../native.js", () => ({
   DEFAULT_WINDOW_STATE: { width: 1280, height: 900, isMaximized: false },
   loadWindowState: mainDeps.loadWindowState,
+  loadDesktopLaunchMode: mainDeps.loadDesktopLaunchMode,
+  saveDesktopLaunchMode: mainDeps.saveDesktopLaunchMode,
   saveWindowState: mainDeps.saveWindowState,
   setupAutoUpdater: mainDeps.setupAutoUpdater,
 }));
@@ -239,7 +245,48 @@ describe("main process", () => {
     expect(typeof mainModule.initializeApp).toBe("function");
   });
 
-  it("initializeApp starts local runtime when FUSION_DESKTOP_MODE=local", async () => {
+  it("initializeApp starts local runtime when remembered mode is local", async () => {
+    mainDeps.loadDesktopLaunchMode.mockResolvedValueOnce("local");
+    const { initializeApp, getCurrentDesktopLaunchMode } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mainDeps.startLocal).toHaveBeenCalledTimes(1);
+    expect(getCurrentDesktopLaunchMode()).toBe("local");
+  });
+
+  it("initializeApp does not start local runtime for remembered choose mode", async () => {
+    mainDeps.loadDesktopLaunchMode.mockResolvedValueOnce("choose");
+    const { initializeApp } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mainDeps.startLocal).not.toHaveBeenCalled();
+  });
+
+  it("initializeApp does not start local runtime for remembered remote mode", async () => {
+    mainDeps.loadDesktopLaunchMode.mockResolvedValueOnce("remote");
+    const { initializeApp, getCurrentDesktopLaunchMode } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mainDeps.startLocal).not.toHaveBeenCalled();
+    expect(getCurrentDesktopLaunchMode()).toBe("remote");
+  });
+
+  it("initializeApp falls back to choose and persists when remembered local start fails", async () => {
+    mainDeps.loadDesktopLaunchMode.mockResolvedValueOnce("local");
+    mainDeps.startLocal.mockRejectedValueOnce(new Error("boom"));
+    const { initializeApp, getCurrentDesktopLaunchMode } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mainDeps.saveDesktopLaunchMode).toHaveBeenCalledWith("choose");
+    expect(getCurrentDesktopLaunchMode()).toBe("choose");
+  });
+
+  it("initializeApp avoids duplicate local start when remembered mode and env flag are local", async () => {
+    mainDeps.loadDesktopLaunchMode.mockResolvedValueOnce("local");
     process.env.FUSION_DESKTOP_MODE = "local";
     const { initializeApp } = await importMainModule();
 
@@ -248,12 +295,17 @@ describe("main process", () => {
     expect(mainDeps.startLocal).toHaveBeenCalledTimes(1);
   });
 
-  it("initializeApp does not start local runtime when FUSION_DESKTOP_MODE is unset", async () => {
+  it("onDesktopModeChange persists the selected launch mode", async () => {
     const { initializeApp } = await importMainModule();
 
     await initializeApp();
 
-    expect(mainDeps.startLocal).not.toHaveBeenCalled();
+    const options = mainDeps.registerIpcHandlers.mock.calls[0]?.[2] as
+      | { onDesktopModeChange?: (mode: "local" | "remote") => Promise<void> }
+      | undefined;
+    await options?.onDesktopModeChange?.("remote");
+
+    expect(mainDeps.saveDesktopLaunchMode).toHaveBeenCalledWith("remote");
   });
 
   it("createMainWindow registers close and closed handlers", async () => {

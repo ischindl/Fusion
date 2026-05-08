@@ -127,6 +127,8 @@ describe("ipc handlers", () => {
     expect(channels.has("desktopRuntime:getStatus")).toBe(true);
     expect(channels.has("desktopRuntime:startLocal")).toBe(true);
     expect(channels.has("desktopRuntime:stopLocal")).toBe(true);
+    expect(channels.has("desktopLaunchMode:getMode")).toBe(true);
+    expect(channels.has("desktopLaunchMode:setMode")).toBe(true);
     expect(channels.has("platform:get")).toBe(true);
   });
 
@@ -151,6 +153,17 @@ describe("ipc handlers", () => {
     );
     expect(onDesktopModeChange).toHaveBeenCalledWith("local");
     expect(window.webContents.send).toHaveBeenCalledWith("shell:state", expect.any(Object));
+  });
+
+  it("desktop launch mode handlers return mode and validate payload", async () => {
+    const onDesktopLaunchModeChange = vi.fn(async () => undefined);
+    const getDesktopLaunchMode = vi.fn(() => "remote");
+    await registerHandlers({ onDesktopLaunchModeChange, getDesktopLaunchMode });
+
+    await expect(mocks.ipcHandlers.get("desktopLaunchMode:getMode")?.({})).resolves.toBe("remote");
+    await expect(mocks.ipcHandlers.get("desktopLaunchMode:setMode")?.({}, "local")).resolves.toBe("remote");
+    await expect(mocks.ipcHandlers.get("desktopLaunchMode:setMode")?.({}, "bad")).rejects.toThrow("Invalid desktop launch mode");
+    expect(onDesktopLaunchModeChange).toHaveBeenCalledWith("local");
   });
 
   it("desktopRuntime start/stop/getStatus handlers proxy runtime manager", async () => {

@@ -47,7 +47,14 @@ vi.mock("../renderer.js", () => ({ isUrlRenderer: vi.fn(() => true), getRenderer
 vi.mock("../menu.js", () => ({ buildAppMenu: vi.fn() }));
 vi.mock("../tray.js", () => ({ setupTray: vi.fn() }));
 vi.mock("../ipc.js", () => ({ registerIpcHandlers: vi.fn() }));
-vi.mock("../native.js", () => ({ DEFAULT_WINDOW_STATE: { width: 1000, height: 800 }, loadWindowState: vi.fn(async () => null), saveWindowState: vi.fn(), setupAutoUpdater: vi.fn() }));
+vi.mock("../native.js", () => ({
+  DEFAULT_WINDOW_STATE: { width: 1000, height: 800 },
+  loadWindowState: vi.fn(async () => null),
+  loadDesktopLaunchMode: vi.fn(async () => "choose"),
+  saveDesktopLaunchMode: vi.fn(async () => undefined),
+  saveWindowState: vi.fn(),
+  setupAutoUpdater: vi.fn(),
+}));
 vi.mock("../deep-link.js", () => ({ registerDeepLinkProtocol: vi.fn(), setupDeepLinkHandler: vi.fn() }));
 vi.mock("../local-runtime.js", () => ({ LocalRuntimeManager: vi.fn(() => mocks.localRuntimeManager) }));
 

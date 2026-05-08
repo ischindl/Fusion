@@ -32,12 +32,20 @@ interface ShellConnectionState {
   localRuntime?: DesktopRuntimeStatus;
 }
 
+type DesktopLaunchMode = "choose" | "local" | "remote";
+
 interface RegisterIpcOptions {
   onDesktopModeChange?: (mode: DesktopShellMode) => Promise<void>;
+  onDesktopLaunchModeChange?: (mode: DesktopLaunchMode) => Promise<void>;
   getRuntimeStatus?: () => DesktopRuntimeStatus;
   startLocalRuntime?: () => Promise<DesktopRuntimeStatus>;
   stopLocalRuntime?: () => Promise<DesktopRuntimeStatus>;
   getServerPort?: () => number | undefined;
+  getDesktopLaunchMode?: () => DesktopLaunchMode;
+}
+
+function isDesktopLaunchMode(value: unknown): value is DesktopLaunchMode {
+  return value === "choose" || value === "local" || value === "remote";
 }
 
 function toShellState(
@@ -103,6 +111,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, tray: Tray, optio
   ipcMain.handle("desktopRuntime:getStatus", async () => options.getRuntimeStatus?.() ?? { source: "none", state: "stopped" });
   ipcMain.handle("desktopRuntime:startLocal", async () => options.startLocalRuntime?.() ?? { source: "none", state: "stopped" });
   ipcMain.handle("desktopRuntime:stopLocal", async () => options.stopLocalRuntime?.() ?? { source: "none", state: "stopped" });
+  ipcMain.handle("desktopLaunchMode:getMode", async () => options.getDesktopLaunchMode?.() ?? "choose");
+  ipcMain.handle("desktopLaunchMode:setMode", async (_event, mode: unknown) => {
+    if (!isDesktopLaunchMode(mode)) {
+      throw new Error("Invalid desktop launch mode");
+    }
+
+    if (options.onDesktopLaunchModeChange) {
+      await options.onDesktopLaunchModeChange(mode);
+      return options.getDesktopLaunchMode?.() ?? mode;
+    }
+
+    if ((mode === "local" || mode === "remote") && options.onDesktopModeChange) {
+      await options.onDesktopModeChange(mode);
+      return options.getDesktopLaunchMode?.() ?? mode;
+    }
+
+    return options.getDesktopLaunchMode?.() ?? mode;
+  });
 
   ipcMain.handle("shell:getState", () => readShellSettings().then((settings) => toShellState(settings, options.getRuntimeStatus?.())));
   ipcMain.handle("shell:listProfiles", async () => (await readShellSettings()).profiles);

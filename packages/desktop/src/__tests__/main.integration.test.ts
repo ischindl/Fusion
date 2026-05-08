@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => {
     registerDeepLinkProtocol: vi.fn(),
     setupDeepLinkHandler: vi.fn(),
     loadWindowState: vi.fn(async () => null),
+    loadDesktopLaunchMode: vi.fn(async () => "choose"),
+    saveDesktopLaunchMode: vi.fn(async () => undefined),
     saveWindowState: vi.fn(),
     setupAutoUpdater: vi.fn(),
   };
@@ -72,6 +74,8 @@ vi.mock("../native.js", () => ({
     isMaximized: false,
   },
   loadWindowState: mocks.loadWindowState,
+  loadDesktopLaunchMode: mocks.loadDesktopLaunchMode,
+  saveDesktopLaunchMode: mocks.saveDesktopLaunchMode,
   saveWindowState: mocks.saveWindowState,
   setupAutoUpdater: mocks.setupAutoUpdater,
 }));

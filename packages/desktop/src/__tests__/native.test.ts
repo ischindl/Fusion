@@ -374,6 +374,45 @@ describe("native integrations", () => {
     });
   });
 
+  describe("desktop launch mode", () => {
+    it("loadDesktopLaunchMode returns choose when file is missing", async () => {
+      const { loadDesktopLaunchMode } = await importNativeModule();
+      mocks.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+
+      await expect(loadDesktopLaunchMode()).resolves.toBe("choose");
+    });
+
+    it("loadDesktopLaunchMode returns persisted mode", async () => {
+      const { loadDesktopLaunchMode } = await importNativeModule();
+      mocks.readFile.mockResolvedValueOnce(JSON.stringify({ mode: "local" }));
+
+      await expect(loadDesktopLaunchMode()).resolves.toBe("local");
+    });
+
+    it("loadDesktopLaunchMode falls back to choose for invalid payload", async () => {
+      const { loadDesktopLaunchMode } = await importNativeModule();
+      mocks.readFile.mockResolvedValueOnce(JSON.stringify({ mode: "invalid" }));
+
+      await expect(loadDesktopLaunchMode()).resolves.toBe("choose");
+    });
+
+    it("saveDesktopLaunchMode writes temp file and renames atomically", async () => {
+      const { saveDesktopLaunchMode } = await importNativeModule();
+
+      await saveDesktopLaunchMode("remote");
+
+      expect(mocks.writeFile).toHaveBeenCalledWith(
+        "/mock/user-data/desktop-launch-mode.json.tmp",
+        JSON.stringify({ mode: "remote" }, null, 2),
+        "utf-8",
+      );
+      expect(mocks.rename).toHaveBeenCalledWith(
+        "/mock/user-data/desktop-launch-mode.json.tmp",
+        "/mock/user-data/desktop-launch-mode.json",
+      );
+    });
+  });
+
   describe("window state", () => {
     it("loadWindowState returns parsed state", async () => {
       const { loadWindowState } = await importNativeModule();

@@ -65,7 +65,9 @@ Desktop boots through a shell-owned mode chooser before mounting the dashboard a
 
 - **First run choice:** users choose **Local Fusion (bundled runtime)** or **Remote connection path**.
 - **Mode contract:** `desktopMode` is `"local" | "remote" | null` and `hasCompletedModeSelection` determines whether the renderer treats startup as first-run. IPC also exposes a renderer-safe `{ isFirstRun, desktopMode }` shape via `shell:getDesktopModeState`.
-- **Desktop mode restore:** after selection, mode is persisted and reused on relaunch.
+- **Desktop mode restore:** launch mode is stored in `app.getPath("userData")/desktop-launch-mode.json` as `{ "mode": "choose" | "local" | "remote" }` and reused on relaunch.
+- **Restore rules:** `choose` keeps chooser-first startup behavior, `local` attempts to start the embedded local runtime on launch, and `remote` skips embedded runtime startup.
+- **Failure fallback:** if remembered `local` restore fails, the shell stops partial runtime state, falls back to `choose`, and persists that fallback to avoid broken relaunch loops.
 - **Remote profiles:** multiple saved profiles are supported (`name`, `serverUrl`, optional `authToken`) and can be created/edited/switched/deleted from the dashboard connection manager.
 - **Delete fallback:** if the active profile is deleted, desktop shell settings automatically select the first remaining profile; deleting the final profile leaves a valid empty payload (`activeProfileId: null`, `profiles: []`).
 - **Storage boundary:** shell connection state is stored only in desktop-local app data at `app.getPath("userData")/shell-connections.json` and is not written to `.fusion/config.json` or dashboard project storage keys.
@@ -93,6 +95,8 @@ Desktop boots through a shell-owned mode chooser before mounting the dashboard a
 | `desktopRuntime:getStatus` | renderer → main | none | `Promise<DesktopRuntimeStatus>` |
 | `desktopRuntime:startLocal` | renderer → main | none | `Promise<DesktopRuntimeStatus>` |
 | `desktopRuntime:stopLocal` | renderer → main | none | `Promise<DesktopRuntimeStatus>` |
+| `desktopLaunchMode:getMode` | renderer → main | none | `Promise<"choose" \| "local" \| "remote">` |
+| `desktopLaunchMode:setMode` | renderer → main | `mode: "choose" \| "local" \| "remote"` | `Promise<"choose" \| "local" \| "remote">` |
 | `tray:updateStatus` | renderer → main | `status: "running" \| "paused" \| "stopped"` | `Promise<void>` |
 | `native:showExportDialog` | renderer → main | none | `Promise<string \| null>` |
 | `native:showImportDialog` | renderer → main | none | `Promise<string \| null>` |
@@ -135,14 +139,16 @@ Desktop local mode uses an in-process runtime manager (`src/local-runtime.ts`) t
 `src/main.ts` orchestrates module startup in this order:
 
 1. `loadWindowState()`
-2. `createMainWindow(state)`
-3. `buildAppMenu({ mainWindow, appName: "Fusion" })`
-4. `setupTray(mainWindow, tray)`
-5. `registerIpcHandlers(mainWindow, tray)`
-6. `registerDeepLinkProtocol()`
-7. `setupDeepLinkHandler(mainWindow)`
-8. `setupAutoUpdater(mainWindow)`
-9. `mainWindow.maximize()` when restored state was maximized
+2. `loadDesktopLaunchMode()`
+3. Restore launch mode behavior (`local` attempts embedded runtime start; `remote`/`choose` skip)
+4. `createMainWindow(state)`
+5. `buildAppMenu({ mainWindow, appName: "Fusion" })`
+6. `setupTray(mainWindow, tray)`
+7. `registerIpcHandlers(mainWindow, tray)`
+8. `registerDeepLinkProtocol()`
+9. `setupDeepLinkHandler(mainWindow)`
+10. `setupAutoUpdater(mainWindow)`
+11. `mainWindow.maximize()` when restored state was maximized
 
 ### Window state and close-to-tray behavior
 
@@ -167,6 +173,7 @@ Desktop local mode uses an in-process runtime manager (`src/local-runtime.ts`) t
   - Window control: `minimize()`, `maximize()`, `close()`, `isMaximized()`
   - App/system: `getSystemInfo()`, `checkForUpdates()`, `getServerPort()`
   - Desktop runtime: `getDesktopRuntimeStatus()`, `startDesktopLocalRuntime()`, `stopDesktopLocalRuntime()`
+  - Desktop launch mode: `getDesktopLaunchMode()`, `setDesktopLaunchMode(mode)`
   - Tray: `updateTrayStatus(status)`
   - Native dialogs: `showExportDialog()`, `showImportDialog()`
   - Event subscriptions (return unsubscribe functions):
@@ -238,6 +245,9 @@ The desktop shell installs a native menu with standard shortcuts.
   - `loadWindowState()` reads `window-state.json` from `app.getPath("userData")`.
   - `saveWindowState(mainWindow)` writes bounds/maximized state atomically (`.tmp` + rename).
   - `DEFAULT_WINDOW_STATE` is the fallback (`1280x900`, not maximized).
+- **Desktop launch-mode persistence**
+  - `loadDesktopLaunchMode()` reads `desktop-launch-mode.json` and returns `"choose" | "local" | "remote"` (invalid/missing files fall back to `"choose"`).
+  - `saveDesktopLaunchMode(mode)` writes the mode atomically (`.tmp` + rename).
 
 ## Deep Linking
 
@@ -274,6 +284,8 @@ FN-1076 depends on these exact exports and names.
 | `setupAutoUpdater` | `(mainWindow?) => void` |
 | `loadWindowState` | `() => Promise<WindowState \| null>` |
 | `saveWindowState` | `(mainWindow) => void` |
+| `loadDesktopLaunchMode` | `() => Promise<"choose" \| "local" \| "remote">` |
+| `saveDesktopLaunchMode` | `(mode) => Promise<void>` |
 | `DEFAULT_WINDOW_STATE` | `WindowState` |
 | `WindowState` | `interface` |
 

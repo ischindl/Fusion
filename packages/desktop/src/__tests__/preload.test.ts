@@ -50,6 +50,20 @@ describe("preload", () => {
     expect(mocks.ipcRenderer.invoke).toHaveBeenCalledWith("app:getServerPort");
   });
 
+  it("electronAPI launch mode methods delegate to IPC", async () => {
+    await importPreloadModule();
+    const api = getExposed<{
+      getDesktopLaunchMode: () => Promise<string>;
+      setDesktopLaunchMode: (mode: "choose" | "local" | "remote") => Promise<string>;
+    }>("electronAPI");
+
+    await api?.getDesktopLaunchMode();
+    await api?.setDesktopLaunchMode("local");
+
+    expect(mocks.ipcRenderer.invoke).toHaveBeenCalledWith("desktopLaunchMode:getMode");
+    expect(mocks.ipcRenderer.invoke).toHaveBeenCalledWith("desktopLaunchMode:setMode", "local");
+  });
+
   it("fusionShell subscribes and unsubscribes state listener", async () => {
     await importPreloadModule();
     const shell = getExposed<{ subscribe: (listener: (state: unknown) => void) => () => void }>("fusionShell");

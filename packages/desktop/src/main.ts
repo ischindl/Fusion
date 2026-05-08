@@ -6,9 +6,12 @@ import { registerIpcHandlers } from "./ipc.js";
 import { buildAppMenu } from "./menu.js";
 import {
   DEFAULT_WINDOW_STATE,
+  loadDesktopLaunchMode,
   loadWindowState,
+  saveDesktopLaunchMode,
   saveWindowState,
   setupAutoUpdater,
+  type DesktopLaunchMode,
   type WindowState,
 } from "./native.js";
 import { setupTray } from "./tray.js";
@@ -35,9 +38,30 @@ enableSourceMaps();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let localRuntimeManager: LocalRuntimeManager | null = null;
+let currentDesktopLaunchMode: DesktopLaunchMode = "choose";
+let localRuntimeStartupAttempted = false;
 
 function getAppWithQuitFlag(): Electron.App & AppWithQuitFlag {
   return app as Electron.App & AppWithQuitFlag;
+}
+
+async function startLocalRuntimeOnce(): Promise<void> {
+  if (!localRuntimeManager || localRuntimeStartupAttempted) {
+    return;
+  }
+
+  const status = localRuntimeManager.getStatus();
+  if (status.source === "embedded-local" && status.state === "running") {
+    localRuntimeStartupAttempted = true;
+    return;
+  }
+
+  localRuntimeStartupAttempted = true;
+  await localRuntimeManager.startLocal();
+}
+
+export function getCurrentDesktopLaunchMode(): DesktopLaunchMode {
+  return currentDesktopLaunchMode;
 }
 
 export function createMainWindow(state?: WindowState): BrowserWindow {
@@ -55,7 +79,6 @@ export function createMainWindow(state?: WindowState): BrowserWindow {
     },
   });
 
-  // Use renderer module to determine how to load the UI
   if (isUrlRenderer()) {
     void window.loadURL(getRendererUrl());
   } else {
@@ -83,14 +106,35 @@ export function createMainWindow(state?: WindowState): BrowserWindow {
 
 export async function initializeApp(): Promise<void> {
   const state = await loadWindowState();
+  const rememberedLaunchMode = await loadDesktopLaunchMode();
+
+  localRuntimeManager = new LocalRuntimeManager({ rootDir: process.cwd() });
+  currentDesktopLaunchMode = rememberedLaunchMode;
+  localRuntimeStartupAttempted = false;
+
+  if (rememberedLaunchMode === "local") {
+    try {
+      await startLocalRuntimeOnce();
+    } catch (error) {
+      await localRuntimeManager.stopLocal();
+      currentDesktopLaunchMode = "choose";
+      localRuntimeStartupAttempted = false;
+      await saveDesktopLaunchMode("choose");
+      console.error("[desktop/main] Failed to restore local mode; falling back to chooser", error);
+    }
+  }
+
+  if (currentDesktopLaunchMode === "choose" && process.env.FUSION_DESKTOP_MODE === "local") {
+    await startLocalRuntimeOnce();
+    currentDesktopLaunchMode = "local";
+  }
+
   const createdWindow = createMainWindow(state ?? undefined);
 
   buildAppMenu({
     mainWindow: createdWindow,
     appName: "Fusion",
   });
-
-  localRuntimeManager = new LocalRuntimeManager({ rootDir: process.cwd() });
 
   tray = new Tray(nativeImage.createEmpty());
   setupTray(createdWindow, tray);
@@ -100,24 +144,38 @@ export async function initializeApp(): Promise<void> {
       if (!localRuntimeManager) {
         return;
       }
+      currentDesktopLaunchMode = mode;
       if (mode === "local") {
-        await localRuntimeManager.startLocal();
+        localRuntimeStartupAttempted = false;
+        await startLocalRuntimeOnce();
+      } else {
+        localRuntimeStartupAttempted = false;
+        await localRuntimeManager.stopLocal();
+      }
+      await saveDesktopLaunchMode(mode);
+    },
+    onDesktopLaunchModeChange: async (mode) => {
+      if (!localRuntimeManager) {
+        return;
+      }
+      currentDesktopLaunchMode = mode;
+      localRuntimeStartupAttempted = false;
+      if (mode === "local") {
+        await startLocalRuntimeOnce();
       } else {
         await localRuntimeManager.stopLocal();
       }
+      await saveDesktopLaunchMode(mode);
     },
     getRuntimeStatus: () => localRuntimeManager?.getStatus() ?? { source: "none", state: "stopped" },
     startLocalRuntime: () => localRuntimeManager?.startLocal() ?? Promise.resolve({ source: "none", state: "stopped" }),
     stopLocalRuntime: () => localRuntimeManager?.stopLocal() ?? Promise.resolve({ source: "none", state: "stopped" }),
     getServerPort: () => localRuntimeManager?.getServerPort(),
+    getDesktopLaunchMode: () => currentDesktopLaunchMode,
   });
   registerDeepLinkProtocol();
   setupDeepLinkHandler(createdWindow);
   setupAutoUpdater(createdWindow);
-
-  if (process.env.FUSION_DESKTOP_MODE === "local") {
-    await localRuntimeManager.startLocal();
-  }
 
   if (state?.isMaximized === true) {
     createdWindow.maximize();

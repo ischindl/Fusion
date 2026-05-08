@@ -93,6 +93,16 @@ const mocks = vi.hoisted(() => {
     return null;
   });
 
+  const loadDesktopLaunchMode = vi.fn(async () => {
+    callLog.push("loadDesktopLaunchMode");
+    return "choose";
+  });
+
+  const saveDesktopLaunchMode = vi.fn(async () => undefined);
+  const startLocal = vi.fn(async () => ({ source: "embedded-local", state: "running", port: 4545 }));
+  const stopLocal = vi.fn(async () => ({ source: "none", state: "stopped" }));
+  const getStatus = vi.fn(() => ({ source: "none", state: "stopped" }));
+
   const saveWindowState = vi.fn();
 
   const DEFAULT_WINDOW_STATE = {
@@ -117,7 +127,12 @@ const mocks = vi.hoisted(() => {
     setupDeepLinkHandler,
     setupAutoUpdater,
     loadWindowState,
+    loadDesktopLaunchMode,
+    saveDesktopLaunchMode,
     saveWindowState,
+    startLocal,
+    stopLocal,
+    getStatus,
     DEFAULT_WINDOW_STATE,
   };
 });
@@ -148,9 +163,20 @@ vi.mock("../deep-link.js", () => ({
 
 vi.mock("../native.js", () => ({
   loadWindowState: mocks.loadWindowState,
+  loadDesktopLaunchMode: mocks.loadDesktopLaunchMode,
+  saveDesktopLaunchMode: mocks.saveDesktopLaunchMode,
   saveWindowState: mocks.saveWindowState,
   setupAutoUpdater: mocks.setupAutoUpdater,
   DEFAULT_WINDOW_STATE: mocks.DEFAULT_WINDOW_STATE,
+}));
+
+vi.mock("../local-runtime.js", () => ({
+  LocalRuntimeManager: vi.fn(() => ({
+    startLocal: mocks.startLocal,
+    stopLocal: mocks.stopLocal,
+    getStatus: mocks.getStatus,
+    getServerPort: vi.fn(() => 0),
+  })),
 }));
 
 // Mock renderer module
@@ -187,6 +213,10 @@ describe("main integration", () => {
       mocks.callLog.push("loadWindowState");
       return null;
     });
+    mocks.loadDesktopLaunchMode.mockImplementation(async () => {
+      mocks.callLog.push("loadDesktopLaunchMode");
+      return "choose";
+    });
   });
 
   it("initializeApp calls modules in the expected order", async () => {
@@ -196,6 +226,7 @@ describe("main integration", () => {
 
     expect(mocks.callLog).toEqual([
       "loadWindowState",
+      "loadDesktopLaunchMode",
       "createMainWindow",
       "buildAppMenu",
       "setupTray",
@@ -342,6 +373,27 @@ describe("main integration", () => {
     if (platformDescriptor) {
       Object.defineProperty(process, "platform", platformDescriptor);
     }
+  });
+
+  it("starts local runtime when remembered mode is local", async () => {
+    mocks.loadDesktopLaunchMode.mockResolvedValueOnce("local");
+    const { initializeApp } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mocks.startLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to choose and persists fallback when local restore fails", async () => {
+    mocks.loadDesktopLaunchMode.mockResolvedValueOnce("local");
+    mocks.startLocal.mockRejectedValueOnce(new Error("start failed"));
+    const { initializeApp, getCurrentDesktopLaunchMode } = await importMainModule();
+
+    await initializeApp();
+
+    expect(mocks.saveDesktopLaunchMode).toHaveBeenCalledWith("choose");
+    expect(getCurrentDesktopLaunchMode()).toBe("choose");
+    expect(mocks.stopLocal).toHaveBeenCalledTimes(1);
   });
 
   it("importing main module does not auto-start app lifecycle", async () => {
