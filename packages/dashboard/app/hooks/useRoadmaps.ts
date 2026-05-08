@@ -12,7 +12,7 @@ import type {
   RoadmapWithHierarchy,
   RoadmapMissionPlanningHandoff,
   RoadmapFeatureTaskPlanningHandoff,
-} from "@fusion/core";
+} from "@fusion-plugin-examples/roadmap";
 import * as api from "../api";
 
 /**

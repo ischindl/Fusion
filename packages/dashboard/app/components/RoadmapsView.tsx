@@ -17,7 +17,7 @@ import type {
   RoadmapFeatureUpdateInput,
   RoadmapMissionPlanningHandoff,
   RoadmapFeatureTaskPlanningHandoff,
-} from "@fusion/core";
+} from "@fusion-plugin-examples/roadmap";
 
 export interface RoadmapsViewProps {
   projectId?: string;

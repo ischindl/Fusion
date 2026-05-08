@@ -43,19 +43,6 @@ import type {
   AgentRatingInput,
   ChatMessage,
   EnrichedChatSession,
-  Roadmap,
-  RoadmapMilestone,
-  RoadmapFeature,
-  RoadmapCreateInput,
-  RoadmapUpdateInput,
-  RoadmapMilestoneCreateInput,
-  RoadmapMilestoneUpdateInput,
-  RoadmapFeatureCreateInput,
-  RoadmapFeatureUpdateInput,
-  RoadmapWithHierarchy,
-  RoadmapExportBundle,
-  RoadmapMissionPlanningHandoff,
-  RoadmapFeatureTaskPlanningHandoff,
   TodoList,
   TodoItem,
   TodoListWithItems,
@@ -83,6 +70,21 @@ import type {
   ProjectNodePathMapping,
 } from "@fusion/core";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
+import type {
+  Roadmap,
+  RoadmapMilestone,
+  RoadmapFeature,
+  RoadmapCreateInput,
+  RoadmapUpdateInput,
+  RoadmapMilestoneCreateInput,
+  RoadmapMilestoneUpdateInput,
+  RoadmapFeatureCreateInput,
+  RoadmapFeatureUpdateInput,
+  RoadmapWithHierarchy,
+  RoadmapExportBundle,
+  RoadmapMissionPlanningHandoff,
+  RoadmapFeatureTaskPlanningHandoff,
+} from "@fusion-plugin-examples/roadmap";
 import type { ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, Routine, RoutineCreateInput, RoutineUpdateInput, RoutineExecutionResult } from "@fusion/core";
 import type { DiscoveredSkill, CatalogEntry, CatalogFetchResult, ToggleSkillResult, SkillContent, SkillFileEntry } from "@fusion/dashboard";
 import type { MilestoneValidationTelemetry } from "../components/mission-types";
