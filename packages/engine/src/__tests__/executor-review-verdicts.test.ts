@@ -325,7 +325,7 @@ describe("Code review verdict tracking", () => {
 
     const tools = await captureTools();
     const result = await tools.fn_review_step("call1", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Implement",
       baseline: "abc123",
@@ -350,7 +350,7 @@ describe("Code review verdict tracking", () => {
 
     const tools = await captureTools();
     await tools.fn_review_step("call1", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Implement",
       baseline: "abc123",
@@ -368,7 +368,7 @@ describe("Code review verdict tracking", () => {
     });
 
     await tools.fn_review_step("call3", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Implement",
       baseline: "def456",
@@ -388,7 +388,7 @@ describe("Code review verdict tracking", () => {
 
     const tools = await captureTools();
     const result = await tools.fn_review_step("call1", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Implement",
     });
@@ -418,7 +418,7 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
 
     const tools = await captureTools();
     await tools.fn_review_step("call1", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Implement",
       baseline: "abc",
@@ -434,11 +434,11 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
 
     // REVISE first
     mockedReviewStep.mockResolvedValue({ verdict: "REVISE", review: "Fix", summary: "Bad" });
-    await tools.fn_review_step("c1", { step: 1, type: "code", step_name: "Impl", baseline: "a" });
+    await tools.fn_review_step("c1", { step: 0, type: "code", step_name: "Impl", baseline: "a" });
 
     // Then APPROVE
     mockedReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "OK", summary: "Good" });
-    await tools.fn_review_step("c2", { step: 1, type: "code", step_name: "Impl", baseline: "b" });
+    await tools.fn_review_step("c2", { step: 0, type: "code", step_name: "Impl", baseline: "b" });
 
     const result = await tools.fn_task_update("c3", { step: 1, status: "done" });
     expect(result.content[0].text).toContain("→ done");
@@ -456,7 +456,7 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
     mockedReviewStep.mockResolvedValue({ verdict: "REVISE", review: "Rethink", summary: "Plan issue" });
 
     const tools = await captureTools();
-    await tools.fn_review_step("c1", { step: 1, type: "plan", step_name: "Impl" });
+    await tools.fn_review_step("c1", { step: 0, type: "plan", step_name: "Impl" });
 
     const result = await tools.fn_task_update("c2", { step: 1, status: "done" });
     expect(result.content[0].text).toContain("→ done");
@@ -466,7 +466,7 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
     mockedReviewStep.mockResolvedValue({ verdict: "REVISE", review: "Fix", summary: "Bad" });
 
     const tools = await captureTools();
-    await tools.fn_review_step("c1", { step: 1, type: "code", step_name: "Step1", baseline: "a" });
+    await tools.fn_review_step("c1", { step: 0, type: "code", step_name: "Step1", baseline: "a" });
 
     // Step 1 is blocked
     const blocked = await tools.fn_task_update("c2", { step: 1, status: "done" });
@@ -497,7 +497,7 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
     mockedReviewStep.mockResolvedValue({ verdict: "REVISE", review: "Bug found", summary: "Issues" });
 
     const tools = await captureTools();
-    const result = await tools.fn_review_step("c1", { step: 1, type: "code", step_name: "Implement", baseline: "abc" });
+    const result = await tools.fn_review_step("c1", { step: 0, type: "code", step_name: "Implement", baseline: "abc" });
 
     expect(result.content[0].text).toContain("cannot be marked done");
     expect(result.content[0].text).toContain("fn_review_step");
@@ -618,7 +618,7 @@ describe("Code review verdict enforcement - fn_task_update blocking", () => {
     // Target step 3 (Testing, currently pending) so the in-progress transition is
     // a valid forward move — the assertion below only verifies that a REVISE on
     // the same step does not produce the "Cannot mark … as done" block.
-    await tools.fn_review_step("c1", { step: 3, type: "code", step_name: "Testing", baseline: "a" });
+    await tools.fn_review_step("c1", { step: 2, type: "code", step_name: "Testing", baseline: "a" });
 
     const result = await tools.fn_task_update("c2", { step: 3, status: "in-progress" });
     expect(result.content[0].text).not.toContain("Cannot mark");
@@ -710,7 +710,7 @@ describe("RETHINK verdict handling", () => {
 
     // Now call fn_review_step with a baseline
     const result = await reviewTool.execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123def",
@@ -743,7 +743,7 @@ describe("RETHINK verdict handling", () => {
 
     // Trigger RETHINK
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123",
@@ -771,14 +771,14 @@ describe("RETHINK verdict handling", () => {
     await updateTool.execute("call-1", { step: 1, status: "in-progress" });
 
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123",
     });
 
     // updateStep should be called: once for in-progress, once for pending (reset)
-    expect(store.updateStep).toHaveBeenCalledWith("FN-040", 1, "pending");
+    expect(store.updateStep).toHaveBeenCalledWith("FN-040", 0, "pending");
   });
 
   it("RETHINK re-prompt includes reviewer feedback", async () => {
@@ -799,7 +799,7 @@ describe("RETHINK verdict handling", () => {
     await updateTool.execute("call-1", { step: 1, status: "in-progress" });
 
     const result = await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123",
@@ -831,7 +831,7 @@ describe("RETHINK verdict handling", () => {
 
     // Call fn_review_step WITHOUT baseline
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       // no baseline
@@ -865,7 +865,7 @@ describe("RETHINK verdict handling", () => {
 
     // Call fn_review_step for step 2 — should not crash
     const result = await toolMap.get("fn_review_step").execute("call-2", {
-      step: 2,
+      step: 1,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123",
@@ -891,6 +891,26 @@ describe("RETHINK verdict handling", () => {
 
     // Verify getLeafId was called
     expect(mockSessionManager.getLeafId).toHaveBeenCalled();
+  });
+
+  it("uses step-1 checkpoint key when step 3 enters in-progress and step index 2 is reviewed", async () => {
+    const store = createMockStore();
+    store.updateStep.mockImplementation(async (_id: string, step: number, status: string) =>
+      makeStepResult(step, status),
+    );
+    mockedReviewStep.mockResolvedValue({ verdict: "RETHINK", review: "Bad", summary: "Redo" });
+
+    const { toolMap, mockNavigateTree } = await captureRethinkTools(store);
+    await toolMap.get("fn_task_update").execute("call-1", { step: 3, status: "in-progress" });
+
+    await toolMap.get("fn_review_step").execute("call-2", {
+      step: 2,
+      type: "code",
+      step_name: "Testing",
+      baseline: "abc123",
+    });
+
+    expect(mockNavigateTree).toHaveBeenCalled();
   });
 
   it("RETHINK falls back to branchWithSummary when navigateTree fails", async () => {
@@ -935,7 +955,7 @@ describe("RETHINK verdict handling", () => {
 
     // Trigger RETHINK
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "code",
       step_name: "Test Step",
       baseline: "abc123",
@@ -1027,7 +1047,7 @@ describe("Plan RETHINK verdict handling", () => {
 
     // Trigger plan RETHINK
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Test Step",
     });
@@ -1054,7 +1074,7 @@ describe("Plan RETHINK verdict handling", () => {
 
     // Even if baseline is passed, plan RETHINK should NOT git reset
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Test Step",
       baseline: "some-sha-that-should-be-ignored",
@@ -1084,13 +1104,13 @@ describe("Plan RETHINK verdict handling", () => {
     await toolMap.get("fn_task_update").execute("call-1", { step: 1, status: "in-progress" });
 
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Test Step",
     });
 
     // updateStep should be called with "pending" to reset the step
-    expect(store.updateStep).toHaveBeenCalledWith("FN-050", 1, "pending");
+    expect(store.updateStep).toHaveBeenCalledWith("FN-050", 0, "pending");
   });
 
   it("plan RETHINK re-prompt includes reviewer feedback and plan-specific language", async () => {
@@ -1110,7 +1130,7 @@ describe("Plan RETHINK verdict handling", () => {
     await toolMap.get("fn_task_update").execute("call-1", { step: 1, status: "in-progress" });
 
     const result = await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Test Step",
     });
@@ -1141,7 +1161,7 @@ describe("Plan RETHINK verdict handling", () => {
 
     // Call fn_review_step for step 2 — should not crash
     const result = await toolMap.get("fn_review_step").execute("call-2", {
-      step: 2,
+      step: 1,
       type: "plan",
       step_name: "Test Step",
     });
@@ -1171,7 +1191,7 @@ describe("Plan RETHINK verdict handling", () => {
     await toolMap.get("fn_task_update").execute("call-1", { step: 1, status: "in-progress" });
 
     await toolMap.get("fn_review_step").execute("call-2", {
-      step: 1,
+      step: 0,
       type: "plan",
       step_name: "Test Step",
     });
@@ -1265,7 +1285,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
     // Step 2: Plan review → APPROVE (advisory, no blocking)
     mockedReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "Good plan", summary: "Approved" });
     const planResult = await tools.fn_review_step("r1", {
-      step: 1, type: "plan", step_name: "Implement",
+      step: 0, type: "plan", step_name: "Implement",
     });
     expect(planResult.content[0].text).toBe("APPROVE");
 
@@ -1274,7 +1294,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       verdict: "REVISE", review: "Missing error handling in fetchUser()", summary: "Needs fixes",
     });
     const reviseResult = await tools.fn_review_step("r2", {
-      step: 1, type: "code", step_name: "Implement", baseline: "sha-1",
+      step: 0, type: "code", step_name: "Implement", baseline: "sha-1",
     });
     expect(reviseResult.content[0].text).toContain("cannot be marked done");
 
@@ -1287,7 +1307,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       verdict: "APPROVE", review: "Error handling added correctly", summary: "All good",
     });
     const approveResult = await tools.fn_review_step("r3", {
-      step: 1, type: "code", step_name: "Implement", baseline: "sha-2",
+      step: 0, type: "code", step_name: "Implement", baseline: "sha-2",
     });
     expect(approveResult.content[0].text).toBe("APPROVE");
 
@@ -1312,7 +1332,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       verdict: "RETHINK", review: "Using polling instead of events is wrong", summary: "Bad approach",
     });
     const rethinkResult = await tools.fn_review_step("r1", {
-      step: 1, type: "code", step_name: "Implement", baseline: "sha-bad",
+      step: 0, type: "code", step_name: "Implement", baseline: "sha-bad",
     });
 
     // Verify RETHINK outcomes
@@ -1323,7 +1343,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       expect.objectContaining({ cwd: expect.any(String) }),
     );
     expect(mockNavigateTree).toHaveBeenCalledWith("e2e-checkpoint", { summarize: false });
-    expect(store.updateStep).toHaveBeenCalledWith("FN-E2E", 1, "pending");
+    expect(store.updateStep).toHaveBeenCalledWith("FN-E2E", 0, "pending");
 
     // Step 3: Restart the step (new approach)
     await tools.fn_task_update("u2", { step: 1, status: "in-progress" });
@@ -1333,7 +1353,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       verdict: "APPROVE", review: "Event-driven approach is correct", summary: "Approved",
     });
     const approveResult = await tools.fn_review_step("r2", {
-      step: 1, type: "code", step_name: "Implement", baseline: "sha-good",
+      step: 0, type: "code", step_name: "Implement", baseline: "sha-good",
     });
     expect(approveResult.content[0].text).toBe("APPROVE");
 
@@ -1353,14 +1373,14 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
     // Step 1: Complete with APPROVE
     await tools.fn_task_update("u1", { step: 1, status: "in-progress" });
     mockedReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "OK", summary: "Good" });
-    await tools.fn_review_step("r1", { step: 1, type: "code", step_name: "Implement", baseline: "sha-1" });
+    await tools.fn_review_step("r1", { step: 0, type: "code", step_name: "Implement", baseline: "sha-1" });
     const step1Done = await tools.fn_task_update("u2", { step: 1, status: "done" });
     expect(step1Done.content[0].text).toContain("→ done");
 
     // Step 2: Gets REVISE
     await tools.fn_task_update("u3", { step: 2, status: "in-progress" });
     mockedReviewStep.mockResolvedValue({ verdict: "REVISE", review: "Tests insufficient", summary: "Bad" });
-    await tools.fn_review_step("r2", { step: 2, type: "code", step_name: "Tests", baseline: "sha-2" });
+    await tools.fn_review_step("r2", { step: 1, type: "code", step_name: "Tests", baseline: "sha-2" });
 
     // Step 2 blocked
     const step2Blocked = await tools.fn_task_update("u4", { step: 2, status: "done" });
@@ -1386,7 +1406,7 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
       verdict: "RETHINK", review: "Plan ignores edge cases", summary: "Bad plan",
     });
     const rethinkResult = await tools.fn_review_step("r1", {
-      step: 1, type: "plan", step_name: "Implement",
+      step: 0, type: "plan", step_name: "Implement",
     });
     expect(rethinkResult.content[0].text).toContain("Your plan was rejected");
 
@@ -1404,11 +1424,11 @@ describe("E2E review pipeline — multi-verdict sequence", () => {
 
     // Plan review → APPROVE
     mockedReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "Good plan", summary: "Approved" });
-    await tools.fn_review_step("r2", { step: 1, type: "plan", step_name: "Implement" });
+    await tools.fn_review_step("r2", { step: 0, type: "plan", step_name: "Implement" });
 
     // Code phase: APPROVE directly
     mockedReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "Clean code", summary: "Good" });
-    await tools.fn_review_step("r3", { step: 1, type: "code", step_name: "Implement", baseline: "sha-1" });
+    await tools.fn_review_step("r3", { step: 0, type: "code", step_name: "Implement", baseline: "sha-1" });
 
     // Mark done — should succeed (plan reviews are advisory, code APPROVE clears the path)
     const doneResult = await tools.fn_task_update("u3", { step: 1, status: "done" });
