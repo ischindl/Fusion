@@ -3,12 +3,14 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { TaskReviewTab } from "../TaskReviewTab";
 import { makeTask } from "./TaskDetailModal.test-helpers";
 
-const refreshTaskReview = vi.fn();
-const reviseTaskReviewItems = vi.fn();
+const apiMocks = vi.hoisted(() => ({
+  refreshTaskReview: vi.fn(),
+  reviseTaskReviewItems: vi.fn(),
+}));
 
 vi.mock("../../api", () => ({
-  refreshTaskReview,
-  reviseTaskReviewItems,
+  refreshTaskReview: apiMocks.refreshTaskReview,
+  reviseTaskReviewItems: apiMocks.reviseTaskReviewItems,
 }));
 
 describe("TaskReviewTab", () => {
@@ -24,10 +26,10 @@ describe("TaskReviewTab", () => {
 
   it("calls refresh endpoint", async () => {
     const task = makeTask({ review: { mode: "direct", source: "reviewer-agent", decision: "pending", items: [] } });
-    refreshTaskReview.mockResolvedValue({ review: task.review, automationStatus: null });
+    apiMocks.refreshTaskReview.mockResolvedValue({ review: task.review, automationStatus: null });
     render(<TaskReviewTab task={task} addToast={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(refreshTaskReview).toHaveBeenCalledWith(task.id, undefined);
+    expect(apiMocks.refreshTaskReview).toHaveBeenCalledWith(task.id, undefined);
   });
 
   it("renders PR decision and status modifiers", () => {
@@ -75,14 +77,14 @@ describe("TaskReviewTab", () => {
       },
     });
 
-    reviseTaskReviewItems.mockResolvedValue({ task, review: task.review });
-    refreshTaskReview.mockResolvedValue({ review: task.review, automationStatus: null });
+    apiMocks.reviseTaskReviewItems.mockResolvedValue({ task, review: task.review });
+    apiMocks.refreshTaskReview.mockResolvedValue({ review: task.review, automationStatus: null });
 
     render(<TaskReviewTab task={task} addToast={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "Request revision" }));
 
-    expect(reviseTaskReviewItems).toHaveBeenCalledWith(task.id, ["ri-1"], undefined);
+    expect(apiMocks.reviseTaskReviewItems).toHaveBeenCalledWith(task.id, ["ri-1"], undefined);
   });
 });

@@ -567,7 +567,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    const uninstallButtons = screen.getAllByTitle("Uninstall");
+    const uninstallButtons = screen.getAllByTitle("Uninstall globally");
     await userEvent.click(uninstallButtons[0]);
 
     expect(mockConfirm).toHaveBeenCalledWith({
@@ -588,7 +588,7 @@ describe("PluginManager", () => {
       expect(screen.getByText("Test Plugin A")).toBeTruthy();
     });
 
-    const uninstallButtons = screen.getAllByTitle("Uninstall");
+    const uninstallButtons = screen.getAllByTitle("Uninstall globally");
     await userEvent.click(uninstallButtons[0]);
 
     await waitFor(() => {
@@ -951,7 +951,7 @@ describe("PluginManager", () => {
       });
 
       // Verify initial state - toggle should NOT be checked
-      const toggle = screen.getByRole("checkbox");
+      const toggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
       expect(toggle).not.toBeChecked();
 
       // Now send an SSE event from a DIFFERENT project trying to enable the plugin
@@ -965,6 +965,7 @@ describe("PluginManager", () => {
             transition: "enabled",
             sourceEvent: "plugin:enabled",
             timestamp: new Date().toISOString(),
+            scope: "project",
             projectId: "other-project", // Different project - this event should be filtered
             enabled: true,
             state: "started",
@@ -975,10 +976,8 @@ describe("PluginManager", () => {
       });
 
       // Toggle should STILL NOT be checked since event is from different project (filtered)
-      await waitFor(() => {
-        const filteredToggle = screen.getByRole("checkbox");
-        expect(filteredToggle).not.toBeChecked();
-      });
+      const filteredToggle = screen.getByRole("checkbox", { name: /Test Plugin A/ });
+      expect(filteredToggle).not.toBeChecked();
     });
 
     it("cleans up EventSource on unmount", async () => {

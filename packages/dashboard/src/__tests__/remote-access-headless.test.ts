@@ -134,6 +134,7 @@ describe("remote access headless parity", () => {
         getMissionAutopilot: vi.fn(),
         getMissionExecutionLoop: vi.fn(),
       }),
+      getMessageStore: vi.fn().mockReturnValue(undefined),
       getHeartbeatMonitor: vi.fn(),
       getWorkingDirectory: vi.fn().mockReturnValue("/fake/root"),
       getRoutineStore: vi.fn(),

@@ -318,11 +318,13 @@ describe("normalizeSubtaskItem", () => {
       8,
     );
 
+    // Priority now normalizes to "normal" when omitted.
     expect(result).toEqual({
       id: "subtask-9",
       title: "Title",
       description: "Description",
       suggestedSize: "L",
+      priority: "normal",
       dependsOn: ["subtask-1"],
     });
   });
@@ -341,6 +343,7 @@ describe("normalizeSubtaskItem", () => {
       title: "Plan",
       description: "Work",
       suggestedSize: "M",
+      priority: "normal",
       dependsOn: [],
     });
   });

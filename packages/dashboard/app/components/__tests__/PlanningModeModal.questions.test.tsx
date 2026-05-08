@@ -1001,7 +1001,7 @@ describe("PlanningModeModal", () => {
         expect(screen.getByText("Planning Complete!")).toBeDefined();
       });
 
-      const sizeSelect = screen.getByRole("combobox") as HTMLSelectElement;
+      const sizeSelect = screen.getByLabelText("Suggested Size") as HTMLSelectElement;
       expect(sizeSelect.value).toBe("M");
       expect(Array.from(sizeSelect.options).map((option) => option.textContent)).toEqual([
         "S (Small)",
@@ -1130,7 +1130,7 @@ describe("PlanningModeModal", () => {
       });
 
       const firstSubtask = screen.getByTestId("subtask-item-0");
-      const sizeSelect = within(firstSubtask).getByRole("combobox") as HTMLSelectElement;
+      const sizeSelect = within(firstSubtask).getByLabelText("Size") as HTMLSelectElement;
 
       expect(sizeSelect.value).toBe("M");
       expect(Array.from(sizeSelect.options).map((option) => option.textContent)).toEqual([

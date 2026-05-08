@@ -1313,7 +1313,7 @@ describe("MailboxView", () => {
       expect(splitPaneBlockMatch).toBeTruthy();
       const splitPaneBlock = splitPaneBlockMatch![1];
       expect(splitPaneBlock).toContain("overflow-y: auto;");
-      expect(splitPaneBlock).toContain("border: 1px solid var(--border);");
+      expect(splitPaneBlock).toContain("border: var(--btn-border-width) solid var(--border);");
       expect(splitPaneBlock).toContain("background: var(--surface);");
 
       const splitEmptyBlockMatch = css.match(/\.mailbox-view\s+\.mailbox-split-empty\s*\{([^}]*)\}/);
@@ -1377,23 +1377,15 @@ describe("MailboxView", () => {
       const path = await import("path");
       const css = loadAllAppCss();
 
-      const mailboxTabBlockMatch = css.match(/\.mailbox-tab\s*\{([^}]*)\}/);
-      expect(mailboxTabBlockMatch).toBeTruthy();
-      const mailboxTabBlock = mailboxTabBlockMatch![1];
-      expect(mailboxTabBlock).toContain("border-color: var(--border);");
-      expect(mailboxTabBlock).toContain("background: var(--surface);");
-      expect(mailboxTabBlock).not.toContain("border: none");
-      expect(mailboxTabBlock).not.toContain("background: none");
-      expect(mailboxTabBlock).not.toContain("border-bottom: 2px solid transparent");
+      expect(css).toMatch(/\.mailbox-tab\s*\{[^}]*border-color:\s*var\(--border\);[^}]*background:\s*var\(--surface\);[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-tab\s*\{[^}]*border:\s*none;[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-tab\s*\{[^}]*background:\s*none;[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-tab\s*\{[^}]*border-bottom:\s*2px\s+solid\s+transparent;[^}]*\}/);
 
-      const agentSubtabBlockMatch = css.match(/\.mailbox-agent-subtab\s*\{([^}]*)\}/);
-      expect(agentSubtabBlockMatch).toBeTruthy();
-      const agentSubtabBlock = agentSubtabBlockMatch![1];
-      expect(agentSubtabBlock).toContain("border-color: var(--border);");
-      expect(agentSubtabBlock).toContain("background: var(--surface);");
-      expect(agentSubtabBlock).not.toContain("border-radius: 0");
-      expect(agentSubtabBlock).not.toContain("border: none");
-      expect(agentSubtabBlock).not.toContain("background: transparent");
+      expect(css).toMatch(/\.mailbox-agent-subtab\s*\{[^}]*border-color:\s*var\(--border\);[^}]*background:\s*var\(--surface\);[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-agent-subtab\s*\{[^}]*border-radius:\s*0;[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-agent-subtab\s*\{[^}]*border:\s*none;[^}]*\}/);
+      expect(css).not.toMatch(/\.mailbox-agent-subtab\s*\{[^}]*background:\s*transparent;[^}]*\}/);
     });
 
     it("renders structural elements that mobile CSS targets", async () => {
