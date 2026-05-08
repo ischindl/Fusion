@@ -16,6 +16,7 @@ import {
   setupTaskDetailModalHooks,
 } from "./TaskDetailModal.test-helpers";
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
+import * as dashboardApi from "../../api";
 
 setupTaskDetailModalHooks();
 
@@ -307,7 +308,7 @@ describe("TaskDetailModal", () => {
     expect(screen.getByText("Comments")).toBeTruthy();
   });
 
-  it("shows non-PR review shell message in Review tab", () => {
+  it("shows non-PR review shell message in Review tab", async () => {
     render(
       <TaskDetailModal
         task={makeTask({ reviewState: { source: "reviewer-agent", items: [], addressing: [] } })}
@@ -321,10 +322,25 @@ describe("TaskDetailModal", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    expect(screen.getByText("GitHub PR review details are only available when auto-merge uses Pull Request mode. Reviewer-agent feedback will appear here in direct mode.")).toBeTruthy();
+    expect(await screen.findByText("No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.")).toBeTruthy();
   });
 
-  it("shows PR review decision details in Review tab", () => {
+  it("shows PR review decision details in Review tab", async () => {
+    vi.mocked(dashboardApi.fetchTaskReview).mockResolvedValueOnce({
+      reviewState: {
+        source: "pull-request",
+        summary: {
+          reviewDecision: "CHANGES_REQUESTED",
+          reviewers: [{ login: "octocat", state: "CHANGES_REQUESTED" }],
+          blockingReasons: ["changes requested review is active"],
+          checks: [],
+        },
+        items: [],
+        addressing: [],
+      },
+      automationStatus: null,
+      emptyMessage: null,
+    });
     render(
       <TaskDetailModal
         task={makeTask({ reviewState: { source: "pull-request", summary: { reviewDecision: "CHANGES_REQUESTED", reviewers: [{ login: "octocat", state: "CHANGES_REQUESTED" }], blockingReasons: ["changes requested review is active"], checks: [] }, items: [], addressing: [] } })}
@@ -338,7 +354,7 @@ describe("TaskDetailModal", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    expect(screen.getByText("CHANGES_REQUESTED")).toBeTruthy();
+    expect(await screen.findByText("CHANGES_REQUESTED")).toBeTruthy();
     expect(screen.getByText("changes requested review is active")).toBeTruthy();
   });
 

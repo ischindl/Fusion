@@ -331,6 +331,7 @@ Inspect task definition, logs, review feedback, comments, documents, workflow ou
 - The priority chip in task metadata is now an inline picker: you can change priority directly from the chip without entering full edit mode.
 - Execution mode now also has a read-mode inline control: a lightning-bolt toggle lets you switch Fast mode on/off from task metadata without opening the full edit form.
 - The **Review** tab is separate from **Comments**: Review shows actionable PR/reviewer feedback and same-task revision controls, while Comments remains the general collaboration thread.
+- In direct/non-PR auto-merge mode, Review renders normalized reviewer-agent feedback (verdict/step/timestamp/detail) with dedicated loading/error/empty states; it does not require users to read raw agent logs.
 
 ### Logs → Agent Log view
 

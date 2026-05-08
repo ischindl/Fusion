@@ -702,6 +702,8 @@ export interface TaskCommentInput {
 export type TaskReviewMode = "pull-request" | "direct";
 export type TaskReviewSource = "github-pr" | "reviewer-agent";
 export type TaskReviewDecision = "approved" | "changes-requested" | "commented" | "pending";
+export type TaskReviewVerdict = "APPROVE" | "REVISE" | "RETHINK" | "UNAVAILABLE";
+export type TaskReviewerType = "plan" | "code";
 export type TaskReviewItemStatus = "queued" | "in-progress" | "addressed" | "failed";
 
 export interface TaskReviewItem {
@@ -778,6 +780,12 @@ export interface TaskReviewStateItem {
   state?: string;
   htmlUrl?: string;
   isResolved?: boolean;
+  source?: TaskReviewSource;
+  reviewType?: TaskReviewerType;
+  verdict?: TaskReviewVerdict;
+  step?: number;
+  summary?: string;
+  addressingStatus?: TaskReviewItemStatus;
 }
 
 export interface ReviewAddressingRecord {
@@ -790,10 +798,16 @@ export interface ReviewAddressingRecord {
   stale?: boolean;
 }
 
+export interface ReviewerTaskReviewSummary {
+  verdict?: TaskReviewVerdict;
+  reviewType?: TaskReviewerType;
+  summary?: string;
+}
+
 export interface TaskReviewState {
   source: "pull-request" | "reviewer-agent";
   lastRefreshedAt?: string;
-  summary?: PrTaskReviewSummary;
+  summary?: PrTaskReviewSummary | ReviewerTaskReviewSummary;
   items: TaskReviewStateItem[];
   addressing: ReviewAddressingRecord[];
 }

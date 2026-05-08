@@ -254,6 +254,12 @@ export interface UpdateTaskReviewRequest {
   reviewState: TaskDetail["reviewState"] | null;
 }
 
+export interface TaskReviewResponse {
+  reviewState: NonNullable<TaskDetail["reviewState"]>;
+  automationStatus: string | null;
+  emptyMessage?: string | null;
+}
+
 export interface RefreshTaskReviewResponse {
   reviewState: NonNullable<TaskDetail["reviewState"]>;
   automationStatus: string | null;
@@ -5105,6 +5111,11 @@ export function acceptTaskReview(taskId: string, projectId?: string): Promise<Ta
   return api<Task>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/accept-review`, projectId), {
     method: "POST",
   });
+}
+
+/** Fetch normalized task review data (PR mode or direct mode) */
+export function fetchTaskReview(taskId: string, projectId?: string): Promise<TaskReviewResponse> {
+  return api<TaskReviewResponse>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/review`, projectId));
 }
 
 /** Refresh normalized task review data (PR mode or direct mode) */

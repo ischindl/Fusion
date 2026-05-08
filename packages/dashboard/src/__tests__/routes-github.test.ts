@@ -2041,15 +2041,63 @@ describe("GET /tasks/:id/review", () => {
     return app;
   }
 
-  it("returns cached reviewState payload", async () => {
+  it("returns normalized reviewer-agent payload in direct mode", async () => {
     (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...FAKE_TASK_DETAIL,
       reviewState: { source: "reviewer-agent", items: [], addressing: [] },
+      log: [{ timestamp: "2026-05-01T10:00:00.000Z", action: "code review Step 2: REVISE" }],
     });
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        timestamp: "2026-05-01T10:00:01.000Z",
+        taskId: "FN-001",
+        type: "text",
+        text: "## Code Review:\n\n### Verdict: REVISE\n\n### Summary\nNeeds null guard\n",
+        agent: "reviewer",
+      },
+    ]);
 
     const res = await REQUEST(buildApp(), "GET", "/api/tasks/FN-001/review");
     expect(res.status).toBe(200);
     expect(res.body.reviewState.source).toBe("reviewer-agent");
+    expect(res.body.reviewState.items[0].reviewType).toBe("code");
+    expect(res.body.reviewState.items[0].verdict).toBe("REVISE");
+  });
+
+  it("returns exact empty payload/message when no reviewer feedback exists", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      reviewState: { source: "reviewer-agent", items: [], addressing: [] },
+      log: [],
+    });
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const res = await REQUEST(buildApp(), "GET", "/api/tasks/FN-001/review");
+    expect(res.status).toBe(200);
+    expect(res.body.reviewState.items).toEqual([]);
+    expect(res.body.emptyMessage).toBe("No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.");
+  });
+
+  it("falls back to task log summary when reviewer output is incomplete", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      reviewState: { source: "reviewer-agent", items: [], addressing: [] },
+      log: [{ timestamp: "2026-05-01T10:00:00.000Z", action: "plan review Step 1: APPROVE" }],
+    });
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        timestamp: "2026-05-01T10:00:01.000Z",
+        taskId: "FN-001",
+        type: "text",
+        text: "partial stream",
+        agent: "reviewer",
+      },
+    ]);
+
+    const res = await REQUEST(buildApp(), "GET", "/api/tasks/FN-001/review");
+    expect(res.status).toBe(200);
+    expect(res.body.reviewState.items[0].summary).toBe("plan review Step 1: APPROVE");
+    expect(res.body.reviewState.items[0].step).toBe(1);
   });
 
   it("returns 404 when task is missing", async () => {

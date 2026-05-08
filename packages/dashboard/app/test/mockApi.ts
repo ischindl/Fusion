@@ -32,6 +32,7 @@ export const dashboardApiMocks = {
   fetchAuthStatus: vi.fn(async () => ({ providers: [] })),
   fetchModels: vi.fn(async () => ({ models: [], favoriteProviders: [], favoriteModels: [] })),
   fetchTaskDetail: vi.fn(),
+  fetchTaskReview: vi.fn(),
   fetchUnreadCount: vi.fn(async () => ({ unreadCount: 0 })),
 } satisfies Record<string, AnyFn>;
 

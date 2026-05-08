@@ -35,8 +35,9 @@ vi.mock("../../api", async (importOriginal) => {
     pauseTask: vi.fn().mockResolvedValue({}),
     unpauseTask: vi.fn().mockResolvedValue({}),
     fetchWorkflowResults: vi.fn().mockResolvedValue([]),
-    refreshTaskReview: vi.fn().mockResolvedValue({ review: undefined, automationStatus: null }),
-    reviseTaskReviewItems: vi.fn().mockResolvedValue({ task: makeTask(), review: undefined }),
+    fetchTaskReview: vi.fn().mockResolvedValue({ reviewState: { source: "reviewer-agent", items: [], addressing: [] }, automationStatus: null, emptyMessage: "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode." }),
+    refreshTaskReview: vi.fn().mockResolvedValue({ reviewState: undefined, automationStatus: null }),
+    reviseTaskReviewItems: vi.fn().mockResolvedValue({ task: makeTask(), reviewState: undefined }),
   });
 });
 

@@ -74,6 +74,23 @@
   color: var(--text);
 }
 
+.task-review-tab__direct-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.task-review-tab__body {
+  margin: 0;
+  padding: var(--space-sm);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  white-space: pre-wrap;
+  font-family: var(--font-primary);
+}
+
 .task-review-tab__status {
   color: var(--text-muted);
   text-transform: capitalize;
@@ -119,5 +136,13 @@
 
   .task-review-tab__status {
     grid-column: 2;
+  }
+
+  .task-review-tab__actions {
+    width: 100%;
+  }
+
+  .task-review-tab__actions .btn {
+    flex: 1;
   }
 }

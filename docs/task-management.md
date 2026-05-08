@@ -258,7 +258,8 @@ This file is the contract for execution and review.
 ## Task Comments vs Steering Comments
 
 - **Task comments** (`fn task comment`) are general collaboration notes.
-- **Review tab feedback** is dedicated actionable review input (PR review data in pull-request mode, reviewer-agent findings in direct mode) used to request same-task revisions.
+- **Review tab feedback** is dedicated actionable review input (PR review data in pull-request mode, reviewer-agent findings in direct/non-PR mode) used to request same-task revisions.
+- In direct/non-PR auto-merge mode, the Review tab shows parsed reviewer-agent feedback with explicit loading/error/empty states instead of sending users to raw comments or agent logs.
 - **Steering comments** (`fn task steer`) are execution guidance for the running agent.
 
 Steering comments can be injected mid-run into active executor sessions.

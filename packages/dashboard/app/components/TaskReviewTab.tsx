@@ -1,7 +1,7 @@
 import "./TaskReviewTab.css";
 import type { Task, TaskDetail } from "@fusion/core";
-import { useMemo, useState } from "react";
-import { refreshTaskReview, reviseTaskReviewItems } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { fetchTaskReview, refreshTaskReview, reviseTaskReviewItems } from "../api";
 import type { ToastType } from "../hooks/useToast";
 
 interface Props {
@@ -11,27 +11,78 @@ interface Props {
   addToast: (message: string, type?: ToastType) => void;
 }
 
+const REVIEW_LOAD_ERROR_MESSAGE = "Failed to load review data.";
+const DIRECT_MODE_EMPTY_MESSAGE =
+  "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.";
+
 function formatTimestamp(value?: string): string {
   if (!value) return "Never";
   return new Date(value).toLocaleString();
+}
+
+type ReviewItem = NonNullable<TaskDetail["reviewState"]>["items"][number];
+
+function getItemStatus(item: ReviewItem): "queued" | "in-progress" | "addressed" | "failed" {
+  if (
+    item.addressingStatus === "queued" ||
+    item.addressingStatus === "in-progress" ||
+    item.addressingStatus === "addressed" ||
+    item.addressingStatus === "failed"
+  ) {
+    return item.addressingStatus;
+  }
+  return "queued";
 }
 
 export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Props) {
   const [selected, setSelected] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [revising, setRevising] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const review = task.reviewState;
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
+  const [review, setReview] = useState(task.reviewState ?? null);
+
   const canRevise = selected.length > 0 && !revising;
   const isPrMode = review?.source === "pull-request";
 
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void fetchTaskReview(task.id, projectId)
+      .then((result) => {
+        if (cancelled) return;
+        setReview(result.reviewState);
+        setEmptyMessage(result.emptyMessage ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setError(REVIEW_LOAD_ERROR_MESSAGE);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task.id, projectId]);
+
   const summaryText = useMemo(() => {
     if (!review) return "No review feedback captured yet.";
-    const decision = review.summary?.reviewDecision ?? "REVIEW_REQUIRED";
-    return `${decision} · ${review.items.length} review item(s)`;
+    if (review.source === "pull-request") {
+      const prSummary = review.summary as { reviewDecision?: string } | undefined;
+      return `${prSummary?.reviewDecision ?? "REVIEW_REQUIRED"} · ${review.items.length} review item(s)`;
+    }
+    const reviewerSummary = review.summary as { summary?: string } | undefined;
+    return `${reviewerSummary?.summary ?? "reviewer-agent"} · ${review.items.length} review item(s)`;
   }, [review]);
 
-  const decisionLabel = review?.summary?.reviewDecision ?? undefined;
+  const decisionLabel = !review
+    ? undefined
+    : review.source === "pull-request"
+      ? (review.summary as { reviewDecision?: string } | undefined)?.reviewDecision
+      : (review.summary as { verdict?: string } | undefined)?.verdict;
 
   const toggleSelected = (id: string) => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]));
@@ -42,12 +93,12 @@ export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Prop
       setError(null);
       setRefreshing(true);
       const result = await refreshTaskReview(task.id, projectId);
+      setReview(result.reviewState);
       onTaskUpdated?.({ ...task, reviewState: result.reviewState } as Task);
       addToast("Review refreshed", "success");
-    } catch (refreshError) {
-      const message = refreshError instanceof Error ? refreshError.message : "Failed to refresh review";
-      setError(message);
-      addToast(message, "error");
+    } catch {
+      setError(REVIEW_LOAD_ERROR_MESSAGE);
+      addToast(REVIEW_LOAD_ERROR_MESSAGE, "error");
     } finally {
       setRefreshing(false);
     }
@@ -58,6 +109,7 @@ export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Prop
       setError(null);
       setRevising(true);
       const result = await reviseTaskReviewItems(task.id, selected, projectId);
+      setReview(result.reviewState);
       onTaskUpdated?.({ ...result.task, reviewState: result.reviewState } as Task);
       setSelected([]);
       addToast("Queued same-task revision", "success");
@@ -85,18 +137,19 @@ export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Prop
         </div>
       </div>
       <div className="task-review-tab__meta">Last refreshed: {formatTimestamp(review?.lastRefreshedAt)}</div>
-      {error ? <div className="task-review-tab__error">{error}</div> : null}
-      {!isPrMode ? (
-        <div className="task-review-tab__empty">GitHub PR review details are only available when auto-merge uses Pull Request mode. Reviewer-agent feedback will appear here in direct mode.</div>
+      {loading ? <div className="task-review-tab__meta">Loading review data…</div> : null}
+      {!loading && error ? <div className="task-review-tab__error">{error}</div> : null}
+      {!loading && !error && !isPrMode && review?.items?.length === 0 ? (
+        <div className="task-review-tab__empty">{emptyMessage ?? DIRECT_MODE_EMPTY_MESSAGE}</div>
       ) : null}
-      {isPrMode && review?.summary?.reviewers?.length ? (
+      {isPrMode && review?.summary && "reviewers" in review.summary && review.summary.reviewers?.length ? (
         <ul className="task-review-tab__reviewers">
           {review.summary.reviewers.map((reviewer) => (
             <li key={`${reviewer.login}-${reviewer.state}`} className="task-review-tab__reviewer">@{reviewer.login} · {reviewer.state}</li>
           ))}
         </ul>
       ) : null}
-      {isPrMode && review?.summary?.blockingReasons?.length ? (
+      {isPrMode && review?.summary && "blockingReasons" in review.summary && review.summary.blockingReasons?.length ? (
         <ul className="task-review-tab__blockers">
           {review.summary.blockingReasons.map((reason) => <li key={reason}>{reason}</li>)}
         </ul>
@@ -120,9 +173,34 @@ export function TaskReviewTab({ task, projectId, onTaskUpdated, addToast }: Prop
             );
           })}
         </ul>
-      ) : isPrMode ? (
-        <div className="task-review-tab__empty">No review items yet.</div>
       ) : null}
+      {!loading && !error && !isPrMode && review?.items?.length ? (
+        <ul className="task-review-tab__list">
+          {review.items
+            .slice()
+            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+            .map((item) => {
+              const status = getItemStatus(item);
+              return (
+                <li key={item.id} className="task-review-tab__item card">
+                  <div className="task-review-tab__direct-item">
+                    <div className="task-review-tab__summary-wrap">
+                      <span className="task-review-tab__decision">reviewer-agent</span>
+                      {item.reviewType ? <span className="task-review-tab__meta">{item.reviewType} review</span> : null}
+                      {typeof item.step === "number" ? <span className="task-review-tab__meta">Step {item.step}</span> : null}
+                      {item.verdict ? <span className="task-review-tab__decision">{item.verdict}</span> : null}
+                      <span className={`task-review-tab__status task-review-tab__status--${status}`}>{status}</span>
+                    </div>
+                    {item.summary ? <p className="task-review-tab__summary">{item.summary}</p> : null}
+                    <div className="task-review-tab__meta">{formatTimestamp(item.createdAt)}</div>
+                    <pre className="task-review-tab__body">{item.body}</pre>
+                  </div>
+                </li>
+              );
+            })}
+        </ul>
+      ) : null}
+      {isPrMode && !loading && !error && !review?.items?.length ? <div className="task-review-tab__empty">No review items yet.</div> : null}
     </div>
   );
 }

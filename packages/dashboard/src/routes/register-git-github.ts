@@ -1,7 +1,15 @@
 import { type NextFunction, type Request, type Response } from "express";
 import { isAbsolute } from "node:path";
 import { spawn } from "node:child_process";
-import type { BatchStatusEntry, BatchStatusResponse, BatchStatusResult, IssueInfo, PrInfo, TaskStore } from "@fusion/core";
+import type {
+  BatchStatusEntry,
+  BatchStatusResponse,
+  BatchStatusResult,
+  IssueInfo,
+  PrInfo,
+  Task,
+  TaskStore,
+} from "@fusion/core";
 import { getCurrentRepo, isGhAuthenticated } from "@fusion/core";
 import {
   ApiError,
@@ -73,6 +81,103 @@ export function parseGitHubBadgeUrl(url: string | undefined): { owner: string; r
   } catch {
     return null;
   }
+}
+
+const DIRECT_REVIEW_EMPTY_MESSAGE =
+  "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.";
+
+type CanonicalTaskReviewState = NonNullable<Task["reviewState"]>;
+type CanonicalTaskReviewStateItem = CanonicalTaskReviewState["items"][number];
+type CanonicalTaskReviewVerdict = NonNullable<CanonicalTaskReviewStateItem["verdict"]>;
+type CanonicalTaskReviewerType = NonNullable<CanonicalTaskReviewStateItem["reviewType"]>;
+
+const REVIEW_BLOCK_RE = /##\s+(Code|Plan)\s+Review:[\s\S]*?(?=\n##\s+(?:Code|Plan)\s+Review:|$)/gi;
+const REVIEW_VERDICT_RE = /###\s+Verdict:\s*(APPROVE|REVISE|RETHINK|UNAVAILABLE)\b/i;
+const REVIEW_SUMMARY_RE = /###\s+Summary\s*\n([\s\S]*?)(?=\n###\s+|$)/i;
+const REVIEW_STEP_RE = /^(plan|code) review Step (\d+): (APPROVE|REVISE|RETHINK|UNAVAILABLE)\b/i;
+
+function extractDirectReviewItems(task: Task, reviewerText: string): CanonicalTaskReviewStateItem[] {
+  const fallbackLogs = (task.log ?? []).filter((entry) => REVIEW_STEP_RE.test(entry.action));
+  const fallbackByType = new Map<CanonicalTaskReviewerType, { step?: number; verdict?: CanonicalTaskReviewVerdict; timestamp: string; summary: string }>();
+  for (const entry of fallbackLogs) {
+    const match = entry.action.match(REVIEW_STEP_RE);
+    if (!match) continue;
+    const reviewType = match[1].toLowerCase() === "plan" ? "plan" : "code";
+    fallbackByType.set(reviewType, {
+      step: Number.parseInt(match[2], 10),
+      verdict: match[3].toUpperCase() as CanonicalTaskReviewVerdict,
+      timestamp: entry.timestamp,
+      summary: entry.action,
+    });
+  }
+
+  const items: CanonicalTaskReviewStateItem[] = [];
+  const blocks = reviewerText.match(REVIEW_BLOCK_RE) ?? [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index] ?? "";
+    const typeMatch = block.match(/##\s+(Code|Plan)\s+Review:/i);
+    const reviewType: CanonicalTaskReviewerType = typeMatch?.[1]?.toLowerCase() === "plan" ? "plan" : "code";
+    const verdict = block.match(REVIEW_VERDICT_RE)?.[1]?.toUpperCase() as CanonicalTaskReviewVerdict | undefined;
+    const summary = block.match(REVIEW_SUMMARY_RE)?.[1]?.trim() || fallbackByType.get(reviewType)?.summary;
+    const fallback = fallbackByType.get(reviewType);
+    items.push({
+      id: `reviewer-${reviewType}-${index + 1}`,
+      body: block.trim(),
+      author: { login: "reviewer-agent" },
+      createdAt: fallback?.timestamp ?? task.updatedAt,
+      source: "reviewer-agent",
+      reviewType,
+      verdict: verdict ?? fallback?.verdict,
+      step: fallback?.step,
+      summary,
+    });
+  }
+
+  if (items.length > 0) {
+    return items;
+  }
+
+  return fallbackLogs.map((entry, index) => {
+    const match = entry.action.match(REVIEW_STEP_RE);
+    const reviewType: CanonicalTaskReviewerType = match?.[1]?.toLowerCase() === "plan" ? "plan" : "code";
+    const verdict = match?.[3]?.toUpperCase() as CanonicalTaskReviewVerdict | undefined;
+    const step = match?.[2] ? Number.parseInt(match[2], 10) : undefined;
+    return {
+      id: `reviewer-fallback-${index + 1}`,
+      body: entry.action,
+      author: { login: "reviewer-agent" },
+      createdAt: entry.timestamp,
+      source: "reviewer-agent",
+      reviewType,
+      verdict,
+      step,
+      summary: entry.action,
+    };
+  });
+}
+
+async function buildDirectReviewState(task: Task, store: TaskStore): Promise<CanonicalTaskReviewState> {
+  const agentLogs = await store.getAgentLogs(task.id);
+  const reviewerText = agentLogs
+    .filter((entry) => entry.agent === "reviewer" && entry.type === "text")
+    .map((entry) => entry.text)
+    .join("");
+  const items = extractDirectReviewItems(task, reviewerText);
+  const newest = [...items].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const latest = newest[0];
+  return {
+    source: "reviewer-agent",
+    lastRefreshedAt: new Date().toISOString(),
+    summary: latest
+      ? {
+          verdict: latest.verdict,
+          reviewType: latest.reviewType,
+          summary: latest.summary,
+        }
+      : { summary: DIRECT_REVIEW_EMPTY_MESSAGE },
+    items: newest,
+    addressing: task.reviewState?.addressing ?? [],
+  };
 }
 
 export async function getGitHubRemotes(cwd?: string): Promise<GitRemote[]> {
@@ -3128,7 +3233,19 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const task = await scopedStore.getTask(req.params.id);
-      res.json({ reviewState: task.reviewState ?? null, automationStatus: task.status ?? null });
+      const hasPrReview = task.reviewState?.source === "pull-request";
+      const reviewState = (hasPrReview
+        ? task.reviewState
+        : await buildDirectReviewState(task, scopedStore)) ?? {
+          source: "reviewer-agent",
+          items: [],
+          addressing: [],
+        };
+      res.json({
+        reviewState,
+        automationStatus: task.status ?? null,
+        emptyMessage: !hasPrReview && reviewState.items.length === 0 ? DIRECT_REVIEW_EMPTY_MESSAGE : null,
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -3172,13 +3289,8 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
           addressing,
         };
       } else {
-        reviewState = {
-          source: task.reviewState?.source ?? "reviewer-agent",
-          lastRefreshedAt: now,
-          summary: task.reviewState?.summary,
-          items: task.reviewState?.items ?? [],
-          addressing: task.reviewState?.addressing ?? [],
-        };
+        reviewState = await buildDirectReviewState(task, scopedStore);
+        reviewState.lastRefreshedAt = now;
       }
 
       await scopedStore.updateTask(task.id, { reviewState });
