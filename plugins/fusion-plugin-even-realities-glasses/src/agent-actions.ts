@@ -10,7 +10,7 @@ export async function startWork(
     return undefined;
   }
   const task = await deps.apiClient.moveTask(taskId, "in-progress");
-  return taskToCard(task);
+  return taskToCard(task as never);
 }
 
 export async function requestReview(
@@ -22,5 +22,5 @@ export async function requestReview(
     return undefined;
   }
   const task = await deps.apiClient.moveTask(taskId, "in-review");
-  return taskToCard(task);
+  return taskToCard(task as never);
 }

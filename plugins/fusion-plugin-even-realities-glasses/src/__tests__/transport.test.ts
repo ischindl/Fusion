@@ -4,8 +4,8 @@ import { StubGlassesTransport } from "../transport.js";
 describe("StubGlassesTransport", () => {
   it("records pushes in order", async () => {
     const transport = new StubGlassesTransport();
-    await transport.pushCard({ id: "1", title: "A", bodyLines: [], accentColor: "blue" });
-    await transport.pushCard({ id: "2", title: "B", bodyLines: [], accentColor: "green" });
+    await transport.pushCard({ id: "1", kind: "task", title: "A", lines: [], badge: "todo" });
+    await transport.pushCard({ id: "2", kind: "task", title: "B", lines: [], badge: "done" });
     expect(transport.pushedCards.map((card) => card.id)).toEqual(["1", "2"]);
   });
 

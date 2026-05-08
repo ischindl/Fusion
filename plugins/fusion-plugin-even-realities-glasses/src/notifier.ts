@@ -1,85 +1,95 @@
+import type { Task } from "@fusion/core";
+import type { PluginContext } from "@fusion/plugin-sdk";
 import { notificationCard } from "./cards.js";
-import type { FusionApiClient, FusionTask } from "./fusion-api-client.js";
+import { diffSnapshots } from "./notifications/diff.js";
+import { pruneMissing, readSnapshot, writeSnapshot } from "./notifications/store.js";
+import type { NotificationEvent } from "./notifications/types.js";
+import type { PluginDb } from "./index.js";
+import { getNotifyColumns, getPollingIntervalMs } from "./settings.js";
 import type { GlassesTransport } from "./transport.js";
 
-type NotifierSettings = { pollingIntervalMs: number; notifyColumns: string[] };
-
-type PluginDb = {
-  prepare(sql: string): {
-    all(...args: unknown[]): unknown;
-    run(...args: unknown[]): unknown;
-  };
-};
-
-export function createNotifier({
-  apiClient,
-  transport,
-  getSettings,
-  logger,
-  db,
-  now = () => new Date().toISOString(),
-}: {
-  apiClient: FusionApiClient;
-  transport: GlassesTransport;
-  getSettings: () => NotifierSettings;
-  logger: Pick<Console, "warn" | "error">;
+export interface NotifierDeps {
+  taskStore: PluginContext["taskStore"];
   db: PluginDb;
-  now?: () => string;
-}) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let running = false;
+  transport: GlassesTransport;
+  settings: PluginContext["settings"];
+  logger?: PluginContext["logger"];
+  pluginId: string;
+  now?: () => Date;
+  setIntervalImpl?: typeof setInterval;
+  clearIntervalImpl?: typeof clearInterval;
+}
+
+export interface Notifier {
+  start(): void;
+  stop(): Promise<void>;
+  pollOnce(): Promise<NotificationEvent[]>;
+  peekPending(limit?: number): NotificationEvent[];
+  drainPending(limit?: number): NotificationEvent[];
+  ack(taskIds: ReadonlySet<string>): number;
+  lastPolledAt(): string | null;
+  getLastPollTime(): string | null;
+}
+
+const PENDING_CAP = 200;
+
+export function createNotifier(deps: NotifierDeps): Notifier {
+  const setIntervalImpl = deps.setIntervalImpl ?? setInterval;
+  const clearIntervalImpl = deps.clearIntervalImpl ?? clearInterval;
+
+  let timer: ReturnType<typeof setInterval> | undefined;
   let inFlight = false;
-  let lastPollTime: string | undefined;
-  let lastSnapshot = new Map<string, string>();
+  let running = false;
+  let stopped = false;
+  let inFlightPromise: Promise<NotificationEvent[]> | null = null;
+  let pending: NotificationEvent[] = [];
+  let lastPollIso: string | null = null;
 
-  const hydrateSnapshot = () => {
-    const rows = db.prepare("SELECT taskId, lastColumn FROM even_realities_seen_tasks").all() as
-      | Array<{ taskId: string; lastColumn: string }>
-      | undefined;
-    for (const row of rows ?? []) {
-      if (typeof row.taskId === "string" && typeof row.lastColumn === "string") {
-        lastSnapshot.set(row.taskId, row.lastColumn);
-      }
+  const nowIso = () => (deps.now?.() ?? new Date()).toISOString();
+
+  const bounded = (items: NotificationEvent[]) => {
+    if (items.length <= PENDING_CAP) return items;
+    return items.slice(items.length - PENDING_CAP);
+  };
+
+  const performPoll = async (): Promise<NotificationEvent[]> => {
+    if (stopped) return [];
+    if (inFlight) {
+      deps.logger?.debug?.("skip overlapping poll", { pluginId: deps.pluginId });
+      return [];
     }
-  };
 
-  const persistTask = (taskId: string, lastColumn: string) => {
-    db.prepare(`
-      INSERT INTO even_realities_seen_tasks(taskId, lastColumn, updatedAt)
-      VALUES(?, ?, ?)
-      ON CONFLICT(taskId) DO UPDATE SET lastColumn = excluded.lastColumn, updatedAt = excluded.updatedAt
-    `).run(taskId, lastColumn, now());
-  };
-
-  const poll = async () => {
-    if (!running || inFlight) return;
     inFlight = true;
     try {
-      const settings = getSettings();
-      const tasks = await apiClient.listTasks();
-      const notifyColumns = new Set(settings.notifyColumns);
-      const nextSnapshot = new Map<string, string>();
+      const tasks = (await deps.taskStore.listTasks({ includeArchived: false })) as Task[];
+      const snapshot = readSnapshot(deps.db);
+      const notifyOnColumns = new Set(getNotifyColumns(deps.settings));
+      const events = diffSnapshots(snapshot, tasks, { notifyOnColumns, alsoNotifyOnDone: false });
+      const taskMap = new Map(tasks.map((task) => [task.id, task] as const));
 
-      for (const task of tasks) {
-        nextSnapshot.set(task.id, task.column);
-        const previousColumn = lastSnapshot.get(task.id);
-        if (previousColumn !== undefined && previousColumn !== task.column && notifyColumns.has(task.column)) {
-          await transport.pushCard(notificationCard(task as FusionTask, "entered notify column"));
+      for (const event of events) {
+        const task = taskMap.get(event.taskId);
+        if (!task) continue;
+        try {
+          await deps.transport.pushCard(notificationCard(task, event.reason));
+        } catch (err) {
+          deps.logger?.error?.("failed to push notification card", { err, pluginId: deps.pluginId, taskId: task.id });
         }
-        persistTask(task.id, task.column);
       }
 
-      lastSnapshot = nextSnapshot;
-      lastPollTime = now();
-    } catch (error) {
-      logger.error("Notifier poll failed", error);
+      pending = bounded([...pending, ...events]);
+      writeSnapshot(
+        deps.db,
+        tasks.map((task) => ({ taskId: task.id, lastColumn: task.column, updatedAt: task.updatedAt })),
+      );
+      pruneMissing(deps.db, new Set(tasks.map((task) => task.id)));
+      lastPollIso = nowIso();
+      return events;
+    } catch (err) {
+      deps.logger?.error?.("notifier poll failed", { err, pluginId: deps.pluginId });
+      return [];
     } finally {
       inFlight = false;
-      if (running) {
-        timer = setTimeout(() => {
-          void poll();
-        }, getSettings().pollingIntervalMs);
-      }
     }
   };
 
@@ -87,21 +97,60 @@ export function createNotifier({
     start() {
       if (running) return;
       running = true;
-      hydrateSnapshot();
-      void poll();
+      stopped = false;
+      void this.pollOnce();
+      const intervalMs = Math.max(5000, getPollingIntervalMs(deps.settings));
+      timer = setIntervalImpl(() => {
+        if (stopped) return;
+        void this.pollOnce();
+      }, intervalMs);
     },
-    stop() {
+
+    async stop() {
+      if (!running && !timer) return;
+      stopped = true;
       running = false;
       if (timer) {
-        clearTimeout(timer);
+        clearIntervalImpl(timer);
         timer = undefined;
       }
+      if (inFlightPromise) {
+        await inFlightPromise.catch(() => undefined);
+      }
     },
+
+    pollOnce() {
+      const poll = performPoll();
+      inFlightPromise = poll;
+      return poll.finally(() => {
+        if (inFlightPromise === poll) inFlightPromise = null;
+      });
+    },
+
+    peekPending(limit = 50) {
+      const max = Math.max(0, Math.floor(limit));
+      return pending.slice(0, max);
+    },
+
+    drainPending(limit = 50) {
+      const max = Math.max(0, Math.floor(limit));
+      const drained = pending.slice(0, max);
+      pending = pending.slice(drained.length);
+      return drained;
+    },
+
+    ack(taskIds: ReadonlySet<string>) {
+      const before = pending.length;
+      pending = pending.filter((event) => !taskIds.has(event.taskId));
+      return before - pending.length;
+    },
+
+    lastPolledAt() {
+      return lastPollIso;
+    },
+
     getLastPollTime() {
-      return lastPollTime;
-    },
-    getLastSnapshot() {
-      return new Map(lastSnapshot);
+      return lastPollIso;
     },
   };
 }

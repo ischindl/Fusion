@@ -72,6 +72,33 @@ Response:
 }
 ```
 
+## Notifications
+
+Notifications are produced by polling `taskStore.listTasks({ includeArchived: false })` on `pollingIntervalSeconds` and diffing against persisted snapshot rows in `even_realities_seen_tasks`.
+
+Diff reasons:
+- `new-task` (task first seen in a watched column)
+- `entered-column` (task moved into a watched column)
+- `left-column` (task moved out of a watched column)
+- `completed` (supported by diff engine; currently disabled in notifier v1)
+
+Snapshot rows survive plugin restarts, so previously-seen tasks are not re-notified after reload.
+
+### Notification endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/notifications` | Read pending events (`limit`, optional `drain=true`) with rendered cards |
+| POST | `/notifications/ack` | Ack events by `taskIds` |
+| POST | `/notifications/poll-now` | Force immediate poll and return emitted events |
+
+Example:
+
+```bash
+curl -X GET "http://localhost:4040/api/plugins/fusion-plugin-even-realities-glasses/notifications?limit=25" \
+  -H "Authorization: Bearer <apiKey>"
+```
+
 ## Security notes
 
 - Uses `Authorization: Bearer <token>` for all API requests.

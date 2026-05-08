@@ -4,19 +4,20 @@ import { requestReview, startWork } from "./agent-actions.js";
 import { FusionApiClient } from "./fusion-api-client.js";
 import { createNotifier } from "./notifier.js";
 import { quickCaptureRoutes } from "./routes/quick-capture-routes.js";
+import { createNotificationRoutes } from "./routes/notification-routes.js";
 import {
   agentActionsEnabled,
   getFusionBaseUrl,
   getFusionToken,
   getNotifyColumns,
-  getPollingIntervalMs,
   settingsSchema,
 } from "./settings.js";
 import { StubGlassesTransport } from "./transport.js";
 
-type PluginDb = {
+export type PluginDb = {
   exec(sql: string): void;
   prepare(sql: string): {
+    get(...args: unknown[]): unknown;
     all(...args: unknown[]): unknown;
     run(...args: unknown[]): unknown;
   };
@@ -43,7 +44,7 @@ function getInstanceOrResponse(ctx: PluginContext): { instance?: PluginInstance;
   return { instance };
 }
 
-const routes: PluginRouteDefinition[] = [
+const coreRoutes: PluginRouteDefinition[] = [
   {
     method: "GET",
     path: "/status",
@@ -54,7 +55,7 @@ const routes: PluginRouteDefinition[] = [
         status: 200,
         body: {
           connected: instance.transport.connected,
-          lastPollTime: instance.notifier.getLastPollTime() ?? null,
+          lastPollTime: instance.notifier.lastPolledAt() ?? null,
           notifyOnColumns: getNotifyColumns(ctx.settings),
         },
       };
@@ -97,6 +98,8 @@ const routes: PluginRouteDefinition[] = [
   },
 ];
 
+const notificationRoutes = createNotificationRoutes((ctx) => instances.get(ctx.pluginId)?.notifier);
+
 const plugin: FusionPlugin = definePlugin({
   manifest: {
     id: "fusion-plugin-even-realities-glasses",
@@ -108,7 +111,7 @@ const plugin: FusionPlugin = definePlugin({
     settingsSchema,
   },
   state: "installed",
-  routes: [...routes, ...quickCaptureRoutes],
+  routes: [...coreRoutes, ...quickCaptureRoutes, ...notificationRoutes],
   hooks: {
     onSchemaInit: (db) => {
       (db as PluginDb).exec(`
@@ -130,18 +133,19 @@ const plugin: FusionPlugin = definePlugin({
       const transport = new StubGlassesTransport();
       await transport.connect();
       const notifier = createNotifier({
-        apiClient: client,
-        transport,
-        getSettings: () => ({ pollingIntervalMs: getPollingIntervalMs(ctx.settings), notifyColumns: getNotifyColumns(ctx.settings) }),
-        logger: ctx.logger,
+        taskStore: ctx.taskStore,
         db,
+        transport,
+        settings: ctx.settings,
+        logger: ctx.logger,
+        pluginId: ctx.pluginId,
       });
       notifier.start();
       instances.set(ctx.pluginId, { client, transport, notifier });
     },
     onUnload: async () => {
       for (const [pluginId, instance] of instances.entries()) {
-        instance.notifier.stop();
+        await instance.notifier.stop();
         await instance.transport.disconnect();
         instances.delete(pluginId);
       }
