@@ -10,6 +10,23 @@ The dashboard now handles browser back navigation consistently on desktop and mo
 Using Back will first dismiss open modals and then step back through in-app view changes (for example, task detail → board) before leaving the app.
 This behavior used to be mobile-only, and now applies across all viewports.
 
+## Deep Links
+
+Use deep links to open a specific task directly from notifications, chat, or external tools.
+
+- `/tasks/<TASK_ID>` (for example, `/tasks/FN-1234`) opens that task, and can include `?project=<project-id>` for multi-project routing.
+- `/?task=<TASK_ID>[&project=<project-id>]` is the canonical in-app form and opens the task detail modal on load.
+- Legacy path-style links (including trailing-slash forms like `/tasks/<TASK_ID>/` and older hash-style entry points that resolve to that path) are normalized client-side to the canonical query form with `history.replaceState`, so the URL updates without a full reload.
+- In non-headless dashboard mode, the server also issues an HTTP 301 redirect from `/tasks/<TASK_ID>` to `/?task=<TASK_ID>` and preserves `?project=` when present.
+- Theme assets resolve `theme-data.css` against the current document base (HTTP/HTTPS, `file://`, and Electron fallback paths), so non-default themes still load correctly when you land on deep-linked or sub-path URLs.
+- Configure `dashboardHost` and `ntfyDashboardHost` in [settings reference](./settings-reference.md) so generated notification links use the correct base URL.
+
+```text
+/tasks/FN-1234
+/?task=FN-1234
+/?task=FN-1234&project=my-project
+```
+
 ## Board View
 
 Board view is the kanban surface for day-to-day operation.
