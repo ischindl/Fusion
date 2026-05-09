@@ -22,6 +22,9 @@ const mockUseChat = vi.mocked(useChatModule.useChat);
 const mockUseChatRooms = vi.mocked(useChatRoomsModule.useChatRooms);
 const mockUseViewportMode = vi.mocked(headerModule.useViewportMode);
 
+const mockCreateSession = vi.fn();
+const mockSendMessage = vi.fn();
+
 function buildRoomsMock(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoomsResult {
   return {
     rooms: [],
@@ -43,11 +46,13 @@ function buildRoomsMock(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoo
 beforeEach(() => {
   vi.clearAllMocks();
   mockUseViewportMode.mockReturnValue("desktop");
+  mockCreateSession.mockReset();
+  mockSendMessage.mockReset();
   mockUseChat.mockReturnValue({
     sessions: [], activeSession: null, sessionsLoading: false, messages: [], messagesLoading: false,
     isStreaming: false, streamingText: "", streamingThinking: "", streamingToolCalls: [],
-    selectSession: vi.fn(), createSession: vi.fn(), archiveSession: vi.fn(), deleteSession: vi.fn(),
-    sendMessage: vi.fn(), stopStreaming: vi.fn(), pendingMessage: "", clearPendingMessage: vi.fn(),
+    selectSession: vi.fn(), createSession: mockCreateSession, archiveSession: vi.fn(), deleteSession: vi.fn(),
+    sendMessage: mockSendMessage, stopStreaming: vi.fn(), pendingMessage: "", clearPendingMessage: vi.fn(),
     loadMoreMessages: vi.fn(), hasMoreMessages: false, searchQuery: "", setSearchQuery: vi.fn(),
     filteredSessions: [], refreshSessions: vi.fn(), agentsMap: new Map(),
   } as any);
@@ -115,6 +120,66 @@ describe("ChatView rooms", () => {
 
     await waitFor(() => expect(roomsMock.sendRoomMessage).toHaveBeenCalledWith("hello room"));
     await waitFor(() => expect(screen.getByTestId("chat-input")).toHaveValue(""));
+  });
+
+  it("pressing Enter in rooms sends to room and not direct session path", async () => {
+    const roomsMock = buildRoomsMock({
+      activeRoom: { id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" },
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.type(screen.getByTestId("chat-input"), "  hello room from enter  ");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => expect(roomsMock.sendRoomMessage).toHaveBeenCalledWith("hello room from enter"));
+    expect(mockCreateSession).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("opens room delete dialog without selecting room", async () => {
+    const roomsMock = buildRoomsMock({
+      rooms: [{ id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" }],
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.click(screen.getByTestId("chat-room-delete-engineering"));
+
+    expect(screen.getByText("Delete Room?")).toBeInTheDocument();
+    expect(roomsMock.selectRoom).not.toHaveBeenCalled();
+  });
+
+  it("confirms room delete", async () => {
+    const roomsMock = buildRoomsMock({
+      rooms: [{ id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" }],
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.click(screen.getByTestId("chat-room-delete-engineering"));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(roomsMock.deleteRoom).toHaveBeenCalledWith("room-1"));
+    expect(roomsMock.deleteRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels room delete without deleting", async () => {
+    const roomsMock = buildRoomsMock({
+      rooms: [{ id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" }],
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.click(screen.getByTestId("chat-room-delete-engineering"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByText("Delete Room?")).not.toBeInTheDocument();
+    expect(roomsMock.deleteRoom).not.toHaveBeenCalled();
   });
 
   it("renders newly appended messages from hook updates", async () => {

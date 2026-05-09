@@ -5085,7 +5085,7 @@ export async function aiMergeTask(
       // Try in-merge fix attempts before propagating
       if (error.name === "VerificationError") {
         const verificationErr = error as VerificationError;
-        const maxFixRetries = Math.min(settings.verificationFixRetries ?? 3, 3);
+        const maxFixRetries = Math.min(settings.verificationFixRetries ?? 2, 3);
 
         if (maxFixRetries > 0 && (verificationErr.verificationResult.testResult || verificationErr.verificationResult.buildResult)) {
           mergerLog.log(`${taskId}: deterministic verification failed — attempting in-merge fix (up to ${maxFixRetries} attempts)`);
@@ -5216,7 +5216,7 @@ export async function aiMergeTask(
 
       // Check if it's a build verification failure
       if (error.message?.includes("Build verification failed")) {
-        const maxFixRetries = Math.min(settings.verificationFixRetries ?? 3, 3);
+        const maxFixRetries = Math.min(settings.verificationFixRetries ?? 2, 3);
 
         // Try in-merge fix before falling back to build retry
         if (maxFixRetries > 0 && (effectiveTestCommand || effectiveBuildCommand)) {

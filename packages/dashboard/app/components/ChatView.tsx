@@ -736,6 +736,7 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
   const [messageInput, setMessageInput] = useState("");
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmDeleteRoomId, setConfirmDeleteRoomId] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(CHAT_SIDEBAR_DEFAULT_WIDTH);
   const [chatScope, setChatScope] = useState<"direct" | "rooms">("direct");
@@ -1222,6 +1223,24 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
   ]);
 
 
+  const handleSendDispatch = useCallback(async () => {
+    const trimmed = messageInput.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    if (chatScope === "rooms") {
+      if (!rooms.activeRoom) {
+        return;
+      }
+      await rooms.sendRoomMessage(trimmed);
+      setMessageInput("");
+      return;
+    }
+
+    handleSend();
+  }, [messageInput, chatScope, rooms, handleSend]);
+
   const handleSkillSelect = useCallback(
     (skill: DiscoveredSkill) => {
       setMessageInput((currentInput) => {
@@ -1376,7 +1395,7 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
 
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        void handleSend();
+        void handleSendDispatch();
       }
     },
     [
@@ -1388,7 +1407,7 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
       filteredSkills,
       highlightedSkillIndex,
       handleSkillSelect,
-      handleSend,
+      handleSendDispatch,
       fileMention,
       messageInput,
     ],
@@ -1857,9 +1876,10 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
                   const isActive = rooms.activeRoom?.id === room.id;
                   const memberCount = isActive ? rooms.activeRoomMembers.length : "—";
                   return (
-                    <button
+                    <div
                       key={room.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       className={`chat-room-item${isActive ? " chat-room-item--active" : ""}`}
                       data-testid={`chat-room-item-${room.slug}`}
                       onClick={() => {
@@ -1868,10 +1888,33 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
                           setSidebarVisible(false);
                         }
                       }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          rooms.selectRoom(room.id);
+                          if (isMobile) {
+                            setSidebarVisible(false);
+                          }
+                        }
+                      }}
                     >
-                      <span className="chat-room-item-name">#{room.name}</span>
-                      <span className="chat-room-item-meta">{memberCount} {memberCount === 1 ? "member" : "members"}</span>
-                    </button>
+                      <span className="chat-room-item-details">
+                        <span className="chat-room-item-name">#{room.name}</span>
+                        <span className="chat-room-item-meta">{memberCount} {memberCount === 1 ? "member" : "members"}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-icon chat-room-item-delete"
+                        data-testid={`chat-room-delete-${room.slug}`}
+                        aria-label={`Delete room ${room.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setConfirmDeleteRoomId(room.id);
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -1956,6 +1999,36 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
         </div>
       )}
 
+      {confirmDeleteRoomId && (
+        <div className="chat-new-dialog-backdrop chat-view-dialog-backdrop" onClick={() => setConfirmDeleteRoomId(null)}>
+          <div className="chat-new-dialog chat-view-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete Room?</h3>
+            <p className="chat-view-delete-dialog-copy">
+              This action cannot be undone. This room and all its messages will be permanently deleted.
+            </p>
+            <div className="chat-new-dialog-actions">
+              <button className="btn btn-sm" onClick={() => setConfirmDeleteRoomId(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      await rooms.deleteRoom(confirmDeleteRoomId);
+                      setConfirmDeleteRoomId(null);
+                    } catch {
+                      addToast("Failed to delete room", "error");
+                    }
+                  })();
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Thread */}
       {chatScope === "rooms" ? (
         <div className="chat-thread">
@@ -2038,11 +2111,7 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
                   type="button"
                   className="chat-input-send"
                   onClick={() => {
-                    const trimmed = messageInput.trim();
-                    if (!trimmed) return;
-                    void rooms.sendRoomMessage(trimmed).then(() => {
-                      setMessageInput("");
-                    });
+                    void handleSendDispatch();
                   }}
                   disabled={!messageInput.trim()}
                   data-testid="chat-send-btn"
