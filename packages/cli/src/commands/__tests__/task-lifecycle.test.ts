@@ -220,6 +220,181 @@ describe("processPullRequestMergeTask", () => {
     expect(github.createPr).not.toHaveBeenCalled();
   });
 
+  it("fails before push when the task branch is missing locally and remotely", async () => {
+    const task: MockTask = {
+      id: "FN-9010",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+    };
+    const branch = getTaskBranchName(task.id);
+    const store = makeStore(task);
+
+    const commands: string[] = [];
+    execMock.mockImplementation((cmd: string) => {
+      commands.push(cmd);
+      if (cmd.startsWith("git show-ref")) {
+        const err = new Error("not found") as Error & { code?: number };
+        err.code = 1;
+        throw err;
+      }
+      if (cmd.startsWith("git ls-remote")) {
+        const err = new Error("not found") as Error & { code?: number };
+        err.code = 2;
+        throw err;
+      }
+      return "";
+    });
+
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn(),
+      mergePr: vi.fn(),
+    };
+
+    await expect(
+      processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined),
+    ).rejects.toThrow(`Cannot create PR for missing task branch "${branch}"`);
+
+    expect(commands.some((cmd) => cmd.startsWith("git push"))).toBe(false);
+    expect(github.createPr).not.toHaveBeenCalled();
+  });
+
+  it("rethrows unexpected remote lookup failures instead of treating them as missing branches", async () => {
+    const task: MockTask = {
+      id: "FN-9013",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+    };
+    const store = makeStore(task);
+
+    const commands: string[] = [];
+    execMock.mockImplementation((cmd: string) => {
+      commands.push(cmd);
+      if (cmd.startsWith("git show-ref")) {
+        const err = new Error("not found") as Error & { code?: number };
+        err.code = 1;
+        throw err;
+      }
+      if (cmd.startsWith("git ls-remote")) {
+        const err = new Error("fatal: unable to access remote") as Error & { code?: number };
+        err.code = 128;
+        throw err;
+      }
+      return "";
+    });
+
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn(),
+      mergePr: vi.fn(),
+    };
+
+    await expect(
+      processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined),
+    ).rejects.toThrow("fatal: unable to access remote");
+
+    expect(commands.some((cmd) => cmd.startsWith("git push"))).toBe(false);
+    expect(github.createPr).not.toHaveBeenCalled();
+  });
+
+  it("skips push when the local branch is gone but the remote task branch exists", async () => {
+    const task: MockTask = {
+      id: "FN-9011",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+    };
+    const branch = getTaskBranchName(task.id);
+    const store = makeStore(task);
+
+    const commands: string[] = [];
+    execMock.mockImplementation((cmd: string) => {
+      commands.push(cmd);
+      if (cmd.startsWith("git show-ref")) {
+        const err = new Error("not found") as Error & { code?: number };
+        err.code = 1;
+        throw err;
+      }
+      return "";
+    });
+
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(async () => ({
+        number: 43,
+        url: "https://github.com/x/y/pull/43",
+        status: "open" as const,
+        headBranch: branch,
+        baseBranch: "main",
+      })),
+      getPrMergeStatus: vi.fn(async () => ({
+        prInfo: { number: 43, status: "open" as const, url: "https://github.com/x/y/pull/43" },
+        reviewDecision: null,
+        checks: [],
+        mergeReady: false,
+        blockingReasons: [],
+      })),
+      mergePr: vi.fn(),
+    };
+
+    const result = await processPullRequestMergeTask(
+      store as never,
+      "/repo",
+      task.id,
+      github as never,
+      () => undefined,
+    );
+
+    expect(result).toBe("waiting");
+    expect(commands.some((cmd) => cmd.startsWith("git ls-remote"))).toBe(true);
+    expect(commands.some((cmd) => cmd.startsWith("git push"))).toBe(false);
+    expect(github.createPr).toHaveBeenCalledWith(expect.objectContaining({ head: branch }));
+  });
+
+  it("parks no-delta branches instead of retrying into branch push failures", async () => {
+    const task: MockTask = {
+      id: "FN-9012",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+    };
+    const branch = getTaskBranchName(task.id);
+    const store = makeStore(task);
+    execMock.mockImplementation(() => "");
+
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(async () => {
+        throw new Error(`GraphQL: No commits between main and ${branch} (createPullRequest)`);
+      }),
+      getPrMergeStatus: vi.fn(),
+      mergePr: vi.fn(),
+    };
+
+    const result = await processPullRequestMergeTask(
+      store as never,
+      "/repo",
+      task.id,
+      github as never,
+      () => undefined,
+    );
+
+    expect(result).toBe("skipped");
+    expect(store.updateTask).toHaveBeenCalledWith(task.id, {
+      status: "failed",
+      error: `No pull request created for ${branch}: the branch has no commits relative to the base branch.`,
+    });
+    expect(store.logEntry).toHaveBeenCalledWith(
+      task.id,
+      `No pull request created for ${branch}: the branch has no commits relative to the base branch.`,
+      expect.stringContaining("No commits between"),
+    );
+  });
+
   it("finalizes task cleanup when PR is already merged on status refresh", async () => {
     const task: MockTask = {
       id: "FN-9004",

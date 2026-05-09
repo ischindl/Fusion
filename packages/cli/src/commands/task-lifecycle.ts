@@ -58,7 +58,48 @@ export function getTaskBranchName(taskId: string): string {
  * fast-forwards thereafter. Required because the GitHub PR-create flow
  * does not implicitly publish the local branch.
  */
+function commandExitCode(err: unknown): number | undefined {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "number" ? code : undefined;
+  }
+  return undefined;
+}
+
+async function gitCommandSucceeds(cwd: string, command: string, missingExitCode: number): Promise<boolean> {
+  try {
+    await execAsync(command, { cwd, timeout: 30_000 });
+    return true;
+  } catch (err: unknown) {
+    if (commandExitCode(err) === missingExitCode) return false;
+    throw err;
+  }
+}
+
 async function pushTaskBranchToOrigin(cwd: string, branch: string): Promise<void> {
+  const localRef = `refs/heads/${branch}`;
+  const localBranchExists = await gitCommandSucceeds(
+    cwd,
+    `git show-ref --verify --quiet "${localRef}"`,
+    1,
+  );
+
+  if (!localBranchExists) {
+    const remoteBranchExists = await gitCommandSucceeds(
+      cwd,
+      `git ls-remote --exit-code --heads origin "${branch}"`,
+      2,
+    );
+
+    if (remoteBranchExists) {
+      return;
+    }
+
+    throw new Error(
+      `Cannot create PR for missing task branch "${branch}": no local ref "${localRef}" and no origin branch "${branch}". Re-run the task or recreate the branch before retrying PR creation.`,
+    );
+  }
+
   try {
     await execAsync(`git push -u origin "${branch}"`, {
       cwd,
@@ -199,11 +240,22 @@ export async function processPullRequestMergeTask(
       // branch, so we push it here right before creating the PR.
       await pushTaskBranchToOrigin(cwd, branch);
     }
-    prInfo = existingPr ?? await github.createPr({
-      title: buildPullRequestTitle(task),
-      body: buildPullRequestBody(task),
-      head: branch,
-    });
+    try {
+      prInfo = existingPr ?? await github.createPr({
+        title: buildPullRequestTitle(task),
+        body: buildPullRequestBody(task),
+        head: branch,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("No commits between")) {
+        const error = `No pull request created for ${branch}: the branch has no commits relative to the base branch.`;
+        await store.updateTask(task.id, { status: "failed", error });
+        await store.logEntry(task.id, error, message);
+        return "skipped";
+      }
+      throw err;
+    }
 
     await store.updatePrInfo(task.id, prInfo);
     await store.logEntry(
