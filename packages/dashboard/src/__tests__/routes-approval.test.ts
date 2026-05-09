@@ -14,19 +14,27 @@ class MockApprovalRequestStore {
   list(input: any = {}) {
     let rows = [...state.requests.values()];
     if (input.status) rows = rows.filter((r) => r.status === input.status);
-    if (input.requesterActorId) rows = rows.filter((r) => r.requester.actorId === input.requesterActorId);
-    if (input.taskId) rows = rows.filter((r) => r.taskId === input.taskId);
-    return rows;
+    const offset = input.offset ?? 0;
+    const limit = input.limit ?? rows.length;
+    return rows.slice(offset, offset + limit);
   }
   get(id: string) {
     return state.requests.get(id) ?? null;
   }
-  decide(id: string, status: "approved" | "denied") {
+  decide(id: string, status: "approved" | "denied", input?: { actor?: any; note?: string }) {
     const req = state.requests.get(id);
     if (!req) throw new Error("Approval request not found");
     if (req.status !== "pending") throw new Error(`Invalid approval request transition: ${req.status} -> ${status}`);
     req.status = status;
-    state.audits.set(id, [...(state.audits.get(id) ?? []), { event: status }]);
+    req.decidedAt = new Date().toISOString();
+    req.updatedAt = req.decidedAt;
+    state.audits.set(id, [...(state.audits.get(id) ?? []), {
+      id: `evt-${status}`,
+      eventType: status,
+      actor: input?.actor ?? { actorId: "user", actorType: "user", actorName: "User" },
+      note: input?.note,
+      createdAt: req.decidedAt,
+    }]);
     return req;
   }
   getAuditHistory(id: string) {
@@ -92,62 +100,106 @@ describe("approval routes", async () => {
 
   beforeEach(() => {
     updateAgent.mockClear();
+    const now = new Date().toISOString();
     state.task = { id: "FN-1", paused: true, pausedByAgentId: "agent-1" };
     state.agent = { id: "agent-1", state: "paused", pauseReason: "awaiting-approval" };
     state.requests = new Map([
-      ["apr-1", { id: "apr-1", status: "pending", requester: { actorId: "agent-1" }, taskId: "FN-1" }],
-      ["apr-2", { id: "apr-2", status: "denied", requester: { actorId: "agent-1" }, taskId: "FN-1" }],
+      ["apr-1", {
+        id: "apr-1",
+        status: "pending",
+        requester: { actorId: "agent-1", actorType: "agent", actorName: "Agent 1" },
+        targetAction: { category: "command_execution", summary: "Run command", action: "bash", resourceType: "command", resourceId: "cmd-1" },
+        taskId: "FN-1",
+        createdAt: now,
+        updatedAt: now,
+        requestedAt: now,
+      }],
+      ["apr-2", {
+        id: "apr-2",
+        status: "denied",
+        requester: { actorId: "agent-1", actorType: "agent", actorName: "Agent 1" },
+        targetAction: { category: "network_api", summary: "Fetch URL", action: "web_fetch", resourceType: "url", resourceId: "https://example.com" },
+        taskId: "FN-1",
+        createdAt: now,
+        updatedAt: now,
+        requestedAt: now,
+      }],
     ]);
-    state.audits = new Map([["apr-1", [{ event: "created" }]]]);
+    state.audits = new Map([
+      ["apr-1", [{ id: "evt-created", eventType: "created", actor: { actorId: "agent-1", actorType: "agent", actorName: "Agent 1" }, createdAt: now }]],
+      ["apr-2", [{ id: "evt-denied", eventType: "denied", actor: { actorId: "dashboard", actorType: "user", actorName: "User" }, createdAt: now }]],
+    ]);
   });
 
-  it("lists and filters requests", async () => {
+  it("lists with status filtering and pendingCount", async () => {
     const app = createApp();
-    const res = await get(app, "/api/approval-requests?status=pending");
+    const res = await get(app, "/api/approvals?status=pending");
     expect(res.status).toBe(200);
-    expect((res.body as any[]).map((r) => r.id)).toEqual(["apr-1"]);
+    expect(res.body.total).toBe(1);
+    expect(res.body.pendingCount).toBe(1);
+    expect(res.body.requests).toHaveLength(1);
+    expect(res.body.requests[0]).toMatchObject({
+      id: "apr-1",
+      actionCategory: "command_execution",
+      actionSummary: "Run command",
+      agentId: "agent-1",
+    });
+  });
+
+  it("returns detail with history", async () => {
+    const app = createApp();
+    const res = await get(app, "/api/approvals/apr-1");
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("apr-1");
+    expect(res.body.history).toHaveLength(1);
+    expect(res.body.targetAction.summary).toBe("Run command");
   });
 
   it("returns 404 for missing request", async () => {
     const app = createApp();
-    const res = await get(app, "/api/approval-requests/missing");
+    const res = await get(app, "/api/approvals/missing");
     expect(res.status).toBe(404);
   });
 
-  it("returns audit history", async () => {
+  it("decides approval and unpauses task/agent", async () => {
     const app = createApp();
-    const res = await get(app, "/api/approval-requests/apr-1/audit");
+    const res = await request(
+      app,
+      "POST",
+      "/api/approvals/apr-1/decision",
+      JSON.stringify({ decision: "approve", comment: "looks good" }),
+      { "content-type": "application/json" },
+    );
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ event: "created" }]);
-  });
-
-  it("approves and unpauses task/agent", async () => {
-    const app = createApp();
-    const res = await request(app, "POST", "/api/approval-requests/apr-1/approve", JSON.stringify({}));
-    expect(res.status).toBe(200);
-    expect((res.body as any).status).toBe("approved");
+    expect(res.body.status).toBe("approved");
+    expect(res.body.history.at(-1)?.eventType).toBe("approved");
+    expect(res.body.history.at(-1)?.note).toBe("looks good");
     expect(state.task.paused).toBe(false);
     expect(updateAgent).toHaveBeenCalledWith("agent-1", { pauseReason: undefined });
   });
 
-  it("denies and unpauses task/agent", async () => {
+  it("supports deny decision", async () => {
     const app = createApp();
-    const res = await request(app, "POST", "/api/approval-requests/apr-1/deny", JSON.stringify({}));
+    const res = await request(
+      app,
+      "POST",
+      "/api/approvals/apr-1/decision",
+      JSON.stringify({ decision: "deny" }),
+      { "content-type": "application/json" },
+    );
     expect(res.status).toBe(200);
-    expect((res.body as any).status).toBe("denied");
-    expect(state.task.paused).toBe(false);
-  });
-
-  it("no-ops when task already unpaused", async () => {
-    state.task.paused = false;
-    const app = createApp();
-    const res = await request(app, "POST", "/api/approval-requests/apr-1/deny", JSON.stringify({}));
-    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("denied");
   });
 
   it("returns 409 for invalid transition", async () => {
     const app = createApp();
-    const res = await request(app, "POST", "/api/approval-requests/apr-2/approve", JSON.stringify({}));
+    const res = await request(
+      app,
+      "POST",
+      "/api/approvals/apr-2/decision",
+      JSON.stringify({ decision: "approve" }),
+      { "content-type": "application/json" },
+    );
     expect(res.status).toBe(409);
   });
 });

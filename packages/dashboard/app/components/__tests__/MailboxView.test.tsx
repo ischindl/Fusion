@@ -5,6 +5,7 @@ import { MailboxView } from "../MailboxView";
 import * as apiModule from "../../api";
 import * as viewportModule from "../../hooks/useViewportMode";
 import * as mobileKeyboardModule from "../../hooks/useMobileKeyboard";
+import * as sseBusModule from "../../sse-bus";
 import type { Agent } from "../../api";
 import type { Message } from "@fusion/core";
 
@@ -20,6 +21,9 @@ vi.mock("../../api", () => ({
   fetchConversation: vi.fn(),
   sendMessage: vi.fn(),
   fetchAgents: vi.fn(),
+  fetchApprovals: vi.fn(),
+  fetchApprovalDetail: vi.fn(),
+  decideApproval: vi.fn(),
 }));
 
 vi.mock("../../hooks/useViewportMode", () => ({
@@ -28,6 +32,14 @@ vi.mock("../../hooks/useViewportMode", () => ({
 
 vi.mock("../../hooks/useMobileKeyboard", () => ({
   useMobileKeyboard: vi.fn(),
+}));
+
+const sseSubscriptions: Array<Record<string, () => void>> = [];
+vi.mock("../../sse-bus", () => ({
+  subscribeSse: vi.fn((_url: string, options: { events: Record<string, () => void> }) => {
+    sseSubscriptions.push(options.events);
+    return () => {};
+  }),
 }));
 
 // Mock lucide-react icons
@@ -59,6 +71,10 @@ const mockMarkAllMessagesRead = vi.mocked(apiModule.markAllMessagesRead);
 const mockDeleteMessage = vi.mocked(apiModule.deleteMessage);
 const mockFetchConversation = vi.mocked(apiModule.fetchConversation);
 const mockSendMessage = vi.mocked(apiModule.sendMessage);
+const mockFetchApprovals = vi.mocked(apiModule.fetchApprovals);
+const mockFetchApprovalDetail = vi.mocked(apiModule.fetchApprovalDetail);
+const mockDecideApproval = vi.mocked(apiModule.decideApproval);
+const mockSubscribeSse = vi.mocked(sseBusModule.subscribeSse);
 const mockUseViewportMode = vi.mocked(viewportModule.useViewportMode);
 const mockUseMobileKeyboard = vi.mocked(mobileKeyboardModule.useMobileKeyboard);
 
@@ -153,6 +169,7 @@ function makeOutboxResponse(messages: Message[]) {
 describe("MailboxView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sseSubscriptions.length = 0;
     mockUseViewportMode.mockReturnValue("desktop");
     mockUseMobileKeyboard.mockReturnValue({
       keyboardOverlap: 0,
@@ -163,6 +180,7 @@ describe("MailboxView", () => {
     mockFetchUnreadCount.mockResolvedValue({ unreadCount: 2 });
     mockFetchAgents.mockResolvedValue(mockAgents);
     mockSendMessage.mockResolvedValue({ ...mockMessage, id: "msg-sent" });
+    mockFetchApprovals.mockResolvedValue({ requests: [], total: 0, pendingCount: 0 });
   });
 
   it("renders the mailbox view", async () => {
@@ -192,7 +210,7 @@ describe("MailboxView", () => {
     });
   });
 
-  it("renders all three tabs", async () => {
+  it("renders all four tabs", async () => {
     mockFetchInbox.mockResolvedValue({
       messages: [],
       unreadCount: 0,
@@ -204,6 +222,210 @@ describe("MailboxView", () => {
     expect(screen.getByTestId("mailbox-tab-inbox")).toBeDefined();
     expect(screen.getByTestId("mailbox-tab-outbox")).toBeDefined();
     expect(screen.getByTestId("mailbox-tab-agents")).toBeDefined();
+    expect(screen.getByTestId("mailbox-tab-approvals")).toBeDefined();
+  });
+
+  it("shows approvals pending badge and loads approvals tab", async () => {
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({
+      requests: [{
+        id: "apr-1",
+        status: "pending",
+        actionCategory: "command_execution",
+        actionSummary: "Run npm test",
+        agentId: "agent-001",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+      total: 1,
+      pendingCount: 2,
+    });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-approvals"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-approvals-pending-badge")).toHaveTextContent("2");
+      expect(screen.getByTestId("mailbox-approval-item-apr-1")).toBeDefined();
+    });
+  });
+
+  it("renders approval detail metadata and history", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({
+      requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", taskId: "FN-1", createdAt: now, updatedAt: now }],
+      total: 1,
+      pendingCount: 1,
+    });
+    mockFetchApprovalDetail.mockResolvedValue({
+      id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", taskId: "FN-1", createdAt: now, updatedAt: now,
+      requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now,
+      targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" },
+      history: [{ id: "evt-1", eventType: "created", actor: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, createdAt: now }],
+    });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-approval-detail")).toBeDefined();
+      expect(screen.getByText(/Requester: Agent 1/)).toBeDefined();
+      expect(screen.getByText(/Task: FN-1/)).toBeDefined();
+      expect(screen.getByTestId("mailbox-approval-history")).toBeDefined();
+    });
+  });
+
+  it("allows approving a pending approval request", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({
+      requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }],
+      total: 1,
+      pendingCount: 1,
+    });
+    mockFetchApprovalDetail.mockResolvedValue({
+      id: "apr-1",
+      status: "pending",
+      actionCategory: "command_execution",
+      actionSummary: "Run npm test",
+      agentId: "agent-001",
+      createdAt: now,
+      updatedAt: now,
+      requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" },
+      requestedAt: now,
+      targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" },
+      history: [{ id: "evt-1", eventType: "created", actor: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, createdAt: now }],
+    });
+    mockDecideApproval.mockResolvedValue({
+      id: "apr-1",
+      status: "approved",
+      actionCategory: "command_execution",
+      actionSummary: "Run npm test",
+      agentId: "agent-001",
+      createdAt: now,
+      updatedAt: now,
+      requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" },
+      requestedAt: now,
+      targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" },
+      history: [{ id: "evt-2", eventType: "approved", actor: { actorId: "user", actorType: "user", actorName: "User" }, createdAt: now }],
+    });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
+
+    await waitFor(() => {
+      expect(mockDecideApproval).toHaveBeenCalledWith("apr-1", { decision: "approve", comment: undefined }, undefined);
+    });
+  });
+
+  it("allows denying a pending approval request", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 });
+    mockFetchApprovalDetail.mockResolvedValue({ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+    mockDecideApproval.mockResolvedValue({ id: "apr-1", status: "denied", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-deny")); });
+
+    await waitFor(() => {
+      expect(mockDecideApproval).toHaveBeenCalledWith("apr-1", { decision: "deny", comment: undefined }, undefined);
+    });
+  });
+
+  it("disables decision buttons while submission is pending", async () => {
+    const now = new Date().toISOString();
+    let resolveDecision: (() => void) | undefined;
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 });
+    mockFetchApprovalDetail.mockResolvedValue({ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+    mockDecideApproval.mockImplementation(() => new Promise((resolve) => { resolveDecision = () => resolve({} as any); }));
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
+
+    expect(screen.getByTestId("mailbox-approval-approve")).toBeDisabled();
+    expect(screen.getByTestId("mailbox-approval-deny")).toBeDisabled();
+    expect(mockDecideApproval).toHaveBeenCalledTimes(1);
+    resolveDecision?.();
+  });
+
+  it("uses mobile stacked layout for approvals detail and back navigation", async () => {
+    const now = new Date().toISOString();
+    mockUseViewportMode.mockReturnValue("mobile");
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 });
+    mockFetchApprovalDetail.mockResolvedValue({ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-approval-detail")).toBeDefined();
+      expect(screen.queryByTestId("mailbox-approval-list")).toBeNull();
+      expect(screen.getByTestId("mailbox-approval-back-to-list")).toBeDefined();
+    });
+
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-approval-back-to-list")); });
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-approval-list")).toBeDefined();
+    });
+  });
+
+  it("refreshes approvals on approval SSE events", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+
+    const latest = sseSubscriptions.at(-1);
+    expect(latest).toBeDefined();
+    await act(async () => {
+      latest?.["approval:requested"]?.();
+      latest?.["approval:updated"]?.();
+      latest?.["approval:decided"]?.();
+    });
+
+    await waitFor(() => {
+      expect(mockFetchApprovals).toHaveBeenCalled();
+      expect(mockSubscribeSse).toHaveBeenCalled();
+    });
+  });
+
+  it("moves decided requests into history view", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals
+      .mockResolvedValueOnce({ requests: [{ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 1 })
+      .mockResolvedValueOnce({ requests: [], total: 0, pendingCount: 0 })
+      .mockResolvedValueOnce({ requests: [{ id: "apr-1", status: "approved", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now }], total: 1, pendingCount: 0 })
+      .mockResolvedValue({ requests: [], total: 0, pendingCount: 0 });
+    mockFetchApprovalDetail.mockResolvedValue({ id: "apr-1", status: "pending", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+    mockDecideApproval.mockResolvedValue({ id: "apr-1", status: "approved", actionCategory: "command_execution", actionSummary: "Run npm test", agentId: "agent-001", createdAt: now, updatedAt: now, requester: { actorId: "agent-001", actorType: "agent", actorName: "Agent 1" }, requestedAt: now, targetAction: { category: "command_execution", action: "bash", summary: "Run npm test", resourceType: "command", resourceId: "cmd" }, history: [] });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-approve")); });
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-approval-filter-history")); });
+
+    await waitFor(() => {
+      expect(mockFetchApprovals).toHaveBeenCalled();
+    });
   });
 
   it("shows inbox tab as active by default", async () => {

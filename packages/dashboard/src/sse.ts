@@ -215,6 +215,18 @@ export type MessageSseEventType =
   | "message:read"
   | "message:deleted";
 
+export type ApprovalSseEventType = "approval:requested" | "approval:updated" | "approval:decided";
+
+type ApprovalSseListener = (event: ApprovalSseEventType, payload: unknown, projectId?: string) => void;
+
+const approvalSseListeners = new Set<ApprovalSseListener>();
+
+export function emitApprovalSseEvent(event: ApprovalSseEventType, payload: unknown, projectId?: string): void {
+  for (const listener of approvalSseListeners) {
+    listener(event, payload, projectId);
+  }
+}
+
 /**
  * Normalized plugin lifecycle payload emitted via SSE.
  * This is the stable contract the UI can reconcile.
@@ -556,6 +568,11 @@ export function createSSE(
       send(`event: message:deleted\ndata: ${JSON.stringify({ id: messageId })}\n\n`);
     };
 
+    const onApprovalEvent: ApprovalSseListener = (event, payload, eventProjectId) => {
+      if (projectId && eventProjectId && eventProjectId !== projectId) return;
+      send(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+
     // --- Chat store event handlers ---
     const onChatSessionCreated = (session: unknown) => {
       send(`event: chat:session:created\ndata: ${JSON.stringify(session)}\n\n`);
@@ -671,6 +688,7 @@ export function createSSE(
         messageStore.off("message:read", onMessageRead);
         messageStore.off("message:deleted", onMessageDeleted);
       }
+      approvalSseListeners.delete(onApprovalEvent);
       if (chatStore) {
         chatStore.off("chat:session:created", onChatSessionCreated);
         chatStore.off("chat:session:updated", onChatSessionUpdated);
@@ -799,6 +817,8 @@ export function createSSE(
     // Sent as a named event so the client's EventSource can detect it
     // (SSE comments starting with ":" are silently consumed and never
     // fire event listeners in the browser).
+    approvalSseListeners.add(onApprovalEvent);
+
     registerManagedConnection({
       id: connectionId,
       clientId,

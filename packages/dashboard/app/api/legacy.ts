@@ -69,6 +69,7 @@ import type {
   DockerExtraCli,
   DockerNodeStatus,
   ProjectNodePathMapping,
+  ApprovalRequestStatus,
 } from "@fusion/core";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import type { ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, Routine, RoutineCreateInput, RoutineUpdateInput, RoutineExecutionResult } from "@fusion/core";
@@ -7598,6 +7599,55 @@ export interface SendMessageInput {
   wakeImmediately?: boolean;
 }
 
+export interface ApprovalRequestSummary {
+  id: string;
+  status: ApprovalRequestStatus;
+  actionCategory: string;
+  actionSummary: string;
+  agentId: string;
+  taskId?: string;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+}
+
+export interface ApprovalRequestDetail extends ApprovalRequestSummary {
+  requester: {
+    actorId: string;
+    actorType: "agent" | "user" | "system";
+    actorName: string;
+  };
+  runId?: string;
+  requestedAt: string;
+  completedAt?: string;
+  targetAction: {
+    category: string;
+    action: string;
+    summary: string;
+    resourceType: string;
+    resourceId: string;
+    context?: Record<string, unknown>;
+  };
+  history: Array<{
+    id: string;
+    eventType: string;
+    actor: {
+      actorId: string;
+      actorType: "agent" | "user" | "system";
+      actorName: string;
+    };
+    note?: string;
+    createdAt: string;
+  }>;
+}
+
+export interface ApprovalListResponse {
+  requests: ApprovalRequestSummary[];
+  total: number;
+  pendingCount: number;
+}
+
 /** Fetch inbox messages for the current user. */
 export function fetchInbox(
   options?: { limit?: number; offset?: number; unreadOnly?: boolean; type?: MessageType },
@@ -7679,6 +7729,34 @@ export function fetchConversation(
 /** Fetch an agent's mailbox (admin read-only view). */
 export function fetchAgentMailbox(agentId: string, projectId?: string): Promise<AgentMailboxResponse> {
   return api<AgentMailboxResponse>(withProjectId(`/agents/${encodeURIComponent(agentId)}/mailbox`, projectId));
+}
+
+export function fetchApprovals(
+  options?: { status?: ApprovalRequestStatus; limit?: number; offset?: number },
+  projectId?: string,
+): Promise<ApprovalListResponse> {
+  const params = new URLSearchParams();
+  if (options?.status) params.set("status", options.status);
+  if (options?.limit !== undefined) params.set("limit", String(options.limit));
+  if (options?.offset !== undefined) params.set("offset", String(options.offset));
+  if (projectId) params.set("projectId", projectId);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return api<ApprovalListResponse>(`/approvals${query}`);
+}
+
+export function fetchApprovalDetail(id: string, projectId?: string): Promise<ApprovalRequestDetail> {
+  return api<ApprovalRequestDetail>(withProjectId(`/approvals/${encodeURIComponent(id)}`, projectId));
+}
+
+export function decideApproval(
+  id: string,
+  input: { decision: "approve" | "deny"; comment?: string },
+  projectId?: string,
+): Promise<ApprovalRequestDetail> {
+  return api<ApprovalRequestDetail>(withProjectId(`/approvals/${encodeURIComponent(id)}/decision`, projectId), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 /** Fetch reflection history for an agent. */

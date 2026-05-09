@@ -96,8 +96,9 @@ Approval pause/resume lifecycle (FN-3548):
 - For `require-approval`, the engine creates/reuses a durable approval request and pauses execution with canonical `pauseReason: "awaiting-approval"`.
 - If task-backed, the owning task is paused (`Task.paused=true`, `pausedByAgentId=<requester>`); the requesting agent is paused (`state="paused"`, `pauseReason="awaiting-approval"`).
 - Dedupe semantics by `approvalDedupeKey`: `pending` reuses the same request, `approved` allows exactly one execution and then marks request `completed`, `denied` stays blocked, `completed` requires a fresh request.
-- HTTP decision endpoints resume best-effort: `POST /api/approval-requests/:id/approve` and `POST /api/approval-requests/:id/deny` unpause matching task/agent when they are paused for `awaiting-approval`.
-- Approval API surface: `GET /api/approval-requests`, `GET /api/approval-requests/:id`, `GET /api/approval-requests/:id/audit`, `POST /api/approval-requests/:id/approve`, `POST /api/approval-requests/:id/deny`.
+- HTTP decision endpoint resumes best-effort: `POST /api/approvals/:id/decision` with `{ decision: "approve" | "deny", comment? }` unpauses matching task/agent when they are paused for `awaiting-approval`.
+- Approval API surface: `GET /api/approvals` (supports status/limit/offset and returns `{ requests, total, pendingCount }`), `GET /api/approvals/:id` (includes request context + audit/history), `POST /api/approvals/:id/decision`.
+- Dashboard mailbox is the primary v1 resolution surface: approvals appear in the mailbox **Approvals** tab with pending/history views and inline approve/deny controls for pending requests.
 
 Default and legacy fallback behavior:
 

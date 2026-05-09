@@ -121,6 +121,8 @@ Mailbox view shows inbox/outbox communication threads and unread state.
 - Inbox renders one row per message (no sender-based collapsing)
 - clicking a message in the Mail tab opens the task detail pane with full message content and conversation context
 - reply rows in the mailbox modal can expand inline to show the replied-to message context for easier thread reading
+- mailbox now includes an **Approvals** tab with pending and history filters (`approved` / `denied` / `completed`), approval detail context, and inline approve/deny actions for pending requests
+- approval lifecycle SSE events (`approval:requested`, `approval:updated`, `approval:decided`) trigger mailbox approvals refresh without manual reload
 - Visible message history/threading is driven by explicit `message.metadata.replyTo.messageId` links
 - Separate top-level messages from the same sender remain independent in the inbox and detail pane
 
