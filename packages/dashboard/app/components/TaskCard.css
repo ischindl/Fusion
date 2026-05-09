@@ -818,7 +818,7 @@
 .card-edit-desc-textarea:focus {
   border-color: var(--todo);
   box-shadow: var(--focus-ring);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
 }
 
 .card-edit-desc-textarea::placeholder {
@@ -892,7 +892,7 @@
 }
 
 .card-delete-btn:hover {
-  color: var(--color-error, #f85149);
+  color: var(--color-error);
 }
 
 .card-delete-btn:focus {
@@ -1007,12 +1007,12 @@
 }
 
 .card-send-back-menu-item:hover {
-  background: var(--surface-hover);
+  background: var(--surface-hover, color-mix(in srgb, var(--text) 6%, transparent));
 }
 
 .card-send-back-menu-item:focus {
   outline: none;
-  background: var(--surface-hover);
+  background: var(--surface-hover, color-mix(in srgb, var(--text) 6%, transparent));
 }
 
 /* Loading state during save */

@@ -265,6 +265,13 @@ Intentional exclusions from shared snapshots:
 - `streamChatResponse()` must flush trailing buffered SSE data on EOF even without a final newline, so terminal `done`/`error` events are not dropped at chunk boundaries.
 - Chat generation ownership is isolated by `generationId` (`ChatManager.beginGeneration` + `ChatStreamManager` subscription filters + route preallocation), preventing stale generation terminal events from leaking into a newer active request.
 
+#### Chat Rooms (Dashboard)
+
+- The Rooms tab in `packages/dashboard/app/components/ChatView.tsx` is wired through `useChatRooms` (`packages/dashboard/app/hooks/useChatRooms.ts`).
+- `useChatRooms` owns room list fetch/sort, active-room selection, member+message hydration, room creation/deletion, and room message sends.
+- The hook subscribes to `/api/events` and consumes `chat:room:created`, `chat:room:updated`, `chat:room:deleted`, `chat:room:member:added`, `chat:room:member:removed`, `chat:room:message:added`, `chat:room:message:updated`, and `chat:room:message:deleted` to keep UI state in sync.
+- Room messages persist through `POST /api/chat/rooms/:id/messages`; UI does not optimistically insert and instead renders persisted messages from `chat:room:message:*` SSE events.
+
 ### Agent Companies
 
 - Import/export utilities: `agent-companies-parser.ts`, `agent-companies-exporter.ts`, `agent-companies-types.ts`

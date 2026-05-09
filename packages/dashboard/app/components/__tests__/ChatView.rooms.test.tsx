@@ -1,107 +1,135 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { userEvent } from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import * as useChatModule from "../../hooks/useChat";
+import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import * as headerModule from "../Header";
+import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
 
-vi.mock("lucide-react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("lucide-react")>();
-  return {
-    ...actual,
-    Plus: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-plus"} {...props} />,
-    Bot: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-bot"} {...props} />,
-  };
-});
-
-vi.mock("../../hooks/useChat", () => ({
-  useChat: vi.fn(),
-}));
-
-vi.mock("../Header", () => ({
-  useViewportMode: vi.fn(),
-}));
-
+vi.mock("../../hooks/useChat", () => ({ useChat: vi.fn() }));
+vi.mock("../../hooks/useChatRooms", () => ({ useChatRooms: vi.fn() }));
+vi.mock("../Header", () => ({ useViewportMode: vi.fn() }));
 vi.mock("../../api", () => ({
   fetchModels: vi.fn().mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] }),
-  fetchAgents: vi.fn().mockResolvedValue([
-    { id: "agent-1", name: "Alpha", role: "executor", state: "idle", metadata: {}, createdAt: "", updatedAt: "" },
-  ]),
+  fetchAgents: vi.fn().mockResolvedValue([{ id: "agent-1", name: "Alpha", role: "executor", state: "idle", metadata: {}, createdAt: "", updatedAt: "" }]),
   fetchDiscoveredSkills: vi.fn().mockResolvedValue([]),
   updateGlobalSettings: vi.fn(),
   searchFiles: vi.fn().mockResolvedValue({ files: [] }),
 }));
 
 const mockUseChat = vi.mocked(useChatModule.useChat);
+const mockUseChatRooms = vi.mocked(useChatRoomsModule.useChatRooms);
 const mockUseViewportMode = vi.mocked(headerModule.useViewportMode);
+
+function buildRoomsMock(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoomsResult {
+  return {
+    rooms: [],
+    roomsLoading: false,
+    roomsError: null,
+    activeRoom: null,
+    activeRoomMembers: [],
+    messages: [],
+    messagesLoading: false,
+    selectRoom: vi.fn(),
+    createRoom: vi.fn().mockResolvedValue({ id: "room-2", name: "product", slug: "product", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "" }),
+    deleteRoom: vi.fn().mockResolvedValue(undefined),
+    sendRoomMessage: vi.fn().mockResolvedValue(undefined),
+    refreshRooms: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockUseViewportMode.mockReturnValue("desktop");
   mockUseChat.mockReturnValue({
-    sessions: [],
-    activeSession: null,
-    sessionsLoading: false,
-    messages: [],
-    messagesLoading: false,
-    isStreaming: false,
-    streamingText: "",
-    streamingThinking: "",
-    streamingToolCalls: [],
-    selectSession: vi.fn(),
-    createSession: vi.fn(),
-    archiveSession: vi.fn(),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    stopStreaming: vi.fn(),
-    pendingMessage: "",
-    clearPendingMessage: vi.fn(),
-    loadMoreMessages: vi.fn(),
-    hasMoreMessages: false,
-    searchQuery: "",
-    setSearchQuery: vi.fn(),
-    filteredSessions: [],
-    refreshSessions: vi.fn(),
-    agentsMap: new Map(),
+    sessions: [], activeSession: null, sessionsLoading: false, messages: [], messagesLoading: false,
+    isStreaming: false, streamingText: "", streamingThinking: "", streamingToolCalls: [],
+    selectSession: vi.fn(), createSession: vi.fn(), archiveSession: vi.fn(), deleteSession: vi.fn(),
+    sendMessage: vi.fn(), stopStreaming: vi.fn(), pendingMessage: "", clearPendingMessage: vi.fn(),
+    loadMoreMessages: vi.fn(), hasMoreMessages: false, searchQuery: "", setSearchQuery: vi.fn(),
+    filteredSessions: [], refreshSessions: vi.fn(), agentsMap: new Map(),
   } as any);
 });
 
 describe("ChatView rooms", () => {
-  it("renders create room flow and local draft list", async () => {
+  it("lists rooms and selects one", async () => {
+    const roomsMock = buildRoomsMock({
+      rooms: [{ id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" }],
+      activeRoom: { id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" },
+      messages: [{ id: "msg-1", roomId: "room-1", role: "user", content: "hello", thinkingOutput: null, metadata: null, senderAgentId: null, mentions: [], createdAt: "2026-05-09T00:00:00.000Z" }],
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
     render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
-
     await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
-    expect(screen.getByTestId("chat-create-room-btn")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("chat-room-item-engineering"));
 
-    await userEvent.click(screen.getByTestId("chat-create-room-btn"));
-    await userEvent.type(screen.getByLabelText("Room name"), "engineering");
-    await userEvent.click(await screen.findByRole("button", { name: /Alpha/i }));
-    const dialog = screen.getByRole("dialog", { name: "Create room" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Create room" }));
-
-    const roomItem = await screen.findByTestId("chat-room-item-engineering");
-    expect(within(roomItem).getByText("#engineering")).toBeInTheDocument();
-    expect(within(roomItem).getByText("1 member")).toBeInTheDocument();
-    expect(screen.getByTestId("chat-rooms-placeholder-pane")).toHaveTextContent("Coming soon — room messaging is being wired up (FN-3807)");
+    expect(roomsMock.selectRoom).toHaveBeenCalledWith("room-1");
+    expect(screen.getByTestId("chat-room-item-engineering")).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument();
   });
 
-  it("hides sidebar on mobile when selecting a room", async () => {
-    mockUseViewportMode.mockReturnValue("mobile");
+  it("create room modal submits via rooms hook", async () => {
+    const roomsMock = buildRoomsMock({ rooms: [] });
+    mockUseChatRooms.mockReturnValue(roomsMock);
 
     render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
-
     await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
     await userEvent.click(screen.getByTestId("chat-create-room-btn"));
-    await userEvent.type(screen.getByLabelText("Room name"), "engineering");
+    await userEvent.type(screen.getByLabelText("Room name"), "product");
     await userEvent.click(await screen.findByRole("button", { name: /Alpha/i }));
-    const dialog = screen.getByRole("dialog", { name: "Create room" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Create room" }));
-
-    await userEvent.click(await screen.findByTestId("chat-room-item-engineering"));
+    await userEvent.click(screen.getByRole("dialog", { name: "Create room" }).querySelector(".btn.btn-primary") as HTMLButtonElement);
 
     await waitFor(() => {
-      expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+      expect(roomsMock.createRoom).toHaveBeenCalledWith({ name: "product", memberAgentIds: ["agent-1"] });
     });
-    expect(screen.getByTestId("chat-rooms-placeholder-pane")).toHaveTextContent("#engineering");
+  });
+
+  it("mobile selection hides sidebar and supports back button", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    const roomsMock = buildRoomsMock({
+      rooms: [{ id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" }],
+      activeRoom: { id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" },
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.click(screen.getByTestId("chat-room-item-engineering"));
+
+    await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+  });
+
+  it("sending room message calls hook and clears input", async () => {
+    const roomsMock = buildRoomsMock({
+      activeRoom: { id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" },
+    });
+    mockUseChatRooms.mockReturnValue(roomsMock);
+
+    render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+    await userEvent.type(screen.getByTestId("chat-input"), "hello room");
+    await userEvent.click(screen.getByTestId("chat-send-btn"));
+
+    await waitFor(() => expect(roomsMock.sendRoomMessage).toHaveBeenCalledWith("hello room"));
+    await waitFor(() => expect(screen.getByTestId("chat-input")).toHaveValue(""));
+  });
+
+  it("renders newly appended messages from hook updates", async () => {
+    const state = buildRoomsMock({
+      activeRoom: { id: "room-1", name: "engineering", slug: "engineering", description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: "", updatedAt: "2026-05-09T00:00:00.000Z" },
+      messages: [],
+    });
+    mockUseChatRooms.mockImplementation(() => state);
+
+    const { rerender } = render(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+    await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+
+    state.messages = [{ id: "msg-2", roomId: "room-1", role: "assistant", content: "reply", thinkingOutput: null, metadata: null, senderAgentId: "agent-1", mentions: [], createdAt: "2026-05-09T00:00:00.000Z" }];
+    rerender(<ChatView addToast={vi.fn()} projectId="proj-1" />);
+
+    expect(screen.getByText("reply")).toBeInTheDocument();
   });
 });

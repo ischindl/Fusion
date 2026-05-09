@@ -24,6 +24,7 @@ import {
   Check,
 } from "lucide-react";
 import { useChat, type ChatMessageInfo, type ToolCallInfo } from "../hooks/useChat";
+import { useChatRooms } from "../hooks/useChatRooms";
 import { useViewportMode } from "./Header";
 import { fetchAgents, fetchDiscoveredSkills, fetchModels, updateGlobalSettings } from "../api";
 import type { Agent } from "@fusion/core";
@@ -32,8 +33,9 @@ import type { ModelInfo } from "../api";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { ProviderIcon } from "./ProviderIcon";
 import { AgentMentionPopup } from "./AgentMentionPopup";
+import { AgentAvatar } from "./AgentAvatar";
 import { FileMentionPopup } from "./FileMentionPopup";
-import { CreateRoomModal, type RoomDraft } from "./CreateRoomModal";
+import { CreateRoomModal } from "./CreateRoomModal";
 import { useFileMention } from "../hooks/useFileMention";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
@@ -736,16 +738,9 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(CHAT_SIDEBAR_DEFAULT_WIDTH);
-  /**
-   * FN-3805: sidebar scope scaffold for Direct vs Rooms tabs.
-   * Rooms remains placeholder-only here; follow-up tasks FN-3806…FN-3813
-   * add room data models, APIs, and routing.
-   */
   const [chatScope, setChatScope] = useState<"direct" | "rooms">("direct");
   const [createRoomOpen, setCreateRoomOpen] = useState(false);
-  // FN-3807: replace draftRooms with backend-backed state.
-  const [draftRooms, setDraftRooms] = useState<RoomDraft[]>([]);
-  const [activeDraftRoomName, setActiveDraftRoomName] = useState<string | null>(null);
+  const rooms = useChatRooms(projectId, addToast);
   const [agentsMap, setAgentsMap] = useState<Map<string, Agent>>(new Map());
   const [discoveredSkills, setDiscoveredSkills] = useState<DiscoveredSkill[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
@@ -1807,30 +1802,30 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
                 Create room
               </button>
             </div>
-            {draftRooms.length === 0 ? (
+            {rooms.rooms.length === 0 ? (
               <div className="chat-sidebar-rooms-empty" data-testid="chat-sidebar-rooms-empty">
                 No rooms yet.
               </div>
             ) : (
               <div className="chat-session-list chat-sidebar-list">
-                {draftRooms.map((room) => {
-                  const memberCount = room.memberAgentIds.length;
-                  const isActive = activeDraftRoomName === room.name;
+                {rooms.rooms.map((room) => {
+                  const isActive = rooms.activeRoom?.id === room.id;
+                  const memberCount = isActive ? rooms.activeRoomMembers.length : "—";
                   return (
                     <button
-                      key={room.name}
+                      key={room.id}
                       type="button"
                       className={`chat-room-item${isActive ? " chat-room-item--active" : ""}`}
-                      data-testid={`chat-room-item-${room.name}`}
+                      data-testid={`chat-room-item-${room.slug}`}
                       onClick={() => {
-                        setActiveDraftRoomName(room.name);
+                        rooms.selectRoom(room.id);
                         if (isMobile) {
                           setSidebarVisible(false);
                         }
                       }}
                     >
-                      <span className="chat-room-item-name">{room.displayName}</span>
-                      <span className="chat-room-item-meta">{memberCount} member{memberCount === 1 ? "" : "s"}</span>
+                      <span className="chat-room-item-name">#{room.name}</span>
+                      <span className="chat-room-item-meta">{memberCount} {memberCount === 1 ? "member" : "members"}</span>
                     </button>
                   );
                 })}
@@ -1918,13 +1913,101 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
 
       {/* Thread */}
       {chatScope === "rooms" ? (
-        <div className="chat-thread chat-thread--rooms-placeholder" data-testid="chat-rooms-placeholder-pane">
-          <div className="chat-rooms-placeholder-title">
-            {activeDraftRoomName ? `#${activeDraftRoomName}` : "Select a room"}
-          </div>
-          <div className="chat-rooms-placeholder-copy">
-            Coming soon — room messaging is being wired up (FN-3807).
-          </div>
+        <div className="chat-thread">
+          {rooms.activeRoom ? (
+            <>
+              <div className="chat-room-thread-header">
+                {isMobile && (
+                  <button className="btn-icon" onClick={() => {
+                    rooms.selectRoom(null);
+                    setSidebarVisible(true);
+                  }} data-testid="chat-back-btn">
+                    <ChevronLeft size={16} />
+                  </button>
+                )}
+                <div className="chat-thread-header-title">#{rooms.activeRoom.name}</div>
+                <div className="chat-room-thread-members">
+                  {rooms.activeRoomMembers.map((member) => (
+                    <AgentAvatar key={member.agentId} agent={agentsMap.get(member.agentId) ?? null} />
+                  ))}
+                </div>
+              </div>
+              <div className="chat-messages" ref={messagesContainerRef} onScroll={updateScrollState}>
+                {rooms.messagesLoading ? (
+                  <div style={{ color: "var(--text-secondary)", fontSize: "13px" }}>Loading messages...</div>
+                ) : rooms.messages.length === 0 ? (
+                  <div style={{ color: "var(--text-secondary)", fontSize: "13px" }}>No messages yet. Start the conversation!</div>
+                ) : (
+                  rooms.messages.map((message) => {
+                    const senderName = message.senderAgentId ? (agentsMap.get(message.senderAgentId)?.name ?? message.senderAgentId.slice(0, 30)) : "You";
+                    const roomMessage: ChatMessageInfo = {
+                      id: message.id,
+                      sessionId: message.roomId,
+                      role: message.role,
+                      content: message.content,
+                      thinkingOutput: message.thinkingOutput ?? undefined,
+                      toolCalls: undefined,
+                      fallbackInfo: undefined,
+                      attachments: message.attachments,
+                      createdAt: message.createdAt,
+                    };
+                    return (
+                      <ChatMessageItem
+                        key={message.id}
+                        message={roomMessage}
+                        forcePlain={showAllAsPlain}
+                        agentName={senderName}
+                        hideAssistantIdentity={false}
+                        showAssistantModelTag={false}
+                        activeModelTag={null}
+                        activeModelProvider={null}
+                        activeSessionId={rooms.activeRoom?.id ?? null}
+                        mentionAgentsByName={mentionAgentsByName}
+                      />
+                    );
+                  })
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            </>
+          ) : (
+            <div className="chat-room-empty-pane" data-testid="chat-rooms-empty-pane">Select a room or create one</div>
+          )}
+
+          {rooms.activeRoom && (
+            <div className="chat-input-area">
+              <div className="chat-input-row">
+                <div className="chat-input-wrapper">
+                  <textarea
+                    ref={inputRef}
+                    className="chat-input-textarea"
+                    placeholder="Type a message..."
+                    value={messageInput}
+                    onChange={handleInputChange}
+                    onKeyDown={handleInputKeyDown}
+                    rows={1}
+                    data-testid="chat-input"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="chat-input-send"
+                  onClick={() => {
+                    const trimmed = messageInput.trim();
+                    if (!trimmed) return;
+                    void rooms.sendRoomMessage(trimmed).then(() => {
+                      setMessageInput("");
+                    });
+                  }}
+                  disabled={!messageInput.trim()}
+                  data-testid="chat-send-btn"
+                  style={{ touchAction: "manipulation" }}
+                >
+                  <Send size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
       <div
@@ -2259,10 +2342,9 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
         isOpen={createRoomOpen}
         onClose={() => setCreateRoomOpen(false)}
         projectId={projectId}
-        existingRoomNames={draftRooms.map((room) => room.name)}
-        onCreate={(draft) => {
-          setDraftRooms((prev) => [...prev, draft]);
-          setActiveDraftRoomName(draft.name);
+        existingRoomNames={rooms.rooms.map((room) => room.name)}
+        onCreate={async (draft) => {
+          await rooms.createRoom({ name: draft.name, memberAgentIds: draft.memberAgentIds });
           setCreateRoomOpen(false);
         }}
       />
