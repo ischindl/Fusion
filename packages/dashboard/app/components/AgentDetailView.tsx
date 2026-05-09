@@ -1211,9 +1211,17 @@ function formatMailboxTimestamp(ts: string): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function mailboxParticipantLabel(id: string, type: ParticipantType): string {
+function mailboxParticipantLabel(
+  id: string,
+  type: ParticipantType,
+  agentNamesById?: ReadonlyMap<string, string>,
+): string {
   if (type === "user") return id === "dashboard" ? "You" : `User: ${id}`;
-  if (type === "agent") return `Agent: ${id}`;
+  if (type === "agent") {
+    const name = agentNamesById?.get(id)?.trim();
+    if (!name || name === id) return `Agent: ${id}`;
+    return `Agent: ${name}`;
+  }
   return "System";
 }
 
@@ -1235,6 +1243,43 @@ function MailTab({
   onRefresh: () => void;
 }) {
   const [activeSubtab, setActiveSubtab] = useState<"inbox" | "outbox">("inbox");
+  const [knownAgents, setKnownAgents] = useState<Agent[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchAgents(undefined, projectId)
+      .then((agents) => {
+        if (!cancelled) {
+          setKnownAgents(agents);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setKnownAgents([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const agentNamesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const knownAgent of knownAgents) {
+      if (!knownAgent.id) continue;
+      const name = typeof knownAgent.name === "string" ? knownAgent.name.trim() : "";
+      if (name.length > 0) {
+        map.set(knownAgent.id, name);
+      }
+    }
+    const currentAgentName = typeof agent.name === "string" ? agent.name.trim() : "";
+    if (currentAgentName.length > 0) {
+      map.set(agent.id, currentAgentName);
+    }
+    return map;
+  }, [knownAgents, agent.id, agent.name]);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const messages = activeSubtab === "inbox" ? (mailbox?.inbox ?? []) : (mailbox?.outbox ?? []);
   const selectedMessage = selectedMessageId ? messages.find((message) => message.id === selectedMessageId) ?? null : null;
@@ -1282,9 +1327,9 @@ function MailTab({
       <div className="mailbox-item-content">
         <div className="mailbox-item-header">
           {activeSubtab === "inbox" ? (
-            <span className="mailbox-item-from">{mailboxParticipantLabel(message.fromId, message.fromType)}</span>
+            <span className="mailbox-item-from">{mailboxParticipantLabel(message.fromId, message.fromType, agentNamesById)}</span>
           ) : (
-            <span className="mailbox-item-to">To: {mailboxParticipantLabel(message.toId, message.toType)}</span>
+            <span className="mailbox-item-to">To: {mailboxParticipantLabel(message.toId, message.toType, agentNamesById)}</span>
           )}
           <span className="mailbox-item-time">{formatMailboxTimestamp(message.createdAt)}</span>
         </div>
@@ -1351,11 +1396,11 @@ function MailTab({
             <div className="agent-mail-tab-detail-meta">
               <div className="agent-mail-tab-detail-row">
                 <span className="agent-mail-tab-detail-label">From</span>
-                <span>{mailboxParticipantLabel(selectedMessage.fromId, selectedMessage.fromType)}</span>
+                <span>{mailboxParticipantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById)}</span>
               </div>
               <div className="agent-mail-tab-detail-row">
                 <span className="agent-mail-tab-detail-label">To</span>
-                <span>{mailboxParticipantLabel(selectedMessage.toId, selectedMessage.toType)}</span>
+                <span>{mailboxParticipantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById)}</span>
               </div>
               <div className="agent-mail-tab-detail-row">
                 <span className="agent-mail-tab-detail-label">Type</span>

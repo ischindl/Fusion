@@ -291,10 +291,20 @@ export class ProjectEngine {
 
     // 3. Initialize notification services (unless caller manages them externally)
     if (!this.options.skipNotifier) {
+      const agentStore = this.runtime.getAgentStore();
+      const agentNameResolver = agentStore
+        ? async (agentId: string): Promise<string | null> => {
+          const agent = await agentStore.getAgent(agentId);
+          const name = typeof agent?.name === "string" ? agent.name.trim() : "";
+          return name.length > 0 ? name : null;
+        }
+        : undefined;
+
       this.notificationService = new NotificationService(store, {
         projectId: this.options.projectId,
         ntfyBaseUrl: this.options.ntfyBaseUrl,
         messageStore: this.runtime.getMessageStore(),
+        agentNameResolver,
       });
       await this.notificationService.start();
 
@@ -304,6 +314,7 @@ export class ProjectEngine {
         {
           projectId: this.options.projectId,
           ntfyBaseUrl: this.options.ntfyBaseUrl,
+          agentNameResolver,
         },
         this.notificationService,
       );

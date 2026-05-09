@@ -207,6 +207,42 @@ describe("MailboxModal", () => {
     });
   });
 
+  it("renders agent participant labels with name and id, then falls back to id", async () => {
+    mockFetchInbox.mockResolvedValue({
+      messages: [
+        { ...mockMessage, id: "msg-known", fromId: "agent-001" },
+        { ...mockMessage, id: "msg-unknown", fromId: "agent-999" },
+      ],
+      total: 2,
+      unreadCount: 2,
+    });
+
+    render(<MailboxModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-known")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId("mailbox-item-msg-known"));
+    await waitFor(() => {
+      expect(screen.getByText("Agent: Test Agent 1")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId("mailbox-back-to-list"));
+    fireEvent.click(screen.getByTestId("mailbox-item-msg-unknown"));
+    await waitFor(() => {
+      expect(screen.getByText("Agent: agent-999")).toBeDefined();
+    });
+  });
+
+  it("shows unread dot for unread messages", async () => {
+    render(<MailboxModal {...defaultProps} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-001")).toBeDefined();
+      expect(screen.getByTestId("mailbox-item-msg-002")).toBeDefined();
+    });
+  });
+
   it("shows unread dot for unread messages", async () => {
     render(<MailboxModal {...defaultProps} />);
     await waitFor(() => {
@@ -745,7 +781,7 @@ describe("MailboxModal", () => {
       expect(screen.getByTestId("message-composer")).toBeDefined();
     });
     // Should show pre-filled recipient (not dropdown)
-    expect(screen.getByText("agent-001")).toBeDefined();
+    expect(screen.getByText("Test Agent 1")).toBeDefined();
   });
 
   it("successful send from Agents tab keeps user on Agents tab and preserves selected agent", async () => {
@@ -1055,8 +1091,8 @@ describe("MailboxModal", () => {
       expect(mailboxMobileSection).toContain(".mailbox-modal .mailbox-title");
       expect(mailboxMobileSection).toContain("flex-shrink: 0;");
       expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions,\s*\.mailbox-view \.mailbox-header-actions\s*\{[^}]*gap:\s*var\(--space-sm\);[^}]*\}/);
-      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-height:\s*36px;[^}]*\}/);
-      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn-icon,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-width:\s*36px;[^}]*display:\s*inline-flex;[^}]*\}/);
+      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-height:\s*2\.25rem;[^}]*\}/);
+      expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.btn-icon,[^}]*\.mailbox-view \.mailbox-header-actions \.btn-icon\s*\{[^}]*min-width:\s*2\.25rem;[^}]*display:\s*inline-flex;[^}]*\}/);
       expect(mailboxMobileSection).toMatch(/\.mailbox-modal \.mailbox-header-actions \.modal-close\s*\{[^}]*padding:\s*0;[^}]*border-radius:\s*var\(--radius-sm\);[^}]*\}/);
       expect(mailboxMobileSection).toContain("overflow-x: auto;");
       expect(mailboxMobileSection).toContain("-webkit-overflow-scrolling: touch;");
@@ -1078,7 +1114,7 @@ describe("MailboxModal", () => {
       expect(mailboxMobileSection).toContain(".mailbox-modal .mailbox-agent-select");
       expect(mailboxMobileSection).toContain("max-width: 100%;");
       expect(mailboxMobileSection).toContain(".mailbox-modal .mailbox-agents");
-      expect(mailboxMobileSection).toContain("min-height: 200px;");
+      expect(mailboxMobileSection).toContain("min-height: 12.5rem;");
       expect(mailboxMobileSection).toContain(".mailbox-modal .mailbox-empty");
       expect(mailboxMobileSection).toContain("padding: var(--space-2xl) var(--space-md);");
     });

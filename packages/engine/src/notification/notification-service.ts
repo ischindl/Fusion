@@ -21,6 +21,8 @@ export interface NotificationServiceOptions {
   ntfyBaseUrl?: string;
   /** Optional message store for mailbox message notifications */
   messageStore?: NotificationMessageStore;
+  /** Resolve human-readable name for an agent ID used in message notifications */
+  agentNameResolver?: (agentId: string) => Promise<string | null> | string | null;
 }
 
 interface NotificationServiceStore {
@@ -267,6 +269,9 @@ export class NotificationService {
 
     const taskId = typeof message.metadata?.taskId === "string" ? message.metadata.taskId : undefined;
 
+    const fromName = await this.resolveAgentName(message.fromType, message.fromId, "from");
+    const toName = await this.resolveAgentName(message.toType, message.toId, "to");
+
     this.maybeNotify(message.id, eventType, {
       taskId,
       taskTitle: undefined,
@@ -275,8 +280,10 @@ export class NotificationService {
         messageId: message.id,
         fromId: message.fromId,
         fromType: message.fromType,
+        ...(fromName ? { fromName } : {}),
         toId: message.toId,
         toType: message.toType,
+        ...(toName ? { toName } : {}),
         type: message.type,
         replyToMessageId: message.metadata?.replyTo?.messageId,
         preview,
@@ -286,6 +293,33 @@ export class NotificationService {
     schedulerLog.log(
       `NotificationService.handleMessageSent scheduled eventType=${eventType} messageId=${message.id}`,
     );
+  }
+
+  private async resolveAgentName(
+    participantType: Message["fromType"],
+    participantId: string,
+    direction: "from" | "to",
+  ): Promise<string | null> {
+    if (participantType !== "agent") {
+      return null;
+    }
+
+    const resolver = this.options.agentNameResolver;
+    if (!resolver) {
+      return null;
+    }
+
+    try {
+      const resolved = await resolver(participantId);
+      const trimmed = typeof resolved === "string" ? resolved.trim() : "";
+      return trimmed.length > 0 ? trimmed : null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      schedulerLog.log(
+        `NotificationService.handleMessageSent failed to resolve ${direction} agent name agentId=${participantId} error=${message}`,
+      );
+      return null;
+    }
   }
 
   private setNotificationsEnabledFromSettings(settings: Settings): void {

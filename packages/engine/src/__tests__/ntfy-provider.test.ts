@@ -14,7 +14,7 @@ vi.mock("../notifier.js", async (importOriginal) => {
   };
 });
 
-import { NtfyNotificationProvider } from "../notification/ntfy-provider.js";
+import { NtfyNotificationProvider, resolveParticipantLabel } from "../notification/ntfy-provider.js";
 
 describe("NtfyNotificationProvider", () => {
   let provider: NtfyNotificationProvider;
@@ -43,14 +43,21 @@ describe("NtfyNotificationProvider", () => {
     ["awaiting-user-review", "User review needed for FN-1", "needs human review", "high"],
     ["planning-awaiting-input", "Planning input needed for FN-1", "awaiting your input", "high"],
     ["fallback-used", "Fallback model used for FN-1", "switched from", "high"],
-    ["message:agent-to-user", "New message from agent-1", "agent-1 → you: preview text", "high"],
-    ["message:agent-to-agent", "agent-1 → agent-2", "agent-1 messaged agent-2: preview text", "default"],
+    ["message:agent-to-user", "New message from Triage Bot", "Triage Bot → you: preview text", "high"],
+    ["message:agent-to-agent", "Triage Bot → Executor Bot", "Triage Bot messaged Executor Bot: preview text", "default"],
   ])("maps %s event correctly", async (event, expectedTitle, messagePart, priority) => {
     await provider.sendNotification(event as any, {
       taskId: "FN-1",
       taskTitle: "T",
       event: event as any,
-      metadata: { fromId: "agent-1", toId: "agent-2", preview: "preview text", messageId: "msg-1" },
+      metadata: {
+        fromId: "agent-1",
+        toId: "agent-2",
+        fromName: "Triage Bot",
+        toName: "Executor Bot",
+        preview: "preview text",
+        messageId: "msg-1",
+      },
     });
 
     expect(mocks.sendNtfyNotificationWithResult).toHaveBeenCalledWith(
@@ -61,6 +68,11 @@ describe("NtfyNotificationProvider", () => {
         message: expect.stringContaining(messagePart),
       }),
     );
+  });
+
+  it("resolveParticipantLabel prefers names and falls back to ids", () => {
+    expect(resolveParticipantLabel({ fromName: "Triage Bot", fromId: "agent-1" }, "from")).toBe("Triage Bot");
+    expect(resolveParticipantLabel({ toId: "agent-2" }, "to")).toBe("agent-2");
   });
 
   it("supports known events and rejects unknown", () => {

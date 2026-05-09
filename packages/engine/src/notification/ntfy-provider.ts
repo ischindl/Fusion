@@ -51,6 +51,20 @@ const SUPPORTED_EVENTS = new Set<SupportedNtfyEvent>([
   "message:agent-to-agent",
 ]);
 
+export function resolveParticipantLabel(
+  metadata: NotificationPayload["metadata"] | undefined,
+  kind: "from" | "to",
+): string {
+  const nameKey = kind === "from" ? "fromName" : "toName";
+  const idKey = kind === "from" ? "fromId" : "toId";
+  const name = typeof metadata?.[nameKey] === "string" ? metadata[nameKey].trim() : "";
+  if (name.length > 0) {
+    return name;
+  }
+  const id = typeof metadata?.[idKey] === "string" ? metadata[idKey].trim() : "";
+  return id.length > 0 ? id : kind === "from" ? "agent" : "recipient";
+}
+
 export class NtfyNotificationProvider implements NotificationProvider {
   private config?: NtfyProviderConfig;
   private abortController: AbortController | null = null;
@@ -113,8 +127,8 @@ export class NtfyNotificationProvider implements NotificationProvider {
 
     const identifier = formatTaskIdentifier(taskLike);
     const messageId = typeof payload.metadata?.messageId === "string" ? payload.metadata.messageId : undefined;
-    const senderLabel = typeof payload.metadata?.fromId === "string" ? payload.metadata.fromId : "agent";
-    const recipientLabel = typeof payload.metadata?.toId === "string" ? payload.metadata.toId : "recipient";
+    const senderLabel = resolveParticipantLabel(payload.metadata, "from");
+    const recipientLabel = resolveParticipantLabel(payload.metadata, "to");
     const preview = typeof payload.metadata?.preview === "string"
       ? payload.metadata.preview
       : "(no preview)";

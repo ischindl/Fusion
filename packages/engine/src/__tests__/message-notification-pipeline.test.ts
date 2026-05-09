@@ -40,7 +40,10 @@ describe("message notification pipeline", () => {
     const store = createStore({ ntfyEvents: ["message:agent-to-user", "message:agent-to-agent"] });
     const messageStore = new TestMessageStore();
 
-    const service = new NotificationService(store as any, { messageStore: messageStore as any });
+    const service = new NotificationService(store as any, {
+      messageStore: messageStore as any,
+      agentNameResolver: (agentId) => (agentId === "agent-1" ? "Triage Bot" : "Executor Bot"),
+    });
     await service.start();
 
     messageStore.sendMessage("agent-to-user", "hi");
@@ -48,6 +51,8 @@ describe("message notification pipeline", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
     expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/test-topic");
+    const firstHeaders = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(firstHeaders.Title).toContain("Triage Bot");
     const firstBody = String((fetchSpy.mock.calls[0]?.[1] as RequestInit).body);
     expect(firstBody).toContain("hi");
 
@@ -56,6 +61,8 @@ describe("message notification pipeline", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
+    const secondHeaders = (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(secondHeaders.Title).toContain("Triage Bot → Executor Bot");
     const secondBody = String((fetchSpy.mock.calls[1]?.[1] as RequestInit).body);
     expect(secondBody).toContain("relay");
 

@@ -8,6 +8,8 @@ export interface NtfyNotifierOptions {
   ntfyBaseUrl?: string;
   /** Project identifier for deep links in notifications */
   projectId?: string;
+  /** Resolve human-readable agent names for message notifications */
+  agentNameResolver?: (agentId: string) => Promise<string | null> | string | null;
 }
 
 export type NtfyNotificationPriority = "low" | "default" | "high" | "urgent";
@@ -249,6 +251,7 @@ export class NtfyNotifier {
     this.notificationService = notificationService ?? new NotificationService(store, {
       projectId: this.projectId,
       ntfyBaseUrl: options.ntfyBaseUrl,
+      agentNameResolver: options.agentNameResolver,
     });
     activeNotificationService = this.notificationService;
   }

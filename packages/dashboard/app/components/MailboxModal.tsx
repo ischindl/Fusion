@@ -68,9 +68,17 @@ function formatTimestamp(ts: string): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function participantLabel(id: string, type: ParticipantType): string {
+function participantLabel(
+  id: string,
+  type: ParticipantType,
+  agentNamesById?: ReadonlyMap<string, string>,
+): string {
   if (type === "user") return id === "dashboard" ? "You" : `User: ${id}`;
-  if (type === "agent") return `Agent: ${id}`;
+  if (type === "agent") {
+    const name = agentNamesById?.get(id)?.trim();
+    if (!name || name === id) return `Agent: ${id}`;
+    return `Agent: ${name}`;
+  }
   return "System";
 }
 
@@ -160,6 +168,18 @@ export function MailboxModal({
   const [replyContextLoading, setReplyContextLoading] = useState<Record<string, boolean>>({});
   const [replyContextErrors, setReplyContextErrors] = useState<Record<string, string>>({});
   const [replyContextCache, setReplyContextCache] = useState<Map<string, Message>>(new Map());
+  const agentNamesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const agent of agents) {
+      if (!agent.id) continue;
+      const name = typeof agent.name === "string" ? agent.name.trim() : "";
+      if (name.length > 0) {
+        map.set(agent.id, name);
+      }
+    }
+    return map;
+  }, [agents]);
+
   const viewportMode = useViewportMode();
   const isMobile = viewportMode === "mobile";
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({ enabled: isMobile });
@@ -532,7 +552,7 @@ export function MailboxModal({
             {cacheMessage && (
               <>
                 <div className="mailbox-conversation-msg-header">
-                  <span>{participantLabel(cacheMessage.fromId, cacheMessage.fromType)}</span>
+                  <span>{participantLabel(cacheMessage.fromId, cacheMessage.fromType, agentNamesById)}</span>
                   <span className="mailbox-message-time">{formatTimestamp(cacheMessage.createdAt)}</span>
                 </div>
                 <div className="mailbox-conversation-msg-body">{cacheMessage.content}</div>
@@ -693,14 +713,14 @@ export function MailboxModal({
                   <span className="mailbox-participant-label">From:</span>
                   <span className="mailbox-participant-value">
                     {selectedMessage.fromType === "agent" ? <Bot size={14} /> : <User size={14} />}
-                    {participantLabel(selectedMessage.fromId, selectedMessage.fromType)}
+                    {participantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById)}
                   </span>
                 </div>
                 <div className="mailbox-participant">
                   <span className="mailbox-participant-label">To:</span>
                   <span className="mailbox-participant-value">
                     {selectedMessage.toType === "agent" ? <Bot size={14} /> : <User size={14} />}
-                    {participantLabel(selectedMessage.toId, selectedMessage.toType)}
+                    {participantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById)}
                   </span>
                 </div>
               </div>
@@ -721,7 +741,7 @@ export function MailboxModal({
                         className={`mailbox-conversation-msg ${msg.id === selectedMessage.id ? "current" : ""}`}
                       >
                         <div className="mailbox-conversation-msg-header">
-                          <span>{participantLabel(msg.fromId, msg.fromType)}</span>
+                          <span>{participantLabel(msg.fromId, msg.fromType, agentNamesById)}</span>
                           <span className="mailbox-message-time">{formatTimestamp(msg.createdAt)}</span>
                         </div>
                         {replyToId && (
@@ -804,7 +824,7 @@ export function MailboxModal({
                       <div className="mailbox-item-content">
                         <div className="mailbox-item-header">
                           <span className="mailbox-item-from">
-                            {participantLabel(msg.fromId, msg.fromType)}
+                            {participantLabel(msg.fromId, msg.fromType, agentNamesById)}
                           </span>
                           <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
                         </div>
@@ -840,7 +860,7 @@ export function MailboxModal({
                       <div className="mailbox-item-content">
                         <div className="mailbox-item-header">
                           <span className="mailbox-item-to">
-                            To: {participantLabel(msg.toId, msg.toType)}
+                            To: {participantLabel(msg.toId, msg.toType, agentNamesById)}
                           </span>
                           <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
                         </div>
@@ -945,9 +965,7 @@ export function MailboxModal({
                             <div className="mailbox-item-content">
                               <div className="mailbox-item-header">
                                 <span className="mailbox-item-from">
-                                  {msg.fromType === "agent"
-                                    ? participantLabel(msg.toId, msg.toType)
-                                    : participantLabel(msg.fromId, msg.fromType)}
+                                  {participantLabel(msg.fromId, msg.fromType, agentNamesById)}
                                 </span>
                                 <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
                               </div>
@@ -969,7 +987,7 @@ export function MailboxModal({
                             <div className="mailbox-item-content">
                               <div className="mailbox-item-header">
                                 <span className="mailbox-item-to">
-                                  To: {participantLabel(msg.toId, msg.toType)}
+                                  To: {participantLabel(msg.toId, msg.toType, agentNamesById)}
                                 </span>
                                 <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
                               </div>

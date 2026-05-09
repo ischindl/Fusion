@@ -867,6 +867,52 @@ describe("AgentDetailView", () => {
     expect(await screen.findByTestId("agent-detail-mail-list")).toBeInTheDocument();
   });
 
+  it("renders agent mailbox participant labels with known agent names", async () => {
+    const user = userEvent.setup();
+    mockFetchAgentMailbox.mockResolvedValue({
+      ownerId: "agent-001",
+      ownerType: "agent",
+      unreadCount: 1,
+      messages: [],
+      inbox: [
+        {
+          id: "msg-1",
+          fromId: "agent-001",
+          fromType: "agent",
+          toId: "dashboard",
+          toType: "user",
+          content: "Self message",
+          type: "agent-to-user",
+          createdAt: "2024-01-01T00:00:00.000Z",
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          read: true,
+        },
+      ],
+      outbox: [
+        {
+          id: "msg-2",
+          fromId: "agent-001",
+          fromType: "agent",
+          toId: "agent-002",
+          toType: "agent",
+          content: "Known recipient",
+          type: "agent-to-agent",
+          createdAt: "2024-01-01T00:00:00.000Z",
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          read: true,
+        },
+      ],
+    } as any);
+
+    render(<AgentDetailView agentId="agent-001" onClose={vi.fn()} addToast={vi.fn()} />);
+
+    await user.click(await screen.findByText("Mail"));
+    expect(await screen.findByText("Agent: Test Agent")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Outbox" }));
+    expect(await screen.findByText("To: Agent: Manager Agent")).toBeInTheDocument();
+  });
+
   it("marks unread inbox messages as read and refreshes mailbox", async () => {
     const user = userEvent.setup();
     mockFetchAgentMailbox.mockResolvedValue({

@@ -165,7 +165,9 @@ describe("NotificationService", () => {
     await service.start();
 
     messageStore.emit("message:sent", createMessage());
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(sendNotification).toHaveBeenCalled();
+    });
 
     expect(sendNotification).toHaveBeenCalledWith(
       "message:agent-to-user",
@@ -178,6 +180,74 @@ describe("NotificationService", () => {
           preview: "hello from agent",
         }),
       }),
+    );
+  });
+
+  it("includes resolved agent names in message metadata", async () => {
+    const store = createStore({ ntfyEnabled: true, ntfyTopic: "topic" });
+    const messageStore = new EventEmitter();
+    const sendNotification = vi.fn(async () => ({ success: true, providerId: "mock" }));
+    const provider: NotificationProvider = {
+      getProviderId: () => "mock",
+      isEventSupported: () => true,
+      sendNotification,
+    };
+
+    const service = new NotificationService(store as any, {
+      messageStore: messageStore as any,
+      agentNameResolver: (agentId) => (agentId === "agent-1" ? "Triage Bot" : "Executor Bot"),
+    });
+    service.registerProvider(provider);
+    await service.start();
+
+    messageStore.emit(
+      "message:sent",
+      createMessage({ type: "agent-to-agent", toId: "agent-2", toType: "agent" }),
+    );
+    await vi.waitFor(() => {
+      expect(sendNotification).toHaveBeenCalled();
+    });
+
+    expect(sendNotification).toHaveBeenCalledWith(
+      "message:agent-to-agent",
+      expect.objectContaining({
+        metadata: expect.objectContaining({ fromName: "Triage Bot", toName: "Executor Bot" }),
+      }),
+    );
+  });
+
+  it("dispatches even when agent name resolution fails", async () => {
+    const store = createStore({ ntfyEnabled: true, ntfyTopic: "topic" });
+    const messageStore = new EventEmitter();
+    const sendNotification = vi.fn(async () => ({ success: true, providerId: "mock" }));
+    const provider: NotificationProvider = {
+      getProviderId: () => "mock",
+      isEventSupported: () => true,
+      sendNotification,
+    };
+
+    const service = new NotificationService(store as any, {
+      messageStore: messageStore as any,
+      agentNameResolver: () => {
+        throw new Error("boom");
+      },
+    });
+    service.registerProvider(provider);
+    await service.start();
+
+    messageStore.emit("message:sent", createMessage({ type: "agent-to-user" }));
+    await vi.waitFor(() => {
+      expect(sendNotification).toHaveBeenCalled();
+    });
+
+    expect(sendNotification).toHaveBeenCalledWith(
+      "message:agent-to-user",
+      expect.objectContaining({
+        metadata: expect.not.objectContaining({ fromName: expect.any(String), toName: expect.any(String) }),
+      }),
+    );
+    expect(schedulerLog.log).toHaveBeenCalledWith(
+      expect.stringContaining("failed to resolve from agent name"),
     );
   });
 
@@ -205,7 +275,9 @@ describe("NotificationService", () => {
         metadata: { replyTo: { messageId: "msg-1" } },
       }),
     );
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(sendNotification).toHaveBeenCalled();
+    });
 
     expect(sendNotification).toHaveBeenCalledWith(
       "message:agent-to-agent",
