@@ -1473,13 +1473,17 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       const tool = api.tools.get("fn_research_run")!;
       const researchStore = store.getResearchStore();
 
-      const promoteRun = () => {
+      const settleRunToCompleted = () => {
         const queuedRun = researchStore.listRuns({ limit: 1 })[0];
         if (!queuedRun) {
           return false;
         }
-
-        researchStore.updateRun(queuedRun.id, { status: "running" });
+        if (queuedRun.status === "completed") {
+          return true;
+        }
+        if (queuedRun.status === "queued") {
+          researchStore.updateRun(queuedRun.id, { status: "running" });
+        }
         researchStore.updateRun(queuedRun.id, {
           status: "completed",
           results: { summary: "done", findings: [{ heading: "h1", content: "f1", sources: [] }], citations: [] },
@@ -1487,20 +1491,14 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
         return true;
       };
 
-      setTimeout(() => {
-        if (promoteRun()) {
-          return;
-        }
-
-        const retryTimer = setInterval(() => {
-          if (!promoteRun()) {
-            return;
+      if (!settleRunToCompleted()) {
+        const interval = setInterval(() => {
+          if (settleRunToCompleted()) {
+            clearInterval(interval);
           }
-          clearInterval(retryTimer);
         }, 25);
-
-        setTimeout(() => clearInterval(retryTimer), 500);
-      }, 25);
+        setTimeout(() => clearInterval(interval), 500);
+      }
 
       const result = await tool.execute(
         "research-run-wait",
