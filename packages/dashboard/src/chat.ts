@@ -135,6 +135,7 @@ const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
 
 /** Maximum file size for # mentions (50KB). Files larger than this are skipped. */
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
+const ROOM_AMBIENT_MAX_RESPONDERS = 5;
 
 function formatAttachmentSize(size: number): string {
   if (size < 1024) return `${size}B`;
@@ -732,6 +733,53 @@ export class ChatManager {
       "The user mentioned the following agents in their message:",
       ...lines,
     ].join("\n");
+  }
+
+  private resolveRoomResponders(
+    session: ChatSession,
+    mentions: ChatMention[],
+    availableAgents: Agent[],
+  ): { direct: Agent[]; ambient: Agent[]; nonMemberMentions: ChatMention[] } {
+    if (session.kind !== "room" || !session.roomId) {
+      return { direct: [], ambient: [], nonMemberMentions: [] };
+    }
+
+    const roomMembers = this.chatStore.listRoomMembers(session.roomId);
+    const memberIds = new Set(roomMembers.map((member) => member.agentId));
+    const agentsById = new Map(availableAgents.map((agent) => [agent.id, agent]));
+
+    const direct: Agent[] = [];
+    const seenDirect = new Set<string>();
+    const nonMemberMentions: ChatMention[] = [];
+
+    for (const mention of mentions) {
+      if (!memberIds.has(mention.agentId)) {
+        nonMemberMentions.push(mention);
+        continue;
+      }
+      if (seenDirect.has(mention.agentId)) {
+        continue;
+      }
+      const agent = agentsById.get(mention.agentId);
+      if (!agent) {
+        continue;
+      }
+      direct.push(agent);
+      seenDirect.add(mention.agentId);
+    }
+
+    const ambientCandidates = roomMembers
+      .map((member) => agentsById.get(member.agentId))
+      .filter((agent): agent is Agent => Boolean(agent) && !seenDirect.has(agent.id));
+
+    const ambient = ambientCandidates.slice(0, ROOM_AMBIENT_MAX_RESPONDERS);
+    if (ambientCandidates.length > ROOM_AMBIENT_MAX_RESPONDERS) {
+      diagnostics.warn(
+        `Room ${session.roomId} ambient responders capped at ${ROOM_AMBIENT_MAX_RESPONDERS} (from ${ambientCandidates.length})`,
+      );
+    }
+
+    return { direct, ambient, nonMemberMentions };
   }
 
   /**

@@ -21,6 +21,12 @@ export type ChatMessageRole = "user" | "assistant" | "system";
  */
 export interface ChatSession {
   id: string;
+  /** Session routing kind; legacy sessions default to direct */
+  kind?: "direct" | "room";
+  /** Room ID when kind is room */
+  roomId?: string | null;
+  /** Optional room name for prompt context */
+  roomName?: string | null;
   /** ID of the agent participating in this session */
   agentId: string;
   /** Human-readable title for the session (optional, can be auto-generated) */
