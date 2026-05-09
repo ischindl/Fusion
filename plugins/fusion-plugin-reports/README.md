@@ -87,3 +87,52 @@ Aggregation is deterministic:
 ```
 
 - If all reviewers fail, combined verdict is `reject` with an explicit consensus summary describing panel failure.
+
+## Report Archive
+
+The plugin persists generated reports in SQLite via `ensureReportSchema(db)` and `ReportStore`.
+
+### Schema
+
+Table: `reports`
+
+- identity/metadata: `id`, `cadence`, `title`, `metadataJson`
+- period window: `periodStart`, `periodEnd`
+- lifecycle/status: `status`, `failureReason`
+- payload references: `draftMarkdown`, `renderedHtmlPath`
+- review payload: `combinedReviewJson`
+- timestamps: `generationStartedAt`, `generationCompletedAt`, `reviewStartedAt`, `reviewCompletedAt`, `approvedAt`, `publishedAt`, `archivedAt`, `createdAt`, `updatedAt`
+- approval actor: `approvedBy`
+
+Indexes:
+
+- `idxReportsCadenceCreated` on `(cadence, createdAt DESC, id)`
+- `idxReportsStatusUpdated` on `(status, updatedAt DESC, id)`
+- `idxReportsPeriod` on `(periodStart, periodEnd, id)`
+
+### Status lifecycle
+
+`generating → review_pending → review_in_progress → review_complete → approved → published`
+
+`failed` and `archived` are allowed from any non-terminal state. Idempotent transitions (`from === to`) are no-ops.
+
+### ReportStore API
+
+- `createReport(input)`
+- `getReport(id)`
+- `listReports(filter?)`
+- `updateReport(id, patch)`
+- `setStatus(id, next, opts?)`
+- `attachReview(id, combinedReview)`
+- `attachRenderedHtml(id, htmlPath)`
+- `deleteReport(id)`
+
+Emitted events:
+
+- `report:created`
+- `report:updated`
+- `report:status-changed`
+- `report:review-attached`
+- `report:deleted`
+
+This archive is the source of truth for downstream report HTML rendering (FN-3785) and dashboard report list/detail flows (FN-3786).
