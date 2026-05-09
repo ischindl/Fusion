@@ -90,3 +90,21 @@ export async function accumulateSessionTokenUsage(
     log.warn(`${taskId}: session token usage accumulate failed: ${message}`);
   }
 }
+
+/**
+ * Compute the cache hit ratio: the fraction of input tokens served from
+ * cache. Returns a number in [0, 1]. Useful for measuring the effectiveness
+ * of prompt caching optimizations.
+ *
+ * @param inputTokens - Non-cached input tokens (includes cache-write tokens)
+ * @param cachedTokens - Tokens read from cache
+ * @returns Cache hit ratio in [0, 1], or 0 if no tokens used
+ */
+export function computeCacheHitRatio(
+  inputTokens: number,
+  cachedTokens: number,
+): number {
+  const total = inputTokens + cachedTokens;
+  if (total === 0) return 0;
+  return cachedTokens / total;
+}
