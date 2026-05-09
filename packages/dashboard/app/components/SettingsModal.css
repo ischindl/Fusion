@@ -21,9 +21,18 @@
 
 @media (max-width: 768px) {
   /* Preserve mobile touch targets while keeping visuals compact via icon sizing/padding. */
-  .settings-header-actions > .btn-icon {
+  .settings-header-actions > .btn-icon,
+  .settings-header-actions > .settings-github-star-btn {
     min-height: calc(var(--space-md) * 3);
+  }
+
+  .settings-header-actions > .btn-icon {
     min-width: calc(var(--space-md) * 3);
+  }
+
+  .settings-github-star-btn__action,
+  .settings-github-star-btn__count {
+    min-height: calc(var(--space-md) * 3);
   }
 }
 
