@@ -5,7 +5,7 @@ import express from "express";
 import { get as performGet, request as performRequest } from "../test-request.js";
 import { createRoadmapRouter } from "../roadmap-routes.js";
 import { ApiError } from "../api-error.js";
-import type { Roadmap, RoadmapMilestone, RoadmapFeature, RoadmapStore } from "@fusion/core";
+import type { Roadmap, RoadmapMilestone, RoadmapFeature, RoadmapStore } from "@fusion-plugin-examples/roadmap";
 
 
 // vi.mock is hoisted
