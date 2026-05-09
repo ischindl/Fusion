@@ -5127,6 +5127,8 @@ export async function aiMergeTask(
               // amend if AI agent already committed). Always rewrites the
               // message deterministically from branch step commits.
               const authorArg = getCommitAuthorArg(settings);
+              const { stdout: finalizeHeadOut } = await execAsync("git rev-parse HEAD", { cwd: rootDir, encoding: "utf-8" });
+              mergerLog.log(`${taskId}: in-merge fix entering with preAttemptHeadSha=${preAttemptHeadSha}, currentHead=${finalizeHeadOut.trim()}`);
               const finalized = await commitOrAmendMergeWithFixes(
                 rootDir,
                 taskId,
@@ -5246,6 +5248,8 @@ export async function aiMergeTask(
 
           if (fixSuccess) {
             const authorArg = getCommitAuthorArg(settings);
+            const { stdout: finalizeHeadOut } = await execAsync("git rev-parse HEAD", { cwd: rootDir, encoding: "utf-8" });
+            mergerLog.log(`${taskId}: in-merge fix entering with preAttemptHeadSha=${preAttemptHeadSha}, currentHead=${finalizeHeadOut.trim()}`);
             const finalized = await commitOrAmendMergeWithFixes(
               rootDir,
               taskId,
