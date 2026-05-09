@@ -121,6 +121,7 @@ const ORPHANED_WITH_WORKTREE_GRACE_MS = 300_000;
  */
 const MAX_TASK_DONE_RETRIES = 3;
 const MAX_AUTO_MERGE_RETRIES = 3;
+const DEADLOCK_RECOVERY_COOLDOWN_MS = 15 * 60_000;
 const DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS = 5 * 60_000;
 
 interface LandedTaskCommit {
@@ -181,6 +182,9 @@ export class SelfHealingManager {
   // ── Event listener cleanup ──────────────────────────────────────────
   private settingsListener: ((data: { settings: Settings; previous: Settings }) => void) | null = null;
 
+  // ── Per-task deadlock recovery cooldown ─────────────────────────────
+  private deadlockRecoveryCooldown: Map<string, number> = new Map();
+
   constructor(
     private store: TaskStore,
     private options: SelfHealingOptions,
@@ -227,6 +231,8 @@ export class SelfHealingManager {
       { name: "failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps().then(() => undefined) },
       { name: "interrupted-merging", fn: () => this.recoverInterruptedMergingTasks().then(() => undefined) },
       { name: "done-merge-metadata", fn: () => this.recoverDoneTaskMergeMetadata().then(() => undefined) },
+      { name: "recover-already-merged-review", fn: () => this.recoverAlreadyMergedReviewTasks().then(() => undefined) },
+      { name: "recover-stuck-merge-deadlocks", fn: () => this.recoverStuckMergeDeadlocks().then(() => undefined) },
       { name: "misclassified-failures", fn: () => this.recoverMisclassifiedFailures().then(() => undefined) },
       { name: "partial-progress-no-task-done", fn: () => this.recoverPartialProgressNoTaskDoneFailures().then(() => undefined) },
       { name: "orphaned-executions", fn: () => this.recoverOrphanedExecutions().then(() => undefined) },
@@ -833,6 +839,7 @@ export class SelfHealingManager {
           { name: "recover-mergeable-review", fn: () => this.recoverMergeableReviewTasks() },
           { name: "recover-merged-review", fn: () => this.recoverMergedReviewTasks() },
           { name: "recover-already-merged-review", fn: () => this.recoverAlreadyMergedReviewTasks() },
+          { name: "recover-stuck-merge-deadlocks", fn: () => this.recoverStuckMergeDeadlocks() },
           { name: "recover-misclassified-failures", fn: () => this.recoverMisclassifiedFailures() },
           { name: "recover-no-progress-no-task-done", fn: () => this.recoverNoProgressNoTaskDoneFailures() },
           { name: "recover-partial-progress-no-task-done", fn: () => this.recoverPartialProgressNoTaskDoneFailures() },
@@ -1673,6 +1680,115 @@ export class SelfHealingManager {
       return recovered;
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Merged review recovery failed: ${errorMessage}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Recover deadlocked retry-exhausted merge failures that are still blocking
+   * dispatch via `blockedBy` or retained worktree ownership.
+   */
+  async recoverStuckMergeDeadlocks(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause || settings.enginePaused) return 0;
+
+      const now = Date.now();
+      const inReview = await this.store.listTasks({ column: "in-review", slim: true });
+      const triage = await this.store.listTasks({ column: "triage", slim: true });
+      const todo = await this.store.listTasks({ column: "todo", slim: true });
+      const inProgress = await this.store.listTasks({ column: "in-progress", slim: true });
+
+      const dependentsByBlocker = new Map<string, Task[]>();
+      for (const task of [...triage, ...todo, ...inProgress]) {
+        if (!task.blockedBy) continue;
+        const dependents = dependentsByBlocker.get(task.blockedBy) ?? [];
+        dependents.push(task);
+        dependentsByBlocker.set(task.blockedBy, dependents);
+      }
+
+      const candidates = inReview.filter((task) => {
+        const cooldownStart = this.deadlockRecoveryCooldown.get(task.id) ?? 0;
+        const cooldownElapsed = now - cooldownStart;
+        const hasBlockedDependents = (dependentsByBlocker.get(task.id) ?? []).some(
+          (dep) => dep.column === "triage" || dep.column === "todo",
+        );
+        return task.column === "in-review" &&
+          !task.paused &&
+          task.status === "failed" &&
+          (task.mergeRetries ?? 0) >= MAX_AUTO_MERGE_RETRIES &&
+          task.mergeDetails?.mergeConfirmed !== true &&
+          (hasBlockedDependents || Boolean(task.worktree)) &&
+          cooldownElapsed >= DEADLOCK_RECOVERY_COOLDOWN_MS;
+      });
+
+      if (candidates.length === 0) return 0;
+
+      let recovered = 0;
+      for (const task of candidates) {
+        const blockedDependents = dependentsByBlocker.get(task.id) ?? [];
+        const blockedTaskIds = blockedDependents.map((dep) => dep.id);
+        try {
+          const landedCommit = await this.findLandedTaskCommit(task);
+          if (landedCommit) {
+            const mergeDetails: MergeDetails = {
+              commitSha: landedCommit.sha,
+              filesChanged: landedCommit.filesChanged,
+              insertions: landedCommit.insertions,
+              deletions: landedCommit.deletions,
+              mergeCommitMessage: landedCommit.subject,
+              mergedAt: new Date().toISOString(),
+              mergeConfirmed: true,
+              prNumber: task.prInfo?.number,
+            };
+
+            await this.store.updateTask(task.id, {
+              status: null,
+              error: null,
+              mergeRetries: 0,
+              worktree: null,
+              branch: null,
+              mergeDetails,
+            });
+            await this.store.moveTask(task.id, "done");
+            await this.cleanupInterruptedMergeArtifacts(task);
+
+            const clearedDependents: string[] = [];
+            for (const dep of blockedDependents) {
+              try {
+                await this.store.updateTask(dep.id, { blockedBy: null });
+                await this.store.logEntry(dep.id, `Auto-recovered: cleared stale blockedBy ${task.id} after deadlock recovery`);
+                clearedDependents.push(dep.id);
+              } catch (depErr: unknown) {
+                const depErrMessage = depErr instanceof Error ? depErr.message : String(depErr);
+                log.warn(`self-heal:deadlock-recovery-dependent-error ${JSON.stringify({ blockerTaskId: task.id, dependentTaskId: dep.id, error: depErrMessage })}`);
+              }
+            }
+
+            await this.store.logEntry(
+              task.id,
+              `Auto-recovered: merge deadlock resolved via landed commit ${landedCommit.sha.slice(0, 8)}${clearedDependents.length > 0 ? `; cleared blockedBy on ${clearedDependents.join(", ")}` : ""}`,
+            );
+            log.log(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: landedCommit.sha, action: "reattributed" })}`);
+            recovered++;
+          } else {
+            await this.store.updateTask(task.id, { paused: true });
+            await this.store.logEntry(task.id, "merge-deadlock-detected: requires manual intervention — verified content not on main");
+            log.warn(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: null, action: "paused-for-manual" })}`);
+            recovered++;
+          }
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          log.warn(`self-heal:deadlock-recovery-error ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, error: errorMessage })}`);
+        } finally {
+          this.deadlockRecoveryCooldown.set(task.id, Date.now());
+        }
+      }
+
+      return recovered;
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.error(`Stuck merge deadlock recovery failed: ${errorMessage}`);
       return 0;
     }
   }
