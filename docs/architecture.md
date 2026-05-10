@@ -275,6 +275,10 @@ Intentional exclusions from shared snapshots:
 - Room messages persist through `POST /api/chat/rooms/:id/messages`; the route persists the user message first, then calls `ChatManager.sendRoomMessage(...)` to orchestrate room-member responders and persist assistant room replies with `chatStore.addRoomMessage(...)`.
 - `sendRoomMessage(...)` uses existing room-member + mention resolution rules: mentioned members are direct responders, non-mentioned members are ambient responders (capped by `ROOM_AMBIENT_MAX_RESPONDERS`), and non-member mentions are handled explicitly by the manager instead of silently disappearing.
 - UI does not optimistically insert room messages; it renders persisted user + assistant room messages from `chat:room:message:*` SSE events.
+- Mention UI in rooms keeps direct-chat behavior unchanged while adding room affordances:
+  - `AgentMentionPopup` receives room membership context and shows members first with a `status-dot` member indicator (`aria-label="Room member"`).
+  - With an empty mention filter in room mode, only room members are listed; a hint row prompts the user to type to search non-members.
+  - Mention chips rendered in room messages (`ChatView` and `QuickChatFAB`) mark non-members via `chat-mention-chip--non-member`, including `title`/`aria-label` text (`Not a member of {roomName}`) and muted warning-token styling.
 
 ### Agent Companies
 
