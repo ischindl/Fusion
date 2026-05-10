@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { loadAllAppCss } from "../../test/cssFixture";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentDetailView } from "../AgentDetailView";
@@ -161,7 +161,7 @@ vi.mock("../../hooks/useConfirm", () => ({
   useConfirm: () => ({ confirm: mockConfirm }),
 }));
 
-import { fetchAgent, fetchAgents, updateAgent, updateAgentState, deleteAgent, fetchAgentChildren, fetchAgentRunLogs, fetchAgentRuns, fetchAgentRunDetail, fetchAgentTasks, fetchChainOfCommand, fetchAgentBudgetStatus, resetAgentBudget, updateAgentInstructions, updateAgentSoul, updateAgentMemory, fetchAgentMemoryFiles, fetchAgentMemoryFile, saveAgentMemoryFile, fetchWorkspaceFileContent, saveWorkspaceFileContent, fetchDiscoveredSkills, fetchSkillContent, fetchModels, fetchPluginRuntimes, fetchAgentLogsWithMeta, fetchAgentMailbox, markMessageRead, upgradeAgentHeartbeatProcedure, updateGlobalSettings, fetchCompanies } from "../../api";
+import { fetchAgent, fetchAgents, updateAgent, updateAgentState, deleteAgent, fetchAgentChildren, fetchAgentRunLogs, fetchAgentRuns, fetchAgentRunDetail, fetchAgentTasks, fetchChainOfCommand, fetchAgentBudgetStatus, resetAgentBudget, updateAgentInstructions, updateAgentSoul, updateAgentMemory, fetchAgentMemoryFiles, fetchAgentMemoryFile, saveAgentMemoryFile, fetchWorkspaceFileContent, saveWorkspaceFileContent, fetchDiscoveredSkills, fetchSkillContent, fetchModels, fetchPluginRuntimes, fetchAgentLogsWithMeta, fetchAgentMailbox, markMessageRead, startAgentRun, upgradeAgentHeartbeatProcedure, updateGlobalSettings, fetchCompanies } from "../../api";
 import { subscribeSse } from "../../sse-bus";
 
 const mockFetchAgent = vi.mocked(fetchAgent);
@@ -192,6 +192,7 @@ const mockFetchPluginRuntimes = vi.mocked(fetchPluginRuntimes);
 const mockFetchAgentLogsWithMeta = vi.mocked(fetchAgentLogsWithMeta);
 const mockFetchAgentMailbox = vi.mocked(fetchAgentMailbox);
 const mockMarkMessageRead = vi.mocked(markMessageRead);
+const mockStartAgentRun = vi.mocked(startAgentRun);
 const mockUpgradeAgentHeartbeatProcedure = vi.mocked(upgradeAgentHeartbeatProcedure);
 const mockUpdateGlobalSettings = vi.mocked(updateGlobalSettings);
 const mockFetchCompanies = vi.mocked(fetchCompanies);
@@ -242,6 +243,7 @@ describe("AgentDetailView", () => {
     mockSubscribeSse.mockReturnValue(vi.fn());
     const mockAgent = createMockAgent();
     mockFetchAgent.mockResolvedValue(mockAgent);
+    mockStartAgentRun.mockResolvedValue({ id: "run-003" } as any);
     mockFetchAgents.mockResolvedValue([
       { id: "agent-001", name: "Test Agent", role: "executor", state: "active", metadata: {} },
       { id: "agent-002", name: "Manager Agent", role: "reviewer", state: "active", metadata: {} },
@@ -1677,6 +1679,102 @@ describe("AgentDetailView", () => {
     );
     expect(openSpy.mock.calls[0]?.[0]).toContain("run-error");
     openSpy.mockRestore();
+  });
+
+  it("renders Run Now in header for active and idle states only", async () => {
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Run now for Test Agent" })).toBeInTheDocument();
+    });
+
+    cleanup();
+    mockFetchAgent.mockResolvedValueOnce(createMockAgent({ state: "idle", taskId: undefined }));
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Run now for Test Agent" })).toBeInTheDocument();
+    });
+
+    cleanup();
+    mockFetchAgent.mockResolvedValueOnce(createMockAgent({ state: "running", taskId: undefined }));
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Run now for Test Agent" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("starts run from header and refreshes runs without runs-tab Run Now", async () => {
+    const addToast = vi.fn();
+    const user = userEvent.setup();
+    mockFetchAgentRuns.mockResolvedValue([
+      {
+        id: "run-001",
+        agentId: "agent-001",
+        startedAt: "2024-01-01T00:00:00.000Z",
+        endedAt: null,
+        status: "active",
+      } as AgentHeartbeatRun,
+    ]);
+
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={addToast}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Run now for Test Agent" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Run now for Test Agent" }));
+
+    await waitFor(() => {
+      expect(mockStartAgentRun).toHaveBeenCalledWith("agent-001", undefined, {
+        source: "on_demand",
+        triggerDetail: "Triggered from dashboard",
+      });
+    });
+
+    await waitFor(() => {
+      expect(addToast).toHaveBeenCalledWith("Heartbeat run started for Test Agent", "success");
+    });
+
+    await user.click(screen.getByText("Runs"));
+
+    const initialRunFetchCalls = mockFetchAgentRuns.mock.calls.length;
+    await waitFor(() => {
+      expect(initialRunFetchCalls).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Run now for Test Agent" }));
+
+    await waitFor(() => {
+      expect(mockFetchAgentRuns.mock.calls.length).toBeGreaterThan(initialRunFetchCalls);
+    });
+
+    expect(screen.getAllByRole("button", { name: "Run now for Test Agent" })).toHaveLength(1);
   });
 
   it("auto-expands the active run when opened from running control context", async () => {

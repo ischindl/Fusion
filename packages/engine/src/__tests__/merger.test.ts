@@ -7618,7 +7618,7 @@ describe("aiMergeTask — in-merge verification fix", () => {
     expect(mockedCreateFnAgent).toHaveBeenCalledTimes(4);
   });
 
-  it("default verificationFixRetries (omitted) results in 2 fix attempts", async () => {
+  it("default verificationFixRetries (omitted) results in 3 fix attempts", async () => {
     mockedExecSync.mockImplementation((cmd: any) => {
       const cmdStr = String(cmd);
       if (cmdStr.includes("rev-parse --verify")) return Buffer.from("abc123");
@@ -7654,30 +7654,29 @@ describe("aiMergeTask — in-merge verification fix", () => {
       { id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050" },
       [{ id: "FN-050", worktree: "/tmp/root/.worktrees/KB-050", column: "in-review" } as Task],
     );
-    // Explicitly omit verificationFixRetries to test default behavior
-    const { verificationFixRetries: _omitVerificationFixRetries, ...settingsWithoutVerificationFixRetries } = DEFAULT_SETTINGS;
+    // Use core defaults (verificationFixRetries defaults to 3)
     (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...settingsWithoutVerificationFixRetries,
+      ...DEFAULT_SETTINGS,
       testCommand: "vitest run",
-      // verificationFixRetries is NOT set — should default to 2
     });
 
     await expect(aiMergeTask(store, "/tmp/root", "FN-050")).rejects.toMatchObject({
       name: "VerificationError",
     });
 
-    // 1 merger AI agent (attempt 1) + 2 fix agent attempts (default) = 3 calls
-    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(3);
+    // 1 merger AI agent (attempt 1) + 3 fix agent attempts (default) = 4 calls
+    expect(mockedCreateFnAgent).toHaveBeenCalledTimes(4);
 
-    // Verify the log shows 2 fix attempts (2 log entries per attempt: start + failure)
+    // Verify the log shows 3 fix attempts (2 log entries per attempt: start + failure)
     const logCalls = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls;
     const fixAttempts = logCalls.filter((call: any[]) =>
       typeof call[1] === "string" && call[1].includes("In-merge verification fix attempt"),
     );
-    // Each attempt produces 2 log entries: "attempt X/2" and "attempt X — verification still fails"
-    expect(fixAttempts).toHaveLength(4);
-    expect(fixAttempts[0][1]).toContain("attempt 1/2");
-    expect(fixAttempts[2][1]).toContain("attempt 2/2");
+    // Each attempt produces 2 log entries: "attempt X/3" and "attempt X — verification still fails"
+    expect(fixAttempts).toHaveLength(6);
+    expect(fixAttempts[0][1]).toContain("attempt 1/3");
+    expect(fixAttempts[2][1]).toContain("attempt 2/3");
+    expect(fixAttempts[4][1]).toContain("attempt 3/3");
   });
 });
 

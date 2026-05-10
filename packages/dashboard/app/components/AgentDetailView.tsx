@@ -140,6 +140,8 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
   const [activeTab, setActiveTab] = useState<TabId>(initialTab ?? "dashboard");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isStartingRun, setIsStartingRun] = useState(false);
+  const [runNowRefreshToken, setRunNowRefreshToken] = useState(0);
   const [latestRun, setLatestRun] = useState<AgentHeartbeatRun | null>(null);
   const [agentMailbox, setAgentMailbox] = useState<AgentMailboxResponse | null>(null);
   const [isLoadingMailbox, setIsLoadingMailbox] = useState(false);
@@ -458,6 +460,20 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
     }
   };
 
+  const handleRunHeartbeat = async () => {
+    if (isStartingRun) return;
+    setIsStartingRun(true);
+    try {
+      await startAgentRun(agentId, projectId, { source: "on_demand", triggerDetail: "Triggered from dashboard" });
+      addToast(`Heartbeat run started for ${agent?.name ?? agentId}`, "success");
+      setRunNowRefreshToken((prev) => prev + 1);
+    } catch (err) {
+      addToast(`Failed to start heartbeat run: ${getErrorMessage(err)}`, "error");
+    } finally {
+      setIsStartingRun(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!agent) return;
     const shouldDelete = await confirm({
@@ -592,6 +608,15 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                     <Play size={14} />
                     Start
                   </button>
+                  <button
+                    className="btn btn-task-create btn--compact"
+                    onClick={() => void handleRunHeartbeat()}
+                    aria-label={`Run now for ${agent.name}`}
+                    disabled={isStartingRun || isTransitioning}
+                  >
+                    <Activity size={14} />
+                    Run Now
+                  </button>
                   <button className="btn btn--danger btn--compact" onClick={handleDelete}>
                     <Trash2 size={14} />
                     Delete
@@ -607,6 +632,15 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                   <button className="btn btn--danger btn--compact" onClick={() => void handleStateChange("paused")} disabled={isTransitioning}>
                     <Square size={14} />
                     Stop
+                  </button>
+                  <button
+                    className="btn btn-task-create btn--compact"
+                    onClick={() => void handleRunHeartbeat()}
+                    aria-label={`Run now for ${agent.name}`}
+                    disabled={isStartingRun || isTransitioning}
+                  >
+                    <Activity size={14} />
+                    Run Now
                   </button>
                 </>
               )}
@@ -717,6 +751,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
               agentName={agent.name}
               initialRunId={initialRunId}
               preferActiveRun={preferActiveRun}
+              runNowRefreshToken={runNowRefreshToken}
             />
           )}
 
@@ -1443,6 +1478,7 @@ function RunsTab({
   agentName,
   initialRunId,
   preferActiveRun,
+  runNowRefreshToken,
 }: { 
   addToast: (msg: string, type?: "success" | "error") => void;
   agentId: string;
@@ -1451,6 +1487,7 @@ function RunsTab({
   agentName?: string;
   initialRunId?: string | null;
   preferActiveRun?: boolean;
+  runNowRefreshToken: number;
 }) {
   const [runs, setRuns] = useState<AgentHeartbeatRun[]>([]);
   const { confirm } = useConfirm();
@@ -1461,6 +1498,7 @@ function RunsTab({
   const [detailRun, setDetailRun] = useState<AgentHeartbeatRun | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const hasAutoExpandedInitialRunRef = useRef(false);
+  const didMountRunNowRefreshRef = useRef(false);
 
   // Load runs on mount
   const loadRuns = useCallback(async () => {
@@ -1477,6 +1515,15 @@ function RunsTab({
   useEffect(() => {
     void loadRuns();
   }, [loadRuns]);
+
+  useEffect(() => {
+    if (!didMountRunNowRefreshRef.current) {
+      didMountRunNowRefreshRef.current = true;
+      return;
+    }
+    setIsLoadingRuns(true);
+    void loadRuns();
+  }, [loadRuns, runNowRefreshToken]);
 
   // Poll for active runs
   const hasActiveRun = runs.some(r => r.status === "active");
@@ -1565,16 +1612,6 @@ function RunsTab({
     }
   }, [initialRunId, preferActiveRun, runs, isLoadingRuns, handleRunClick]);
 
-  const handleRunHeartbeat = async () => {
-    try {
-      await startAgentRun(agentId, projectId, { source: "on_demand", triggerDetail: "Triggered from dashboard" });
-      addToast(`Heartbeat run started for ${agentName ?? agentId}`, "success");
-      setIsLoadingRuns(true);
-      void loadRuns();
-    } catch (err) {
-      addToast(`Failed to start heartbeat run: ${getErrorMessage(err)}`, "error");
-    }
-  };
 
   const handleStopRun = async () => {
     const shouldStop = await confirm({
@@ -1596,7 +1633,6 @@ function RunsTab({
     }
   };
 
-  const canRunHeartbeat = agentState === "active" || agentState === "idle";
 
   if (isLoadingRuns && runs.length === 0) {
     return (
@@ -1612,17 +1648,6 @@ function RunsTab({
   if (runs.length === 0) {
     return (
       <div className="runs-tab">
-        {canRunHeartbeat && (
-          <div className="runs-toolbar">
-            <button
-              className="btn btn--sm btn-task-create"
-              onClick={() => void handleRunHeartbeat()}
-              aria-label={`Run now for ${agentName ?? agentId}`}
-            >
-              <Activity size={14} /> Run Now
-            </button>
-          </div>
-        )}
         <div className="runs-empty">
           <Activity size={48} opacity={0.3} />
           <p>No runs yet</p>
@@ -1854,32 +1879,23 @@ function RunsTab({
 
   return (
     <div className="runs-tab">
-      {canRunHeartbeat && (
-        <div className="runs-toolbar runs-toolbar--between">
-          <span className="runs-toolbar-meta">
-            {runs.length} run{runs.length !== 1 ? "s" : ""}
-            {hasActiveRun && <span className="run-live-indicator run-live-indicator--with-margin"><span className="live-dot" />Live</span>}
-          </span>
-          <div className="run-header-group">
-            {hasActiveRun && (
-              <button
-                className="btn btn--sm btn--danger"
-                onClick={() => void handleStopRun()}
-                aria-label={`Stop active run for ${agentName ?? agentId}`}
-              >
-                <Square size={14} /> Stop Run
-              </button>
-            )}
+      <div className="runs-toolbar runs-toolbar--between">
+        <span className="runs-toolbar-meta">
+          {runs.length} run{runs.length !== 1 ? "s" : ""}
+          {hasActiveRun && <span className="run-live-indicator run-live-indicator--with-margin"><span className="live-dot" />Live</span>}
+        </span>
+        <div className="run-header-group">
+          {hasActiveRun && (
             <button
-              className="btn btn--sm btn-task-create"
-              onClick={() => void handleRunHeartbeat()}
-              aria-label={`Run now for ${agentName ?? agentId}`}
+              className="btn btn--sm btn--danger"
+              onClick={() => void handleStopRun()}
+              aria-label={`Stop active run for ${agentName ?? agentId}`}
             >
-              <Activity size={14} /> Run Now
+              <Square size={14} /> Stop Run
             </button>
-          </div>
+          )}
         </div>
-      )}
+      </div>
       {activeRuns.map((run, i) => renderRunCard(run, i, true))}
       {completedRuns.map((run, i) => renderRunCard(run, activeRuns.length + i, false))}
     </div>

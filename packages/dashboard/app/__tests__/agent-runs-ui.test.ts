@@ -66,7 +66,7 @@ describe("Agent runs UI — static analysis", () => {
     });
   });
 
-  describe("AgentDetailView RunsTab", () => {
+  describe("AgentDetailView run controls", () => {
     it("loads runs via fetchAgentRuns API", () => {
       expect(agentDetailViewContent).toMatch(/fetchAgentRuns/);
     });
@@ -79,8 +79,8 @@ describe("Agent runs UI — static analysis", () => {
       expect(agentDetailViewContent).toMatch(/import.*startAgentRun.*from.*api/);
     });
 
-    it("has Run Now button in runs tab", () => {
-      expect(agentDetailViewContent).toMatch(/Run Now/);
+    it("has Run Now button in header controls", () => {
+      expect(agentDetailViewContent).toMatch(/agent-detail-controls[\s\S]*Run Now/);
       expect(agentDetailViewContent).toMatch(/handleRunHeartbeat/);
     });
 
