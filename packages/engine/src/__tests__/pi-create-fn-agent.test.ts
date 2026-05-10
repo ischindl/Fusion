@@ -1050,6 +1050,30 @@ describe("createFnAgent", () => {
     expect(createAgentSessionMock).not.toHaveBeenCalled();
   });
 
+  it("uses the configured fallback model when the primary model cannot be resolved", async () => {
+    findMock.mockImplementation((provider: string, modelId: string) => {
+      if (provider === "zai" && modelId === "glm-5.1") return undefined;
+      return { provider, id: modelId };
+    });
+
+    const { createFnAgent } = await import("../pi.js");
+
+    await createFnAgent({
+      cwd: "/tmp",
+      systemPrompt: "test",
+      tools: "readonly",
+      defaultProvider: "zai",
+      defaultModelId: "glm-5.1",
+      fallbackProvider: "openai-codex",
+      fallbackModelId: "gpt-5.4",
+    });
+
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(createAgentSessionMock.mock.calls[0]?.[0]).toMatchObject({
+      model: { provider: "openai-codex", id: "gpt-5.4" },
+    });
+  });
+
   it("throws when the configured fallback model cannot be resolved", async () => {
     findMock.mockImplementation((provider: string, modelId: string) => (
       provider === "openai-codex" && modelId === "missing-model" ? undefined : { provider, id: modelId }

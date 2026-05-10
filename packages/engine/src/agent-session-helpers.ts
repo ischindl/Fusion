@@ -11,7 +11,12 @@ import type { AgentRuntimeOptions } from "./agent-runtime.js";
 import type { SkillSelectionContext } from "./skill-resolver.js";
 import type { PluginRunner } from "./plugin-runner.js";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { resolveTaskExecutionModel, resolveTaskPlanningModel, type Settings } from "@fusion/core";
+import {
+  resolveExecutionSettingsModel,
+  resolveTaskExecutionModel,
+  resolveTaskPlanningModel,
+  type Settings,
+} from "@fusion/core";
 import { resolveRuntime, buildRuntimeResolutionContext, type SessionPurpose } from "./runtime-resolution.js";
 import { createLogger } from "./logger.js";
 import { promptWithFallback, describeModel } from "./pi.js";
@@ -160,6 +165,33 @@ export function resolvePlanningSessionModel(
   return {
     provider: resolvedTaskPlanningModel.provider,
     modelId: resolvedTaskPlanningModel.modelId,
+  };
+}
+
+export function resolveHeartbeatSessionModels(
+  settings: Partial<Settings> | undefined,
+  assignedAgentRuntimeConfig?: Record<string, unknown>,
+): {
+  defaultProvider: string | undefined;
+  defaultModelId: string | undefined;
+  fallbackProvider: string | undefined;
+  fallbackModelId: string | undefined;
+} {
+  const assignedRuntimeModel = extractRuntimeModel(assignedAgentRuntimeConfig);
+  const executionSettingsModel = resolveExecutionSettingsModel(settings);
+
+  const defaultProvider = assignedRuntimeModel.provider ?? executionSettingsModel.provider;
+  const defaultModelId = assignedRuntimeModel.modelId ?? executionSettingsModel.modelId;
+
+  const executionPairAvailable = Boolean(executionSettingsModel.provider && executionSettingsModel.modelId);
+  const defaultMatchesExecution =
+    defaultProvider === executionSettingsModel.provider && defaultModelId === executionSettingsModel.modelId;
+
+  return {
+    defaultProvider,
+    defaultModelId,
+    fallbackProvider: executionPairAvailable && !defaultMatchesExecution ? executionSettingsModel.provider : undefined,
+    fallbackModelId: executionPairAvailable && !defaultMatchesExecution ? executionSettingsModel.modelId : undefined,
   };
 }
 

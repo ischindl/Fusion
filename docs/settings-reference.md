@@ -482,6 +482,19 @@ Fusion uses a dual-scope model settings system with five lanes. Global settings 
 6. Global `defaultProvider` + `defaultModelId`
 7. Automatic provider/model resolution
 
+### Heartbeat model (durable agents)
+
+Heartbeat sessions for durable agents use this order:
+
+1. Assigned durable agent runtime model (`runtimeConfig.model` or `runtimeConfig.modelProvider` + `runtimeConfig.modelId`) when present
+2. Project `executionProvider` + `executionModelId`
+3. Global `executionGlobalProvider` + `executionGlobalModelId`
+4. Project `defaultProviderOverride` + `defaultModelIdOverride`
+5. Global `defaultProvider` + `defaultModelId`
+6. Automatic provider/model resolution
+
+When heartbeat has both (1) and (2-5), the runtime model is used as primary and the execution-lane model is passed as fallback. On timer-triggered runs, unrecoverable missing-provider credential/registry failures complete as `heartbeat_model_unavailable` instead of permanently setting the durable agent to `state=error`.
+
 ### Reviewer model
 
 1. Per-task `validatorModelProvider` + `validatorModelId`

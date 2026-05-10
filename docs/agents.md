@@ -184,6 +184,17 @@ Executor precedence for task runs:
 
 If the assigned agent runtime model is missing or incomplete, Fusion falls back to the normal task/settings execution hierarchy.
 
+### Durable-agent heartbeat model precedence and unavailable-provider behavior
+
+Heartbeat sessions for durable agents resolve models with heartbeat-specific fallback semantics:
+
+1. Agent runtime model (`runtimeConfig.model` or `runtimeConfig.modelProvider` + `runtimeConfig.modelId`) when present
+2. Execution-lane settings fallback (`executionProvider`/`executionModelId` → `executionGlobalProvider`/`executionGlobalModelId` → project/global defaults)
+
+When the runtime model is present and differs from execution-lane settings, heartbeat passes the execution-lane model as a fallback pair for session creation.
+
+If a **timer heartbeat** still cannot create/run a session due to unavailable provider credentials or missing provider registration, the run completes with `resultJson.reason = "heartbeat_model_unavailable"` and diagnostics in `resultJson.detail`/`stderrExcerpt` instead of leaving the durable agent stuck in persistent `state="error"`.
+
 ### Assigned-agent identity + planning model precedence for task triage
 
 When a triage/specification run targets a task with `assignedAgentId` and that agent is durable, planning now inherits the assigned agent context instead of only generic triage-role defaults.

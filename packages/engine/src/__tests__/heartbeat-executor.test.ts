@@ -2329,9 +2329,15 @@ describe("executeHeartbeat", () => {
       expect(taskLogTool.name).toBe("fn_task_log");
     });
 
-    it("passes model config from agent runtimeConfig to createFnAgent", async () => {
+    it("passes runtime model as primary and execution settings model as fallback", async () => {
       const store = createStoreWithAgentForExec({
-        runtimeConfig: { modelProvider: "openai", modelId: "gpt-4o" },
+        runtimeConfig: { model: "anthropic/claude-sonnet-4-5" },
+      });
+      mockTaskStore = createMockTaskStore({
+        getSettings: vi.fn().mockResolvedValue({
+          executionProvider: "openai",
+          executionModelId: "gpt-4.1",
+        }),
       });
       const mockSession = createMockAgentSession();
       mockedCreateFnAgent.mockResolvedValue({
@@ -2340,12 +2346,14 @@ describe("executeHeartbeat", () => {
 
       const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
 
-      await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
 
       expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
       const callArgs = mockedCreateFnAgent.mock.calls[0]![0];
-      expect(callArgs.defaultProvider).toBe("openai");
-      expect(callArgs.defaultModelId).toBe("gpt-4o");
+      expect(callArgs.defaultProvider).toBe("anthropic");
+      expect(callArgs.defaultModelId).toBe("claude-sonnet-4-5");
+      expect(callArgs.fallbackProvider).toBe("openai");
+      expect(callArgs.fallbackModelId).toBe("gpt-4.1");
     });
 
     it("passes undefined model when runtimeConfig has no model", async () => {
@@ -2523,6 +2531,23 @@ describe("executeHeartbeat", () => {
       expect(result.stderrExcerpt).toContain("Model unavailable");
       // Agent state should be set to error
       expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "error");
+    });
+
+    it("fails soft on timer heartbeat when model provider credentials are unavailable", async () => {
+      const store = createStoreWithAgentForExec();
+      mockedCreateFnAgent.mockRejectedValue(new Error("No API key for provider: anthropic"));
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      expect(result.status).toBe("completed");
+      expect(result.resultJson).toMatchObject({
+        reason: "heartbeat_model_unavailable",
+        source: "timer",
+      });
+      expect(store.updateAgentState).toHaveBeenCalledWith("agent-001", "active");
+      expect(store.updateAgentState).not.toHaveBeenCalledWith("agent-001", "error");
     });
 
     it("completes run as failed when promptWithFallback throws", async () => {

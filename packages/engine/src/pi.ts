@@ -1634,19 +1634,39 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     retry: { enabled: true, maxRetries: 3 },
   });
 
-  // Resolve explicit model selection if provider and model ID are specified
-  const selectedModel = resolveConfiguredModel(
-    modelRegistry,
-    "primary",
-    options.defaultProvider,
-    options.defaultModelId,
-  );
-  const fallbackModel = resolveConfiguredModel(
-    modelRegistry,
-    "fallback",
-    options.fallbackProvider,
-    options.fallbackModelId,
-  );
+  // Resolve explicit model selection if provider and model ID are specified.
+  // If the primary configured model cannot be resolved but a fallback model is
+  // configured, prefer the fallback as the initial model selection.
+  let selectedModel;
+  let fallbackModel;
+  try {
+    selectedModel = resolveConfiguredModel(
+      modelRegistry,
+      "primary",
+      options.defaultProvider,
+      options.defaultModelId,
+    );
+  } catch (primaryResolutionError) {
+    if (!options.fallbackProvider || !options.fallbackModelId) {
+      throw primaryResolutionError;
+    }
+    fallbackModel = resolveConfiguredModel(
+      modelRegistry,
+      "fallback",
+      options.fallbackProvider,
+      options.fallbackModelId,
+    );
+    selectedModel = fallbackModel;
+  }
+
+  if (!fallbackModel) {
+    fallbackModel = resolveConfiguredModel(
+      modelRegistry,
+      "fallback",
+      options.fallbackProvider,
+      options.fallbackModelId,
+    );
+  }
 
   // Resolve skill selection: explicit skillSelection wins over convenience `skills`
   let effectiveSkillSelection: SkillSelectionContext | undefined = options.skillSelection;

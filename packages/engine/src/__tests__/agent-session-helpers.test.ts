@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractRuntimeHint, resolveMergerSessionModel } from "../agent-session-helpers.js";
+import {
+  extractRuntimeHint,
+  resolveHeartbeatSessionModels,
+  resolveMergerSessionModel,
+} from "../agent-session-helpers.js";
 
 describe("extractRuntimeHint", () => {
   it("returns undefined for undefined config", () => {
@@ -20,6 +24,53 @@ describe("extractRuntimeHint", () => {
 
   it("returns undefined for non-string runtimeHint", () => {
     expect(extractRuntimeHint({ runtimeHint: 42 })).toBeUndefined();
+  });
+});
+
+describe("resolveHeartbeatSessionModels", () => {
+  it("uses agent runtime model as primary and execution settings as fallback", () => {
+    expect(resolveHeartbeatSessionModels(
+      {
+        executionProvider: "openai",
+        executionModelId: "gpt-4.1",
+      },
+      { model: "anthropic/claude-sonnet-4-5" },
+    )).toEqual({
+      defaultProvider: "anthropic",
+      defaultModelId: "claude-sonnet-4-5",
+      fallbackProvider: "openai",
+      fallbackModelId: "gpt-4.1",
+    });
+  });
+
+  it("uses execution settings model when runtime override is missing", () => {
+    expect(resolveHeartbeatSessionModels(
+      {
+        executionProvider: "openai",
+        executionModelId: "gpt-4.1",
+      },
+      {},
+    )).toEqual({
+      defaultProvider: "openai",
+      defaultModelId: "gpt-4.1",
+      fallbackProvider: undefined,
+      fallbackModelId: undefined,
+    });
+  });
+
+  it("does not duplicate fallback when runtime and execution model are the same", () => {
+    expect(resolveHeartbeatSessionModels(
+      {
+        executionProvider: "openai",
+        executionModelId: "gpt-4.1",
+      },
+      { modelProvider: "openai", modelId: "gpt-4.1" },
+    )).toEqual({
+      defaultProvider: "openai",
+      defaultModelId: "gpt-4.1",
+      fallbackProvider: undefined,
+      fallbackModelId: undefined,
+    });
   });
 });
 
