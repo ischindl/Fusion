@@ -596,9 +596,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     let cancelled = false;
     fetchAiSessions(projectId).then((sessions) => {
       if (cancelled) return;
-      const pending = sessions.filter(
-        (s) => s.type === "mission_interview" && missionInterviewListStatuses.has(s.status),
-      );
+      const pending = sessions.filter((s) => {
+        if (s.type !== "mission_interview" || !missionInterviewListStatuses.has(s.status)) {
+          return false;
+        }
+        if (projectId) {
+          return s.projectId === projectId;
+        }
+        return s.projectId == null;
+      });
       setPendingInterviewSessions(pending);
     }).catch((err) => {
       console.warn("[MissionManager] Failed to fetch pending interview sessions:", err);

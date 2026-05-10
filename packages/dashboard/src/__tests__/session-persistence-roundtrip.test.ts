@@ -288,13 +288,22 @@ describe("session persistence round-trip", () => {
       ]),
     );
 
-    const sessionId = await createMissionInterviewSession("127.0.0.44", "Mission persistence", "/tmp/project");
+    const sessionId = await createMissionInterviewSession(
+      "127.0.0.44",
+      "Mission persistence",
+      "/tmp/project",
+      undefined,
+      undefined,
+      undefined,
+      "project-mission",
+    );
     await waitFor(() => Boolean(getMissionInterviewSession(sessionId)?.currentQuestion));
 
     await submitMissionInterviewResponse(sessionId, { "q-m-1": "A mission" }, "/tmp/project");
 
     const persisted = aiSessionStore.get(sessionId);
     expect(persisted?.status).toBe("complete");
+    expect(persisted?.projectId).toBe("project-mission");
 
     const history = JSON.parse(persisted?.conversationHistory ?? "[]") as Array<{ question: { id: string } }>;
     expect(history).toHaveLength(1);

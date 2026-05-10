@@ -222,6 +222,7 @@ interface MissionInterviewHistoryEntry {
 interface MissionInterviewSession {
   id: string;
   ip: string;
+  projectId: string | null;
   missionId: string;
   missionTitle: string;
   history: MissionInterviewHistoryEntry[];
@@ -315,6 +316,7 @@ function persistMissionSession(session: MissionInterviewSession, status: "genera
     title: session.missionTitle.slice(0, 120),
     inputPayload: JSON.stringify({
       ip: session.ip,
+      projectId: session.projectId,
       missionTitle: session.missionTitle,
       missionId: session.missionId,
       modelProvider: session.modelProvider,
@@ -325,7 +327,7 @@ function persistMissionSession(session: MissionInterviewSession, status: "genera
     result: session.summary ? JSON.stringify(session.summary) : null,
     thinkingOutput: session.thinkingOutput,
     error: error ?? null,
-    projectId: null,
+    projectId: session.projectId,
     createdAt: session.createdAt.toISOString(),
     updatedAt: new Date().toISOString(),
     lockedByTab: null,
@@ -345,7 +347,7 @@ function unpersistMissionSession(sessionId: string): void {
 }
 
 function buildMissionInterviewSessionFromRow(row: AiSessionRow): MissionInterviewSession {
-  const payload = safeParseJson<{ ip?: string; missionId?: string; missionTitle?: string; modelProvider?: string; modelId?: string }>(
+  const payload = safeParseJson<{ ip?: string; projectId?: string | null; missionId?: string; missionTitle?: string; modelProvider?: string; modelId?: string }>(
     row.inputPayload,
     {},
     { throwOnError: true, fieldName: "inputPayload" },
@@ -361,6 +363,7 @@ function buildMissionInterviewSessionFromRow(row: AiSessionRow): MissionIntervie
   return {
     id: row.id,
     ip: payload.ip ?? "",
+    projectId: row.projectId ?? payload.projectId ?? null,
     missionId: payload.missionId ?? "",
     missionTitle: payload.missionTitle ?? row.title,
     history: safeParseJson<MissionInterviewHistoryEntry[]>(
@@ -1095,6 +1098,7 @@ export async function createMissionInterviewSession(
   promptOverrides?: PromptOverrideMap,
   modelProvider?: string,
   modelId?: string,
+  projectId?: string | null,
 ): Promise<string> {
   if (!checkRateLimit(ip)) {
     const resetTime = getRateLimitResetTime(ip);
@@ -1109,6 +1113,7 @@ export async function createMissionInterviewSession(
   const session: MissionInterviewSession = {
     id: sessionId,
     ip,
+    projectId: projectId ?? null,
     missionId: "",
     missionTitle,
     history: [],
@@ -1292,6 +1297,7 @@ export function __registerMissionInterviewSessionForTest(sessionId: string, miss
   sessions.set(sessionId, {
     id: sessionId,
     ip: "127.0.0.1",
+    projectId: null,
     missionId: "",
     missionTitle,
     history: [],

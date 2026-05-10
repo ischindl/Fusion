@@ -406,7 +406,7 @@ export function createMissionRouter(
 
       try {
         const ip = req.ip || req.socket.remoteAddress || "unknown";
-        const { store: scopedStore } = await getProjectContext(req);
+        const { store: scopedStore, projectId } = await getProjectContext(req);
         const rootDir = scopedStore.getRootDir();
         const settings = await scopedStore.getSettings();
 
@@ -425,6 +425,7 @@ export function createMissionRouter(
           settings.promptOverrides,
           resolvedProvider,
           resolvedModelId,
+          projectId ?? null,
         );
         res.status(201).json({ sessionId });
       } catch (err: unknown) {

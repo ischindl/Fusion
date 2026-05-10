@@ -182,7 +182,7 @@ describe("session resume + history restore", () => {
       result: null,
       thinkingOutput: "mission-latest-thinking",
       error: null,
-      projectId: null,
+      projectId: "project-resume",
       createdAt: now,
       updatedAt: now,
       lockedByTab: null,
@@ -203,6 +203,7 @@ describe("session resume + history restore", () => {
     const restored = getMissionInterviewSession(row.id);
     expect(restored).toBeDefined();
     expect(restored?.history).toHaveLength(1);
+    expect(restored?.projectId).toBe("project-resume");
     expect(restored?.history[0]?.thinkingOutput).toBe("mission-turn-1-thinking");
     expect(restored?.thinkingOutput).toBe("mission-latest-thinking");
     expect(restored?.lastGeneratedThinking).toBe("mission-latest-thinking");

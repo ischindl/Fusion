@@ -2752,6 +2752,7 @@ describe("Mission API", () => {
         { "mission-interview-system": "Scoped mission interview prompt" },
         undefined,
         undefined,
+        projectId,
       );
     });
 
@@ -2839,6 +2840,7 @@ describe("Mission API", () => {
         {},
         undefined,
         undefined,
+        null,
       );
     });
 
@@ -2914,6 +2916,7 @@ describe("Mission API", () => {
         {},
         "zai",
         "glm-5.1",
+        projectId,
       );
     });
 
@@ -2954,6 +2957,7 @@ describe("Mission API", () => {
         {},
         "anthropic",
         "claude-sonnet-4-5",
+        projectId,
       );
     });
 
@@ -2997,6 +3001,7 @@ describe("Mission API", () => {
         {},
         "openai",
         "gpt-4o",
+        projectId,
       );
     });
 
@@ -3033,6 +3038,7 @@ describe("Mission API", () => {
         {},
         undefined,
         undefined,
+        projectId,
       );
     });
   });

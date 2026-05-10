@@ -1732,6 +1732,55 @@ describe("MissionManager", () => {
     });
   });
 
+  it("only shows in-progress interview sessions scoped to the active project", async () => {
+    mockFetchAiSessions.mockResolvedValueOnce([
+      {
+        id: "session-project-a",
+        type: "mission_interview",
+        status: "awaiting_input",
+        title: "Project A Interview",
+        projectId: "project-a",
+        lockedByTab: null,
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      },
+      {
+        id: "session-project-b",
+        type: "mission_interview",
+        status: "awaiting_input",
+        title: "Project B Interview",
+        projectId: "project-b",
+        lockedByTab: null,
+        updatedAt: "2026-01-04T00:00:00.000Z",
+      },
+      {
+        id: "session-unscoped",
+        type: "mission_interview",
+        status: "awaiting_input",
+        title: "Unscoped Interview",
+        projectId: null,
+        lockedByTab: null,
+        updatedAt: "2026-01-05T00:00:00.000Z",
+      },
+    ]);
+    globalThis.fetch = createFetchMock();
+
+    render(
+      <MissionManager
+        isOpen={true}
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+        projectId="project-a"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Project A Interview")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Project B Interview")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unscoped Interview")).not.toBeInTheDocument();
+    expect(mockFetchAiSessions).toHaveBeenCalledWith("project-a");
+  });
   it("exposes retry action for errored interview sessions from the mission list", async () => {
     mockFetchAiSessions.mockResolvedValueOnce([
       {
