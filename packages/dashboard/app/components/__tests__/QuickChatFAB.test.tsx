@@ -475,14 +475,15 @@ describe("QuickChatFAB session-first UX", () => {
     });
   });
 
-  it("FN-3884: snaps to bottom when first opened", async () => {
+  it("FN-3910: anchors to live tail on initial controlled open", async () => {
     const deferredMessages = createDeferredPromise<{
       messages: Array<{ id: string; sessionId: string; role: "assistant"; content: string; createdAt: string }>;
     }>();
     mockFetchChatMessages.mockImplementationOnce(() => deferredMessages.promise);
 
-    render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
-    fireEvent.click(screen.getByTestId("quick-chat-fab"));
+    const { rerender } = render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" open={false} onOpenChange={vi.fn()} />);
+
+    rerender(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" open onOpenChange={vi.fn()} />);
 
     const messages = await screen.findByTestId("quick-chat-messages");
     let scrollTopValue = 0;
@@ -496,7 +497,10 @@ describe("QuickChatFAB session-first UX", () => {
       },
     });
 
-    // FN-3814: install descriptors before initial messages resolve so the first-open isOpen path writes into this captured scrollTop.
+    // FN-3910: install descriptors before initial messages resolve so the initial-open
+    // useLayoutEffect branch (openingNow from isOpen false->true) writes to this scrollTop.
+    expect(scrollTopValue).toBe(0);
+
     deferredMessages.resolve({
       messages: [
         {
