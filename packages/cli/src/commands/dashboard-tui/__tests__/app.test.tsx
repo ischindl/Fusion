@@ -429,7 +429,10 @@ describe("Settings view", () => {
     const controller = newController();
     controller.setSystemInfo(makeSystemInfo());
     let remoteState: "stopped" | "starting" | "running" | "error" = "running";
-    const activateProvider = vi.fn(async () => {});
+    let remoteProvider: "tailscale" | "cloudflare" | null = "tailscale";
+    const activateProvider = vi.fn(async (provider: "tailscale" | "cloudflare") => {
+      remoteProvider = provider;
+    });
     const settings: SettingsValues = {
       maxConcurrent: 1,
       maxWorktrees: 2,
@@ -441,13 +444,13 @@ describe("Settings view", () => {
       remoteActiveProvider: "cloudflare",
       remoteShortLivedEnabled: true,
       remoteShortLivedTtlMs: 600000,
-      remoteStatus: { provider: "cloudflare", state: "running", url: "https://remote.example.com", lastError: null },
+      remoteStatus: { provider: remoteProvider, state: "running", url: "https://remote.example.com", lastError: null },
     };
     controller.setInteractiveData(makeInteractiveData({
       settings,
       remote: {
         activateProvider,
-        getStatus: async () => ({ provider: "cloudflare", state: remoteState, url: "https://remote.example.com", lastError: null }),
+        getStatus: async () => ({ provider: remoteProvider, state: remoteState, url: "https://remote.example.com", lastError: null }),
         startTunnel: async () => {
           remoteState = "starting";
         },
