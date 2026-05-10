@@ -200,12 +200,23 @@
 
 @media (max-width: 768px) {
   .research-view {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding: var(--space-md);
     padding-bottom: calc(var(--space-md) + var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--standalone-bottom-gap));
   }
 
   .research-view__layout {
+    display: flex;
+    flex-direction: column;
     grid-template-columns: minmax(0, 1fr);
+    flex: initial;
+  }
+
+  .research-view__history {
+    flex: initial;
+    min-height: initial;
+    overflow: visible;
   }
 
   .research-view__header {

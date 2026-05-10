@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { loadAllAppCss, loadAllAppCssBaseOnly } from "../../test/cssFixture";
 import { Header } from "../Header";
 import { ResearchView } from "../ResearchView";
 
@@ -528,9 +529,12 @@ describe("ResearchView", () => {
     await waitFor(() => expect(enrichButton).not.toBeDisabled());
   });
 
-  it("includes mobile layout media rule", async () => {
-    const css = await import("../ResearchView.css?inline");
-    expect(css.default).toContain("@media (max-width: 768px)");
-    expect(css.default).toContain(".research-view__layout");
+  it("FN-3912: research view content is scrollable on mobile", () => {
+    const css = loadAllAppCss();
+    const baseCss = loadAllAppCssBaseOnly();
+
+    expect(baseCss).toMatch(/\.research-view__layout\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*2fr\);[^}]*\}/);
+
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[^}]*\.research-view\s*\{[^}]*overflow-y:\s*auto;[^}]*-webkit-overflow-scrolling:\s*touch;[^}]*padding-bottom:\s*calc\(var\(--space-md\)\s*\+\s*var\(--mobile-nav-height\)\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\s*\+\s*var\(--standalone-bottom-gap\)\);[^}]*\}/);
   });
 });
