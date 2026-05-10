@@ -8,6 +8,7 @@ declare module "express" {
 }
 import multer from "multer";
 import { resolve, sep, join, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as nodeFs from "node:fs";
 import os from "node:os";
 import v8 from "node:v8";
@@ -86,6 +87,49 @@ const BUNDLED_PLUGIN_RUNTIMES: Array<{
     version: "1.0.0",
   },
 ];
+const BUNDLED_PLUGIN_IDS = new Set([
+  "fusion-plugin-dependency-graph",
+  "fusion-plugin-whatsapp-chat",
+  "fusion-plugin-roadmap",
+  "fusion-plugin-hermes-runtime",
+  "fusion-plugin-openclaw-runtime",
+  "fusion-plugin-paperclip-runtime",
+  "fusion-plugin-cursor-runtime",
+]);
+
+function extractBundledPluginId(pathInput: string): string | null {
+  const normalized = pathInput.replace(/\\/gu, "/").replace(/\/+$/u, "").trim();
+  if (BUNDLED_PLUGIN_IDS.has(normalized)) {
+    return normalized;
+  }
+
+  for (const pluginId of BUNDLED_PLUGIN_IDS) {
+    if (normalized.endsWith(`/plugins/${pluginId}`)) {
+      return pluginId;
+    }
+  }
+
+  return null;
+}
+
+function resolveBundledPluginDirInDashboard(pluginId: string): string | null {
+  const moduleDir = resolve(fileURLToPath(import.meta.url), "..");
+  const dashboardPackageRoot = resolve(moduleDir, "..");
+  const candidates = [
+    join(dashboardPackageRoot, "dist", "plugins", pluginId),
+    join(dashboardPackageRoot, "plugins", pluginId),
+    join(dashboardPackageRoot, "..", "..", "plugins", pluginId),
+  ];
+
+  for (const candidate of candidates) {
+    if (nodeFs.existsSync(join(candidate, "manifest.json"))) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 import { createSessionDiagnostics } from "./ai-session-diagnostics.js";
 import { createApiRoutesContext } from "./routes/context.js";
 import { registerTaskWorkflowRoutes } from "./routes/register-task-workflow-routes.js";
@@ -3399,8 +3443,43 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         throw badRequest("'aiScanOnLoad' must be a boolean when provided");
       }
 
+      const requestPath = (body.path as string).trim();
+      const absoluteRequestPath = isAbsolute(requestPath) ? requestPath : resolve(process.cwd(), requestPath);
+
+      let manifestPathForInstall = absoluteRequestPath;
+      let manifestResolutionError: ApiError | null = null;
+      let attemptedBundledLookup = false;
+
+      try {
+        await resolvePluginManifest(manifestPathForInstall);
+      } catch (err) {
+        if (err instanceof ApiError && err.statusCode === 404) {
+          manifestResolutionError = err;
+          const bundledPluginId = extractBundledPluginId(requestPath) ?? extractBundledPluginId(absoluteRequestPath);
+          if (bundledPluginId) {
+            attemptedBundledLookup = true;
+            const bundledPath = resolveBundledPluginDirInDashboard(bundledPluginId);
+            if (bundledPath) {
+              manifestPathForInstall = bundledPath;
+            }
+          }
+        } else {
+          throw err;
+        }
+      }
+
+      if (manifestResolutionError && manifestPathForInstall === absoluteRequestPath) {
+        if (attemptedBundledLookup) {
+          throw notFound(
+            `Plugin install path not found: ${requestPath}. `
+            + "Checked resolved local path and bundled plugin locations.",
+          );
+        }
+        throw manifestResolutionError;
+      }
+
       // Resolve manifest — supports package root and dist-folder selections
-      const { manifestDir, manifest } = await resolvePluginManifest(body.path as string);
+      const { manifestDir, manifest } = await resolvePluginManifest(manifestPathForInstall);
 
       try {
         const plugin = await pluginStore.registerPlugin({

@@ -7,24 +7,34 @@ let registered = false;
 
 type PluginViewComponent = ({ context }: { context?: PluginDashboardViewContext }) => ReactElement;
 
-function createMissingPluginView(moduleId: string): PluginViewComponent {
+function createMissingPluginView(moduleId: string, exportName: string): PluginViewComponent {
   return function MissingPluginView() {
-    return createElement("span", null, `Bundled plugin view unavailable: ${moduleId}`);
+    return createElement("span", null, `Bundled plugin view unavailable: ${moduleId}#${exportName}`);
   };
 }
 
-async function loadBundledPluginView(moduleId: string, exportName: string): Promise<{ default: PluginViewComponent }> {
-  try {
-    const mod = await import(/* @vite-ignore */ moduleId) as Record<string, ComponentType<{ context?: PluginDashboardViewContext }>>;
-    const component = mod[exportName];
-    if (component) {
-      return { default: component as PluginViewComponent };
-    }
-  } catch {
-    // Fall back to placeholder view when optional bundled plugin examples are unavailable.
+async function loadDependencyGraphView(): Promise<{ default: PluginViewComponent }> {
+  const moduleId = "@fusion-plugin-examples/dependency-graph/dashboard-view";
+  const exportName = "DependencyGraphDashboardView";
+  const mod = await import("@fusion-plugin-examples/dependency-graph/dashboard-view") as Record<string, ComponentType<{ context?: PluginDashboardViewContext }>>;
+  const component = mod[exportName];
+  if (!component) {
+    console.warn(`[plugin-views] Missing export ${exportName} from ${moduleId}`);
+    return { default: createMissingPluginView(moduleId, exportName) };
   }
+  return { default: component as PluginViewComponent };
+}
 
-  return { default: createMissingPluginView(moduleId) };
+async function loadRoadmapView(): Promise<{ default: PluginViewComponent }> {
+  const moduleId = "@fusion-plugin-examples/roadmap/dashboard-view";
+  const exportName = "RoadmapDashboardView";
+  const mod = await import("@fusion-plugin-examples/roadmap/dashboard-view") as Record<string, ComponentType<{ context?: PluginDashboardViewContext }>>;
+  const component = mod[exportName];
+  if (!component) {
+    console.warn(`[plugin-views] Missing export ${exportName} from ${moduleId}`);
+    return { default: createMissingPluginView(moduleId, exportName) };
+  }
+  return { default: component as PluginViewComponent };
 }
 
 export function registerBundledPluginViews(): void {
@@ -34,12 +44,16 @@ export function registerBundledPluginViews(): void {
   registerPluginView(
     "fusion-plugin-dependency-graph",
     "graph",
-    lazy(() => loadBundledPluginView("@fusion-plugin-examples/dependency-graph/dashboard-view", "DependencyGraphDashboardView")),
+    lazy(loadDependencyGraphView),
   );
 
   registerPluginView(
     "roadmap-planner",
     "roadmaps",
-    lazy(() => loadBundledPluginView("@fusion-plugin-examples/roadmap/dashboard-view", "RoadmapDashboardView")),
+    lazy(loadRoadmapView),
   );
+}
+
+export function __test_resetBundledPluginViewRegistration(): void {
+  registered = false;
 }

@@ -473,6 +473,90 @@ describe("POST /api/plugins central persistence integration", () => {
   });
 });
 
+describe("POST /api/plugins mode:install — bundled plugin path fallback", () => {
+  let pluginStore: PluginStore;
+  let pluginLoader: PluginLoader;
+  let store: TaskStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    pluginStore = createMockPluginStore();
+    pluginLoader = createMockPluginLoader();
+    store = createMockTaskStore({
+      getPluginStore: vi.fn().mockReturnValue(pluginStore),
+    });
+  });
+
+  function buildApp() {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, { pluginStore, pluginLoader }));
+    return app;
+  }
+
+  it("installs bundled dependency graph plugin when relative path misses cwd", async () => {
+    const bundledManifest = {
+      ...VALID_MANIFEST,
+      id: "fusion-plugin-dependency-graph",
+      name: "Dependency Graph",
+    };
+    mockExistsSync.mockImplementation((p: string) => p.includes("fusion-plugin-dependency-graph/manifest.json"));
+    mockAccess.mockImplementation((p: string) => {
+      if (p.includes("fusion-plugin-dependency-graph")) return Promise.resolve();
+      return Promise.reject(new Error("not found"));
+    });
+    mockReadFile.mockResolvedValue(JSON.stringify(bundledManifest));
+    (pluginStore.registerPlugin as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...INSTALLED_PLUGIN,
+      id: "fusion-plugin-dependency-graph",
+      name: "Dependency Graph",
+    });
+
+    const res = await REQUEST(buildApp(), "POST", "/api/plugins", {
+      mode: "install",
+      path: "./plugins/fusion-plugin-dependency-graph",
+    });
+
+    expect(res.status).toBe(201);
+    expect(pluginStore.registerPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manifest: expect.objectContaining({ id: "fusion-plugin-dependency-graph" }),
+        path: expect.stringContaining("fusion-plugin-dependency-graph"),
+      }),
+    );
+  });
+
+  it("returns 404 with helpful message when local and bundled paths are unresolved", async () => {
+    mockExistsSync.mockReturnValue(false);
+    mockAccess.mockRejectedValue(new Error("not found"));
+
+    const res = await REQUEST(buildApp(), "POST", "/api/plugins", {
+      mode: "install",
+      path: "./plugins/fusion-plugin-dependency-graph",
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("Checked resolved local path and bundled plugin locations");
+  });
+
+  it("keeps register mode behavior unchanged", async () => {
+    (pluginStore.registerPlugin as ReturnType<typeof vi.fn>).mockResolvedValue(INSTALLED_PLUGIN);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/plugins", {
+      mode: "register",
+      id: "my-plugin",
+      name: "My Plugin",
+      version: "1.0.0",
+      path: "./plugins/fusion-plugin-dependency-graph",
+    });
+
+    expect(res.status).toBe(201);
+    expect(pluginStore.registerPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "./plugins/fusion-plugin-dependency-graph" }),
+    );
+  });
+});
+
 describe("POST /api/plugins mode:install — negative paths", () => {
   let pluginStore: PluginStore;
   let pluginLoader: PluginLoader;
