@@ -1,21 +1,24 @@
-import { lazy } from "react";
+import { createElement, lazy, type ReactElement } from "react";
 import type { ComponentType } from "react";
+import type { PluginDashboardViewContext } from "./types";
 import { registerPluginView } from "./pluginViewRegistry";
 
 let registered = false;
 
-function createMissingPluginView(moduleId: string): ComponentType {
+type PluginViewComponent = ({ context }: { context?: PluginDashboardViewContext }) => ReactElement;
+
+function createMissingPluginView(moduleId: string): PluginViewComponent {
   return function MissingPluginView() {
-    return `Bundled plugin view unavailable: ${moduleId}`;
+    return createElement("span", null, `Bundled plugin view unavailable: ${moduleId}`);
   };
 }
 
-async function loadBundledPluginView(moduleId: string, exportName: string) {
+async function loadBundledPluginView(moduleId: string, exportName: string): Promise<{ default: PluginViewComponent }> {
   try {
-    const mod = await import(/* @vite-ignore */ moduleId) as Record<string, ComponentType>;
+    const mod = await import(/* @vite-ignore */ moduleId) as Record<string, ComponentType<{ context?: PluginDashboardViewContext }>>;
     const component = mod[exportName];
     if (component) {
-      return { default: component };
+      return { default: component as PluginViewComponent };
     }
   } catch {
     // Fall back to placeholder view when optional bundled plugin examples are unavailable.

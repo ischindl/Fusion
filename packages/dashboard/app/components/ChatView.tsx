@@ -2046,7 +2046,15 @@ export function ChatView({ projectId, addToast }: ChatViewProps) {
                 <div className="chat-thread-header-title">#{rooms.activeRoom.name}</div>
                 <div className="chat-room-thread-members">
                   {rooms.activeRoomMembers.map((member) => (
-                    <AgentAvatar key={member.agentId} agent={agentsMap.get(member.agentId) ?? null} />
+                    <AgentAvatar
+                      key={member.agentId}
+                      agent={
+                        agentsMap.get(member.agentId) ?? {
+                          id: member.agentId,
+                          name: member.agentId.slice(0, 30),
+                        }
+                      }
+                    />
                   ))}
                 </div>
               </div>
