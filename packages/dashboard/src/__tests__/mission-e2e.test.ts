@@ -3214,6 +3214,39 @@ describe("Mission API", () => {
 
       expect(res.status).toBe(400);
     });
+
+    it("forwards branch selection and assignment mode when triaging a feature", async () => {
+      const { app, missionStore } = buildApp();
+      const ms = missionStore as ReturnType<typeof createMockMissionStore>;
+
+      const mission = ms.createMission({ title: "Test Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+
+      const res = await request(
+        app,
+        "POST",
+        `/api/missions/features/${feature.id}/triage`,
+        JSON.stringify({
+          branchSelection: { mode: "custom-new", branchName: "feature/mission-shared", baseBranch: "develop" },
+          branchAssignment: { mode: "per-task-derived" },
+        }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(200);
+      expect(ms.triageFeature).toHaveBeenCalledWith(
+        feature.id,
+        undefined,
+        undefined,
+        {
+          branch: "feature/mission-shared",
+          baseBranch: "develop",
+          assignmentMode: "per-task-derived",
+        },
+      );
+    });
   });
 
   describe("POST /api/missions/slices/:sliceId/triage-all", () => {
@@ -3252,6 +3285,34 @@ describe("Mission API", () => {
       );
 
       expect(res.status).toBe(404);
+    });
+
+    it("forwards branch selection and assignment mode when triaging all slice features", async () => {
+      const { app, missionStore } = buildApp();
+      const ms = missionStore as ReturnType<typeof createMockMissionStore>;
+
+      const mission = ms.createMission({ title: "Test Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      ms.addFeature(slice.id, { title: "Feature 1" });
+
+      const res = await request(
+        app,
+        "POST",
+        `/api/missions/slices/${slice.id}/triage-all`,
+        JSON.stringify({
+          branchSelection: { mode: "existing", branchName: "feature/mission-existing", baseBranch: "main" },
+          branchAssignment: { mode: "shared" },
+        }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(200);
+      expect(ms.triageSlice).toHaveBeenCalledWith(slice.id, {
+        branch: "feature/mission-existing",
+        baseBranch: "main",
+        assignmentMode: "shared",
+      });
     });
   });
 

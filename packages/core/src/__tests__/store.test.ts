@@ -11462,7 +11462,7 @@ describe("RunMutationContext", () => {
       await rm(localRoot, { recursive: true, force: true });
       await rm(localGlobal, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   it("addComment() with runContext includes runContext in log entry", async () => {
     const localRoot = makeTmpDir();

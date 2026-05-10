@@ -280,6 +280,88 @@ describe("SubtaskBreakdownModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("submits shared branch selection and merge target settings", async () => {
+    renderModal();
+    await waitFor(() => expect(streamHandlers).toBeDefined());
+    act(() => {
+      streamHandlers.onSubtasks(SAMPLE_SUBTASKS);
+    });
+
+    await screen.findByText("Branch strategy");
+
+    const branchStrategySelect = screen.getByText("Branch strategy").closest("div")?.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(branchStrategySelect, { target: { value: "custom-new" } });
+
+    const branchNameInput = await waitFor(() => {
+      const input = screen.getByText("Branch name").closest("div")?.querySelector("input") as HTMLInputElement | null;
+      expect(input).toBeTruthy();
+      return input as HTMLInputElement;
+    });
+
+    const mergeTargetInput = screen.getByText("Merge target / base branch (optional)").closest("div")?.querySelector("input") as HTMLInputElement;
+    const branchModeSelect = screen.getByText("Planning branch mode").closest("div")?.querySelector("select") as HTMLSelectElement;
+
+    fireEvent.change(branchNameInput, { target: { value: "feature/planning-shared" } });
+    fireEvent.change(mergeTargetInput, { target: { value: "develop" } });
+    fireEvent.change(branchModeSelect, { target: { value: "shared" } });
+
+    fireEvent.click(screen.getByText("Create Tasks"));
+
+    await waitFor(() => {
+      expect(mockCreateTasksFromBreakdown).toHaveBeenCalledWith(
+        "session-123",
+        expect.any(Array),
+        undefined,
+        undefined,
+        {
+          branchSelection: {
+            mode: "custom-new",
+            branchName: "feature/planning-shared",
+            baseBranch: "develop",
+          },
+          branchAssignment: { mode: "shared" },
+        },
+      );
+    });
+  });
+
+  it("submits per-task-derived assignment mode", async () => {
+    renderModal();
+    await waitFor(() => expect(streamHandlers).toBeDefined());
+    act(() => {
+      streamHandlers.onSubtasks(SAMPLE_SUBTASKS);
+    });
+
+    await screen.findByText("Branch strategy");
+
+    const branchStrategySelect = screen.getByText("Branch strategy").closest("div")?.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(branchStrategySelect, { target: { value: "custom-new" } });
+
+    const branchNameInput = screen.getByText("Branch name").closest("div")?.querySelector("input") as HTMLInputElement;
+    fireEvent.change(branchNameInput, { target: { value: "feature/planning-derived" } });
+
+    const branchModeSelect = screen.getByText("Planning branch mode").closest("div")?.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(branchModeSelect, { target: { value: "per-task-derived" } });
+
+    fireEvent.click(screen.getByText("Create Tasks"));
+
+    await waitFor(() => {
+      expect(mockCreateTasksFromBreakdown).toHaveBeenCalledWith(
+        "session-123",
+        expect.any(Array),
+        undefined,
+        undefined,
+        expect.objectContaining({
+          branchSelection: expect.objectContaining({
+            mode: "custom-new",
+            branchName: "feature/planning-derived",
+          }),
+          branchAssignment: { mode: "per-task-derived" },
+        }),
+      );
+    });
+  });
+
   it("sends active breakdown session to background without canceling", async () => {
     const closeSpy = vi.fn();
     mockConnectSubtaskStream.mockImplementationOnce((_sessionId, _projectId, handlers) => {

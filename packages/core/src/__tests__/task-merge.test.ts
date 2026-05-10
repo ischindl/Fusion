@@ -44,6 +44,21 @@ describe("resolveTaskMergeTarget", () => {
     });
   });
 
+  it("trims inherited branch context before using it", () => {
+    expect(resolveTaskMergeTarget({
+      baseBranch: undefined,
+      branchContext: {
+        groupId: "G-1",
+        source: "planning",
+        assignmentMode: "shared",
+        inheritedBaseBranch: "  release/2026.10  ",
+      },
+    })).toEqual({
+      branch: "release/2026.10",
+      source: "task-branch-context",
+    });
+  });
+
   it("uses project default branch when task has no explicit target", () => {
     expect(resolveTaskMergeTarget(
       { baseBranch: undefined, branchContext: undefined },

@@ -22,6 +22,13 @@ interface MockTask {
   title: string;
   description: string;
   worktree?: string;
+  baseBranch?: string;
+  branchContext?: {
+    groupId: string;
+    source: "planning" | "mission";
+    assignmentMode: "shared" | "per-task-derived";
+    inheritedBaseBranch?: string;
+  };
   prInfo?: {
     number: number;
     url: string;
@@ -138,6 +145,55 @@ describe("processPullRequestMergeTask", () => {
     expect(pushIdx).toBeGreaterThan(-1);
     expect(pushIdx).toBeGreaterThan(findIdx);
     expect(pushIdx).toBeLessThan(createIdx);
+  });
+
+  it("uses inherited branch-context merge target when creating a PR", async () => {
+    const task: MockTask = {
+      id: "FN-9002",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+      branchContext: {
+        groupId: "planning:abc",
+        source: "planning",
+        assignmentMode: "shared",
+        inheritedBaseBranch: "develop",
+      },
+    };
+    const branch = getTaskBranchName(task.id);
+    const store = makeStore(task, { baseBranch: "main" });
+    execMock.mockImplementation(() => "");
+
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(async () => ({
+        number: 7,
+        url: "https://github.com/x/y/pull/7",
+        status: "open" as const,
+        headBranch: branch,
+        baseBranch: "develop",
+      })),
+      getPrMergeStatus: vi.fn(async () => ({
+        prInfo: { number: 7, status: "open" as const, url: "https://github.com/x/y/pull/7" },
+        reviewDecision: null,
+        checks: [],
+        mergeReady: false,
+        blockingReasons: [],
+      })),
+      mergePr: vi.fn(),
+    };
+
+    await processPullRequestMergeTask(
+      store as never,
+      "/repo",
+      task.id,
+      github as never,
+      () => undefined,
+    );
+
+    expect(github.createPr).toHaveBeenCalledWith(expect.objectContaining({
+      base: "develop",
+    }));
   });
 
   it("skips the push when an existing PR already covers the branch", async () => {
