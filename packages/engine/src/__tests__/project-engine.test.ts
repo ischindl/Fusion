@@ -1991,3 +1991,176 @@ describe("ProjectEngine swallowed error hardening", () => {
     await engine.stop();
   });
 });
+
+describe("ProjectEngine stale mergeActive rescue (FN-3900)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("task:moved into in-review clears leaked mergeActive entry before enqueue", async () => {
+    vi.useFakeTimers();
+
+    const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+    mockStore.store.getTask.mockResolvedValue({
+      id: "FN-leaked",
+      column: "in-review",
+      paused: false,
+      status: null,
+      mergeRetries: 0,
+    });
+    mocks.currentStore = mockStore.store;
+
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      mergeQueue: string[];
+      mergeActive: Set<string>;
+      activeMergeTaskId: string | null;
+      internalEnqueueMerge: (taskId: string) => void;
+    };
+
+    await engine.start();
+    privateEngine.mergeActive = new Set(["FN-leaked"]);
+    privateEngine.mergeQueue = [];
+    privateEngine.activeMergeTaskId = null;
+
+    const originalEnqueue = privateEngine.internalEnqueueMerge.bind(privateEngine);
+    const enqueueSpy = vi.spyOn(privateEngine, "internalEnqueueMerge").mockImplementation((taskId: string) => {
+      expect(privateEngine.mergeActive.has("FN-leaked")).toBe(false);
+      return originalEnqueue(taskId);
+    });
+    const warnSpy = vi.spyOn(runtimeLog, "warn").mockImplementation(() => {});
+
+    const taskMovedHandler = mockStore.store.on.mock.calls.find((c: unknown[]) => c[0] === "task:moved")?.[1] as
+      | ((payload: { task: { id: string; column: string; paused?: boolean }; to: string }) => Promise<void>)
+      | undefined;
+    if (!taskMovedHandler) throw new Error("task:moved handler was not registered");
+
+    await taskMovedHandler({
+      task: { id: "FN-leaked", column: "in-review", paused: false },
+      to: "in-review",
+    });
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(enqueueSpy).toHaveBeenCalledWith("FN-leaked");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/clearing stale mergeActive before enqueue/));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("FN-leaked"));
+
+    await engine.stop();
+  });
+
+  it("internalEnqueueMerge warns and skips direct leaked mergeActive entries", async () => {
+    const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+    mocks.currentStore = mockStore.store;
+
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      mergeQueue: string[];
+      mergeActive: Set<string>;
+      activeMergeTaskId: string | null;
+      internalEnqueueMerge: (taskId: string) => void;
+    };
+    const warnSpy = vi.spyOn(runtimeLog, "warn").mockImplementation(() => {});
+
+    await engine.start();
+
+    privateEngine.mergeActive = new Set(["FN-leaked2"]);
+    privateEngine.mergeQueue = [];
+    privateEngine.activeMergeTaskId = null;
+
+    privateEngine.internalEnqueueMerge("FN-leaked2");
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("mergeActive entry is leaked"));
+    expect(privateEngine.mergeQueue).toEqual([]);
+    expect(mocks.aiMergeTask).not.toHaveBeenCalled();
+
+    await engine.stop();
+  });
+
+  it.each([
+    { scenario: "queued", mergeQueue: ["FN-live"], activeMergeTaskId: null },
+    { scenario: "active", mergeQueue: [], activeMergeTaskId: "FN-live" },
+  ])(
+    "internalEnqueueMerge does not warn for live mergeActive entry ($scenario)",
+    async ({ mergeQueue, activeMergeTaskId }) => {
+      const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+      mocks.currentStore = mockStore.store;
+
+      const engine = createEngine();
+      const privateEngine = engine as unknown as {
+        mergeQueue: string[];
+        mergeActive: Set<string>;
+        activeMergeTaskId: string | null;
+        internalEnqueueMerge: (taskId: string) => void;
+      };
+      const warnSpy = vi.spyOn(runtimeLog, "warn").mockImplementation(() => {});
+
+      await engine.start();
+
+      privateEngine.mergeActive = new Set(["FN-live"]);
+      privateEngine.mergeQueue = [...mergeQueue];
+      privateEngine.activeMergeTaskId = activeMergeTaskId;
+      const queueBefore = [...privateEngine.mergeQueue];
+
+      privateEngine.internalEnqueueMerge("FN-live");
+
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("mergeActive entry is leaked"));
+      expect(privateEngine.mergeQueue).toEqual(queueBefore);
+
+      await engine.stop();
+    },
+  );
+
+  it("task:moved rescue does not clear legitimate active mergeActive entry", async () => {
+    vi.useFakeTimers();
+
+    const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+    mockStore.store.getTask.mockResolvedValue({
+      id: "FN-busy",
+      column: "in-review",
+      paused: false,
+      status: null,
+      mergeRetries: 0,
+    });
+    mocks.currentStore = mockStore.store;
+
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      mergeQueue: string[];
+      mergeActive: Set<string>;
+      activeMergeTaskId: string | null;
+      internalEnqueueMerge: (taskId: string) => void;
+    };
+
+    await engine.start();
+    privateEngine.mergeActive = new Set(["FN-busy"]);
+    privateEngine.activeMergeTaskId = "FN-busy";
+    privateEngine.mergeQueue = [];
+
+    const enqueueSpy = vi.spyOn(privateEngine, "internalEnqueueMerge");
+    const warnSpy = vi.spyOn(runtimeLog, "warn").mockImplementation(() => {});
+
+    const taskMovedHandler = mockStore.store.on.mock.calls.find((c: unknown[]) => c[0] === "task:moved")?.[1] as
+      | ((payload: { task: { id: string; column: string; paused?: boolean }; to: string }) => Promise<void>)
+      | undefined;
+    if (!taskMovedHandler) throw new Error("task:moved handler was not registered");
+
+    await taskMovedHandler({
+      task: { id: "FN-busy", column: "in-review", paused: false },
+      to: "in-review",
+    });
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(enqueueSpy).toHaveBeenCalledWith("FN-busy");
+    expect(privateEngine.mergeActive.has("FN-busy")).toBe(true);
+    expect(privateEngine.activeMergeTaskId).toBe("FN-busy");
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringMatching(/clearing stale mergeActive/));
+
+    await engine.stop();
+  });
+});
