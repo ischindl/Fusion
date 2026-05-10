@@ -210,6 +210,12 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
         resolveBranchSelection(branchSelection, branch, baseBranch);
       const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
+      const planningBranchContext = {
+        groupId: `planning:${sessionId}`,
+        source: "planning" as const,
+        assignmentMode: branchMode,
+        inheritedBaseBranch: resolvedBaseBranch,
+      };
 
       const createdTasks = [] as Awaited<ReturnType<TaskStore["createTask"]>>[];
       const tempIdToTaskId = new Map<string, string>();
@@ -236,6 +242,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           source: { sourceType: "api", sourceParentTaskId: typeof parentTaskId === "string" ? parentTaskId : undefined },
           branch: taskBranch,
           baseBranch: resolvedBaseBranch,
+          branchContext: planningBranchContext,
         });
 
         tempIdToTaskId.set(item.tempId, task.id);
@@ -1206,6 +1213,12 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
         resolveBranchSelection(branchSelection, branch, baseBranch);
       const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
+      const planningBranchContext = {
+        groupId: `planning:${planningSessionId}`,
+        source: "planning" as const,
+        assignmentMode: branchMode,
+        inheritedBaseBranch: resolvedBaseBranch,
+      };
 
       const createdTasks = [] as Awaited<ReturnType<TaskStore["createTask"]>>[];
       const tempIdToTaskId = new Map<string, string>();
@@ -1225,6 +1238,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           source: { sourceType: "api", sourceMetadata: { planningSessionId } },
           branch: taskBranch,
           baseBranch: resolvedBaseBranch,
+          branchContext: planningBranchContext,
         });
 
         tempIdToTaskId.set(item.id, task.id);

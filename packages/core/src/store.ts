@@ -129,6 +129,42 @@ interface TaskRow {
 }
 
 /** Database row shape for the task_documents table. */
+const TASK_BRANCH_CONTEXT_METADATA_KEY = "fusionBranchContext";
+
+function parseTaskBranchContextFromSourceMetadata(sourceMetadata: Record<string, unknown> | undefined): import("./types.js").TaskBranchContext | undefined {
+  const raw = sourceMetadata?.[TASK_BRANCH_CONTEXT_METADATA_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  if (typeof candidate.groupId !== "string" || !candidate.groupId.trim()) return undefined;
+  if (candidate.source !== "planning" && candidate.source !== "mission") return undefined;
+  if (candidate.assignmentMode !== "shared" && candidate.assignmentMode !== "per-task-derived") return undefined;
+  const inheritedBaseBranch = typeof candidate.inheritedBaseBranch === "string" && candidate.inheritedBaseBranch.trim().length > 0
+    ? candidate.inheritedBaseBranch.trim()
+    : undefined;
+  return {
+    groupId: candidate.groupId,
+    source: candidate.source,
+    assignmentMode: candidate.assignmentMode,
+    inheritedBaseBranch,
+  };
+}
+
+function withTaskBranchContextInSourceMetadata(
+  sourceMetadata: Record<string, unknown> | undefined,
+  branchContext: import("./types.js").TaskBranchContext | undefined,
+): Record<string, unknown> | undefined {
+  if (!branchContext) return sourceMetadata;
+  return {
+    ...(sourceMetadata ?? {}),
+    [TASK_BRANCH_CONTEXT_METADATA_KEY]: {
+      groupId: branchContext.groupId,
+      source: branchContext.source,
+      assignmentMode: branchContext.assignmentMode,
+      ...(branchContext.inheritedBaseBranch ? { inheritedBaseBranch: branchContext.inheritedBaseBranch } : {}),
+    },
+  };
+}
+
 interface TaskDocumentRow {
   id: string;
   taskId: string;
@@ -846,7 +882,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       sourceSessionId: row.sourceSessionId || undefined,
       sourceMessageId: row.sourceMessageId || undefined,
       sourceParentTaskId: row.sourceParentTaskId || undefined,
-      sourceMetadata: fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined,
+      sourceMetadata: (() => {
+        const parsed = fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined;
+        return withTaskBranchContextInSourceMetadata(parsed, parseTaskBranchContextFromSourceMetadata(parsed));
+      })(),
+      branchContext: (() => {
+        const parsed = fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined;
+        return parseTaskBranchContextFromSourceMetadata(parsed);
+      })(),
       checkedOutBy: row.checkedOutBy || undefined,
       checkedOutAt: row.checkedOutAt || undefined,
       checkoutNodeId: row.checkoutNodeId || undefined,
@@ -2485,7 +2528,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       sourceSessionId: input.source?.sourceSessionId,
       sourceMessageId: input.source?.sourceMessageId,
       sourceParentTaskId: input.source?.sourceParentTaskId,
-      sourceMetadata: input.source?.sourceMetadata,
+      sourceMetadata: withTaskBranchContextInSourceMetadata(input.source?.sourceMetadata, input.branchContext),
+      branchContext: input.branchContext,
       column: input.column || "triage",
       dependencies: input.dependencies || [],
       breakIntoSubtasks: input.breakIntoSubtasks === true ? true : undefined,

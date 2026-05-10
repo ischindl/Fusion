@@ -55,6 +55,7 @@ import {
   rateLimited,
 } from "./api-error.js";
 import type { AiSessionStore } from "./ai-session-store.js";
+import { resolveBranchAssignmentContext, resolveBranchSelection } from "./routes/branch-selection.js";
 
 // ── Validation Utilities ────────────────────────────────────────────────────
 
@@ -2441,7 +2442,7 @@ export function createMissionRouter(
     "/features/:featureId/triage",
     catchTypedHandler(async (req, res) => {
       const { featureId } = req.params;
-      const { taskTitle, taskDescription } = req.body || {};
+      const { taskTitle, taskDescription, branch, baseBranch, branchSelection, branchAssignment } = req.body || {};
 
       if (!validateFeatureId(featureId)) {
         throw badRequest("Invalid feature ID format");
@@ -2453,10 +2454,18 @@ export function createMissionRouter(
       }
 
       try {
+        const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
+          resolveBranchSelection(branchSelection, branch, baseBranch);
+        const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
         const feature = await missionStore.triageFeature(
           featureId,
           taskTitle || undefined,
           taskDescription || undefined,
+          {
+            branch: resolvedBranch,
+            baseBranch: resolvedBaseBranch,
+            assignmentMode: branchMode,
+          },
         );
         res.json(feature);
       } catch (err: unknown) {
@@ -2481,6 +2490,7 @@ export function createMissionRouter(
     "/slices/:sliceId/triage-all",
     catchTypedHandler(async (req, res) => {
       const { sliceId } = req.params;
+      const { branch, baseBranch, branchSelection, branchAssignment } = req.body || {};
 
       if (!validateSliceId(sliceId)) {
         throw badRequest("Invalid slice ID format");
@@ -2492,7 +2502,14 @@ export function createMissionRouter(
       }
 
       try {
-        const triaged = await missionStore.triageSlice(sliceId);
+        const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
+          resolveBranchSelection(branchSelection, branch, baseBranch);
+        const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
+        const triaged = await missionStore.triageSlice(sliceId, {
+          branch: resolvedBranch,
+          baseBranch: resolvedBaseBranch,
+          assignmentMode: branchMode,
+        });
         res.json({ triaged, count: triaged.length });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);

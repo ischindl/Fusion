@@ -609,6 +609,38 @@ describe("TaskStore", () => {
       expect(clearedBaseBranch.title).toBe("Keep this title");
     });
 
+    it("persists planning branch context metadata on create", async () => {
+      const task = await store.createTask({
+        description: "Planning branch context",
+        baseBranch: "release/2026.10",
+        branch: "planning/session-42",
+        branchContext: {
+          groupId: "planning-session-42",
+          source: "planning",
+          assignmentMode: "shared",
+          inheritedBaseBranch: "release/2026.10",
+        },
+      });
+
+      expect(task.branchContext).toEqual({
+        groupId: "planning-session-42",
+        source: "planning",
+        assignmentMode: "shared",
+        inheritedBaseBranch: "release/2026.10",
+      });
+
+      const detail = await store.getTask(task.id);
+      expect(detail.branchContext).toEqual(task.branchContext);
+      expect(detail.sourceMetadata).toMatchObject({
+        fusionBranchContext: {
+          groupId: "planning-session-42",
+          source: "planning",
+          assignmentMode: "shared",
+          inheritedBaseBranch: "release/2026.10",
+        },
+      });
+    });
+
     it("round-trips branch fields through listTasks and reload", async () => {
       store.close();
       store = new TaskStore(rootDir, globalDir);

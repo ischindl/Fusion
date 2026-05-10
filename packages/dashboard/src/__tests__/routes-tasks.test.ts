@@ -1939,6 +1939,12 @@ describe("POST /subtasks/*", () => {
     expect(store.createTask).toHaveBeenCalledWith(expect.objectContaining({
       branch: "feature/planning",
       baseBranch: "main",
+      branchContext: {
+        groupId: `planning:${start.body.sessionId}`,
+        source: "planning",
+        assignmentMode: "shared",
+        inheritedBaseBranch: "main",
+      },
     }));
   });
 
@@ -1974,9 +1980,19 @@ describe("POST /subtasks/*", () => {
     expect(createRes.status).toBe(201);
     expect(store.createTask).toHaveBeenNthCalledWith(1, expect.objectContaining({
       branch: "feature/planning/first-task",
+      branchContext: expect.objectContaining({
+        groupId: `planning:${start.body.sessionId}`,
+        source: "planning",
+        assignmentMode: "per-task-derived",
+      }),
     }));
     expect(store.createTask).toHaveBeenNthCalledWith(2, expect.objectContaining({
       branch: "feature/planning/second-task",
+      branchContext: expect.objectContaining({
+        groupId: `planning:${start.body.sessionId}`,
+        source: "planning",
+        assignmentMode: "per-task-derived",
+      }),
     }));
   });
 

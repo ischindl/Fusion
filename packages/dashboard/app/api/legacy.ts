@@ -6584,17 +6584,42 @@ export function unlinkFeatureFromTask(featureId: string, projectId?: string): Pr
 }
 
 /** Triage a feature — create a task from the feature and link it */
-export function triageFeature(featureId: string, taskTitle?: string, taskDescription?: string, projectId?: string): Promise<MissionFeature> {
+export function triageFeature(
+  featureId: string,
+  taskTitle?: string,
+  taskDescription?: string,
+  projectId?: string,
+  branchOptions?: {
+    branchSelection?: {
+      mode: "project-default" | "auto-new" | "existing" | "custom-new";
+      branchName?: string;
+      baseBranch?: string;
+    };
+    branchAssignment?: { mode: "shared" | "per-task-derived" };
+  },
+): Promise<MissionFeature> {
   return api<MissionFeature>(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/triage`, projectId), {
     method: "POST",
-    body: JSON.stringify({ taskTitle, taskDescription }),
+    body: JSON.stringify({ taskTitle, taskDescription, ...branchOptions }),
   });
 }
 
 /** Triage all "defined" features in a slice */
-export function triageAllSliceFeatures(sliceId: string, projectId?: string): Promise<{ triaged: MissionFeature[]; count: number }> {
+export function triageAllSliceFeatures(
+  sliceId: string,
+  projectId?: string,
+  branchOptions?: {
+    branchSelection?: {
+      mode: "project-default" | "auto-new" | "existing" | "custom-new";
+      branchName?: string;
+      baseBranch?: string;
+    };
+    branchAssignment?: { mode: "shared" | "per-task-derived" };
+  },
+): Promise<{ triaged: MissionFeature[]; count: number }> {
   return api<{ triaged: MissionFeature[]; count: number }>(withProjectId(`/missions/slices/${encodeURIComponent(sliceId)}/triage-all`, projectId), {
     method: "POST",
+    body: JSON.stringify(branchOptions ?? {}),
   });
 }
 

@@ -1066,6 +1066,17 @@ export interface TaskSource {
   sourceMetadata?: Record<string, unknown>;
 }
 
+export type TaskBranchGroupSource = "planning" | "mission";
+
+export type TaskBranchAssignmentMode = "shared" | "per-task-derived";
+
+export interface TaskBranchContext {
+  groupId: string;
+  source: TaskBranchGroupSource;
+  assignmentMode: TaskBranchAssignmentMode;
+  inheritedBaseBranch?: string;
+}
+
 export interface Task {
   id: string;
   title?: string;
@@ -1099,6 +1110,8 @@ export interface Task {
    *  the conventional `fn/{task-id}` when conflict recovery generated a
    *  unique suffixed name (e.g., `fn/fn-042-2`). */
   branch?: string;
+  /** Optional planning/mission branch-group metadata carried across related tasks. */
+  branchContext?: TaskBranchContext;
   /** Internal execution-only provenance for dependency-start handoff.
    *  When set, the scheduler asked executor to start from an upstream dependency
    *  branch. This is transient execution state and should be cleared after use. */
@@ -1302,6 +1315,8 @@ export interface TaskCreateInput {
   baseBranch?: string;
   /** Actual git working branch name used for this task's worktree. */
   branch?: string;
+  /** Optional planning/mission branch-group metadata carried across related tasks. */
+  branchContext?: TaskBranchContext;
   /** Durable source provenance for the originating external issue. */
   sourceIssue?: TaskSourceIssue;
   /** Optional persisted aggregate token usage snapshot for task creation/import paths. */
@@ -2628,6 +2643,8 @@ export interface ArchivedTaskEntry {
   baseBranch?: string;
   /** Actual git branch name used for this task's worktree */
   branch?: string;
+  /** Optional planning/mission branch-group metadata carried across related tasks. */
+  branchContext?: TaskBranchContext;
   /** Base commit SHA for the task's worktree */
   baseCommitSha?: string;
   /** List of files modified by this task */

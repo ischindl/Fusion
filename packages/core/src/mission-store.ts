@@ -3040,6 +3040,11 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     featureId: string,
     taskTitle?: string,
     taskDescription?: string,
+    branchOptions?: {
+      branch?: string;
+      baseBranch?: string;
+      assignmentMode?: "shared" | "per-task-derived";
+    },
   ): Promise<MissionFeature> {
     if (!this.taskStore) {
       throw new Error("TaskStore reference is required for triage operations");
@@ -3065,10 +3070,26 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
       description = enriched || feature.title;
     }
 
+    const slice = this.getSlice(feature.sliceId);
+    const milestone = slice ? this.getMilestone(slice.milestoneId) : undefined;
+    const missionId = milestone?.missionId;
+
     // Create the task
     const task = await this.taskStore.createTask({
       title: taskTitle || feature.title,
       description,
+      branch: branchOptions?.branch,
+      baseBranch: branchOptions?.baseBranch,
+      ...(missionId
+        ? {
+            branchContext: {
+              groupId: `mission:${missionId}`,
+              source: "mission" as const,
+              assignmentMode: branchOptions?.assignmentMode ?? "shared",
+              inheritedBaseBranch: branchOptions?.baseBranch,
+            },
+          }
+        : {}),
     });
 
     // Link the feature to the new task (this also updates feature status to "triaged")
@@ -3088,7 +3109,14 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
    * @returns Array of updated features that were triaged
    * @throws Error if slice not found or TaskStore not available
    */
-  async triageSlice(sliceId: string): Promise<MissionFeature[]> {
+  async triageSlice(
+    sliceId: string,
+    branchOptions?: {
+      branch?: string;
+      baseBranch?: string;
+      assignmentMode?: "shared" | "per-task-derived";
+    },
+  ): Promise<MissionFeature[]> {
     if (!this.taskStore) {
       throw new Error("TaskStore reference is required for triage operations");
     }
@@ -3103,7 +3131,13 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
 
     const triaged: MissionFeature[] = [];
     for (const feature of definedFeatures) {
-      const updated = await this.triageFeature(feature.id);
+      const branch = branchOptions?.assignmentMode === "per-task-derived"
+        ? (branchOptions?.branch ? `${branchOptions.branch}/${feature.id.toLowerCase()}` : undefined)
+        : branchOptions?.branch;
+      const updated = await this.triageFeature(feature.id, undefined, undefined, {
+        ...branchOptions,
+        branch,
+      });
       triaged.push(updated);
     }
 
