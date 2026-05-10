@@ -2,6 +2,7 @@ import type { PluginContext } from "@fusion/core";
 import { definePlugin } from "@fusion/plugin-sdk";
 import { runReviewPanel } from "./review-panel.js";
 import { ensureReportSchema } from "./report-schema.js";
+import { createReportExportRoutes } from "./routes/report-export-routes.js";
 import type { CombinedReview, ReviewPanelMember, RunReviewPanelInput } from "./review-types.js";
 import type { ReportCadence, ReportCreateInput } from "./store/report-types.js";
 import { ReportStore } from "./store/report-store.js";
@@ -21,6 +22,7 @@ const plugin = definePlugin({
   hooks: {
     onSchemaInit: ensureReportSchema,
   },
+  routes: createReportExportRoutes(),
 });
 
 export interface RunGeneratedReportReviewInput {
@@ -85,3 +87,4 @@ export * from "./review-panel.js";
 export { ensureReportSchema } from "./report-schema.js";
 export { ReportStore, ReportStoreError, type ReportStoreEvents } from "./store/report-store.js";
 export * from "./store/report-types.js";
+export * from "./render/index.js";

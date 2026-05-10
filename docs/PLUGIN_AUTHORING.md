@@ -455,6 +455,8 @@ const plugin: FusionPlugin = {
 };
 ```
 
+Route handlers may return either plain JSON values or a `PluginRouteResponse` envelope. `PluginRouteResponse` now supports optional `headers` and `contentType` fields so plugins can serve non-JSON payloads like downloadable HTML. Example: return `{ status: 200, body: html, contentType: "text/html; charset=utf-8", headers: { "Content-Disposition": "attachment; filename=\"report.html\"" } }` to send an attachment response directly from a plugin route.
+
 ### Route Mounting
 
 Routes are mounted at `/api/plugins/{pluginId}/{path}`.

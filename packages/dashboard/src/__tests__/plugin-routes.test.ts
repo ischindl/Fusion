@@ -1638,6 +1638,100 @@ describe("createPluginRouter plugin-defined route responses", () => {
     const res = await REQUEST(app, "DELETE", "/plugins/demo/resource");
     expect(res.status).toBe(204);
   });
+
+  it("returns JSON by default for object bodies", async () => {
+    const pluginStore = createMockPluginStore();
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/json",
+            handler: vi.fn(async () => ({ status: 200, body: { ok: true } })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await performGet(app, "/plugins/demo/json");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.body).toEqual({ ok: true });
+  });
+
+  it("sends raw html body when contentType is provided", async () => {
+    const pluginStore = createMockPluginStore();
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/html",
+            handler: vi.fn(async () => ({
+              status: 200,
+              body: "<html><body>Hello</body></html>",
+              contentType: "text/html; charset=utf-8",
+            })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await performGet(app, "/plugins/demo/html");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.text).toContain("<html><body>Hello</body></html>");
+  });
+
+  it("propagates custom response headers", async () => {
+    const pluginStore = createMockPluginStore();
+    const pluginLoader = createMockPluginLoader({
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "demo" } }),
+    });
+    const pluginRunner = {
+      getPluginRoutes: vi.fn().mockReturnValue([
+        {
+          pluginId: "demo",
+          route: {
+            method: "GET",
+            path: "/download",
+            handler: vi.fn(async () => ({
+              status: 200,
+              body: "<html></html>",
+              contentType: "text/html",
+              headers: {
+                "Content-Disposition": "attachment; filename=\"x.html\"",
+              },
+            })),
+          },
+        },
+      ]),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use("/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner));
+
+    const res = await performGet(app, "/plugins/demo/download");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe("attachment; filename=\"x.html\"");
+  });
 });
 
 describe("GET /api/plugins/runtimes", () => {

@@ -30,6 +30,8 @@ export interface Report {
   failureReason: string | null;
   draftMarkdown: string | null;
   renderedHtmlPath: string | null;
+  renderedHtml: string | null;
+  renderedHtmlGeneratedAt: string | null;
   metadata: Record<string, unknown>;
   combinedReview: CombinedReview | null;
   createdAt: string;
@@ -45,7 +47,7 @@ export interface ReportCreateInput {
   draftMarkdown?: string;
 }
 
-export type ReportUpdateInput = Partial<Pick<Report, "title" | "draftMarkdown" | "renderedHtmlPath" | "metadata" | "failureReason">>;
+export type ReportUpdateInput = Partial<Pick<Report, "title" | "draftMarkdown" | "renderedHtmlPath" | "renderedHtml" | "renderedHtmlGeneratedAt" | "metadata" | "failureReason">>;
 
 export interface ReportListFilter {
   cadence?: ReportCadence;

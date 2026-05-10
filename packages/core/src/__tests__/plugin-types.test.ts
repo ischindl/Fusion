@@ -17,12 +17,29 @@ import type {
   PluginWorkflowStepContribution,
   PluginUiContributionDefinition,
   PluginUiContributionInputDefinition,
+  PluginRouteResponse,
 } from "../plugin-types.js";
 import {
   normalizePluginUiContributionDefinition,
   normalizePluginUiContributionSurface,
   validatePluginManifest,
 } from "../plugin-types.js";
+
+describe("PluginRouteResponse", () => {
+  it("keeps headers/contentType optional for back-compat", () => {
+    const legacy: PluginRouteResponse = { status: 200, body: { ok: true } };
+    const withOverrides: PluginRouteResponse = {
+      status: 200,
+      body: "<html></html>",
+      headers: { "Content-Disposition": "attachment; filename=\"x.html\"" },
+      contentType: "text/html; charset=utf-8",
+    };
+
+    expect(legacy.headers).toBeUndefined();
+    expect(legacy.contentType).toBeUndefined();
+    expect(withOverrides.contentType).toContain("text/html");
+  });
+});
 
 describe("PluginSecurityScanResult", () => {
   it("supports stable verdict/findings shape", () => {

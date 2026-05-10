@@ -29,6 +29,8 @@ interface ReportRow {
   failureReason: string | null;
   draftMarkdown: string | null;
   renderedHtmlPath: string | null;
+  rendered_html: string | null;
+  rendered_html_generated_at: string | null;
   metadataJson: string;
   combinedReviewJson: string | null;
   createdAt: string;
@@ -76,6 +78,8 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
       failureReason: null,
       draftMarkdown: input.draftMarkdown ?? null,
       renderedHtmlPath: null,
+      renderedHtml: null,
+      renderedHtmlGeneratedAt: null,
       metadata: input.metadata ?? {},
       combinedReview: null,
       createdAt: now,
@@ -88,12 +92,12 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
           id, cadence, periodStart, periodEnd, title, status,
           generationStartedAt, generationCompletedAt, reviewStartedAt, reviewCompletedAt,
           approvedAt, approvedBy, publishedAt, archivedAt, failureReason,
-          draftMarkdown, renderedHtmlPath, metadataJson, combinedReviewJson, createdAt, updatedAt
+          draftMarkdown, renderedHtmlPath, rendered_html, rendered_html_generated_at, metadataJson, combinedReviewJson, createdAt, updatedAt
         ) VALUES (
           @id, @cadence, @periodStart, @periodEnd, @title, @status,
           @generationStartedAt, @generationCompletedAt, @reviewStartedAt, @reviewCompletedAt,
           @approvedAt, @approvedBy, @publishedAt, @archivedAt, @failureReason,
-          @draftMarkdown, @renderedHtmlPath, @metadataJson, @combinedReviewJson, @createdAt, @updatedAt
+          @draftMarkdown, @renderedHtmlPath, @renderedHtml, @renderedHtmlGeneratedAt, @metadataJson, @combinedReviewJson, @createdAt, @updatedAt
         )
       `).run(this.toDbParams(report, true));
     });
@@ -157,6 +161,8 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
       draftMarkdown: patch.draftMarkdown ?? current.draftMarkdown,
       renderedHtmlPath: patch.renderedHtmlPath ?? current.renderedHtmlPath,
       metadata: patch.metadata ?? current.metadata,
+      renderedHtml: patch.renderedHtml ?? current.renderedHtml,
+      renderedHtmlGeneratedAt: patch.renderedHtmlGeneratedAt ?? current.renderedHtmlGeneratedAt,
       failureReason: patch.failureReason ?? current.failureReason,
       updatedAt: new Date().toISOString(),
     };
@@ -224,6 +230,13 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
     return this.updateReport(id, { renderedHtmlPath: htmlPath });
   }
 
+  setRenderedHtml(id: string, html: string): Report {
+    return this.updateReport(id, {
+      renderedHtml: html,
+      renderedHtmlGeneratedAt: new Date().toISOString(),
+    });
+  }
+
   deleteReport(id: string): void {
     this.requireReport(id);
     this.db.transaction(() => {
@@ -258,6 +271,8 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
       failureReason: row.failureReason,
       draftMarkdown: row.draftMarkdown,
       renderedHtmlPath: row.renderedHtmlPath,
+      renderedHtml: row.rendered_html,
+      renderedHtmlGeneratedAt: row.rendered_html_generated_at,
       metadata: this.parseMetadata(row.metadataJson),
       combinedReview: this.parseCombinedReview(row.combinedReviewJson),
       createdAt: row.createdAt,
@@ -284,6 +299,8 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
           failureReason = @failureReason,
           draftMarkdown = @draftMarkdown,
           renderedHtmlPath = @renderedHtmlPath,
+          rendered_html = @renderedHtml,
+          rendered_html_generated_at = @renderedHtmlGeneratedAt,
           metadataJson = @metadataJson,
           combinedReviewJson = @combinedReviewJson,
           updatedAt = @updatedAt
@@ -314,6 +331,8 @@ export class ReportStore extends EventEmitter<ReportStoreEvents> {
       failureReason: report.failureReason,
       draftMarkdown: report.draftMarkdown,
       renderedHtmlPath: report.renderedHtmlPath,
+      renderedHtml: report.renderedHtml,
+      renderedHtmlGeneratedAt: report.renderedHtmlGeneratedAt,
       metadataJson: JSON.stringify(report.metadata ?? {}),
       combinedReviewJson: report.combinedReview ? JSON.stringify(report.combinedReview) : null,
       ...(includeCreatedAt ? { createdAt: report.createdAt } : {}),

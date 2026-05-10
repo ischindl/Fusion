@@ -201,6 +201,10 @@ export type PluginRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 export interface PluginRouteResponse {
   status: number;
   body?: unknown;
+  /** Optional response headers to set on the outgoing HTTP response. */
+  headers?: Record<string, string>;
+  /** Optional explicit content type; when set, body is sent without JSON serialization. */
+  contentType?: string;
 }
 
 export type PluginRouteResult = unknown | PluginRouteResponse;

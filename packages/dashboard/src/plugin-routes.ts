@@ -579,12 +579,28 @@ export function createPluginRouter(
         const result = await route.handler(req as unknown, ctx);
 
         if (isPluginRouteResponse(result)) {
+          if (result.headers) {
+            for (const [name, value] of Object.entries(result.headers)) {
+              res.setHeader(name, value);
+            }
+          }
+          if (result.contentType) {
+            res.setHeader("Content-Type", result.contentType);
+          }
           if (result.status === 204) {
             res.status(204).send();
             return;
           }
           if (result.body === undefined) {
             res.status(result.status).send();
+            return;
+          }
+          if (
+            result.contentType
+            || typeof result.body === "string"
+            || Buffer.isBuffer(result.body)
+          ) {
+            res.status(result.status).send(result.body);
             return;
           }
           res.status(result.status).json(result.body);
