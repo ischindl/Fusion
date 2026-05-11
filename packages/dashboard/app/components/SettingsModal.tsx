@@ -4147,26 +4147,26 @@ export function SettingsModal({
                     </small>
                   </div>
                 )}
-                <div className="form-group">
-                <label>{selectedMemoryFile?.label || "Memory Editor"}</label>
-                <small>
-                  {selectedMemoryFile?.layer === "long-term" && "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams."}
-                  {selectedMemoryFile?.layer === "daily" && "Raw daily observations, open loops, and running context for dream processing."}
-                  {selectedMemoryFile?.layer === "dreams" && "Synthesized patterns and open loops promoted from daily memory."}
-                  {!selectedMemoryFile && "Edits the selected memory file."}
-                </small>
-                <div className="memory-editor-frame">
-                  <FileEditor
-                    content={memoryContent}
-                    onChange={(content) => {
-                      setMemoryContent(content);
-                      setMemoryDirty(true);
-                    }}
-                    readOnly={!isEditingAllowed}
-                    filePath={selectedMemoryPath}
-                  />
+                <div className="form-group memory-editor-form-group">
+                  <label>{selectedMemoryFile?.label || "Memory Editor"}</label>
+                  <small>
+                    {selectedMemoryFile?.layer === "long-term" && "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams."}
+                    {selectedMemoryFile?.layer === "daily" && "Raw daily observations, open loops, and running context for dream processing."}
+                    {selectedMemoryFile?.layer === "dreams" && "Synthesized patterns and open loops promoted from daily memory."}
+                    {!selectedMemoryFile && "Edits the selected memory file."}
+                  </small>
+                  <div className="memory-editor-frame">
+                    <FileEditor
+                      content={memoryContent}
+                      onChange={(content) => {
+                        setMemoryContent(content);
+                        setMemoryDirty(true);
+                      }}
+                      readOnly={!isEditingAllowed}
+                      filePath={selectedMemoryPath}
+                    />
+                  </div>
                 </div>
-              </div>
               </div>
             )}
 

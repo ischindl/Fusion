@@ -1146,6 +1146,17 @@
 
 .memory-editor-section {
   margin-top: var(--space-lg);
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.memory-editor-form-group {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .memory-file-summary {
@@ -1192,7 +1203,9 @@
   border-radius: var(--radius-md);
   overflow: hidden;
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  min-width: 0;
 }
 
 /* === Auth Provider Cards === */
