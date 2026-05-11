@@ -2,7 +2,8 @@ import type { PluginContext, PluginRouteDefinition, PluginRouteResult } from "@f
 import { generateCli } from "../generation/generator.js";
 import { runGeneratedCli } from "../generation/runner.js";
 import type { GeneratedCliArtifact, RunRequest } from "../generation/types.js";
-import { createDraftStore, getArtifactDir, NotFoundError } from "../storage/draft-store.js";
+import { createCliPressStore } from "../store/cli-press-store.js";
+import type { CliSpec, Service } from "../store/cli-press-types.js";
 import type { ServiceDraft } from "../wizard/types.js";
 import { validateDraft } from "../wizard/validation.js";
 
@@ -22,6 +23,32 @@ function asArtifact(draft: ServiceDraft): GeneratedCliArtifact | null {
     binPath: draft.artifactPath,
     entrypoint: "node",
     generatedAt: draft.generatedAt,
+  };
+}
+
+function getArtifactDir(id: string, projectRoot: string): string {
+  return `${projectRoot}/.fusion/plugins/cli-printing-press/artifacts/${id}`;
+}
+
+function getStore(ctx: PluginContext) {
+  return createCliPressStore(ctx.taskStore.getDatabase());
+}
+
+function toDraft(service: Service, spec: CliSpec | undefined, endpoints: ServiceDraft["endpoints"]): ServiceDraft {
+  return {
+    id: service.id,
+    name: service.displayName,
+    slug: service.slug,
+    description: service.description ?? "",
+    baseUrl: service.baseUrl,
+    transport: "http",
+    endpoints,
+    credential: { kind: "none" },
+    createdAt: service.createdAt,
+    updatedAt: service.updatedAt,
+    generatedAt: spec?.generatedAt,
+    regeneratedAt: spec?.generatedAt,
+    artifactPath: spec?.status === "generated" ? spec.specJson : undefined,
   };
 }
 
@@ -69,8 +96,27 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
         const draft = request.body as ServiceDraft;
         const result = validateDraft(draft);
         if (!result.ok) return { status: 400, body: { error: Object.values(result.errors)[0] ?? "Validation failed", errors: result.errors } };
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        const created = await store.create(draft);
+        const store = getStore(ctx);
+        const createdService = store.createService({
+          slug: draft.slug,
+          displayName: draft.name,
+          description: draft.description,
+          baseUrl: draft.baseUrl,
+          sourceKind: "manual",
+          sourceRef: undefined,
+        });
+        const createdSpec = store.createSpec({
+          serviceId: createdService.id,
+          name: `${draft.slug}-cli`,
+          version: "0.1.0",
+          generatorVersion: "cli-printing-press",
+          specJson: JSON.stringify(draft),
+          status: "draft",
+          generatedAt: undefined,
+          lastGenerationError: undefined,
+        });
+        store.setSetting({ serviceId: createdService.id, key: "endpoints", value: JSON.stringify(draft.endpoints), scope: "wizard" });
+        const created = toDraft(createdService, createdSpec, draft.endpoints);
         return ok(created, 201);
       },
     },
@@ -78,8 +124,14 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
       method: "GET",
       path: "/drafts",
       handler: async (_req, ctx: PluginContext) => {
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        return ok(await store.list());
+        const store = getStore(ctx);
+        const drafts = store.listServices().map((service) => ({
+          id: service.id,
+          name: service.displayName,
+          slug: service.slug,
+          updatedAt: service.updatedAt,
+        }));
+        return ok(drafts);
       },
     },
     {
@@ -87,9 +139,13 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
       path: "/drafts/:id",
       handler: async (req, ctx: PluginContext) => {
         const request = asRequest(req);
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        const draft = await store.get(request.params.id);
-        return draft ? ok(draft) : ok({ error: "Draft not found" }, 404);
+        const store = getStore(ctx);
+        const service = store.getService(request.params.id);
+        if (!service) return ok({ error: "Draft not found" }, 404);
+        const spec = store.listSpecs(service.id)[0];
+        const endpointsSetting = store.listSettings(service.id).find((entry) => entry.key === "endpoints" && entry.scope === "wizard");
+        const endpoints = endpointsSetting ? (JSON.parse(endpointsSetting.value) as ServiceDraft["endpoints"]) : [];
+        return ok(toDraft(service, spec, endpoints));
       },
     },
     {
@@ -100,14 +156,30 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
         const draft = request.body as ServiceDraft;
         const result = validateDraft(draft);
         if (!result.ok) return { status: 400, body: { error: Object.values(result.errors)[0] ?? "Validation failed", errors: result.errors } };
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        try {
-          const updated = await store.update(request.params.id, draft);
-          return ok(updated);
-        } catch (error) {
-          if (error instanceof NotFoundError) return ok({ error: "Draft not found" }, 404);
-          throw error;
-        }
+        const store = getStore(ctx);
+        const service = store.getService(request.params.id);
+        if (!service) return ok({ error: "Draft not found" }, 404);
+        const updatedService = store.updateService(service.id, {
+          displayName: draft.name,
+          description: draft.description,
+          baseUrl: draft.baseUrl,
+          sourceKind: "manual",
+        });
+        const existingSpec = store.listSpecs(service.id)[0];
+        const updatedSpec = existingSpec
+          ? store.updateSpec(existingSpec.id, { specJson: JSON.stringify(draft), status: "draft", lastGenerationError: undefined })
+          : store.createSpec({
+            serviceId: service.id,
+            name: `${draft.slug}-cli`,
+            version: "0.1.0",
+            generatorVersion: "cli-printing-press",
+            specJson: JSON.stringify(draft),
+            status: "draft",
+            generatedAt: undefined,
+            lastGenerationError: undefined,
+          });
+        store.setSetting({ serviceId: service.id, key: "endpoints", value: JSON.stringify(draft.endpoints), scope: "wizard" });
+        return ok(toDraft(updatedService, updatedSpec, draft.endpoints));
       },
     },
     {
@@ -116,17 +188,28 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
       handler: async (req, ctx: PluginContext) => {
         const request = asRequest(req);
         const projectRoot = ctx.taskStore.getRootDir();
-        const store = createDraftStore({ rootDir: projectRoot });
-        const existing = await store.get(request.params.id);
-        if (!existing) return ok({ error: "Draft not found" }, 404);
-
-        const artifact = await generateCli({ draft: existing, outDir: getArtifactDir(existing.id, projectRoot) });
-        const draft = await store.update(request.params.id, {
-          regeneratedAt: artifact.generatedAt,
+        const store = getStore(ctx);
+        const service = store.getService(request.params.id);
+        if (!service) return ok({ error: "Draft not found" }, 404);
+        const spec = store.listSpecs(service.id)[0];
+        if (!spec) return ok({ error: "Draft not found" }, 404);
+        const draft = JSON.parse(spec.specJson) as ServiceDraft;
+        const artifact = await generateCli({ draft, outDir: getArtifactDir(draft.id, projectRoot) });
+        const updatedSpec = store.updateSpec(spec.id, {
+          specJson: JSON.stringify({ ...draft, regeneratedAt: artifact.generatedAt, generatedAt: artifact.generatedAt, artifactPath: artifact.binPath }),
           generatedAt: artifact.generatedAt,
-          artifactPath: artifact.binPath,
+          status: "generated",
+          lastGenerationError: undefined,
         });
-        return ok({ draft, artifact });
+        store.createArtifact({
+          cliSpecId: spec.id,
+          kind: "script",
+          path: artifact.binPath.replace(`${projectRoot}/.fusion/`, ""),
+          executable: true,
+          checksum: undefined,
+          sizeBytes: undefined,
+        });
+        return ok({ draft: JSON.parse(updatedSpec.specJson) as ServiceDraft, artifact });
       },
     },
     {
@@ -137,10 +220,12 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
         const parsed = validateRunRequest(request.body);
         if (!parsed.ok) return ok({ error: parsed.error }, 400);
 
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        const draft = await store.get(request.params.id);
-        if (!draft) return ok({ error: "Draft not found" }, 404);
-
+        const store = getStore(ctx);
+        const service = store.getService(request.params.id);
+        if (!service) return ok({ error: "Draft not found" }, 404);
+        const spec = store.listSpecs(service.id)[0];
+        if (!spec) return ok({ error: "Draft not found" }, 404);
+        const draft = JSON.parse(spec.specJson) as ServiceDraft;
         const artifact = asArtifact(draft);
         if (!artifact) return ok({ error: "Draft has not been generated yet" }, 409);
 
@@ -163,9 +248,13 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
       path: "/drafts/:id/artifact",
       handler: async (req, ctx: PluginContext) => {
         const request = asRequest(req);
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        const draft = await store.get(request.params.id);
-        const artifact = draft ? asArtifact(draft) : null;
+        const store = getStore(ctx);
+        const service = store.getService(request.params.id);
+        if (!service) return ok({ error: "Artifact not found" }, 404);
+        const spec = store.listSpecs(service.id)[0];
+        if (!spec) return ok({ error: "Artifact not found" }, 404);
+        const draft = JSON.parse(spec.specJson) as ServiceDraft;
+        const artifact = asArtifact(draft);
         return artifact ? ok({ artifact }) : ok({ error: "Artifact not found" }, 404);
       },
     },
@@ -174,8 +263,8 @@ export function createCliPrintingPressRoutes(): PluginRouteDefinition[] {
       path: "/drafts/:id",
       handler: async (req, ctx: PluginContext) => {
         const request = asRequest(req);
-        const store = createDraftStore({ rootDir: ctx.taskStore.getRootDir() });
-        await store.delete(request.params.id);
+        const store = getStore(ctx);
+        store.deleteService(request.params.id);
         return { status: 204 };
       },
     },

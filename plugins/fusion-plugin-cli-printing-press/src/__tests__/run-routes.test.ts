@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Database } from "@fusion/core";
 import { createCliPrintingPressRoutes } from "../routes/wizard-routes.js";
 import type { ServiceDraft } from "../wizard/types.js";
 
@@ -49,7 +50,9 @@ describe("run routes", () => {
       res.end("pong");
     });
     const rootDir = await mkdtemp(join(tmpdir(), "cli-printing-press-run-routes-"));
-    const ctx = { taskStore: { getRootDir: () => rootDir } } as any;
+    const db = new Database(join(rootDir, ".fusion"), { inMemory: true });
+    db.init();
+    const ctx = { taskStore: { getRootDir: () => rootDir, getDatabase: () => db } } as any;
 
     const createRes = await route("POST", "/drafts").handler({ params: {}, body: makeDraft(baseUrl) }, ctx);
     const id = (createRes.body as { id: string }).id;
@@ -71,7 +74,9 @@ describe("run routes", () => {
       }, 50);
     });
     const rootDir = await mkdtemp(join(tmpdir(), "cli-printing-press-run-routes-"));
-    const ctx = { taskStore: { getRootDir: () => rootDir } } as any;
+    const db = new Database(join(rootDir, ".fusion"), { inMemory: true });
+    db.init();
+    const ctx = { taskStore: { getRootDir: () => rootDir, getDatabase: () => db } } as any;
 
     const createRes = await route("POST", "/drafts").handler({ params: {}, body: makeDraft(baseUrl) }, ctx);
     const id = (createRes.body as { id: string }).id;

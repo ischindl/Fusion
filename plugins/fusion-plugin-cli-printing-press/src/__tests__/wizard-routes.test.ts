@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { Database } from "@fusion/core";
 import { createCliPrintingPressRoutes } from "../routes/wizard-routes";
 import type { ServiceDraft } from "../wizard/types";
 
@@ -19,7 +20,9 @@ function route(method: string, path: string) {
 describe("wizard routes", () => {
   it("handles create/get/delete lifecycle", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "cli-printing-press-routes-"));
-    const ctx = { taskStore: { getRootDir: () => rootDir } } as any;
+    const db = new Database(join(rootDir, ".fusion"), { inMemory: true });
+    db.init();
+    const ctx = { taskStore: { getRootDir: () => rootDir, getDatabase: () => db } } as any;
 
     const createRes = await route("POST", "/drafts").handler({ params: {}, body: makeDraft() }, ctx);
     expect(createRes.status).toBe(201);
