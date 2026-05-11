@@ -676,6 +676,23 @@ export class ChatManager {
     }
   }
 
+  private async getAgentById(agentId: string): Promise<Agent | null> {
+    if (!this.agentStore) {
+      return null;
+    }
+
+    try {
+      this.agentStoreReady ??= this.agentStore.init();
+      await this.agentStoreReady;
+      const agent = await this.agentStore.getAgent(agentId);
+      return agent ?? null;
+    } catch (agentLookupError) {
+      const message = agentLookupError instanceof Error ? agentLookupError.message : String(agentLookupError);
+      diagnostics.warn(`Failed to resolve room member agent ${agentId}: ${message}`);
+      return null;
+    }
+  }
+
   /** A parsed @ mention of an agent in a chat message */
   private async parseMentions(content: string, agents?: Agent[]): Promise<ChatMention[]> {
     if (!this.agentStore) {
@@ -830,6 +847,20 @@ export class ChatManager {
     const trimmedContent = content.trim();
     const hasMentionCandidates = /@[\w-]+/.test(trimmedContent);
     const availableAgents = await this.listAgentsForMentions();
+    const availableAgentsById = new Map(availableAgents.map((agent) => [agent.id, agent]));
+
+    for (const member of this.chatStore.listRoomMembers(roomId)) {
+      if (availableAgentsById.has(member.agentId)) {
+        continue;
+      }
+      const memberAgent = await this.getAgentById(member.agentId);
+      if (!memberAgent) {
+        continue;
+      }
+      availableAgentsById.set(memberAgent.id, memberAgent);
+      availableAgents.push(memberAgent);
+    }
+
     const mentions = hasMentionCandidates ? await this.parseMentions(trimmedContent, availableAgents) : [];
 
     const responderPlan = this.resolveRoomResponders(

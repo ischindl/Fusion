@@ -10,6 +10,7 @@ const mockChatStore = {
 
 const mockAgentStore = {
   init: vi.fn(),
+  getAgent: vi.fn(),
   listAgents: vi.fn(),
 };
 
@@ -59,6 +60,7 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
         { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
       ]);
       mockAgentStore.listAgents.mockResolvedValue([{ id: "agent-a", name: "Alpha", role: "executor" }]);
+      mockAgentStore.getAgent.mockResolvedValue({ id: "agent-a", name: "Alpha", role: "executor" });
 
       __setCreateResolvedAgentSession(async () => ({
         session: {
@@ -85,8 +87,36 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
       expect(assistantWrite).toMatchObject({ role: "assistant", senderAgentId: "agent-a", content: "Room reply" });
     });
 
-    it("records non-member mentions and emits explanatory assistant note", async () => {
+    it("falls back to room-member getAgent lookup when listAgents fails", async () => {
       mockChatStore.listRoomMembers.mockReturnValue([
+        { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
+      ]);
+      mockAgentStore.listAgents.mockRejectedValue(new Error("list failed"));
+      mockAgentStore.getAgent.mockResolvedValue({ id: "agent-a", name: "Alpha", role: "executor" });
+
+      __setCreateResolvedAgentSession(async () => ({
+        session: {
+          prompt: vi.fn(),
+          dispose: vi.fn(),
+          state: {
+            messages: [{ role: "assistant", content: "Room reply" }],
+          },
+        },
+        provider: "test",
+        model: "test",
+        fallbackInfo: undefined,
+      } as any));
+
+      const manager = new ChatManager(mockChatStore as any, "/tmp", mockAgentStore as any);
+      const result = await manager.sendRoomMessage("room-1", "hello");
+
+      expect(result.responders).toEqual(["agent-a"]);
+
+      const assistantWrite = mockChatStore.addRoomMessage.mock.calls[1]?.[1];
+      expect(assistantWrite).toMatchObject({ role: "assistant", senderAgentId: "agent-a", content: "Room reply" });
+    });
+
+    it("records non-member mentions and emits explanatory assistant note", async () => {      mockChatStore.listRoomMembers.mockReturnValue([
         { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
       ]);
       mockAgentStore.listAgents.mockResolvedValue([
