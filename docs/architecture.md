@@ -240,7 +240,7 @@ Lifecycle contract (`types.ts` `isValidApprovalRequestTransition`):
 - Default behavior aggregates a deduped cluster snapshot from the local node plus reachable peers (`includeRemote !== false`) while preserving node-local last-known entries when peers are unreachable.
 - `includeRemote=false` is the non-recursive local-only path used for peer fan-out, so cross-node aggregation never recursively calls remote aggregated endpoints.
 - Route registration reuses the shared `options?.centralCore` instance when available instead of creating per-request `CentralCore` instances, preserving shared mesh state continuity.
-- Nodes UI topology (`MeshTopology` via `useMeshState`) now renders peer relationships from `knownPeers` in this snapshot, including remote↔remote links when present.
+- Nodes UI topology consumes a dedicated `useMeshState` hook that unwraps the `/api/mesh/state` snapshot into `NodeMeshState[]`; `MeshTopology` renders peer relationships directly from each node's `knownPeers` (including remote↔remote links) without fabricating local-star fallback edges.
 
 ### Shared mesh-state snapshot helpers
 

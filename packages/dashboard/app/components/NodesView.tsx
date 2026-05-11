@@ -201,10 +201,10 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
       {(error || meshError) && <div className="nodes-view-error">{error ?? meshError}</div>}
 
       {/* Mesh Topology Visualization */}
-      {!meshLoading && meshState && meshState.nodes.length > 0 && (
+      {!meshLoading && meshState.length > 0 && (
         <section className="nodes-view-topology" aria-label="Mesh Topology">
           <h3 className="nodes-view-section-title">Mesh Topology</h3>
-          <MeshTopology nodes={meshState.nodes} />
+          <MeshTopology nodes={meshState} />
         </section>
       )}
 

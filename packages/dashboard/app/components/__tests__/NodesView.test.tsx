@@ -142,7 +142,7 @@ beforeEach(() => {
   });
 
   mockUseMeshState.mockReturnValue({
-    meshState: { collectedAt: "2026-01-01T00:00:00.000Z", sourceNodeId: "local", nodes: [] },
+    meshState: [],
     loading: false,
     error: null,
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -202,14 +202,10 @@ describe("NodesView", () => {
       ],
     }));
     mockUseMeshState.mockReturnValue({
-      meshState: {
-        collectedAt: "2026-01-01T00:00:00.000Z",
-        sourceNodeId: "node-1",
-        nodes: [
-          { nodeId: "node-1", nodeName: "Alpha", nodeUrl: undefined, nodeType: "local", status: "online", metrics: null, lastSeen: "2026-01-01T00:00:00.000Z", connectedAt: "2026-01-01T00:00:00.000Z", knownPeers: [] },
-          { nodeId: "node-2", nodeName: "Beta", nodeUrl: "https://beta.node", nodeType: "remote", status: "offline", metrics: null, lastSeen: "2026-01-01T00:00:00.000Z", connectedAt: "2026-01-01T00:00:00.000Z", knownPeers: [] },
-        ],
-      },
+      meshState: [
+        { nodeId: "node-1", nodeName: "Alpha", nodeUrl: undefined, nodeType: "local", status: "online", metrics: null, lastSeen: "2026-01-01T00:00:00.000Z", connectedAt: "2026-01-01T00:00:00.000Z", knownPeers: [] },
+        { nodeId: "node-2", nodeName: "Beta", nodeUrl: "https://beta.node", nodeType: "remote", status: "offline", metrics: null, lastSeen: "2026-01-01T00:00:00.000Z", connectedAt: "2026-01-01T00:00:00.000Z", knownPeers: [] },
+      ],
       loading: false,
       error: null,
       refresh: vi.fn().mockResolvedValue(undefined),
@@ -361,21 +357,17 @@ describe("NodesView", () => {
 
       mockUseNodes.mockReturnValue(makeUseNodesResult({ nodes: sampleNodes }));
       mockUseMeshState.mockReturnValue({
-        meshState: {
-          collectedAt: "2026-01-01T00:00:00.000Z",
-          sourceNodeId: "node-local",
-          nodes: sampleNodes.map((node) => ({
-            nodeId: node.id,
-            nodeName: node.name,
-            nodeUrl: node.url,
-            nodeType: node.type,
-            status: node.status,
-            metrics: null,
-            lastSeen: node.updatedAt,
-            connectedAt: node.createdAt,
-            knownPeers: [],
-          })),
-        },
+        meshState: sampleNodes.map((node) => ({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeUrl: node.url,
+          nodeType: node.type,
+          status: node.status,
+          metrics: null,
+          lastSeen: node.updatedAt,
+          connectedAt: node.createdAt,
+          knownPeers: [],
+        })),
         loading: false,
         error: null,
         refresh: vi.fn().mockResolvedValue(undefined),

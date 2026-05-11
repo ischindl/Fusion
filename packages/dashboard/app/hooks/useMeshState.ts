@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MeshClusterSnapshot } from "@fusion/core";
+import type { NodeMeshState } from "@fusion/core";
 import { fetchMeshState } from "../api";
 
 const POLL_INTERVAL_MS = 10000;
 const VISIBILITY_REFRESH_DEBOUNCE_MS = 1000;
 
 export interface UseMeshStateResult {
-  meshState: MeshClusterSnapshot | null;
+  meshState: NodeMeshState[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
 }
 
 export function useMeshState(): UseMeshStateResult {
-  const [meshState, setMeshState] = useState<MeshClusterSnapshot | null>(null);
+  const [meshState, setMeshState] = useState<NodeMeshState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -23,7 +23,7 @@ export function useMeshState(): UseMeshStateResult {
     try {
       setError(null);
       const data = await fetchMeshState();
-      setMeshState(data);
+      setMeshState(data.nodes);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch mesh state");
     }
@@ -37,7 +37,7 @@ export function useMeshState(): UseMeshStateResult {
       try {
         const data = await fetchMeshState();
         if (!cancelled) {
-          setMeshState(data);
+          setMeshState(data.nodes);
           setError(null);
         }
       } catch (err) {
