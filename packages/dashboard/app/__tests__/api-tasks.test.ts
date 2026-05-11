@@ -834,7 +834,7 @@ describe("plugin dashboard view API wrappers", () => {
   it("fetchPluginDashboardViews calls /api/plugins/dashboard-views", async () => {
     globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, [
       {
-        pluginId: "roadmap-planner",
+        pluginId: "fusion-plugin-roadmap",
         view: { viewId: "roadmaps", label: "Roadmaps", componentPath: "./dashboard-view" },
       },
     ]));
@@ -850,7 +850,7 @@ describe("plugin dashboard view API wrappers", () => {
   it("fetchPluginUiSlots calls /api/plugins/ui-slots and keeps slot shape", async () => {
     globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, [
       {
-        pluginId: "roadmap-planner",
+        pluginId: "fusion-plugin-roadmap",
         slot: {
           slotId: "task-detail-tab",
           label: "Roadmap Details",

@@ -17,7 +17,7 @@ import plugin, {
   normalizeRoadmapMilestoneOrder,
 } from "../index.js";
 
-describe("roadmap-planner package surface", () => {
+describe("fusion-plugin-roadmap package surface", () => {
   const tmpDirs: string[] = [];
 
   afterEach(async () => {
@@ -48,7 +48,7 @@ describe("roadmap-planner package surface", () => {
   });
 
   it("exports plugin manifest with roadmap id", () => {
-    expect(plugin.manifest.id).toBe("roadmap-planner");
+    expect(plugin.manifest.id).toBe("fusion-plugin-roadmap");
   });
 
   it("registers onSchemaInit hook that creates roadmap tables and indexes", () => {

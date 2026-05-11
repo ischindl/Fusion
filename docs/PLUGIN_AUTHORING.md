@@ -573,8 +573,8 @@ Route handlers may return either plain JSON values or a `PluginRouteResponse` en
 Routes are mounted at `/api/plugins/{pluginId}/{path}`.
 Route handlers receive the same loader-built `PluginContext` used by hooks/tools, including real `taskStore`, plugin `settings`, `logger`, `emitEvent`, and engine-injected `createAiSession` (when available):
 
-- Example roadmap plugin route: `path: "/roadmaps"` in plugin `roadmap-planner` resolves to `/api/plugins/roadmap-planner/roadmaps`
-- Roadmap suggestion endpoints follow the same namespace (for example `/api/plugins/roadmap-planner/roadmaps/:roadmapId/suggestions/milestones`)
+- Example roadmap plugin route: `path: "/roadmaps"` in plugin `fusion-plugin-roadmap` resolves to `/api/plugins/fusion-plugin-roadmap/roadmaps`
+- Roadmap suggestion endpoints follow the same namespace (for example `/api/plugins/fusion-plugin-roadmap/roadmaps/:roadmapId/suggestions/milestones`)
 - Do not document or depend on legacy host-owned `/api/roadmaps` routes unless your current source still ships them
 
 - Plugin ID: `fusion-plugin-notification`
@@ -1264,7 +1264,7 @@ Polls CI status for branches and provides custom API endpoints.
 Standalone roadmap planning plugin extracted from dashboard host code.
 
 - Demonstrates: `hooks.onSchemaInit` for plugin-owned schema DDL (`ensureRoadmapSchema`)
-- Demonstrates: plugin-scoped route namespace under `/api/plugins/roadmap-planner/*`
+- Demonstrates: plugin-scoped route namespace under `/api/plugins/fusion-plugin-roadmap/*`
 - Demonstrates: top-level navigation registration through `dashboardViews` (`viewId: "roadmaps"`) and host static view registration
 - Demonstrates: AI suggestion flows that consume `ctx.createAiSession` through plugin route handlers
 

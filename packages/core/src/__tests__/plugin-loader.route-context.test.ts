@@ -9,13 +9,13 @@ describe("PluginLoader.createRouteContext", () => {
     const baseStore = { getRootDir: () => "/tmp" } as any;
     const loader = new PluginLoader({ pluginStore, taskStore: baseStore });
     const resolveProjectTaskStore = vi.fn();
-    const ctx = await loader.createRouteContext("roadmap-planner", {
+    const ctx = await loader.createRouteContext("fusion-plugin-roadmap", {
       taskStore: baseStore,
       settings: { ok: true },
       resolveProjectTaskStore,
     });
 
-    expect(ctx.pluginId).toBe("roadmap-planner");
+    expect(ctx.pluginId).toBe("fusion-plugin-roadmap");
     expect(ctx.settings).toEqual({ ok: true });
     expect(ctx.resolveProjectTaskStore).toBe(resolveProjectTaskStore);
   });

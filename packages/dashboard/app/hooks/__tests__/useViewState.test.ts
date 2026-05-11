@@ -73,7 +73,7 @@ describe("useViewState", () => {
     const { result } = renderHook(() => useViewState(createOptions()));
 
     await waitFor(() => {
-      expect(result.current.taskView).toBe("plugin:roadmap-planner:roadmaps");
+      expect(result.current.taskView).toBe("plugin:fusion-plugin-roadmap:roadmaps");
     });
   });
 

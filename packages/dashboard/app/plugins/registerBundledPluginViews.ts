@@ -80,7 +80,7 @@ export function registerBundledPluginViews(): void {
   );
 
   registerPluginView(
-    "roadmap-planner",
+    "fusion-plugin-roadmap",
     "roadmaps",
     lazy(loadRoadmapView),
   );

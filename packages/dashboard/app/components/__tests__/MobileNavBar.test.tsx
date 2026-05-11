@@ -411,7 +411,7 @@ describe("MobileNavBar", () => {
         experimentalFeatures={{}}
         pluginDashboardViews={[
           {
-            pluginId: "roadmap-planner",
+            pluginId: "fusion-plugin-roadmap",
             view: { viewId: "roadmaps", label: "Roadmaps", componentPath: "./RoadmapsView", icon: "Map", placement: "primary" },
           },
         ]}

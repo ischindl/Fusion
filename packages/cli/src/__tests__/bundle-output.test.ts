@@ -41,7 +41,7 @@ describe("CLI bundle output", () => {
     expect(content).not.toContain('"@fusion/core"');
     expect(content).not.toContain('"@fusion/dashboard"');
     expect(content).not.toContain('"@fusion/engine"');
-    expect(content).not.toContain('"@fusion-plugin-examples/roadmap"');
+    expect(content).not.toContain('"@fusion-plugin-examples/fusion-plugin-roadmap"');
   });
 
   it("does not contain runtime memory-backend side-load imports", () => {
@@ -187,7 +187,7 @@ describe("CLI bundle output", () => {
 
     expect(existsSync(manifestPath)).toBe(true);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as { id?: string; name?: string };
-    expect(manifest.id).toBe("roadmap-planner");
+    expect(manifest.id).toBe("fusion-plugin-roadmap");
     expect(typeof manifest.name).toBe("string");
     expect(manifest.name?.length).toBeGreaterThan(0);
 

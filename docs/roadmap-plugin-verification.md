@@ -4,7 +4,7 @@
 
 - Backend roadmap ownership lives in `plugins/fusion-plugin-roadmap/**`.
 - Frontend roadmap ownership lives in `plugins/fusion-plugin-roadmap/**` (`dashboard/` and `dashboard-view` export).
-- Canonical API namespace is plugin-scoped: `/api/plugins/roadmap-planner/...`.
+- Canonical API namespace is plugin-scoped: `/api/plugins/fusion-plugin-roadmap/...`.
 - Dashboard Roadmaps view is registered via plugin dashboard view host (`registerBundledPluginViews` + `PluginDashboardViewHost`), not hardcoded app-level `RoadmapsView` import.
 - Roadmap schema initialization is plugin-owned via `hooks.onSchemaInit` (`ensureRoadmapSchema`).
 - AI suggestions use plugin-context session factory (`ctx.createAiSession` passed into suggestion generation), not direct `@fusion/engine` imports.
@@ -21,7 +21,7 @@
 
 ### Route contract expectations
 
-- Plugin routes are expected under `/api/plugins/roadmap-planner/...` via host plugin route mounting.
+- Plugin routes are expected under `/api/plugins/fusion-plugin-roadmap/...` via host plugin route mounting.
 - Legacy `/api/roadmaps...` compatibility behavior (if present) must delegate to plugin implementation and be documented.
 
 ## 3) Host/plugin integration checks
@@ -34,14 +34,14 @@
 ### Integration points verified (Step 1)
 
 - `plugins/fusion-plugin-roadmap/src/index.ts` declares:
-  - `manifest.id = "roadmap-planner"`
+  - `manifest.id = "fusion-plugin-roadmap"`
   - `hooks.onSchemaInit = ensureRoadmapSchema`
   - `routes = createRoadmapPluginRoutes()`
   - `dashboardViews` entry `{ viewId: "roadmaps", placement: "primary" }`
 - `packages/dashboard/app/plugins/registerBundledPluginViews.ts` statically registers:
-  - plugin id `roadmap-planner`
+  - plugin id `fusion-plugin-roadmap`
   - view id `roadmaps`
-  - lazy import `@fusion-plugin-examples/roadmap/dashboard-view`
+  - lazy import `@fusion-plugin-examples/fusion-plugin-roadmap/dashboard-view`
 - `packages/dashboard/app/App.tsx` renders plugin views through `PluginDashboardViewHost`.
 
 ## 4) Manual UI scenarios
@@ -71,7 +71,7 @@ Notes:
 
 ### Step 2 backend/API verification checks
 
-- `pnpm --filter @fusion-plugin-examples/roadmap test`
+- `pnpm --filter @fusion-plugin-examples/fusion-plugin-roadmap test`
   - ✅ Pass (9 files, 227 tests)
   - Coverage includes roadmap CRUD store operations, milestone/feature reorder, cross-milestone move, handoff/export mapping, deterministic ordering/lineage, route handlers, dashboard API client namespace, and AI suggestion behavior (success/error/timeout/service unavailable).
 - `pnpm --filter @fusion/dashboard exec vitest run src/__tests__/roadmap-routes.routes.test.ts src/__tests__/plugin-routes-wiring.test.ts --silent=passed-only --reporter=dot`

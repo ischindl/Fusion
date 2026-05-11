@@ -18,7 +18,7 @@ describe("pluginViewRegistry", () => {
 
   it("builds plugin IDs", () => {
     expect(getPluginViewId("plugin-a", "main")).toBe("plugin:plugin-a:main");
-    expect(getPluginViewId("roadmap-planner", "roadmaps")).toBe("plugin:roadmap-planner:roadmaps");
+    expect(getPluginViewId("fusion-plugin-roadmap", "roadmaps")).toBe("plugin:fusion-plugin-roadmap:roadmaps");
   });
 
   it("parses and validates plugin IDs", () => {
@@ -78,11 +78,11 @@ describe("pluginViewRegistry", () => {
     expect(await screen.findByText("proj-1")).toBeInTheDocument();
   });
 
-  it("resolves roadmap-planner registry entry and avoids unavailable fallback", async () => {
+  it("resolves fusion-plugin-roadmap registry entry and avoids unavailable fallback", async () => {
     const RoadmapsView = lazy(async () => ({ default: () => <div>Roadmaps Plugin View</div> }));
-    registerPluginView("roadmap-planner", "roadmaps", RoadmapsView);
+    registerPluginView("fusion-plugin-roadmap", "roadmaps", RoadmapsView);
 
-    render(<>{PluginDashboardViewHost({ viewId: "plugin:roadmap-planner:roadmaps" })}</>);
+    render(<>{PluginDashboardViewHost({ viewId: "plugin:fusion-plugin-roadmap:roadmaps" })}</>);
 
     expect(await screen.findByText("Roadmaps Plugin View")).toBeInTheDocument();
     expect(screen.queryByTestId("plugin-view-unavailable")).toBeNull();

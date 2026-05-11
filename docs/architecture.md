@@ -177,7 +177,7 @@ Concrete references:
   - Core schema tables include: `tasks`, `config`, `workflow_steps`, `activityLog`, `archivedTasks`, `automations`, `agents`, `agentHeartbeats`, approval tables (`approval_requests`, `approval_request_audit_events`), `task_documents`, `task_document_revisions`, mission hierarchy tables (`missions`, `milestones`, `slices`, `mission_features`, `mission_events`), plugin/routine tables (`plugins`, `routines`), roadmap tables (`roadmaps`, `roadmap_milestones`, `roadmap_features`), insight tables (`project_insights`, `project_insight_runs`), research tables (`research_runs`, `research_exports`, `research_run_events`), eval tables (`eval_runs`, `eval_task_results`, `eval_run_events`), todo tables (`todo_lists`, `todo_items`), `__meta`
   - Migration-created tables include: `ai_sessions`, `messages`, `agentRatings`, `chat_sessions`, `chat_messages`, `runAuditEvents`, `mission_contract_assertions`, `mission_feature_assertions`, `mission_validator_runs`, `mission_validator_failures`, `mission_fix_feature_lineage`
   - `ai_sessions.status` lifecycle includes `draft` (pre-start planning session), then `generating`, `awaiting_input`, terminal `complete` / `error`
-- **Roadmap feature ownership**: roadmap contracts, ordering/handoff helpers, persistence, routes, and dashboard UI live in `plugins/fusion-plugin-roadmap` (package `@fusion-plugin-examples/roadmap`) rather than dashboard/core ownership.
+- **Roadmap feature ownership**: roadmap contracts, ordering/handoff helpers, persistence, routes, and dashboard UI live in `plugins/fusion-plugin-roadmap` (package `@fusion-plugin-examples/roadmap`, plugin id `fusion-plugin-roadmap`) rather than dashboard/core ownership.
 - **CentralCore**: `packages/core/src/central-core.ts`
   - Global project registry, health, central activity feed, global concurrency
   - Backed by `packages/core/src/central-db.ts` (`~/.fusion/fusion-central.db`)
@@ -425,12 +425,12 @@ Key roadmap invariants:
 - cross-milestone feature moves must renumber both the source and destination milestone deterministically
 
 **Roadmap frontend API contract (plugin namespace):**
-- Canonical frontend namespace: `/api/plugins/roadmap-planner/roadmaps`
+- Canonical frontend namespace: `/api/plugins/fusion-plugin-roadmap/roadmaps`
 - Roadmaps: `GET /`, `POST /`, `GET /:roadmapId`, `PATCH /:roadmapId`, `DELETE /:roadmapId`
 - Milestones: `GET /:roadmapId/milestones`, `POST /:roadmapId/milestones`, `PATCH /milestones/:milestoneId`, `DELETE /milestones/:milestoneId`, `POST /:roadmapId/milestones/reorder`
 - Features: `GET /milestones/:milestoneId/features`, `POST /milestones/:milestoneId/features`, `PATCH /features/:featureId`, `DELETE /features/:featureId`, `POST /milestones/:milestoneId/features/reorder`, `POST /features/:featureId/move`
 - Export/Handoff: `GET /:roadmapId/export`, `GET /:roadmapId/handoff`, `GET /:roadmapId/handoff/mission`, `GET /:roadmapId/milestones/:milestoneId/features/:featureId/handoff/task`
-- Dashboard host no longer mounts legacy `/api/roadmaps`; roadmap REST traffic goes through the plugin namespace only.
+- Canonical roadmap REST namespace is plugin-scoped (`/api/plugins/fusion-plugin-roadmap/...`), while dashboard maintains a temporary `/api/roadmaps` compatibility mount that delegates to plugin-owned handlers during migration.
 
 **Database schema:**
 - `roadmaps` — roadmap metadata (id, title, description, timestamps)
@@ -738,7 +738,7 @@ Key server capabilities:
 - Insights routes (`insights-routes.ts`)
 - Evals routes (`evals-routes.ts`) — `/api/evals` read surface for eval result listing/filtering, drill-down detail, and eval run metadata
 - Research routes (`research-routes.ts`) — `/api/research` surface for runs, details, cancel/retry, exports, create-task, and attach-task actions; supports graceful degradation envelopes via availability payloads when capabilities are unavailable
-- Plugin-defined roadmap routes under `plugin-routes.ts` dispatch (`/api/plugins/roadmap-planner/...`)
+- Plugin-defined roadmap routes under `plugin-routes.ts` dispatch (`/api/plugins/fusion-plugin-roadmap/...`)
 - Project-scoped store reuse via `project-store-resolver.ts`
 - Rate limiting (`rate-limit.ts`)
 - Static SPA hosting (Vite build output)

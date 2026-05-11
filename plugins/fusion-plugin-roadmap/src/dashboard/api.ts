@@ -13,7 +13,7 @@ import type {
   RoadmapFeatureTaskPlanningHandoff,
 } from "../roadmap-types.js";
 
-const BASE = "/api/plugins/roadmap-planner";
+const BASE = "/api/plugins/fusion-plugin-roadmap";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {

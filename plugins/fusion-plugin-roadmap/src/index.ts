@@ -4,7 +4,7 @@ import { ensureRoadmapSchema } from "./roadmap-schema.js";
 
 const plugin = definePlugin({
   manifest: {
-    id: "roadmap-planner",
+    id: "fusion-plugin-roadmap",
     name: "Roadmaps",
     version: "0.1.0",
     description: "Standalone roadmap planning plugin",
@@ -57,17 +57,17 @@ export {
   normalizeRoadmapFeatureOrder,
   applyRoadmapFeatureReorder,
   moveRoadmapFeature,
-} from "./store/roadmap-ordering.js";
+} from "./roadmap-ordering.js";
 
 export {
   mapFeatureToTaskHandoff,
   mapRoadmapToMissionHandoff,
   mapRoadmapWithHierarchyToMissionHandoff,
   mapAllFeaturesToTaskHandoffs,
-} from "./store/roadmap-handoff.js";
+} from "./roadmap-handoff.js";
 
-export { RoadmapStore } from "./store/roadmap-store.js";
-export type { RoadmapStoreEvents } from "./store/roadmap-store.js";
+export { RoadmapStore } from "./roadmap-store.js";
+export type { RoadmapStoreEvents } from "./roadmap-store.js";
 
 export { ensureRoadmapSchema } from "./roadmap-schema.js";
 export { RoadmapDashboardView } from "./dashboard-view.js";

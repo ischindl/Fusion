@@ -841,7 +841,7 @@ describe("PluginUiSlotDefinition", () => {
 describe("PluginDashboardViewDefinition", () => {
   it("accepts a valid PluginDashboardViewDefinition with optional fields", () => {
     const view = {
-      viewId: "roadmap-planner",
+      viewId: "fusion-plugin-roadmap",
       label: "Roadmap Planner",
       componentPath: "./views/RoadmapPlanner.js",
       icon: "Map",
@@ -850,7 +850,7 @@ describe("PluginDashboardViewDefinition", () => {
       description: "Plan milestones and slices",
     };
 
-    expect(view.viewId).toBe("roadmap-planner");
+    expect(view.viewId).toBe("fusion-plugin-roadmap");
     expect(view.placement).toBe("overflow");
     expect(view.description).toContain("milestones");
   });

@@ -598,7 +598,7 @@ describe("Database", () => {
     it("executes roadmap plugin schema hook to create roadmap-owned tables and indexes", async () => {
       await db.runPluginSchemaInits([
         {
-          pluginId: "roadmap-planner",
+          pluginId: "fusion-plugin-roadmap",
           hook: ensureRoadmapSchema,
         },
       ]);

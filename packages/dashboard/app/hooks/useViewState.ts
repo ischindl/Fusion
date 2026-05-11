@@ -37,7 +37,7 @@ function isTaskView(value: string | null): value is TaskView {
   return value !== null && (isBuiltInTaskView(value) || isPluginViewId(value));
 }
 
-const LEGACY_ROADMAPS_PLUGIN_VIEW = getPluginViewId("roadmap-planner", "roadmaps");
+const LEGACY_ROADMAPS_PLUGIN_VIEW = getPluginViewId("fusion-plugin-roadmap", "roadmaps");
 
 function normalizeTaskView(value: TaskView): TaskView {
   return value === "devserver" ? "dev-server" : value;
@@ -47,7 +47,7 @@ function migrateLegacyRoadmapsView(value: string): TaskView {
   if (value !== "roadmaps") {
     return "board";
   }
-  return isPluginViewRegistered("roadmap-planner", "roadmaps") ? LEGACY_ROADMAPS_PLUGIN_VIEW : "board";
+  return isPluginViewRegistered("fusion-plugin-roadmap", "roadmaps") ? LEGACY_ROADMAPS_PLUGIN_VIEW : "board";
 }
 
 interface UseViewStateOptions {

@@ -3,7 +3,7 @@ import { createRoadmapPluginRoutes } from "../roadmap-routes.js";
 
 function createCtx() {
   return {
-    pluginId: "roadmap-planner",
+    pluginId: "fusion-plugin-roadmap",
     taskStore: {
       getDatabase: () => ({}),
       getRootDir: () => "/tmp/project",

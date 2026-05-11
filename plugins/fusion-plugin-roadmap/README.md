@@ -4,9 +4,9 @@
 
 ## Plugin identity
 
-- Manifest id: `roadmap-planner`
-- Route namespace: `/api/plugins/roadmap-planner/*`
-- Dashboard view id: `plugin:roadmap-planner:roadmaps`
+- Manifest id: `fusion-plugin-roadmap`
+- Route namespace: `/api/plugins/fusion-plugin-roadmap/*`
+- Dashboard view id: `plugin:fusion-plugin-roadmap:roadmaps`
 
 ## Package layout
 
@@ -18,7 +18,7 @@
 - `src/dashboard/RoadmapsView.tsx` — plugin-owned roadmap planner page
 - `src/dashboard/useRoadmaps.ts` — plugin-owned roadmap CRUD/reorder/suggestions/handoff hook
 - `src/dashboard/RoadmapsView.css` — plugin-owned roadmap styles
-- `src/dashboard/api.ts` — plugin-local client for `/api/plugins/roadmap-planner/*`
+- `src/dashboard/api.ts` — plugin-local client for `/api/plugins/fusion-plugin-roadmap/*`
 - `src/roadmap-types.ts` + `src/store/*` — roadmap domain types/store
 
 ## Exported surfaces
@@ -60,7 +60,7 @@ Host-owned responsibilities:
 
 - Execute plugin schema hooks during DB startup and expose resulting tables/indexes to plugin routes.
 - Inject `createAiSession()` into plugin runtime/route context.
-- Discover plugin dashboard views via `/api/plugins/dashboard-views` and resolve plugin view IDs (for roadmap: `plugin:roadmap-planner:roadmaps`) through the host view registry.
+- Discover plugin dashboard views via `/api/plugins/dashboard-views` and resolve plugin view IDs (for roadmap: `plugin:fusion-plugin-roadmap:roadmaps`) through the host view registry.
 
 ## Notes
 

@@ -139,7 +139,7 @@ Integrated routers are mounted through `register-integrated-routers.ts` and inte
   - `createMissionRouter` → `/api/missions`
   - `createInsightsRouter` → `/api/insights`
   - `createTodoRouter` → `/api/todos`
-- Roadmap endpoints are plugin-owned and exposed under `/api/plugins/roadmap-planner/...`.
+- Roadmap endpoints are plugin-owned and exposed under `/api/plugins/fusion-plugin-roadmap/...`.
 - `registerIntegratedDevServerRouter(...)` mounts:
   - `createDevServerRouter` → `/api/dev-server`
 

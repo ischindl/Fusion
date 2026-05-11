@@ -15,7 +15,7 @@ vi.mock("@fusion-plugin-examples/dependency-graph/dashboard-view", () => ({
   DependencyGraphDashboardView: (...args: unknown[]) => MockDependencyGraphDashboardView(...args),
 }));
 
-vi.mock("@fusion-plugin-examples/roadmap/dashboard-view", () => ({
+vi.mock("@fusion-plugin-examples/fusion-plugin-roadmap/dashboard-view", () => ({
   RoadmapDashboardView: (...args: unknown[]) => MockRoadmapDashboardView(...args),
 }));
 
@@ -37,7 +37,7 @@ describe("registerBundledPluginViews", () => {
     registerBundledPluginViews();
 
     expect(getPluginViewComponent("fusion-plugin-dependency-graph", "graph")).toBeTruthy();
-    expect(getPluginViewComponent("roadmap-planner", "roadmaps")).toBeTruthy();
+    expect(getPluginViewComponent("fusion-plugin-roadmap", "roadmaps")).toBeTruthy();
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "wizard")).toBeTruthy();
     expect(getPluginViewComponent("fusion-plugin-cli-printing-press", "manage")).toBeTruthy();
   });
@@ -56,7 +56,7 @@ describe("registerBundledPluginViews", () => {
     registerBundledPluginViews();
 
     expect(isPluginViewRegistered("fusion-plugin-dependency-graph", "graph")).toBe(true);
-    expect(isPluginViewRegistered("roadmap-planner", "roadmaps")).toBe(true);
+    expect(isPluginViewRegistered("fusion-plugin-roadmap", "roadmaps")).toBe(true);
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "wizard")).toBe(true);
     expect(isPluginViewRegistered("fusion-plugin-cli-printing-press", "manage")).toBe(true);
     // Unknown plugin/view should not be registered

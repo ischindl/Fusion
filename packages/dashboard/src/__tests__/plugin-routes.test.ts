@@ -1028,7 +1028,7 @@ describe("GET /api/plugins/dashboard-views", () => {
   it("keeps dashboard-views payload separate from ui-slots payload", async () => {
     (pluginLoader.getPluginDashboardViews as ReturnType<typeof vi.fn>).mockReturnValue([
       {
-        pluginId: "roadmap-planner",
+        pluginId: "fusion-plugin-roadmap",
         view: {
           viewId: "roadmaps",
           label: "Roadmaps",
@@ -1038,7 +1038,7 @@ describe("GET /api/plugins/dashboard-views", () => {
     ]);
     (pluginLoader.getPluginUiSlots as ReturnType<typeof vi.fn>).mockReturnValue([
       {
-        pluginId: "roadmap-planner",
+        pluginId: "fusion-plugin-roadmap",
         slot: {
           slotId: "task-detail-tab",
           label: "Roadmap Details",
@@ -1696,7 +1696,8 @@ describe("createPluginRouter plugin-defined route responses", () => {
     const res = await performGet(app, "/plugins/demo/html");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/html");
-    expect(res.text).toContain("<html><body>Hello</body></html>");
+    const html = typeof res.text === "string" ? res.text : String(res.body ?? "");
+    expect(html).toContain("<html><body>Hello</body></html>");
   });
 
   it("propagates custom response headers", async () => {

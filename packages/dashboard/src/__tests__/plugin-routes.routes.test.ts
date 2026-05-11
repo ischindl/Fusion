@@ -1193,24 +1193,24 @@ describe("plugin-defined route dispatch", () => {
   it("registers PATCH routes from plugins", () => {
     const pluginRunner = {
       getPluginRoutes: vi.fn().mockReturnValue([
-        { pluginId: "roadmap-planner", route: { method: "PATCH", path: "/roadmaps/x", handler: vi.fn() } },
+        { pluginId: "fusion-plugin-roadmap", route: { method: "PATCH", path: "/roadmaps/x", handler: vi.fn() } },
       ]),
     };
 
     const pluginStore = createMockPluginStore();
     const router = createPluginRouter(pluginStore, createMockPluginLoader({
       createRouteContext: vi.fn().mockResolvedValue({
-        pluginId: "roadmap-planner",
+        pluginId: "fusion-plugin-roadmap",
         taskStore: createMockTaskStore(),
         settings: {},
         logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
         emitEvent: vi.fn(),
       }),
-      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "roadmap-planner" } }),
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "fusion-plugin-roadmap" } }),
     } as any), pluginRunner as any, createMockTaskStore());
 
     const stack = (router as any).stack as Array<{ route?: { path: string; methods: Record<string, boolean> } }>;
-    const patchRoute = stack.find((layer) => layer.route?.path === "/roadmap-planner/roadmaps/x");
+    const patchRoute = stack.find((layer) => layer.route?.path === "/fusion-plugin-roadmap/roadmaps/x");
     expect(patchRoute?.route?.methods.patch).toBe(true);
   });
 
@@ -1218,14 +1218,14 @@ describe("plugin-defined route dispatch", () => {
     const routeHandler = vi.fn().mockResolvedValue({ ok: true });
     const pluginRunner = {
       getPluginRoutes: vi.fn().mockReturnValue([
-        { pluginId: "roadmap-planner", route: { method: "POST", path: "/ctx-check", handler: routeHandler } },
+        { pluginId: "fusion-plugin-roadmap", route: { method: "POST", path: "/ctx-check", handler: routeHandler } },
       ]),
     };
     const scopedPluginStore = createMockPluginStore();
     const scopedTaskStore = createMockTaskStore({ getPluginStore: vi.fn().mockReturnValue(scopedPluginStore) });
     mockGetOrCreateProjectStore.mockResolvedValue(scopedTaskStore);
     const createRouteContext = vi.fn().mockImplementation(async (_pluginId: string, overrides: any) => ({
-      pluginId: "roadmap-planner",
+      pluginId: "fusion-plugin-roadmap",
       taskStore: overrides.taskStore,
       settings: overrides.settings,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -1235,7 +1235,7 @@ describe("plugin-defined route dispatch", () => {
     }));
     const pluginLoader = createMockPluginLoader({
       createRouteContext,
-      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "roadmap-planner" } }),
+      getPlugin: vi.fn().mockReturnValue({ manifest: { id: "fusion-plugin-roadmap" } }),
     } as any);
     const pluginStore = createMockPluginStore();
 
@@ -1243,9 +1243,9 @@ describe("plugin-defined route dispatch", () => {
     app.use(express.json());
     app.use("/api/plugins", createPluginRouter(pluginStore, pluginLoader, pluginRunner as any, createMockTaskStore()));
 
-    const res = await REQUEST(app, "POST", "/api/plugins/roadmap-planner/ctx-check", { projectId: "proj_123" });
+    const res = await REQUEST(app, "POST", "/api/plugins/fusion-plugin-roadmap/ctx-check", { projectId: "proj_123" });
     expect(res.status).toBe(200);
-    expect(createRouteContext).toHaveBeenCalledWith("roadmap-planner", expect.objectContaining({
+    expect(createRouteContext).toHaveBeenCalledWith("fusion-plugin-roadmap", expect.objectContaining({
       taskStore: scopedTaskStore,
       resolveProjectTaskStore: projectStoreResolver.getOrCreateProjectStore,
     }));

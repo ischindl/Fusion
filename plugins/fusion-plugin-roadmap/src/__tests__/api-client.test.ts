@@ -44,11 +44,11 @@ describe("roadmap dashboard api client", () => {
     await updateRoadmap("RM-1", { title: "B" }, "proj-1");
     await deleteRoadmap("RM-1", "proj-1");
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/plugins/roadmap-planner/roadmaps?projectId=proj-1");
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/plugins/roadmap-planner/roadmaps/RM-1?projectId=proj-1");
-    expect(fetchMock.mock.calls[2][0]).toBe("/api/plugins/roadmap-planner/roadmaps?projectId=proj-1");
-    expect(fetchMock.mock.calls[3][0]).toBe("/api/plugins/roadmap-planner/roadmaps/RM-1?projectId=proj-1");
-    expect(fetchMock.mock.calls[4][0]).toBe("/api/plugins/roadmap-planner/roadmaps/RM-1?projectId=proj-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/plugins/fusion-plugin-roadmap/roadmaps?projectId=proj-1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1?projectId=proj-1");
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/plugins/fusion-plugin-roadmap/roadmaps?projectId=proj-1");
+    expect(fetchMock.mock.calls[3][0]).toBe("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1?projectId=proj-1");
+    expect(fetchMock.mock.calls[4][0]).toBe("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1?projectId=proj-1");
   });
 
   it("uses plugin namespace for milestone and feature reorder/move + suggestions + handoff", async () => {
@@ -68,14 +68,14 @@ describe("roadmap dashboard api client", () => {
     await fetchRoadmapHandoff("RM-1", "proj-1");
 
     const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/RM-1/milestones?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/milestones/RMS-1?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/RM-1/milestones/reorder?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/milestones/RMS-1/features/reorder?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/features/RF-1/move?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/RM-1/suggestions/milestones?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/milestones/RMS-1/suggestions/features?projectId=proj-1");
-    expect(calledUrls).toContain("/api/plugins/roadmap-planner/roadmaps/RM-1/handoff?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1/milestones?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/milestones/RMS-1?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1/milestones/reorder?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/milestones/RMS-1/features/reorder?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/features/RF-1/move?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1/suggestions/milestones?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/milestones/RMS-1/suggestions/features?projectId=proj-1");
+    expect(calledUrls).toContain("/api/plugins/fusion-plugin-roadmap/roadmaps/RM-1/handoff?projectId=proj-1");
   });
 
   it("surfaces server error body when available", async () => {
