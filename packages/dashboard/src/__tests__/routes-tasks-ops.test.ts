@@ -1484,8 +1484,9 @@ describe("PATCH /tasks/:id", () => {
     expect(res.body.dependencies).toEqual(["FN-002"]);
   });
 
-  it("forwards priority to store.updateTask", async () => {
-    const updatedTask = { ...FAKE_TASK_DETAIL, priority: "high" as const };
+  it("forwards priority to store.updateTask without changing task column", async () => {
+    const triageTask = { ...FAKE_TASK_DETAIL, column: "triage" as const, status: "awaiting-approval" as const };
+    const updatedTask = { ...triageTask, priority: "high" as const };
     (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue(updatedTask);
 
     const res = await REQUEST(buildApp(), "PATCH", "/api/tasks/KB-001", JSON.stringify({ priority: "high" }), {
@@ -1495,6 +1496,8 @@ describe("PATCH /tasks/:id", () => {
     expect(res.status).toBe(200);
     expect(store.updateTask).toHaveBeenCalledWith("KB-001", { priority: "high" });
     expect(res.body.priority).toBe("high");
+    expect(res.body.column).toBe("triage");
+    expect(res.body.status).toBe("awaiting-approval");
   });
 
   it("forwards priority=null to store.updateTask (resets to default)", async () => {

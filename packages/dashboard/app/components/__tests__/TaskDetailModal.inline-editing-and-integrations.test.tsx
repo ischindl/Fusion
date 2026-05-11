@@ -891,17 +891,28 @@ describe("TaskDetailModal", () => {
       });
     });
 
-    it("updates priority inline and propagates successful save", async () => {
+    it("updates priority inline and propagates successful save without moving triage tasks", async () => {
       const { updateTask } = await import("../../api");
       const mockUpdate = vi.mocked(updateTask);
       const onTaskUpdated = vi.fn();
       const addToast = vi.fn();
-      const updatedTask = makeTask({ id: "FN-001", column: "triage", priority: "urgent" });
+      const updatedTask = makeTask({
+        id: "FN-001",
+        column: "triage",
+        status: "awaiting-approval",
+        priority: "urgent",
+      });
       mockUpdate.mockResolvedValueOnce(updatedTask as Task);
 
       render(
         <TaskDetailModal
-          task={makeTask({ id: "FN-001", column: "triage", description: "Priority metadata", priority: "normal" })}
+          task={makeTask({
+            id: "FN-001",
+            column: "triage",
+            status: "awaiting-approval",
+            description: "Priority metadata",
+            priority: "normal",
+          })}
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
@@ -919,7 +930,12 @@ describe("TaskDetailModal", () => {
       await waitFor(() => {
         expect(mockUpdate).toHaveBeenCalledWith("FN-001", { priority: "urgent" }, undefined);
       });
-      expect(onTaskUpdated).toHaveBeenCalledWith(updatedTask);
+      expect(onTaskUpdated).toHaveBeenCalledWith(expect.objectContaining({
+        id: "FN-001",
+        column: "triage",
+        status: "awaiting-approval",
+        priority: "urgent",
+      }));
       expect(addToast).toHaveBeenCalledWith("Priority updated to urgent", "success");
     });
 

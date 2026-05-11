@@ -169,6 +169,20 @@ describe("TaskStore", () => {
   });
 
 
+  describe("updateTask — priority", () => {
+    it("does not move triage tasks when only priority is updated", async () => {
+      const task = await store.createTask({
+        description: "Planning task",
+        column: "triage",
+        priority: "normal",
+      });
+
+      const updated = await store.updateTask(task.id, { priority: "urgent" });
+      expect(updated.column).toBe("triage");
+      expect(updated.priority).toBe("urgent");
+    });
+  });
+
   describe("updateTask — blockedBy", () => {
     it("sets blockedBy to a string value", async () => {
       const task = await store.createTask({ title: "Blocked task", description: "A task" });

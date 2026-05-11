@@ -637,6 +637,112 @@ describe("useTasks", () => {
       // Should preserve the done column since we have timestamp and incoming doesn't
       expect(result.current.tasks[0].column).toBe("done");
     });
+
+    it("keeps triage tasks in triage when task:updated only changes priority", async () => {
+      const initialTask = createMockTask({
+        id: "FN-001",
+        column: "triage" as Column,
+        status: "awaiting-approval",
+        priority: "normal",
+        columnMovedAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => {
+        expect(result.current.tasks[0].column).toBe("triage");
+      });
+
+      const priorityOnlyUpdate = createMockTask({
+        id: "FN-001",
+        column: "triage" as Column,
+        status: "awaiting-approval",
+        priority: "urgent",
+        columnMovedAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-03T00:00:00Z",
+      });
+
+      act(() => {
+        MockEventSource.instances[0]._emit("task:updated", priorityOnlyUpdate);
+      });
+
+      expect(result.current.tasks[0].column).toBe("triage");
+      expect(result.current.tasks[0].status).toBe("awaiting-approval");
+      expect(result.current.tasks[0].priority).toBe("urgent");
+    });
+
+    it("keeps triage column when priority-only task:updated payload has mismatched stale column", async () => {
+      const initialTask = createMockTask({
+        id: "FN-001",
+        column: "triage" as Column,
+        status: "awaiting-approval",
+        priority: "normal",
+        columnMovedAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => {
+        expect(result.current.tasks[0].column).toBe("triage");
+      });
+
+      const mismatchedPriorityUpdate = createMockTask({
+        id: "FN-001",
+        column: "todo" as Column,
+        status: "awaiting-approval",
+        priority: "urgent",
+        columnMovedAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-03T00:00:00Z",
+      });
+
+      act(() => {
+        MockEventSource.instances[0]._emit("task:updated", mismatchedPriorityUpdate);
+      });
+
+      expect(result.current.tasks[0].column).toBe("triage");
+      expect(result.current.tasks[0].priority).toBe("urgent");
+    });
+
+    it("allows explicit approve-plan move events to transition triage tasks to todo", async () => {
+      const initialTask = createMockTask({
+        id: "FN-001",
+        column: "triage" as Column,
+        status: "awaiting-approval",
+        priority: "urgent",
+        columnMovedAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+
+      const { result } = renderHook(() => useTasks());
+
+      await waitFor(() => {
+        expect(result.current.tasks[0].column).toBe("triage");
+      });
+
+      const approvePlanMove = {
+        task: createMockTask({
+          id: "FN-001",
+          column: "triage" as Column,
+          status: "awaiting-approval",
+          priority: "urgent",
+          columnMovedAt: "2026-01-03T00:00:00Z",
+          updatedAt: "2026-01-03T00:00:00Z",
+        }),
+        from: "triage" as Column,
+        to: "todo" as Column,
+      };
+
+      act(() => {
+        MockEventSource.instances[0]._emit("task:moved", approvePlanMove);
+      });
+
+      expect(result.current.tasks[0].column).toBe("todo");
+    });
   });
 
   describe("SSE event: task:deleted", () => {

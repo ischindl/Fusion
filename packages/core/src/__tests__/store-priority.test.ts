@@ -36,6 +36,18 @@ describe("TaskStore", () => {
       expect(detail.priority).toBe("normal");
     });
 
+    it("keeps triage tasks in triage when only priority changes", async () => {
+      const task = await harness.store().createTask({
+        description: "Planning task with manual review",
+        column: "triage",
+        priority: "normal",
+      });
+
+      const updated = await harness.store().updateTask(task.id, { priority: "urgent" });
+      expect(updated.priority).toBe("urgent");
+      expect(updated.column).toBe("triage");
+    });
+
     it("preserves explicit priority through archive and unarchive", async () => {
       const task = await harness.store().createTask({
         description: "Archive priority task",

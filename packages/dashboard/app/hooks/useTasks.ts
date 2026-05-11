@@ -59,7 +59,7 @@ function mergeIncomingTask(current: Task, incoming: Task): Task {
     return { ...incoming, column: current.column, columnMovedAt: current.columnMovedAt };
   }
 
-  if (columnTimestampCompare > 0) {
+  if (columnTimestampCompare >= 0) {
     return { ...incoming, column: current.column, columnMovedAt: current.columnMovedAt };
   }
 
