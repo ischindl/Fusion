@@ -2096,6 +2096,43 @@ export function createResearchTools(options: ResearchToolsOptions): ToolDefiniti
 }
 
 export function createReadMessagesTool(messageStore: MessageStore, agentId: string): ToolDefinition {
+  const REPLY_CONTEXT_CONTENT_MAX_CHARS = 400;
+
+  const trimReplyContent = (value: string): string => {
+    if (value.length <= REPLY_CONTEXT_CONTENT_MAX_CHARS) {
+      return value;
+    }
+    return `${value.slice(0, REPLY_CONTEXT_CONTENT_MAX_CHARS - 1)}…`;
+  };
+
+  const resolveReplyContext = (msg: Message): {
+    parentMessageId: string;
+    parentMessage: Message | null;
+    missingParent: boolean;
+  } | null => {
+    const metadata = msg.metadata;
+    const parentMessageId = typeof metadata === "object"
+      && metadata !== null
+      && "replyTo" in metadata
+      && typeof metadata.replyTo === "object"
+      && metadata.replyTo !== null
+      && "messageId" in metadata.replyTo
+      && typeof metadata.replyTo.messageId === "string"
+      ? metadata.replyTo.messageId
+      : null;
+
+    if (!parentMessageId) {
+      return null;
+    }
+
+    const parentMessage = messageStore.getMessage(parentMessageId);
+    return {
+      parentMessageId,
+      parentMessage,
+      missingParent: !parentMessage,
+    };
+  };
+
   return {
     name: "fn_read_messages",
     label: "Read Messages",
@@ -2121,10 +2158,28 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
           };
         }
 
-        const lines = messages.map((msg: Message) => {
-          const timestamp = new Date(msg.createdAt).toLocaleString();
-          const readStatus = msg.read ? "[read] " : "[unread] ";
-          return `${readStatus}[id: ${msg.id}] [from: ${msg.fromType}:${msg.fromId}] ${msg.content} (${timestamp})`;
+        const messageEntries = messages.map((msg: Message) => {
+          const replyContext = resolveReplyContext(msg);
+          return {
+            message: msg,
+            replyContext,
+          };
+        });
+
+        const lines = messageEntries.map(({ message, replyContext }) => {
+          const timestamp = new Date(message.createdAt).toLocaleString();
+          const readStatus = message.read ? "[read] " : "[unread] ";
+          const baseLine = `${readStatus}[id: ${message.id}] [from: ${message.fromType}:${message.fromId}] ${message.content} (${timestamp})`;
+          if (!replyContext) {
+            return baseLine;
+          }
+
+          if (replyContext.parentMessage) {
+            const parent = replyContext.parentMessage;
+            return `${baseLine}\n  ↳ reply-to [id: ${parent.id}] [from: ${parent.fromType}:${parent.fromId}] ${trimReplyContent(parent.content)}`;
+          }
+
+          return `${baseLine}\n  ↳ reply-to [id: ${replyContext.parentMessageId}] (missing parent message)`;
         });
 
         return {
@@ -2132,7 +2187,15 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
             type: "text" as const,
             text: `Messages (${messages.length}):\n${lines.join("\n")}`,
           }],
-          details: { messages },
+          details: {
+            messages,
+            threadContext: messageEntries
+              .filter((entry) => entry.replyContext)
+              .map((entry) => ({
+                messageId: entry.message.id,
+                replyTo: entry.replyContext,
+              })),
+          },
         };
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);

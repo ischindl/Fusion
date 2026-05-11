@@ -748,8 +748,9 @@ When messaging tools are enabled for an agent, heartbeat runs check for unread m
 
 Mailbox replies use `message.metadata.replyTo.messageId` as the stable reply link.
 
-- `read_messages` includes each message ID in its human-readable output so agents can target a specific message.
-- `send_message` supports `reply_to_message_id`; when provided, the sent message is stored with `metadata.replyTo.messageId`.
+- `fn_read_messages` includes each message ID in its human-readable output so agents can target a specific message.
+- When a message has `metadata.replyTo.messageId`, `fn_read_messages` now includes one-level reply-parent context inline (and in structured tool details) so heartbeat/mailbox runs can understand what the message is replying to without expanding full threads.
+- `fn_send_message` supports `reply_to_message_id`; when provided, the sent message is stored with `metadata.replyTo.messageId`.
 - Heartbeat prompts explicitly instruct agents to include `reply_to_message_id` when replying.
 
 The dashboard mailbox UI also uses the same metadata contract when users click **Reply**, so user and agent replies share one threading model.

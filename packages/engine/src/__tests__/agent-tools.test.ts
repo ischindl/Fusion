@@ -729,6 +729,7 @@ function createMockMessageStore(overrides: Partial<MessageStore> = {}): MessageS
   return {
     sendMessage: vi.fn(),
     getInbox: vi.fn().mockReturnValue([]),
+    getMessage: vi.fn().mockReturnValue(null),
     markAsRead: vi.fn(),
     markAllAsRead: vi.fn(),
     ...overrides,
@@ -1142,7 +1143,66 @@ describe("createReadMessagesTool", () => {
     expect((text as { text: string }).text).toContain("Messages (2)");
     expect((text as { text: string }).text).toContain("[unread] [id: msg-1] [from: agent:agent-2] Hello there");
     expect((text as { text: string }).text).toContain("[read] [id: msg-2] [from: user:user-1] Another message");
-    expect(result.details).toEqual({ messages });
+    expect(result.details).toEqual({ messages, threadContext: [] });
+  });
+
+  it("includes reply-parent context inline and in details when message links to a parent", async () => {
+    const child = createMessage({
+      id: "msg-child",
+      content: "Follow-up question",
+      metadata: { replyTo: { messageId: "msg-parent" } } as any,
+    });
+    const parent = createMessage({
+      id: "msg-parent",
+      fromId: "agent-9",
+      fromType: "agent",
+      content: "Parent message context",
+    });
+    vi.mocked(messageStore.getInbox).mockReturnValue([child]);
+    vi.mocked(messageStore.getMessage).mockReturnValue(parent);
+
+    const result = await executeTool(tool, {});
+    const text = result.content[0] as { type: string; text: string };
+
+    expect(text.text).toContain("↳ reply-to [id: msg-parent] [from: agent:agent-9] Parent message context");
+    expect(result.details).toEqual({
+      messages: [child],
+      threadContext: [{
+        messageId: "msg-child",
+        replyTo: {
+          parentMessageId: "msg-parent",
+          parentMessage: parent,
+          missingParent: false,
+        },
+      }],
+    });
+  });
+
+  it("surfaces missing-parent context without changing base inbox behavior", async () => {
+    const child = createMessage({
+      id: "msg-child",
+      content: "Follow-up question",
+      metadata: { replyTo: { messageId: "msg-missing" } } as any,
+    });
+    vi.mocked(messageStore.getInbox).mockReturnValue([child]);
+    vi.mocked(messageStore.getMessage).mockReturnValue(null);
+
+    const result = await executeTool(tool, {});
+    const text = result.content[0] as { type: string; text: string };
+
+    expect(text.text).toContain("↳ reply-to [id: msg-missing] (missing parent message)");
+    expect(result.details).toEqual({
+      messages: [child],
+      threadContext: [{
+        messageId: "msg-child",
+        replyTo: {
+          parentMessageId: "msg-missing",
+          parentMessage: null,
+          missingParent: true,
+        },
+      }],
+    });
+    expect(messageStore.getInbox).toHaveBeenCalledWith("agent-1", "agent", { read: false, limit: 20 });
   });
 
   it("returns error when messageStore.getInbox throws", async () => {

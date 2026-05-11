@@ -137,6 +137,9 @@ const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
 /** Maximum file size for # mentions (50KB). Files larger than this are skipped. */
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
 const ROOM_AMBIENT_MAX_RESPONDERS = 5;
+const ROOM_THREAD_CONTEXT_MAX_MESSAGES = 16;
+const ROOM_THREAD_CONTEXT_MAX_CHARS = 8_000;
+const ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS = 1_200;
 const IN_FLIGHT_PERSIST_DEBOUNCE_MS = 200;
 
 function formatAttachmentSize(size: number): string {
@@ -902,6 +905,7 @@ export class ChatManager {
         roomId,
         roomName: room.name,
         content: trimmedContent,
+        latestUserMessageId: userMessage.id,
         mentions,
         responder,
         modelProvider,
@@ -939,6 +943,7 @@ export class ChatManager {
     roomId: string;
     roomName: string;
     content: string;
+    latestUserMessageId: string;
     mentions: ChatMention[];
     responder: Agent;
     modelProvider?: string;
@@ -967,9 +972,13 @@ export class ChatManager {
     }
     systemPrompt = `${systemPrompt}\n\n${CHAT_AGENT_MESSAGE_ROUTING_GUIDANCE}`;
 
+    const roomMessages = this.chatStore.getRoomMessages(input.roomId, { limit: ROOM_THREAD_CONTEXT_MAX_MESSAGES });
     const roomPrompt = [
       `You are replying as ${input.responder.name} in room #${input.roomName}.`,
       "Reply to the latest user room message in the context of this shared room thread.",
+      "Room transcript (oldest to newest, bounded):",
+      this.formatRoomThreadContext(roomMessages, input.latestUserMessageId),
+      "Latest user message to answer:",
       input.content,
     ].join("\n\n");
 
@@ -1012,6 +1021,37 @@ export class ChatManager {
     } finally {
       resolvedSession.session.dispose?.();
     }
+  }
+
+  private formatRoomThreadContext(
+    messages: Array<{ id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; senderAgentId?: string | null }>,
+    latestUserMessageId: string,
+  ): string {
+    const trimmedFromTail: string[] = [];
+    let totalChars = 0;
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const senderLabel = message.role === "user"
+        ? "User"
+        : message.role === "system"
+          ? "System"
+          : (message.senderAgentId ? `Agent ${message.senderAgentId}` : "Assistant");
+      const content = message.content.length > ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS
+        ? `${message.content.slice(0, ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS - 1)}…`
+        : message.content;
+      const marker = message.id === latestUserMessageId ? " [LATEST USER MESSAGE — ANSWER THIS]" : "";
+      const line = `- [${message.createdAt}] (${message.role}) ${senderLabel}: ${content}${marker}`;
+
+      if (trimmedFromTail.length > 0 && totalChars + line.length > ROOM_THREAD_CONTEXT_MAX_CHARS) {
+        break;
+      }
+
+      trimmedFromTail.push(line);
+      totalChars += line.length;
+    }
+
+    return trimmedFromTail.reverse().join("\n");
   }
 
   /**

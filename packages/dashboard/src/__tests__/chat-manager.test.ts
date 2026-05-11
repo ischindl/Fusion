@@ -64,6 +64,7 @@ const mockChatStore = {
   updateSession: vi.fn(),
   setCliSessionFile: vi.fn(),
   setInFlightGeneration: vi.fn(),
+  getRoomMessages: vi.fn(),
 };
 
 const mockAgentStore = {
@@ -115,6 +116,7 @@ describe("ChatManager.sendMessage", () => {
       content: "",
     });
     mockChatStore.getMessages.mockReturnValue([]);
+    mockChatStore.getRoomMessages.mockReturnValue([]);
 
     mockAgentStore.init.mockResolvedValue(undefined);
     mockAgentStore.getAgent.mockResolvedValue({
@@ -1547,6 +1549,7 @@ describe("ChatManager diagnostics", () => {
       content: "",
     });
     mockChatStore.getMessages.mockReturnValue([]);
+    mockChatStore.getRoomMessages.mockReturnValue([]);
     mockAgentStore.init.mockResolvedValue(undefined);
     mockAgentStore.getAgent.mockResolvedValue({
       id: "agent-001",

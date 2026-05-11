@@ -6,6 +6,7 @@ const mockChatStore = {
   createSession: vi.fn(),
   getRoom: vi.fn(),
   addRoomMessage: vi.fn(),
+  getRoomMessages: vi.fn(),
 };
 
 const mockAgentStore = {
@@ -24,6 +25,7 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
       roomId: "room-1",
       ...input,
     }));
+    mockChatStore.getRoomMessages.mockReturnValue([]);
   });
 
   describe("resolveRoomResponders", () => {
@@ -116,7 +118,8 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
       expect(assistantWrite).toMatchObject({ role: "assistant", senderAgentId: "agent-a", content: "Room reply" });
     });
 
-    it("records non-member mentions and emits explanatory assistant note", async () => {      mockChatStore.listRoomMembers.mockReturnValue([
+    it("records non-member mentions and emits explanatory assistant note", async () => {
+      mockChatStore.listRoomMembers.mockReturnValue([
         { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
       ]);
       mockAgentStore.listAgents.mockResolvedValue([
@@ -151,6 +154,86 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
         senderAgentId: null,
         content: expect.stringContaining("@Zeta"),
       });
+    });
+
+    it("includes bounded room transcript context in responder prompt", async () => {
+      mockChatStore.listRoomMembers.mockReturnValue([
+        { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
+      ]);
+      mockAgentStore.listAgents.mockResolvedValue([{ id: "agent-a", name: "Alpha", role: "executor" }]);
+      mockAgentStore.getAgent.mockResolvedValue({ id: "agent-a", name: "Alpha", role: "executor" });
+
+      const promptSpy = vi.fn().mockResolvedValue(undefined);
+      __setCreateResolvedAgentSession(async () => ({
+        session: {
+          prompt: promptSpy,
+          dispose: vi.fn(),
+          state: {
+            messages: [{ role: "assistant", content: "Room reply" }],
+          },
+        },
+      } as any));
+
+      mockChatStore.getRoomMessages.mockReturnValue([
+        { id: "msg-older", role: "user", senderAgentId: null, content: "Older user context", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "msg-assist", role: "assistant", senderAgentId: "agent-a", content: "Earlier assistant context", createdAt: "2026-01-01T00:00:01.000Z" },
+        { id: "msg-1", role: "user", senderAgentId: null, content: "hello @Alpha", createdAt: "2026-01-01T00:00:02.000Z" },
+      ]);
+
+      const manager = new ChatManager(mockChatStore as any, "/tmp", mockAgentStore as any);
+      await manager.sendRoomMessage("room-1", "hello @Alpha");
+
+      const prompt = promptSpy.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("Room transcript (oldest to newest, bounded):");
+      expect(prompt).toContain("Older user context");
+      expect(prompt).toContain("Earlier assistant context");
+      expect(prompt).toContain("[LATEST USER MESSAGE — ANSWER THIS]");
+      expect(mockChatStore.getRoomMessages).toHaveBeenCalledWith("room-1", { limit: expect.any(Number) });
+    });
+
+    it("trims older room context entries from the prompt window", async () => {
+      mockChatStore.listRoomMembers.mockReturnValue([
+        { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
+      ]);
+      mockAgentStore.listAgents.mockResolvedValue([{ id: "agent-a", name: "Alpha", role: "executor" }]);
+      mockAgentStore.getAgent.mockResolvedValue({ id: "agent-a", name: "Alpha", role: "executor" });
+
+      const promptSpy = vi.fn().mockResolvedValue(undefined);
+      __setCreateResolvedAgentSession(async () => ({
+        session: {
+          prompt: promptSpy,
+          dispose: vi.fn(),
+          state: {
+            messages: [{ role: "assistant", content: "Room reply" }],
+          },
+        },
+      } as any));
+
+      const history = Array.from({ length: 30 }, (_, index) => ({
+        id: `msg-${index + 1}`,
+        role: index % 2 === 0 ? "user" : "assistant",
+        senderAgentId: index % 2 === 0 ? null : "agent-a",
+        content: `history-item-${index}`,
+        createdAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      }));
+      history[history.length - 1] = {
+        ...history[history.length - 1],
+        id: "msg-1",
+        role: "user",
+        senderAgentId: null,
+        content: "hello @Alpha",
+      };
+      mockChatStore.getRoomMessages.mockImplementation((_roomId: string, filter?: { limit?: number }) => {
+        const limit = filter?.limit ?? history.length;
+        return history.slice(-limit);
+      });
+
+      const manager = new ChatManager(mockChatStore as any, "/tmp", mockAgentStore as any);
+      await manager.sendRoomMessage("room-1", "hello @Alpha");
+
+      const prompt = promptSpy.mock.calls[0]?.[0] as string;
+      expect(prompt).toContain("history-item-28");
+      expect(prompt).not.toContain("history-item-0");
     });
   });
 });
