@@ -51,6 +51,7 @@ The dashboard supports mission planning workflows where you can:
 - Track progress at each layer
 - Persisted missions with `interviewState: "in_progress"` remain visible as interview-styled mission cards in the main mission list so planning work does not disappear after reloads
 - Resume in-progress mission interview sessions directly from separate transient session rows in the main missions list (`mission_interview` sessions in `generating`, `awaiting_input`, or `error`) before a mission record is created
+- Banner-driven mission interview resumes are one-shot: if you close or send the interview to background, Missions re-fetches project-scoped `mission_interview` sessions and re-surfaces the transient row (including on the mobile stacked Missions view) so resume/retry remains discoverable without losing persisted `interviewState: "in_progress"` mission cards
 
 ### Auto-Generated Assertions
 

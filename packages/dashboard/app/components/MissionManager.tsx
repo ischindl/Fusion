@@ -566,7 +566,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   // Pending mission interview sessions (for resume prompt after page reload)
   const [pendingInterviewSessions, setPendingInterviewSessions] = useState<AiSessionSummary[]>([]);
   const [localResumeSessionId, setLocalResumeSessionId] = useState<string | undefined>(undefined);
-  const effectiveResumeSessionId = localResumeSessionId ?? resumeSessionId;
+  const dismissedResumeSessionIdRef = useRef<string | null>(null);
+  const effectiveResumeSessionId =
+    localResumeSessionId ??
+    (resumeSessionId && dismissedResumeSessionIdRef.current === resumeSessionId ? undefined : resumeSessionId);
 
   // Milestone/Slice interview modal
   const [interviewTarget, setInterviewTarget] = useState<{
@@ -589,6 +592,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       setShowInterviewModal(true);
     }
   }, [isActive, effectiveResumeSessionId]);
+
+  // If parent requests a different resume session, allow it to open again.
+  useEffect(() => {
+    if (resumeSessionId && dismissedResumeSessionIdRef.current !== resumeSessionId) {
+      dismissedResumeSessionIdRef.current = null;
+    }
+  }, [resumeSessionId]);
 
   // Detect pending mission interview sessions for resume prompt
   useEffect(() => {
@@ -3504,6 +3514,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     setShowInterviewModal(true);
   };
 
+  const handleInterviewModalClose = () => {
+    dismissedResumeSessionIdRef.current = effectiveResumeSessionId ?? null;
+    setLocalResumeSessionId(undefined);
+    setShowInterviewModal(false);
+  };
+
   const renderInterviewSessionItems = () => pendingInterviewSessions.map((session) => {
     const isErrored = session.status === "error";
     const isGenerating = session.status === "generating";
@@ -4035,7 +4051,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const interviewModal = (
     <MissionInterviewModal
       isOpen={showInterviewModal}
-      onClose={() => setShowInterviewModal(false)}
+      onClose={handleInterviewModalClose}
       onMissionCreated={() => {
         loadMissions();
         addToast("Mission created from AI interview", "success");

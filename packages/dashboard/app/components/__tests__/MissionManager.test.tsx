@@ -1653,6 +1653,106 @@ describe("MissionManager", () => {
     });
   });
 
+  it("re-shows project-scoped transient interview rows after banner resume is backgrounded on mobile", async () => {
+    mockViewport("mobile");
+
+    const missionsWithPersistedInterview = [
+      {
+        id: "M-PERSISTED-INTERVIEW",
+        title: "Persisted mission interview",
+        description: "Persisted mission row",
+        status: "planning",
+        interviewState: "in_progress",
+        milestones: [],
+        createdAt: "2026-01-06T00:00:00.000Z",
+        updatedAt: "2026-01-06T00:00:00.000Z",
+      },
+      ...mockMissions,
+    ];
+
+    mockFetchAiSession.mockResolvedValueOnce({
+      id: "session-bg-1",
+      type: "mission_interview",
+      status: "generating",
+      title: "Project A transient interview",
+      inputPayload: JSON.stringify({ missionTitle: "Project A transient interview" }),
+      conversationHistory: "[]",
+      currentQuestion: null,
+      result: null,
+      thinkingOutput: "",
+      error: null,
+      projectId: "project-a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    mockFetchAiSessions.mockResolvedValueOnce([
+      {
+        id: "session-bg-1",
+        type: "mission_interview",
+        status: "awaiting_input",
+        title: "Project A transient interview",
+        projectId: "project-a",
+        lockedByTab: null,
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      },
+      {
+        id: "session-other-project",
+        type: "mission_interview",
+        status: "awaiting_input",
+        title: "Project B transient interview",
+        projectId: "project-b",
+        lockedByTab: null,
+        updatedAt: "2026-01-04T00:00:00.000Z",
+      },
+    ]);
+
+    globalThis.fetch = createFetchMockWithHealth(missionsWithPersistedInterview as Array<Record<string, unknown>>, {
+      ...mockMissionHealthById,
+      "M-PERSISTED-INTERVIEW": {
+        missionId: "M-PERSISTED-INTERVIEW",
+        status: "planning",
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        tasksInFlight: 0,
+        totalTasks: 0,
+        estimatedCompletionPercent: 0,
+        autopilotState: "inactive",
+        autopilotEnabled: false,
+      },
+    });
+
+    render(
+      <MissionManager
+        isOpen={true}
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+        projectId="project-a"
+        resumeSessionId="session-bg-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Plan Mission with AI")).toBeInTheDocument();
+      expect(screen.getByText("Preparing next question...")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByLabelText("Send to background"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Plan Mission with AI")).not.toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Project A transient interview")).toBeInTheDocument();
+      expect(screen.getByText("Persisted mission interview")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Project B transient interview")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Resume interview")).toBeInTheDocument();
+    expect(mockFetchAiSessions).toHaveBeenCalledWith("project-a");
+  });
+
   it("keeps persisted interview-stage missions visible with interview styling and mission selection behavior", async () => {
     const missionsWithInterview = [
       {
