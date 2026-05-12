@@ -42,6 +42,17 @@ const { mockCreateFnAgent } = vi.hoisted(() => ({
 
 vi.mock("@fusion/engine", () => ({
   createFnAgent: mockCreateFnAgent,
+  createResolvedAgentSession: vi.fn(async () => ({
+    session: { state: { messages: [] }, prompt: vi.fn(), dispose: vi.fn() },
+    runtimeModel: undefined,
+  })),
+  promptWithFallback: vi.fn(async (session: { prompt: (message: string) => Promise<void> }, prompt: string) => {
+    await session.prompt(prompt);
+  }),
+  extractRuntimeHint: vi.fn(() => undefined),
+  extractRuntimeModel: vi.fn(() => undefined),
+  createSendMessageTool: vi.fn(() => ({})),
+  createReadMessagesTool: vi.fn(() => ({})),
 }));
 
 function makePlanningAgent(responses: string[]) {

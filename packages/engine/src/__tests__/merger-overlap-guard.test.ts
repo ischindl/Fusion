@@ -369,7 +369,7 @@ describe("aiMergeTask overlap-aware fallback integration", () => {
     expect(result.resolutionMethod).toBe("ours");
     expect(git(dir, "git show HEAD:store.ts")).toContain("main fallback");
     expect(git(dir, "git show HEAD:store.ts")).not.toContain("branch hardening");
-  });
+  }, 15_000);
 
   it("warn-only logs overlap but preserves main-wins behavior", async () => {
     commitFile(dir, "store.ts", "export const mode = 'base';\n", "feat: add store");

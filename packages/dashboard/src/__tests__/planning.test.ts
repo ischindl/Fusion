@@ -2053,7 +2053,7 @@ describe("planning module", () => {
       expect(result).toEqual([]);
     });
 
-    it("generates subtasks from keyDeliverables", async () => {
+    it("generates subtasks from keyDeliverables and appends verification", async () => {
       const mockIp = getUniqueIp();
       const sessionId = await createCompletedSession(mockIp, "Build auth system");
 
@@ -2061,7 +2061,7 @@ describe("planning module", () => {
 
       // The AI-generated session produces 3 key deliverables:
       // "Implementation", "Tests", "Documentation"
-      expect(result.length).toBe(3);
+      expect(result.length).toBe(4);
 
       // First subtask has no dependencies
       expect(result[0]).toEqual({
@@ -2083,7 +2083,7 @@ describe("planning module", () => {
         dependsOn: ["subtask-1"],
       });
 
-      // Third subtask depends on second
+      // Third deliverable subtask depends on second
       expect(result[2]).toEqual({
         id: "subtask-3",
         title: "Documentation",
@@ -2092,6 +2092,16 @@ describe("planning module", () => {
         priority: "normal",
         dependsOn: ["subtask-2"],
       });
+
+      expect(result[3]).toEqual({
+        id: "subtask-4",
+        title: "Verify end-to-end",
+        description: expect.any(String),
+        suggestedSize: "S",
+        priority: "normal",
+        dependsOn: ["subtask-3"],
+      });
+      expect(result[3]?.description).toContain("Verify the full plan end-to-end now that all deliverables are implemented.");
     });
 
     it("inherits summary priority for generated subtasks", async () => {
@@ -2115,10 +2125,11 @@ describe("planning module", () => {
 
       const result = generateSubtasksFromPlanning(sessionId);
 
-      expect(result.length).toBe(3);
+      expect(result.length).toBe(4);
       expect(result[0]?.description).toContain('Implement "Implementation" as this subtask\'s primary outcome.');
       expect(result[1]?.description).toContain('Implement "Tests" as this subtask\'s primary outcome.');
       expect(result[2]?.description).toContain('Implement "Documentation" as this subtask\'s primary outcome.');
+      expect(result[3]?.description).toContain("Verify the full plan end-to-end now that all deliverables are implemented.");
 
       expect(result[0]?.description).toContain("## Larger Plan Context");
       expect(result[0]?.description).toContain("## Planning Interview Context");
@@ -2200,7 +2211,7 @@ describe("planning module", () => {
       expect(result[0]?.description).toContain("## Larger Plan Context");
     });
 
-    it("assigns correct sizes based on deliverable position", async () => {
+    it("assigns correct sizes based on deliverable position and appended verification", async () => {
       const mockIp = getUniqueIp();
       const { sessionId } = await createSession(mockIp, "Multi-deliverable test", undefined, TEST_ROOT_DIR);
 
@@ -2222,14 +2233,16 @@ describe("planning module", () => {
       }
 
       const result = generateSubtasksFromPlanning(sessionId);
-      expect(result.length).toBe(5);
+      expect(result.length).toBe(6);
 
-      // First: S, Middle: M, Last: S
+      // First: S, Middle: M, Last deliverable: S, Verification: S
       expect(result[0]?.suggestedSize).toBe("S");
       expect(result[1]?.suggestedSize).toBe("M");
       expect(result[2]?.suggestedSize).toBe("M");
       expect(result[3]?.suggestedSize).toBe("M");
       expect(result[4]?.suggestedSize).toBe("S");
+      expect(result[5]?.title).toBe("Verify end-to-end");
+      expect(result[5]?.suggestedSize).toBe("S");
     });
 
     it("uses sequential dependencies between subtasks", async () => {
@@ -2244,11 +2257,43 @@ describe("planning module", () => {
       }
     });
 
+    it("appends verification after a single deliverable", async () => {
+      const mockIp = getUniqueIp();
+      const { sessionId } = await createSession(mockIp, "Single deliverable test", undefined, TEST_ROOT_DIR);
+
+      await submitResponse(sessionId, { scope: "small" });
+      await submitResponse(sessionId, { requirements: "one thing" });
+      await submitResponse(sessionId, { confirm: true });
+
+      const session = getSession(sessionId);
+      if (session?.summary) {
+        session.summary.keyDeliverables = ["Only one"];
+      }
+
+      const result = generateSubtasksFromPlanning(sessionId);
+      expect(result).toHaveLength(2);
+      expect(result[0]?.id).toBe("subtask-1");
+      expect(result[0]?.title).toBe("Only one");
+      expect(result[1]).toEqual(expect.objectContaining({
+        id: "subtask-2",
+        title: "Verify end-to-end",
+        suggestedSize: "S",
+        dependsOn: ["subtask-1"],
+      }));
+    });
+
     it("merges compact subtask drafts onto generated planning subtasks", async () => {
       const mockIp = getUniqueIp();
       const sessionId = await createCompletedSession(mockIp, "Compact draft merge test");
 
       const generated = generateSubtasksFromPlanning(sessionId);
+      const verificationSubtask = generated.at(-1);
+      expect(verificationSubtask).toEqual(expect.objectContaining({
+        id: "subtask-4",
+        title: "Verify end-to-end",
+        dependsOn: ["subtask-3"],
+      }));
+
       const merged = mergePlanningSubtaskDrafts(sessionId, [
         { id: generated[0]!.id },
         {
@@ -2263,6 +2308,12 @@ describe("planning module", () => {
           id: generated[2]!.id,
           dependsOn: [generated[0]!.id, generated[1]!.id],
         },
+        {
+          id: verificationSubtask!.id,
+          title: "Edited verification",
+          description: "Run end-to-end verification and capture follow-ups",
+          dependsOn: [generated[1]!.id, generated[2]!.id],
+        },
       ]);
 
       expect(merged[0]).toEqual(generated[0]);
@@ -2276,6 +2327,12 @@ describe("planning module", () => {
       expect(merged[2]).toEqual({
         ...generated[2],
         dependsOn: [generated[0]!.id, generated[1]!.id],
+      });
+      expect(merged[3]).toEqual({
+        ...verificationSubtask,
+        title: "Edited verification",
+        description: "Run end-to-end verification and capture follow-ups",
+        dependsOn: [generated[1]!.id, generated[2]!.id],
       });
     });
 

@@ -1264,13 +1264,21 @@ describe("Planning Mode Routes", () => {
 
         expect(res.status).toBe(200);
         expect(res.body.sessionId).toBe(sessionId);
-        expect(res.body.subtasks).toHaveLength(1);
+        expect(res.body.subtasks).toHaveLength(2);
         expect(res.body.subtasks[0]).toEqual(
           expect.objectContaining({
             title: "OAuth integration",
           }),
         );
         expect(res.body.subtasks[0].description).toContain("Use OAuth providers and secure refresh tokens");
+        expect(res.body.subtasks[1]).toEqual(
+          expect.objectContaining({
+            id: "subtask-2",
+            title: "Verify end-to-end",
+            dependsOn: ["subtask-1"],
+            suggestedSize: "S",
+          }),
+        );
       });
     });
 
@@ -1738,7 +1746,7 @@ describe("Planning Mode Routes", () => {
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:00.000Z",
         };
-        for (let index = 0; index < 15; index += 1) {
+        for (let index = 0; index < 16; index += 1) {
           (store.createTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
             ...createdTaskBase,
             id: `FN-${300 + index}`,
@@ -1786,7 +1794,15 @@ describe("Planning Mode Routes", () => {
           priority?: string;
           dependsOn: string[];
         }>;
-        expect(generatedSubtasks).toHaveLength(15);
+        expect(generatedSubtasks).toHaveLength(16);
+        expect(generatedSubtasks[15]).toEqual(
+          expect.objectContaining({
+            id: "subtask-16",
+            title: "Verify end-to-end",
+            dependsOn: ["subtask-15"],
+            suggestedSize: "S",
+          }),
+        );
 
         const oversizedLegacyPayload = JSON.stringify({ planningSessionId, subtasks: generatedSubtasks });
         const compactPayload = JSON.stringify({
@@ -1805,7 +1821,7 @@ describe("Planning Mode Routes", () => {
         );
 
         expect(res.status).toBe(201);
-        expect(store.createTask).toHaveBeenCalledTimes(15);
+        expect(store.createTask).toHaveBeenCalledTimes(16);
         expect(store.createTask).toHaveBeenNthCalledWith(
           1,
           expect.objectContaining({
@@ -1814,13 +1830,13 @@ describe("Planning Mode Routes", () => {
           }),
         );
         expect(store.createTask).toHaveBeenNthCalledWith(
-          15,
+          16,
           expect.objectContaining({
-            title: generatedSubtasks[14]!.title,
-            description: generatedSubtasks[14]!.description,
+            title: generatedSubtasks[15]!.title,
+            description: generatedSubtasks[15]!.description,
           }),
         );
-        expect(store.logEntry).toHaveBeenCalledTimes(15);
+        expect(store.logEntry).toHaveBeenCalledTimes(16);
       });
 
       it("applies branchSelection when creating a planning task", async () => {
