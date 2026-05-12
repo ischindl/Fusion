@@ -16,6 +16,9 @@ export type NtfyNotificationPriority = "low" | "default" | "high" | "urgent";
 
 const DEFAULT_NTFY_BASE_URL = "https://ntfy.sh";
 const GRIDLOCK_NOTIFICATION_COOLDOWN_MS = 15 * 60 * 1000;
+const NTFY_TITLE_MAX = 250;
+// ntfy documents a 4 KiB message body limit; reserve room for an ellipsis when truncating UTF-8 payloads.
+const NTFY_MESSAGE_MAX = 4096;
 
 export const DEFAULT_NTFY_EVENTS: readonly NtfyNotificationEvent[] = [
   "in-review",
@@ -93,6 +96,47 @@ function resolveNtfyBaseUrl(baseUrl: string | undefined, fallback = DEFAULT_NTFY
   return trimmed.replace(/\/+$/, "");
 }
 
+function isLatin1Safe(value: string): boolean {
+  for (const char of value) {
+    if (char.codePointAt(0)! > 0xff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function truncateNtfyTitle(title: string): string {
+  const characters = Array.from(title);
+  if (characters.length <= NTFY_TITLE_MAX) {
+    return title;
+  }
+  return `${characters.slice(0, NTFY_TITLE_MAX - 1).join("")}…`;
+}
+
+function truncateNtfyMessage(message: string): string {
+  if (Buffer.byteLength(message, "utf8") <= NTFY_MESSAGE_MAX) {
+    return message;
+  }
+
+  const characters = Array.from(message);
+  let low = 0;
+  let high = characters.length;
+  let best = "…";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = `${characters.slice(0, mid).join("")}…`;
+    if (Buffer.byteLength(candidate, "utf8") <= NTFY_MESSAGE_MAX) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best;
+}
+
 export function resolveNtfyEvents(events?: NtfyNotificationEvent[]): NtfyNotificationEvent[] {
   return events ? [...events] : [...DEFAULT_NTFY_EVENTS];
 }
@@ -151,26 +195,40 @@ export async function sendNtfyNotificationWithResult({
   signal,
 }: SendNtfyNotificationInput): Promise<{ ok: boolean; status: number; statusText: string } | null> {
   try {
+    const resolvedBaseUrl = resolveNtfyBaseUrl(ntfyBaseUrl);
+    const trimmedToken = ntfyAccessToken?.trim();
+    const truncatedTitle = truncateNtfyTitle(title);
+    const truncatedMessage = truncateNtfyMessage(message);
+    const latin1Safe = isLatin1Safe(truncatedTitle) && isLatin1Safe(truncatedMessage);
+
     const headers: Record<string, string> = {
-      Title: title,
       Priority: priority,
-      "Content-Type": "text/plain",
+      "Content-Type": latin1Safe ? "text/plain" : "application/json",
     };
 
-    if (clickUrl) {
-      headers.Click = clickUrl;
+    if (latin1Safe) {
+      headers.Title = truncatedTitle;
+      if (clickUrl) {
+        headers.Click = clickUrl;
+      }
     }
 
-    const trimmedToken = ntfyAccessToken?.trim();
     if (trimmedToken) {
       headers.Authorization = `Bearer ${trimmedToken}`;
     }
 
-    const resolvedBaseUrl = resolveNtfyBaseUrl(ntfyBaseUrl);
-    const response = await fetch(`${resolvedBaseUrl}/${topic}`, {
+    const response = await fetch(latin1Safe ? `${resolvedBaseUrl}/${topic}` : `${resolvedBaseUrl}/`, {
       method: "POST",
       headers,
-      body: message,
+      body: latin1Safe
+        ? truncatedMessage
+        : JSON.stringify({
+          topic,
+          title: truncatedTitle,
+          message: truncatedMessage,
+          priority,
+          ...(clickUrl ? { click: clickUrl } : {}),
+        }),
       signal,
     });
 

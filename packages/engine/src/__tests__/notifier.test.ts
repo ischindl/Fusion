@@ -8,6 +8,7 @@ import {
   isNtfyEventEnabled,
   resolveNtfyEvents,
   notifyFallbackUsed,
+  sendNtfyNotificationWithResult,
 } from "../notifier.js";
 import { NotificationService } from "../notification/notification-service.js";
 
@@ -104,6 +105,128 @@ describe("Ntfy notifier helpers", () => {
         messageId: "msg-1",
       }),
     ).toBe("http://localhost:4040/?project=proj-1&view=mailbox&mailbox-message=msg-1#message-msg-1");
+  });
+});
+
+describe("sendNtfyNotificationWithResult", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      new Headers(init?.headers);
+      return { ok: true, status: 200, statusText: "OK" } as Response;
+    });
+    global.fetch = fetchMock;
+  });
+
+  it("calling with a unicode title does not throw and posts JSON with auth preserved", async () => {
+    const signal = new AbortController().signal;
+
+    await expect(sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      ntfyAccessToken: "secret-token",
+      topic: "test-topic",
+      title: "Triage Bot → Executor Bot",
+      message: "Triage Bot → you: preview text",
+      clickUrl: "https://fusion.example.com/?task=FN-1",
+      signal,
+    })).resolves.toEqual({ ok: true, status: 200, statusText: "OK" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://ntfy.sh/",
+      expect.objectContaining({
+        method: "POST",
+        signal,
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          Priority: "default",
+          Authorization: "Bearer secret-token",
+        }),
+      }),
+    );
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      topic: "test-topic",
+      title: "Triage Bot → Executor Bot",
+      message: "Triage Bot → you: preview text",
+      priority: "default",
+      click: "https://fusion.example.com/?task=FN-1",
+    });
+  });
+
+  it("keeps the legacy text/plain header path for pure ASCII titles", async () => {
+    const signal = new AbortController().signal;
+
+    await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "ascii-topic",
+      title: "Task FN-1 merged",
+      message: "Task \"Example\" has been merged to main",
+      clickUrl: "https://fusion.example.com/?task=FN-1",
+      signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://ntfy.sh/ascii-topic",
+      expect.objectContaining({
+        method: "POST",
+        signal,
+        headers: expect.objectContaining({
+          "Content-Type": "text/plain",
+          Title: "Task FN-1 merged",
+          Priority: "default",
+          Click: "https://fusion.example.com/?task=FN-1",
+        }),
+        body: "Task \"Example\" has been merged to main",
+      }),
+    );
+  });
+
+  it("truncates overlong titles to 250 characters with an ellipsis", async () => {
+    await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "test-topic",
+      title: `${"T".repeat(260)}→`,
+      message: "Preview text",
+    });
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const payload = JSON.parse(String(request.body)) as { title: string };
+    expect(Array.from(payload.title)).toHaveLength(250);
+    expect(payload.title.endsWith("…")).toBe(true);
+  });
+
+  it("truncates overlong messages to fit within 4096 UTF-8 bytes with an ellipsis", async () => {
+    await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "test-topic",
+      title: "Triage Bot → Executor Bot",
+      message: "é".repeat(3000),
+    });
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const payload = JSON.parse(String(request.body)) as { message: string };
+    expect(Buffer.byteLength(payload.message, "utf8")).toBeLessThanOrEqual(4096);
+    expect(payload.message.endsWith("…")).toBe(true);
+  });
+
+  it("does not split a surrogate pair when truncating overlong messages", async () => {
+    await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "test-topic",
+      title: "Triage Bot → Executor Bot",
+      message: `${"𝐀".repeat(1024)}Z`,
+    });
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const payload = JSON.parse(String(request.body)) as { message: string };
+    const characters = Array.from(payload.message);
+    expect(Buffer.byteLength(payload.message, "utf8")).toBeLessThanOrEqual(4096);
+    expect(characters.at(-1)).toBe("…");
+    expect(characters.at(-2)).toBe("𝐀");
+    expect(payload.message.endsWith("𝐀…")).toBe(true);
+    expect(payload.message).not.toContain("�");
   });
 });
 

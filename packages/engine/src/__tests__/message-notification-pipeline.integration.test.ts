@@ -61,11 +61,14 @@ describe("message notification pipeline integration", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/test-topic");
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/");
     const firstOptions = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     const firstHeaders = firstOptions.headers as Record<string, string>;
-    expect(firstHeaders.Title).toBe("agent-A → agent-B");
-    expect(String(firstOptions.body)).toContain("agent-A messaged agent-B: hi from agent A");
+    expect(firstHeaders["Content-Type"]).toBe("application/json");
+    const firstPayload = JSON.parse(String(firstOptions.body)) as { title: string; message: string; topic: string };
+    expect(firstPayload.topic).toBe("test-topic");
+    expect(firstPayload.title).toBe("agent-A → agent-B");
+    expect(firstPayload.message).toContain("agent-A messaged agent-B: hi from agent A");
 
     messageStore.sendMessage({
       fromId: "agent-A",
@@ -80,8 +83,11 @@ describe("message notification pipeline integration", () => {
     await vi.waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
-    const replyHeaders = (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe("https://ntfy.sh/test-topic");
+    const replyRequest = fetchSpy.mock.calls[1]?.[1] as RequestInit;
+    const replyHeaders = replyRequest.headers as Record<string, string>;
     expect(replyHeaders.Title).toBe("Re: reply preview");
+    expect(String(replyRequest.body)).toContain("agent-A messaged agent-B: reply preview");
 
     await taskStore.updateGlobalSettings({ ntfyEvents: ["message:agent-to-user"] });
 
@@ -147,9 +153,13 @@ describe("message notification pipeline integration", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/");
     const request = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     const headers = request.headers as Record<string, string>;
-    expect(headers.Title).toBe("New message from agent-A");
-    expect(String(request.body)).toContain("agent-A → you: hello user");
+    expect(headers["Content-Type"]).toBe("application/json");
+    const payload = JSON.parse(String(request.body)) as { title: string; message: string; topic: string };
+    expect(payload.topic).toBe("test-topic");
+    expect(payload.title).toBe("New message from agent-A");
+    expect(payload.message).toContain("agent-A → you: hello user");
   });
 });

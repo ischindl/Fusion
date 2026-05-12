@@ -53,22 +53,25 @@ describe("message notification pipeline", () => {
     await vi.waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/test-topic");
-    const firstHeaders = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
-    expect(firstHeaders.Title).toContain("Triage Bot");
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ntfy.sh/");
+    const firstRequest = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    const firstHeaders = firstRequest.headers as Record<string, string>;
+    expect(firstHeaders["Content-Type"]).toBe("application/json");
     expect(firstHeaders.Authorization).toBe("Bearer token-123");
-    const firstBody = String((fetchSpy.mock.calls[0]?.[1] as RequestInit).body);
-    expect(firstBody).toContain("hi");
+    const firstBody = JSON.parse(String(firstRequest.body)) as { title: string; message: string; topic: string };
+    expect(firstBody.topic).toBe("test-topic");
+    expect(firstBody.title).toContain("Triage Bot");
+    expect(firstBody.message).toContain("hi");
 
     messageStore.sendMessage("agent-to-agent", "relay");
     await vi.waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
-    const secondHeaders = (fetchSpy.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>;
-    expect(secondHeaders.Title).toContain("Triage Bot → Executor Bot");
-    const secondBody = String((fetchSpy.mock.calls[1]?.[1] as RequestInit).body);
-    expect(secondBody).toContain("relay");
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe("https://ntfy.sh/");
+    const secondBody = JSON.parse(String((fetchSpy.mock.calls[1]?.[1] as RequestInit).body)) as { title: string; message: string };
+    expect(secondBody.title).toContain("Triage Bot → Executor Bot");
+    expect(secondBody.message).toContain("relay");
 
     messageStore.sendMessage("user-to-agent", "ignore me");
     await new Promise((resolve) => setTimeout(resolve, 0));

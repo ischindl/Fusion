@@ -48,6 +48,8 @@ Defaults from `DEFAULT_GLOBAL_SETTINGS`; key scope from `GLOBAL_SETTINGS_KEYS`.
 | `webhookEnabled` | `boolean` | `false` | Enable webhook notifications for task lifecycle events. Part of the legacy flat settings; prefer `notificationProviders` for new setups. |
 
 In **Settings → Notifications**, use **Test message notification** to exercise the full mailbox-message dispatch pipeline (`NotificationService.dispatch` → provider delivery), not just a raw ntfy POST.
+
+Fusion automatically falls back to ntfy's JSON publish format when a notification title or message contains non-Latin-1 characters, and truncates outgoing titles/messages to ntfy's documented size limits before sending.
 | `webhookUrl` | `string` | `undefined` | Webhook endpoint URL. Must be `http://` or `https://`. Part of legacy flat settings. |
 | `webhookFormat` | `"slack" \| "discord" \| "generic"` | `"generic"` | Webhook payload format. Part of legacy flat settings. |
 | `webhookEvents` | `string[]` | `[]` | Event filter for webhook notifications. Empty/omitted means all events. Part of legacy flat settings. |
