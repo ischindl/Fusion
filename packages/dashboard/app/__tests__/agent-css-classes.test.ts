@@ -76,14 +76,19 @@ describe("Agent CSS classes", () => {
   it("should use dashboard tokens in the updated org chart styles", () => {
     const agentsViewCss = fs.readFileSync(path.join(__dirname, "../components/AgentsView.css"), "utf-8");
     const orgChartStart = agentsViewCss.indexOf("/* === FN-1167: Agent Org Chart + Chain of Command === */");
-    const orgChartSection = orgChartStart >= 0 ? agentsViewCss.slice(orgChartStart) : "";
+    const orgChartEnd = agentsViewCss.indexOf(".chain-of-command-path", orgChartStart);
+    const orgChartSection = orgChartStart >= 0
+      ? agentsViewCss.slice(orgChartStart, orgChartEnd >= 0 ? orgChartEnd : undefined)
+      : "";
     expect(orgChartSection).toContain("gap: var(--space-xl)");
-    expect(orgChartSection).toContain("padding: var(--space-lg)");
+    expect(orgChartSection).toContain("padding: var(--space-xl)");
+    expect(orgChartSection).toContain("padding: var(--space-md)");
     expect(orgChartSection).toContain("--org-chart-node-width: calc(var(--space-xl) * 9 + var(--space-xs))");
     expect(orgChartSection).toContain("--org-chart-root-gap: var(--space-xl)");
     expect(orgChartSection).toContain("--org-chart-connector-gap: var(--space-sm)");
     expect(orgChartSection).toContain("--org-chart-sibling-gap: var(--space-xl)");
     expect(orgChartSection).toContain("--org-chart-children-offset: calc(var(--space-lg) + var(--space-sm))");
+    expect(orgChartSection).toContain("--org-chart-connector-color: color-mix(in srgb, var(--text-muted) 60%, transparent)");
     expect(orgChartSection).toContain("--org-chart-first-child-leaves: 1");
     expect(orgChartSection).toContain("--org-chart-last-child-leaves: 1");
     expect(orgChartSection).toContain("--org-chart-first-child-center-offset");
@@ -95,24 +100,33 @@ describe("Agent CSS classes", () => {
     expect(orgChartSection).toContain("overflow: auto");
     expect(orgChartSection).toContain("overscroll-behavior: contain");
     expect(orgChartSection).toContain("transform-origin: top left");
+    expect(orgChartSection).toContain("background: var(--bg)");
+    expect(orgChartSection).toContain("background: var(--card)");
+    expect(orgChartSection).toContain("background: var(--card-hover)");
     expect(orgChartSection).toContain("border: 1px solid var(--border)");
+    expect(orgChartSection).toContain("border-radius: var(--radius-lg)");
+    expect(orgChartSection).toContain("border-radius: var(--radius-pill)");
+    expect(orgChartSection).toContain("box-shadow: var(--shadow-sm)");
+    expect(orgChartSection).toContain("box-shadow: var(--shadow-md)");
+    expect(orgChartSection).toContain("box-shadow: var(--shadow-md), var(--focus-ring-strong)");
+    expect(orgChartSection).toContain("border-color: color-mix(in srgb, var(--color-success) 40%, var(--border))");
     expect(orgChartSection).toContain("color: var(--text)");
     expect(orgChartSection).toContain("color: var(--text-muted)");
-    expect(orgChartSection).toContain("border-radius: var(--radius-pill)");
-    expect(orgChartSection).toContain("transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast)");
+    expect(orgChartSection).toContain("box-shadow var(--transition-fast)");
+    expect(orgChartSection).toContain("background-color var(--transition-fast)");
+    expect(orgChartSection).toContain("transform var(--transition-fast)");
     expect(orgChartSection).toContain("--org-chart-subtree-leaves-number: var(--org-chart-subtree-leaves, 1)");
     expect(orgChartSection).toContain("min-width: calc(");
-    expect(orgChartSection).not.toContain("var(--border-color)");
-    expect(orgChartSection).not.toContain("var(--text-primary)");
-    expect(orgChartSection).not.toContain("var(--text-secondary)");
     expect(orgChartSection).toContain(".agent-org-chart--vertical .org-chart-children");
     expect(orgChartSection).toContain("gap: var(--space-sm)");
     expect(orgChartSection).toContain("padding-top: var(--space-sm)");
     expect(orgChartSection).toContain("padding-left: calc(var(--space-lg) + var(--space-sm))");
-    expect(orgChartSection).toContain("--org-chart-node-width: calc(var(--space-2xl) * 5)");
-    expect(orgChartSection).toContain("--org-chart-sibling-gap: var(--space-sm)");
-    expect(orgChartSection).toContain("--org-chart-children-offset: var(--space-lg)");
+    expect(orgChartSection).toContain("@media (max-width: 768px)");
+    expect(orgChartSection).not.toContain("var(--border-color)");
+    expect(orgChartSection).not.toContain("var(--text-primary)");
+    expect(orgChartSection).not.toContain("var(--text-secondary)");
     expect(orgChartSection).not.toMatch(/1\.5rem|0\.75rem|0\.72rem|0\.78rem|0\.65rem|120ms\s+ease|10px/);
+    expect(orgChartSection).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba\(/);
   });
 
   it("encodes compact mobile agent detail header layout contracts", () => {

@@ -879,6 +879,9 @@
   min-height: 0;
   overflow: auto;
   max-width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y;
@@ -912,13 +915,14 @@
   --org-chart-connector-gap: var(--space-sm);
   --org-chart-children-offset: calc(var(--space-lg) + var(--space-sm));
   --org-chart-root-gap: var(--space-xl);
+  --org-chart-connector-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   --org-chart-first-child-leaves: 1;
   --org-chart-last-child-leaves: 1;
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
   gap: var(--org-chart-root-gap);
-  padding: var(--space-lg);
+  padding: var(--space-xl);
   min-height: var(--org-chart-node-width);
 }
 
@@ -951,13 +955,18 @@
 .org-chart-node-card {
   width: var(--org-chart-node-width);
   max-width: 100%;
-  background: var(--surface);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   padding: var(--space-md);
   color: var(--text);
   cursor: pointer;
-  transition: border-color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
   position: relative;
 }
 
@@ -965,30 +974,37 @@
 .org-chart-node-card:focus-visible {
   border-color: var(--todo);
   background: var(--card-hover);
+  box-shadow: var(--shadow-md);
   transform: translateY(calc(var(--space-xs) * -0.25));
   outline: none;
 }
 
 .org-chart-node-card:focus-visible {
-  box-shadow: var(--focus-ring-strong);
+  box-shadow: var(--shadow-md), var(--focus-ring-strong);
 }
 
 .org-chart-node-card--running {
   background: var(--state-active-bg);
+  border-color: color-mix(in srgb, var(--color-success) 40%, var(--border));
 }
 
 .org-chart-node__header {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-sm);
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
 }
 
 .org-chart-node__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: var(--space-lg);
+  flex-shrink: 0;
 }
 
 .org-chart-node__name {
+  font-size: calc(var(--space-sm) + var(--space-xs) * 1.5);
   font-weight: 600;
   line-height: 1.2;
 }
@@ -999,6 +1015,7 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-xs);
+  margin-top: var(--space-xs);
 }
 
 .org-chart-node__badge {
@@ -1025,7 +1042,7 @@
   bottom: calc(var(--org-chart-connector-gap) * -1);
   width: 1px;
   height: var(--org-chart-children-offset);
-  background: var(--border);
+  background: var(--org-chart-connector-color);
 }
 
 .org-chart-children {
@@ -1060,7 +1077,7 @@
   left: var(--org-chart-first-child-center-offset);
   right: var(--org-chart-last-child-center-offset);
   height: 1px;
-  background: var(--border);
+  background: var(--org-chart-connector-color);
 }
 
 .agent-org-chart--vertical {
@@ -1106,6 +1123,7 @@
   right: auto;
   width: 1px;
   height: auto;
+  background: var(--org-chart-connector-color);
 }
 
 .agent-org-chart--vertical .org-chart-children > .org-chart-node::before {
@@ -1114,6 +1132,7 @@
   transform: none;
   width: var(--space-sm);
   height: 1px;
+  background: var(--org-chart-connector-color);
 }
 
 .org-chart-children > .org-chart-node::before {
@@ -1124,7 +1143,18 @@
   transform: translateX(-50%);
   width: 1px;
   height: var(--org-chart-children-offset);
-  background: var(--border);
+  background: var(--org-chart-connector-color);
+}
+
+@media (max-width: 768px) {
+  .agent-org-chart {
+    --org-chart-sibling-gap: var(--space-lg);
+    padding: var(--space-md);
+  }
+
+  .agent-org-chart--vertical {
+    --org-chart-sibling-gap: var(--space-sm);
+  }
 }
 
 .chain-of-command-path {
