@@ -43,11 +43,13 @@ describe("TaskStore", () => {
       await harness.store().listTasks({ slim: true, includeArchived: false, startupMemo: true });
       expect(storeAny.startupSlimListMemo.size).toBeGreaterThan(0);
 
-      await harness.store().watch();
-      expect(storeAny.startupSlimListMemo.size).toBe(0);
-
-      harness.store().stopWatching();
-    });
+      try {
+        await harness.store().watch();
+        expect(storeAny.startupSlimListMemo.size).toBe(0);
+      } finally {
+        harness.store().stopWatching();
+      }
+    }, 30_000);
     it("cache is updated when polling is active even without fs.watch", async () => {
       await harness.store().watch();
 

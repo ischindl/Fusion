@@ -113,7 +113,7 @@ Research is intentionally not shown in the primary board/list/agents/missions/ch
 3. Select which providers to use (Web Search, Page Fetch, GitHub, Local Docs, LLM Synthesis)
 4. Click **Create Run**
 
-The run enters the `queued` status and progresses through orchestration phases as the engine processes it.
+The run enters the `queued` status. Depending on entrypoint, execution may start immediately or wait for an execution surface/engine path to pick it up.
 
 ### Viewing results
 
