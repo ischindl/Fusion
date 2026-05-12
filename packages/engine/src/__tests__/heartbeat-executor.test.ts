@@ -221,6 +221,25 @@ describe("executeHeartbeat", () => {
       expect(section).toContain("**stale**");
     });
 
+    it("buildReportsHealthSection preserves AgentStore method binding for direct-report lookups", async () => {
+      const now = new Date().toISOString();
+      const report = { id: "agent-004", name: "bound-report", state: "active", taskId: "FN-102", reportsTo: "agent-001", lastHeartbeatAt: now, updatedAt: now } as Agent;
+      const store = createStoreWithAgentForExec() as AgentStore & {
+        listAgents: ReturnType<typeof vi.fn>;
+        getAgentsByReportsTo: (agentId: string) => Promise<Agent[]>;
+      };
+      store.listAgents = vi.fn().mockResolvedValue([mockAgent, report]);
+      store.getAgentsByReportsTo = async function (agentId: string) {
+        const agents = await this.listAgents();
+        return agents.filter((candidate: Agent) => candidate.reportsTo === agentId);
+      };
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const section = await (monitor as any).buildReportsHealthSection("agent-001", store);
+      expect(section).toContain("bound-report");
+      expect(store.listAgents).toHaveBeenCalledTimes(1);
+    });
+
     it("executeHeartbeat includes reports health section when agent has reports", async () => {
       const store = createStoreWithAgentForExec({ taskId: "FN-001" });
       const now = new Date().toISOString();

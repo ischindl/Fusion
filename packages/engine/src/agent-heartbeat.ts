@@ -2430,14 +2430,14 @@ export class HeartbeatMonitor {
   }
 
   private async buildReportsHealthSection(agentId: string, agentStore: AgentStore): Promise<string | null> {
-    const getReports = (agentStore as AgentStore & { getAgentsByReportsTo?: (id: string) => Promise<Agent[]> }).getAgentsByReportsTo;
-    if (typeof getReports !== "function") {
+    const storeWithReports = agentStore as AgentStore & { getAgentsByReportsTo?: (id: string) => Promise<Agent[]> };
+    if (typeof storeWithReports.getAgentsByReportsTo !== "function") {
       return null;
     }
 
     let reports: Agent[];
     try {
-      reports = await getReports(agentId);
+      reports = await storeWithReports.getAgentsByReportsTo(agentId);
     } catch (err) {
       heartbeatLog.warn(`Failed to load reports for ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
       return null;
