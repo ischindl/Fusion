@@ -193,6 +193,8 @@ describe("TaskDetailModal", () => {
         const timestamps = screen.getByLabelText("Task timestamps");
         expect(timestamps).toHaveTextContent("Created 2d ago");
         expect(timestamps).toHaveTextContent("Updated 3h ago");
+        expect(getComputedStyle(timestamps).flexWrap).toBe("nowrap");
+        expect(timestamps.querySelector(".detail-timestamp-separator")).toBeTruthy();
 
         const times = timestamps.querySelectorAll("time");
         expect(times[0]?.getAttribute("dateTime")).toBe("2026-05-09T12:00:00.000Z");

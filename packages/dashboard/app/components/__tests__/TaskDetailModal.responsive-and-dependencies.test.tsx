@@ -32,7 +32,7 @@ describe("TaskDetailModal", () => {
       const css = readDashboardStylesSource();
 
       expectBaseRule(css, ".detail-timestamps", "display: inline-flex;");
-      expectBaseRule(css, ".detail-timestamps", "flex-wrap: wrap;");
+      expectBaseRule(css, ".detail-timestamps", "flex-wrap: nowrap;");
       expectBaseRule(css, ".detail-timestamp-item", "display: inline-flex;");
 
       expect(css).toMatch(/@media \(max-width: 768px\)\s*\{\s*\.detail-provenance\s*\{[^}]*\}\s*\.detail-timestamps\s*\{[^}]*flex-direction:\s*column;/);

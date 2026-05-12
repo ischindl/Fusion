@@ -159,7 +159,7 @@
 .detail-timestamps {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-xs);
   color: var(--text-dim);
   margin-top: var(--space-xs);
