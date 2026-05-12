@@ -3663,7 +3663,7 @@ export function SettingsModal({
               <details className="settings-option-details">
                 <summary>More details</summary>
                 <small>
-                  Controls in-merge fix attempts after deterministic test/build verification failures (0-3).
+                  Controls auto-fix retry attempts after deterministic test/build verification failures — applies to both executor-time and in-merge verification (0-3).
                 </small>
               </details>
             </div>
