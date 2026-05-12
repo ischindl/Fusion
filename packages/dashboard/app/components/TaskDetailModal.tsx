@@ -223,7 +223,7 @@ function formatTimestamp(iso: string): string {
   if (diffMin < 60) return `${diffMin}m ago`;
   if (diffHr < 24) return `${diffHr}h ago`;
   if (diffDay < 7) return `${diffDay}d ago`;
-  return date.toLocaleDateString();
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function formatBytes(bytes: number): string {
@@ -2069,9 +2069,22 @@ export function TaskDetailContent({
                     </span>
                   </div>
                 )}
-                <div className="detail-timestamps">
-                  Created {new Date(task.createdAt).toLocaleDateString()} · Updated{" "}
-                  {new Date(task.updatedAt).toLocaleDateString()}
+                <div className="detail-timestamps" aria-label="Task timestamps">
+                  <span className="detail-timestamp-item">
+                    <span className="detail-timestamp-label">Created</span>{" "}
+                    <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>
+                      {formatTimestamp(task.createdAt)}
+                    </time>
+                  </span>
+                  <span className="detail-timestamp-separator" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="detail-timestamp-item">
+                    <span className="detail-timestamp-label">Updated</span>{" "}
+                    <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>
+                      {formatTimestamp(task.updatedAt)}
+                    </time>
+                  </span>
                 </div>
               </div>
             </>

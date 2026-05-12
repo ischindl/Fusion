@@ -1221,6 +1221,22 @@ describe("AgentDetailView", () => {
     });
   });
 
+  it("keeps active header Stop and Run Now buttons accessible by name while using mobile icon-control class", async () => {
+    render(
+      <AgentDetailView
+        agentId="agent-001"
+        onClose={vi.fn()}
+        addToast={vi.fn()}
+      />,
+    );
+
+    const stopButton = await screen.findByRole("button", { name: "Stop" });
+    const runNowButton = await screen.findByRole("button", { name: "Run now for Test Agent" });
+
+    expect(stopButton.className).toContain("agent-detail-mobile-icon-control");
+    expect(runNowButton.className).toContain("agent-detail-mobile-icon-control");
+  });
+
   it("transitions running agent to paused when Stop is clicked", async () => {
     mockFetchAgent.mockResolvedValue(createMockAgent({ state: "running" }));
 
@@ -1312,6 +1328,7 @@ describe("AgentDetailView", () => {
     expect(stylesContent).toContain("grid-column: 1;");
     expect(stylesContent).toContain(".agent-detail-header-actions {");
     expect(stylesContent).toContain("grid-column: 2;");
+    expect(stylesContent).toContain(".agent-detail-controls .agent-detail-mobile-icon-control {");
     expect(stylesContent).toContain(".agent-detail-mobile-icon-control .agent-detail-control-label {");
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -161,6 +161,65 @@ describe("TaskDetailModal", () => {
       expect(provenance).toBeTruthy();
       expect(timestamps).toBeTruthy();
       expect(provenance?.compareDocumentPosition(timestamps as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    describe("compact timestamp metadata", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-05-11T12:00:00.000Z"));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("renders compact relative timestamps for recent tasks", () => {
+        render(
+          <TaskDetailModal
+            task={makeTask({
+              sourceType: "dashboard_ui",
+              createdAt: "2026-05-09T12:00:00.000Z",
+              updatedAt: "2026-05-11T09:00:00.000Z",
+            })}
+            onClose={noop}
+            onMoveTask={noopMove}
+            onDeleteTask={noopDelete}
+            onMergeTask={noopMerge}
+            onOpenDetail={noopOpenDetail}
+            addToast={noop}
+          />,
+        );
+
+        const timestamps = screen.getByLabelText("Task timestamps");
+        expect(timestamps).toHaveTextContent("Created 2d ago");
+        expect(timestamps).toHaveTextContent("Updated 3h ago");
+
+        const times = timestamps.querySelectorAll("time");
+        expect(times[0]?.getAttribute("dateTime")).toBe("2026-05-09T12:00:00.000Z");
+        expect(times[1]?.getAttribute("dateTime")).toBe("2026-05-11T09:00:00.000Z");
+      });
+
+      it("renders short calendar date for older timestamps", () => {
+        render(
+          <TaskDetailModal
+            task={makeTask({
+              sourceType: "dashboard_ui",
+              createdAt: "2026-05-01T12:00:00.000Z",
+              updatedAt: "2026-05-02T12:00:00.000Z",
+            })}
+            onClose={noop}
+            onMoveTask={noopMove}
+            onDeleteTask={noopDelete}
+            onMergeTask={noopMerge}
+            onOpenDetail={noopOpenDetail}
+            addToast={noop}
+          />,
+        );
+
+        const timestamps = screen.getByLabelText("Task timestamps");
+        expect(timestamps).toHaveTextContent("Created May 1");
+        expect(timestamps).toHaveTextContent("Updated May 2");
+      });
     });
   });
 

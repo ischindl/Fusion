@@ -629,18 +629,18 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                     <Pause size={14} />
                     <span className="agent-detail-control-label">Pause</span>
                   </button>
-                  <button className="btn btn--danger btn--compact" onClick={() => void handleStateChange("paused")} disabled={isTransitioning}>
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
                     <Square size={14} />
-                    Stop
+                    <span className="agent-detail-control-label">Stop</span>
                   </button>
                   <button
-                    className="btn btn-task-create btn--compact"
+                    className="btn btn-task-create btn--compact agent-detail-mobile-icon-control"
                     onClick={() => void handleRunHeartbeat()}
                     aria-label={`Run now for ${agent.name}`}
                     disabled={isStartingRun || isTransitioning}
                   >
                     <Activity size={14} />
-                    Run Now
+                    <span className="agent-detail-control-label">Run Now</span>
                   </button>
                 </>
               )}
@@ -662,9 +662,9 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                     <Pause size={14} />
                     <span className="agent-detail-control-label">Pause</span>
                   </button>
-                  <button className="btn btn--danger btn--compact" onClick={() => void handleStateChange("paused")} disabled={isTransitioning}>
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
                     <Square size={14} />
-                    Stop
+                    <span className="agent-detail-control-label">Stop</span>
                   </button>
                 </>
               )}
@@ -674,9 +674,9 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                     <Play size={14} />
                     Retry
                   </button>
-                  <button className="btn btn--danger btn--compact" onClick={() => void handleStateChange("paused")} disabled={isTransitioning}>
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
                     <Square size={14} />
-                    Stop
+                    <span className="agent-detail-control-label">Stop</span>
                   </button>
                 </>
               )}

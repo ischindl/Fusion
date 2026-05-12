@@ -157,13 +157,46 @@
 }
 
 .detail-timestamps {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
   color: var(--text-dim);
   margin-top: var(--space-xs);
+}
+
+.detail-timestamp-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+}
+
+.detail-timestamp-label {
+  color: var(--text-muted);
+}
+
+.detail-timestamp-separator {
+  color: var(--text-dim);
 }
 
 @media (max-width: 768px) {
   .detail-provenance {
     align-items: flex-start;
+  }
+
+  .detail-timestamps {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-timestamp-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .detail-timestamp-separator {
+    display: none;
   }
 }
 

@@ -27,6 +27,17 @@ describe("TaskDetailModal", () => {
       expectBaseRule(css, ".detail-meta-inline-controls", "flex-wrap: nowrap;");
       expect(css).not.toMatch(/@media \(max-width: 640px\)\s*\{[^}]*\.detail-meta-inline-controls\s*\{[^}]*flex-direction:\s*column;/);
     });
+
+    it("uses grouped timestamp metadata on desktop with mobile stacked overrides", () => {
+      const css = readDashboardStylesSource();
+
+      expectBaseRule(css, ".detail-timestamps", "display: inline-flex;");
+      expectBaseRule(css, ".detail-timestamps", "flex-wrap: wrap;");
+      expectBaseRule(css, ".detail-timestamp-item", "display: inline-flex;");
+
+      expect(css).toMatch(/@media \(max-width: 768px\)\s*\{\s*\.detail-provenance\s*\{[^}]*\}\s*\.detail-timestamps\s*\{[^}]*flex-direction:\s*column;/);
+      expect(css).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.detail-timestamp-separator\s*\{[^}]*display:\s*none;/);
+    });
     it("renders responsive structural classes (modal-lg, overlay, spacer, tabs, detail-body)", () => {
       const { container } = render(
         <TaskDetailModal
@@ -43,6 +54,8 @@ describe("TaskDetailModal", () => {
       expect(container.querySelector(".modal-overlay.open")).toBeTruthy();
       expect(container.querySelector(".modal-actions .modal-actions-spacer")).toBeTruthy();
       expect(container.querySelector(".detail-body")).toBeTruthy();
+      expect(container.querySelector(".detail-timestamps")).toBeTruthy();
+      expect(container.querySelectorAll(".detail-timestamp-item").length).toBe(2);
       const tabs = container.querySelectorAll(".detail-tab");
       expect(tabs.length).toBe(10);
       expect(tabs[0].classList.contains("detail-tab-active")).toBe(true);
