@@ -10,32 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          node-version: "24"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: pnpm
-
-      - name: Cache pnpm store
-        uses: actions/cache@v4
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Setup Node and install dependencies
+        uses: ./.github/actions/setup-node-pnpm
 
       - name: Build dashboard client
         run: pnpm --filter @fusion/dashboard build
@@ -53,29 +29,8 @@ jobs:
     needs: build-web
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          node-version: "24"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: pnpm
-
-      - name: Cache pnpm store
-        uses: actions/cache@v4
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+      - name: Setup Node and install dependencies
+        uses: ./.github/actions/setup-node-pnpm
 
       - name: Cache iOS DerivedData
         uses: actions/cache@v4
@@ -84,9 +39,6 @@ jobs:
           key: ${{ runner.os }}-derived-data-${{ hashFiles('packages/mobile/**', 'pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-derived-data-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download dashboard artifact
         uses: actions/download-artifact@v4
@@ -147,35 +99,14 @@ jobs:
     needs: build-web
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          node-version: "24"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: pnpm
+      - name: Setup Node and install dependencies
+        uses: ./.github/actions/setup-node-pnpm
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Cache pnpm store
-        uses: actions/cache@v4
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
 
       - name: Cache Android Gradle caches
         uses: actions/cache@v4
@@ -184,9 +115,6 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('packages/mobile/android/**/*.gradle*', 'packages/mobile/android/**/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download dashboard artifact
         uses: actions/download-artifact@v4

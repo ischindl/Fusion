@@ -179,6 +179,10 @@
 
 .plugin-error-text--detail {
   max-width: min(100%, 32rem);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .plugin-detail-content {
