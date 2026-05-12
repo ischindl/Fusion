@@ -1015,18 +1015,32 @@ export class ChatManager {
       input.content,
     ].join("\n\n");
 
+    const responderRuntimeModel = extractRuntimeModel(input.responder.runtimeConfig);
+    const effectiveModelProvider = input.modelProvider ?? responderRuntimeModel.provider;
+    const effectiveModelId = input.modelId ?? responderRuntimeModel.modelId;
+    const chatModelSettings = await this.getChatModelSettings();
+    const allowFallback = !(input.modelProvider && input.modelId)
+      && !(responderRuntimeModel.provider && responderRuntimeModel.modelId);
+
     const resolvedSession = await createResolvedAgentSession({
-      createFnAgent,
-      resolvedProvider: input.modelProvider,
-      resolvedModel: input.modelId,
-      defaultModelProvider: input.modelProvider,
-      defaultModelId: input.modelId,
-      createFnAgentArgs: {
-        rootDir: this.rootDir,
-        modelProvider: input.modelProvider,
-        modelId: input.modelId,
-        systemPrompt,
-      },
+      sessionPurpose: "heartbeat",
+      pluginRunner: this.pluginRunner,
+      runtimeHint: extractRuntimeHint(input.responder.runtimeConfig),
+      cwd: this.rootDir,
+      systemPrompt,
+      tools: "coding",
+      ...(effectiveModelProvider && effectiveModelId
+        ? {
+            defaultProvider: effectiveModelProvider,
+            defaultModelId: effectiveModelId,
+          }
+        : {}),
+      ...(allowFallback && chatModelSettings.fallbackProvider && chatModelSettings.fallbackModelId
+        ? {
+            fallbackProvider: chatModelSettings.fallbackProvider,
+            fallbackModelId: chatModelSettings.fallbackModelId,
+          }
+        : {}),
     });
 
     try {

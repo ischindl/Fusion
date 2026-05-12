@@ -263,6 +263,54 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
       );
     });
 
+    it("passes resolved-session runtime options when generating room replies", async () => {
+      mockChatStore.listRoomMembers.mockReturnValue([
+        { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
+      ]);
+      mockAgentStore.listAgents.mockResolvedValue([
+        {
+          id: "agent-a",
+          name: "Alpha",
+          role: "executor",
+          runtimeConfig: { model: "anthropic/claude-sonnet-4-5", runtimeHint: "openclaw" },
+        },
+      ]);
+      mockAgentStore.getAgent.mockResolvedValue({
+        id: "agent-a",
+        name: "Alpha",
+        role: "executor",
+        runtimeConfig: { model: "anthropic/claude-sonnet-4-5", runtimeHint: "openclaw" },
+      });
+
+      const createResolvedSession = vi.fn().mockResolvedValue({
+        session: {
+          prompt: vi.fn().mockResolvedValue(undefined),
+          dispose: vi.fn(),
+          state: {
+            messages: [{ role: "assistant", content: "Room reply" }],
+          },
+        },
+      });
+      __setCreateResolvedAgentSession(createResolvedSession as any);
+
+      const manager = new ChatManager(mockChatStore as any, "/tmp", mockAgentStore as any);
+      await manager.sendRoomMessage("room-1", "hello @Alpha");
+
+      expect(createResolvedSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionPurpose: "heartbeat",
+        pluginRunner: undefined,
+        runtimeHint: "openclaw",
+        cwd: "/tmp",
+        systemPrompt: expect.any(String),
+        tools: "coding",
+        defaultProvider: "anthropic",
+        defaultModelId: "claude-sonnet-4-5",
+      }));
+      expect(createResolvedSession.mock.calls[0]?.[0]).not.toHaveProperty("createFnAgentArgs");
+      expect(createResolvedSession.mock.calls[0]?.[0]).not.toHaveProperty("resolvedProvider");
+      expect(createResolvedSession.mock.calls[0]?.[0]).not.toHaveProperty("resolvedModel");
+    });
+
     it("throws surfaced error when all room responders fail to reply", async () => {
       mockChatStore.listRoomMembers.mockReturnValue([
         { roomId: "room-1", agentId: "agent-a", role: "member", addedAt: "2026-01-01" },
