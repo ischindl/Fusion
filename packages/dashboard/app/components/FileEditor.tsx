@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo, useRef, type UIEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FileEdit, Eye, WrapText } from "lucide-react";
+import { FileEdit, Eye, ListOrdered, WrapText } from "lucide-react";
 
 interface FileEditorProps {
   content: string;
@@ -9,6 +9,8 @@ interface FileEditorProps {
   readOnly?: boolean;
   filePath?: string;
   showLineNumbers?: boolean;
+  onToggleLineNumbers?: () => void;
+  canToggleLineNumbers?: boolean;
 }
 
 function isMarkdownFile(filePath?: string): boolean {
@@ -17,7 +19,15 @@ function isMarkdownFile(filePath?: string): boolean {
   return lowerPath.endsWith(".md") || lowerPath.endsWith(".markdown") || lowerPath.endsWith(".mdx");
 }
 
-export function FileEditor({ content, onChange, readOnly, filePath, showLineNumbers = false }: FileEditorProps) {
+export function FileEditor({
+  content,
+  onChange,
+  readOnly,
+  filePath,
+  showLineNumbers = false,
+  onToggleLineNumbers,
+  canToggleLineNumbers = true,
+}: FileEditorProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
@@ -26,6 +36,7 @@ export function FileEditor({ content, onChange, readOnly, filePath, showLineNumb
   // For markdown files in readOnly mode, default to preview
   const effectiveShowPreview = isMarkdown && (readOnly ? true : showPreview);
   const shouldRenderLineNumbers = showLineNumbers && !readOnly && !effectiveShowPreview;
+  const shouldShowLineNumbersToggle = Boolean(onToggleLineNumbers) && canToggleLineNumbers && !readOnly && !effectiveShowPreview;
   const lineCount = useMemo(() => {
     if (!shouldRenderLineNumbers) {
       return 0;
@@ -81,28 +92,56 @@ export function FileEditor({ content, onChange, readOnly, filePath, showLineNumb
             </button>
           </div>
           {!readOnly && (
-            <button
-              className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
-              onClick={handleWordWrapToggle}
-              aria-label="Toggle word wrap"
-              title="Toggle word wrap"
-            >
-              <WrapText size={14} />
-            </button>
+            <div className="file-editor-toolbar-actions">
+              {shouldShowLineNumbersToggle && (
+                <button
+                  className={`btn btn-sm file-editor-line-numbers-button ${showLineNumbers ? "btn-primary" : ""}`}
+                  onClick={onToggleLineNumbers}
+                  aria-label="Toggle line numbers"
+                  aria-pressed={showLineNumbers}
+                  title="Toggle line numbers"
+                >
+                  <ListOrdered size={14} />
+                  <span>Line #</span>
+                </button>
+              )}
+              <button
+                className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
+                onClick={handleWordWrapToggle}
+                aria-label="Toggle word wrap"
+                title="Toggle word wrap"
+              >
+                <WrapText size={14} />
+              </button>
+            </div>
           )}
         </div>
       ) : (
         !readOnly && (
           <div className="file-editor-toolbar">
             <div className="file-editor-mode-toggle" />
-            <button
-              className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
-              onClick={handleWordWrapToggle}
-              aria-label="Toggle word wrap"
-              title="Toggle word wrap"
-            >
-              <WrapText size={14} />
-            </button>
+            <div className="file-editor-toolbar-actions">
+              {shouldShowLineNumbersToggle && (
+                <button
+                  className={`btn btn-sm file-editor-line-numbers-button ${showLineNumbers ? "btn-primary" : ""}`}
+                  onClick={onToggleLineNumbers}
+                  aria-label="Toggle line numbers"
+                  aria-pressed={showLineNumbers}
+                  title="Toggle line numbers"
+                >
+                  <ListOrdered size={14} />
+                  <span>Line #</span>
+                </button>
+              )}
+              <button
+                className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
+                onClick={handleWordWrapToggle}
+                aria-label="Toggle word wrap"
+                title="Toggle word wrap"
+              >
+                <WrapText size={14} />
+              </button>
+            </div>
           </div>
         )
       )}

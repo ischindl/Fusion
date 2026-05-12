@@ -724,7 +724,16 @@ describe("FileBrowserModal", () => {
   });
 
   describe("line number toggle", () => {
-    it("renders a header toggle and persists preference per project", async () => {
+    const clickFileEntry = async (name: string) => {
+      const fileEntry = screen.getAllByText(name).find((element) => element.classList.contains("file-node-name"));
+      expect(fileEntry).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.click(fileEntry!);
+      });
+    };
+
+    it("renders an editor toggle and persists preference per project", async () => {
       render(
         <FileBrowserModal
           initialWorkspace="project"
@@ -734,6 +743,8 @@ describe("FileBrowserModal", () => {
         />,
       );
 
+      await clickFileEntry("file1.ts");
+
       const toggle = screen.getByRole("button", { name: /toggle line numbers/i });
       expect(toggle).toHaveAttribute("aria-pressed", "false");
 
@@ -742,7 +753,7 @@ describe("FileBrowserModal", () => {
       expect(localStorage.getItem("kb:proj-1:kb-files-line-numbers")).toBe("true");
     });
 
-    it("loads persisted preference when project changes", () => {
+    it("loads persisted preference when project changes", async () => {
       localStorage.setItem("kb:proj-a:kb-files-line-numbers", "true");
       localStorage.setItem("kb:proj-b:kb-files-line-numbers", "false");
 
@@ -755,6 +766,8 @@ describe("FileBrowserModal", () => {
         />,
       );
 
+      await clickFileEntry("file1.ts");
+
       expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("aria-pressed", "true");
 
       rerender(
@@ -765,6 +778,8 @@ describe("FileBrowserModal", () => {
           projectId="proj-b"
         />,
       );
+
+      await clickFileEntry("file1.ts");
 
       expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("aria-pressed", "false");
     });
@@ -786,18 +801,18 @@ describe("FileBrowserModal", () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /toggle line numbers/i }));
-
       await act(async () => {
         fireEvent.click(screen.getByText("editable.ts"));
       });
 
+      fireEvent.click(screen.getByRole("button", { name: /toggle line numbers/i }));
       expect(document.querySelector(".file-editor-line-numbers")).toBeInTheDocument();
 
       await act(async () => {
         fireEvent.click(screen.getByText("readme.pdf"));
       });
 
+      expect(screen.queryByRole("button", { name: /toggle line numbers/i })).not.toBeInTheDocument();
       expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();
     });
   });

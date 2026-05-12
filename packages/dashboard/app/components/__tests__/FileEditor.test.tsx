@@ -243,6 +243,57 @@ describe("FileEditor", () => {
   });
 
   describe("line numbers", () => {
+    it("shows the line number toggle button when toggle support is provided", () => {
+      render(
+        <FileEditor
+          content={"first\nsecond\nthird"}
+          onChange={vi.fn()}
+          filePath="src/app.ts"
+          showLineNumbers={false}
+          onToggleLineNumbers={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: /toggle line numbers/i })).toHaveAttribute("title", "Toggle line numbers");
+    });
+
+    it("hides the line number toggle button when toggle support is not provided", () => {
+      render(<FileEditor content="first\nsecond" onChange={vi.fn()} filePath="src/app.ts" showLineNumbers={false} />);
+
+      expect(screen.queryByRole("button", { name: /toggle line numbers/i })).not.toBeInTheDocument();
+    });
+
+    it("calls onToggleLineNumbers when the toggle button is clicked", () => {
+      const onToggleLineNumbers = vi.fn();
+      render(
+        <FileEditor
+          content="first\nsecond"
+          onChange={vi.fn()}
+          filePath="src/app.ts"
+          onToggleLineNumbers={onToggleLineNumbers}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /toggle line numbers/i }));
+      expect(onToggleLineNumbers).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides the line number toggle button for read-only files", () => {
+      render(
+        <FileEditor
+          content={"one\ntwo"}
+          onChange={vi.fn()}
+          filePath="file.bin"
+          readOnly
+          showLineNumbers
+          onToggleLineNumbers={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByRole("button", { name: /toggle line numbers/i })).not.toBeInTheDocument();
+    });
+
     it("shows line numbers for editable text mode when enabled", () => {
       render(
         <FileEditor
@@ -250,6 +301,7 @@ describe("FileEditor", () => {
           onChange={vi.fn()}
           filePath="src/app.ts"
           showLineNumbers
+          onToggleLineNumbers={vi.fn()}
         />,
       );
 
@@ -262,16 +314,30 @@ describe("FileEditor", () => {
 
     it("hides line numbers in markdown preview mode", () => {
       render(
-        <FileEditor content="# Heading" onChange={vi.fn()} filePath="readme.md" showLineNumbers />,
+        <FileEditor
+          content="# Heading"
+          onChange={vi.fn()}
+          filePath="readme.md"
+          showLineNumbers
+          onToggleLineNumbers={vi.fn()}
+        />,
       );
 
       fireEvent.click(screen.getByRole("button", { name: /preview mode/i }));
       expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /toggle line numbers/i })).not.toBeInTheDocument();
     });
 
     it("hides line numbers for read-only files", () => {
       render(
-        <FileEditor content={"one\ntwo"} onChange={vi.fn()} filePath="file.bin" readOnly showLineNumbers />,
+        <FileEditor
+          content={"one\ntwo"}
+          onChange={vi.fn()}
+          filePath="file.bin"
+          readOnly
+          showLineNumbers
+          onToggleLineNumbers={vi.fn()}
+        />,
       );
 
       expect(document.querySelector(".file-editor-line-numbers")).not.toBeInTheDocument();

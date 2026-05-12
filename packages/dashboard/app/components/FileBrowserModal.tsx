@@ -1,6 +1,6 @@
 import "./FileBrowser.css";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { X, Save, RotateCcw, Folder, FileType, ArrowLeft, ListOrdered } from "lucide-react";
+import { X, Save, RotateCcw, Folder, FileType, ArrowLeft } from "lucide-react";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { useWorkspaceFileEditor } from "../hooks/useWorkspaceFileEditor";
 import { useWorkspaces } from "../hooks/useWorkspaces";
@@ -288,16 +288,6 @@ export function FileBrowserModal({
             )}
           </div>
           <div className="file-browser-header-actions">
-            <button
-              className={`btn btn-sm file-browser-line-numbers-toggle ${showLineNumbers ? "btn-primary" : ""}`}
-              onClick={handleToggleLineNumbers}
-              aria-label="Toggle line numbers"
-              aria-pressed={showLineNumbers}
-              title="Toggle line numbers"
-            >
-              <ListOrdered size={14} />
-              <span>Line #</span>
-            </button>
             <WorkspaceSelector
               currentWorkspace={currentWorkspace}
               projectName={projectName}
@@ -419,6 +409,8 @@ export function FileBrowserModal({
                       filePath={selectedFile}
                       readOnly={isBinaryFile(selectedFile)}
                       showLineNumbers={showLineNumbers && !isBinaryFile(selectedFile)}
+                      onToggleLineNumbers={handleToggleLineNumbers}
+                      canToggleLineNumbers={!isBinaryFile(selectedFile)}
                     />
                   </div>
                 )}
