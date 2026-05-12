@@ -123,4 +123,35 @@ describeIfGit("auditSquashMerge", () => {
     );
     expect(findings.issueCount).toBe(1);
   });
+
+  it("reports combined duplicate-subject and touched-file overlap findings", async () => {
+    const repo = setupRepo();
+
+    write(repo, "shared.txt", "alpha\nbeta\ngamma\n");
+    git(repo, "git add shared.txt && git commit -m 'chore: add shared file'");
+
+    git(repo, "git checkout -b feature/combined");
+    write(repo, "shared.txt", "alpha-branch\nbeta\ngamma\n");
+    git(repo, "git add shared.txt && git commit -m 'feat: duplicate and overlap'");
+
+    git(repo, "git checkout main");
+    write(repo, "shared.txt", "alpha\nbeta\ngamma-main\n");
+    git(repo, "git add shared.txt && git commit -m 'feat: duplicate and overlap'");
+
+    git(repo, "git merge --squash feature/combined");
+    const squashSha = createSquashCommit(repo, ["feat: duplicate and overlap"]);
+
+    const findings = await auditSquashMerge({ rootDir: repo, squashSha, lookback: 10 });
+
+    expect(findings.clean).toBe(false);
+    expect(findings.issueCount).toBe(2);
+    expect(findings.duplicateSubjects).toEqual([
+      { type: "duplicate-subject", subject: "feat: duplicate and overlap" },
+    ]);
+    expect(findings.touchedFileOverlaps).toHaveLength(1);
+    expect(findings.touchedFileOverlaps[0]).toMatchObject({
+      type: "touched-file-overlap",
+      file: "shared.txt",
+    });
+  });
 });
