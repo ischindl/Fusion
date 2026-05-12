@@ -632,7 +632,6 @@ export function useQuickChat(
 
         pendingMessageRef.current = content;
         setPendingMessage(content);
-        addToast?.("Still waiting for previous response — message queued", "warning");
         return Promise.resolve();
       }
 

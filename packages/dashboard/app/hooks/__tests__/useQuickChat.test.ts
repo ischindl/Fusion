@@ -571,14 +571,15 @@ describe("useQuickChat", () => {
     });
   });
 
-  it("sending during streaming queues message", async () => {
+  it("sending during streaming queues message without warning toast", async () => {
     const existingSession = makeSession({ id: "session-existing", agentId: "agent-001" });
+    const addToast = vi.fn();
 
     mockFetchResumeChatSession.mockResolvedValueOnce({ session: existingSession });
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
 
-    const { result } = renderHook(() => useQuickChat("proj-123"));
+    const { result } = renderHook(() => useQuickChat("proj-123", addToast));
 
     await act(async () => {
       await result.current.switchSession("agent-001");
@@ -598,6 +599,7 @@ describe("useQuickChat", () => {
 
     expect(result.current.pendingMessage).toBe("Queued follow-up");
     expect(mockStreamChatResponse).toHaveBeenCalledTimes(1);
+    expect(addToast).not.toHaveBeenCalledWith("Still waiting for previous response — message queued", "warning");
   });
 
   it("starts a fresh stream and shows active state on second turn after first turn completes", async () => {

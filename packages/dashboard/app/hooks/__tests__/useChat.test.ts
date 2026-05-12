@@ -966,14 +966,15 @@ describe("useChat", () => {
     });
   });
 
-  it("sending during streaming queues pendingMessage", async () => {
+  it("sending during streaming queues pendingMessage without warning toast", async () => {
     const session = makeSession({ id: "session-001", agentId: "agent-001" });
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
     mockFetchChatMessages.mockResolvedValueOnce({ messages: [] });
+    const addToast = vi.fn();
 
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
 
-    const { result } = renderHook(() => useChat("proj-123"));
+    const { result } = renderHook(() => useChat("proj-123", addToast));
 
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(1);
@@ -1001,6 +1002,7 @@ describe("useChat", () => {
 
     expect(result.current.pendingMessage).toBe("Queued message");
     expect(mockStreamChatResponse).toHaveBeenCalledTimes(1);
+    expect(addToast).not.toHaveBeenCalledWith("Still waiting for previous response — message queued", "warning");
   });
 
   describe("queued message closure behavior", () => {
