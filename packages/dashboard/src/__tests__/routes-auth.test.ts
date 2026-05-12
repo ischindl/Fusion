@@ -611,12 +611,43 @@ describe("GET /auth/status", () => {
     const providers = res.body.providers.filter((p: any) => p.id !== "claude-cli" && p.id !== "droid-cli" && p.id !== "cursor-cli" && p.id !== "llama-cpp");
     expect(providers).toEqual([
       { id: "github-copilot", name: "GitHub Copilot", authenticated: true, type: "oauth", loginInProgress: false },
-      { id: "openai-codex", name: "OpenAI Codex", authenticated: false, type: "oauth", loginInProgress: false },
+      { id: "openai-codex", name: "OpenAI Codex", authenticated: false, type: "oauth", loginInProgress: false, requiresManualCode: true },
       { id: "openrouter", name: "OpenRouter", authenticated: false, type: "api_key" },
       { id: "kimi-coding", name: "Kimi", authenticated: false, type: "api_key" },
       { id: "acme-extension", name: "Acme Extension", authenticated: true, type: "api_key" },
     ]);
   });
+
+  it.each(["https://my-host.example.com", undefined])(
+    "marks manual-code oauth providers during auth status when origin is %s",
+    async (origin) => {
+      (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "github-copilot", name: "GitHub Copilot" },
+        { id: "openai-codex", name: "OpenAI Codex" },
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      (authStorage.getApiKeyProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+        { id: "openrouter", name: "OpenRouter" },
+      ]);
+
+      const res = origin
+        ? await REQUEST(buildApp(), "GET", "/api/auth/status", undefined, { Origin: origin })
+        : await REQUEST(buildApp(), "GET", "/api/auth/status");
+
+      expect(res.status).toBe(200);
+      const openAiCodex = res.body.providers.find((p: any) => p.id === "openai-codex");
+      const anthropic = res.body.providers.find((p: any) => p.id === "anthropic");
+      const githubCopilot = res.body.providers.find((p: any) => p.id === "github-copilot");
+      const openrouter = res.body.providers.find((p: any) => p.id === "openrouter");
+      const claudeCli = res.body.providers.find((p: any) => p.id === "claude-cli");
+
+      expect(openAiCodex.requiresManualCode).toBe(true);
+      expect(anthropic.requiresManualCode).toBe(true);
+      expect(githubCopilot).not.toHaveProperty("requiresManualCode");
+      expect(openrouter).not.toHaveProperty("requiresManualCode");
+      expect(claudeCli).not.toHaveProperty("requiresManualCode");
+    },
+  );
 
   it("returns unauthenticated status", async () => {
     (authStorage.hasAuth as ReturnType<typeof vi.fn>).mockReturnValue(false);

@@ -33,6 +33,7 @@ import { PluginSlot } from "./PluginSlot";
 import { appendTokenQuery } from "../auth";
 import { filterVisibleOnboardingAndSettingsProviders } from "./providerVisibility";
 import { useShellConnection } from "../hooks/useShellConnection";
+import { useConfirm } from "../hooks/useConfirm";
 
 const mapLegacyCustomProviderToConfig = (
   provider: CustomProvider | CustomProviderConfig,
@@ -177,6 +178,9 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   "kimi-coding": "Kimi Coding",
   moonshot: "Moonshot",
 };
+
+const getManualCodeLoginWarningMessage = (providerName: string) =>
+  `After you sign in with ${providerName}, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?`;
 
 function getProviderDisplayName(providerId: string): string {
   if (PROVIDER_DISPLAY_NAMES[providerId]) {
@@ -555,6 +559,7 @@ export function ModelOnboardingModal({
   firstCreatedTask,
   onViewTask,
 }: ModelOnboardingModalProps) {
+  const { confirm } = useConfirm();
   // Initialize from persisted state if available (allows resume from last step)
   const persistedState = getOnboardingState();
   const persistedStep = persistedState?.currentStep;
@@ -1054,6 +1059,19 @@ export function ModelOnboardingModal({
   // OAuth login handler
   const handleLogin = useCallback(
     async (providerId: string) => {
+      const provider = authProviders.find((entry) => entry.id === providerId);
+      if (provider?.requiresManualCode === true) {
+        const shouldContinue = await confirm({
+          title: "Heads up — manual paste-back required",
+          message: getManualCodeLoginWarningMessage(provider.name),
+          confirmLabel: "Continue to login",
+          cancelLabel: "Cancel",
+        });
+        if (!shouldContinue) {
+          return;
+        }
+      }
+
       // Clear any previous terminal outcome before starting a new login attempt
       setLoginOutcomes((prev) => {
         const outcome = prev[providerId];
@@ -1181,7 +1199,7 @@ export function ModelOnboardingModal({
         clearAuthLoginUiState();
       }
     },
-    [addToast, loadAuthStatus, setGitHubSkippedState],
+    [addToast, authProviders, confirm, loadAuthStatus, setGitHubSkippedState],
   );
 
   const handleSubmitManualCode = useCallback(async (providerId: string) => {

@@ -978,6 +978,20 @@ export function SettingsModal({
   }, []);
 
   const handleLogin = useCallback(async (providerId: string) => {
+    const provider = authProviders.find((entry) => entry.id === providerId);
+    if (provider?.requiresManualCode === true) {
+      const shouldContinue = await confirm({
+        title: "Heads up — manual paste-back required",
+        message:
+          `After you sign in with ${provider.name}, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?`,
+        confirmLabel: "Continue to login",
+        cancelLabel: "Cancel",
+      });
+      if (!shouldContinue) {
+        return;
+      }
+    }
+
     setAuthActionInProgress(providerId);
     clearAuthLoginUiState(providerId);
 
@@ -1035,7 +1049,7 @@ export function SettingsModal({
       setAuthActionInProgress(null);
       clearAuthLoginUiState(providerId);
     }
-  }, [addToast, clearAuthLoginUiState, loadAuthStatus, scrollSettingsToTop]);
+  }, [addToast, authProviders, clearAuthLoginUiState, confirm, loadAuthStatus, scrollSettingsToTop]);
 
   const handleSubmitManualCode = useCallback(async (providerId: string) => {
     const code = manualCodeInputs[providerId]?.trim();

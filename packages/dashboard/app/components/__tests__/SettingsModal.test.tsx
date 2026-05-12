@@ -57,6 +57,7 @@ const mockSetDroidCliEnabled = vi.fn();
 const mockFetchCursorCliStatus = vi.fn();
 const mockSetCursorCliEnabled = vi.fn();
 const mockUseWorkspaceFileBrowser = vi.fn();
+const mockConfirm = vi.fn();
 
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
@@ -123,6 +124,10 @@ vi.mock("../../hooks/useMemoryBackendStatus", () => ({
 const mockUseMobileKeyboard = vi.fn();
 vi.mock("../../hooks/useMobileKeyboard", () => ({
   useMobileKeyboard: (...args: unknown[]) => mockUseMobileKeyboard(...args),
+}));
+
+vi.mock("../../hooks/useConfirm", () => ({
+  useConfirm: () => ({ confirm: (...args: unknown[]) => mockConfirm(...args) }),
 }));
 
 vi.mock("../../hooks/useViewportMode", () => ({
@@ -268,6 +273,7 @@ describe("SettingsModal", () => {
     mockFetchSettings.mockResolvedValue(defaultSettings);
     mockFetchSettingsByScope.mockResolvedValue({ global: defaultSettings, project: {} });
     mockFetchAuthStatus.mockResolvedValue({ providers: [] });
+    mockConfirm.mockResolvedValue(true);
     mockFetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
     mockFetchCustomProviders.mockResolvedValue({ providers: [] });
     mockCreateCustomProvider.mockResolvedValue({ provider: {} });
@@ -1154,6 +1160,71 @@ describe("SettingsModal", () => {
         expect(scrollToSpy).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
       });
       expect(openSpy).toHaveBeenCalled();
+    });
+
+    it("warns before starting manual-code oauth login and stops when cancelled", async () => {
+      vi.spyOn(window, "open").mockImplementation(() => null);
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      });
+      mockConfirm.mockResolvedValueOnce(false);
+
+      renderModal();
+      await waitForSettingsModalReady();
+
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      await userEvent.click(within(anthropicCard).getByRole("button", { name: "Login" }));
+
+      await waitFor(() => {
+        expect(mockConfirm).toHaveBeenCalledWith({
+          title: "Heads up — manual paste-back required",
+          message:
+            "After you sign in with Anthropic, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?",
+          confirmLabel: "Continue to login",
+          cancelLabel: "Cancel",
+        });
+      });
+      expect(mockLoginProvider).not.toHaveBeenCalled();
+    });
+
+    it("continues manual-code oauth login after confirmation", async () => {
+      const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      });
+      mockLoginProvider.mockResolvedValueOnce({ url: "https://claude.ai/oauth/authorize" });
+      mockConfirm.mockResolvedValueOnce(true);
+
+      renderModal();
+      await waitForSettingsModalReady();
+
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      await userEvent.click(within(anthropicCard).getByRole("button", { name: "Login" }));
+
+      await waitFor(() => {
+        expect(mockConfirm).toHaveBeenCalled();
+        expect(mockLoginProvider).toHaveBeenCalledWith("anthropic");
+        expect(openSpy).toHaveBeenCalledWith("https://claude.ai/oauth/authorize", "_blank");
+      });
+    });
+
+    it("skips the warning for oauth providers without manual-code fallback", async () => {
+      const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "github", name: "GitHub", authenticated: false, type: "oauth" }],
+      });
+      mockLoginProvider.mockResolvedValueOnce({ url: "https://example.com/auth" });
+
+      renderModal();
+      await waitForSettingsModalReady();
+
+      await userEvent.click(screen.getByRole("button", { name: "Login" }));
+
+      await waitFor(() => {
+        expect(mockConfirm).not.toHaveBeenCalled();
+        expect(mockLoginProvider).toHaveBeenCalledWith("github");
+        expect(openSpy).toHaveBeenCalledWith("https://example.com/auth", "_blank");
+      });
     });
 
     it("renders Anthropic pasted-code form when login response includes manualCode", async () => {
