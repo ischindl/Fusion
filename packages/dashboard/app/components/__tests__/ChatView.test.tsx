@@ -2498,10 +2498,14 @@ describe("ChatView CSS — mobile thread switcher", () => {
     expect(optionTitleMatch).toBeTruthy();
     expect(triggerMatch?.[1]).toContain("min-height: calc(var(--space-lg) * 2)");
     expect(triggerMatch?.[1]).toContain("min-width: 0");
+    expect(triggerMatch?.[1]).toContain("line-height: normal");
     expect(dropdownMatch?.[1]).toContain("background: var(--surface)");
     expect(dropdownMatch?.[1]).toContain("border: 1px solid var(--border)");
     expect(optionMatch?.[1]).toContain("min-height: calc(var(--space-lg) * 2.25)");
     expect(optionMatch?.[1]).toContain("align-items: flex-start");
+    expect(optionMatch?.[1]).toContain("line-height: normal");
+    expect(optionTitleMatch?.[1]).toContain("display: block");
+    expect(optionTitleMatch?.[1]).toContain("line-height: normal");
     expect(optionTitleMatch?.[1]).toContain("white-space: normal");
     expect(optionTitleMatch?.[1]).toContain("overflow-wrap: anywhere");
   });
