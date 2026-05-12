@@ -3967,8 +3967,12 @@ describe("ChatView mobile CSS contract", () => {
     expect(mobileRuleContains(".chat-sidebar-header", "display: none")).toBe(true);
   });
 
-  it("mobile .chat-sidebar-search is hidden", () => {
-    expect(mobileRuleContains(".chat-sidebar-search", "display: none")).toBe(true);
+  it("mobile .chat-sidebar-search remains visible (FN-4120)", () => {
+    expect(mobileRuleNotContains(".chat-sidebar-search", "display: none")).toBe(true);
+  });
+
+  it("mobile .chat-sidebar-search keeps a token-based touch target (FN-4120)", () => {
+    expect(mobileRuleContains(".chat-sidebar-search", "min-height: calc(var(--space-2xl) + var(--space-xs))")).toBe(true);
   });
 
   it("mobile .chat-sidebar-list has flex: 1 and overflow-y: auto for scrolling", () => {

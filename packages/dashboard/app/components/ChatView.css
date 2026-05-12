@@ -1565,7 +1565,7 @@
   }
 
   .chat-sidebar-search {
-    display: none;
+    min-height: calc(var(--space-2xl) + var(--space-xs));
   }
 
   .chat-sidebar-list {
