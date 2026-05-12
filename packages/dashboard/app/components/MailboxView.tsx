@@ -202,7 +202,7 @@ export function MailboxView({
   const [showComposer, setShowComposer] = useState(false);
   const [composeRecipient, setComposeRecipient] = useState<{ id: string; type: ParticipantType } | null>(null);
   const [composeReplyContext, setComposeReplyContext] = useState<{ messageId: string; preview: string } | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(ALL_AGENTS_MAILBOX_ID);
   const [agentSubTab, setAgentSubTab] = useState<"inbox" | "outbox">("inbox");
   const [agentMailbox, setAgentMailbox] = useState<AgentMailboxResponse | null>(null);
   const [allAgentsMailbox, setAllAgentsMailbox] = useState<AllAgentsMailboxResponse | null>(null);
@@ -414,7 +414,6 @@ export function MailboxView({
 
   // Load agent mailbox when selected
   useEffect(() => {
-    if (!selectedAgentId) return;
     if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) {
       void loadAllAgentsMailbox();
       return;
@@ -900,11 +899,10 @@ export function MailboxView({
                 <div className="mailbox-agents-dropdown">
                   <select
                     className="message-composer-select mailbox-agent-select"
-                    value={selectedAgentId ?? ""}
-                    onChange={(e) => { setSelectedAgentId(e.target.value || null); setAgentSubTab("inbox"); }}
+                    value={selectedAgentId}
+                    onChange={(e) => { setSelectedAgentId(e.target.value); setAgentSubTab("inbox"); }}
                     data-testid="mailbox-agent-select"
                   >
-                    <option value="">Select an agent…</option>
                     <option value={ALL_AGENTS_MAILBOX_ID}>All agents</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
@@ -947,12 +945,6 @@ export function MailboxView({
                 </div>
               )}
               <div className="mailbox-agents-content">
-                {!selectedAgentId && (
-                  <div className="mailbox-empty">
-                    <Bot size={32} />
-                    <p>Select an agent to view their mailbox</p>
-                  </div>
-                )}
                 {selectedAgentId === ALL_AGENTS_MAILBOX_ID && isLoading && !allAgentsMailbox && <MailboxSkeleton />}
                 {selectedAgentId === ALL_AGENTS_MAILBOX_ID && allAgentsMailbox && allAgentsMailbox.messages.length === 0 && (
                   <div className="mailbox-empty">

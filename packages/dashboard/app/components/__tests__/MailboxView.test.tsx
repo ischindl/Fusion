@@ -1220,6 +1220,30 @@ describe("MailboxView", () => {
   });
 
   describe("agent mailbox sub-tabs", () => {
+    it("FN-4103 defaults the Agents tab selector to All agents without a placeholder", async () => {
+      mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+      mockFetchAllAgentMailbox.mockResolvedValue({ messages: [], total: 0, unreadCount: 0 });
+
+      render(<MailboxView {...defaultProps} />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
+      });
+
+      await waitFor(() => {
+        expect(mockFetchAllAgentMailbox).toHaveBeenCalledWith(undefined);
+      });
+
+      const agentSelect = screen.getByTestId("mailbox-agent-select") as HTMLSelectElement;
+      expect(agentSelect.value).toBe("__all_agents__");
+
+      const firstOption = agentSelect.options[0];
+      expect(firstOption?.value).toBe("__all_agents__");
+      expect(firstOption?.text).toBe("All agents");
+      expect(screen.queryByText("Select an agent to view their mailbox")).toBeNull();
+      expect(screen.getByText("No agent-to-agent messages")).toBeDefined();
+    });
+
     it("shows All agents option and renders aggregate stream without subtabs", async () => {
       const aggregateMessage: Message = {
         ...mockAgentToAgentMessage,
@@ -1243,8 +1267,6 @@ describe("MailboxView", () => {
         fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
       });
 
-      fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "__all_agents__" } });
-
       await waitFor(() => {
         expect(mockFetchAllAgentMailbox).toHaveBeenCalledWith(undefined);
         expect(screen.queryByTestId("mailbox-agent-subtabs")).toBeNull();
@@ -1262,7 +1284,6 @@ describe("MailboxView", () => {
       await act(async () => {
         fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
       });
-      fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "__all_agents__" } });
 
       await act(async () => {
         fireEvent.click(screen.getByTestId("mailbox-compose-btn"));
@@ -1283,7 +1304,6 @@ describe("MailboxView", () => {
       await act(async () => {
         fireEvent.click(screen.getByTestId("mailbox-tab-agents"));
       });
-      fireEvent.change(screen.getByTestId("mailbox-agent-select"), { target: { value: "__all_agents__" } });
 
       const latest = sseSubscriptions.at(-1);
       await act(async () => {
