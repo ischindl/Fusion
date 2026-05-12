@@ -129,6 +129,22 @@ describe("hydrateWorktreeDb", () => {
     expect(after).toEqual(before);
   });
 
+  it("bootstraps worktree db when .fusion scratch dir is missing", async () => {
+    const root = makeProject("h-open-root-");
+    const worktree = mkdtempSync(join(tmpdir(), "h-open-dst-"));
+    cleanup.push(root, worktree);
+    insertTask(root, "FN-1");
+
+    const warn = vi.fn();
+    const store = { getTask: vi.fn(async () => ({ id: "FN-1", dependencies: [] })) };
+    const result = await hydrateWorktreeDb({ rootDir: root, worktreePath: worktree, taskId: "FN-1", store: store as any, logger: { warn } });
+
+    expect(result.degraded).toBe(false);
+    expect(result.tasksCopied).toBe(1);
+    expect(existsSync(join(worktree, ".fusion", "fusion.db"))).toBe(true);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("unable to open database file"));
+  });
+
   it("degrades on write failure", async () => {
     const root = makeProject("h-denied-");
     const worktree = makeProject("h-denied-dst-");

@@ -2154,6 +2154,31 @@ describe("worktree DB hydration", () => {
     expect(mockedHydrateWorktreeDb).toHaveBeenCalledTimes(1);
   });
 
+  it("logs degraded hydration reason and continues execution", async () => {
+    mockedHydrateWorktreeDb.mockResolvedValueOnce({
+      tasksCopied: 0,
+      documentsCopied: 0,
+      degraded: true,
+      reason: "unable to open database file",
+    });
+    mockedExistsSync.mockReturnValue(false);
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await executor.execute(makeTask());
+
+    expect((store.logEntry as ReturnType<typeof vi.fn>).mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          "FN-HYD",
+          "Worktree DB hydration degraded: unable to open database file",
+          undefined,
+          expect.objectContaining({ agentId: "executor" }),
+        ],
+      ]),
+    );
+    expect(mockedCreateFnAgent).toHaveBeenCalled();
+  });
+
   it("hydration failure does not abort execute", async () => {
     mockedHydrateWorktreeDb.mockRejectedValueOnce(new Error("boom"));
     mockedExistsSync.mockReturnValue(false);

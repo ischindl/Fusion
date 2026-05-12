@@ -378,4 +378,6 @@ Expected executor log entry on success:
 Hydrated worktree DB: 4 tasks, 12 task_documents
 ```
 
-Failure policy is strict non-blocking: hydration warnings are logged, but worktree creation/execution continues. Canonical task data remains the root project TaskStore DB; if an agent needs non-hydrated rows immediately, `fn_task_show` remains the canonical fallback path.
+A concrete recovered failure mode now covered by tests: when a worktree directory exists but its local `.fusion/` scratch state is missing, opening `DatabaseSync(<worktree>/.fusion/fusion.db)` can fail with `unable to open database file`. Hydration now performs destination bootstrap (`mkdir -p .fusion` + schema init) and retries the destination open once before degrading.
+
+Failure policy remains strict non-blocking for genuinely unrecoverable cases: hydration warnings are logged, but worktree creation/execution continues. Examples that still intentionally degrade include source DB missing, destination write-permission failures, and irreconcilable schema/open errors after bootstrap retry. Canonical task data remains the root project TaskStore DB; if an agent needs non-hydrated rows immediately, `fn_task_show` remains the canonical fallback path.

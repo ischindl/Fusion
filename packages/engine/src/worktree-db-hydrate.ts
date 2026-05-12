@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync, TaskStore } from "@fusion/core";
+import { Database, DatabaseSync, type TaskStore } from "@fusion/core";
 
 export interface HydrateWorktreeDbParams {
   rootDir: string;
@@ -59,8 +59,26 @@ async function resolveDependencyIds(taskId: string, store: Pick<TaskStore, "getT
 }
 
 function ensureWorktreeSchema(worktreePath: string): void {
-  const schemaStore = new TaskStore(worktreePath);
-  schemaStore.close();
+  const fusionDir = join(worktreePath, ".fusion");
+  mkdirSync(fusionDir, { recursive: true });
+  const db = new Database(fusionDir);
+  db.init();
+  db.close();
+}
+
+function isRecoverableOpenError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("unable to open database file");
+}
+
+function openWorktreeDbWithRecovery(dstDbPath: string, worktreePath: string): DatabaseSync {
+  try {
+    return new DatabaseSync(dstDbPath);
+  } catch (error) {
+    if (!isRecoverableOpenError(error)) throw error;
+    ensureWorktreeSchema(worktreePath);
+    return new DatabaseSync(dstDbPath);
+  }
 }
 
 export async function hydrateWorktreeDb({
@@ -95,7 +113,7 @@ export async function hydrateWorktreeDb({
     }
 
     srcDb = new DatabaseSync(srcDbPath);
-    dstDb = new DatabaseSync(dstDbPath);
+    dstDb = openWorktreeDbWithRecovery(dstDbPath, worktreePath);
 
     dstDb.exec("PRAGMA journal_mode = WAL");
 
