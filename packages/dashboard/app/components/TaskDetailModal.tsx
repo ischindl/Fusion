@@ -790,6 +790,8 @@ export function TaskDetailContent({
   const canEditGithubTracking = GITHUB_TRACKING_EDITABLE_COLUMNS.has(task.column) && !isSaving;
   const githubTrackingEnabled = githubTrackingEnabledDraft ?? (task.githubTracking?.enabled === true);
   const githubTrackedIssue = task.githubTracking?.issue;
+  const showInlineGithubTrackingEnableButton =
+    canEditGithubTracking && !githubTrackedIssue && (!githubTrackingEnabled || (isSavingGithubTracking && task.githubTracking?.enabled !== true));
   const showGithubTrackingSection = canEditGithubTracking || githubTrackingEnabled || Boolean(githubTrackedIssue);
   const githubTrackingStatus = githubTrackedIssue ? "Linked" : githubTrackingEnabled ? "Enabled" : "Disabled";
   const effectiveGithubRepoDefault = resolveEffectiveGithubRepoDefault(settings ?? null, globalSettings);
@@ -2391,15 +2393,15 @@ export function TaskDetailContent({
                     </span>
                   )}
                 </div>
-                {canEditGithubTracking && !githubTrackingEnabled && !githubTrackedIssue && !isSavingGithubTracking && (
+                {showInlineGithubTrackingEnableButton && (
                   <button
                     type="button"
-                    className="btn btn-sm btn-primary touch-target detail-github-tracking-enable"
+                    className="btn btn-sm btn-primary detail-github-tracking-enable"
                     aria-label="Enable GitHub tracking"
                     onClick={() => void handleToggleGithubTracking()}
                     disabled={isSavingGithubTracking}
                   >
-                    Enable GitHub tracking
+                    {isSavingGithubTracking ? "Saving…" : "Enable"}
                   </button>
                 )}
                 <button
