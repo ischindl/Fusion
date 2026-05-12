@@ -49,6 +49,12 @@ export interface ChatViewProps {
   experimentalFeatures?: Record<string, boolean>;
 }
 
+const CHAT_INPUT_MAX_HEIGHT_PX = 320;
+
+export function clampChatInputHeight(scrollHeight: number): number {
+  return Math.min(scrollHeight, CHAT_INPUT_MAX_HEIGHT_PX);
+}
+
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
@@ -1526,7 +1532,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
         window.requestAnimationFrame(() => {
           if (!inputRef.current) return;
           inputRef.current.style.height = "auto";
-          inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+          inputRef.current.style.height = `${clampChatInputHeight(inputRef.current.scrollHeight)}px`;
           inputRef.current.focus();
         });
 
@@ -1565,7 +1571,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
       window.requestAnimationFrame(() => {
         if (!inputRef.current) return;
         inputRef.current.style.height = "auto";
-        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+        inputRef.current.style.height = `${clampChatInputHeight(inputRef.current.scrollHeight)}px`;
         inputRef.current.focus();
         inputRef.current.setSelectionRange(nextCursorPos, nextCursorPos);
       });
@@ -1725,7 +1731,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     }
 
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+    textarea.style.height = `${clampChatInputHeight(textarea.scrollHeight)}px`;
   }, [updateMentionState]);
 
   const handleInputSelectionChange = useCallback(

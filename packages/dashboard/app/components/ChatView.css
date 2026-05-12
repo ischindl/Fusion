@@ -1302,8 +1302,11 @@
   font-size: 14px;
   font-family: inherit;
   line-height: 1.4;
-  max-height: 120px;
+  max-height: 320px;
   min-height: 40px;
+  /* Mobile keeps the desktop cap because the surrounding chat-input-area
+     and thread flex bounds already prevent the composer from overtaking
+     the message pane before textarea scrolling engages. */
   /* touch-action: manipulation allows tap-to-focus (so iOS doesn't
      auto-dismiss the keyboard between gesture frames) and blocks
      double-tap zoom + pan/zoom gestures. We previously tried `none`
