@@ -345,6 +345,27 @@ const CHAT_SIDEBAR_MIN_WIDTH = 180;
 const CHAT_SIDEBAR_MAX_WIDTH = 500;
 const CHAT_SIDEBAR_STORAGE_KEY = "fusion:chat-sidebar-width";
 const CHAT_SCOPE_STORAGE_KEY = "fusion:chat-scope";
+const CHAT_DRAFT_STORAGE_PREFIX = "fusion:chat-draft:";
+
+function getChatDraftKey(scope: "direct" | "rooms", id: string | null | undefined): string | null {
+  if (!id) {
+    return null;
+  }
+
+  return `${CHAT_DRAFT_STORAGE_PREFIX}${scope}:${id}`;
+}
+
+function getPersistedChatDraft(key: string | null): string {
+  if (!key) {
+    return "";
+  }
+
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 interface PendingAttachment {
   file: File;
@@ -839,18 +860,35 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   } = useChat(projectId, addToast);
 
   const [showNewDialog, setShowNewDialog] = useState(false);
-  const [messageInput, setMessageInput] = useState("");
+  const chatRoomsEnabled = experimentalFeatures?.chatRooms === true;
+  const [chatScope, setChatScope] = useState<"direct" | "rooms">(() => {
+    try {
+      const persistedScope = localStorage.getItem(CHAT_SCOPE_STORAGE_KEY);
+      if (persistedScope === "rooms" && chatRoomsEnabled) {
+        return "rooms";
+      }
+    } catch {
+      // Ignore storage errors.
+    }
+
+    return "direct";
+  });
+  // Keep this hook unconditional to preserve hook ordering and test stability.
+  // Rooms UI and interactions are fully gated by `chatRoomsEnabled`.
+  const rooms = useChatRooms(projectId, addToast);
+  const [messageInput, setMessageInput] = useState(() => {
+    const initialDraftKey = getChatDraftKey(
+      chatScope,
+      chatScope === "rooms" ? rooms.activeRoom?.id : activeSession?.id,
+    );
+    return getPersistedChatDraft(initialDraftKey);
+  });
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmDeleteRoomId, setConfirmDeleteRoomId] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(CHAT_SIDEBAR_DEFAULT_WIDTH);
-  const [chatScope, setChatScope] = useState<"direct" | "rooms">("direct");
   const [createRoomOpen, setCreateRoomOpen] = useState(false);
-  const chatRoomsEnabled = experimentalFeatures?.chatRooms === true;
-  // Keep this hook unconditional to preserve hook ordering and test stability.
-  // Rooms UI and interactions are fully gated by `chatRoomsEnabled`.
-  const rooms = useChatRooms(projectId, addToast);
   const [agentsMap, setAgentsMap] = useState<Map<string, Agent>>(new Map());
   const [discoveredSkills, setDiscoveredSkills] = useState<DiscoveredSkill[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
@@ -947,6 +985,37 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
       // Ignore storage errors.
     }
   }, [chatRoomsEnabled, chatScope]);
+
+  const activeDraftKey = getChatDraftKey(
+    chatScope,
+    chatScope === "rooms" ? rooms.activeRoom?.id : activeSession?.id,
+  );
+  const lastDraftKeyRef = useRef<string | null>(activeDraftKey);
+
+  useEffect(() => {
+    if (activeDraftKey === lastDraftKeyRef.current) {
+      return;
+    }
+
+    lastDraftKeyRef.current = activeDraftKey;
+    setMessageInput(getPersistedChatDraft(activeDraftKey));
+  }, [activeDraftKey]);
+
+  useEffect(() => {
+    if (!activeDraftKey || lastDraftKeyRef.current !== activeDraftKey) {
+      return;
+    }
+
+    try {
+      if (messageInput) {
+        localStorage.setItem(activeDraftKey, messageInput);
+        return;
+      }
+      localStorage.removeItem(activeDraftKey);
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [activeDraftKey, messageInput]);
 
   const roomThreadActive = chatRoomsEnabled && chatScope === "rooms" && !!rooms.activeRoom;
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
@@ -1354,6 +1423,13 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
 
   const clearComposerState = useCallback(() => {
     setMessageInput("");
+    if (activeDraftKey) {
+      try {
+        localStorage.removeItem(activeDraftKey);
+      } catch {
+        // Ignore storage errors.
+      }
+    }
     setShowSkillMenu(false);
     setSkillFilter("");
     setMentionPopupVisible(false);
@@ -1367,7 +1443,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
       }
       return [];
     });
-  }, []);
+  }, [activeDraftKey]);
 
   // Handle send message including pending attachment uploads.
   const handleSend = useCallback(() => {
