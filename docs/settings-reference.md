@@ -331,7 +331,7 @@ Recovery entrypoints in the dashboard:
 ### Authentication troubleshooting (mobile OAuth fallback)
 
 When an OAuth provider returns a localhost callback that this dashboard host cannot open directly, use the **manual code** fallback in Settings/Onboarding:
-- Tap **Login** for the provider, complete sign-in in the browser, then paste either the final redirect URL or the authorization code into the fallback textbox.
+- Tap **Login** for the provider, complete sign-in in the browser, then paste either the final redirect URL or the authorization code into the fallback textbox. Fusion now shows a pre-login warning first so you know to copy the browser address bar URL before the redirect tab appears to fail.
 - On mobile/coarse-pointer layouts, the fallback textbox now auto-scrolls into view on focus (and after keyboard viewport shifts) so the paste/submit path remains usable.
 
 **Credential storage rule:** API keys for Research providers are not stored in settings JSON. They are managed through the existing auth storage pipeline (`/api/auth/status`, `POST /api/auth/api-key`, `DELETE /api/auth/api-key`) and persisted in auth credential storage with masked hints in API responses.

@@ -224,6 +224,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.get("/auth/status", async (req, res) => {
     try {
+      const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
       const storage = getAuthStorage();
       storage.reload();
       const oauthProviders = storage.getOAuthProviders();
@@ -234,12 +235,14 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         type: "oauth" | "api_key" | "cli";
         keyHint?: string;
         loginInProgress?: boolean;
+        requiresManualCode?: boolean;
       }[] = oauthProviders.map((p) => ({
         id: p.id,
         name: p.name,
         authenticated: storage.hasAuth(p.id) && !isExpiredOauthCredential(p.id, storage),
         type: "oauth" as const,
         loginInProgress: loginInProgress.has(p.id),
+        requiresManualCode: getManualCodeConfig(p.id, origin) !== undefined || undefined,
       }));
 
       // Include API-key-backed providers if supported

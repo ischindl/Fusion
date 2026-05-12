@@ -1330,6 +1330,8 @@ export interface AuthProvider {
   authenticated: boolean;
   /** True when the server currently has an active OAuth login flow for this provider. */
   loginInProgress?: boolean;
+  /** True when the redirect cannot reach this dashboard host and the user must paste the URL/code back manually. */
+  requiresManualCode?: boolean;
   /**
    * How this provider authenticates / is activated.
    * - "oauth": OAuth flow (user clicks Login → redirect)

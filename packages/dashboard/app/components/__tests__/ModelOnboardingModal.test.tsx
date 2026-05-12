@@ -22,6 +22,7 @@ const mockCreateCustomProvider = vi.fn();
 const mockFetchCursorCliStatus = vi.fn();
 const mockSetCursorCliEnabled = vi.fn();
 const mockUseShellConnection = vi.fn();
+const mockConfirm = vi.fn();
 
 vi.mock("../../api", () => ({
   fetchAuthStatus: (...args: unknown[]) => mockFetchAuthStatus(...args),
@@ -110,6 +111,10 @@ vi.mock("../onboarding-events", () => ({
 // Mock ProviderIcon for test isolation
 vi.mock("../../hooks/useShellConnection", () => ({
   useShellConnection: (...args: unknown[]) => mockUseShellConnection(...args),
+}));
+
+vi.mock("../../hooks/useConfirm", () => ({
+  useConfirm: () => ({ confirm: (...args: unknown[]) => mockConfirm(...args) }),
 }));
 
 vi.mock("../ProviderIcon", () => ({
@@ -204,6 +209,7 @@ beforeEach(() => {
     ready: false,
   });
   mockSetCursorCliEnabled.mockResolvedValue({ enabled: true, restartRequired: false });
+  mockConfirm.mockResolvedValue(true);
   // Default to no persisted state (start at ai-setup)
   mockGetOnboardingState.mockReturnValue(null);
   mockSaveOnboardingState.mockImplementation(() => {});
@@ -654,6 +660,74 @@ describe("ModelOnboardingModal", () => {
 
       await waitFor(() => {
         expect(mockLoginProvider).toHaveBeenCalledWith("anthropic");
+        expect(mockWindowOpen).toHaveBeenCalledWith("https://auth.example.com/login", "_blank");
+      });
+    });
+
+    it("warns before starting manual-code oauth login and stops when cancelled", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      });
+      vi.spyOn(window, "open").mockImplementation(vi.fn());
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Login")).toBeTruthy();
+      });
+
+      mockConfirm.mockResolvedValueOnce(false);
+      fireEvent.click(screen.getByText("Login"));
+
+      await waitFor(() => {
+        expect(mockConfirm).toHaveBeenCalledWith({
+          title: "Heads up — manual paste-back required",
+          message:
+            "After you sign in with Anthropic, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?",
+          confirmLabel: "Continue to login",
+          cancelLabel: "Cancel",
+        });
+      });
+      expect(mockLoginProvider).not.toHaveBeenCalled();
+    });
+
+    it("continues manual-code oauth login after confirmation", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      });
+      const mockWindowOpen = vi.fn();
+      vi.spyOn(window, "open").mockImplementation(mockWindowOpen);
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Login")).toBeTruthy();
+      });
+
+      mockConfirm.mockResolvedValueOnce(true);
+      fireEvent.click(screen.getByText("Login"));
+
+      await waitFor(() => {
+        expect(mockConfirm).toHaveBeenCalled();
+        expect(mockLoginProvider).toHaveBeenCalledWith("anthropic");
+        expect(mockWindowOpen).toHaveBeenCalledWith("https://auth.example.com/login", "_blank");
+      });
+    });
+
+    it("skips the warning for oauth providers without manual-code fallback", async () => {
+      mockFetchAuthStatus.mockResolvedValueOnce({
+        providers: [{ id: "google", name: "Google", authenticated: false, type: "oauth" }],
+      });
+      const mockWindowOpen = vi.fn();
+      vi.spyOn(window, "open").mockImplementation(mockWindowOpen);
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+
+      const loginButton = await screen.findByText("Login");
+      fireEvent.click(loginButton);
+
+      await waitFor(() => {
+        expect(mockConfirm).not.toHaveBeenCalled();
+        expect(mockLoginProvider).toHaveBeenCalledWith("google");
         expect(mockWindowOpen).toHaveBeenCalledWith("https://auth.example.com/login", "_blank");
       });
     });
