@@ -439,6 +439,9 @@
 .detail-github-tracking-enable {
   margin-left: auto;
   align-self: center;
+  padding-block: calc(var(--space-xs) / 2);
+  padding-inline: var(--space-sm);
+  line-height: 1.2;
 }
 
 .detail-source-toggle {
