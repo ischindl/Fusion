@@ -2203,7 +2203,7 @@ describe("TaskDetailModal", () => {
 
       expect(screen.getByText("GitHub tracking")).toBeTruthy();
       expect(screen.getByText("Tracking is currently disabled")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Enable GitHub tracking" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Enable GitHub tracking" })).toHaveTextContent("Enable");
     });
 
     it("enables GitHub tracking via the inline header button without expanding the disclosure", async () => {
@@ -2241,6 +2241,50 @@ describe("TaskDetailModal", () => {
       expect(addToast).not.toHaveBeenCalledWith(expect.stringContaining("Failed to update FN-001"), "error");
       expect(screen.getByRole("button", { name: "Expand GitHub tracking details" })).toHaveAttribute("aria-expanded", "false");
       expect(screen.queryByRole("button", { name: "Collapse GitHub tracking details" })).toBeNull();
+    });
+
+    it("keeps the inline enable button mounted and disabled while saving", async () => {
+      const { updateTask } = await import("../../api");
+      const mockUpdate = vi.mocked(updateTask);
+      let resolveUpdate: ((task: Task) => void) | undefined;
+      mockUpdate.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveUpdate = resolve;
+          }),
+      );
+
+      render(
+        <TaskDetailModal
+          task={makeTask({
+            id: "FN-001",
+            column: "todo",
+            githubTracking: {
+              enabled: false,
+            },
+          })}
+          onClose={noop}
+          onOpenDetail={noopOpenDetail}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          addToast={noop}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Enable GitHub tracking" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Enable GitHub tracking" })).toBeDisabled();
+      });
+      expect(screen.getByRole("button", { name: "Enable GitHub tracking" })).toHaveTextContent("Saving…");
+      expect(screen.getByRole("button", { name: "Expand GitHub tracking details" })).toHaveAttribute("aria-expanded", "false");
+
+      resolveUpdate?.({ id: "FN-001" } as Task);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Enable GitHub tracking" })).toBeNull();
+      });
     });
 
     it("hides the inline enable button when tracking is already enabled", () => {
