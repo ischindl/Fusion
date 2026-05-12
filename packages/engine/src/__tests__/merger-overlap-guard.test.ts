@@ -153,19 +153,25 @@ function assertIsolatedWorkspace(dir: string): void {
 
 const createdDirs = new Set<string>();
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function cleanupTempDir(dir?: string): void {
   if (!dir) return;
   createdDirs.delete(dir);
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
     try {
       if (!existsSync(dir)) return;
       rmSync(dir, { recursive: true, force: true });
-      return;
+      if (!existsSync(dir)) return;
     } catch (error) {
-      if (attempt === 3) {
+      if (attempt === 5) {
         throw error;
       }
     }
+
+    sleepSync(attempt * 25);
   }
 }
 
