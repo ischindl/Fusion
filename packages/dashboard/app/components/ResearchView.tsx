@@ -225,7 +225,7 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
       <header className="research-view__header">
         <div>
           <h2 className="research-view__title">Research</h2>
-          <p className="research-view__subtitle">Create and track research runs with cited findings.</p>
+          <p className="research-view__subtitle">Cited search and synthesis runs: gather sources, fetch content, and synthesize findings.</p>
         </div>
         <button className="btn" type="button" onClick={() => void refresh()}>
           Refresh

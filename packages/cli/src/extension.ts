@@ -1474,7 +1474,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_run",
     label: "fn: Run Research",
-    description: "Start a bounded research run and optionally wait for findings.",
+    description: "Cited-research pipeline: create a bounded search/fetch/synthesis run (not an autonomous experiment loop) and optionally wait for completion.",
     parameters: Type.Object({
       query: Type.String({ description: "Research query or question" }),
       wait_for_completion: Type.Optional(Type.Boolean({ description: "Wait for the run to complete before returning (default: false)" })),
@@ -1538,7 +1538,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_list",
     label: "fn: List Research Runs",
-    description: "List recent research runs.",
+    description: "Cited-research pipeline: list recent search/fetch/synthesis runs (not experiment-loop sessions)."
     parameters: Type.Object({
       status: Type.Optional(StringEnum([...RESEARCH_RUN_STATUSES], { description: "Filter by run status" }) as unknown as TSchema),
       limit: Type.Optional(Type.Number({ description: "Max runs to return (default: 10)" })),
@@ -1562,7 +1562,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_get",
     label: "fn: Get Research Run",
-    description: "Get one research run and structured findings.",
+    description: "Cited-research pipeline: get one run with structured findings and citations (not experiment-loop state)."
     parameters: Type.Object({ id: Type.String({ description: "Research run ID" }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
@@ -1604,7 +1604,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_cancel",
     label: "fn: Cancel Research Run",
-    description: "Cancel an in-flight research run. Terminal runs return INVALID_TRANSITION.",
+    description: "Cited-research pipeline: cancel an in-flight run; terminal runs return INVALID_TRANSITION (does not control experiment loops)."
     parameters: Type.Object({ id: Type.String({ description: "Research run ID" }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
@@ -1666,7 +1666,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_retry",
     label: "fn: Retry Research Run",
-    description: "Retry a failed research run when lifecycle marks it retryable.",
+    description: "Cited-research pipeline: retry a failed run when lifecycle marks it retryable (not an autonomous experiment loop retry)."
     parameters: Type.Object({ id: Type.String({ description: "Research run ID" }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);

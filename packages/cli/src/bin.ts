@@ -287,16 +287,16 @@ Usage:
                          Create a GitHub PR for an in-review task
   fn task import <owner/repo> [opts]  Import GitHub issues as tasks
   fn research create --query <text> [--wait] [--max-wait-ms <ms>] [--json]
-                                      Create and optionally wait for a research run
+                                      Create and optionally wait for a cited-research run (search/fetch/synthesis)
   fn research list | ls [--status <status>] [--limit <n>] [--json]
-                                      List research runs
-  fn research show <run-id> [--json]  Show research run details
+                                      List cited-research runs
+  fn research show <run-id> [--json]  Show cited-research run details
   fn research export <run-id> [--format <json|markdown|pdf>] [--output <path>] [--json]
-                                      Export research run results
+                                      Export cited-research run results
   fn research cancel <run-id> [--json]
-                                      Cancel an active research run
+                                      Cancel an active cited-research run
   fn research retry <run-id> [--json]
-                                      Retry a failed/cancelled research run
+                                      Retry a failed/cancelled cited-research run
   fn mission create [title] [desc]    Create a new mission
   fn mission list | ls                List missions
   fn mission show | info <id>         Show mission details
