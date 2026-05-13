@@ -1538,7 +1538,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_list",
     label: "fn: List Research Runs",
-    description: "Cited-research pipeline: list recent search/fetch/synthesis runs (not experiment-loop sessions)."
+    description: "Cited-research pipeline: list recent search/fetch/synthesis runs (not experiment-loop sessions).",
     parameters: Type.Object({
       status: Type.Optional(StringEnum([...RESEARCH_RUN_STATUSES], { description: "Filter by run status" }) as unknown as TSchema),
       limit: Type.Optional(Type.Number({ description: "Max runs to return (default: 10)" })),
@@ -1562,7 +1562,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_get",
     label: "fn: Get Research Run",
-    description: "Cited-research pipeline: get one run with structured findings and citations (not experiment-loop state)."
+    description: "Cited-research pipeline: get one run with structured findings and citations (not experiment-loop state).",
     parameters: Type.Object({ id: Type.String({ description: "Research run ID" }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
@@ -1604,7 +1604,7 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_research_cancel",
     label: "fn: Cancel Research Run",
-    description: "Cited-research pipeline: cancel an in-flight run; terminal runs return INVALID_TRANSITION (does not control experiment loops)."
+    description: "Cited-research pipeline: cancel an in-flight run; terminal runs return INVALID_TRANSITION (does not control experiment loops).",
     parameters: Type.Object({ id: Type.String({ description: "Research run ID" }) }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
