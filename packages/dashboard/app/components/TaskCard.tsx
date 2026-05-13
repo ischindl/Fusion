@@ -12,7 +12,6 @@ import {
 } from "@fusion/core";
 import { fetchTaskDetail, uploadAttachment, fetchMission, fetchAgent } from "../api";
 import { GitHubBadge } from "./GitHubBadge";
-import { pickPreferredBadge } from "./TaskCardBadge";
 import { ProviderIcon } from "./ProviderIcon";
 import { PluginSlot } from "./PluginSlot";
 import { useBadgeWebSocket } from "../hooks/useBadgeWebSocket";
