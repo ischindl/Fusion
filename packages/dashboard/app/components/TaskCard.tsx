@@ -1661,7 +1661,7 @@ function TaskCardComponent({
           </>
         );
       })()}
-      {(filesChangedButton || timeIndicator || isGitHubImportedTask || showTrackingIndicator) && (
+      {(filesChangedButton || timeIndicator || isGitHubImportedTask) && (
         <div className="card-footer-row">
           {filesChangedButton}
           {isGitHubImportedTask && (
@@ -1672,20 +1672,6 @@ function TaskCardComponent({
             >
               <ProviderIcon provider="github" size="sm" />
             </span>
-          )}
-          {showTrackingIndicator && githubTrackedIssue && (
-            <a
-              className="card-source-provenance card-github-tracking-link"
-              href={githubTrackedIssue.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Linked GitHub issue: ${githubTrackedIssue.owner}/${githubTrackedIssue.repo}#${githubTrackedIssue.number}`}
-              aria-label={`Linked GitHub issue #${githubTrackedIssue.number}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ProviderIcon provider="github" size="sm" />
-              <span>{`#${githubTrackedIssue.number}`}</span>
-            </a>
           )}
           {timeIndicator && (
             <span
@@ -1757,6 +1743,22 @@ function TaskCardComponent({
               <span className="visually-hidden">Assigned to {agentName ?? task.assignedAgentId}</span>
             </span>
           )}
+        </div>
+      )}
+      {showTrackingIndicator && githubTrackedIssue && (
+        <div className="card-bottom-right-row">
+          <a
+            className="card-source-provenance card-github-tracking-link"
+            href={githubTrackedIssue.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Linked GitHub issue: ${githubTrackedIssue.owner}/${githubTrackedIssue.repo}#${githubTrackedIssue.number}`}
+            aria-label={`Linked GitHub issue #${githubTrackedIssue.number}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ProviderIcon provider="github" size="sm" />
+            <span>{`#${githubTrackedIssue.number}`}</span>
+          </a>
         </div>
       )}
       <PluginSlot slotId="task-card-badge" projectId={projectId} />
