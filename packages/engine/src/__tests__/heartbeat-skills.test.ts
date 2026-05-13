@@ -19,6 +19,15 @@ vi.mock("../pi.js", () => ({
   }),
 }));
 import { createFnAgent } from "../pi.js";
+vi.mock("../worktree-acquisition.js", () => ({
+  acquireTaskWorktree: vi.fn(async ({ rootDir }: { rootDir: string }) => ({
+    worktreePath: `${rootDir}/.worktrees/fn-001`,
+    branch: "fusion/fn-001",
+    source: "existing",
+    hydrated: false,
+    isResume: true,
+  })),
+}));
 const mockedCreateFnAgent = vi.mocked(createFnAgent);
 
 describe("executeHeartbeat — skill selection resolver contract (FN-1510/FN-1511)", () => {
@@ -191,7 +200,7 @@ describe("executeHeartbeat — skill selection resolver contract (FN-1510/FN-151
     expect(mockedCreateFnAgent).toHaveBeenCalled();
     const firstCall = mockedCreateFnAgent.mock.calls[0];
     const opts = firstCall[0];
-    expect(opts.cwd).toBe("/project/root");
+    expect(opts.cwd).toBe("/project/root/.worktrees/fn-001");
   });
 
   it("heartbeat completes successfully when agent has no skills", async () => {
