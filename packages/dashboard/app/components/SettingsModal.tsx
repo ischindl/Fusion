@@ -4552,93 +4552,97 @@ export function SettingsModal({
               </div>
             </div>
             <div className="form-group">
-              <label htmlFor="research-project-max-concurrent">Max Concurrent Runs</label>
-              <input
-                id="research-project-max-concurrent"
-                className="input"
-                type="number"
-                min={1}
-                value={limits?.maxConcurrentRuns ?? 3}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    researchSettings: {
-                      ...(current.researchSettings ?? {}),
-                      limits: {
-                        ...(current.researchSettings?.limits ?? {}),
-                        maxConcurrentRuns: event.target.value === "" ? undefined : Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="research-project-max-sources">Max Sources Per Run</label>
-              <input
-                id="research-project-max-sources"
-                className="input"
-                type="number"
-                min={1}
-                value={limits?.maxSourcesPerRun ?? 20}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    researchSettings: {
-                      ...(current.researchSettings ?? {}),
-                      limits: {
-                        ...(current.researchSettings?.limits ?? {}),
-                        maxSourcesPerRun: event.target.value === "" ? undefined : Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="research-project-max-duration">Max Duration (ms)</label>
-              <input
-                id="research-project-max-duration"
-                className="input"
-                type="number"
-                min={1000}
-                value={limits?.maxDurationMs ?? 300000}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    researchSettings: {
-                      ...(current.researchSettings ?? {}),
-                      limits: {
-                        ...(current.researchSettings?.limits ?? {}),
-                        maxDurationMs: event.target.value === "" ? undefined : Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="research-project-request-timeout">Request Timeout (ms)</label>
-              <input
-                id="research-project-request-timeout"
-                className="input"
-                type="number"
-                min={1000}
-                value={limits?.requestTimeoutMs ?? 30000}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    researchSettings: {
-                      ...(current.researchSettings ?? {}),
-                      limits: {
-                        ...(current.researchSettings?.limits ?? {}),
-                        requestTimeoutMs: event.target.value === "" ? undefined : Number(event.target.value),
-                      },
-                    },
-                  }))
-                }
-              />
-              {researchLimitError && <small className="field-error">{researchLimitError}</small>}
+              <div className="settings-research-limits-grid">
+                <div className="settings-research-limit-field">
+                  <label htmlFor="research-project-max-concurrent">Max Concurrent Runs</label>
+                  <input
+                    id="research-project-max-concurrent"
+                    className="input"
+                    type="number"
+                    min={1}
+                    value={limits?.maxConcurrentRuns ?? 3}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        researchSettings: {
+                          ...(current.researchSettings ?? {}),
+                          limits: {
+                            ...(current.researchSettings?.limits ?? {}),
+                            maxConcurrentRuns: event.target.value === "" ? undefined : Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="settings-research-limit-field">
+                  <label htmlFor="research-project-max-sources">Max Sources Per Run</label>
+                  <input
+                    id="research-project-max-sources"
+                    className="input"
+                    type="number"
+                    min={1}
+                    value={limits?.maxSourcesPerRun ?? 20}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        researchSettings: {
+                          ...(current.researchSettings ?? {}),
+                          limits: {
+                            ...(current.researchSettings?.limits ?? {}),
+                            maxSourcesPerRun: event.target.value === "" ? undefined : Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="settings-research-limit-field">
+                  <label htmlFor="research-project-max-duration">Max Duration (ms)</label>
+                  <input
+                    id="research-project-max-duration"
+                    className="input"
+                    type="number"
+                    min={1000}
+                    value={limits?.maxDurationMs ?? 300000}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        researchSettings: {
+                          ...(current.researchSettings ?? {}),
+                          limits: {
+                            ...(current.researchSettings?.limits ?? {}),
+                            maxDurationMs: event.target.value === "" ? undefined : Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="settings-research-limit-field">
+                  <label htmlFor="research-project-request-timeout">Request Timeout (ms)</label>
+                  <input
+                    id="research-project-request-timeout"
+                    className="input"
+                    type="number"
+                    min={1000}
+                    value={limits?.requestTimeoutMs ?? 30000}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        researchSettings: {
+                          ...(current.researchSettings ?? {}),
+                          limits: {
+                            ...(current.researchSettings?.limits ?? {}),
+                            requestTimeoutMs: event.target.value === "" ? undefined : Number(event.target.value),
+                          },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {researchLimitError && <small className="field-error settings-research-limits-error">{researchLimitError}</small>}
+              </div>
             </div>
           </>
         );

@@ -293,8 +293,25 @@
   gap: var(--space-sm);
 }
 
+.settings-research-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.settings-research-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.settings-research-limits-error {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 768px) {
-  .settings-research-source-grid {
+  .settings-research-source-grid,
+  .settings-research-limits-grid {
     grid-template-columns: 1fr;
   }
 }
