@@ -196,6 +196,24 @@ Fallback behavior remains unchanged:
 
 Execution-ownership sync intentionally avoids assignment-trigger side effects (`agent:assigned` wakeups) that are intended for control-plane delegation.
 
+### Running-state invariant for assigned durable agents (FN-4249)
+
+Invariant: a durable agent must not remain `state="running"` while its linked task is outside `in-progress` (especially `todo` + `status="queued"`).
+
+Layered enforcement:
+- **Scheduler rollback (`packages/engine/src/scheduler.ts`)**: when overlap gating requeues a todo task to `status="queued"`, scheduler immediately rolls back any running agent linked through `executionTaskId` to `state="active"` and clears the execution-task link.
+- **Heartbeat reconciliation (`packages/engine/src/agent-heartbeat.ts`)**: `reconcileOrphanedRunningAgents()` resets rows stuck in `running` when no active heartbeat run exists (or the run is stale).
+- **Self-healing reconciler (`packages/engine/src/self-healing.ts`)**: `recoverAgentsRunningOnInactiveTasks()` periodically clears `running` + `executionTaskId` mismatches when the linked task is not in `in-progress`.
+
+Manual recovery for pre-fix stuck rows:
+1. Open the agent in Dashboard → Agent Detail.
+2. Set state back to `active`.
+3. Clear execution task link (set task link to none).
+
+Programmatic equivalent:
+- `AgentStore.updateAgentState(agentId, "active")`
+- `AgentStore.syncExecutionTaskLink(agentId, undefined)`
+
 ### Assigned-agent runtime model precedence for task execution
 
 When a task is executed by an assigned durable agent, executor session model selection now prefers that agent's explicit runtime model when it is fully specified.
