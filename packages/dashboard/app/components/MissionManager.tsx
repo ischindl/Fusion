@@ -3893,7 +3893,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 </div>
               )}
 
-              {missions.length === 0 && missionInterviewDrafts.length === 0 && !isCreatingMission && (
+              {missions.length === 0 && missionInterviewDrafts.length === 0 && persistedInterviewMissions.length === 0 && !isCreatingMission && (
                 <div className="mission-manager__empty mission-manager__empty--large mission-manager__empty--mission">
                   <Target size={32} />
                   <h3 className="mission-manager__empty-title">No missions yet</h3>
