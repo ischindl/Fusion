@@ -241,6 +241,8 @@ Every squash commit path now enforces a file-scope invariant immediately before 
 
 Tasks can opt out per task via `task.scopeOverride = true`; when present, the merger bypasses the invariant and logs `task.scopeOverrideReason` when provided. Empty declared file scopes are not enforced.
 
+File Scope entries are validated when PROMPT.md is written: non-path tokens (git refs, URLs, SHAs, bare identifiers) are rejected with `InvalidFileScopeError`, and entries must be repo-relative paths/globs.
+
 When `mergeConflictStrategy="smart-prefer-main"`, the merger also runs an overlap guard before the Attempt 3 `-X ours` fallback. If recent `main` commits (30-commit lookback) touched files the task branch also changed, the default `mergeStrategyOverlapBehavior="flip-to-prefer-branch"` makes those overlapping files prefer the task branch instead of silently discarding branch hardening; `warn-only` preserves the legacy fallback while logging the risk, and `ignore` disables the guard.
 
 For manual follow-up, standalone auditing, or post-incident inspection, the script remains available:

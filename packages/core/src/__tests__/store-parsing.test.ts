@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import * as projectMemory from "../project-memory.js";
 import { AgentStore } from "../agent-store.js";
 import { CentralDatabase } from "../central-db.js";
-import { TaskStore, TaskHasDependentsError } from "../store.js";
+import { InvalidFileScopeError, isValidFileScopeEntry, TaskStore, TaskHasDependentsError } from "../store.js";
 import { buildResearchDocumentKey, type Task } from "../types.js";
 import { createTaskStoreTestHarness, makeTmpDir } from "./store-test-helpers.js";
 
@@ -151,6 +151,40 @@ describe("TaskStore", () => {
   });
 
 
+  describe("isValidFileScopeEntry", () => {
+    it.each([
+      "packages/core/src/store.ts",
+      "packages/engine/src/**/*.ts",
+      "packages/core/*",
+      "app/*.tsx",
+      "Makefile",
+      "Dockerfile",
+      "AGENTS.md",
+      ".changeset/foo-bar.md",
+      "vendor/some-pkg/LICENSE",
+    ])("accepts %s", (entry) => {
+      expect(isValidFileScopeEntry(entry)).toBe(true);
+    });
+
+    it.each([
+      "fusion/fn-4280",
+      "origin/fusion/fn-4280",
+      "refs/heads/main",
+      "HEAD",
+      "main",
+      "fusion",
+      "https://example.com/a.ts",
+      "git@github.com:owner/repo.git",
+      "deadbeefcafe1234",
+      "../escape/path.ts",
+      "/absolute/path.ts",
+      "",
+      "   ",
+    ])("rejects %s", (entry) => {
+      expect(isValidFileScopeEntry(entry)).toBe(false);
+    });
+  });
+
   describe("parseFileScopeFromPrompt", () => {
     it("returns paths when File Scope is followed by another heading", async () => {
       const task = await store.createTask({ description: "Mid-file scope" });
@@ -265,7 +299,58 @@ describe("TaskStore", () => {
         "packages/engine/src/**/*.ts",
       ]);
     });
+
+    it("drops invalid entries from mixed file scope declarations", async () => {
+      const task = await store.createTask({ description: "Mixed file scope" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Mixed file scope
+
+## File Scope
+
+- \`packages/dashboard/app/components/TaskDetailModal.tsx\`
+- \`fusion/fn-4280\`
+- \`origin/fusion/fn-4280\`
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual(["packages/dashboard/app/components/TaskDetailModal.tsx"]);
+    });
   });
 
+  describe("File Scope validation at write time", () => {
+    it("createTask rejects invalid File Scope entries and rolls back", async () => {
+      const badPrompt = `# Bad prompt\n\n## File Scope\n\n- \`packages/core/src/store.ts\`\n- \`origin/fusion/fn-4280\`\n`;
+
+      await expect(store.createTaskWithReservedId({ description: "bad create" }, { taskId: "FN-999", prompt: badPrompt }))
+        .rejects.toBeInstanceOf(InvalidFileScopeError);
+
+      await expect(store.getTask("FN-999")).rejects.toThrow(/not found/i);
+      expect(existsSync(join(rootDir, ".fusion", "tasks", "FN-999"))).toBe(false);
+    });
+
+    it("updateTask rejects invalid File Scope prompt and preserves existing PROMPT.md", async () => {
+      const task = await store.createTask({ description: "update scope" });
+      const promptPath = join(rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
+      const originalPrompt = await readFile(promptPath, "utf-8");
+      const invalidPrompt = `# ${task.id}: invalid\n\n## File Scope\n\n- \`refs/heads/main\`\n`;
+
+      await expect(store.updateTask(task.id, { prompt: invalidPrompt }))
+        .rejects.toBeInstanceOf(InvalidFileScopeError);
+
+      expect(await readFile(promptPath, "utf-8")).toBe(originalPrompt);
+    });
+
+    it("updateTask accepts valid File Scope prompt", async () => {
+      const task = await store.createTask({ description: "update scope valid" });
+      const promptPath = join(rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
+      const validPrompt = `# ${task.id}: valid\n\n## File Scope\n\n- \`packages/core/src/store.ts\`\n- \`packages/core/*\`\n`;
+
+      await store.updateTask(task.id, { prompt: validPrompt });
+      expect(await readFile(promptPath, "utf-8")).toBe(validPrompt);
+    });
+  });
 
 });

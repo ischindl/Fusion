@@ -520,6 +520,103 @@ export class TaskHasDependentsError extends Error {
   }
 }
 
+export class InvalidFileScopeError extends Error {
+  readonly taskId: string;
+  readonly invalidEntries: string[];
+
+  constructor(taskId: string, invalidEntries: string[]) {
+    super(
+      `Invalid File Scope entries in PROMPT.md for ${taskId}: ${invalidEntries.join(", ")}. ` +
+        "File Scope must contain repo-relative file paths or globs (e.g. `packages/core/src/store.ts`, `packages/engine/src/**/*.ts`), not git refs or identifiers.",
+    );
+    this.name = "InvalidFileScopeError";
+    this.taskId = taskId;
+    this.invalidEntries = invalidEntries;
+  }
+}
+
+const KNOWN_FILE_SCOPE_ROOT_FILES = new Set([
+  "makefile",
+  "dockerfile",
+  "justfile",
+  "license",
+  "readme",
+  "changelog",
+  "agents.md",
+]);
+
+export function isValidFileScopeEntry(token: string): boolean {
+  const trimmed = token.trim();
+  if (!trimmed) return false;
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith("origin/")
+    || lower.startsWith("upstream/")
+    || lower.startsWith("refs/")
+    || /^https?:\/\//i.test(trimmed)
+    || /^git@/i.test(trimmed)
+    || /^ssh:\/\//i.test(trimmed)
+    || /^[a-z]+\/fn-\d+$/i.test(trimmed)
+    || /^[a-f0-9]{7,}$/i.test(trimmed)
+    || trimmed.includes("..")
+    || trimmed.startsWith("/")
+  ) {
+    return false;
+  }
+
+  const segments = trimmed.split("/");
+  const lastSegment = segments[segments.length - 1];
+  const hasSlash = trimmed.includes("/");
+  const hasDotInLastSegment = lastSegment.includes(".");
+
+  if (KNOWN_FILE_SCOPE_ROOT_FILES.has(lastSegment.toLowerCase())) {
+    return true;
+  }
+
+  if (trimmed.includes("**") || trimmed.endsWith("/*") || (lastSegment.includes("*") && hasDotInLastSegment)) {
+    return true;
+  }
+
+  if (hasSlash && hasDotInLastSegment) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractFileScopeTokens(content: string): string[] {
+  const headingMatch = content.match(/^##\s+File\s+Scope\s*$/m);
+  if (!headingMatch) return [];
+
+  const startIdx = headingMatch.index! + headingMatch[0].length;
+  const rest = content.slice(startIdx);
+  const nextHeading = rest.search(/\n##?\s/);
+  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+  const tokens: string[] = [];
+  const backtickRegex = /`([^`]+)`/g;
+  let match;
+  while ((match = backtickRegex.exec(section)) !== null) {
+    tokens.push(match[1]);
+  }
+
+  return tokens;
+}
+
+function validateFileScopeInPromptContent(prompt: string): { valid: string[]; invalid: string[] } {
+  const tokens = extractFileScopeTokens(prompt);
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const token of tokens) {
+    if (isValidFileScopeEntry(token)) {
+      valid.push(token);
+    } else {
+      invalid.push(token);
+    }
+  }
+  return { valid, invalid };
+}
+
 export class TaskStore extends EventEmitter<TaskStoreEvents> {
   static async getOrCreateForProject(
     projectId?: string,
@@ -2855,6 +2952,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ?? (task.column === "triage"
         ? buildBootstrapPrompt(id, task.title, task.description)
         : this.generateSpecifiedPrompt(task));
+    const validation = validateFileScopeInPromptContent(prompt);
+    if (validation.invalid.length > 0) {
+      if (this.isWatching) this.taskCache.delete(id);
+      this.deleteTaskById(id);
+      const { rm } = await import("node:fs/promises");
+      if (existsSync(dir)) {
+        await rm(dir, { recursive: true, force: true });
+      }
+      throw new InvalidFileScopeError(id, validation.invalid);
+    }
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "PROMPT.md"), prompt);
 
@@ -2897,6 +3004,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
         const newDir = this.taskDir(newId);
         await this.atomicCreateTaskJson(newDir, newTask, "duplicateTask");
+        const validation = validateFileScopeInPromptContent(sourceTask.prompt);
+        if (validation.invalid.length > 0) {
+          this.deleteTaskById(newId);
+          const { rm } = await import("node:fs/promises");
+          if (existsSync(newDir)) {
+            await rm(newDir, { recursive: true, force: true });
+          }
+          throw new InvalidFileScopeError(newId, validation.invalid);
+        }
         await mkdir(newDir, { recursive: true });
         await writeFile(join(newDir, "PROMPT.md"), sourceTask.prompt);
 
@@ -2963,6 +3079,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         const newDir = this.taskDir(newId);
         await this.atomicCreateTaskJson(newDir, newTask, "refineTask");
         const prompt = `# ${newTask.title}\n\n${newTask.description}\n`;
+        // Defensive no-op for refine prompts, which typically have no File Scope section.
+        const validation = validateFileScopeInPromptContent(prompt);
+        if (validation.invalid.length > 0) {
+          this.deleteTaskById(newId);
+          const { rm } = await import("node:fs/promises");
+          if (existsSync(newDir)) {
+            await rm(newDir, { recursive: true, force: true });
+          }
+          throw new InvalidFileScopeError(newId, validation.invalid);
+        }
         await mkdir(newDir, { recursive: true });
         await writeFile(join(newDir, "PROMPT.md"), prompt);
 
@@ -4089,6 +4215,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       if (this.isWatching) this.taskCache.set(id, { ...task });
 
       if (updates.prompt !== undefined) {
+        const validation = validateFileScopeInPromptContent(updates.prompt);
+        if (validation.invalid.length > 0) {
+          throw new InvalidFileScopeError(id, validation.invalid);
+        }
         await mkdir(dir, { recursive: true });
         await writeFile(join(dir, "PROMPT.md"), updates.prompt);
       }
@@ -4616,24 +4746,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     const content = await readFile(promptPath, "utf-8");
 
-    // Find the ## File Scope section.
-    // We locate the heading then slice to the next heading (or end of file)
-    // to avoid multiline `$` anchor issues with lazy quantifiers.
-    const headingMatch = content.match(/^##\s+File\s+Scope\s*$/m);
-    if (!headingMatch) return [];
-
-    const startIdx = headingMatch.index! + headingMatch[0].length;
-    const rest = content.slice(startIdx);
-    const nextHeading = rest.search(/\n##?\s/);
-    const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-    const paths: string[] = [];
-    const backtickRegex = /`([^`]+)`/g;
-    let match;
-    while ((match = backtickRegex.exec(section)) !== null) {
-      paths.push(match[1]);
-    }
-
-    return paths;
+    const paths = extractFileScopeTokens(content);
+    return paths.filter((path) => isValidFileScopeEntry(path));
   }
 
   async deleteTask(
@@ -4686,6 +4800,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       this.emit("task:deleted", task, { githubIssueAction: options?.githubIssueAction ?? "auto" });
       return task;
     });
+  }
+
+  private deleteTaskById(taskId: string): void {
+    this.clearLinkedAgentTaskIds(taskId);
+    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+    this.db.bumpLastModified();
   }
 
   private rewriteDependentsAndDeleteTask(taskId: string, dependentIds: string[]): Task[] {
@@ -6875,6 +6995,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     // Generate PROMPT.md with preserved steps
     const prompt = entry.prompt ?? this.generatePromptFromArchiveEntry(entry);
+    const validation = validateFileScopeInPromptContent(prompt);
+    if (validation.invalid.length > 0) {
+      throw new InvalidFileScopeError(entry.id, validation.invalid);
+    }
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "PROMPT.md"), prompt);
 
