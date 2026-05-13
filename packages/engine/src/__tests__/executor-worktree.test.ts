@@ -885,7 +885,7 @@ describe("TaskExecutor worktree recovery", () => {
     }
 
     expect(handleSpy).toHaveBeenCalledTimes(5);
-    const tripwireLogCall = vi.mocked(store.logEntry).mock.calls.find((call) =>
+    const tripwireLogCall = vi.mocked(store.logEntry).mock.calls.find((call: unknown[]) =>
       call[0] === "FN-050" && String(call[1]).includes("Branch conflict tripwire fired after 6 events"),
     );
     expect(tripwireLogCall).toBeDefined();

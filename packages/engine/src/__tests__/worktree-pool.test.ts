@@ -276,6 +276,14 @@ describe("WorktreePool", () => {
           );
           throw err;
         }
+        if (cmdStr === "git worktree list --porcelain") {
+          return Buffer.from([
+            "worktree /other/wt",
+            "HEAD 1111111",
+            "branch refs/heads/fusion/fn-042",
+            "",
+          ].join("\n"));
+        }
         if (cmdStr.includes("git rev-parse --verify 'fusion/fn-042^{commit}'")) {
           return Buffer.from("abc123def456\n");
         }
