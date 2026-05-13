@@ -156,6 +156,15 @@
   border-radius: var(--radius-sm);
 }
 
+.detail-provenance-context {
+  display: inline-block;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 .detail-timestamps {
   display: inline-flex;
   align-items: center;
@@ -182,6 +191,10 @@
 @media (max-width: 768px) {
   .detail-provenance {
     align-items: flex-start;
+  }
+
+  .detail-provenance-context {
+    max-width: 20ch;
   }
 
   .detail-timestamps {
