@@ -2449,7 +2449,7 @@ describe("TaskDetailModal", () => {
       expect(githubSummaryRule).not.toMatch(/\bflex\s*:\s*1\s+1\s+100%/);
       expect(githubSummaryRule).not.toMatch(/\bflex-basis\s*:\s*100%/);
       expect(githubSummaryRule).not.toMatch(/\bwidth\s*:\s*100%/);
-      expect(sourceSummaryRule).toMatch(/\bflex\s*:\s*1\s+1\s+100%/);
+      expect(sourceSummaryRule).toMatch(/\bflex\s*:\s*1\s+1\s+auto/);
     });
 
     it("hides section when tracking is disabled and task is not in an eligible column", () => {

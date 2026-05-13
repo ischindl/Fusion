@@ -215,7 +215,7 @@ function getStepStatusColor(status: string): string {
     case "done":
       return "var(--color-success)";
     case "in-progress":
-      return "var(--in-progress)";
+      return "var(--todo)";
     case "skipped":
       return "var(--text-dim)";
     case "pending":

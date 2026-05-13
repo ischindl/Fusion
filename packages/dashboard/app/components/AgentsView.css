@@ -1146,14 +1146,11 @@
   background: var(--org-chart-connector-color);
 }
 
-@media (max-width: 768px) {
-  .agent-org-chart {
-    --org-chart-sibling-gap: var(--space-lg);
-    padding: var(--space-md);
-  }
 
-  .agent-org-chart--vertical {
-    --org-chart-sibling-gap: var(--space-sm);
+@media (max-width: 768px) {
+  .agent-org-chart-shell {
+    min-height: 0;
+    overflow: hidden;
   }
 }
 
@@ -1328,7 +1325,7 @@
 
   .agents-view-title h2 {
     display: block;
-    font-size: var(--space-md);
+    font-size: var(--space-lg);
     line-height: 1;
   }
 
@@ -1371,14 +1368,11 @@
     flex: 0 0 auto;
   }
 
-  /* Controls button: icon-only on mobile, sized to match view-toggle buttons */
+  /* Controls button: keep visible label on mobile with 36px touch target. */
   .agent-controls-trigger {
-    padding: 0;
-    width: calc(var(--space-lg) * 2 + var(--space-xs));
-    height: calc(var(--space-lg) * 2 + var(--space-xs));
-    min-width: calc(var(--space-lg) * 2 + var(--space-xs));
+    padding: 0 var(--space-sm);
     min-height: calc(var(--space-lg) * 2 + var(--space-xs));
-    font-size: 0;
+    font-size: var(--space-md);
     display: inline-flex;
     align-items: center;
     justify-content: center;

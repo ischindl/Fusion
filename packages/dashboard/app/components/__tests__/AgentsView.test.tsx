@@ -1413,7 +1413,7 @@ describe("AgentsView", () => {
       const css = loadAllAppCss();
       expect(css).toContain(".agents-view-primary-actions {\n  position: relative;");
       expect(css).toContain(".agent-controls-panel {\n  position: absolute;\n  top: calc(100% + var(--space-sm));\n  right: 0;");
-      expect(css).toContain(".agents-view-title h2 {\n    display: block;\n    font-size: var(--space-md);");
+      expect(css).toContain(".agents-view-title h2 {\n    display: block;\n    font-size: var(--space-lg);");
       expect(css).toContain(".agent-controls-mobile-actions {");
       expect(css).toContain(".agent-controls-mobile-actions .btn {");
       expect(css).toContain(".agents-view-controls .view-toggle .view-toggle-btn {");

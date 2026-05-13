@@ -319,11 +319,13 @@ describe("TaskDetailModal", () => {
     );
 
     const depsSection = container.querySelector(".detail-deps");
+    const blockingSection = container.querySelector(".detail-deps.detail-blocking");
     const prSection = container.querySelector(".detail-pr-section");
 
     expect(depsSection).toBeTruthy();
+    expect(blockingSection).toBeTruthy();
     expect(prSection).toBeTruthy();
-    expect(depsSection?.nextElementSibling).toBe(prSection);
+    expect(blockingSection?.nextElementSibling).toBe(prSection);
     expect(prSection?.querySelector(".pr-section")).toBeTruthy();
   });
 
