@@ -4638,7 +4638,7 @@ export class TaskExecutor {
               }
               break;
             }
-            default:
+            default: {
               const isAdvisoryReview = reviewType === "plan" || reviewType === ("spec" as typeof reviewType);
               if (isAdvisoryReview) {
                 const key = `${reviewType}:${step}`;
@@ -4662,6 +4662,7 @@ export class TaskExecutor {
                 text = "UNAVAILABLE — reviewer did not produce a usable verdict. Code review remains blocking; retry once or escalate via dashboard.";
               }
               break;
+            }
           }
 
           return { content: [{ type: "text" as const, text }], details: {} };
