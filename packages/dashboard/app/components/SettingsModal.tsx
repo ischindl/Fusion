@@ -2058,7 +2058,6 @@ export function SettingsModal({
                 min={0}
                 className="input"
                 value={form.capacityRiskTodoThreshold ?? 20}
-                disabled={form.capacityRiskBannerEnabled !== true}
                 onChange={(e) =>
                   setForm((f) => ({
                     ...f,
@@ -2069,7 +2068,7 @@ export function SettingsModal({
                   }))
                 }
               />
-              <small>Banner fires when todo count is strictly greater than this value (default 20).</small>
+              <small>Banner fires when todo count is strictly greater than this value (default 20). Applies when the banner is enabled.</small>
             </div>
             <h4 className="settings-section-heading settings-section-heading--spaced">GitHub Tracking</h4>
             <div className="form-group">
