@@ -13,6 +13,7 @@ export interface UseAppSettingsResult {
   enginePaused: boolean;
   taskStuckTimeoutMs: number | undefined;
   staleHighFanoutBlockerAgeThresholdMs: number;
+  capacityRiskBannerEnabled: boolean;
   capacityRiskTodoThreshold: number;
   showQuickChatFAB: boolean;
   prAuthAvailable: boolean;
@@ -43,6 +44,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [enginePaused, setEnginePaused] = useState(false);
   const [taskStuckTimeoutMs, setTaskStuckTimeoutMs] = useState<number | undefined>(undefined);
   const [staleHighFanoutBlockerAgeThresholdMs, setStaleHighFanoutBlockerAgeThresholdMs] = useState(2 * 60 * 60 * 1000);
+  const [capacityRiskBannerEnabled, setCapacityRiskBannerEnabled] = useState(false);
   const [capacityRiskTodoThreshold, setCapacityRiskTodoThreshold] = useState(20);
   const [showQuickChatFAB, setShowQuickChatFAB] = useState(false);
   const [prAuthAvailable, setPrAuthAvailable] = useState(false);
@@ -80,6 +82,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
         settings.staleHighFanoutBlockerAgeThresholdMs ?? 2 * 60 * 60 * 1000,
       );
       setShowQuickChatFAB(settings.showQuickChatFAB === true);
+      setCapacityRiskBannerEnabled(settings.capacityRiskBannerEnabled === true);
       setCapacityRiskTodoThreshold(settings.capacityRiskTodoThreshold ?? 20);
       setExperimentalFeatures(settings.experimentalFeatures ?? {});
       const features = settings.experimentalFeatures ?? {};
@@ -177,6 +180,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     enginePaused,
     taskStuckTimeoutMs,
     staleHighFanoutBlockerAgeThresholdMs,
+    capacityRiskBannerEnabled,
     capacityRiskTodoThreshold,
     showQuickChatFAB,
     prAuthAvailable,

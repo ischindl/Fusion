@@ -76,7 +76,7 @@ import { ShellConnectionStatus } from "./components/ShellConnectionStatus";
 import { getShellConnectionNativeResult, type ShellConnectionNativeResult } from "./shell-native";
 import type { AiSessionSummary, DashboardHealthResponse } from "./api";
 import { api, fetchDashboardHealth, fetchUnreadCount, fetchTaskDetail, fetchWorkflowSteps } from "./api";
-import { getScopedItem, setScopedItem } from "./utils/projectStorage";
+import { getScopedItem, removeScopedItem, setScopedItem } from "./utils/projectStorage";
 import { subscribeSse } from "./sse-bus";
 import { AUTH_TOKEN_RECOVERY_REQUIRED_EVENT } from "./auth";
 import { AuthTokenRecoveryDialog } from "./components/AuthTokenRecoveryDialog";
@@ -140,6 +140,7 @@ const WORKING_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-working-branch-filter";
 const BASE_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-base-branch-filter";
 const NO_BRANCH_FILTER_VALUE = "__fusion:no-branch__";
 const APPROVAL_BANNER_DISMISSED_STORAGE_KEY = "fusion:approval-banner-dismissed";
+const CAPACITY_RISK_DISMISSED_KEY = "kb-capacity-risk-banner-dismissed";
 
 interface ApprovalBannerCandidate {
   dedupeKey: string;
@@ -665,10 +666,19 @@ function AppInner() {
   const [setupWarningDismissed, setSetupWarningDismissed] = useState(
     () => getScopedItem(SETUP_WARNING_DISMISSED_KEY, currentProject?.id) === "true",
   );
+  const [capacityRiskDismissed, setCapacityRiskDismissed] = useState(
+    () => getScopedItem(CAPACITY_RISK_DISMISSED_KEY, currentProject?.id) === "true",
+  );
 
   useEffect(() => {
     setSetupWarningDismissed(
       getScopedItem(SETUP_WARNING_DISMISSED_KEY, currentProject?.id) === "true",
+    );
+  }, [currentProject?.id]);
+
+  useEffect(() => {
+    setCapacityRiskDismissed(
+      getScopedItem(CAPACITY_RISK_DISMISSED_KEY, currentProject?.id) === "true",
     );
   }, [currentProject?.id]);
 
@@ -708,6 +718,11 @@ function AppInner() {
     setSetupWarningDismissed(true);
   }, [currentProject?.id]);
 
+  const handleDismissCapacityRisk = useCallback(() => {
+    setScopedItem(CAPACITY_RISK_DISMISSED_KEY, "true", currentProject?.id);
+    setCapacityRiskDismissed(true);
+  }, [currentProject?.id]);
+
   // Settings state
   const {
     maxConcurrent,
@@ -716,6 +731,7 @@ function AppInner() {
     enginePaused,
     taskStuckTimeoutMs,
     staleHighFanoutBlockerAgeThresholdMs,
+    capacityRiskBannerEnabled,
     capacityRiskTodoThreshold,
     showQuickChatFAB,
     prAuthAvailable,
@@ -752,6 +768,33 @@ function AppInner() {
       }),
     [agentStats?.todoTaskCount, agentStats?.idleNonEphemeralCount, inProgressCount, inReviewCount, capacityRiskTodoThreshold],
   );
+
+  const previousCapacityRiskBannerEnabledRef = useRef(capacityRiskBannerEnabled);
+  const previousCapacityRiskTodoThresholdRef = useRef(capacityRiskTodoThreshold);
+  const previousCapacityRiskProjectIdRef = useRef(currentProject?.id);
+
+  useEffect(() => {
+    if (previousCapacityRiskProjectIdRef.current !== currentProject?.id) {
+      previousCapacityRiskProjectIdRef.current = currentProject?.id;
+      previousCapacityRiskBannerEnabledRef.current = capacityRiskBannerEnabled;
+      previousCapacityRiskTodoThresholdRef.current = capacityRiskTodoThreshold;
+      return;
+    }
+
+    const wasEnabled = previousCapacityRiskBannerEnabledRef.current;
+    const previousThreshold = previousCapacityRiskTodoThresholdRef.current;
+    const bannerEnabledChangedToTrue = !wasEnabled && capacityRiskBannerEnabled;
+    const thresholdChanged = previousThreshold !== capacityRiskTodoThreshold;
+
+    if (bannerEnabledChangedToTrue || thresholdChanged) {
+      removeScopedItem(CAPACITY_RISK_DISMISSED_KEY, currentProject?.id);
+      setCapacityRiskDismissed(false);
+    }
+
+    previousCapacityRiskProjectIdRef.current = currentProject?.id;
+    previousCapacityRiskBannerEnabledRef.current = capacityRiskBannerEnabled;
+    previousCapacityRiskTodoThresholdRef.current = capacityRiskTodoThreshold;
+  }, [capacityRiskBannerEnabled, capacityRiskTodoThreshold, currentProject?.id]);
 
   const skillsEnabled = experimentalFeatures.skillsView === true;
   const nodesEnabled = experimentalFeatures.nodesView === true;
@@ -1463,7 +1506,9 @@ function AppInner() {
     if (taskView === "board") {
       return (
         <PageErrorBoundary>
-          <CapacityRiskBanner signal={capacityRiskSignal} />
+          {capacityRiskBannerEnabled && !capacityRiskDismissed ? (
+            <CapacityRiskBanner signal={capacityRiskSignal} onDismiss={handleDismissCapacityRisk} />
+          ) : null}
           <Board
             tasks={filteredBoardTasks}
             projectId={currentProject?.id}
