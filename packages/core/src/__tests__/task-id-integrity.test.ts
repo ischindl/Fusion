@@ -99,7 +99,7 @@ describe("detectTaskIdIntegrityAnomalies", () => {
     );
   });
 
-  it("detects committed reservations that target existing task IDs", () => {
+  it("does not flag committed reservations that point at existing task IDs (the happy-path steady state)", () => {
     const db = createDb();
     const now = new Date().toISOString();
     insertTask(db, "FN-103");
@@ -124,13 +124,8 @@ describe("detectTaskIdIntegrityAnomalies", () => {
 
     const report = detectTaskIdIntegrityAnomalies(db);
 
-    expect(report.anomalies).toContainEqual(
-      expect.objectContaining({
-        kind: "committed_reservation_for_existing_id",
-        prefix: "FN",
-        affectedIds: ["FN-103"],
-      }),
-    );
+    expect(report.status).toBe("ok");
+    expect(report.anomalies).toEqual([]);
   });
 
   it("detects active task rows whose prefix is outside distributed state", () => {

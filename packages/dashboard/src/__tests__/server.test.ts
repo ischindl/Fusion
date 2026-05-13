@@ -440,10 +440,10 @@ describe("createServer health and headless mode", () => {
         checkedAt: "2026-05-12T11:00:00.000Z",
         anomalies: [
           {
-            kind: "committed_reservation_for_existing_id",
+            kind: "duplicate_active_id",
             prefix: "FN",
             affectedIds: ["FN-103"],
-            details: "reservation collision",
+            details: "duplicate row",
           },
         ],
       }),
@@ -468,10 +468,10 @@ describe("createServer health and headless mode", () => {
         checkedAt: "2026-05-12T11:00:00.000Z",
         anomalies: [
           {
-            kind: "committed_reservation_for_existing_id",
+            kind: "duplicate_active_id",
             prefix: "FN",
             affectedIds: ["FN-103"],
-            details: "reservation collision",
+            details: "duplicate row",
           },
         ],
         recommendedAction:

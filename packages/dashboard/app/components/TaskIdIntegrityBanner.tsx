@@ -14,7 +14,6 @@ const ANOMALY_LABELS: Record<TaskIdIntegrityReport["anomalies"][number]["kind"],
   duplicate_active_id: "Duplicate active task ID",
   id_in_active_and_archived: "Task ID present in active and archived storage",
   next_sequence_at_or_below_used: "Allocator next sequence overlaps an existing task ID",
-  committed_reservation_for_existing_id: "Committed reservation still points at an existing task ID",
   task_row_outside_known_prefix: "Task row uses a prefix outside allocator state",
 };
 

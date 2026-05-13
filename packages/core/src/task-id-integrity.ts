@@ -6,7 +6,6 @@ export type TaskIdIntegrityAnomalyKind =
   | "duplicate_active_id"
   | "id_in_active_and_archived"
   | "next_sequence_at_or_below_used"
-  | "committed_reservation_for_existing_id"
   | "task_row_outside_known_prefix";
 
 export interface TaskIdIntegrityAnomaly {
@@ -24,7 +23,6 @@ export interface TaskIdIntegrityReport {
 
 type TaskRow = { id: string; source: "tasks" | "archivedTasks" };
 type StateRow = { prefix: string; nextSequence: number };
-type ReservationRow = { prefix: string; taskId: string; status: string };
 type DuplicateRow = { id: string; duplicateCount: number };
 
 function parseTaskId(taskId: string): { prefix: string; sequence: number } | null {
@@ -74,20 +72,6 @@ function readStateRows(db: Database): StateRow[] {
 
   try {
     return db.prepare("SELECT prefix, nextSequence FROM distributed_task_id_state").all() as StateRow[];
-  } catch {
-    return [];
-  }
-}
-
-function readCommittedReservations(db: Database): ReservationRow[] {
-  if (!hasTable(db, "distributed_task_id_reservations")) {
-    return [];
-  }
-
-  try {
-    return db
-      .prepare("SELECT prefix, taskId, status FROM distributed_task_id_reservations WHERE status = 'committed'")
-      .all() as ReservationRow[];
   } catch {
     return [];
   }
@@ -213,24 +197,6 @@ export function detectTaskIdIntegrityAnomalies(db: Database): TaskIdIntegrityRep
           });
         }
       }
-    }
-
-    const existingIds = new Set(allRows.map((row) => row.id));
-    const committedReservationsByPrefix = new Map<string, string[]>();
-    for (const row of readCommittedReservations(db)) {
-      if (!existingIds.has(row.taskId)) {
-        continue;
-      }
-      const prefix = row.prefix.trim().toUpperCase() || parseTaskId(row.taskId)?.prefix || "unknown";
-      committedReservationsByPrefix.set(prefix, [...(committedReservationsByPrefix.get(prefix) ?? []), row.taskId]);
-    }
-    for (const [prefix, affectedIds] of committedReservationsByPrefix) {
-      anomalies.push({
-        kind: "committed_reservation_for_existing_id",
-        prefix,
-        affectedIds: uniqueSorted(affectedIds),
-        details: `Committed reservation rows still reference task IDs that already exist for prefix ${prefix}.`,
-      });
     }
 
     return buildReport(checkedAt, anomalies);
