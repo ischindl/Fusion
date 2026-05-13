@@ -102,7 +102,7 @@ export function useTaskDiffStats(
       return;
     }
 
-    const shouldFetchDoneTask = column === "done" && Boolean(commitSha);
+    const shouldFetchDoneTask = column === "done";
     const shouldFetchActiveTask = (column === "in-progress" || column === "in-review") && Boolean(worktree);
 
     if (!taskId || (!shouldFetchDoneTask && !shouldFetchActiveTask)) {

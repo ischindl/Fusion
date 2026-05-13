@@ -19,7 +19,7 @@ describe("useTaskDiffStats", () => {
     vi.clearAllMocks();
   });
 
-  it("fetches diff stats for done tasks with a commit SHA", async () => {
+  it("fetches diff stats for done tasks", async () => {
     mockFetchTaskDiff.mockResolvedValueOnce({
       files: [
         { path: "src/a.ts", status: "modified", additions: 10, deletions: 2, patch: "" },
@@ -98,15 +98,20 @@ describe("useTaskDiffStats", () => {
     expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", "/repo/.worktrees/fn-123", "proj-1");
   });
 
-  it("does not fetch for done tasks without a commit SHA", async () => {
+  it("fetches for done tasks even when commit SHA is missing", async () => {
+    mockFetchTaskDiff.mockResolvedValueOnce({
+      files: [],
+      stats: { filesChanged: 4, additions: 20, deletions: 6 },
+    });
+
     const { result } = renderHook(() =>
       useTaskDiffStats("FN-123", "done", undefined, undefined),
     );
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.stats).toBeNull();
-    expect(mockFetchTaskDiff).not.toHaveBeenCalled();
+    expect(result.current.stats).toEqual({ filesChanged: 4, additions: 20, deletions: 6 });
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined);
   });
 
   it("does not fetch for empty task ID", async () => {
