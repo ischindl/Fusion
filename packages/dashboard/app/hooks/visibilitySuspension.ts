@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+let lastHiddenAt: number | null = null;
+let lastVisibleAt: number | null = null;
+
 const SUSPENSION_ERROR_PATTERNS = [
   "load failed",
   "failed to fetch",
@@ -17,24 +20,47 @@ export function isLikelyTabSuspensionError(message: string): boolean {
   return SUSPENSION_ERROR_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
+export function lastVisibilityTransition(): { hiddenAt: number | null; visibleAt: number | null } {
+  return {
+    hiddenAt: lastHiddenAt,
+    visibleAt: lastVisibleAt,
+  };
+}
+
+/**
+ * Tracks tab visibility transitions and suspension-recovery signals.
+ * - `onBecameVisible` subscriptions fire only when transitioning hidden -> visible.
+ * - `lastVisibilityTransition` exposes last hidden/visible timestamps for testing and reconnect logic.
+ */
 export function useTabVisibilitySuspension() {
-  const lastHiddenAtRef = useRef<number | null>(null);
-  const lastVisibleAtRef = useRef<number | null>(null);
+  const lastHiddenAtRef = useRef<number | null>(lastHiddenAt);
+  const lastVisibleAtRef = useRef<number | null>(lastVisibleAt);
+  const visibilityHandlersRef = useRef(new Set<() => void>());
 
   useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
 
+    let previousVisibilityState = document.visibilityState;
+
     const handleVisibilityChange = () => {
       const now = Date.now();
-      if (document.visibilityState === "hidden") {
+      const currentVisibilityState = document.visibilityState;
+      if (currentVisibilityState === "hidden") {
         lastHiddenAtRef.current = now;
-        return;
+        lastHiddenAt = now;
       }
-      if (document.visibilityState === "visible") {
+      if (currentVisibilityState === "visible") {
         lastVisibleAtRef.current = now;
+        lastVisibleAt = now;
+        if (previousVisibilityState === "hidden") {
+          for (const handler of visibilityHandlersRef.current) {
+            handler();
+          }
+        }
       }
+      previousVisibilityState = currentVisibilityState;
     };
 
     handleVisibilityChange();
@@ -61,8 +87,16 @@ export function useTabVisibilitySuspension() {
     return now - visibleAt <= windowMs;
   }, [isHiddenNow]);
 
+  const onBecameVisible = useCallback((handler: () => void) => {
+    visibilityHandlersRef.current.add(handler);
+    return () => {
+      visibilityHandlersRef.current.delete(handler);
+    };
+  }, []);
+
   return useMemo(() => ({
     isHiddenNow,
     wasRecentlyHidden,
-  }), [isHiddenNow, wasRecentlyHidden]);
+    onBecameVisible,
+  }), [isHiddenNow, onBecameVisible, wasRecentlyHidden]);
 }

@@ -1,6 +1,10 @@
 import { act, fireEvent, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { isLikelyTabSuspensionError, useTabVisibilitySuspension } from "../visibilitySuspension";
+import {
+  isLikelyTabSuspensionError,
+  lastVisibilityTransition,
+  useTabVisibilitySuspension,
+} from "../visibilitySuspension";
 
 describe("visibilitySuspension", () => {
   it.each([
@@ -44,6 +48,8 @@ describe("visibilitySuspension", () => {
       fireEvent(document, new Event("visibilitychange"));
     });
 
+    expect(lastVisibilityTransition().hiddenAt).not.toBeNull();
+    expect(lastVisibilityTransition().visibleAt).not.toBeNull();
     expect(result.current.wasRecentlyHidden(5000)).toBe(true);
 
     act(() => {
@@ -53,5 +59,111 @@ describe("visibilitySuspension", () => {
     expect(result.current.wasRecentlyHidden(5000)).toBe(false);
 
     vi.useRealTimers();
+  });
+
+  it("fires onBecameVisible on hidden to visible transition", () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    const { result } = renderHook(() => useTabVisibilitySuspension());
+    const callback = vi.fn();
+    result.current.onBecameVisible(callback);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire onBecameVisible when moving visible to hidden", () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    const { result } = renderHook(() => useTabVisibilitySuspension());
+    const callback = vi.fn();
+    result.current.onBecameVisible(callback);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("unsubscribes onBecameVisible callback", () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    const { result } = renderHook(() => useTabVisibilitySuspension());
+    const callback = vi.fn();
+    const unsubscribe = result.current.onBecameVisible(callback);
+    unsubscribe();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("fires all onBecameVisible subscribers", () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    const { result } = renderHook(() => useTabVisibilitySuspension());
+    const callbackA = vi.fn();
+    const callbackB = vi.fn();
+    result.current.onBecameVisible(callbackA);
+    result.current.onBecameVisible(callbackB);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    act(() => {
+      fireEvent(document, new Event("visibilitychange"));
+    });
+
+    expect(callbackA).toHaveBeenCalledTimes(1);
+    expect(callbackB).toHaveBeenCalledTimes(1);
   });
 });
