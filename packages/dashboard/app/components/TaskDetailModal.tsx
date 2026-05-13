@@ -2522,7 +2522,7 @@ export function TaskDetailContent({
                           Create tracking issue
                         </button>
                         {!canCreateTrackingIssue && (
-                          <small className="detail-source-empty">Tracking issue will be created once this task has a title.</small>
+                          <small className="detail-source-empty">Tracking issue will be created once this task has a title or description to summarize.</small>
                         )}
                       </>
                     )}

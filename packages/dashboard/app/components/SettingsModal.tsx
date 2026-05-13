@@ -2047,9 +2047,9 @@ export function SettingsModal({
                 Controls whether newly created tasks have GitHub issue tracking enabled by default. Individual tasks can still override this from the task detail modal.
               </small>
               <small>
-                Tracking issues use this task&apos;s title. If a task has no title yet, Fusion can summarize its description using the title summarization model configured above.
+                Tracking issues use this task&apos;s title. If a task has no title yet, Fusion can summarize its description using the title summarization model in Project Models.
                 {!form.autoSummarizeTitles && !form.useAiMergeCommitSummary && !form.githubTrackingEnabledByDefault
-                  ? " Enable summarization above to configure that model."
+                  ? " Enable summarization in Project Models to configure that model."
                   : ""}
               </small>
             </div>

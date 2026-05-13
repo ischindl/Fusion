@@ -822,7 +822,7 @@ describe("SettingsModal", () => {
       await waitForSettingsModalReady();
 
       expect(
-        screen.getByText(/Tracking issues use this task's title\. If a task has no title yet, Fusion can summarize its description using the title summarization model configured above\./),
+        screen.getByText(/Tracking issues use this task's title\. If a task has no title yet, Fusion can summarize its description using the title summarization model in Project Models\./),
       ).toBeInTheDocument();
     });
   });

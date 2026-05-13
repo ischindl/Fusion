@@ -37,7 +37,7 @@ describe("TaskDetailModal GitHub tracking CTA", () => {
     const button = screen.getByRole("button", { name: "Create tracking issue" });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("title", "Add a title or description so a tracking issue can be created.");
-    expect(screen.getByText("Tracking issue will be created once this task has a title.")).toBeInTheDocument();
+    expect(screen.getByText("Tracking issue will be created once this task has a title or description to summarize.")).toBeInTheDocument();
   });
 
   it("enables create tracking issue when task title is present", async () => {
@@ -60,7 +60,7 @@ describe("TaskDetailModal GitHub tracking CTA", () => {
 
     await user.click(screen.getByRole("button", { name: "Expand GitHub tracking details" }));
     expect(screen.getByRole("button", { name: "Create tracking issue" })).toBeEnabled();
-    expect(screen.queryByText("Tracking issue will be created once this task has a title.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tracking issue will be created once this task has a title or description to summarize.")).not.toBeInTheDocument();
   });
 
   it("enables create tracking issue when task description has a non-empty first line", async () => {
@@ -83,6 +83,6 @@ describe("TaskDetailModal GitHub tracking CTA", () => {
 
     await user.click(screen.getByRole("button", { name: "Expand GitHub tracking details" }));
     expect(screen.getByRole("button", { name: "Create tracking issue" })).toBeEnabled();
-    expect(screen.queryByText("Tracking issue will be created once this task has a title.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tracking issue will be created once this task has a title or description to summarize.")).not.toBeInTheDocument();
   });
 });
