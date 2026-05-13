@@ -970,6 +970,12 @@ describe("WorkflowResultsTab", () => {
       expect(css).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.workflow-output-modal-overlay\s*\{[^}]*padding:\s*0;/);
     });
 
+    it("includes safe-area top padding for expanded output modal header on mobile", () => {
+      const css = loadAllAppCss();
+
+      expect(css).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.workflow-output-modal-header\s*\{[^}]*padding-top:\s*max\([^;]*env\(safe-area-inset-top/);
+    });
+
     it("includes safe-area bottom padding for expanded output modal body on mobile", () => {
       const css = loadAllAppCss();
 
