@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const { mockSyncStartupModels } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
@@ -123,16 +126,45 @@ const mocks = vi.hoisted(() => {
   });
 
   const centralCoreCtor = vi.fn().mockImplementation(() => {
+    const now = new Date().toISOString();
+    const projects = [
+      { id: "project-1", name: "Test Project", path: "/repo", status: "active", isolationMode: "in-process", createdAt: now, updatedAt: now },
+    ];
+
     const instance = {
       init: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
-      getProjectByPath: vi.fn().mockResolvedValue({ id: "project-1" }),
-      getProject: vi.fn().mockImplementation((id: string) =>
-        Promise.resolve({ id, name: `Project ${id}`, path: `/repo/${id}`, status: "active", isolationMode: "in-process", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+      getProjectByPath: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve(projects.find((project) => project.path === path) ?? null),
       ),
-      listProjects: vi.fn().mockResolvedValue([
-        { id: "project-1", name: "Test Project", path: "/repo", status: "active", isolationMode: "in-process", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-      ]),
+      registerProject: vi.fn().mockImplementation(({ name, path, isolationMode }: { name: string; path: string; isolationMode: "in-process" | "child-process" }) => {
+        const project = {
+          id: `project-${projects.length + 1}`,
+          name,
+          path,
+          status: "inactive",
+          isolationMode,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        projects.push(project);
+        return Promise.resolve(project);
+      }),
+      updateProject: vi.fn().mockImplementation((id: string, patch: { status?: string }) => {
+        const index = projects.findIndex((project) => project.id === id);
+        if (index >= 0) {
+          projects[index] = {
+            ...projects[index],
+            ...patch,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return Promise.resolve();
+      }),
+      getProject: vi.fn().mockImplementation((id: string) =>
+        Promise.resolve(projects.find((project) => project.id === id) ?? null),
+      ),
+      listProjects: vi.fn().mockImplementation(() => Promise.resolve([...projects])),
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
@@ -591,6 +623,10 @@ vi.mock("../task-lifecycle.js", () => ({
   processPullRequestMergeTask: vi.fn().mockResolvedValue("waiting"),
 }));
 
+vi.mock("../project-context.js", () => ({
+  resolveProject: vi.fn().mockRejectedValue(new Error("project not initialized")),
+}));
+
 const { runDaemon } = await import("../daemon.js");
 
 describe("runDaemon", () => {
@@ -783,6 +819,50 @@ describe("runDaemon", () => {
     });
 
     await triggerSignal("SIGINT");
+  });
+
+  it("auto-registers cwd project when not previously registered", async () => {
+    const freshCwd = mkdtempSync(join(tmpdir(), "daemon-auto-register-"));
+    cwdSpy.mockReturnValue(freshCwd);
+
+    try {
+      await runDaemon({});
+
+      const registrationCalls = mocks.centralInstances.flatMap((instance) =>
+        instance.registerProject.mock.calls,
+      );
+      expect(registrationCalls).toContainEqual([
+        expect.objectContaining({ path: freshCwd, isolationMode: "in-process" }),
+      ]);
+
+      const updateCalls = mocks.centralInstances.flatMap((instance) =>
+        instance.updateProject.mock.calls,
+      );
+      expect(updateCalls).toContainEqual([expect.any(String), { status: "active" }]);
+      expect(process.exit).not.toHaveBeenCalledWith(1);
+
+      await triggerSignal("SIGINT");
+    } finally {
+      rmSync(freshCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("--no-auto-register preserves legacy exit behavior", async () => {
+    const freshCwd = mkdtempSync(join(tmpdir(), "daemon-no-auto-register-"));
+    cwdSpy.mockReturnValue(freshCwd);
+
+    try {
+      await runDaemon({ noAutoRegister: true });
+
+      const registrationCalls = mocks.centralInstances.flatMap((instance) =>
+        instance.registerProject.mock.calls,
+      );
+      expect(registrationCalls).toHaveLength(0);
+      expect(errorSpy).toHaveBeenCalledWith("[daemon] No engine started for the current project — exiting");
+      expect(process.exit).toHaveBeenCalledWith(1);
+    } finally {
+      rmSync(freshCwd, { recursive: true, force: true });
+    }
   });
 
   it("stops engine services during shutdown", async () => {

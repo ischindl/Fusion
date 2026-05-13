@@ -65,6 +65,7 @@ import { resolveSelfExtension } from "./self-extension.js";
 import { registerCustomProviders, reregisterCustomProviders } from "./custom-provider-registry.js";
 import { syncStartupModels } from "./startup-model-sync.js";
 import { ensureBundledDependencyGraphPluginInstalled, ensureBundledPluginInstalled, isBundledPluginId } from "../plugins/bundled-plugin-install.js";
+import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
 
 const DIAGNOSTIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 let diagnosticIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -223,7 +224,7 @@ function ensureProcessDiagnostics(): void {
 
 export async function runServe(
   port: number,
-  opts: { interactive?: boolean; paused?: boolean; host?: string; daemon?: boolean } = {},
+  opts: { interactive?: boolean; paused?: boolean; host?: string; daemon?: boolean; noAutoRegister?: boolean } = {},
 ) {
   serveStartTime = Date.now();
   ensureProcessDiagnostics();
@@ -265,10 +266,6 @@ export async function runServe(
   try {
     sharedCentralCore = new CentralCore();
     await sharedCentralCore.init();
-    const registered = await sharedCentralCore.getProjectByPath(cwd);
-    if (registered) {
-      ntfyProjectId = registered.id;
-    }
   } catch {
     // Central DB unavailable or project not registered — backward compatible
   }
@@ -335,6 +332,16 @@ export async function runServe(
     } catch {
       // Non-fatal — engine uses fallback defaults
     }
+  }
+
+  if (sharedCentralCore) {
+    const registered = await ensureCwdProjectRegistered({
+      cwd,
+      central: sharedCentralCore,
+      logPrefix: "serve",
+      autoRegister: !opts.noAutoRegister,
+    });
+    ntfyProjectId = registered?.id;
   }
 
   const engineManager = new ProjectEngineManager(sharedCentralCore, {

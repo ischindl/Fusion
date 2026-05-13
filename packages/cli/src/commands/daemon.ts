@@ -64,6 +64,7 @@ import { getClaudeCodeCredentialPaths, getCodexCliAuthPath, getFusionAuthPath, g
 import { resolveProject } from "../project-context.js";
 import { ensureBundledDependencyGraphPluginInstalled } from "../plugins/bundled-plugin-install.js";
 import { syncStartupModels } from "./startup-model-sync.js";
+import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
 
 const DIAGNOSTIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 let daemonStartTime = 0;
@@ -167,6 +168,8 @@ export interface DaemonOptions {
   interactive?: boolean;
   /** Just print/generate token without starting server */
   tokenOnly?: boolean;
+  /** Disable cwd auto-registration and preserve legacy strict behavior */
+  noAutoRegister?: boolean;
 }
 
 export async function runDaemon(opts: DaemonOptions = {}) {
@@ -246,10 +249,6 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   try {
     sharedCentralCore = new CentralCore();
     await sharedCentralCore.init();
-    const registered = await sharedCentralCore.getProjectByPath(cwd);
-    if (registered) {
-      ntfyProjectId = registered.id;
-    }
   } catch {
     // Central DB unavailable or project not registered — backward compatible
   }
@@ -305,6 +304,16 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     } catch {
       // Non-fatal — engine uses fallback defaults
     }
+  }
+
+  if (sharedCentralCore) {
+    const registered = await ensureCwdProjectRegistered({
+      cwd,
+      central: sharedCentralCore,
+      logPrefix: "daemon",
+      autoRegister: !opts.noAutoRegister,
+    });
+    ntfyProjectId = registered?.id;
   }
 
   const engineManager = new ProjectEngineManager(sharedCentralCore, {

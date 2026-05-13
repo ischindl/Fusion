@@ -247,10 +247,10 @@ Usage:
   fn dashboard --paused               Start with automation paused
   fn dashboard --dev                  Start web UI only (no AI engine)
   fn dashboard --interactive          Start with interactive port selection
-  fn serve [--port <port>] [--host <host>] [--paused] [--daemon]
+  fn serve [--port <port>] [--host <host>] [--paused] [--daemon] [--no-auto-register]
                                       Start Fusion as a headless node (API + engine, no UI)
-                                      Use --daemon to enable bearer token authentication
-  fn daemon [--port <port>] [--host <host>] [--token <token>] [--paused] [--token-only]
+                                      Auto-registers cwd project on first run (use --no-auto-register to disable)
+  fn daemon [--port <port>] [--host <host>] [--token <token>] [--paused] [--token-only] [--no-auto-register]
                                       Start Fusion daemon (API + engine, auth required)
   fn desktop                          Launch the Fusion desktop app (Electron)
   fn desktop --dev                    Launch with hot-reload (connects to Vite dev server)
@@ -646,7 +646,8 @@ async function main() {
         const hostIdx = args.indexOf("--host");
         const host = hostIdx !== -1 && hostIdx + 1 < args.length ? args[hostIdx + 1] : undefined;
         const daemon = args.includes("--daemon");
-        await runServe(port, { paused, interactive, host, daemon });
+        const noAutoRegister = args.includes("--no-auto-register");
+        await runServe(port, { paused, interactive, host, daemon, noAutoRegister });
         break;
       }
 
@@ -662,7 +663,8 @@ async function main() {
         const tokenIdx = args.indexOf("--token");
         const token = tokenIdx !== -1 && tokenIdx + 1 < args.length ? args[tokenIdx + 1] : undefined;
         const tokenOnly = args.includes("--token-only");
-        await runDaemon({ port, paused, interactive, host, token, tokenOnly });
+        const noAutoRegister = args.includes("--no-auto-register");
+        await runDaemon({ port, paused, interactive, host, token, tokenOnly, noAutoRegister });
         break;
       }
 
