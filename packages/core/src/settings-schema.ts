@@ -39,6 +39,8 @@ export const DEFAULT_GLOBAL_SETTINGS = {
     "memory-dreams-processed",
   ],
   ntfyDashboardHost: undefined,
+  failureNotificationDelayMs: 30000,
+  failureNotificationMode: "sticky-only",
   webhookEnabled: false,
   webhookUrl: undefined,
   webhookFormat: "generic",

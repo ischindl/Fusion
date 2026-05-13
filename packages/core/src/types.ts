@@ -1685,6 +1685,13 @@ export interface GlobalSettings {
    *  ?project=<id>&task=<id> so the dashboard opens the correct project first.
    *  Example: "http://localhost:3000" or "https://fusion.example.com" */
   ntfyDashboardHost?: string;
+  /** How long a task must remain in `status='failed'` before a push notification fires.
+   *  Set to 0 to dispatch immediately (legacy behavior). Default: 30000 ms. */
+  failureNotificationDelayMs?: number;
+  /** `sticky-only` (default) defers failure notifications by `failureNotificationDelayMs`
+   *  and suppresses them if the task self-recovers. `all` restores the legacy
+   *  immediate-dispatch behavior. */
+  failureNotificationMode?: "sticky-only" | "all";
   /** When true, enables webhook notifications for task lifecycle events.
    *  Requires webhookUrl to be set. Default: false. */
   webhookEnabled?: boolean;

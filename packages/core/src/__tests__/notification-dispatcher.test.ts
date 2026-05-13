@@ -160,5 +160,7 @@ describe("NotificationDispatcher", () => {
       "memory-dreams-processed",
     ]);
     expect(DEFAULT_GLOBAL_SETTINGS.notificationProviders).toEqual([]);
+    expect(DEFAULT_GLOBAL_SETTINGS.failureNotificationDelayMs).toBe(30000);
+    expect(DEFAULT_GLOBAL_SETTINGS.failureNotificationMode).toBe("sticky-only");
   });
 });
