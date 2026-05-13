@@ -233,6 +233,47 @@ describe("FN-4308 multi-commit done task aggregation", () => {
     expect(response.body.files[0].path).toBe("reachable.txt");
   });
 
+  it("aggregates revised done tasks that gained additional lineage commits", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({ column: "done", lineageId: "lin-1", mergeDetails: { commitSha: "rev-2" } }));
+    store.setAssociations("lin-1", [makeAssociation("rev-1", "2026-04-01T00:00:00.000Z"), makeAssociation("rev-2", "2026-04-02T00:00:00.000Z")]);
+
+    gitResponses({
+      "merge-base --is-ancestor rev-1 HEAD": "",
+      "merge-base --is-ancestor rev-2 HEAD": "",
+      "rev-parse rev-1^": "p1",
+      "diff --name-status p1..rev-1": "A\tinitial.ts",
+      "diff p1..rev-1 -- initial.ts": "+i\n",
+      "rev-parse rev-2^": "p2",
+      "diff --name-status p2..rev-2": "A\trevision.ts",
+      "diff p2..rev-2 -- revision.ts": "+r\n",
+    });
+
+    const app = createServer(store as any);
+    const response = await requestDiff(app);
+    expect(response.status).toBe(200);
+    expect(response.body.stats.filesChanged).toBe(2);
+    expect(response.body.files.map((f: any) => f.path).sort()).toEqual(["initial.ts", "revision.ts"]);
+  });
+
+  it("uses legacy single-commit behavior when only mergeDetails.commitSha exists", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({ column: "done", mergeDetails: { commitSha: "healed" } }));
+
+    gitResponses({
+      "merge-base --is-ancestor healed HEAD": "",
+      "rev-parse healed^": "ph",
+      "diff --name-status ph..healed": "A\thealed.ts",
+      "diff ph..healed -- healed.ts": "+h\n",
+    });
+
+    const app = createServer(store as any);
+    const response = await requestDiff(app);
+    expect(response.status).toBe(200);
+    expect(response.body.stats.filesChanged).toBe(1);
+    expect(response.body.files[0].path).toBe("healed.ts");
+  });
+
   it("includes mergeDetails.commitSha even when missing from associations", async () => {
     const store = new MockStore();
     store.addTask(createTask({ column: "done", lineageId: "lin-1", mergeDetails: { commitSha: "merge-only" } }));
