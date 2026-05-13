@@ -59,4 +59,35 @@ describe("filePathLinkify", () => {
     expect(styles.whiteSpace).toBe("normal");
     expect(styles.display).not.toBe("inline-flex");
   });
+
+  it("inherits surrounding text color and left-aligns wrapped path text", () => {
+    const openFile = vi.fn();
+
+    render(
+      <FileBrowserProvider openFile={openFile}>
+        <div style={{ color: "rgb(10, 20, 30)" }}>
+          <FilePathLink path="src/foo.ts">src/foo.ts</FilePathLink>
+        </div>
+      </FileBrowserProvider>,
+    );
+
+    const button = screen.getByRole("button", { name: "src/foo.ts" });
+    const styles = getComputedStyle(button);
+
+    expect(styles.color).toBe("rgb(10, 20, 30)");
+    expect(styles.color).not.toBe("rgb(47, 129, 247)");
+    expect(styles.display).toBe("inline");
+    expect(styles.display).not.toBe("inline-flex");
+
+    const filePathLinkRule = Array.from(document.styleSheets)
+      .flatMap((sheet) => Array.from(sheet.cssRules))
+      .find(
+        (rule): rule is CSSStyleRule =>
+          rule instanceof CSSStyleRule && rule.selectorText === ".file-path-link",
+      );
+
+    expect(filePathLinkRule).toBeDefined();
+    expect(filePathLinkRule?.style.textAlign).toBe("left");
+    expect(filePathLinkRule?.style.color).toBe("inherit");
+  });
 });
