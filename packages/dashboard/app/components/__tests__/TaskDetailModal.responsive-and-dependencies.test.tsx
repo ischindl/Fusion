@@ -128,6 +128,60 @@ describe("TaskDetailModal", () => {
       });
     });
 
+    it("passes githubIssueAction=delete for tracked tasks", async () => {
+      const onDeleteTask = vi.fn().mockResolvedValue({} as Task);
+      mockConfirm
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+
+      render(
+        <TaskDetailModal
+          task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={onDeleteTask}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+      await waitFor(() => {
+        expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { githubIssueAction: "delete" });
+      });
+    });
+
+    it("passes githubIssueAction=leave for tracked tasks", async () => {
+      const onDeleteTask = vi.fn().mockResolvedValue({} as Task);
+      mockConfirm
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false);
+
+      render(
+        <TaskDetailModal
+          task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={onDeleteTask}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+      await waitFor(() => {
+        expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { githubIssueAction: "leave" });
+      });
+    });
+
     it("keeps legacy delete payload for untracked tasks", async () => {
       const onDeleteTask = vi.fn().mockResolvedValue({} as Task);
       mockConfirm.mockResolvedValueOnce(true);
@@ -166,11 +220,13 @@ describe("TaskDetailModal", () => {
 
       mockConfirm
         .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(true);
 
       render(
         <TaskDetailModal
-          task={makeTask()}
+          task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={onDeleteTask}
@@ -190,6 +246,19 @@ describe("TaskDetailModal", () => {
           danger: true,
         });
         expect(mockConfirm).toHaveBeenNthCalledWith(2, {
+          title: "Linked GitHub Issue",
+          message: "Choose what to do with owner/repo#42 when deleting FN-099.\n\nClose the issue?",
+          confirmLabel: "Close Issue",
+          cancelLabel: "More Options",
+        });
+        expect(mockConfirm).toHaveBeenNthCalledWith(3, {
+          title: "Delete Linked GitHub Issue",
+          message: "Delete owner/repo#42 on GitHub, or leave it unchanged?",
+          confirmLabel: "Delete Issue",
+          cancelLabel: "Leave Unchanged",
+          danger: true,
+        });
+        expect(mockConfirm).toHaveBeenNthCalledWith(4, {
           title: "Force Delete Task",
           message: "FN-099 is a dependency of FN-100, FN-101.\n\nDelete anyway by removing these dependency references first?",
           danger: true,
@@ -197,8 +266,11 @@ describe("TaskDetailModal", () => {
       });
 
       await waitFor(() => {
-        expect(onDeleteTask).toHaveBeenNthCalledWith(1, "FN-099");
-        expect(onDeleteTask).toHaveBeenNthCalledWith(2, "FN-099", { removeDependencyReferences: true });
+        expect(onDeleteTask).toHaveBeenNthCalledWith(1, "FN-099", { githubIssueAction: "delete" });
+        expect(onDeleteTask).toHaveBeenNthCalledWith(2, "FN-099", {
+          removeDependencyReferences: true,
+          githubIssueAction: "delete",
+        });
         expect(noop).toHaveBeenCalledWith("Deleted FN-099 after removing dependency references", "info");
       });
     });

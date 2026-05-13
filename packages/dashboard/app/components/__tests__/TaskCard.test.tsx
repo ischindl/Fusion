@@ -123,6 +123,106 @@ describe("TaskCard", () => {
     });
   });
 
+  it("uses githubIssueAction=delete for tracked task delete", async () => {
+    const onDeleteTask = vi.fn(async () => makeTask());
+    mockConfirm
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    render(
+      <TaskCard
+        task={makeTask({
+          column: "triage",
+          githubTracking: {
+            enabled: true,
+            issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00Z" },
+          },
+        } as any)}
+        onOpenDetail={noop}
+        addToast={noop}
+        onDeleteTask={onDeleteTask}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Delete task"));
+    });
+
+    await waitFor(() => {
+      expect(onDeleteTask).toHaveBeenCalledWith("FN-001", { githubIssueAction: "delete" });
+    });
+  });
+
+  it("uses githubIssueAction=leave for tracked task delete", async () => {
+    const onDeleteTask = vi.fn(async () => makeTask());
+    mockConfirm
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false);
+
+    render(
+      <TaskCard
+        task={makeTask({
+          column: "triage",
+          githubTracking: {
+            enabled: true,
+            issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00Z" },
+          },
+        } as any)}
+        onOpenDetail={noop}
+        addToast={noop}
+        onDeleteTask={onDeleteTask}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Delete task"));
+    });
+
+    await waitFor(() => {
+      expect(onDeleteTask).toHaveBeenCalledWith("FN-001", { githubIssueAction: "leave" });
+    });
+  });
+
+  it("preserves githubIssueAction on dependency-conflict retry", async () => {
+    const conflict = new Error("Cannot delete task FN-001: still referenced as a dependency by FN-002.") as Error & { status: number; details: { code: string; dependentIds: string[] } };
+    conflict.status = 409;
+    conflict.details = { code: "TASK_HAS_DEPENDENTS", dependentIds: ["FN-002"] };
+    const onDeleteTask = vi.fn()
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce(makeTask());
+
+    mockConfirm
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+
+    render(
+      <TaskCard
+        task={makeTask({
+          column: "triage",
+          githubTracking: {
+            enabled: true,
+            issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00Z" },
+          },
+        } as any)}
+        onOpenDetail={noop}
+        addToast={noop}
+        onDeleteTask={onDeleteTask}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Delete task"));
+    });
+
+    await waitFor(() => {
+      expect(onDeleteTask).toHaveBeenNthCalledWith(2, "FN-001", { removeDependencyReferences: true, githubIssueAction: "delete" });
+    });
+  });
+
   it("keeps legacy delete options for untracked task", async () => {
     const onDeleteTask = vi.fn(async () => makeTask());
     mockConfirm.mockResolvedValueOnce(true);
