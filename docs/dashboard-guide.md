@@ -27,6 +27,20 @@ Use deep links to open a specific task directly from notifications, chat, or ext
 /?task=FN-1234&project=my-project
 ```
 
+## Clickable File Paths
+
+File paths in dashboard text are automatically rendered as inline links. Clicking a linked path opens the Files browser modal at that path (including line/column targets when available) so you can inspect the file and use editor actions where supported.
+
+Current surfaces include:
+- Task detail modal content (description markdown, **Review** tab, and **Workflow Results** tab output)
+- Chat view messages/tool output
+- Agent log viewer
+- Activity log modal
+- Dev Server log viewer
+- Settings sync log
+
+Only detected file-path text is linkified; non-path text remains plain. Linked paths must resolve within the current project workspace to open successfully.
+
 ## Board View
 
 Board view is the kanban surface for day-to-day operation.
