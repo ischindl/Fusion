@@ -296,8 +296,6 @@ export function AppModals({
           onCreateTask={handleModalCreateWithOnboardingTracking}
           addToast={addToast}
           projectId={projectId}
-          onPlanningMode={modalManager.openPlanningWithInitialPlan}
-          onSubtaskBreakdown={modalManager.openSubtaskBreakdown}
         />
       </ModalErrorBoundary>
 
