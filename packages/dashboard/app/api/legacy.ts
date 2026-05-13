@@ -79,7 +79,7 @@ import type {
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import type { ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, Routine, RoutineCreateInput, RoutineUpdateInput, RoutineExecutionResult } from "@fusion/core";
 import type { DiscoveredSkill, CatalogEntry, CatalogFetchResult, ToggleSkillResult, SkillContent, SkillFileEntry } from "@fusion/dashboard";
-import type { MilestoneValidationTelemetry } from "../components/mission-types";
+import type { MilestoneValidationTelemetry, MissionInterviewDraftSummary } from "../components/mission-types";
 import type {
   ResearchAvailability,
   ResearchRunDetail,
@@ -7003,6 +7003,26 @@ export function cancelMissionInterview(sessionId: string, projectId?: string, ta
     method: "POST",
     body: JSON.stringify({ sessionId, tabId }),
   });
+}
+
+export async function fetchMissionInterviewDrafts(projectId?: string): Promise<MissionInterviewDraftSummary[]> {
+  const query = projectId ? `?${new URLSearchParams({ projectId }).toString()}` : "";
+  const result = await api<{ drafts?: MissionInterviewDraftSummary[] }>(`/missions/interview/drafts${query}`);
+  return result.drafts ?? [];
+}
+
+export function discardMissionInterviewDraft(
+  sessionId: string,
+  projectId?: string,
+  tabId?: string,
+): Promise<{ removed: boolean }> {
+  return api<{ removed: boolean }>(
+    withProjectId(`/missions/interview/drafts/${encodeURIComponent(sessionId)}/discard`, projectId),
+    {
+      method: "POST",
+      body: JSON.stringify({ tabId }),
+    },
+  );
 }
 
 /** Create mission from completed interview */

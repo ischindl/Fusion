@@ -180,7 +180,9 @@ Create a new mission — a high-level objective that can span multiple milestone
 
 List all missions with their current status.
 
-No parameters.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `includeDrafts` | boolean | — | Include in-flight mission interview drafts (default: true) |
 
 ### fn_mission_show
 

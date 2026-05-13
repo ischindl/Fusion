@@ -155,13 +155,22 @@ function createMockMissionStore(overrides = {}) {
   };
 }
 
+function createMockDatabase(drafts: Array<{ id: string; title: string; status: string; updatedAt: string }> = []) {
+  return {
+    prepare: vi.fn().mockReturnValue({
+      all: vi.fn().mockReturnValue(drafts),
+    }),
+  };
+}
+
 function mockResolvedProjectStore(
   missionStore: ReturnType<typeof createMockMissionStore>,
-  overrides: Partial<{ getTask: ReturnType<typeof vi.fn> }> = {},
+  overrides: Partial<{ getTask: ReturnType<typeof vi.fn>; getDatabase: ReturnType<typeof createMockDatabase> }> = {},
 ) {
   vi.mocked(getStore).mockResolvedValue({
     getMissionStore: () => missionStore,
     getTask: vi.fn().mockResolvedValue({ id: "FN-001" }),
+    getDatabase: () => createMockDatabase(),
     ...overrides,
   } as any);
 }
@@ -281,9 +290,7 @@ describe("mission commands", () => {
   describe("runMissionList", () => {
     it("displays missions in formatted output", async () => {
       const mockMissionStore = createMockMissionStore();
-      vi.mocked(getStore).mockResolvedValue({
-        getMissionStore: () => mockMissionStore,
-      } as any);
+      mockResolvedProjectStore(mockMissionStore);
 
       const consoleCapture = captureConsole();
 
@@ -313,9 +320,7 @@ describe("mission commands", () => {
       const mockMissionStore = createMockMissionStore({
         listMissions: vi.fn().mockReturnValue([]),
       });
-      vi.mocked(getStore).mockResolvedValue({
-        getMissionStore: () => mockMissionStore,
-      } as any);
+      mockResolvedProjectStore(mockMissionStore);
 
       const consoleCapture = captureConsole();
 
@@ -332,6 +337,102 @@ describe("mission commands", () => {
 
         expect(consoleCapture.logs.some(log => log.includes("No missions yet"))).toBe(true);
 
+        mockExit.mockRestore();
+      } finally {
+        consoleCapture.restore();
+      }
+    });
+
+    it("shows drafts before mission status sections when present", async () => {
+      const mockMissionStore = createMockMissionStore();
+      mockResolvedProjectStore(mockMissionStore, {
+        getDatabase: () => createMockDatabase([
+          {
+            id: "draft-1",
+            title: "Draft mission",
+            status: "awaiting_input",
+            updatedAt: "2026-05-12T00:00:00.000Z",
+          },
+        ]),
+      });
+
+      const consoleCapture = captureConsole();
+
+      try {
+        const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+          throw new Error("process.exit");
+        });
+
+        try {
+          await runMissionList();
+        } catch {
+          // expected
+        }
+
+        const joined = consoleCapture.logs.join("\n");
+        expect(joined).toContain("◌ Drafts (1)");
+        expect(joined).toContain("draft-1  Draft mission — (draft · interview awaiting_input)");
+        expect(joined.indexOf("◌ Drafts (1)")).toBeLessThan(joined.indexOf("● Active (1)"));
+
+        mockExit.mockRestore();
+      } finally {
+        consoleCapture.restore();
+      }
+    });
+
+    it("suppresses drafts when includeDrafts is false", async () => {
+      const mockMissionStore = createMockMissionStore();
+      mockResolvedProjectStore(mockMissionStore, {
+        getDatabase: () => createMockDatabase([
+          {
+            id: "draft-1",
+            title: "Draft mission",
+            status: "awaiting_input",
+            updatedAt: "2026-05-12T00:00:00.000Z",
+          },
+        ]),
+      });
+
+      const consoleCapture = captureConsole();
+
+      try {
+        const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+          throw new Error("process.exit");
+        });
+
+        try {
+          await runMissionList(undefined, { includeDrafts: false });
+        } catch {
+          // expected
+        }
+
+        expect(consoleCapture.logs.join("\n")).not.toContain("Drafts");
+        mockExit.mockRestore();
+      } finally {
+        consoleCapture.restore();
+      }
+    });
+
+    it("omits drafts heading when no drafts exist", async () => {
+      const mockMissionStore = createMockMissionStore();
+      mockResolvedProjectStore(mockMissionStore, {
+        getDatabase: () => createMockDatabase([]),
+      });
+
+      const consoleCapture = captureConsole();
+
+      try {
+        const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+          throw new Error("process.exit");
+        });
+
+        try {
+          await runMissionList();
+        } catch {
+          // expected
+        }
+
+        expect(consoleCapture.logs.join("\n")).not.toContain("Drafts");
         mockExit.mockRestore();
       } finally {
         consoleCapture.restore();

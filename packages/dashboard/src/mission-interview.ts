@@ -19,7 +19,7 @@ import type { PlanningQuestion, PromptOverrideMap } from "@fusion/core";
 import { resolvePrompt } from "@fusion/core";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { AiSessionStore, AiSessionRow } from "./ai-session-store.js";
+import type { AiSessionStore, AiSessionRow, AiSessionStatus } from "./ai-session-store.js";
 import { SessionEventBuffer, type SessionBufferedEvent } from "./sse-buffer.js";
 import {
   createSessionDiagnostics,
@@ -95,6 +95,14 @@ const MAX_PARSE_RETRIES = 1;
 export const GENERATION_TIMEOUT_MS = 180_000;
 
 const generationGuard = new GenerationGuard();
+
+const MISSION_INTERVIEW_DRAFT_STATUSES = ["generating", "awaiting_input", "error"] as const;
+
+function isMissionInterviewDraftStatus(
+  status: AiSessionStatus,
+): status is Extract<AiSessionStatus, (typeof MISSION_INTERVIEW_DRAFT_STATUSES)[number]> {
+  return (MISSION_INTERVIEW_DRAFT_STATUSES as readonly string[]).includes(status);
+}
 
 /** Mission interview system prompt */
 export const MISSION_INTERVIEW_SYSTEM_PROMPT = `You are a mission planning assistant for a project management system.
@@ -199,6 +207,16 @@ export interface MissionPlanSummary {
 export type MissionInterviewResponse =
   | { type: "question"; data: PlanningQuestion }
   | { type: "complete"; data: MissionPlanSummary };
+
+export interface MissionInterviewDraftSummary {
+  id: string;
+  title: string;
+  status: Extract<AiSessionStatus, (typeof MISSION_INTERVIEW_DRAFT_STATUSES)[number]>;
+  projectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  hasConversation: boolean;
+}
 
 /** SSE event types for mission interview streaming */
 export type MissionInterviewStreamEvent =
@@ -1249,6 +1267,54 @@ export async function cancelMissionInterviewSession(sessionId: string): Promise<
   }
 
   unpersistMissionSession(sessionId);
+}
+
+export function listMissionInterviewDrafts(projectId?: string): MissionInterviewDraftSummary[] {
+  if (!_aiSessionStore) {
+    return [];
+  }
+
+  return _aiSessionStore
+    .listActive(projectId)
+    .filter((session) => {
+      if (session.type !== "mission_interview") {
+        return false;
+      }
+      if (!isMissionInterviewDraftStatus(session.status)) {
+        return false;
+      }
+      if (projectId) {
+        return session.projectId === projectId;
+      }
+      return session.projectId == null;
+    })
+    .map((session) => {
+      const row = _aiSessionStore?.get(session.id);
+      const conversation = row ? safeParseJson<unknown[]>(row.conversationHistory, []) : [];
+      return {
+        id: session.id,
+        title: session.title,
+        status: session.status as MissionInterviewDraftSummary["status"],
+        projectId: session.projectId,
+        createdAt: row?.createdAt ?? session.updatedAt,
+        updatedAt: session.updatedAt,
+        hasConversation: conversation.length > 0,
+      };
+    });
+}
+
+export async function discardMissionInterviewSession(sessionId: string): Promise<{ removed: boolean }> {
+  try {
+    await cancelMissionInterviewSession(sessionId);
+    return { removed: true };
+  } catch (error) {
+    if (!(error instanceof SessionNotFoundError)) {
+      throw error;
+    }
+  }
+
+  const removed = _aiSessionStore?.deleteByIdAndType(sessionId, "mission_interview") ?? false;
+  return { removed };
 }
 
 export function getMissionInterviewSession(sessionId: string): MissionInterviewSession | undefined {

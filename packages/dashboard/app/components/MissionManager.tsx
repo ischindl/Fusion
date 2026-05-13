@@ -58,6 +58,7 @@ import {
   fetchMission,
   updateMission,
   deleteMission,
+  ApiRequestError,
   createMilestone,
   updateMilestone,
   deleteMilestone,
@@ -93,9 +94,11 @@ import {
   fetchValidationRun,
   fetchAiSessions,
   fetchAiSession,
+  fetchMissionInterviewDrafts,
+  discardMissionInterviewDraft,
   type AiSessionSummary,
 } from "../api";
-import type { AutopilotState } from "./mission-types";
+import type { AutopilotState, MissionInterviewDraftSummary } from "./mission-types";
 
 const MISSION_SIDEBAR_DEFAULT_WIDTH = 300;
 const MISSION_SIDEBAR_MIN_WIDTH = 220;
@@ -566,7 +569,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const [showInterviewModal, setShowInterviewModal] = useState(false);
 
   // Pending mission interview sessions (for resume prompt after page reload)
-  const [pendingInterviewSessions, setPendingInterviewSessions] = useState<AiSessionSummary[]>([]);
+  const [_pendingInterviewSessions, setPendingInterviewSessions] = useState<AiSessionSummary[]>([]);
+  const [missionInterviewDrafts, setMissionInterviewDrafts] = useState<MissionInterviewDraftSummary[]>([]);
   const [localResumeSessionId, setLocalResumeSessionId] = useState<string | undefined>(undefined);
   const dismissedResumeSessionIdRef = useRef<string | null>(null);
   const effectiveResumeSessionId =
@@ -622,6 +626,25 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       console.warn("[MissionManager] Failed to fetch pending interview sessions:", err);
     });
     return () => { cancelled = true; };
+  }, [isActive, projectId, effectiveResumeSessionId]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+
+    fetchMissionInterviewDrafts(projectId)
+      .then((drafts) => {
+        if (!cancelled) {
+          setMissionInterviewDrafts(drafts);
+        }
+      })
+      .catch((err) => {
+        console.warn("[MissionManager] Failed to fetch mission interview drafts:", err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isActive, projectId, effectiveResumeSessionId]);
 
   // Auto-open milestone/slice interview modal when resuming from background session
@@ -3539,7 +3562,27 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     setShowInterviewModal(false);
   };
 
-  const renderInterviewSessionItems = () => pendingInterviewSessions.map((session) => {
+  const handleDiscardInterviewSession = async (sessionId: string) => {
+    try {
+      await discardMissionInterviewDraft(sessionId, projectId);
+      setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        addToast("Draft is open in another tab", "error");
+        return;
+      }
+      if (err instanceof ApiRequestError && err.status === 404) {
+        setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
+        return;
+      }
+      addToast(getErrorMessage(err) || "Failed to discard draft", "error");
+      return;
+    } finally {
+      setDeleteConfirmId(null);
+    }
+  };
+
+  const renderInterviewSessionItems = () => missionInterviewDrafts.map((session) => {
     const isErrored = session.status === "error";
     const isGenerating = session.status === "generating";
 
@@ -3575,6 +3618,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
             aria-label={getInterviewActionLabel(session.status)}
           >
             {isGenerating ? <Loader2 size={14} className="spinner" /> : isErrored ? <RefreshCw size={14} /> : <Sparkles size={14} />}
+          </button>
+          <button
+            className="mission-icon-btn mission-icon-btn--danger"
+            onClick={() => setDeleteConfirmId({ type: "interview_draft", id: session.id })}
+            title="Discard draft"
+            aria-label="Discard draft"
+          >
+            <Trash2 size={14} />
           </button>
         </div>
       </div>
@@ -3779,7 +3830,16 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               {/* Mission and interview items */}
               {renderMissionListItems(persistedInterviewMissions, { interviewStyle: true })}
               {renderMissionListItems(standardMissions)}
-              {renderInterviewSessionItems()}
+              {missionInterviewDrafts.length > 0 && (
+                <div className="mission-list__drafts-group">
+                  <div className="mission-list__drafts-header">
+                    <Sparkles size={16} className="mission-list__item-icon" />
+                    <span>Drafts</span>
+                    <span>({missionInterviewDrafts.length})</span>
+                  </div>
+                  {renderInterviewSessionItems()}
+                </div>
+              )}
 
               {/* Edit mission form */}
               {editingMissionId && (
@@ -3884,6 +3944,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 await handleDeleteSlice(deleteConfirmId.id);
               } else if (deleteConfirmId.type === "feature") {
                 await handleDeleteFeature(deleteConfirmId.id);
+              } else if (deleteConfirmId.type === "interview_draft") {
+                await handleDiscardInterviewSession(deleteConfirmId.id);
               }
             }}
           >

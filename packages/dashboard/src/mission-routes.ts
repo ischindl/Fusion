@@ -590,6 +590,47 @@ export function createMissionRouter(
     })
   );
 
+  router.get(
+    "/interview/drafts",
+    catchTypedHandler(async (req, res) => {
+      const projectId = typeof req.query.projectId === "string" && req.query.projectId.trim().length > 0
+        ? req.query.projectId.trim()
+        : undefined;
+      const { listMissionInterviewDrafts } = await import("./mission-interview.js");
+      res.json({ drafts: listMissionInterviewDrafts(projectId) });
+    })
+  );
+
+  router.post(
+    "/interview/drafts/:sessionId/discard",
+    catchTypedHandler(async (req, res) => {
+      const { sessionId } = req.params;
+      const tabId = typeof req.body?.tabId === "string" && req.body.tabId.trim().length > 0
+        ? req.body.tabId.trim()
+        : undefined;
+
+      if (!sessionId || typeof sessionId !== "string") {
+        throw badRequest("sessionId is required");
+      }
+
+      const lockCheck = checkSessionLock(sessionId, tabId, aiSessionStore);
+      if (!lockCheck.allowed) {
+        res.status(409).json({
+          error: "Session locked by another tab",
+          lockedByTab: lockCheck.currentHolder,
+        });
+        return;
+      }
+
+      const { discardMissionInterviewSession } = await import("./mission-interview.js");
+      const result = await discardMissionInterviewSession(sessionId);
+      if (!result.removed) {
+        throw notFound(`Mission interview session ${sessionId} not found or expired`);
+      }
+      res.json({ success: true, removed: true });
+    })
+  );
+
   /**
    * GET /api/missions/interview/:sessionId/stream
    * SSE endpoint for real-time interview session updates.

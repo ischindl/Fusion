@@ -15,6 +15,8 @@ import { MissionManager } from "../MissionManager";
 
 const mockFetchAiSession = vi.fn();
 const mockFetchAiSessions = vi.fn();
+const mockFetchMissionInterviewDrafts = vi.fn();
+const mockDiscardMissionInterviewDraft = vi.fn();
 const mockCancelMissionInterview = vi.fn();
 const mockConnectMissionInterviewStream = vi.fn();
 const mockPreviewEnrichedDescription = vi.fn();
@@ -36,6 +38,8 @@ vi.mock("../../api", async () => {
     ...actual,
     fetchAiSession: (...args: any[]) => mockFetchAiSession(...args),
     fetchAiSessions: (...args: any[]) => mockFetchAiSessions(...args),
+    fetchMissionInterviewDrafts: (...args: any[]) => mockFetchMissionInterviewDrafts(...args),
+    discardMissionInterviewDraft: (...args: any[]) => mockDiscardMissionInterviewDraft(...args),
     cancelMissionInterview: (...args: any[]) => mockCancelMissionInterview(...args),
     connectMissionInterviewStream: (...args: any[]) => mockConnectMissionInterviewStream(...args),
     previewEnrichedDescription: (...args: any[]) => mockPreviewEnrichedDescription(...args),
@@ -695,10 +699,14 @@ describe("MissionManager", () => {
     originalEventSource = globalThis.EventSource;
     mockFetchAiSession.mockReset();
     mockFetchAiSessions.mockReset();
+    mockFetchMissionInterviewDrafts.mockReset();
+    mockDiscardMissionInterviewDraft.mockReset();
     mockCancelMissionInterview.mockReset();
     mockConnectMissionInterviewStream.mockReset();
     mockFetchAiSession.mockResolvedValue(null);
     mockFetchAiSessions.mockResolvedValue([]);
+    mockFetchMissionInterviewDrafts.mockResolvedValue([]);
+    mockDiscardMissionInterviewDraft.mockResolvedValue({ removed: true });
     mockCancelMissionInterview.mockResolvedValue(undefined);
     mockConnectMissionInterviewStream.mockReturnValue({
       close: vi.fn(),
@@ -1687,6 +1695,17 @@ describe("MissionManager", () => {
         updatedAt: "2026-01-03T00:00:00.000Z",
       },
     ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValue([
+      {
+        id: "session-bg-1",
+        title: "Project A transient interview",
+        status: "awaiting_input",
+        projectId: "project-a",
+        createdAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        hasConversation: true,
+      },
+    ]);
 
     const missionsWithPersistedInterview = [
       {
@@ -1787,6 +1806,17 @@ describe("MissionManager", () => {
         projectId: "project-b",
         lockedByTab: null,
         updatedAt: "2026-01-04T00:00:00.000Z",
+      },
+    ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValue([
+      {
+        id: "session-bg-1",
+        title: "Project A transient interview",
+        status: "awaiting_input",
+        projectId: "project-a",
+        createdAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        hasConversation: true,
       },
     ]);
 
@@ -1928,6 +1958,35 @@ describe("MissionManager", () => {
         updatedAt: "2026-01-06T00:00:00.000Z",
       },
     ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "session-awaiting",
+        title: "Payment workflow planning",
+        status: "awaiting_input",
+        projectId: null,
+        createdAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        hasConversation: true,
+      },
+      {
+        id: "session-generating",
+        title: "Analytics mission drafting",
+        status: "generating",
+        projectId: null,
+        createdAt: "2026-01-04T00:00:00.000Z",
+        updatedAt: "2026-01-04T00:00:00.000Z",
+        hasConversation: false,
+      },
+      {
+        id: "session-error",
+        title: "SRE guardrails",
+        status: "error",
+        projectId: null,
+        createdAt: "2026-01-05T00:00:00.000Z",
+        updatedAt: "2026-01-05T00:00:00.000Z",
+        hasConversation: true,
+      },
+    ]);
     mockFetchAiSession.mockResolvedValue({
       id: "session-awaiting",
       type: "mission_interview",
@@ -1986,6 +2045,17 @@ describe("MissionManager", () => {
         projectId: null,
         lockedByTab: null,
         updatedAt: "2026-01-03T00:00:00.000Z",
+      },
+    ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "session-awaiting",
+        title: "Transient interview session",
+        status: "awaiting_input",
+        projectId: null,
+        createdAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        hasConversation: false,
       },
     ]);
 
@@ -2052,6 +2122,17 @@ describe("MissionManager", () => {
         updatedAt: "2026-01-05T00:00:00.000Z",
       },
     ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "session-project-a",
+        title: "Project A Interview",
+        status: "awaiting_input",
+        projectId: "project-a",
+        createdAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        hasConversation: true,
+      },
+    ]);
     globalThis.fetch = createFetchMock();
 
     render(
@@ -2083,6 +2164,17 @@ describe("MissionManager", () => {
         updatedAt: "2026-01-05T00:00:00.000Z",
       },
     ]);
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "session-error",
+        title: "Mission in error",
+        status: "error",
+        projectId: null,
+        createdAt: "2026-01-05T00:00:00.000Z",
+        updatedAt: "2026-01-05T00:00:00.000Z",
+        hasConversation: true,
+      },
+    ]);
     mockFetchAiSession.mockResolvedValue({
       id: "session-error",
       type: "mission_interview",
@@ -2112,6 +2204,102 @@ describe("MissionManager", () => {
     await waitFor(() => {
       expect(screen.getByText("Plan Mission with AI")).toBeInTheDocument();
     });
+  });
+
+  it("renders mission interview drafts with discard actions", async () => {
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "draft-awaiting",
+        title: "Draft awaiting input",
+        status: "awaiting_input",
+        projectId: null,
+        createdAt: "2026-05-12T00:00:00.000Z",
+        updatedAt: "2026-05-12T00:05:00.000Z",
+        hasConversation: true,
+      },
+      {
+        id: "draft-error",
+        title: "Draft with error",
+        status: "error",
+        projectId: null,
+        createdAt: "2026-05-12T00:10:00.000Z",
+        updatedAt: "2026-05-12T00:15:00.000Z",
+        hasConversation: true,
+      },
+    ]);
+    globalThis.fetch = createFetchMock();
+
+    render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+    expect(await screen.findByText("Drafts")).toBeInTheDocument();
+    expect(screen.getByText("Draft awaiting input")).toBeInTheDocument();
+    expect(screen.getByText("Draft with error")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting input")).toBeInTheDocument();
+    expect(screen.getByText("Needs retry")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByLabelText("Discard draft")[0]!);
+    fireEvent.click(screen.getByText("Delete"));
+
+    await waitFor(() => {
+      expect(mockDiscardMissionInterviewDraft).toHaveBeenCalledWith("draft-awaiting", undefined);
+      expect(screen.queryByText("Draft awaiting input")).not.toBeInTheDocument();
+    });
+  });
+
+  it("resumes a mission interview draft", async () => {
+    mockFetchAiSession.mockResolvedValue({
+      id: "draft-awaiting",
+      type: "mission_interview",
+      status: "awaiting_input",
+      title: "Draft awaiting input",
+      inputPayload: JSON.stringify({ missionTitle: "Draft awaiting input" }),
+      conversationHistory: "[]",
+      currentQuestion: JSON.stringify({
+        id: "q-1",
+        type: "text",
+        question: "What should happen next?",
+        description: "Resume the interview",
+      }),
+      result: null,
+      thinkingOutput: "",
+      error: null,
+      projectId: null,
+      createdAt: "2026-05-12T00:00:00.000Z",
+      updatedAt: "2026-05-12T00:05:00.000Z",
+    });
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+      {
+        id: "draft-awaiting",
+        title: "Draft awaiting input",
+        status: "awaiting_input",
+        projectId: null,
+        createdAt: "2026-05-12T00:00:00.000Z",
+        updatedAt: "2026-05-12T00:05:00.000Z",
+        hasConversation: true,
+      },
+    ]);
+    globalThis.fetch = createFetchMock();
+
+    render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+    expect(await screen.findByText("Draft awaiting input")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Resume interview"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Plan Mission with AI")).toBeInTheDocument();
+    });
+  });
+
+  it("hides drafts section when no mission interview drafts exist", async () => {
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([]);
+    globalThis.fetch = createFetchMock();
+
+    render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Build Auth System")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Drafts")).not.toBeInTheDocument();
   });
 
   it("logs a warning when pending interview session fetch fails", async () => {

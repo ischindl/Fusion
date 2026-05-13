@@ -53,6 +53,22 @@ The dashboard supports mission planning workflows where you can:
 - Resume in-progress mission interview sessions directly from separate transient session rows in the main missions list (`mission_interview` sessions in `generating`, `awaiting_input`, or `error`) before a mission record is created
 - Banner-driven mission interview resumes are one-shot: if you close or send the interview to background, Missions re-fetches project-scoped `mission_interview` sessions and re-surfaces the transient row (including on the mobile stacked Missions view) so resume/retry remains discoverable without losing persisted `interviewState: "in_progress"` mission cards
 
+### Mission Interview Drafts
+
+Mission interview sessions are persisted in `ai_sessions` before a mission row exists, so unfinished drafts stay recoverable across reloads and restarts.
+
+- **Dashboard:** the Missions view shows a **Drafts** section for in-flight `mission_interview` sessions with **Resume** and **Discard** actions.
+- **CLI:** `fn mission list` shows drafts by default before normal mission status sections. Pass `--no-drafts` to hide them.
+- **pi extension:** `fn_mission_list` includes drafts by default and accepts `includeDrafts: false` to suppress them.
+- **Discarding drafts:** discarding removes the `ai_sessions` row even for cold drafts after a server restart.
+
+Mission interview draft endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/missions/interview/drafts` | List in-flight mission interview drafts |
+| `POST /api/missions/interview/drafts/:sessionId/discard` | Discard a draft session |
+
 ### Auto-Generated Assertions
 
 When missions are created through the interview planning workflow, Fusion automatically generates contract assertions for each feature:

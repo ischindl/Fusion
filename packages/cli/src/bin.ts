@@ -1224,9 +1224,11 @@ async function main() {
             break;
           }
           case "list":
-          case "ls":
-            await runMissionList(projectName);
+          case "ls": {
+            const includeDrafts = !args.includes("--no-drafts");
+            await runMissionList(projectName, { includeDrafts });
             break;
+          }
           case "show":
           case "info": {
             const id = args[2];

@@ -526,7 +526,12 @@ describe("bin command routing and fallbacks", () => {
 
   it("routes mission list alias", async () => {
     await runBin(["mission", "ls"]);
-    expect(commandMocks.runMissionList).toHaveBeenCalledWith(undefined);
+    expect(commandMocks.runMissionList).toHaveBeenCalledWith(undefined, { includeDrafts: true });
+  });
+
+  it("routes mission list with --no-drafts", async () => {
+    await runBin(["mission", "list", "--no-drafts"]);
+    expect(commandMocks.runMissionList).toHaveBeenCalledWith(undefined, { includeDrafts: false });
   });
 
   it("routes mission show alias", async () => {

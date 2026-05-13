@@ -617,6 +617,27 @@ export class AiSessionStore extends EventEmitter<AiSessionStoreEvents> {
     this.emit("ai_session:deleted", id);
   }
 
+  deleteByIdAndType(id: string, type: AiSessionType): boolean {
+    const existing = this.db
+      .prepare("SELECT id FROM ai_sessions WHERE id = ? AND type = ?")
+      .get(id, type) as { id: string } | undefined;
+
+    if (!existing) {
+      return false;
+    }
+
+    this.clearThinkingTimer(id);
+    const result = this.db
+      .prepare("DELETE FROM ai_sessions WHERE id = ? AND type = ?")
+      .run(id, type) as { changes?: number };
+
+    const removed = Number(result.changes ?? 0) > 0;
+    if (removed) {
+      this.emit("ai_session:deleted", id);
+    }
+    return removed;
+  }
+
   /**
    * Recover sessions after server restart.
    * - `generating` sessions with a currentQuestion -> `awaiting_input`

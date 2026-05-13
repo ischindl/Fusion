@@ -36,6 +36,16 @@ export interface AutopilotStatus {
   nextScheduledCheck?: string;
 }
 
+export interface MissionInterviewDraftSummary {
+  id: string;
+  title: string;
+  status: "generating" | "awaiting_input" | "error";
+  projectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  hasConversation: boolean;
+}
+
 export interface Mission {
   id: string;
   title: string;

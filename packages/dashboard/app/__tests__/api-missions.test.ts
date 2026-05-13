@@ -5,6 +5,8 @@ import {
   fetchAgentLogsWithMeta,
   fetchAiSessions,
   fetchAiSession,
+  fetchMissionInterviewDrafts,
+  discardMissionInterviewDraft,
   deleteAiSession,
   updateTask,
   createTask,
@@ -965,6 +967,54 @@ describe("streamChatResponse", () => {
     expect(callbacks.done).toEqual([]);
     expect(callbacks.error).toEqual([]);
   });
+
+describe("mission interview draft api helpers", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("fetches mission interview drafts with project scope", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(
+      mockFetchResponse(true, {
+        drafts: [{
+          id: "session-1",
+          title: "Draft mission",
+          status: "awaiting_input",
+          projectId: "project-a",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T01:00:00.000Z",
+          hasConversation: true,
+        }],
+      }),
+    );
+
+    const drafts = await fetchMissionInterviewDrafts("project-a");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/missions/interview/drafts?projectId=project-a",
+      expect.objectContaining({ headers: expect.anything() }),
+    );
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.id).toBe("session-1");
+  });
+
+  it("discards a mission interview draft", async () => {
+    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { removed: true }));
+
+    const result = await discardMissionInterviewDraft("session-2", "project-a", "tab-1");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/missions/interview/drafts/session-2/discard?projectId=project-a",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ tabId: "tab-1" }),
+      }),
+    );
+    expect(result).toEqual({ removed: true });
+  });
+});
 
   it("fires onError when fetch aborts unexpectedly", async () => {
     const callbacks = {

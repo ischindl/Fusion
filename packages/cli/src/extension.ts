@@ -2020,20 +2020,36 @@ export default function kbExtension(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use to see all missions and their current status",
       "Missions are grouped by status (active, planning, complete, etc.)",
+      "Drafts represent unfinished mission interview sessions; fn_mission_show does not work on draft IDs because no mission row exists yet",
       "Use before fn_mission_show to find a specific mission ID",
     ],
-    parameters: Type.Object({}),
+    parameters: Type.Object({
+      includeDrafts: Type.Optional(Type.Boolean({ description: "Include in-flight mission interview drafts (default: true)" })),
+    }),
 
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const missionStore = store.getMissionStore();
+      const includeDrafts = params.includeDrafts ?? true;
 
       const missions = missionStore.listMissions();
+      const drafts = includeDrafts
+        ? (store.getDatabase()
+          .prepare(
+            `SELECT id, title, status, updatedAt
+             FROM ai_sessions
+             WHERE type = 'mission_interview'
+               AND status IN ('generating', 'awaiting_input', 'error')
+               AND COALESCE(archived, 0) = 0
+             ORDER BY updatedAt DESC`,
+          )
+          .all() as Array<{ id: string; title: string; status: "generating" | "awaiting_input" | "error"; updatedAt: string }>)
+        : [];
 
-      if (missions.length === 0) {
+      if (missions.length === 0 && drafts.length === 0) {
         return {
           content: [{ type: "text", text: "No missions yet." }],
-          details: { count: 0 },
+          details: { count: 0, drafts: [] },
         };
       }
 
@@ -2048,8 +2064,17 @@ export default function kbExtension(pi: ExtensionAPI) {
       const lines: string[] = [];
       lines.push(`Missions (${missions.length})`);
       lines.push(
-        `Summary: active ${summary.active}, planning ${summary.planning}, blocked ${summary.blocked}, complete ${summary.complete}, archived ${summary.archived}\n`,
+        `Summary: active ${summary.active}, planning ${summary.planning}, blocked ${summary.blocked}, complete ${summary.complete}, archived ${summary.archived}`,
       );
+      lines.push("");
+
+      if (drafts.length > 0) {
+        lines.push(`Drafts (${drafts.length})`);
+        for (const draft of drafts) {
+          lines.push(`  ◌ ${draft.id}: ${draft.title} (draft · interview ${draft.status})`);
+        }
+        lines.push("");
+      }
 
       for (const mission of missions) {
         const statusIcon = mission.status === "complete" ? "✓" : mission.status === "active" ? "●" : mission.status === "blocked" ? "⚠" : "○";
@@ -2059,7 +2084,11 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: lines.join("\n") }],
-        details: { count: missions.length, missions: missions.map((m) => ({ id: m.id, title: m.title, status: m.status })) },
+        details: {
+          count: missions.length,
+          missions: missions.map((m) => ({ id: m.id, title: m.title, status: m.status })),
+          drafts: drafts.map((draft) => ({ id: draft.id, title: draft.title, status: draft.status, updatedAt: draft.updatedAt })),
+        },
       };
     },
   });

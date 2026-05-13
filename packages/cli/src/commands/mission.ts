@@ -93,21 +93,46 @@ export async function runMissionCreate(titleArg?: string, descriptionArg?: strin
   console.log();
 }
 
+interface RunMissionListOptions {
+  includeDrafts?: boolean;
+}
+
 /**
  * List all missions with status summary.
  */
-export async function runMissionList(projectName?: string) {
+export async function runMissionList(projectName?: string, options: RunMissionListOptions = {}) {
   const store = await getStore({ project: projectName });
   const missionStore = store.getMissionStore();
+  const includeDrafts = options.includeDrafts ?? true;
 
   const missions = missionStore.listMissions();
+  const drafts = includeDrafts
+    ? (store.getDatabase()
+      .prepare(
+        `SELECT id, title, status, updatedAt
+         FROM ai_sessions
+         WHERE type = 'mission_interview'
+           AND status IN ('generating', 'awaiting_input', 'error')
+           AND COALESCE(archived, 0) = 0
+         ORDER BY updatedAt DESC`,
+      )
+      .all() as Array<{ id: string; title: string; status: "generating" | "awaiting_input" | "error"; updatedAt: string }>)
+    : [];
 
-  if (missions.length === 0) {
+  if (missions.length === 0 && drafts.length === 0) {
     console.log("\n  No missions yet. Create one with: fn mission create\n");
     process.exit(0);
   }
 
   console.log();
+
+  if (drafts.length > 0) {
+    console.log(`  ◌ Drafts (${drafts.length})`);
+    for (const draft of drafts) {
+      console.log(`    ◌  ${draft.id}  ${draft.title} — (draft · interview ${draft.status})`);
+    }
+    console.log();
+  }
 
   // Group by status
   const byStatus: Record<string, typeof missions> = {};
