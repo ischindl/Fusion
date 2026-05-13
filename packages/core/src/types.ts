@@ -2203,6 +2203,12 @@ export interface ProjectSettings {
   /** Strategy used when a merge conflict can't be resolved by AI. See
    *  {@link MergeConflictStrategy}. Default: "smart". */
   mergeConflictStrategy?: MergeConflictStrategy;
+  /** Minimum branch net line volume before the pre-commit diff-volume gate evaluates a file. Default applied at read site: 20. */
+  mergeDiffVolumeMinLines?: number;
+  /** Minimum staged/branch-net ratio required by the pre-commit diff-volume gate. Default applied at read site: 0.2. */
+  mergeDiffVolumeThreshold?: number;
+  /** Additional file globs allowlisted by the pre-commit diff-volume gate on top of generated/lockfile patterns. Default applied at read site: []. */
+  mergeDiffVolumeAllowlist?: string[];
   /** Controls overlap protection when `mergeConflictStrategy="smart-prefer-main"`
    *  reaches its Attempt 3 fallback. Default: "flip-to-prefer-branch". */
   mergeStrategyOverlapBehavior?: MergeStrategyOverlapBehavior;

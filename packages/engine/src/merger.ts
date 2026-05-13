@@ -74,6 +74,9 @@ import { createRunAuditor, generateSyntheticRunId, type EngineRunContext } from 
 import { createWebFetchTool } from "./agent-tools.js";
 import { auditSquashMerge, MERGER_MAIN_OVERLAP_LOOKBACK_COMMITS, type PostMergeAuditStrategy, type SquashAuditFindings } from "./merger-squash-audit.js";
 import { detectMergeOverlap, restoreBranchWinsFiles } from "./merger-overlap-guard.js";
+import { checkDiffVolume, DiffVolumeRegressionError } from "./merger-diff-volume-gate.js";
+
+export { DiffVolumeRegressionError } from "./merger-diff-volume-gate.js";
 
 /** Conflict type classification for merge conflict resolution */
 export type ConflictType =
@@ -144,7 +147,7 @@ function truncateWorkflowScriptOutput(output: string): string {
 }
 
 /** Check if a path matches a glob pattern (simple glob support: * and **) */
-function matchGlob(path: string, pattern: string): boolean {
+export function matchGlob(path: string, pattern: string): boolean {
   // Handle ** which matches across directory boundaries (must do before single *)
   if (pattern.includes("**")) {
     // Convert ** to match any characters including /
@@ -186,6 +189,77 @@ function matchGlob(path: string, pattern: string): boolean {
     .replace(/\*/g, "[^/]*");
   const regex = new RegExp(`^${regexPattern}$`);
   return regex.test(fileName) || regex.test(path);
+}
+
+interface DiffVolumeGateSettings {
+  minLines: number;
+  threshold: number;
+  allowlistGlobs: string[];
+}
+
+function resolveDiffVolumeGateSettings(settings?: Settings): DiffVolumeGateSettings {
+  const minLinesRaw = settings?.mergeDiffVolumeMinLines ?? 20;
+  const thresholdRaw = settings?.mergeDiffVolumeThreshold ?? 0.2;
+  return {
+    minLines: Math.max(1, Math.trunc(Number.isFinite(minLinesRaw) ? minLinesRaw : 20)),
+    threshold: Math.min(1, Math.max(0, Number.isFinite(thresholdRaw) ? thresholdRaw : 0.2)),
+    allowlistGlobs: Array.isArray(settings?.mergeDiffVolumeAllowlist)
+      ? settings.mergeDiffVolumeAllowlist.filter((glob): glob is string => typeof glob === "string" && glob.trim().length > 0)
+      : [],
+  };
+}
+
+function formatDiffVolumeFindings(findings: ReadonlyArray<{ file: string; branchNet: number; staged: number; ratio: number }>): string {
+  return findings
+    .map((finding) => `${finding.file} (branchNet=${finding.branchNet}, staged=${finding.staged}, ratio=${finding.ratio.toFixed(3)})`)
+    .join("\n");
+}
+
+async function resetToIntegrationTarget(rootDir: string, integrationTargetSha: string): Promise<void> {
+  await execAsync(`git reset --hard ${quoteArg(integrationTargetSha)}`, {
+    cwd: rootDir,
+    encoding: "utf-8",
+  });
+  await execAsync("git clean -fd", {
+    cwd: rootDir,
+    encoding: "utf-8",
+  });
+}
+
+async function runDiffVolumeGate(params: {
+  rootDir: string;
+  branch: string;
+  integrationTargetSha: string;
+  taskId: string;
+  settings?: Settings;
+  store?: TaskStore;
+}): Promise<void> {
+  try {
+    const gateSettings = resolveDiffVolumeGateSettings(params.settings);
+    await checkDiffVolume({
+      rootDir: params.rootDir,
+      branch: params.branch,
+      integrationTargetSha: params.integrationTargetSha,
+      minLines: gateSettings.minLines,
+      threshold: gateSettings.threshold,
+      allowlistGlobs: gateSettings.allowlistGlobs,
+      taskId: params.taskId,
+    });
+  } catch (error: unknown) {
+    if (!(error instanceof DiffVolumeRegressionError)) throw error;
+    await resetToIntegrationTarget(params.rootDir, params.integrationTargetSha);
+    const details = formatDiffVolumeFindings(error.findings);
+    if (params.store) {
+      await params.store.appendAgentLog(
+        params.taskId,
+        `Diff-volume gate blocked auto-resolved squash before commit`,
+        "tool_error",
+        details,
+        "merger",
+      );
+    }
+    throw error;
+  }
 }
 
 export async function getStagedFiles(cwd: string): Promise<string[]> {
@@ -3341,6 +3415,14 @@ export async function commitOrAmendMergeWithFixes(
       // This is the phantom-merge fix: previously the code blindly amended
       // HEAD (the previous task's commit), silently dropping the current
       // task's branch and inheriting the prior task's stats.
+      await runDiffVolumeGate({
+        rootDir,
+        branch,
+        integrationTargetSha: preAttemptHeadSha,
+        taskId,
+        settings,
+        store,
+      });
       await execAsync(
         `git commit ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
         { cwd: rootDir },
@@ -3366,6 +3448,14 @@ export async function commitOrAmendMergeWithFixes(
     // HEAD moved — AI agent committed already. Amend with deterministic
     // message + any new staged fixes folded in. `--amend -m` replaces both
     // the message and includes any newly-staged content.
+    await runDiffVolumeGate({
+      rootDir,
+      branch,
+      integrationTargetSha: preAttemptHeadSha,
+      taskId,
+      settings,
+      store,
+    });
     await execAsync(
       `git commit --amend ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
       { cwd: rootDir },
@@ -3387,6 +3477,9 @@ export async function commitOrAmendMergeWithFixes(
     mergerLog.log(`${taskId}: amended merge commit with verification fixes (deterministic message)`);
     return { ok: true, reason: "completed" };
   } catch (err: unknown) {
+    if (err instanceof DiffVolumeRegressionError) {
+      throw err;
+    }
     const errorMessage = err instanceof Error ? err.message : String(err);
     mergerLog.warn(`${taskId}: failed to finalize merge commit: ${errorMessage}`);
     return { ok: false, reason: "unknown-phantom" };
@@ -5974,6 +6067,7 @@ export async function aiMergeTask(
         buildSource: effectiveBuildSource,
         preMergeRebaseFallthrough,
         attempt3BranchWinsFiles: preferBranchOnOverlapFiles,
+        preAttemptHeadSha,
       }, aiTracker);
 
       if (success) {
@@ -6009,6 +6103,10 @@ export async function aiMergeTask(
         } catch {
           // best-effort abort cleanup
         }
+        throw error;
+      }
+
+      if (error instanceof DiffVolumeRegressionError || error?.name === "DiffVolumeRegressionError") {
         throw error;
       }
 
@@ -6916,6 +7014,8 @@ interface MergeAttemptParams {
    *  the task branch after the default `-X ours` squash so overlapping files
    *  keep the branch's hardening while non-overlapping files still prefer main. */
   attempt3BranchWinsFiles?: Set<string>;
+  /** HEAD of the integration target immediately before this squash attempt began. */
+  preAttemptHeadSha?: string;
 }
 
 /** Mutable flags carried through the merge cascade. */
@@ -6932,7 +7032,7 @@ interface AiInvocationTracker {
  * Returns true if merge succeeded, false if should retry (for attempts 1-2).
  * Throws on unrecoverable errors.
  */
-async function executeMergeAttempt(
+export async function executeMergeAttempt(
   params: MergeAttemptParams,
   aiTracker: AiInvocationTracker,
 ): Promise<boolean> {
@@ -7087,6 +7187,14 @@ async function executeMergeAttempt(
               aiSummary: safeBody,
               aiSubject,
             });
+            await runDiffVolumeGate({
+              rootDir,
+              branch,
+              integrationTargetSha: params.preAttemptHeadSha || "HEAD",
+              taskId,
+              settings,
+              store,
+            });
             await execAsync(
               `git commit ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
               { cwd: rootDir },
@@ -7226,6 +7334,7 @@ async function executeMergeAttempt(
       buildCommand,
       sourceIssueRef,
       preMergeRebaseFallthrough: params.preMergeRebaseFallthrough,
+      preAttemptHeadSha: params.preAttemptHeadSha,
     });
 
     // Handle build failure
@@ -7335,7 +7444,7 @@ async function executeMergeAttempt(
     // and trip the phantom-merge guard even though the task's content is
     // already on HEAD. Retrying with auto-conflict-resolution can't help a
     // verification failure anyway — there are no conflicts to resolve.
-    if (error?.name === "VerificationError") {
+    if (error?.name === "VerificationError" || error?.name === "DiffVolumeRegressionError") {
       throw error;
     }
 
@@ -7355,7 +7464,7 @@ async function executeMergeAttempt(
  *   - "theirs" — the task branch wins (mergeConflictStrategy="smart-prefer-branch")
  *   - "ours" — the main branch wins (mergeConflictStrategy="smart-prefer-main", default)
  */
-async function attemptWithSideStrategy(
+export async function attemptWithSideStrategy(
   params: MergeAttemptParams,
   side: "theirs" | "ours" = "theirs",
   aiTracker?: AiInvocationTracker,
@@ -7383,7 +7492,7 @@ async function attemptWithSideStrategy(
 
     return finalizeSideStrategyAttempt(params, side, aiTracker);
   } catch (error) {
-    if (error instanceof Error && error.name === "MergeAbortedError") {
+    if (error instanceof Error && (error.name === "MergeAbortedError" || error.name === "DiffVolumeRegressionError")) {
       throw error;
     }
     mergerLog.error(`${taskId}: -X ${side} merge failed: ${error}`);
@@ -7424,7 +7533,7 @@ async function attemptWithMixedSideStrategy(
 
     return finalizeSideStrategyAttempt(params, strategy.defaultSide, aiTracker);
   } catch (error) {
-    if (error instanceof Error && error.name === "MergeAbortedError") {
+    if (error instanceof Error && (error.name === "MergeAbortedError" || error.name === "DiffVolumeRegressionError")) {
       throw error;
     }
     mergerLog.error(`${taskId}: overlap-aware merge failed: ${error}`);
@@ -7484,6 +7593,14 @@ async function finalizeSideStrategyAttempt(
     aiSummary: aiSummary?.trim().length ? aiSummary : safeBody,
     aiSubject,
   });
+  await runDiffVolumeGate({
+    rootDir,
+    branch,
+    integrationTargetSha: params.preAttemptHeadSha || "HEAD",
+    taskId,
+    settings,
+    store,
+  });
   await execAsync(
     `git commit ${subjectArg} ${bodyArg}${issueRefBodyArg}${trailerArg}${authorArg}`,
     { cwd: rootDir },
@@ -7538,6 +7655,8 @@ interface AiAgentParams {
    *  the merge prompt when the pre-merge rebase recovery cascade fell
    *  through. See MergePromptParams.preMergeRebaseFallthrough for details. */
   preMergeRebaseFallthrough?: string;
+  /** HEAD of the integration target immediately before this squash attempt began. */
+  preAttemptHeadSha?: string;
 }
 
 /**
@@ -7579,6 +7698,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     testCommand,
     buildCommand,
     preMergeRebaseFallthrough,
+    preAttemptHeadSha,
   } = params;
 
   const settings = await store.getSettings();
@@ -7835,6 +7955,14 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
           includeTaskId,
           aiSummary: aiSummary?.trim().length ? aiSummary : safeBody,
           aiSubject,
+        });
+        await runDiffVolumeGate({
+          rootDir,
+          branch,
+          integrationTargetSha: preAttemptHeadSha || "HEAD",
+          taskId,
+          settings,
+          store,
         });
         await execAsync(
           `git commit ${subjectArg} ${bodyArg}${issueRefBodyArg}${trailerArg}${authorArg}`,

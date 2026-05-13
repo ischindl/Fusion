@@ -221,6 +221,8 @@ Two rules, learned the hard way (FN-2370 silently reverted three commits' work):
 
 After any squash that auto-resolved conflicts, the merger now runs the post-squash audit as a blocking gate before auto-completing the task. Flagged merges stay in `in-review` for inspection, and only a clean audit proceeds to `done`.
 
+Before those auto-resolved squash commits are written, the merger also runs a per-file diff-volume gate: it compares each file's staged squash delta against the branch's net delta vs its merge-base, and blocks the merge in `in-review` when a non-allowlisted file loses too much branch volume. This is the pre-commit guard against FN-3936-style silent drops where fallback resolution kept a branch's commit message but discarded the branch's main file edits.
+
 When `mergeConflictStrategy="smart-prefer-main"`, the merger also runs an overlap guard before the Attempt 3 `-X ours` fallback. If recent `main` commits (30-commit lookback) touched files the task branch also changed, the default `mergeStrategyOverlapBehavior="flip-to-prefer-branch"` makes those overlapping files prefer the task branch instead of silently discarding branch hardening; `warn-only` preserves the legacy fallback while logging the risk, and `ignore` disables the guard.
 
 For manual follow-up, standalone auditing, or post-incident inspection, the script remains available:
