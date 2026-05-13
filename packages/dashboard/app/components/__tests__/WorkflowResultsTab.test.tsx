@@ -510,6 +510,32 @@ describe("WorkflowResultsTab", () => {
       expect(screen.getByTestId("workflow-result-mode-toggle-WS-002")).toHaveTextContent("Markdown");
     });
 
+    it("FN-4209: header wraps when preview content is long", () => {
+      const longToken = "X".repeat(520);
+      const longOutputResults: WorkflowStepResult[] = [
+        {
+          ...mockResults[0],
+          output: `Preview ${longToken}`,
+        },
+      ];
+
+      render(<WorkflowResultsTab taskId="FN-001" results={longOutputResults} />);
+
+      const outputHeader = document.querySelector(".workflow-result-output-header");
+      expect(outputHeader).not.toBeNull();
+      if (!outputHeader) {
+        return;
+      }
+
+      expect(getComputedStyle(outputHeader).flexWrap).toBe("wrap");
+
+      const preview = outputHeader.querySelector(".workflow-result-output-preview");
+      expect(preview).not.toBeNull();
+
+      const outputToggle = screen.getByTestId("workflow-result-toggle-WS-001");
+      expect(outputToggle).toBeInTheDocument();
+    });
+
     it("does not show mode toggle when output is collapsed", () => {
       render(<WorkflowResultsTab taskId="FN-001" results={mockResults} />);
 
@@ -879,9 +905,10 @@ describe("WorkflowResultsTab", () => {
 
       expect(baseCss).toMatch(/\.phase-badge\s*\{[^}]*font-size:\s*calc\(var\(--space-sm\) \+ var\(--space-xs\) \* 0\.75\);/);
       expect(baseCss).toMatch(/\.workflow-result-output-header\s*\{[^}]*flex-wrap:\s*wrap;/);
-      expect(baseCss).toMatch(/\.workflow-result-output-preview\s*\{[^}]*flex:\s*1 1 calc\(var\(--space-2xl\) \* 6\);[^}]*min-width:\s*0;/);
+      expect(baseCss).toMatch(/\.workflow-result-output-preview\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/);
       expect(allCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.workflow-result-output-preview\s*\{[^}]*flex-basis:\s*100%;[^}]*order:\s*3;/);
-      expect(allCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.workflow-result-mode-toggle\s*\{[^}]*margin-left:\s*0;/);
+      expect(baseCss).toMatch(/\.workflow-result-mode-toggle\s*\{[^}]*margin-left:\s*auto;[^}]*flex-shrink:\s*0;/);
+      expect(allCss).toMatch(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.workflow-result-mode-toggle\s*\{[^}]*margin-left:\s*0;[^}]*min-width:\s*calc\(var\(--space-lg\) \* 2 \+ var\(--space-xs\)\);[^}]*min-height:\s*calc\(var\(--space-lg\) \* 2 \+ var\(--space-xs\)\);/);
     });
 
 

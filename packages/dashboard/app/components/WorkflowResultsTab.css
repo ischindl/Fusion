@@ -294,6 +294,7 @@
   align-items: center;
   gap: var(--space-sm);
   margin-bottom: var(--space-xs);
+  min-width: 0;
 }
 
 .workflow-result-toggle {
@@ -305,8 +306,10 @@
 }
 
 .workflow-result-output-preview {
-  flex: 1 1 calc(var(--space-2xl) * 6);
+  flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
   color: var(--text-dim);
   font-style: italic;
@@ -314,6 +317,7 @@
 
 .workflow-result-mode-toggle {
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .workflow-result-expand-toggle {
@@ -510,12 +514,19 @@
   }
 
   .workflow-result-output-preview {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    text-overflow: ellipsis;
     flex-basis: 100%;
     order: 3;
   }
 
   .workflow-result-mode-toggle {
     margin-left: 0;
+    min-width: calc(var(--space-lg) * 2 + var(--space-xs));
+    min-height: calc(var(--space-lg) * 2 + var(--space-xs));
   }
 
 
