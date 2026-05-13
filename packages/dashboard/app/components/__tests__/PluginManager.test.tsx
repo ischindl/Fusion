@@ -115,6 +115,7 @@ import {
   PluginManager,
   STATE_COLORS,
 } from "../PluginManager";
+import { loadAllAppCss } from "../../test/cssFixture";
 import {
   fetchPlugins,
   installPlugin,
@@ -140,6 +141,10 @@ function expectEventsUrl(url: string, projectId?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  const styleEl = document.createElement("style");
+  styleEl.setAttribute("data-test-id", "all-app-css");
+  styleEl.textContent = loadAllAppCss();
+  document.head.appendChild(styleEl);
   mockConfirm.mockReset();
   mockConfirm.mockResolvedValue(true);
   window.sessionStorage.clear();
@@ -220,6 +225,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  document.querySelector('[data-test-id="all-app-css"]')?.remove();
   vi.restoreAllMocks();
   delete (globalThis as any).__testEventSourceInstance;
 });
@@ -376,6 +382,11 @@ describe("PluginManager", () => {
     const listItem = screen.getByText(plugin.name).closest(".plugin-item");
     expect(listItem).toBeTruthy();
 
+    const listError = (listItem as HTMLElement).querySelector(".plugin-error-text");
+    expect(listError).toBeTruthy();
+    const listStyle = window.getComputedStyle(listError as Element);
+    expect(listStyle.whiteSpace).toBe("nowrap");
+
     const settingsButton = (listItem as HTMLElement).querySelector('button[title="Settings"]');
     expect(settingsButton).toBeTruthy();
     await userEvent.click(settingsButton as HTMLElement);
@@ -383,10 +394,11 @@ describe("PluginManager", () => {
     const detailError = await screen.findByText(plugin.error);
     expect(detailError).toHaveClass("plugin-error-text", "plugin-error-text--detail");
 
-    const detailStyle = getComputedStyle(detailError);
+    const detailStyle = window.getComputedStyle(detailError);
     expect(detailStyle.whiteSpace).toBe("normal");
     expect(detailStyle.overflow).toBe("visible");
     expect(detailStyle.textOverflow).toBe("clip");
+    expect(detailStyle.overflowWrap).toBe("anywhere");
   });
 
   it("shows setup-required action for installed built-in agent browser", async () => {
