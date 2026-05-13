@@ -21,6 +21,7 @@ import { EvalStore } from "./eval-store.js";
 import { BackwardCompat, ProjectRequiredError } from "./migration.js";
 import { CentralCore } from "./central-core.js";
 import { getTaskMergeBlocker, resolveTaskMergeTarget } from "./task-merge.js";
+import { getInReviewStallReason } from "./in-review-stall.js";
 import { ensureMemoryFileWithBackend } from "./project-memory.js";
 import { runCommandAsync } from "./run-command.js";
 import { createLogger } from "./logger.js";
@@ -3073,8 +3074,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     const sql = `SELECT ${selectClause} FROM tasks${whereClause} ORDER BY createdAt ASC`;
 
     const rows = this.db.prepare(sql).all(...params);
+    const now = Date.now();
     const activeTasks = await Promise.all((rows as unknown as TaskRow[]).map(async (row) => {
       const task = this.rowToTask(row);
+      task.inReviewStall = getInReviewStallReason(task, { now });
 
       // Slim path: aggregate the timed-execution total server-side, then
       // strip the heavy log payload from the wire response. Without this
@@ -3156,8 +3159,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ).all(since, resolvedLimit + 1) as TaskRow[]);
 
     const hasMore = rows.length > resolvedLimit;
+    const now = Date.now();
     const tasks = rows.slice(0, resolvedLimit).map((row) => {
       const task = this.rowToTask(row);
+      task.inReviewStall = getInReviewStallReason(task, { now });
       task.timedExecutionMs = this.computeTimedExecutionMs(task.log);
       task.log = [];
       task.githubTracking = undefined;
@@ -3264,8 +3269,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       `).all(...params) as unknown as TaskRow[];
     }
 
+    const now = Date.now();
     const activeMatches = await Promise.all(rows.map(async (row) => {
       const task = this.rowToTask(row);
+      task.inReviewStall = getInReviewStallReason(task, { now });
 
       // Slim path mirrors `listTasks`: aggregate timed execution server-side
       // before stripping the heavy log payload from the wire response.
