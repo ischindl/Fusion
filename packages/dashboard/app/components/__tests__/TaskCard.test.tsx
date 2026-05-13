@@ -1110,6 +1110,14 @@ describe("TaskCard", () => {
     expect(css).toMatch(/\.card-github-tracking-link:focus-visible\s*\{[^}]*--focus-ring-strong/);
   });
 
+  it("keeps GitHub provenance indicators grouped on the right edge", () => {
+    const css = loadAllAppCssBaseOnly();
+
+    expect(css).toMatch(/\.card-footer-row\s*>\s*\.card-source-provenance:first-of-type\s*\{[^}]*margin-left:\s*auto;[^}]*\}/);
+    const provenanceRule = css.match(/\.card-source-provenance\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(provenanceRule).not.toMatch(/margin-left\s*:\s*auto/);
+  });
+
   it("does not render a GitHub tracking link when githubTracking is absent", () => {
     render(
       <TaskCard

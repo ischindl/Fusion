@@ -605,9 +605,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: auto;
   flex-shrink: 0;
   color: var(--text-muted);
+}
+
+.card-footer-row > .card-source-provenance:first-of-type {
+  margin-left: auto;
 }
 
 .card-source-provenance .provider-icon {
