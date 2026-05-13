@@ -74,7 +74,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
       mode: "block",
       strategy: "rebase",
       findings: findings({ strategy: "rebase" }),
-      isTreeVerified: false,
+      verificationPassed: false,
     });
     expect(result.action).toBe("pass");
   });
@@ -88,7 +88,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
         duplicates: [duplicateSubject("feat: collide")],
         overlaps: [overlap("docs/README.md")],
       }),
-      isTreeVerified: true,
+      verificationPassed: true,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "block", reason: "mode-block" });
   });
@@ -98,7 +98,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
       mode: "block",
       strategy: "rebase",
       findings: findings({ strategy: "rebase", overlaps: [overlap("docs/README.md")] }),
-      isTreeVerified: true,
+      verificationPassed: true,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "pass", reason: "verified-short-circuit" });
   });
@@ -108,7 +108,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
       mode: "block",
       strategy: "rebase",
       findings: findings({ strategy: "rebase", overlaps: [overlap("docs/README.md")] }),
-      isTreeVerified: false,
+      verificationPassed: false,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "block", reason: "mode-block" });
   });
@@ -118,7 +118,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
       mode: "block",
       strategy: "squash",
       findings: findings({ strategy: "squash", overlaps: [overlap("docs/README.md")] }),
-      isTreeVerified: true,
+      verificationPassed: true,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "block", reason: "mode-block" });
   });
@@ -132,7 +132,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
         duplicates: [duplicateSubject("feat: collide")],
         overlaps: [overlap("packages/dashboard/app/x.tsx")],
       }),
-      isTreeVerified: false,
+      verificationPassed: false,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "pass", reason: "mode-warn" });
   });
@@ -142,7 +142,7 @@ describe("resolvePostMergeAuditAction (FN-4333)", () => {
       mode: "warn",
       strategy: "rebase",
       findings: findings({ strategy: "rebase", overlaps: [overlap("a.txt")] }),
-      isTreeVerified: true,
+      verificationPassed: true,
     });
     expect(result).toEqual<PostMergeAuditAction>({ action: "pass", reason: "verified-short-circuit" });
   });
