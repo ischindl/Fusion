@@ -3764,8 +3764,17 @@ export class HeartbeatTriggerScheduler {
         return;
       }
 
+      // Guard: skip timer ticks for idle agents when configured
+      const timerRc = (agent.runtimeConfig ?? {}) as {
+        allowParallelExecution?: boolean;
+        skipHeartbeatWhenIdle?: boolean;
+      };
+      if (timerRc.skipHeartbeatWhenIdle === true && (!agent.taskId || agent.taskId.length === 0)) {
+        heartbeatLog.log(`Timer tick skipped for ${agentId} (skipHeartbeatWhenIdle, no task assigned)`);
+        return;
+      }
+
       // Guard: when parallel execution is disabled, skip if the agent's bound task is actively executing
-      const timerRc = (agent.runtimeConfig ?? {}) as { allowParallelExecution?: boolean };
       if (timerRc.allowParallelExecution === false && agent.taskId && this.isTaskExecuting?.(agent.taskId)) {
         heartbeatLog.log(`Timer tick skipped for ${agentId} (parallel execution disabled, task ${agent.taskId} executing)`);
         return;
