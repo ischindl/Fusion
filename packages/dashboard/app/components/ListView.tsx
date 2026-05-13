@@ -1584,7 +1584,7 @@ export function ListView({
                                     <span
                                       className="list-column-badge"
                                       style={{
-                                        background: `${COLUMN_COLOR_MAP[task.column]}20`,
+                                        background: `color-mix(in srgb, ${COLUMN_COLOR_MAP[task.column]} 12%, transparent)`,
                                         color: COLUMN_COLOR_MAP[task.column],
                                       }}
                                     >
