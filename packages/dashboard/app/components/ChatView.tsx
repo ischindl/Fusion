@@ -1352,6 +1352,33 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     };
   }, [isMobile, activeSession, roomThreadActive, anchorToBottom]);
 
+  useEffect(() => {
+    if (roomThreadActive) {
+      return;
+    }
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const messagesContainer = messagesContainerRef.current;
+    if (!messagesContainer) {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (isUserScrollingRef.current) {
+        return;
+      }
+      anchorToBottom(messagesContainer);
+    });
+
+    observer.observe(messagesContainer);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [roomThreadActive, anchorToBottom, activeSession?.id, chatScope]);
+
   // Fetch agents on mount for name resolution (project-scoped with stale-request protection)
   useEffect(() => {
     let cancelled = false;
