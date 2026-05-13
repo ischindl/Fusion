@@ -88,6 +88,15 @@ export type {
 } from "./agent-provisioning-policy.js";
 export { TaskStore } from "./store.js";
 export {
+  STALLED_REVIEW_REENQUEUE_THRESHOLD,
+  STALLED_REVIEW_INVALID_TRANSITION_THRESHOLD,
+  STALLED_REVIEW_WINDOW_MS,
+  STALLED_REVIEW_REENQUEUE_PATTERN,
+  STALLED_REVIEW_INVALID_TRANSITION_PATTERN,
+  detectStalledReview,
+} from "./stalled-review-detector.js";
+export type { StalledReviewSignal } from "./stalled-review-detector.js";
+export {
   detectTaskIdIntegrityAnomalies,
 } from "./task-id-integrity.js";
 export type {

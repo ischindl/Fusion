@@ -1,3 +1,4 @@
+import type { StalledReviewSignal } from "./stalled-review-detector.js";
 
 import type { InReviewStallSignal } from "./in-review-stall.js";
 
