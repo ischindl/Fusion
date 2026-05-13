@@ -625,6 +625,7 @@ html .column.drag-over * {
  * Runtime provider settings card — unified layout used by Hermes / OpenClaw /
  * Paperclip cards. Header (large logo + name + status), description, form,
  * footer action row.
+ * font-size values intentionally raw — no --font-size-* tokens defined yet
  * ------------------------------------------------------------------------- */
 
 .runtime-card {
@@ -645,8 +646,8 @@ html .column.drag-over * {
 
 .runtime-card__logo {
   flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
+  width: 44px; /* matches mobile touch-target convention from AGENTS.md (no --touch-target token defined) */
+  height: 44px; /* matches mobile touch-target convention from AGENTS.md (no --touch-target token defined) */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -657,7 +658,7 @@ html .column.drag-over * {
 .runtime-card__title {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-xs);
   flex: 1;
   min-width: 0;
 }
@@ -676,11 +677,11 @@ html .column.drag-over * {
 }
 
 .runtime-card__status--ok {
-  color: var(--accent-green, #22c55e);
+  color: var(--color-success);
 }
 
 .runtime-card__status--err {
-  color: var(--accent-red, #ef4444);
+  color: var(--color-error);
 }
 
 .runtime-card__status--neutral {
@@ -710,7 +711,7 @@ html .column.drag-over * {
 
 .runtime-card__tabs {
   display: flex;
-  gap: var(--space-xxs, 2px);
+  gap: var(--space-xs);
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--space-sm);
 }
@@ -734,7 +735,7 @@ html .column.drag-over * {
 
 .runtime-card__tab[aria-selected="true"] {
   color: var(--text);
-  border-bottom-color: var(--accent, #4f46e5);
+  border-bottom-color: var(--accent);
 }
 
 .runtime-card__footer {
@@ -756,13 +757,13 @@ html .column.drag-over * {
 }
 
 .runtime-card__toast--ok {
-  background: color-mix(in srgb, var(--accent-green, #22c55e) 12%, transparent);
-  color: var(--accent-green, #22c55e);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
 }
 
 .runtime-card__toast--err {
-  background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
-  color: var(--accent-red, #ef4444);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
 }
 
 .runtime-card__cobrand {
@@ -771,7 +772,7 @@ html .column.drag-over * {
   gap: var(--space-xs);
   font-size: 0.75rem;
   color: var(--text-muted);
-  margin-top: var(--space-xxs, 2px);
+  margin-top: var(--space-xs);
 }
 
 .runtime-card__cobrand-mark {
