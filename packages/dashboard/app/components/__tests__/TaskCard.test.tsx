@@ -1252,10 +1252,39 @@ describe("TaskCard", () => {
     expect(chipStyle.whiteSpace).toBe("nowrap");
   });
 
-  it("keeps GitHub provenance indicators grouped on the right edge", () => {
-    const css = loadAllAppCssBaseOnly();
+  it("FN-4287: keeps GitHub provenance indicators grouped on the right edge", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          sourceType: "github_import",
+          sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/42" },
+          githubTracking: {
+            issue: {
+              owner: "other",
+              repo: "tracking",
+              number: 99,
+              url: "https://github.com/other/tracking/issues/99",
+              createdAt: "2026-05-12T00:00:00.000Z",
+            },
+          },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
 
+    const footerRow = container.querySelector(".card-footer-row");
+    const footerProvenance = container.querySelectorAll(".card-footer-row .card-source-provenance");
+    const trackingLink = container.querySelector(".card-github-tracking-link");
+
+    expect(footerRow).not.toBeNull();
+    expect(footerProvenance).toHaveLength(1);
+    expect(trackingLink).not.toBeNull();
+
+    const css = loadAllAppCssBaseOnly();
     expect(css).toMatch(/\.card-footer-row\s*>\s*\.card-source-provenance:first-of-type\s*\{[^}]*margin-left:\s*auto;[^}]*\}/);
+    expect(css).toMatch(/\.card-source-provenance\s*\+\s*\.card-source-provenance\s*\{[^}]*margin-left:\s*0;[^}]*\}/);
     const provenanceRule = css.match(/\.card-source-provenance\s*\{[^}]*\}/)?.[0] ?? "";
     expect(provenanceRule).not.toMatch(/margin-left\s*:\s*auto/);
   });

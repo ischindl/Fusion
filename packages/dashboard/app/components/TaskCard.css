@@ -641,6 +641,10 @@
   margin-left: auto;
 }
 
+.card-source-provenance + .card-source-provenance {
+  margin-left: 0;
+}
+
 .card-source-provenance .provider-icon {
   display: inline-flex;
   align-items: center;
