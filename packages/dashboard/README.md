@@ -1153,3 +1153,12 @@ import { InsightsView } from "./components/InsightsView";
   }}
 />
 ```
+
+## GitHub tracking issue handling on task delete
+
+When deleting a task that has an active linked GitHub tracking issue, the dashboard prompts for one of three actions:
+- **Close issue** (default behavior for API callers that do not pass an explicit action)
+- **Delete issue** (requires gh CLI authentication)
+- **Leave issue unchanged**
+
+This choice is sent as `githubIssueAction` through the delete-task API and propagated to the tracking-state service.
