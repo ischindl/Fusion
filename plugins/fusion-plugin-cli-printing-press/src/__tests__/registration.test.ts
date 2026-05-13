@@ -18,12 +18,10 @@ describe("plugin registration contracts", () => {
       expect(plugin.routes?.some((route) => route.path === "/drafts")).toBe(true);
       expect(plugin.dashboardViews?.map((view) => view.viewId)).toEqual(["wizard", "manage"]);
       expect(typeof plugin.executorRuntimeEnv).toBe("function");
+      // FN-4150/FN-3768 track future workflow step template contributions.
+      expect(plugin.workflowStepTemplates).toBeUndefined();
     } finally {
       h.cleanup();
     }
-  });
-
-  it.skip("TODO(FN-3768): assert plugin workflow-step template contributions once shipped", () => {
-    // This branch does not yet export workflow step templates/contributions for cli-printing-press.
   });
 });

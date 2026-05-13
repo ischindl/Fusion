@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import plugin from "../index.js";
+import * as runtimeModule from "../runtime/executor-runtime-env.js";
 import { buildExecutorRuntimeEnv } from "../runtime/executor-runtime-env.js";
 import { makeFakeRegistry } from "./fixtures/registry.js";
 
@@ -55,7 +56,9 @@ describe("runtime availability", () => {
     }
   });
 
-  it.skip("TODO(FN-3767): cover resolveGeneratedCliInvocation contract once exported", () => {
-    // FN-3767 documented resolveGeneratedCliInvocation, but this branch has only buildExecutorRuntimeEnv.
+  it("documents currently exported runtime helpers", () => {
+    // FN-3767/FN-4150 track exposing resolveGeneratedCliInvocation in a future runtime surface.
+    expect(typeof runtimeModule.buildExecutorRuntimeEnv).toBe("function");
+    expect("resolveGeneratedCliInvocation" in runtimeModule).toBe(false);
   });
 });
