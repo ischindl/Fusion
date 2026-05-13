@@ -137,7 +137,7 @@ describe("NotificationDispatcher", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps ntfy defaults unchanged and adds notificationProviders default", () => {
+  it("keeps ntfy defaults unchanged and adds notification provider/failure defaults", () => {
     const event: NtfyNotificationEvent = "memory-dreams-processed";
     expect(event).toBe("memory-dreams-processed");
 
