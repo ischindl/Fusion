@@ -1297,6 +1297,27 @@ describe("AgentLogViewer", () => {
       expect(code!.textContent).toBe("inline code");
     });
 
+    it("renders file links inside inline code with the code wrapper preserved", () => {
+      const openFile = vi.fn();
+      const entries = [
+        makeEntry({ text: "Check `packages/engine/src/scheduler.ts:7` now." }),
+      ];
+      const { container } = render(
+        <FileBrowserProvider openFile={openFile}>
+          <AgentLogViewer entries={entries} loading={false} />
+        </FileBrowserProvider>,
+      );
+
+      const fileLink = screen.getByRole("button", { name: "packages/engine/src/scheduler.ts:7" });
+      const code = fileLink.closest("code");
+      expect(code).toBeTruthy();
+      expect(code?.querySelector("button.file-path-link")).toBe(fileLink);
+
+      fireEvent.click(fileLink);
+      expect(openFile).toHaveBeenCalledWith("packages/engine/src/scheduler.ts", { line: 7, col: undefined });
+      expect(container.querySelectorAll("code button.file-path-link")).toHaveLength(1);
+    });
+
     it("renders code blocks with GFM support", () => {
       const entries = [
         makeEntry({ text: "```typescript\nconst x = 1;\n```" }),

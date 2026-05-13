@@ -22,7 +22,7 @@ import { FileBrowserProvider } from "../../context/FileBrowserContext";
 setupTaskDetailModalHooks();
 
 describe("TaskDetailModal", () => {
-  it("renders clickable file links in markdown content", async () => {
+  it("renders clickable file links in markdown inline code while preserving code wrappers", async () => {
     const openFile = vi.fn();
     render(
       <FileBrowserProvider openFile={openFile}>
@@ -42,7 +42,13 @@ describe("TaskDetailModal", () => {
       </FileBrowserProvider>,
     );
 
-    await userEvent.click(screen.getAllByRole("button", { name: "packages/dashboard/app/App.tsx:12" })[0]!);
+    const fileLinks = screen.getAllByRole("button", { name: "packages/dashboard/app/App.tsx:12" });
+    expect(fileLinks.length).toBeGreaterThan(0);
+    const code = fileLinks[0]?.closest("code");
+    expect(code).toBeTruthy();
+    expect(code?.querySelector("button.file-path-link")).toBe(fileLinks[0]);
+
+    await userEvent.click(fileLinks[0]!);
     expect(openFile).toHaveBeenCalledWith("packages/dashboard/app/App.tsx", { line: 12, col: undefined });
   });
 

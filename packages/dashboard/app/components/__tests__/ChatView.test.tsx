@@ -525,7 +525,7 @@ describe("ChatView", () => {
     expect(screen.getByText("Hi there!")).toBeInTheDocument();
   });
 
-  it("renders file paths in assistant messages as clickable file-browser links", async () => {
+  it("renders file paths in assistant inline code as clickable links while preserving the code wrapper", async () => {
     const openFile = vi.fn();
     setupMockChat({
       activeSession: activeSessionFixture,
@@ -538,7 +538,12 @@ describe("ChatView", () => {
       </FileBrowserProvider>,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "packages/foo/bar.ts:42" }));
+    const fileLink = screen.getByRole("button", { name: "packages/foo/bar.ts:42" });
+    const code = fileLink.closest("code");
+    expect(code).toBeTruthy();
+    expect(code?.querySelector("button.file-path-link")).toBe(fileLink);
+
+    await userEvent.click(fileLink);
     expect(openFile).toHaveBeenCalledWith("packages/foo/bar.ts", { line: 42, col: undefined });
   });
 
