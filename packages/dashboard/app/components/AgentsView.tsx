@@ -1,5 +1,5 @@
 import "./AgentsView.css";
-import { useState, useEffect, useCallback, useRef, useMemo, useId, lazy, Suspense, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useId, lazy, Suspense, type CSSProperties, type ReactNode } from "react";
 import { Plus, Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Info } from "lucide-react";
 import type { Agent, AgentCapability, AgentOnboardingSummary, AgentState, OrgTreeNode } from "../api";
 import { updateAgent, updateAgentState, deleteAgent, startAgentRun, fetchOrgTree, fetchSettings, updateSettings } from "../api";
@@ -755,6 +755,37 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
     }
   }, [displayOrgTree, orgChartLayoutMode, orgChartViewportWidth, orgChartZoomIndex]);
 
+  const renderOrgChartLayoutToggle = useCallback(() => {
+    const options: Array<{ value: OrgChartLayoutPreference; label: string; icon: ReactNode; ariaLabel: string }> = [
+      { value: "horizontal", label: "Horizontal", icon: <Network size={16} />, ariaLabel: "Horizontal layout" },
+      { value: "vertical", label: "Vertical", icon: <List size={16} />, ariaLabel: "Vertical layout" },
+      { value: "auto", label: "Auto", icon: <RefreshCw size={16} />, ariaLabel: "Automatic layout" },
+    ];
+
+    return (
+      <div className="agent-org-chart-layout-toggle" data-testid="agent-org-chart-layout-toggle">
+        {options.map((option) => {
+          const isActive = orgChartLayoutPreference === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className={`btn-icon touch-target agent-org-chart-layout-toggle__button${isActive ? " btn-icon--active" : ""}`}
+              onClick={() => handleOrgChartLayoutPreferenceChange(option.value)}
+              aria-pressed={isActive}
+              aria-label={option.ariaLabel}
+              title={option.ariaLabel}
+              data-layout-value={option.value}
+            >
+              {option.icon}
+              <span className="agent-org-chart-layout-toggle__text">{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }, [handleOrgChartLayoutPreferenceChange, orgChartLayoutPreference]);
+
   /** Get skill badges from agent metadata */
   const getSkillBadges = (agent: Agent): string[] => {
     if (Array.isArray(agent.metadata?.skills)) {
@@ -1053,17 +1084,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
               <div className="agent-org-chart-shell" data-testid="agent-org-chart-shell">
                 {isMobileViewport ? (
                   <div className="agent-org-chart-controls" data-testid="agent-org-chart-controls">
-                    <div className="agent-org-chart-layout-toggle" data-testid="agent-org-chart-layout-toggle">
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "horizontal" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("horizontal")} aria-pressed={orgChartLayoutPreference === "horizontal"} aria-label="Horizontal layout" title="Horizontal layout" data-layout-value="horizontal">
-                        <Network size={16} />
-                      </button>
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "vertical" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("vertical")} aria-pressed={orgChartLayoutPreference === "vertical"} aria-label="Vertical layout" title="Vertical layout" data-layout-value="vertical">
-                        <List size={16} />
-                      </button>
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "auto" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("auto")} aria-pressed={orgChartLayoutPreference === "auto"} aria-label="Automatic layout" title="Automatic layout" data-layout-value="auto">
-                        <RefreshCw size={16} />
-                      </button>
-                    </div>
+                    {renderOrgChartLayoutToggle()}
                     <button
                       type="button"
                       className="btn-icon touch-target"
@@ -1098,17 +1119,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   </div>
                 ) : (
                   <div className="agent-org-chart-toolbar">
-                    <div className="agent-org-chart-layout-toggle" data-testid="agent-org-chart-layout-toggle">
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "horizontal" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("horizontal")} aria-pressed={orgChartLayoutPreference === "horizontal"} aria-label="Horizontal layout" title="Horizontal layout" data-layout-value="horizontal">
-                        <Network size={16} />
-                      </button>
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "vertical" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("vertical")} aria-pressed={orgChartLayoutPreference === "vertical"} aria-label="Vertical layout" title="Vertical layout" data-layout-value="vertical">
-                        <List size={16} />
-                      </button>
-                      <button type="button" className={`btn-icon touch-target${orgChartLayoutPreference === "auto" ? " btn-icon--active" : ""}`} onClick={() => handleOrgChartLayoutPreferenceChange("auto")} aria-pressed={orgChartLayoutPreference === "auto"} aria-label="Automatic layout" title="Automatic layout" data-layout-value="auto">
-                        <RefreshCw size={16} />
-                      </button>
-                    </div>
+                    {renderOrgChartLayoutToggle()}
                   </div>
                 )}
                 <div

@@ -879,6 +879,17 @@
   box-shadow: var(--shadow-sm);
 }
 
+.agent-org-chart-layout-toggle__button {
+  width: auto;
+  padding: var(--space-xs) var(--space-sm);
+  gap: var(--space-xs);
+}
+
+.agent-org-chart-layout-toggle__text {
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.5);
+  font-weight: 500;
+}
+
 .agent-org-chart-controls__zoom-label {
   min-width: calc(var(--space-2xl) * 2);
   font-family: var(--font-mono);
@@ -1261,6 +1272,13 @@
 
   .agent-org-chart-controls .agent-org-chart-layout-toggle {
     order: 1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .agent-org-chart-controls .agent-org-chart-layout-toggle__button {
+    justify-content: center;
   }
 
   .agent-org-chart-controls__zoom-label {
