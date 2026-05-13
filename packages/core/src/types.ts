@@ -1860,9 +1860,18 @@ export interface GlobalSettings {
    *  verbose `detail` payload is omitted to reduce log size/noise. Distinct
    *  from `persistAgentThinkingLog`, which controls `thinking` rows. */
   persistAgentToolOutput?: boolean;
-  /** When true, persist `thinking` log entries from agent reasoning deltas.
-   *  Default: false (suppressed). This only affects persisted `thinking` rows
-   *  and does not change normal assistant text/tool output behavior. */
+  /** When true, persist `thinking` log entries from agent reasoning deltas for
+   *  permanent (non-ephemeral) agents. Default: false (suppressed). */
+  persistAgentThinkingLogPermanent?: boolean;
+  /** When true, persist `thinking` log entries from agent reasoning deltas for
+   *  ephemeral / task-worker / spawned agents. Default: false (suppressed). */
+  persistAgentThinkingLogEphemeral?: boolean;
+  /** @deprecated Use `persistAgentThinkingLogPermanent` and
+   *  `persistAgentThinkingLogEphemeral` instead.
+   *
+   *  Legacy fallback: when explicitly set and one of the granular fields is
+   *  undefined, this value seeds that undefined granular kind at read time.
+   *  Default: false (suppressed). */
   persistAgentThinkingLog?: boolean;
   /** Research defaults shared across all projects.
    * Project settings may override these via `researchSettings`. */
@@ -2557,6 +2566,7 @@ export {
   isGlobalOnlySettingsKey,
   isGlobalSettingsKey,
   isProjectSettingsKey,
+  resolvePersistAgentThinkingLog,
 } from "./settings-schema.js";
 
 export interface BoardConfig {

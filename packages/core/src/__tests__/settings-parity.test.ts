@@ -62,11 +62,19 @@ describe("settings key parity", () => {
     expect(isGlobalSettingsKey("persistAgentThinkingLog")).toBe(true);
     expect(isProjectSettingsKey("persistAgentThinkingLog")).toBe(false);
     expect(isGlobalOnlySettingsKey("persistAgentThinkingLog")).toBe(true);
+    expect(isGlobalSettingsKey("persistAgentThinkingLogPermanent")).toBe(true);
+    expect(isProjectSettingsKey("persistAgentThinkingLogPermanent")).toBe(false);
+    expect(isGlobalOnlySettingsKey("persistAgentThinkingLogPermanent")).toBe(true);
+    expect(isGlobalSettingsKey("persistAgentThinkingLogEphemeral")).toBe(true);
+    expect(isProjectSettingsKey("persistAgentThinkingLogEphemeral")).toBe(false);
+    expect(isGlobalOnlySettingsKey("persistAgentThinkingLogEphemeral")).toBe(true);
     expect(isGlobalSettingsKey("researchSettings")).toBe(false);
   });
 
   it("defaults persisted thinking logs to disabled", () => {
     expect(DEFAULT_GLOBAL_SETTINGS.persistAgentThinkingLog).toBe(false);
+    expect(DEFAULT_GLOBAL_SETTINGS.persistAgentThinkingLogPermanent).toBe(false);
+    expect(DEFAULT_GLOBAL_SETTINGS.persistAgentThinkingLogEphemeral).toBe(false);
   });
 
   it("includes heartbeatMultiplier in project defaults", () => {
