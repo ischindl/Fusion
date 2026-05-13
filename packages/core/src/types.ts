@@ -4639,6 +4639,12 @@ export interface AgentHeartbeatConfig {
    * Permanent agents only — ignored for ephemeral agents. Default: true when unset.
    */
   allowParallelExecution?: boolean;
+  /**
+   * When true, timer-triggered heartbeats are skipped while the agent has no currently assigned
+   * task (`agent.taskId` is unset). Assignment and on-demand triggers are unaffected.
+   * Default: false (timer fires regardless of assignment).
+   */
+  skipHeartbeatWhenIdle?: boolean;
 }
 
 /** Per-agent budget configuration, stored in agent.runtimeConfig.budgetConfig */
