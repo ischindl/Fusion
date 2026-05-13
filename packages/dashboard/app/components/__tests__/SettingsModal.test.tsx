@@ -3639,6 +3639,45 @@ describe("SettingsModal", () => {
       expect(screen.getByText(/Open Authentication Settings/i)).toBeInTheDocument();
     });
 
+    it("keeps default max sources outside advanced details and groups provider controls", async () => {
+      renderModal();
+      await waitForSettingsModalReady();
+      await openResearchGlobalSection();
+
+      const details = screen.getByText(/Advanced — external search providers/i).closest("details");
+      const maxSourcesInput = screen.getByLabelText("Default Max Sources Per Run");
+      expect(details).toBeTruthy();
+      expect(maxSourcesInput.closest("details")).toBeNull();
+      expect(details).not.toContainElement(maxSourcesInput);
+
+      const builtInRadio = screen.getByLabelText(/Built-in \(uses agent web tools\)/i);
+      const providerGroup = builtInRadio.closest(".settings-research-provider-group");
+      expect(providerGroup).toBeTruthy();
+      expect(providerGroup).toContainElement(details);
+      expect(providerGroup).toContainElement(screen.getByText(/No API key required\./i));
+    });
+
+    it("groups project limits fields in one grid and keeps validation error visible", async () => {
+      renderModal();
+      await waitForSettingsModalReady();
+      await openResearchProjectSection();
+
+      const maxConcurrent = screen.getByLabelText("Max Concurrent Runs");
+      const maxSources = screen.getByLabelText("Max Sources Per Run");
+      const maxDuration = screen.getByLabelText("Max Duration (ms)");
+      const requestTimeout = screen.getByLabelText("Request Timeout (ms)");
+
+      const limitsGrid = maxConcurrent.closest(".settings-research-limits-grid");
+      expect(limitsGrid).toBeTruthy();
+      expect(maxSources.closest(".settings-research-limits-grid")).toBe(limitsGrid);
+      expect(maxDuration.closest(".settings-research-limits-grid")).toBe(limitsGrid);
+      expect(requestTimeout.closest(".settings-research-limits-grid")).toBe(limitsGrid);
+
+      fireEvent.change(maxConcurrent, { target: { value: "0" } });
+      await userEvent.click(screen.getByText("Save"));
+      expect(await screen.findByText("Research max concurrent runs must be at least 1.")).toBeInTheDocument();
+    });
+
     it("shows missing credentials warning and routes CTA to Authentication", async () => {
       mockFetchSettings.mockResolvedValueOnce({
         ...defaultSettings,
