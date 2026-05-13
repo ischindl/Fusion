@@ -970,14 +970,16 @@ function TaskCardComponent({
     const taskInfo = task.prInfo;
     const taskTimestamp = task.prInfo?.lastCheckedAt ?? task.updatedAt;
 
-    // Compare all three sources and pick the freshest
-    let bestData = pickPreferredBadge<PrInfo>(wsData, wsTimestamp, taskInfo, taskTimestamp);
-    const bestTimestamp = wsTimestamp && wsTimestamp >= taskTimestamp ? wsTimestamp : taskTimestamp;
+    let bestData = taskInfo;
+    let bestTimestamp = taskTimestamp;
 
-    if (batchInfo && batchTimestamp) {
-      if (!bestTimestamp || batchTimestamp > bestTimestamp) {
-        bestData = batchInfo;
-      }
+    if (wsData && (!bestTimestamp || (wsTimestamp != null && wsTimestamp >= bestTimestamp))) {
+      bestData = wsData;
+      bestTimestamp = wsTimestamp ?? bestTimestamp;
+    }
+
+    if (batchInfo && (!bestTimestamp || (batchTimestamp != null && batchTimestamp >= bestTimestamp))) {
+      bestData = batchInfo;
     }
 
     return bestData;
@@ -991,14 +993,16 @@ function TaskCardComponent({
     const taskInfo = task.issueInfo;
     const taskTimestamp = task.issueInfo?.lastCheckedAt ?? task.updatedAt;
 
-    // Compare all three sources and pick the freshest
-    let bestData = pickPreferredBadge<IssueInfo>(wsData, wsTimestamp, taskInfo, taskTimestamp);
-    const bestTimestamp = wsTimestamp && wsTimestamp >= taskTimestamp ? wsTimestamp : taskTimestamp;
+    let bestData = taskInfo;
+    let bestTimestamp = taskTimestamp;
 
-    if (batchInfo && batchTimestamp) {
-      if (!bestTimestamp || batchTimestamp > bestTimestamp) {
-        bestData = batchInfo;
-      }
+    if (wsData && (!bestTimestamp || (wsTimestamp != null && wsTimestamp >= bestTimestamp))) {
+      bestData = wsData;
+      bestTimestamp = wsTimestamp ?? bestTimestamp;
+    }
+
+    if (batchInfo && (!bestTimestamp || (batchTimestamp != null && batchTimestamp >= bestTimestamp))) {
+      bestData = batchInfo;
     }
 
     return bestData;

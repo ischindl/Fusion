@@ -9,12 +9,16 @@ export function pickPreferredBadge<T extends { lastCheckedAt?: string }>(
   taskValue: T | undefined,
   taskTimestamp: string | undefined,
 ): T | undefined {
-  if (liveValue === undefined || !liveTimestamp) {
+  if (liveValue == null) {
     return taskValue;
   }
 
+  if (!liveTimestamp) {
+    return taskValue ?? liveValue;
+  }
+
   if (!taskTimestamp || liveTimestamp >= taskTimestamp) {
-    return liveValue ?? undefined;
+    return liveValue;
   }
 
   return taskValue;

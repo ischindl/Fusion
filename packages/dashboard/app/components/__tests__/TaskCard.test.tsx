@@ -31,6 +31,22 @@ vi.mock("../../hooks/useTaskDiffStats", () => ({
   useTaskDiffStats: (...args: any[]) => useTaskDiffStatsMock(...args),
 }));
 
+const badgeUpdatesMock = new Map<string, any>();
+const subscribeToBadgeMock = vi.fn();
+const unsubscribeFromBadgeMock = vi.fn();
+vi.mock("../../hooks/useBadgeWebSocket", () => ({
+  useBadgeWebSocket: () => ({
+    badgeUpdates: badgeUpdatesMock,
+    isConnected: true,
+    subscribeToBadge: subscribeToBadgeMock,
+    unsubscribeFromBadge: unsubscribeFromBadgeMock,
+  }),
+}));
+
+vi.mock("../../hooks/useBatchBadgeFetch", () => ({
+  getFreshBatchData: vi.fn(() => null),
+}));
+
 // Mock the api module
 vi.mock("../../api", () => ({
   fetchTaskDetail: vi.fn(),
@@ -90,6 +106,9 @@ const highFanout = {
 afterEach(() => {
   vi.useRealTimers();
   useTaskDiffStatsMock.mockReturnValue({ stats: null, loading: false });
+  badgeUpdatesMock.clear();
+  subscribeToBadgeMock.mockReset();
+  unsubscribeFromBadgeMock.mockReset();
 });
 
 describe("TaskCard", () => {
@@ -277,6 +296,31 @@ describe("TaskCard", () => {
 
     fireEvent.click(screen.getByRole("link", { name: "#42" }));
     expect(onOpenDetail).not.toHaveBeenCalled();
+  });
+
+  it("renders GitHub badge from live websocket data even when task payload has no badge fields", () => {
+    badgeUpdatesMock.set("default:FN-001", {
+      prInfo: {
+        url: "https://github.com/owner/repo/pull/77",
+        number: 77,
+        status: "open",
+        title: "Live PR",
+        headBranch: "feature/live",
+        baseBranch: "main",
+        commentCount: 0,
+      },
+      timestamp: "2026-05-13T12:00:00.000Z",
+    });
+
+    render(
+      <TaskCard
+        task={makeTask({ column: "in-review", prInfo: undefined, issueInfo: undefined })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "#77" })).toBeDefined();
   });
 
   it("clicking issue badge text does not open the task detail modal", () => {

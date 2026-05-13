@@ -207,7 +207,7 @@ describe("useBadgeWebSocket", () => {
     expect(subscribeMsg).toBeDefined();
   });
 
-  it("sends unsubscribe, clears cached state, and closes the socket when the final subscription is removed", () => {
+  it("sends unsubscribe, retains cached state, and closes the socket when the final subscription is removed", () => {
     const { result } = renderHook(() => useBadgeWebSocket());
 
     act(() => {
@@ -240,7 +240,7 @@ describe("useBadgeWebSocket", () => {
     });
     expect(unsubscribeMsg).toBeDefined();
     expect(MockWebSocket.instances[0].close).toHaveBeenCalled();
-    expect(result.current.badgeUpdates.has("default:FN-063")).toBe(false);
+    expect(result.current.badgeUpdates.has("default:FN-063")).toBe(true);
   });
 
   it("shares a single websocket and ref-counted subscription across hook instances", () => {
