@@ -2218,6 +2218,15 @@ describe("MissionManager", () => {
         hasConversation: true,
       },
       {
+        id: "draft-generating",
+        title: "Draft generating",
+        status: "generating",
+        projectId: null,
+        createdAt: "2026-05-12T00:06:00.000Z",
+        updatedAt: "2026-05-12T00:09:00.000Z",
+        hasConversation: true,
+      },
+      {
         id: "draft-error",
         title: "Draft with error",
         status: "error",
@@ -2233,18 +2242,27 @@ describe("MissionManager", () => {
 
     expect(await screen.findByText("Drafts")).toBeInTheDocument();
     expect(screen.getByText("Draft awaiting input")).toBeInTheDocument();
+    expect(screen.getByText("Draft generating")).toBeInTheDocument();
     expect(screen.getByText("Draft with error")).toBeInTheDocument();
-    expect(screen.getByText("Awaiting input")).toBeInTheDocument();
-    expect(screen.getByText("Needs retry")).toBeInTheDocument();
+
+    const statusCases = [
+      ["Draft awaiting input", "Resume interview", "Resume", false],
+      ["Draft generating", "Generating plan", "Generating…", true],
+      ["Draft with error", "Retry interview", "Retry", false],
+    ] as const;
+
+    for (const [title, actionLabel, buttonText, disabled] of statusCases) {
+      const row = screen.getByText(title).closest(".mission-list__item");
+      expect(row).not.toBeNull();
+      const actionButton = within(row!).getByRole("button", { name: actionLabel });
+      expect(actionButton).toBeInTheDocument();
+      expect(within(row!).getByText(buttonText)).toBeInTheDocument();
+      expect(actionButton).toHaveProperty("disabled", disabled);
+      expect(within(row!).getByRole("button", { name: "Discard draft" })).toBeInTheDocument();
+      expect(within(row!).getByText("Discard")).toBeInTheDocument();
+    }
 
     const awaitingRow = screen.getByText("Draft awaiting input").closest(".mission-list__item");
-    const errorRow = screen.getByText("Draft with error").closest(".mission-list__item");
-    expect(awaitingRow).not.toBeNull();
-    expect(errorRow).not.toBeNull();
-    expect(within(awaitingRow!).getByRole("button", { name: "Resume interview" })).toBeInTheDocument();
-    expect(within(awaitingRow!).getByRole("button", { name: "Discard draft" })).toBeInTheDocument();
-    expect(within(errorRow!).getByRole("button", { name: "Retry interview" })).toBeInTheDocument();
-
     fireEvent.click(within(awaitingRow!).getByRole("button", { name: "Discard draft" }));
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
 
@@ -2253,6 +2271,39 @@ describe("MissionManager", () => {
       expect(screen.queryByText("Draft awaiting input")).not.toBeInTheDocument();
     });
   });
+
+  it.each([
+    ["awaiting_input", "Resume interview", "Resume", false],
+    ["generating", "Generating plan", "Generating…", true],
+    ["error", "Retry interview", "Retry", false],
+  ] as const)(
+    "renders draft action copy for %s status",
+    async (status, actionLabel, visibleLabel, disabled) => {
+      mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
+        {
+          id: `draft-${status}`,
+          title: `Draft ${status}`,
+          status,
+          projectId: null,
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:05:00.000Z",
+          hasConversation: true,
+        },
+      ]);
+      globalThis.fetch = createFetchMock();
+
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      const row = await screen.findByText(`Draft ${status}`);
+      const item = row.closest(".mission-list__item");
+      expect(item).not.toBeNull();
+      const actionButton = within(item!).getByRole("button", { name: actionLabel });
+      expect(actionButton).toHaveProperty("disabled", disabled);
+      expect(within(item!).getByText(visibleLabel)).toBeInTheDocument();
+      expect(within(item!).getByRole("button", { name: "Discard draft" })).toBeInTheDocument();
+      expect(within(item!).getByText("Discard")).toBeInTheDocument();
+    },
+  );
 
   it("FN-4247: renders Drafts group above standard missions", async () => {
     mockFetchMissionInterviewDrafts.mockResolvedValueOnce([
@@ -2353,6 +2404,16 @@ describe("MissionManager", () => {
     expect(await screen.findByText("Drafts")).toBeInTheDocument();
     expect(screen.getByText("Draft only mission")).toBeInTheDocument();
     expect(screen.queryByText("No missions yet")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty mission state when there are no missions and no drafts", async () => {
+    mockFetchMissionInterviewDrafts.mockResolvedValueOnce([]);
+    globalThis.fetch = createFetchMockWithHealth([], {});
+
+    render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+    expect(await screen.findByText("No missions yet")).toBeInTheDocument();
+    expect(screen.queryByText("Drafts")).not.toBeInTheDocument();
   });
 
   it("logs a warning when pending interview session fetch fails", async () => {
