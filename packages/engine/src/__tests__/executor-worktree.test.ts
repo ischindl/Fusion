@@ -862,6 +862,44 @@ describe("TaskExecutor worktree recovery", () => {
     );
   });
 
+  it("FN-4397 tripwire pauses on 6th branch conflict and suppresses additional recovery-required agent logs", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const conflictError = new BranchConflictError({
+      branchName: "fusion/fn-050",
+      conflictingWorktreePath: "/tmp/test/.worktrees/green-sage",
+      existingTipSha: "abc123def456",
+      strandedCommits: [],
+      startPoint: "HEAD",
+      recommendedAction: "Reclaim the existing task branch/worktree or explicitly discard prior work before retrying.",
+    });
+
+    const handleSpy = vi.spyOn(executor as any, "handleBranchConflict").mockImplementation(async () => {
+      await store.appendAgentLog("FN-050", "Branch conflict recovery required", "tool_error", "mock", "executor");
+      return "sticky";
+    });
+    vi.spyOn(executor as any, "createWorktree").mockRejectedValue(conflictError);
+
+    for (let i = 0; i < 6; i += 1) {
+      await executor.execute(makeTask());
+    }
+
+    expect(handleSpy).toHaveBeenCalledTimes(5);
+    const tripwireLogCall = vi.mocked(store.logEntry).mock.calls.find((call) =>
+      call[0] === "FN-050" && String(call[1]).includes("Branch conflict tripwire fired after 6 events"),
+    );
+    expect(tripwireLogCall).toBeDefined();
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-050",
+      expect.objectContaining({
+        status: "failed",
+        paused: true,
+        pausedReason: "branch-conflict-tripwire",
+      }),
+    );
+    expect(store.appendAgentLog).toHaveBeenCalledTimes(5);
+  });
+
   it("falls back to default base and clears task.executionStartBranch when the configured base ref is missing (FN-2165)", async () => {
     const store = createMockStore();
 

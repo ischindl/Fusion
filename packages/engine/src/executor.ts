@@ -747,6 +747,8 @@ export class TaskExecutor {
   private spawnedAgents = new Map<string, Set<string>>();
   /** Per-task baseline of session stats used for delta persistence across repeated updates. */
   private tokenUsageBaselines = new Map<string, { inputTokens: number; outputTokens: number; cachedTokens: number; totalTokens: number }>();
+  /** In-memory branch conflict error counters per task for tripwire protection. */
+  private branchConflictErrorCount = new Map<string, number>();
   /** One-shot watchdogs for completed tasks that should have transitioned to in-review. */
   private completedTaskWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
   /** One-shot watchdogs for workflow reruns that should have bounced back to in-progress. */
@@ -3947,6 +3949,27 @@ export class TaskExecutor {
           });
           // Fall through to terminal failure marking
         } else if (isBranchConflictError(err)) {
+          const conflictCount = (this.branchConflictErrorCount.get(task.id) ?? 0) + 1;
+          this.branchConflictErrorCount.set(task.id, conflictCount);
+
+          if (conflictCount > this.BRANCH_CONFLICT_TRIPWIRE_THRESHOLD) {
+            const details = [
+              `branch=${err.branchName}`,
+              `worktree=${err.conflictingWorktreePath}`,
+              `existingTipSha=${err.existingTipSha}`,
+              `startPoint=${err.startPoint}`,
+            ].join(" ");
+            const tripwireMessage = `Branch conflict tripwire fired after ${conflictCount} events (threshold ${this.BRANCH_CONFLICT_TRIPWIRE_THRESHOLD}). ${details}`;
+            await this.store.logEntry(task.id, `[recovery] ${tripwireMessage}`, undefined, this.currentRunContext);
+            await this.store.updateTask(task.id, {
+              status: "failed",
+              error: tripwireMessage,
+              paused: true,
+              pausedReason: "branch-conflict-tripwire",
+            });
+            return;
+          }
+
           let outcome: "retry" | "reclaimed" | "sticky" = "sticky";
           for (let attempt = 1; attempt <= this.MAX_AUTO_RECOVERY_ATTEMPTS; attempt += 1) {
             outcome = await this.handleBranchConflict(task, err);
@@ -4053,6 +4076,15 @@ export class TaskExecutor {
       // State is in-memory and per-run — should not persist across attempts.
       this.loopRecoveryState.delete(task.id);
       this.tokenUsageBaselines.delete(task.id);
+
+      if (taskDone) {
+        this.branchConflictErrorCount.delete(task.id);
+      } else {
+        const latestTask = await this.store.getTask(task.id);
+        if (latestTask.column === "done" || latestTask.column === "archived") {
+          this.branchConflictErrorCount.delete(task.id);
+        }
+      }
 
       // Requeue stuck-killed task AFTER this.executing is cleared.
       // This prevents the race where the scheduler re-dispatches the task
@@ -6378,6 +6410,7 @@ and show an appropriate message to the user.\`
   }
 
   private readonly MAX_AUTO_RECOVERY_ATTEMPTS = 3;
+  private readonly BRANCH_CONFLICT_TRIPWIRE_THRESHOLD = 5;
 
   private async reclaimExistingWorktree(
     task: Task,
