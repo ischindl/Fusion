@@ -19,7 +19,7 @@
  * lookup on creation, the on-disk fallback on completion, and the startup
  * sweep here close that gap.
  */
-import type { AgentStore, AgentState, Agent, TaskStore, Task } from "@fusion/core";
+import type { AgentStore, AgentState, Agent, TaskStore, Task, Settings } from "@fusion/core";
 import { isEphemeralAgent } from "@fusion/core";
 
 export interface TaskOwner {
@@ -43,6 +43,7 @@ export interface EphemeralWorkerManagerOptions {
    * don't race the executor on the same agentId.
    */
   isDeletionPendingExternal?: (agentId: string) => boolean;
+  getSettings?: () => Promise<Pick<Settings, "ephemeralAgentsEnabled">>;
 }
 
 const TERMINAL_TASK_COLUMNS = new Set<Task["column"]>(["done", "archived"]);
@@ -52,6 +53,7 @@ export class EphemeralWorkerManager {
   private readonly taskStore: TaskStore;
   private readonly log: EphemeralWorkerLogger;
   private readonly isDeletionPendingExternal: (agentId: string) => boolean;
+  private readonly getSettings: () => Promise<Pick<Settings, "ephemeralAgentsEnabled">>;
 
   /** taskId → owner. In-memory only; on-disk fallback covers restart gaps. */
   private readonly taskAgentMap = new Map<string, TaskOwner>();
@@ -65,6 +67,7 @@ export class EphemeralWorkerManager {
     this.taskStore = options.taskStore;
     this.log = options.logger;
     this.isDeletionPendingExternal = options.isDeletionPendingExternal ?? (() => false);
+    this.getSettings = options.getSettings ?? (async () => ({ ephemeralAgentsEnabled: true }));
   }
 
   // ── public surface ───────────────────────────────────────────────────────
@@ -123,6 +126,14 @@ export class EphemeralWorkerManager {
         } catch (delErr) {
           this.log.warn(`Failed to delete stale ephemeral worker ${existing.id} for ${task.id}:`, delErr);
         }
+      }
+
+      const settings = await this.getSettings();
+      if (settings.ephemeralAgentsEnabled === false) {
+        this.log.warn(
+          `Task ${task.id} has no permanent agent assignment; ephemeralAgentsEnabled=false — refusing to spawn ephemeral worker`,
+        );
+        return null;
       }
 
       const agent = await this.agentStore.createAgent({

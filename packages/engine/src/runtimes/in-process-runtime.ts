@@ -530,6 +530,10 @@ export class InProcessRuntime
             taskStore: this.taskStore,
             logger: runtimeLog,
             isDeletionPendingExternal: (agentId) => this.executor?.isEphemeralDeletionPending(agentId) ?? false,
+            getSettings: async () => {
+              const settings = await this.taskStore.getSettings();
+              return { ephemeralAgentsEnabled: settings.ephemeralAgentsEnabled };
+            },
           });
         }
         if (this.workerManager) {

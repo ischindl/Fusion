@@ -754,6 +754,30 @@ describe("InProcessRuntime", () => {
       expect(assignTaskSpy.mock.invocationCallOrder[0]).toBeLessThan(updateStateSpy.mock.invocationCallOrder[0]);
     }, 30000);
 
+    it("does not spawn runtime task-worker agents when ephemeral agents are disabled", async () => {
+      mockTaskStoreSettings.ephemeralAgentsEnabled = false;
+      await runtime.start();
+
+      const store = getAgentStore(runtime);
+      const createAgentSpy = vi.spyOn(store, "createAgent");
+      const warnSpy = vi.spyOn(runtimeLog, "warn");
+
+      const executorOptions = mockExecutorCtor.mock.calls.at(-1)?.[0] as {
+        onStart?: (task: Task, worktreePath: string) => void;
+      };
+      executorOptions.onStart?.({ id: "FN-1663" } as Task, join(testDir, "worktree-FN-1663"));
+
+      await vi.waitFor(() => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Task FN-1663 has no permanent agent assignment; ephemeralAgentsEnabled=false"),
+        );
+      });
+
+      const agents = await store.listAgents({ includeEphemeral: true });
+      expect(agents.some((agent: Agent) => agent.name === "executor-FN-1663")).toBe(false);
+      expect(createAgentSpy).not.toHaveBeenCalledWith(expect.objectContaining({ name: "executor-FN-1663" }));
+    }, 30000);
+
     it("falls back to runtime task-worker when assignedAgentId points to ephemeral agent", async () => {
       await runtime.start();
 
