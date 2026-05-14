@@ -1,5 +1,10 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  ExperimentFinalizeBranchExistsError,
+  ExperimentFinalizeCherryPickConflictError,
+  ExperimentFinalizeMergeBaseError,
+} from "./finalize-types.js";
 
 const execAsync = promisify(exec);
 const GIT_TIMEOUT_MS = 30_000;
@@ -13,6 +18,13 @@ export interface GitOps {
   stashPush(message: string): Promise<string | null>;
   stashPop(ref: string): Promise<void>;
   statusPorcelain(): Promise<string>;
+  mergeBase(refA: string, refB: string): Promise<string>;
+  branchExists(name: string): Promise<boolean>;
+  createBranch(name: string, startPoint: string): Promise<void>;
+  cherryPick(commit: string): Promise<void>;
+  checkout(ref: string): Promise<void>;
+  currentBranch(): Promise<string | null>;
+  deleteBranch(name: string, opts?: { force?: boolean }): Promise<void>;
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string> {
@@ -61,6 +73,59 @@ export function defaultGitOps(cwd: string): GitOps {
     },
     async statusPorcelain() {
       return await runGit(cwd, ["status", "--porcelain"]);
+    },
+    async mergeBase(refA: string, refB: string) {
+      try {
+        return await runGit(cwd, ["merge-base", refA, refB]);
+      } catch (error) {
+        const err = error as Error;
+        throw new ExperimentFinalizeMergeBaseError(`Unable to resolve merge-base for ${refA} and ${refB}: ${err.message}`);
+      }
+    },
+    async branchExists(name: string) {
+      try {
+        await runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`]);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async createBranch(name: string, startPoint: string) {
+      const exists = await this.branchExists(name);
+      if (exists) {
+        throw new ExperimentFinalizeBranchExistsError(`Branch already exists: ${name}`);
+      }
+      await runGit(cwd, ["branch", name, startPoint]);
+    },
+    async cherryPick(commit: string) {
+      try {
+        await runGit(cwd, ["cherry-pick", commit]);
+      } catch (error) {
+        const err = error as Error;
+        try {
+          await runGit(cwd, ["cherry-pick", "--abort"]);
+        } catch {
+          // best effort
+        }
+        throw new ExperimentFinalizeCherryPickConflictError(`Cherry-pick failed for ${commit}`, {
+          groupId: "unknown",
+          commit,
+          stderr: err.message,
+        });
+      }
+    },
+    async checkout(ref: string) {
+      await runGit(cwd, ["checkout", ref]);
+    },
+    async currentBranch() {
+      try {
+        return await runGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+      } catch {
+        return null;
+      }
+    },
+    async deleteBranch(name: string, opts?: { force?: boolean }) {
+      await runGit(cwd, ["branch", opts?.force ? "-D" : "-d", name]);
     },
   };
 }
