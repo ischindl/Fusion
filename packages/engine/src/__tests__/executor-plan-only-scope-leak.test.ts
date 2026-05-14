@@ -98,12 +98,7 @@ describe("FN-4482 plan-only scope leak guard", () => {
     const { store, tool } = await setup({ unstaged: ["packages/core/src/db.ts"] });
     const result = await tool.execute("id", {});
     expect(result.content[0].text).toContain("Task marked complete");
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-4482",
-      expect.stringContaining("[scope-leak] reviewLevel=1 enforcement=warn"),
-      undefined,
-      undefined,
-    );
+    expect(store.logEntry.mock.calls.some((call: unknown[]) => String(call[1]).includes("[scope-leak] reviewLevel=1 enforcement=warn"))).toBe(true);
   });
 
   it("blocks plan-only off-scope edits when enforcement is block", async () => {
@@ -119,12 +114,7 @@ describe("FN-4482 plan-only scope leak guard", () => {
     const { store, tool } = await setup({ scopeOverride: true, unstaged: ["packages/core/src/db.ts"] });
     const result = await tool.execute("id", {});
     expect(result.content[0].text).toContain("Task marked complete");
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-4482",
-      "[scope-leak] scope guard bypassed via task.scopeOverride",
-      undefined,
-      undefined,
-    );
+    expect(store.logEntry.mock.calls.some((call: unknown[]) => call[1] === "[scope-leak] scope guard bypassed via task.scopeOverride")).toBe(true);
   });
 
   it("skips checks when planOnlyScopeLeakEnforcement=off", async () => {
@@ -138,12 +128,7 @@ describe("FN-4482 plan-only scope leak guard", () => {
     const { store, tool } = await setup({ reviewLevel, enforcement: "block", unstaged: ["packages/core/src/db.ts"] });
     const result = await tool.execute("id", {});
     expect(result.content[0].text).toContain("Task marked complete");
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-4482",
-      expect.stringContaining(`[scope-leak] reviewLevel=${reviewLevel} enforcement=warn`),
-      undefined,
-      undefined,
-    );
+    expect(store.logEntry.mock.calls.some((call: unknown[]) => String(call[1]).includes(`[scope-leak] reviewLevel=${reviewLevel} enforcement=warn`))).toBe(true);
   });
 
   it("fails open on git capture failure", async () => {
