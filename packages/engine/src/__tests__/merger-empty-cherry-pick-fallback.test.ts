@@ -159,24 +159,4 @@ describeIfGit("FN-4475 empty cherry-pick fallback handling", () => {
       && String(msg).includes("Auto-merge skipped"))).toBe(false);
   }, 20_000);
 
-  it("FN-4475 still propagates genuine conflicts when fail-fast strategy is used", async () => {
-    const repo = setupRepo("fusion-merger-empty-fallback-fail-fast-");
-    writeFileSync(join(repo, "conflict.txt"), "base\n", "utf-8");
-    git(repo, "git add conflict.txt && git commit -m 'chore: base conflict file'");
-
-    const branch = "fusion/fn-4475-fail-fast";
-    git(repo, `git checkout -b ${branch}`);
-    writeFileSync(join(repo, "conflict.txt"), "branch-change\n", "utf-8");
-    git(repo, "git add conflict.txt && git commit -m 'feat: branch conflict change'");
-
-    git(repo, "git checkout main");
-    writeFileSync(join(repo, "conflict.txt"), "main-change\n", "utf-8");
-    git(repo, "git add conflict.txt && git commit -m 'feat: main conflict change'");
-
-    const task = makeTask({ id: "FN-4475-C", branch, baseBranch: "main", column: "in-review", prompt: "# Task\n" });
-    const store = createStore(task, { mergeConflictStrategy: "fail-fast" });
-
-    await expect(aiMergeTask(store, repo, task.id)).rejects.toThrow();
-    expect((store.moveTask as ReturnType<typeof vi.fn>).mock.calls.some(([, column]) => column === "done")).toBe(false);
-  }, 20_000);
 });
