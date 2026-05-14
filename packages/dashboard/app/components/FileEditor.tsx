@@ -141,7 +141,6 @@ export function FileEditor({
       editorViewRef.current = null;
       view.destroy();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveShowPreview]);
 
   useEffect(() => {
