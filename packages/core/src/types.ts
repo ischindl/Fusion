@@ -1495,8 +1495,24 @@ export interface Task {
   updatedAt: string;
 }
 
+export type RetrySummary = {
+  stuckKill: number;
+  recovery: number;
+  taskDone: number;
+  workflowStep: number;
+  verification: number;
+  postReviewFix: number;
+  mergeConflict: number;
+  branchConflict: number;
+  reviewerContext: number;
+  reviewerFallback: number;
+  total: number;
+};
+
 export interface TaskDetail extends Task {
   prompt: string;
+  /** Derived aggregate of retry counters (computed on read; never persisted). */
+  retrySummary?: RetrySummary;
 }
 
 /** A task candidate from the inbox-lite work selection, with metadata about why it was selected. */
@@ -2548,6 +2564,18 @@ export interface ProjectSettings {
   /** Maximum number of times the stuck-task detector can kill and re-queue a task
    *  before it is marked as permanently failed. Default: 6. */
   maxStuckKills?: number;
+  /** Maximum branch-conflict auto-recovery retries before failing the task.
+   *  Default: 5. */
+  maxBranchConflictRecoveries?: number;
+  /** Maximum reviewer context-limit compact-and-retry attempts before failing.
+   *  Default: 2. */
+  maxReviewerContextRetries?: number;
+  /** Maximum reviewer fallback-model retry attempts before failing.
+   *  Default: 2. */
+  maxReviewerFallbackRetries?: number;
+  /** Master cap across all retry categories before throwing RetryStormError.
+   *  Default: 25. */
+  maxTotalRetriesBeforeFail?: number;
   /** When the stuck-task detector kills and re-queues a task, preserve the
    *  task's step progress (step statuses + currentStep) instead of resetting
    *  every step to `pending`. The worktree and branch are still cleared so

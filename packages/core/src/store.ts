@@ -34,6 +34,7 @@ import { assertProjectRootDir } from "./project-root-guard.js";
 import { generateTaskLineageId, normalizeTaskCommitAssociation } from "./task-lineage.js";
 import { createDistributedTaskIdAllocator, reconcileTaskIdState, resolveLocalNodeId, type DistributedTaskIdAllocator } from "./distributed-task-id.js";
 import { detectStalledReview } from "./stalled-review-detector.js";
+import { computeRetrySummary } from "./retry-summary.js";
 import {
   detectTaskIdIntegrityAnomalies,
   type TaskIdIntegrityReport,
@@ -3188,6 +3189,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
 
       task.stalledReview = detectStalledReview(task, { now: Date.now() });
+      // Derived at read time only; retrySummary is never persisted to SQLite.
+      task.retrySummary = computeRetrySummary(task);
 
       // Sync steps from PROMPT.md if task.steps is empty
       if (task.steps.length === 0) {
@@ -3295,6 +3298,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         }
       }
       task.stalledReview = detectStalledReview(task, { now });
+      // Derived at read time only; retrySummary is never persisted to SQLite.
+      task.retrySummary = computeRetrySummary(task);
 
       // Slim path: aggregate the timed-execution total server-side, then
       // strip the heavy log payload from the wire response. Without this
@@ -3403,6 +3408,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
       task.timedExecutionMs = this.computeTimedExecutionMs(task.log);
       task.stalledReview = detectStalledReview(task, { now });
+      // Derived at read time only; retrySummary is never persisted to SQLite.
+      task.retrySummary = computeRetrySummary(task);
       task.log = [];
       return task;
     });
