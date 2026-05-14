@@ -4,6 +4,43 @@
 
 Fusion uses multiple agent roles for planning, execution, review, and merge workflows.
 
+## Interactive CLI Chat
+
+Use `fn chat` to message an agent from your terminal.
+
+### Synopsis
+
+```bash
+fn chat <agent-id> [message…] [--once] [--non-interactive] [--poll-ms <n>]
+```
+
+### Behavior
+
+- `fn chat <agent-id>` opens an interactive REPL.
+- Each message is stored as a `user-to-agent` MessageStore message from `cli` with `metadata.wakeRecipient=true`.
+- Agent replies are polled from your inbox and printed as they arrive.
+
+### Flags
+
+- `--once` send one message and exit after first reply (or timeout)
+- `--non-interactive` read full stdin to EOF as message body
+- `--poll-ms <n>` override poll interval in milliseconds (default `1000`, or `FUSION_CHAT_POLL_MS`)
+
+### Examples
+
+```bash
+# Interactive chat session
+fn chat agent-abc123
+
+# One-shot message (positional content implies --once)
+fn chat agent-abc123 "status update?"
+
+# Scripted one-shot from stdin
+printf "deploy report" | fn chat agent-abc123 --once --non-interactive
+```
+
+> Replies require a running engine for the same project (for example `fn` dashboard or `fn serve`).
+
 ## Agent Field Parity Matrix
 
 Every first-class editable agent field has a defined create/edit/import/template behavior. This ensures consistent round-tripping across all surfaces.
