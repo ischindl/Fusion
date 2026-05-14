@@ -3258,7 +3258,7 @@ export class Database {
     if (version < 76) {
       this.applyMigration(76, () => {
         this.addColumnIfMissing("workflow_steps", "gateMode", "TEXT NOT NULL DEFAULT 'advisory'");
-        this.db.exec("UPDATE workflow_steps SET gateMode = CASE WHEN mode = 'script' THEN 'gate' ELSE 'advisory' END WHERE gateMode IS NULL OR gateMode = ''");
+        this.db.exec("UPDATE workflow_steps SET gateMode = CASE WHEN mode = 'script' THEN 'gate' ELSE 'advisory' END");
       });
     }
 
