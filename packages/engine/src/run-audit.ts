@@ -92,6 +92,7 @@ export type DatabaseMutationType =
   | "task:pause"
   | "task:unpause"
   | "task:dependency:add"
+  | "task:auto-recover-already-merged"
   | "document:write"
   | "workflow-step:result"
   | "agent:create:requested"
