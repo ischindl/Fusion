@@ -92,6 +92,7 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   persistAgentThinkingLogPermanent: false,
   persistAgentThinkingLogEphemeral: false,
   persistAgentThinkingLog: false,
+  agentMemoryInclusionMode: "full",
   researchGlobalDefaults: {
     searchProvider: undefined,
     synthesisProvider: undefined,
@@ -287,6 +288,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   taskEvaluationFollowUpPolicy: "off",
   taskEvaluationRetention: undefined,
   memoryEnabled: true,
+  agentMemoryInclusionMode: undefined,
   memoryBackendType: "qmd",
   memoryAutoSummarizeEnabled: false,
   memoryAutoSummarizeThresholdChars: 50_000,

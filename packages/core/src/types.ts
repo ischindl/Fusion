@@ -1664,6 +1664,8 @@ export interface ResolvedEvalSettings {
   retentionDays: number;
 }
 
+export type AgentMemoryInclusionMode = "full" | "index" | "off";
+
 export interface GlobalSettings {
   /** Theme mode preference: dark, light, or system (follows OS). Default: "dark". */
   themeMode?: ThemeMode;
@@ -2515,6 +2517,12 @@ export interface ProjectSettings {
   /** Reference to a named script in the scripts map that runs before task execution.
    *  Used for pre-task setup like environment preparation. */
   setupScript?: string;
+  /** Agent memory prompt inclusion mode baseline for all projects/agents.
+   *  - "full": inline full curated memory content into prompts (default)
+   *  - "index": include only a compact memory index, then fetch on demand via memory tools
+   *  - "off": omit agent-memory prompt sections entirely
+   */
+  agentMemoryInclusionMode?: AgentMemoryInclusionMode;
   /** When true, enables periodic AI-powered extraction of insights from working memory
    *  into a distilled long-term memory file. Creates an automation schedule that reads
    *  `.fusion/memory/MEMORY.md`, identifies patterns/principles/pitfalls, and writes to
@@ -2533,6 +2541,12 @@ export interface ProjectSettings {
    *  in their prompts and will not read or write to .fusion/memory/ files.
    *  Default: true (enabled for backward compatibility). */
   memoryEnabled?: boolean;
+  /** Agent memory prompt inclusion mode for this project.
+   *  - "full": inline full curated memory content into prompts
+   *  - "index": include only a compact memory index and fetch details via tools
+   *  - "off": omit agent-memory prompt sections entirely
+   */
+  agentMemoryInclusionMode?: AgentMemoryInclusionMode;
   /** Memory backend type for pluggable memory storage.
    *  Available built-in backends:
    *  - "qmd": QMD (Quantized Memory Distillation) backend using the qmd CLI tool (default)
@@ -4669,6 +4683,10 @@ export interface AgentHeartbeatConfig {
   messageResponseMode?: MessageResponseMode;
   /** Per-agent budget governance configuration. When set, enables budget tracking and enforcement. */
   budgetConfig?: AgentBudgetConfig;
+  /** Per-agent override for memory prompt inclusion mode. */
+  agentMemoryInclusionMode?: AgentMemoryInclusionMode;
+  /** Last resolved memory inclusion mode recorded by engine for transition logging. */
+  lastAgentMemoryInclusionMode?: AgentMemoryInclusionMode;
   /**
    * When true, the engine fires a catch-up heartbeat at server startup if the
    * agent's last heartbeat is older than its interval — i.e., the server was
