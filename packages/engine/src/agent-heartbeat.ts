@@ -30,6 +30,7 @@ import {
   buildPluginPromptSection,
   resolveAgentHeartbeatProcedure,
 } from "./agent-instructions.js";
+import { resolveHeartbeatScopeDisciplineMode, selectHeartbeatProcedure } from "./heartbeat-procedure-resolver.js";
 import { buildPromptLayers, collapsePromptLayers } from "./prompt-layers.js";
 import { heartbeatLog, formatError } from "./logger.js";
 import { acquireTaskWorktree } from "./worktree-acquisition.js";
@@ -2375,9 +2376,23 @@ export class HeartbeatMonitor {
               `Agent ${agentId} no-task heartbeat bypassed configured heartbeatProcedurePath and used HEARTBEAT_NO_TASK_PROCEDURE to keep prompt guidance aligned with ambient tools`,
             );
           }
+          const heartbeatScopeDiscipline = resolveHeartbeatScopeDisciplineMode(heartbeatModelSettings, agent);
+          const resolvedProcedureTemplate = selectHeartbeatProcedure(heartbeatScopeDiscipline, isNoTaskRun, {
+            task: {
+              strict: HEARTBEAT_PROCEDURE_STRICT,
+              lite: HEARTBEAT_PROCEDURE_LITE,
+              off: HEARTBEAT_PROCEDURE_OFF,
+            },
+            noTask: {
+              strict: HEARTBEAT_NO_TASK_PROCEDURE_STRICT,
+              lite: HEARTBEAT_NO_TASK_PROCEDURE_LITE,
+              off: HEARTBEAT_NO_TASK_PROCEDURE_OFF,
+            },
+          });
           const heartbeatProcedureText = shouldOverrideCustomProcedureForNoTaskRun
-            ? HEARTBEAT_NO_TASK_PROCEDURE
-            : (customProcedure ?? (isNoTaskRun ? HEARTBEAT_NO_TASK_PROCEDURE : HEARTBEAT_PROCEDURE));
+            ? resolvedProcedureTemplate
+            : (customProcedure ?? resolvedProcedureTemplate);
+          // Precedence: heartbeatProcedurePath (custom file) > resolved heartbeatScopeDiscipline template > strict default.
           const heartbeatProcedureSource = shouldOverrideCustomProcedureForNoTaskRun
             ? "default-no-task-override"
             : (customProcedure ? "custom" : "default");
@@ -2581,10 +2596,19 @@ export class HeartbeatMonitor {
               systemPrompt: truncatePrompt(systemPromptFinal, 100_000),
               executionPrompt: truncatePrompt(executionPrompt, 100_000),
               heartbeatProcedureSource,
+              contextSnapshot: {
+                ...(run.contextSnapshot ?? {}),
+                heartbeatScopeDiscipline,
+              },
             };
             await this.store.saveRun(runWithPrompts);
             // Update local run reference so completeRun merges correctly
-            Object.assign(run, { systemPrompt: runWithPrompts.systemPrompt, executionPrompt: runWithPrompts.executionPrompt, heartbeatProcedureSource: runWithPrompts.heartbeatProcedureSource });
+            Object.assign(run, {
+              systemPrompt: runWithPrompts.systemPrompt,
+              executionPrompt: runWithPrompts.executionPrompt,
+              heartbeatProcedureSource: runWithPrompts.heartbeatProcedureSource,
+              contextSnapshot: runWithPrompts.contextSnapshot,
+            });
           } catch (promptPersistErr) {
             heartbeatLog.warn(`Failed to persist prompts for ${agentId}/${run.id}: ${promptPersistErr instanceof Error ? promptPersistErr.message : String(promptPersistErr)}`);
           }

@@ -22,6 +22,10 @@ describe("resolveHeartbeatScopeDisciplineMode", () => {
     expect(resolveHeartbeatScopeDisciplineMode(project("invalid" as never), agent(undefined))).toBe("strict");
   });
 
+  it("falls through invalid agent and invalid project modes to strict default", () => {
+    expect(resolveHeartbeatScopeDisciplineMode(project("invalid" as never), agent("invalid"))).toBe("strict");
+  });
+
   it("defaults to strict when unset", () => {
     expect(resolveHeartbeatScopeDisciplineMode(undefined, undefined)).toBe("strict");
   });

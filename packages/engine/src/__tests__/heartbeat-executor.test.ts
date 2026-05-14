@@ -7,6 +7,7 @@ import {
   HEARTBEAT_SYSTEM_PROMPT,
   HEARTBEAT_NO_TASK_SYSTEM_PROMPT,
   HEARTBEAT_PROCEDURE,
+  HEARTBEAT_PROCEDURE_OFF,
   HEARTBEAT_NO_TASK_PROCEDURE,
   getAgentSoulWords,
 } from "../agent-heartbeat.js";
@@ -1144,6 +1145,72 @@ describe("executeHeartbeat", () => {
 
       const savedRun = await store.getRunDetail("agent-001", result.id);
       expect(savedRun?.heartbeatProcedureSource).toBe("default");
+    });
+
+    it("uses lite task-scoped procedure when project heartbeatScopeDiscipline is lite", async () => {
+      const store = createStoreWithAgentForExec({ taskId: "FN-001" });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      mockTaskStore = createMockTaskStore({
+        getSettings: vi.fn().mockResolvedValue({ heartbeatScopeDiscipline: "lite" }),
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      expect(result.status).toBe("completed");
+      const persistedRun = vi.mocked(store.saveRun).mock.calls
+        .map(([arg]) => arg)
+        .find((arg): arg is AgentHeartbeatRun => typeof arg.executionPrompt === "string");
+      expect(persistedRun?.executionPrompt).toContain("Assignment review");
+      expect(persistedRun?.executionPrompt).toContain("Classify scope before acting");
+      expect(persistedRun?.executionPrompt).not.toContain("Per-tick self-check");
+      expect(persistedRun?.contextSnapshot?.heartbeatScopeDiscipline).toBe("lite");
+    });
+
+    it("uses agent runtimeConfig heartbeatScopeDiscipline over project default", async () => {
+      const store = createStoreWithAgentForExec({
+        runtimeConfig: { heartbeatScopeDiscipline: "strict" },
+        taskId: "FN-001",
+      });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      mockTaskStore = createMockTaskStore({
+        getSettings: vi.fn().mockResolvedValue({ heartbeatScopeDiscipline: "lite" }),
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      expect(result.status).toBe("completed");
+      const persistedRun = vi.mocked(store.saveRun).mock.calls
+        .map(([arg]) => arg)
+        .find((arg): arg is AgentHeartbeatRun => typeof arg.executionPrompt === "string");
+      expect(persistedRun?.executionPrompt).toContain("Per-tick self-check");
+      expect(persistedRun?.executionPrompt).toContain("Classify the bound task");
+      expect(persistedRun?.executionPrompt).not.toContain("Assignment review");
+      expect(persistedRun?.contextSnapshot?.heartbeatScopeDiscipline).toBe("strict");
+    });
+
+    it("off mode omits scope-classification guidance", async () => {
+      const store = createStoreWithAgentForExec({ taskId: "FN-001" });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      mockTaskStore = createMockTaskStore({
+        getSettings: vi.fn().mockResolvedValue({ heartbeatScopeDiscipline: "off" }),
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      const result = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      expect(result.status).toBe("completed");
+      const executionPrompt = mockSession.prompt.mock.calls.at(-1)?.[0] as string;
+      expect(executionPrompt).toContain(HEARTBEAT_PROCEDURE_OFF);
+      expect(executionPrompt).not.toContain("Classify scope before acting");
+      expect(executionPrompt).not.toContain("Classify the bound task");
+
+      const savedRun = await store.getRunDetail("agent-001", result.id);
+      expect(savedRun?.contextSnapshot?.heartbeatScopeDiscipline).toBe("off");
     });
 
     it("task-scoped run receives HEARTBEAT_SYSTEM_PROMPT as system prompt", async () => {
@@ -2775,6 +2842,7 @@ describe("executeHeartbeat", () => {
         taskId: "FN-001",
         triggeringCommentIds: ["comment-1"],
         triggeringCommentType: "task",
+        heartbeatScopeDiscipline: "strict",
       });
     });
 
