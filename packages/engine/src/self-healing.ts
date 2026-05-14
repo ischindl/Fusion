@@ -23,7 +23,7 @@ import { createLogger } from "./logger.js";
 import { getRegisteredWorktreePaths, isUsableTaskWorktree, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
 import { extractMissingWorktreePathFromSessionStartFailure, isMissingWorktreeSessionStartFailure, isRecoverableMissingWorktreeReviewFailure } from "./restart-recovery-coordinator.js";
 import { classifyError, extractMissingModulePath, isOperatorActionableAgentError, isStaleWorktreeModuleResolutionError } from "./transient-error-detector.js";
-import { inspectBranchConflict } from "./branch-conflicts.js";
+import { deriveTaskIdFromFusionBranch, inspectBranchConflict } from "./branch-conflicts.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
 
 const log = createLogger("self-healing");
@@ -1412,6 +1412,12 @@ export class SelfHealingManager {
 
       const todoCandidates = await this.store.listTasks({ column: "todo", slim: true });
       const inProgressCandidates = await this.store.listTasks({ column: "in-progress", slim: true });
+      const inProgressByWorktree = new Map<string, string>();
+      for (const inProgressTask of inProgressCandidates) {
+        if (inProgressTask.worktree) {
+          inProgressByWorktree.set(inProgressTask.worktree, inProgressTask.id);
+        }
+      }
       const inReviewPausedCandidates = (await this.store.listTasks({ column: "in-review", slim: true }))
         .filter((task) => task.paused === true && task.pausedReason === "branch-conflict-unrecoverable");
       const candidates = [...todoCandidates, ...inProgressCandidates, ...inReviewPausedCandidates];
@@ -1459,11 +1465,103 @@ export class SelfHealingManager {
             throw inspection.error;
           }
 
+          const wasPausedBranchConflict = task.paused === true && task.pausedReason === "branch-conflict-unrecoverable";
+
+          if (inspection.kind === "fully-subsumed") {
+            const taskIdUpper = task.id.toUpperCase();
+            const branchOwnerTaskId = deriveTaskIdFromFusionBranch(task.branch);
+            const activeOwner = inProgressByWorktree.get(inspection.livePath);
+            const ownedByOtherInProgressTask = Boolean(activeOwner && activeOwner !== task.id);
+            const canAutoReclaimLiveZero =
+              branchOwnerTaskId !== null &&
+              branchOwnerTaskId === taskIdUpper &&
+              !activeTaskIds.has(taskIdUpper) &&
+              !ownedByOtherInProgressTask;
+
+            if (canAutoReclaimLiveZero) {
+              let reclaimedCleanly = false;
+              try {
+                await execAsync(`git worktree remove --force ${JSON.stringify(inspection.livePath)}`, {
+                  cwd: this.options.rootDir,
+                  timeout: 120_000,
+                  maxBuffer: 10 * 1024 * 1024,
+                });
+                await execAsync("git worktree prune", {
+                  cwd: this.options.rootDir,
+                  timeout: 120_000,
+                  maxBuffer: 10 * 1024 * 1024,
+                });
+                await execAsync(`git branch -D ${JSON.stringify(task.branch)}`, {
+                  cwd: this.options.rootDir,
+                  timeout: 120_000,
+                  maxBuffer: 10 * 1024 * 1024,
+                });
+
+                await this.store.updateTask(task.id, {
+                  worktree: null,
+                  branch: null,
+                  paused: false,
+                  pausedReason: undefined,
+                  status: null,
+                  error: null,
+                });
+                await this.store.logEntry(
+                  task.id,
+                  `[recovery] reclaim-live-zero-commits ${task.id} branch=${task.branch} worktree=${inspection.livePath} tip=${inspection.tipSha.slice(0, 12)} reason=zero-unique-commits-vs-main`,
+                );
+
+                if (task.column === "in-review") {
+                  await this.store.moveTask(task.id, "todo", {
+                    moveSource: "engine",
+                    preserveProgress: true,
+                    preserveResumeState: true,
+                  });
+                }
+
+                try {
+                  const auditor = createRunAuditor(this.store, {
+                    runId: generateSyntheticRunId("self-heal", task.id),
+                    agentId: "self-healing",
+                    taskId: task.id,
+                    taskLineageId: task.lineageId,
+                    phase: "reclaim-live-zero-commits",
+                  });
+                  await auditor.git({
+                    type: "branch:auto-reclaim",
+                    target: task.branch,
+                    metadata: {
+                      taskId: task.id,
+                      branch: task.branch,
+                      worktreePath: inspection.livePath,
+                      existingTipSha: inspection.tipSha,
+                      strandedCommitCount: 0,
+                      subsumed: true,
+                      recoveredFromPaused: wasPausedBranchConflict,
+                      previousPausedReason: wasPausedBranchConflict ? task.pausedReason : null,
+                      trigger: "self-healing-sweep-live-zero",
+                    },
+                  });
+                } catch (auditErr: unknown) {
+                  log.warn(`Failed to write branch:auto-reclaim run-audit event for ${task.id}: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`);
+                }
+
+                recovered++;
+                reclaimedCleanly = true;
+              } catch (reclaimErr: unknown) {
+                const reclaimMessage = reclaimErr instanceof Error ? reclaimErr.message : String(reclaimErr);
+                await this.store.logEntry(task.id, `Auto-recovery warning: reclaim-live-zero-commits failed — ${reclaimMessage}`);
+                log.warn(`Failed reclaim-live-zero-commits for ${task.id}: ${reclaimMessage}`);
+              }
+
+              if (reclaimedCleanly) {
+                continue;
+              }
+            }
+          }
+
           const preservedCommitCount = inspection.kind === "fully-subsumed"
             ? 0
             : inspection.taskAttributedCommitCount;
-
-          const wasPausedBranchConflict = task.paused === true && task.pausedReason === "branch-conflict-unrecoverable";
           await this.store.updateTask(task.id, {
             worktree: inspection.livePath,
             branch: task.branch,

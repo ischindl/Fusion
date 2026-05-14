@@ -35,9 +35,9 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     const repoDir = await setupRepo();
     await run("git checkout -b fusion/fn-9001", repoDir);
     await run("git checkout main", repoDir);
-    const livePath = path.join(repoDir, "..", "live-9001");
+    const livePath = path.join(repoDir, "wt-live-9001");
     await run(`git worktree add ${JSON.stringify(livePath)} fusion/fn-9001`, repoDir);
-    const stalePath = path.join(repoDir, "..", "stale-9001");
+    const stalePath = path.join(repoDir, "wt-stale-9001");
     await mkdir(stalePath, { recursive: true });
 
     const result = await inspectBranchConflict({
@@ -63,9 +63,9 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git checkout main", repoDir);
     await run(`git cherry-pick ${branchCommit}`, repoDir);
 
-    const livePath = path.join(repoDir, "..", "live-9001-upstream");
+    const livePath = path.join(repoDir, "wt-live-9001-upstream");
     await run(`git worktree add ${JSON.stringify(livePath)} fusion/fn-9001`, repoDir);
-    const stalePath = path.join(repoDir, "..", "stale-9001-upstream");
+    const stalePath = path.join(repoDir, "wt-stale-9001-upstream");
     await mkdir(stalePath, { recursive: true });
 
     const result = await inspectBranchConflict({
@@ -88,9 +88,9 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git commit -m 'feat(FN-9001): unique' -m 'Fusion-Task-Id: FN-9001'", repoDir);
     await run("git checkout main", repoDir);
 
-    const livePath = path.join(repoDir, "..", "live-9001-unique");
+    const livePath = path.join(repoDir, "wt-live-9001-unique");
     await run(`git worktree add ${JSON.stringify(livePath)} fusion/fn-9001`, repoDir);
-    const stalePath = path.join(repoDir, "..", "stale-9001-unique");
+    const stalePath = path.join(repoDir, "wt-stale-9001-unique");
     await mkdir(stalePath, { recursive: true });
 
     const result = await inspectBranchConflict({
@@ -113,9 +113,9 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git commit -m 'chore: other work'", repoDir);
     await run("git checkout main", repoDir);
 
-    const livePath = path.join(repoDir, "..", "live-other");
+    const livePath = path.join(repoDir, "wt-live-other");
     await run(`git worktree add ${JSON.stringify(livePath)} topic/other`, repoDir);
-    const stalePath = path.join(repoDir, "..", "stale-other");
+    const stalePath = path.join(repoDir, "wt-stale-other");
     await mkdir(stalePath, { recursive: true });
 
     const result = await inspectBranchConflict({
