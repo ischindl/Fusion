@@ -5830,7 +5830,7 @@ describe("SelfHealingManager reclaimSelfOwnedBranchConflicts", () => {
 
     const recovered = await manager.reclaimSelfOwnedBranchConflicts();
     expect(recovered).toBe(1);
-    expect(store.updateTask).toHaveBeenCalledWith("FN-509", expect.objectContaining({ worktree: "/tmp/fn-509", branch: "fusion/fn-509", status: null, paused: false }));
+    expect(store.updateTask).toHaveBeenCalledWith("FN-509", expect.objectContaining({ worktree: null, branch: null, status: null, paused: false }));
     expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         domain: "git",

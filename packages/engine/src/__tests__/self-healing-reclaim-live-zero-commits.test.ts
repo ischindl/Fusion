@@ -72,6 +72,50 @@ describe("self-healing reclaim live zero commits", () => {
     }));
   });
 
+  it("keeps reclaimable conflicts on non-destructive preserve path", async () => {
+    (store.listTasks as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "FN-9001", column: "in-review", checkedOutBy: null, branch: "fusion/fn-9001", worktree: "/tmp/stale", paused: true, pausedReason: "branch-conflict-unrecoverable", status: "failed" },
+      ]);
+    vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValueOnce({
+      kind: "reclaimable",
+      livePath: "/tmp/live",
+      tipSha: "1234567890abcdef",
+      taskAttributedCommitCount: 1,
+      strandedCommits: [{ sha: "abc", subject: "unique" }],
+    } as any);
+
+    const recovered = await manager.reclaimSelfOwnedBranchConflicts();
+
+    expect(recovered).toBe(1);
+    expect(execMock).not.toHaveBeenCalledWith(expect.stringContaining("git worktree remove --force"), expect.anything());
+    expect(execMock).not.toHaveBeenCalledWith(expect.stringContaining("git branch -D"), expect.anything());
+    expect(store.updateTask).toHaveBeenCalledWith("FN-9001", expect.objectContaining({ worktree: "/tmp/live", branch: "fusion/fn-9001" }));
+  });
+
+  it("skips destructive fast-path when another in-progress task owns live worktree", async () => {
+    (store.listTasks as any)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: "FN-9001", column: "in-progress", checkedOutBy: null, branch: "fusion/fn-9001", worktree: "/tmp/stale" },
+        { id: "FN-9002", column: "in-progress", checkedOutBy: null, branch: "fusion/fn-9002", worktree: "/tmp/live" },
+      ])
+      .mockResolvedValueOnce([]);
+    vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValueOnce({
+      kind: "fully-subsumed",
+      livePath: "/tmp/live",
+      tipSha: "1234567890abcdef",
+    } as any);
+
+    const recovered = await manager.reclaimSelfOwnedBranchConflicts();
+
+    expect(recovered).toBe(1);
+    expect(execMock).not.toHaveBeenCalledWith(expect.stringContaining("git worktree remove --force"), expect.anything());
+    expect(store.updateTask).toHaveBeenCalledWith("FN-9001", expect.objectContaining({ worktree: "/tmp/live", branch: "fusion/fn-9001" }));
+  });
+
   it("does not run destructive fast-path for foreign branch names", async () => {
     (store.listTasks as any)
       .mockResolvedValueOnce([])
