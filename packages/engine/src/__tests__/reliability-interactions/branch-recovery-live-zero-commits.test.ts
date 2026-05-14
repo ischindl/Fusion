@@ -16,6 +16,7 @@ vi.mock("node:child_process", async () => {
 });
 
 import { SelfHealingManager } from "../../self-healing.js";
+import { RestartRecoveryCoordinator } from "../../restart-recovery-coordinator.js";
 import * as branchConflicts from "../../branch-conflicts.js";
 import * as worktreePool from "../../worktree-pool.js";
 
@@ -40,6 +41,71 @@ describe("reliability interactions: live-zero reclaim", () => {
     vi.spyOn(worktreePool, "isUsableTaskWorktree").mockResolvedValue(true);
     execMock.mockReset();
     execMock.mockResolvedValue("");
+  });
+
+  it("restart recovery and reclaim sweep converge to todo + null worktree for live-zero case", async () => {
+    const taskState: any = {
+      id: "FN-9100",
+      column: "in-review",
+      checkedOutBy: null,
+      branch: "fusion/fn-9100",
+      worktree: "/tmp/live-9100",
+      status: "failed",
+      error: "Task branch conflict",
+      paused: true,
+      pausedReason: "branch-conflict-unrecoverable",
+      userPaused: false,
+      lineageId: "lin-9100",
+      updatedAt: new Date().toISOString(),
+    };
+
+    const statefulStore = {
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false }),
+      listTasks: vi.fn(async ({ column }: any) => {
+        if (!column) return [taskState];
+        return taskState.column === column ? [taskState] : [];
+      }),
+      getTask: vi.fn(async (id: string) => (id === taskState.id ? taskState : null)),
+      updateTask: vi.fn(async (id: string, patch: any) => {
+        if (id !== taskState.id) return;
+        Object.assign(taskState, patch);
+      }),
+      moveTask: vi.fn(async (id: string, column: string) => {
+        if (id !== taskState.id) return;
+        taskState.column = column;
+      }),
+      logEntry: vi.fn().mockResolvedValue(undefined),
+      recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
+      pauseTask: vi.fn().mockResolvedValue(undefined),
+      checkTaskDoneProgressInvariant: vi.fn().mockResolvedValue({ canMarkDone: false, reason: "no-task-done" }),
+      appendAgentLog: vi.fn().mockResolvedValue(undefined),
+      listTaskAgents: vi.fn().mockResolvedValue([]),
+      getTaskExecutionSession: vi.fn().mockResolvedValue(null),
+      setTaskExecutionSession: vi.fn().mockResolvedValue(undefined),
+      clearTaskExecutionSession: vi.fn().mockResolvedValue(undefined),
+      assignTaskToAgent: vi.fn().mockResolvedValue(undefined),
+      appendTaskExecutionHistory: vi.fn().mockResolvedValue(undefined),
+      setTaskProgress: vi.fn().mockResolvedValue(undefined),
+      setTaskWorkflowRun: vi.fn().mockResolvedValue(undefined),
+      deleteTaskWorkflowRun: vi.fn().mockResolvedValue(undefined),
+      updateTaskWorkflowStep: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const recovery = new RestartRecoveryCoordinator(statefulStore, {
+      resumeOrphaned: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValueOnce({ kind: "fully-subsumed", livePath: "/tmp/live-9100", tipSha: "abc123abc123" } as any);
+
+    await recovery.recoverInterruptedRuns();
+    const healing = new SelfHealingManager(statefulStore, { rootDir: "/tmp/test" });
+    vi.spyOn(worktreePool, "isUsableTaskWorktree").mockResolvedValue(true);
+    const reclaimed = await healing.reclaimSelfOwnedBranchConflicts();
+
+    expect(reclaimed).toBe(1);
+    expect(taskState.column).toBe("todo");
+    expect(taskState.worktree).toBeNull();
+    expect(taskState.branch).toBeNull();
   });
 
   it("skips userPaused tasks", async () => {
