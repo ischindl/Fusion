@@ -49,6 +49,7 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 | [Architecture](./architecture.md) | System architecture, package layout, storage model, and engine execution flow |
 | [Dashboard Real-Time](./dashboard-realtime.md) | Canonical event-stream architecture contract (shared `/api/events` bus + dedicated stream boundaries), with project/node scoping, reconnect/cleanup behavior, and realtime pitfalls |
 | [Storage](./storage.md) | Storage architecture, migration, archive system, and SQLite schema |
+| [DAG Architecture Deliverables](./dag/) | Milestone A DAG architecture documents: requirements matrix, ADR v1, and failure/observability contract |
 | [Dev Server Module Audit](./dev-server-modules.md) | Analysis of parallel dashboard dev-server module families, production wiring, and consolidation guidance |
 | [Beads and Dolt Evaluation for Fusion Node Sync](./beads-dolt-sync-evaluation.md) | Evaluation of Beads and Dolt for node sync, with a recommendation for Fusion-native sync design |
 | [Shared Mesh Replication Protocol](./shared-mesh-protocol.md) | Canonical multi-leader replication/write-coordination contract (versioning, quorum, leases/fencing, queue/replay, reconciliation, and degraded-read semantics) |
