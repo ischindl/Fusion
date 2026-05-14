@@ -432,6 +432,7 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previous.fanout?.totalCount === next.fanout?.totalCount &&
     previous.fanout?.activeTodoCount === next.fanout?.activeTodoCount &&
     previous.fanout?.isHighFanout === next.fanout?.isHighFanout &&
+    previous.fanout?.overlapBlockedTodoCount === next.fanout?.overlapBlockedTodoCount &&
     previous.fanout?.escalation?.blockingAgeMs === next.fanout?.escalation?.blockingAgeMs &&
     areTaskDependenciesEqual(previous.fanout?.dependentIds ?? [], next.fanout?.dependentIds ?? []) &&
     areTaskDependenciesEqual(previous.fanout?.staleBlockedByDependentIds ?? [], next.fanout?.staleBlockedByDependentIds ?? []) &&
@@ -1793,11 +1794,11 @@ function TaskCardComponent({
           {fanout && fanout.totalCount > 0 && (
             <span
               className={`card-fanout-badge${fanout.staleBlockedByDependentIds.length > 0 ? " card-fanout-badge--stale" : ""}`}
-              data-tooltip={`Blocking ${fanout.totalCount} active task(s); ${fanout.activeTodoCount} waiting in todo${fanout.isHighFanout ? ` (high fan-out threshold: ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD})` : ""}${fanout.escalation ? ` · escalated after ${Math.floor(fanout.escalation.blockingAgeMs / 60000)}m in blocking column` : ""}`}
+              data-tooltip={`Blocking ${fanout.totalCount} active task(s); overlap blockedBy queue: ${fanout.overlapBlockedTodoCount} todo${fanout.isHighFanout ? ` (overlap bottleneck threshold: ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD})` : ""}${fanout.escalation ? ` · escalated after ${Math.floor(fanout.escalation.blockingAgeMs / 60000)}m in blocking column` : ""}`}
             >
               <GitBranch size={12} style={{ verticalAlign: "middle" }} />
               <span>
-                {fanout.escalation ? "Escalated" : fanout.isHighFanout ? "High fan-out" : "Blocks"}{" "}
+                {fanout.escalation ? "Escalated overlap" : fanout.isHighFanout ? "Overlap bottleneck" : "Blocks"}{" "}
                 <span className="card-fanout-count">{fanout.totalCount}</span>
                 {fanout.staleBlockedByDependentIds.length > 0 ? ` (${fanout.staleBlockedByDependentIds.length} stale)` : ""}
               </span>

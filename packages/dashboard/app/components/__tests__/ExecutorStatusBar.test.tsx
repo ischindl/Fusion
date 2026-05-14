@@ -69,20 +69,20 @@ describe("ExecutorStatusBar", () => {
       expect(statusBar).not.toHaveTextContent("Escalated");
     });
 
-    it("shows highest escalated blocker summary with stable tie-break ordering", () => {
+    it("shows overlap bottleneck summary with stable tie-break ordering", () => {
       const tasks = [
         makeTask("FN-010", "in-progress", { columnMovedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }),
         makeTask("FN-002", "in-review", { columnMovedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }),
-        makeTask("FN-101", "todo", { dependencies: ["FN-010"] }),
-        makeTask("FN-102", "todo", { dependencies: ["FN-010"] }),
-        makeTask("FN-103", "todo", { dependencies: ["FN-010"] }),
-        makeTask("FN-104", "todo", { dependencies: ["FN-010"] }),
-        makeTask("FN-105", "todo", { dependencies: ["FN-010"] }),
-        makeTask("FN-201", "todo", { dependencies: ["FN-002"] }),
-        makeTask("FN-202", "todo", { dependencies: ["FN-002"] }),
-        makeTask("FN-203", "todo", { dependencies: ["FN-002"] }),
-        makeTask("FN-204", "todo", { dependencies: ["FN-002"] }),
-        makeTask("FN-205", "todo", { dependencies: ["FN-002"] }),
+        makeTask("FN-101", "todo", { blockedBy: "FN-010" }),
+        makeTask("FN-102", "todo", { blockedBy: "FN-010" }),
+        makeTask("FN-103", "todo", { blockedBy: "FN-010" }),
+        makeTask("FN-104", "todo", { blockedBy: "FN-010" }),
+        makeTask("FN-105", "todo", { blockedBy: "FN-010" }),
+        makeTask("FN-201", "todo", { blockedBy: "FN-002" }),
+        makeTask("FN-202", "todo", { blockedBy: "FN-002" }),
+        makeTask("FN-203", "todo", { blockedBy: "FN-002" }),
+        makeTask("FN-204", "todo", { blockedBy: "FN-002" }),
+        makeTask("FN-205", "todo", { blockedBy: "FN-002" }),
       ];
 
       render(
@@ -93,11 +93,11 @@ describe("ExecutorStatusBar", () => {
       );
 
       const statusBar = screen.getByRole("status");
-      expect(statusBar).toHaveTextContent("Escalated");
+      expect(statusBar).toHaveTextContent("Overlap queue");
       expect(statusBar).toHaveTextContent("FN-002 · 5 todo");
     });
 
-    it("does not show escalated summary for ordinary chains below threshold", () => {
+    it("does not show overlap queue summary for ordinary chains below threshold", () => {
       const tasks = [
         makeTask("FN-500", "in-progress"),
         makeTask("FN-501", "todo", { dependencies: ["FN-500"] }),

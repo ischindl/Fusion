@@ -94,18 +94,19 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
 
   const relativeTime = useMemo(() => formatRelativeTime(stats.lastActivityAt), [stats.lastActivityAt]);
 
-  const highestEscalatedBlocker = useMemo(() => {
+  const highestOverlapBlocker = useMemo(() => {
     const fanoutMap = computeBlockerFanoutMap(tasks, {
       staleHighFanoutAgeThresholdMs:
         staleHighFanoutBlockerAgeThresholdMs ?? STALE_HIGH_FANOUT_BLOCKER_AGE_THRESHOLD_MS,
     });
-    const candidates = Array.from(fanoutMap.values())
-      .map((entry) => entry.escalation)
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    const candidates = Array.from(fanoutMap.entries())
+      .map(([blockerId, entry]) => ({ blockerId, entry }))
+      .filter(({ entry }) => entry.isHighFanout)
       .sort((a, b) => {
-        if (b.activeTodoCount !== a.activeTodoCount) return b.activeTodoCount - a.activeTodoCount;
-        if (b.totalActiveCount !== a.totalActiveCount) return b.totalActiveCount - a.totalActiveCount;
-        if (b.blockingAgeMs !== a.blockingAgeMs) return b.blockingAgeMs - a.blockingAgeMs;
+        if (b.entry.overlapBlockedTodoCount !== a.entry.overlapBlockedTodoCount) return b.entry.overlapBlockedTodoCount - a.entry.overlapBlockedTodoCount;
+        const aAge = a.entry.escalation?.blockingAgeMs ?? 0;
+        const bAge = b.entry.escalation?.blockingAgeMs ?? 0;
+        if (bAge !== aAge) return bAge - aAge;
         return a.blockerId.localeCompare(b.blockerId, "en", { numeric: true, sensitivity: "base" });
       });
 
@@ -212,17 +213,17 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
         <span className="executor-status-bar__count">{stats.inReviewCount}</span>
       </div>
 
-      {highestEscalatedBlocker && (
+      {highestOverlapBlocker && (
         <>
           <span className="executor-status-bar__divider" aria-hidden="true" />
           <div className="executor-status-bar__segment executor-status-bar__segment--fanout">
             <span className="executor-status-bar__indicator executor-status-bar__indicator--fanout executor-status-bar__indicator--active" aria-hidden="true" />
-            <span className="executor-status-bar__label">Escalated</span>
+            <span className="executor-status-bar__label">Overlap queue</span>
             <span
               className="executor-status-bar__fanout-summary"
-              title={`Escalated blocker ${highestEscalatedBlocker.blockerId}: ${highestEscalatedBlocker.activeTodoCount} todo waiting (threshold ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD}), ${highestEscalatedBlocker.totalActiveCount} active total`}
+              title={`${highestOverlapBlocker.entry.escalation ? "Escalated" : "Temporary"} overlap bottleneck ${highestOverlapBlocker.blockerId}: ${highestOverlapBlocker.entry.overlapBlockedTodoCount} todo blocked via blockedBy (threshold ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD})`}
             >
-              {highestEscalatedBlocker.blockerId} · {highestEscalatedBlocker.activeTodoCount} todo
+              {highestOverlapBlocker.blockerId} · {highestOverlapBlocker.entry.overlapBlockedTodoCount} todo{highestOverlapBlocker.entry.escalation ? " (escalated)" : ""}
             </span>
           </div>
         </>

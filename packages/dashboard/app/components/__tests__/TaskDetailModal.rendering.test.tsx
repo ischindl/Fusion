@@ -312,6 +312,27 @@ describe("TaskDetailModal", () => {
     });
   });
 
+  it("shows overlap blockedBy summary in Blocking section", () => {
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-B", column: "in-progress" })}
+        tasks={[
+          makeTask({ id: "FN-B", column: "in-progress" }),
+          makeTask({ id: "FN-1", column: "todo", blockedBy: "FN-B" }),
+          makeTask({ id: "FN-2", column: "todo", blockedBy: "FN-B" }),
+        ]}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByText("FN-B is blocking 2 todo task(s) via blockedBy overlap")).toBeInTheDocument();
+  });
+
   it("renders modal wrapper structure and default close control", () => {
     const { container } = render(
       <TaskDetailModal

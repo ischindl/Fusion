@@ -99,6 +99,10 @@ const highFanout = {
   totalCount: 7,
   activeTodoCount: 3,
   dependentIds: ["FN-002", "FN-003"],
+  dependencyDependentIds: [],
+  overlapBlockedDependentIds: ["FN-002", "FN-003"],
+  overlapBlockedActiveCount: 3,
+  overlapBlockedTodoCount: 3,
   staleBlockedByDependentIds: [],
   isHighFanout: true,
 } as const;
@@ -598,7 +602,7 @@ describe("TaskCard", () => {
     rerender(
       <TaskCard
         task={makeTask({ column: "todo" })}
-        fanout={{ totalCount: 0, activeTodoCount: 0, dependentIds: [], staleBlockedByDependentIds: [], isHighFanout: false }}
+        fanout={{ totalCount: 0, activeTodoCount: 0, dependentIds: [], dependencyDependentIds: [], overlapBlockedDependentIds: [], overlapBlockedActiveCount: 0, overlapBlockedTodoCount: 0, staleBlockedByDependentIds: [], isHighFanout: false }}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -611,7 +615,7 @@ describe("TaskCard", () => {
     render(
       <TaskCard
         task={makeTask({ column: "in-progress" })}
-        fanout={{ totalCount: 7, activeTodoCount: 4, dependentIds: ["FN-002"], staleBlockedByDependentIds: [], isHighFanout: false }}
+        fanout={{ totalCount: 7, activeTodoCount: 4, dependentIds: ["FN-002"], dependencyDependentIds: ["FN-002"], overlapBlockedDependentIds: [], overlapBlockedActiveCount: 0, overlapBlockedTodoCount: 0, staleBlockedByDependentIds: [], isHighFanout: false }}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -620,14 +624,14 @@ describe("TaskCard", () => {
     const badge = screen.getByText("Blocks").closest(".card-fanout-badge") as HTMLElement;
     expect(badge).not.toBeNull();
     expect(badge.textContent).toContain("Blocks 7");
-    expect(badge.getAttribute("data-tooltip")).toBe("Blocking 7 active task(s); 4 waiting in todo");
+    expect(badge.getAttribute("data-tooltip")).toContain("overlap blockedBy queue: 0 todo");
   });
 
   it("applies stale fan-out modifier when stale blockedBy dependents exist", () => {
     const { container } = render(
       <TaskCard
         task={makeTask({ column: "in-progress" })}
-        fanout={{ totalCount: 3, activeTodoCount: 1, dependentIds: ["FN-003"], staleBlockedByDependentIds: ["FN-003"], isHighFanout: false }}
+        fanout={{ totalCount: 3, activeTodoCount: 1, dependentIds: ["FN-003"], dependencyDependentIds: [], overlapBlockedDependentIds: ["FN-003"], overlapBlockedActiveCount: 1, overlapBlockedTodoCount: 1, staleBlockedByDependentIds: ["FN-003"], isHighFanout: false }}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -638,7 +642,7 @@ describe("TaskCard", () => {
     expect(badge.textContent).toContain("(1 stale)");
   });
 
-  it("renders high fan-out badge without visible todo suffix while keeping tooltip context", () => {
+  it("renders overlap bottleneck badge without visible todo suffix while keeping tooltip context", () => {
     render(
       <TaskCard
         task={makeTask({ column: "in-progress" })}
@@ -648,11 +652,11 @@ describe("TaskCard", () => {
       />,
     );
 
-    const badge = screen.getByText("High fan-out").closest(".card-fanout-badge") as HTMLElement;
+    const badge = screen.getByText("Overlap bottleneck").closest(".card-fanout-badge") as HTMLElement;
     expect(badge).not.toBeNull();
-    expect(badge.textContent).toContain("High fan-out 7");
+    expect(badge.textContent).toContain("Overlap bottleneck 7");
     expect(badge.textContent).not.toContain("todo)");
-    expect(badge.getAttribute("data-tooltip")).toContain("3 waiting in todo");
+    expect(badge.getAttribute("data-tooltip")).toContain("overlap blockedBy queue: 3 todo");
   });
 
   it("escalates only threshold-crossing fan-out badges", () => {
@@ -663,6 +667,8 @@ describe("TaskCard", () => {
           ...highFanout,
           totalCount: 8,
           activeTodoCount: 5,
+          overlapBlockedTodoCount: 5,
+          overlapBlockedActiveCount: 8,
           dependentIds: ["FN-003"],
           escalation: { blockerId: "FN-001", activeTodoCount: 5, totalActiveCount: 8, blockingAgeMs: 3_600_000 },
         }}
@@ -671,7 +677,7 @@ describe("TaskCard", () => {
       />,
     );
 
-    let badge = screen.getByText("Escalated").closest(".card-fanout-badge") as HTMLElement;
+    let badge = screen.getByText("Escalated overlap").closest(".card-fanout-badge") as HTMLElement;
     expect(badge).not.toBeNull();
     expect(badge.textContent).toContain("Escalated");
     expect(badge.textContent).toContain("8");
@@ -680,7 +686,7 @@ describe("TaskCard", () => {
     rerender(
       <TaskCard
         task={makeTask({ column: "in-progress" })}
-        fanout={{ totalCount: 8, activeTodoCount: 4, dependentIds: ["FN-003"], staleBlockedByDependentIds: [], isHighFanout: false }}
+        fanout={{ totalCount: 8, activeTodoCount: 4, dependentIds: ["FN-003"], dependencyDependentIds: ["FN-003"], overlapBlockedDependentIds: [], overlapBlockedActiveCount: 0, overlapBlockedTodoCount: 0, staleBlockedByDependentIds: [], isHighFanout: false }}
         onOpenDetail={noop}
         addToast={noop}
       />,

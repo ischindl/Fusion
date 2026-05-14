@@ -1894,6 +1894,10 @@ export function TaskDetailContent({
     });
   }, [blockingEntry, tasks]);
 
+  const overlapBlockingSummary = blockingEntry
+    ? `${task.id} is blocking ${blockingEntry.overlapBlockedTodoCount} todo task(s) via blockedBy overlap`
+    : null;
+
   const assignedAgentLabel = assignedAgent?.name ?? task.assignedAgentId ?? null;
   const detailProviders = useMemo(() => {
     const providers: string[] = [];
@@ -3094,6 +3098,11 @@ export function TaskDetailContent({
           </div>
           <div className="detail-deps detail-blocking">
             <h4>Blocking</h4>
+            {blockingEntry && (
+              <div className="detail-empty-inline">
+                {overlapBlockingSummary}
+              </div>
+            )}
             {blockingDependents.length > 0 ? (
               <ul className="detail-dep-list">
                 {blockingDependents.map((dependent) => (
