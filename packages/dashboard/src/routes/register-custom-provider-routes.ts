@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import dns from "node:dns/promises";
+import net from "node:net";
 import type { CustomProvider } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import type { ApiRouteRegistrar } from "./types.js";
@@ -29,8 +31,8 @@ function assertNonEmptyString(value: unknown, fieldName: string): string {
 }
 
 function assertApiType(value: unknown): CustomProvider["apiType"] {
-  if (value !== "openai-compatible" && value !== "anthropic-compatible") {
-    throw badRequest("apiType must be either 'openai-compatible' or 'anthropic-compatible'");
+  if (value !== "openai-compatible" && value !== "anthropic-compatible" && value !== "google-generative-ai") {
+    throw badRequest("apiType must be 'openai-compatible', 'anthropic-compatible', or 'google-generative-ai'");
   }
   return value;
 }
@@ -175,6 +177,42 @@ async function probeProviderModels(
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw badRequest("baseUrl must use http or https");
+  }
+  // SSRF protection: reject private/loopback/link-local hosts
+  const hostname = url.hostname.toLowerCase();
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal")
+  ) {
+    throw badRequest("baseUrl must not be a loopback or private address");
+  }
+  // Resolve hostname to IP and check against private ranges.
+  // If resolution fails, let the fetch attempt proceed naturally.
+  try {
+    const resolved = await dns.lookup(hostname, { all: true });
+    const addresses = resolved.map((a) => a.address);
+    for (const addr of addresses) {
+      if (net.isIP(addr) === 0) continue;
+      const parts = addr.split(".").map(Number);
+      if (parts.length === 4 && !Number.isNaN(parts[0])) {
+        // 127.0.0.0/8
+        if (parts[0] === 127) throw badRequest("baseUrl must not be a loopback or private address");
+        // 10.0.0.0/8
+        if (parts[0] === 10) throw badRequest("baseUrl must not be a loopback or private address");
+        // 172.16.0.0/12
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) throw badRequest("baseUrl must not be a loopback or private address");
+        // 192.168.0.0/16
+        if (parts[0] === 192 && parts[1] === 168) throw badRequest("baseUrl must not be a loopback or private address");
+        // 169.254.0.0/16 (link-local, includes cloud metadata)
+        if (parts[0] === 169 && parts[1] === 254) throw badRequest("baseUrl must not be a loopback or private address");
+      }
+    }
+  } catch {
+    // DNS resolution failed — proceed without SSRF check; the fetch will fail naturally
   }
 
   let modelsUrl: string;
@@ -439,10 +477,13 @@ export const registerCustomProviderRoutes: ApiRouteRegistrar = (ctx) => {
     }
   });
 
-  // NOTE: probe-models must be registered AFTER the :id param routes
-  // so Express does not match "probe-models" as an :id value.
+      // NOTE: probe-models must be registered AFTER the :id param routes
+      // so Express does not match "probe-models" as an :id value.
   router.post("/custom-providers/probe-models", async (req, res) => {
     try {
+      if (!req.body || typeof req.body !== "object") {
+        throw badRequest("request body must be an object");
+      }
       const body = req.body as Record<string, unknown>;
 
       const baseUrl = assertBaseUrl(body.baseUrl);
@@ -451,7 +492,6 @@ export const registerCustomProviderRoutes: ApiRouteRegistrar = (ctx) => {
           ? body.apiKey.trim()
           : undefined;
 
-      // Probe endpoint accepts all three API types
       const rawApiType = body.apiType as string | undefined;
       if (
         rawApiType !== "openai-compatible" &&

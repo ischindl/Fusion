@@ -311,7 +311,7 @@ export interface NotificationProviderConfig {
 export interface CustomProvider {
   id: string;
   name: string;
-  apiType: "openai-compatible" | "anthropic-compatible";
+  apiType: "openai-compatible" | "anthropic-compatible" | "google-generative-ai";
   baseUrl: string;
   apiKey?: string;
   models?: { id: string; name: string }[];

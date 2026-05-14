@@ -239,7 +239,7 @@ describe("custom providers API routes", () => {
     });
 
     expect(res.status).toBe(400);
-    expect(String(res.body.error)).toContain("apiType must be either");
+    expect(String(res.body.error)).toContain("apiType must be");
   });
 
   it("POST /api/custom-providers rejects invalid baseUrl format", async () => {

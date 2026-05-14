@@ -1770,7 +1770,7 @@ export function setLlamaCppEnabled(
 export interface CustomProvider {
   id: string;
   name: string;
-  apiType: "openai-compatible" | "anthropic-compatible";
+  apiType: "openai-compatible" | "anthropic-compatible" | "google-generative-ai";
   baseUrl: string;
   apiKey?: string;
   models?: { id: string; name: string }[];
@@ -1782,7 +1782,9 @@ export async function fetchCustomProviders(): Promise<CustomProviderConfig[] & {
     id: provider.id,
     name: provider.name,
     baseUrl: provider.baseUrl,
-    api: provider.apiType === "anthropic-compatible" ? "anthropic-messages" : "openai-completions",
+    api: provider.apiType === "anthropic-compatible" ? "anthropic-messages"
+      : provider.apiType === "google-generative-ai" ? "google-generative-ai"
+      : "openai-completions",
     apiKey: provider.apiKey,
     models: (provider.models ?? []).map((model) => ({ id: model.id, name: model.name })),
   } satisfies CustomProviderConfig));
@@ -1855,7 +1857,9 @@ export interface CustomProviderConfig {
 }
 
 export function createCustomProvider(config: CustomProviderConfig): Promise<CustomProvider> {
-  const apiType = config.api === "anthropic-messages" ? "anthropic-compatible" : "openai-compatible";
+  const apiType = config.api === "anthropic-messages" ? "anthropic-compatible"
+    : config.api === "google-generative-ai" ? "google-generative-ai"
+    : "openai-compatible";
   return addCustomProvider({
     name: config.name?.trim() || config.id,
     apiType,
@@ -1870,8 +1874,7 @@ export function createCustomProvider(config: CustomProviderConfig): Promise<Cust
 
 /**
  * Probe a custom provider's /models endpoint to discover available models.
- * Only works for OpenAI-compatible providers (the /models endpoint is an
- * OpenAI convention). Returns the list of models found at the provider.
+ * Supports OpenAI-compatible, Anthropic-compatible, and Google Generative AI providers.
  */
 export interface ProbeModelResult {
   id: string;

@@ -13,7 +13,7 @@ import "./CustomProvidersSection.css";
 
 type ProviderApiType = CustomProvider["apiType"];
 
-const API_TYPES: ProviderApiType[] = ["openai-compatible", "anthropic-compatible"];
+const API_TYPES: ProviderApiType[] = ["openai-compatible", "anthropic-compatible", "google-generative-ai"];
 
 type LegacyProvider = {
   id: string;
