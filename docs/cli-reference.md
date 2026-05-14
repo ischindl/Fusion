@@ -494,7 +494,7 @@ fn task delete FN-001 --force
 
 ### Branch conflict recovery
 
-Use `fn task branch-recovery` when executor branch allocation fails because the canonical task branch is already checked out elsewhere. By default, the command lists every recovery candidate for the task, including the branch tip SHA, attached worktree path (if any), and stranded commit subjects that are not reachable from the current run start point.
+Use `fn task branch-recovery` when executor branch allocation fails because the canonical task branch is already checked out elsewhere. By default, the command lists every recovery candidate for the task, including the branch tip SHA, attached worktree path (if any), and patch-id-aware stranded commit subjects unique versus `main` (`git cherry`). Fully-subsumed branches show `stranded commits: none`.
 
 ```bash
 fn task branch-recovery FN-001

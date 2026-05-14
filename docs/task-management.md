@@ -258,7 +258,7 @@ When the executor tries to allocate the canonical task branch (`fusion/<task-id>
 
 2. **Inspect candidates**
 
-   Run the recovery command with no flags to list every matching canonical or sibling branch. The output includes the tip SHA, any attached worktree path, and the stranded commits that are not reachable from the run's start point.
+   Run the recovery command with no flags to list every matching canonical or sibling branch. The output includes the tip SHA, any attached worktree path, and patch-id-aware stranded commit subjects unique to the branch versus `main` (`git cherry`). Fully-subsumed branches now report no stranded commits.
 
    ```bash
    fn task branch-recovery FN-001
