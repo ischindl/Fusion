@@ -6957,6 +6957,26 @@ export async function aiMergeTask(
           verificationPassed,
         });
 
+        try {
+          await audit.git({
+            type: "merge:audit-failure",
+            target: auditSha,
+            metadata: {
+              mode: postMergeAuditMode,
+              strategy: selectedPostMergeAuditStrategy,
+              action: decision.action,
+              reason: decision.reason,
+              issueCount: auditFindings.issueCount,
+              duplicateSubjectCount: auditFindings.duplicateSubjects.length,
+              touchedFileOverlapCount: auditFindings.touchedFileOverlaps.length,
+              verificationPassed,
+              auditTargetLabel: auditFindings.auditTargetLabel,
+            },
+          });
+        } catch (err) {
+          mergerLog.warn(`${taskId}: failed to record merge:audit-failure run_audit event: ${String(err)}`);
+        }
+
         if (decision.action === "block") {
           const auditError = new SquashAuditError(taskId, auditSha, auditFindings);
           await store.appendAgentLog(
