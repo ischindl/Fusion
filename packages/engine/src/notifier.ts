@@ -29,6 +29,7 @@ export const DEFAULT_NTFY_EVENTS: readonly NtfyNotificationEvent[] = [
   "planning-awaiting-input",
   "gridlock",
   "fallback-used",
+  "token-budget",
   "message:agent-to-user",
   "message:agent-to-agent",
   "message:room",

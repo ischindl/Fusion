@@ -298,6 +298,7 @@ export type NtfyNotificationEvent =
   | "gridlock"
   | "fallback-used"
   | "memory-dreams-processed"
+  | "token-budget"
   | "message:agent-to-user"
   | "message:agent-to-agent"
   | "message:room";
@@ -313,6 +314,7 @@ export const NOTIFICATION_EVENTS = [
   "gridlock",
   "fallback-used",
   "memory-dreams-processed",
+  "token-budget",
   "message:agent-to-user",
   "message:agent-to-agent",
   "message:room",
@@ -1127,6 +1129,24 @@ export interface TaskTokenUsage {
   lastUsedAt: string;
 }
 
+export interface TaskTokenBudget {
+  /** Total-token soft cap. When reached, emits one notification and continues. */
+  soft?: number;
+  /** Total-token hard cap. When reached, pauses the task with pausedReason="token_budget_exceeded". */
+  hard?: number;
+  /** Optional per-size overrides keyed by Task.size (S/M/L). Falls back to soft/hard when absent. */
+  perSize?: { S?: { soft?: number; hard?: number }; M?: { soft?: number; hard?: number }; L?: { soft?: number; hard?: number } };
+}
+
+export interface TaskTokenBudgetOverride {
+  soft?: number;
+  hard?: number;
+  /** Optional ISO timestamp recording when an operator widened the cap on unpause. */
+  raisedAt?: string;
+  /** Optional free-text justification recorded with the override. */
+  reason?: string;
+}
+
 /** Thrown when a checkout is attempted on a task already checked out by another agent. */
 export class CheckoutConflictError extends Error {
   constructor(
@@ -1207,6 +1227,12 @@ export interface Task {
   paused?: boolean;
   /** Optional machine-readable reason for automated pauses (for example dispatch-storm). */
   pausedReason?: string;
+  /** ISO timestamp set when the task first crossed the soft token budget cap. */
+  tokenBudgetSoftAlertedAt?: string;
+  /** ISO timestamp set when the task first crossed the hard token budget cap. */
+  tokenBudgetHardAlertedAt?: string;
+  /** Optional per-task budget override set by an operator on resume. */
+  tokenBudgetOverride?: TaskTokenBudgetOverride;
   /** Dispatch-storm cycle counter tracked by scheduler for todo↔in-progress loop detection. */
   dispatchStormCount?: number;
   /** ISO timestamp of the most recent dispatch-storm cycle increment. */
@@ -1740,6 +1766,8 @@ export interface GlobalSettings {
    *  ?project=<id>&task=<id> so the dashboard opens the correct project first.
    *  Example: "http://localhost:3000" or "https://fusion.example.com" */
   ntfyDashboardHost?: string;
+  /** Optional global fallback per-task token budget defaults. */
+  taskTokenBudget?: TaskTokenBudget;
   /** How long a task must remain in `status='failed'` before a push notification fires.
    *  Set to 0 to dispatch immediately (legacy behavior). Default: 30000 ms. */
   failureNotificationDelayMs?: number;
@@ -2626,6 +2654,8 @@ export interface ProjectSettings {
    *  each prompt and proactively compacts context when the token count reaches
    *  this threshold. */
   tokenCap?: number;
+  /** Optional per-task token budget defaults (soft/hard with optional size overrides). */
+  taskTokenBudget?: TaskTokenBudget;
   /** When true, each task step runs in its own fresh agent session instead of a
    *  single session for the entire task. Enables per-step error recovery and
    *  optional parallel execution when steps have non-overlapping file scopes.
