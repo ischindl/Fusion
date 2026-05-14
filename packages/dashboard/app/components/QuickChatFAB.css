@@ -564,7 +564,7 @@
 
 .quick-chat-input-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: var(--space-sm);
   min-width: 0;
 }
@@ -639,14 +639,25 @@
   display: none;
 }
 
-.quick-chat-panel-input input {
+.quick-chat-textarea {
   flex: 1;
   min-width: 0;
+  min-height: 40px;
+  max-height: 320px;
   border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--text);
   padding: var(--space-sm);
+  resize: none;
+  overflow-y: auto;
+  font: inherit;
+  line-height: 1.45;
+  display: block;
+}
+
+.quick-chat-textarea:focus-visible {
+  outline: none;
 }
 
 /* Keep the attachment trigger compact inside the input wrapper so the composer
@@ -798,6 +809,11 @@
   .quick-chat-panel.quick-chat-panel--keyboard-open .quick-chat-panel-input {
     /* When keyboard is open, do not add home-indicator inset gap above it. */
     padding-bottom: calc(var(--space-sm) + var(--space-xs));
+  }
+
+  .quick-chat-textarea {
+    min-height: 40px;
+    max-height: 320px;
   }
 
   .quick-chat-attachment-previews {
