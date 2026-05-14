@@ -2330,8 +2330,8 @@ export class HeartbeatMonitor {
           },
           // Skill selection: use waking agent's skills (heartbeat has no role fallback)
           ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
-          actionGateContext: this.buildActionGateContext(agent, taskId, run.id, heartbeatModelSettings.defaultAgentPermissionPolicy),
-          permanentAgentGating: this.buildPermanentAgentGatingContext(agent, taskId, run.id, heartbeatModelSettings.defaultAgentPermissionPolicy),
+          actionGateContext: this.buildActionGateContext(agent, taskId, run.id, heartbeatModelSettings?.defaultAgentPermissionPolicy),
+          permanentAgentGating: this.buildPermanentAgentGatingContext(agent, taskId, run.id, heartbeatModelSettings?.defaultAgentPermissionPolicy),
         });
 
         // Track for monitoring
