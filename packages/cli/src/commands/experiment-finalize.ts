@@ -1,9 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-  createDatabase,
-  ExperimentSessionStore,
-} from "@fusion/core";
+import { TaskStore } from "@fusion/core";
 import {
   defaultGitOps,
   ExperimentFinalizeBranchExistsError,
@@ -72,11 +69,11 @@ export async function runExperimentFinalize(options: ExperimentFinalizeOptions):
   try {
     const project = options.projectName ? await resolveProject(options.projectName) : undefined;
     const projectRoot = project?.projectPath ?? process.cwd();
-    const db = createDatabase(resolve(projectRoot, ".fusion"));
-    await db.init();
-    const store = new ExperimentSessionStore(db);
+    const taskStore = new TaskStore(projectRoot);
+    await taskStore.init();
+    const sessionStore = taskStore.getExperimentSessionStore();
     const service = new ExperimentFinalizeService({
-      store,
+      store: sessionStore,
       git: defaultGitOps(projectRoot),
     });
 

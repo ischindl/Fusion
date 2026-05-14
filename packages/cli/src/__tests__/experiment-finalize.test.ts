@@ -6,6 +6,7 @@ import { join } from "node:path";
 const previewPlan = vi.fn();
 const finalize = vi.fn();
 const init = vi.fn();
+const getExperimentSessionStore = vi.fn(() => ({}));
 
 const mockErrors = vi.hoisted(() => ({
   CherryPickConflictError: class extends Error {
@@ -17,8 +18,7 @@ const mockErrors = vi.hoisted(() => ({
 }));
 
 vi.mock("@fusion/core", () => ({
-  createDatabase: vi.fn(() => ({ init })),
-  ExperimentSessionStore: vi.fn(),
+  TaskStore: vi.fn(() => ({ init, getExperimentSessionStore })),
 }));
 
 vi.mock("@fusion/engine", () => ({
@@ -38,6 +38,7 @@ describe("runExperimentFinalize", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     init.mockResolvedValue(undefined);
+    getExperimentSessionStore.mockReturnValue({});
   });
 
   it("dry-run calls previewPlan and not finalize", async () => {
@@ -46,6 +47,7 @@ describe("runExperimentFinalize", () => {
 
     await runExperimentFinalize({ sessionId: "EXP-1", dryRun: true });
 
+    expect(getExperimentSessionStore).toHaveBeenCalled();
     expect(previewPlan).toHaveBeenCalledWith({ sessionId: "EXP-1", integrationBranch: undefined });
     expect(finalize).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalled();
