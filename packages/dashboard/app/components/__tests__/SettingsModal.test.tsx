@@ -1823,6 +1823,31 @@ describe("SettingsModal", () => {
       const payload = mockUpdateSettings.mock.calls[0][0];
       expect(payload.overlapIgnorePaths).toEqual(["README.md", "generated/*"]);
     });
+
+    it("renders and saves heartbeat scope discipline", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        heartbeatScopeDiscipline: "lite",
+      });
+
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText("Scheduling"));
+
+      const select = screen.getByLabelText("Heartbeat Scope Discipline") as HTMLSelectElement;
+      expect(select.value).toBe("lite");
+
+      await userEvent.selectOptions(select, "off");
+      await userEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledTimes(1);
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.heartbeatScopeDiscipline).toBe("off");
+    });
   });
 
   describe("Number input clearing", () => {

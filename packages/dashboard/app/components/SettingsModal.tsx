@@ -3122,6 +3122,25 @@ export function SettingsModal({
               />
             </div>
             <div className="form-group">
+              <label htmlFor="heartbeatScopeDiscipline">Heartbeat Scope Discipline</label>
+              <select
+                id="heartbeatScopeDiscipline"
+                className="select"
+                value={form.heartbeatScopeDiscipline ?? "strict"}
+                onChange={(e) => {
+                  setForm((f) => ({
+                    ...f,
+                    heartbeatScopeDiscipline: e.target.value as "strict" | "lite" | "off",
+                  }));
+                }}
+              >
+                <option value="strict">Strict (default)</option>
+                <option value="lite">Lite</option>
+                <option value="off">Off</option>
+              </select>
+              <small>Strict — coordination-focused; higher per-tick tokens. Lite — pre-2026-05-11 behavior. Off — minimal procedure.</small>
+            </div>
+            <div className="form-group">
               <label htmlFor="taskStuckTimeoutMs">Stuck Task Timeout (minutes)</label>
               <input
                 id="taskStuckTimeoutMs"

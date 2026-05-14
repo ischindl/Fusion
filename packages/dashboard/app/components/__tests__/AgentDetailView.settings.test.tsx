@@ -507,7 +507,7 @@ describe("Budget Settings", () => {
 
     await waitFor(() => {
       // Progress bar should not be visible
-      expect(screen.queryByText(/tokens/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/\d[\d,]*\s*\/\s*\d[\d,]* tokens/)).not.toBeInTheDocument();
     });
   });
 
@@ -687,6 +687,50 @@ describe("Config autosave", () => {
     expect(mockUpdateAgent.mock.calls[0]?.[1]).toMatchObject({
       runtimeConfig: expect.objectContaining({ heartbeatIntervalMs: 123_000 }),
     });
+  });
+
+  it("renders heartbeat scope discipline selector and saves override", async () => {
+    mockFetchAgent.mockResolvedValue(createMockAgent({
+      runtimeConfig: { heartbeatScopeDiscipline: "lite" },
+    }));
+
+    const user = userEvent.setup();
+    render(<AgentDetailView agentId="agent-001" onClose={vi.fn()} addToast={vi.fn()} />);
+    await openSettings(user);
+
+    const select = screen.getByLabelText("Heartbeat Scope Discipline") as HTMLSelectElement;
+    expect(select.value).toBe("lite");
+
+    await user.selectOptions(select, "off");
+
+    await waitFor(() => {
+      expect(mockUpdateAgent).toHaveBeenCalled();
+    }, { timeout: 3000 });
+
+    expect(mockUpdateAgent.mock.calls.at(-1)?.[1]).toMatchObject({
+      runtimeConfig: expect.objectContaining({ heartbeatScopeDiscipline: "off" }),
+    });
+  });
+
+  it("clears heartbeat scope discipline when inherit project default is selected", async () => {
+    mockFetchAgent.mockResolvedValue(createMockAgent({
+      runtimeConfig: { heartbeatScopeDiscipline: "strict" },
+    }));
+
+    const user = userEvent.setup();
+    render(<AgentDetailView agentId="agent-001" onClose={vi.fn()} addToast={vi.fn()} />);
+    await openSettings(user);
+
+    const select = screen.getByLabelText("Heartbeat Scope Discipline") as HTMLSelectElement;
+    await user.selectOptions(select, "");
+
+    await waitFor(() => {
+      expect(mockUpdateAgent).toHaveBeenCalled();
+    }, { timeout: 3000 });
+
+    const latestPayload = mockUpdateAgent.mock.calls.at(-1)?.[1] as { runtimeConfig?: Record<string, unknown> };
+    expect(latestPayload.runtimeConfig).toBeDefined();
+    expect(latestPayload.runtimeConfig).not.toHaveProperty("heartbeatScopeDiscipline");
   });
 });
 

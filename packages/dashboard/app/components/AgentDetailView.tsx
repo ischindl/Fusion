@@ -3245,6 +3245,11 @@ function deriveSkipHeartbeatWhenIdle(runtimeConfig: AgentDetail["runtimeConfig"]
   return runtimeConfig?.skipHeartbeatWhenIdle === true;
 }
 
+function deriveHeartbeatScopeDiscipline(runtimeConfig: AgentDetail["runtimeConfig"] | undefined): "strict" | "lite" | "off" | "" {
+  const mode = runtimeConfig?.heartbeatScopeDiscipline;
+  return mode === "strict" || mode === "lite" || mode === "off" ? mode : "";
+}
+
 function deriveBudgetValues(runtimeConfig: AgentDetail["runtimeConfig"] | undefined): Record<string, string> {
   const bc = (runtimeConfig ?? {}).budgetConfig as Record<string, unknown> | undefined;
   const nextValues: Record<string, string> = {};
@@ -3617,6 +3622,9 @@ function ConfigTab({
   const [skipHeartbeatWhenIdle, setSkipHeartbeatWhenIdle] = useState<boolean>(
     () => deriveSkipHeartbeatWhenIdle(agent.runtimeConfig),
   );
+  const [heartbeatScopeDiscipline, setHeartbeatScopeDiscipline] = useState<"strict" | "lite" | "off" | "">(
+    () => deriveHeartbeatScopeDiscipline(agent.runtimeConfig),
+  );
 
   // Budget config state initialised from agent.runtimeConfig.budgetConfig
   const [budgetValues, setBudgetValues] = useState<Record<string, string>>(
@@ -3904,6 +3912,7 @@ function ConfigTab({
     if (runMissedHeartbeatOnStartup !== deriveRunMissedHeartbeatOnStartup(agent.runtimeConfig)) return true;
     if (allowParallelExecution !== deriveAllowParallelExecution(agent.runtimeConfig)) return true;
     if (skipHeartbeatWhenIdle !== deriveSkipHeartbeatWhenIdle(agent.runtimeConfig)) return true;
+    if (heartbeatScopeDiscipline !== deriveHeartbeatScopeDiscipline(agent.runtimeConfig)) return true;
     for (const key of ["heartbeatIntervalMs", "heartbeatTimeoutMs", "maxConcurrentRuns", "messageResponseMode", "autoClaimCandidatesInPrompt"] as const) {
       const current = heartbeatValues[key]?.trim() ?? "";
       let persisted = rc[key] !== undefined && rc[key] !== null ? String(rc[key]) : "";
@@ -3981,6 +3990,7 @@ function ConfigTab({
     setRunMissedHeartbeatOnStartup(deriveRunMissedHeartbeatOnStartup(agent.runtimeConfig));
     setAllowParallelExecution(deriveAllowParallelExecution(agent.runtimeConfig));
     setSkipHeartbeatWhenIdle(deriveSkipHeartbeatWhenIdle(agent.runtimeConfig));
+    setHeartbeatScopeDiscipline(deriveHeartbeatScopeDiscipline(agent.runtimeConfig));
     setBudgetValues(deriveBudgetValues(agent.runtimeConfig));
     setModelValue(initialModelValue);
     setSelectedRuntimeId(initialRuntimeHint);
@@ -4155,6 +4165,12 @@ function ConfigTab({
       newRuntimeConfig.messageResponseMode = messageResponseMode;
     }
 
+    if (!heartbeatScopeDiscipline) {
+      delete newRuntimeConfig.heartbeatScopeDiscipline;
+    } else {
+      newRuntimeConfig.heartbeatScopeDiscipline = heartbeatScopeDiscipline;
+    }
+
     if (runtimeMode === "runtime") {
       if (selectedRuntimeId.trim()) {
         newRuntimeConfig.runtimeHint = selectedRuntimeId.trim();
@@ -4233,7 +4249,7 @@ function ConfigTab({
       runtimeConfig: newRuntimeConfig,
       bundleConfig: newBundleConfig,
     };
-  }, [agent.metadata, agent.runtimeConfig, allowParallelExecution, autoClaimRelevantTasksEnabled, budgetValues, bundleEntryFile, bundleExternalPath, bundleFiles, bundleMode, formValues, heartbeatEnabled, heartbeatValues, iconValue, modelValue, nameValue, reportsToValue, roleValue, runMissedHeartbeatOnStartup, runtimeMode, selectedRuntimeId, selectedSkills, skipHeartbeatWhenIdle, titleValue, validationErrors]);
+  }, [agent.metadata, agent.runtimeConfig, allowParallelExecution, autoClaimRelevantTasksEnabled, budgetValues, bundleEntryFile, bundleExternalPath, bundleFiles, bundleMode, formValues, heartbeatEnabled, heartbeatScopeDiscipline, heartbeatValues, iconValue, modelValue, nameValue, reportsToValue, roleValue, runMissedHeartbeatOnStartup, runtimeMode, selectedRuntimeId, selectedSkills, skipHeartbeatWhenIdle, titleValue, validationErrors]);
 
   const persistSettings = useCallback(async (showValidationToast: boolean, source: "auto" | "manual") => {
     const payload = buildSavePayload();
@@ -4705,6 +4721,26 @@ function ConfigTab({
               Skip heartbeat when idle
             </label>
             <span className="config-hint">When enabled, scheduled (timer) heartbeats are skipped while this agent has no assigned task. The agent still wakes immediately when a task is assigned or you trigger a run manually. Default: off.</span>
+          </div>
+
+          <div className="config-field">
+            <label htmlFor="hb-heartbeatScopeDiscipline">Heartbeat Scope Discipline</label>
+            <select
+              id="hb-heartbeatScopeDiscipline"
+              className="select"
+              value={heartbeatScopeDiscipline}
+              onChange={(e) => {
+                const value = e.target.value;
+                setHeartbeatScopeDiscipline(value === "strict" || value === "lite" || value === "off" ? value : "");
+                void scheduleAutoSave();
+              }}
+            >
+              <option value="">Inherit project default</option>
+              <option value="strict">Strict</option>
+              <option value="lite">Lite</option>
+              <option value="off">Off</option>
+            </select>
+            <span className="config-hint">Strict — coordination-focused; higher per-tick tokens. Lite — pre-2026-05-11 behavior. Off — minimal procedure.</span>
           </div>
 
           <div className="config-field">
