@@ -382,6 +382,23 @@ Features:
 - Dismiss/archive/unarchive insight records as they age
 - Create triage tasks from selected insights directly from the view
 
+## Reliability View
+
+Reliability view summarizes in-review pipeline health so operators can spot bounce/merge instability trends without leaving the dashboard.
+
+Navigation:
+- Desktop: **Header → More views → Reliability**
+- Mobile: **More** sheet → **Reliability**
+
+Features:
+- Headline 7-day in-review failure rate with color thresholds: success for `<5%`, warning for `<10%`, error for `≥10%`; shows **Insufficient data** when the metric is null
+- Per-day in-review flow table showing tasks that entered in-review versus tasks bounced back to in-progress
+- In-review duration percentiles (P50 and P95) plus sample count
+- Merge-attempt distribution stats including mean, max, and histogram buckets
+- Auto-refreshes every 60 seconds
+
+For the backing API and `windowDays` query parameter, see [architecture.md](./architecture.md).
+
 ## Dev Server View
 
 Dev Server view manages detected dev server commands, preview URLs, and live logs for local development.
