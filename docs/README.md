@@ -88,6 +88,7 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 | [Dashboard Load Performance](./performance/dashboard-load.md) | SQLite index analysis and optimization for dashboard boot path queries |
 | [CLI Printing Press Plugin Design](./design/cli-printing-press-plugin.md) | Architecture design for the CLI printing press bundled plugin (FN-3762) |
 | [CLI Printing Press Research](./research/cli-printing-press.md) | Upstream `cli-printing-press` analysis and Fusion integration mapping (FN-3761) |
+| [Research vs Experiment Session Naming Decision](./research/naming-decision-2026-05.md) | Naming decision record: hybrid approach retaining `research_*` for cited-search/synthesis and adding `experiment_session_*` for upstream parity (FN-4223) |
 
 ## External Resources
 
