@@ -224,7 +224,7 @@ function ensureProcessDiagnostics(): void {
 
 export async function runServe(
   port: number,
-  opts: { interactive?: boolean; paused?: boolean; host?: string; daemon?: boolean; noAutoRegister?: boolean } = {},
+  opts: { interactive?: boolean; paused?: boolean; host?: string; daemon?: boolean; noAutoRegister?: boolean; project?: string } = {},
 ) {
   serveStartTime = Date.now();
   ensureProcessDiagnostics();
@@ -399,15 +399,72 @@ export async function runServe(
     }
   }
 
-  // Get the cwd project's engine and store for the HTTP layer.
-  // serve.ts needs a store for plugin setup, diagnostics, and the server.
-  const cwdEngine = ntfyProjectId ? engineManager.getEngine(ntfyProjectId) : undefined;
-  if (!cwdEngine) {
-    console.error("[serve] No engine started for the current project — exiting");
+  const startedEngines = [...engineManager.getAllEngines().values()];
+  const projects = sharedCentralCore ? await sharedCentralCore.listProjects() : [];
+
+  const resolvePrimaryEngine = async (): Promise<{
+    engine: (typeof startedEngines)[number];
+    source: "cli-flag" | "default-setting" | "cwd" | "fallback";
+  } | null> => {
+    if (opts.project) {
+      const byId = startedEngines.find((engine) => engine.getProjectId() === opts.project);
+      if (byId) {
+        return { engine: byId, source: "cli-flag" };
+      }
+
+      const projectMatch = projects.find((project) => project.name === opts.project);
+      if (projectMatch) {
+        const byName = engineManager.getEngine(projectMatch.id);
+        if (byName) {
+          return { engine: byName, source: "cli-flag" };
+        }
+      }
+
+      console.error(`[serve] --project "${opts.project}" did not match any started engine`);
+      process.exit(1);
+      return null;
+    }
+
+    const defaultProjectId = await sharedCentralCore?.getDefaultProjectId?.();
+    if (defaultProjectId) {
+      const defaultEngine = engineManager.getEngine(defaultProjectId);
+      if (defaultEngine) {
+        return { engine: defaultEngine, source: "default-setting" };
+      }
+      console.warn(`[serve] defaultProjectId ${defaultProjectId} is set but no engine started for it — falling through`);
+    }
+
+    const cwdEngine = ntfyProjectId ? engineManager.getEngine(ntfyProjectId) : undefined;
+    if (cwdEngine) {
+      return { engine: cwdEngine, source: "cwd" };
+    }
+
+    const fallback = startedEngines[0];
+    if (!fallback) {
+      return null;
+    }
+
+    return { engine: fallback, source: "fallback" };
+  };
+
+  const primarySelection = await resolvePrimaryEngine();
+  if (!primarySelection) {
+    console.error("[serve] No engines started — registry empty or all engines failed to start. Exiting.");
     process.exit(1);
-    return; // unreachable in production, but needed for test mocks
+    return;
   }
-  const store = cwdEngine.getTaskStore();
+
+  const primaryEngine = primarySelection.engine;
+  const primaryProjectId = primaryEngine.getProjectId();
+  ntfyProjectId = primaryProjectId;
+  const primaryProject = projects.find((project) => project.id === primaryProjectId);
+  const primaryProjectName = primaryProject?.name ?? primaryProjectId;
+  const primaryCwd = primaryEngine.getWorkingDirectory();
+  console.log(
+    `[serve] HTTP layer bound to project ${primaryProjectName} (${primaryProjectId}) [source: ${primarySelection.source}]`,
+  );
+
+  const store = primaryEngine.getTaskStore();
 
   // InProcessRuntime does not call store.watch() — do it here so SSE events
   // and file-watcher triggers are active for the HTTP layer.
@@ -503,11 +560,11 @@ export async function runServe(
     );
   }
 
-  // Get subsystems from the cwd engine for the HTTP layer
-  const heartbeatMonitor = cwdEngine.getRuntime().getHeartbeatMonitor();
-  const missionAutopilot = cwdEngine.getRuntime().getMissionAutopilot();
-  const missionExecutionLoop = cwdEngine.getRuntime().getMissionExecutionLoop();
-  const automationStore = cwdEngine.getAutomationStore();
+  // Get subsystems from the primary engine for the HTTP layer
+  const heartbeatMonitor = primaryEngine.getRuntime().getHeartbeatMonitor();
+  const missionAutopilot = primaryEngine.getRuntime().getMissionAutopilot();
+  const missionExecutionLoop = primaryEngine.getRuntime().getMissionExecutionLoop();
+  const automationStore = primaryEngine.getAutomationStore();
 
   const authStorage = AuthStorage.create(getFusionAuthPath());
   const supplementalAuthStorage = createReadOnlyAuthFileStorage([
@@ -524,9 +581,9 @@ export async function runServe(
   try {
     const agentDir = getPackageManagerAgentDir();
     packageManager = new DefaultPackageManager({
-      cwd,
+      cwd: primaryCwd,
       agentDir,
-      settingsManager: createReadOnlyProviderSettingsView(cwd, agentDir) as unknown as SettingsManager,
+      settingsManager: createReadOnlyProviderSettingsView(primaryCwd, agentDir) as unknown as SettingsManager,
     });
     const resolvedPaths = await packageManager.resolve();
     const packageExtensionPaths = resolvedPaths.extensions
@@ -602,14 +659,14 @@ export async function runServe(
     const extensionsResult = await discoverAndLoadExtensions(
       [
         ...selfExtensionPaths,
-        ...getEnabledPiExtensionPaths(cwd),
+        ...getEnabledPiExtensionPaths(primaryCwd),
         ...packageExtensionPaths,
         ...claudeCliPaths,
         ...droidCliPaths,
         ...llamaCppPaths,
       ],
-      cwd,
-      join(cwd, ".fusion", "disabled-auto-extension-discovery"),
+      primaryCwd,
+      join(primaryCwd, ".fusion", "disabled-auto-extension-discovery"),
     );
 
     for (const { path, error } of extensionsResult.errors) {
@@ -715,10 +772,10 @@ export async function runServe(
     : undefined;
 
   const app = createServer(store, {
-    engine: cwdEngine,
+    engine: primaryEngine,
     engineManager,
     centralCore: sharedCentralCore ?? undefined,
-    onMerge: (taskId) => cwdEngine.onMerge(taskId),
+    onMerge: (taskId) => primaryEngine.onMerge(taskId),
     authStorage: dashboardAuthStorage,
     modelRegistry,
     automationStore,
@@ -726,7 +783,7 @@ export async function runServe(
     missionExecutionLoop,
     heartbeatMonitor: heartbeatMonitor
       ? {
-          rootDir: cwd,
+          rootDir: primaryCwd,
           startRun: heartbeatMonitor.startRun.bind(heartbeatMonitor),
           executeHeartbeat: heartbeatMonitor.executeHeartbeat.bind(heartbeatMonitor),
           stopRun: heartbeatMonitor.stopRun.bind(heartbeatMonitor),

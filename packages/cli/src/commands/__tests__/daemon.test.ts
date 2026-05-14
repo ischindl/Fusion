@@ -165,6 +165,7 @@ const mocks = vi.hoisted(() => {
         Promise.resolve(projects.find((project) => project.id === id) ?? null),
       ),
       listProjects: vi.fn().mockImplementation(() => Promise.resolve([...projects])),
+      getDefaultProjectId: vi.fn().mockResolvedValue(undefined),
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
@@ -412,6 +413,8 @@ const mocks = vi.hoisted(() => {
         heartbeatTriggerScheduler.stop();
       }),
       getTaskStore: vi.fn(() => store),
+      getProjectId: vi.fn(() => runtimeConfig.projectId),
+      getWorkingDirectory: vi.fn(() => runtimeConfig.workingDirectory),
       getAutomationStore: vi.fn(() => automationStore),
       getRuntime: vi.fn(() => ({
         getHeartbeatMonitor: () => heartbeatMonitor,
@@ -847,7 +850,7 @@ describe("runDaemon", () => {
     }
   });
 
-  it("--no-auto-register preserves legacy exit behavior", async () => {
+  it("--no-auto-register falls back to existing started engines", async () => {
     const freshCwd = mkdtempSync(join(tmpdir(), "daemon-no-auto-register-"));
     cwdSpy.mockReturnValue(freshCwd);
 
@@ -858,8 +861,12 @@ describe("runDaemon", () => {
         instance.registerProject.mock.calls,
       );
       expect(registrationCalls).toHaveLength(0);
-      expect(errorSpy).toHaveBeenCalledWith("[daemon] No engine started for the current project — exiting");
-      expect(process.exit).toHaveBeenCalledWith(1);
+      expect(process.exit).not.toHaveBeenCalledWith(1);
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[daemon] HTTP layer bound to project")
+      );
+
+      await triggerSignal("SIGINT");
     } finally {
       rmSync(freshCwd, { recursive: true, force: true });
     }

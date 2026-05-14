@@ -796,10 +796,11 @@ Key server capabilities:
 - Intentional startup/banner text in `fn dashboard` and `fn serve` remains direct plain output for readability and backward-compatible scripting behavior.
 
 ### Headless Node Mode (`fn serve` / `fn daemon`)
-- Headless runtimes now auto-register the current working directory as a project when it is missing from central registry metadata, then continue normal engine startup.
+- Headless runtimes auto-register the current working directory as a project when it is missing from central registry metadata, then continue normal engine startup.
 - First-run auto-bootstrap logs one line: `[serve] Auto-registered project "<name>" at <cwd>` (or `[daemon] ...`).
-- This enables first-run startup in CI/Docker/cron without requiring a prior `fn init` or `fn project add`.
-- Pass `--no-auto-register` to either command to preserve legacy strict behavior.
+- Primary engine binding order is: `--project <id|name>` → central `defaultProjectId` → cwd project (if registered/started) → first started engine in registry iteration order.
+- This enables startup from arbitrary launch directories (systemd, Docker, parent directories, symlinked paths) without requiring cwd to be a registered project.
+- `--no-auto-register` still disables cwd registration, but startup only exits when zero engines start across the registry.
 
 ### Real-time channels
 - **SSE**: `/api/events` (`sse.ts`)

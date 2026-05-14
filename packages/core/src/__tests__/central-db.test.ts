@@ -39,7 +39,7 @@ describe("CentralDatabase", () => {
 
     it("should initialize schema version", () => {
       db.init();
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
     });
 
     it("should enable WAL mode and busy_timeout", () => {
@@ -229,7 +229,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       const nodeColumnNames = nodeColumns.map((column) => column.name);
@@ -294,7 +294,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       const nodeColumnNames = nodeColumns.map((column) => column.name);
@@ -382,7 +382,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
 
       const nodeColumns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
       expect(nodeColumns.map((column) => column.name)).toContain("dockerConfig");
@@ -532,7 +532,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
 
       const mappings = db
         .prepare("SELECT projectId, nodeId, path FROM projectNodePathMappings ORDER BY projectId")
@@ -555,7 +555,7 @@ describe("CentralDatabase", () => {
 
       db.init();
 
-      expect(db.getSchemaVersion()).toBe(10);
+      expect(db.getSchemaVersion()).toBe(11);
 
       const snapshotCols = db.prepare("PRAGMA table_info(meshSharedSnapshots)").all() as Array<{ name: string }>;
       expect(snapshotCols.map((c) => c.name)).toEqual(

@@ -250,10 +250,10 @@ Usage:
   fn dashboard --paused               Start with automation paused
   fn dashboard --dev                  Start web UI only (no AI engine)
   fn dashboard --interactive          Start with interactive port selection
-  fn serve [--port <port>] [--host <host>] [--paused] [--daemon] [--no-auto-register]
+  fn serve [--port <port>] [--host <host>] [--paused] [--daemon] [--project <id|name>] [--no-auto-register]
                                       Start Fusion as a headless node (API + engine, no UI)
                                       Auto-registers cwd project on first run (use --no-auto-register to disable)
-  fn daemon [--port <port>] [--host <host>] [--token <token>] [--paused] [--token-only] [--no-auto-register]
+  fn daemon [--port <port>] [--host <host>] [--token <token>] [--paused] [--token-only] [--project <id|name>] [--no-auto-register]
                                       Start Fusion daemon (API + engine, auth required)
   fn desktop                          Launch the Fusion desktop app (Electron)
   fn desktop --dev                    Launch with hot-reload (connects to Vite dev server)
@@ -399,6 +399,11 @@ Supported file types: png, jpg, gif, webp, txt, log, json, yaml, yml, toml, csv,
 `.trim();
 
 function extractGlobalProjectFlag(argv: string[]): { cleanedArgs: string[]; projectName?: string } {
+  const command = argv[0];
+  if (command === "serve" || command === "daemon") {
+    return { cleanedArgs: [...argv] };
+  }
+
   const cleanedArgs: string[] = [];
   let projectName: string | undefined;
 
@@ -652,8 +657,9 @@ async function main() {
         const hostIdx = args.indexOf("--host");
         const host = hostIdx !== -1 && hostIdx + 1 < args.length ? args[hostIdx + 1] : undefined;
         const daemon = args.includes("--daemon");
+        const project = getFlagValue(args, "--project");
         const noAutoRegister = args.includes("--no-auto-register");
-        await runServe(port, { paused, interactive, host, daemon, noAutoRegister });
+        await runServe(port, { paused, interactive, host, daemon, project, noAutoRegister });
         break;
       }
 
@@ -669,8 +675,9 @@ async function main() {
         const tokenIdx = args.indexOf("--token");
         const token = tokenIdx !== -1 && tokenIdx + 1 < args.length ? args[tokenIdx + 1] : undefined;
         const tokenOnly = args.includes("--token-only");
+        const project = getFlagValue(args, "--project");
         const noAutoRegister = args.includes("--no-auto-register");
-        await runDaemon({ port, paused, interactive, host, token, tokenOnly, noAutoRegister });
+        await runDaemon({ port, paused, interactive, host, token, tokenOnly, project, noAutoRegister });
         break;
       }
 
