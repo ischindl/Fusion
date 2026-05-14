@@ -4,6 +4,16 @@
 
 Fusion Research is a cited search-and-synthesis pipeline: create bounded research runs, gather sources with built-in web tools, and synthesize findings into actionable task context from the dashboard, CLI, or agent sessions.
 
+## Execution model (FN-4221)
+
+All Fusion surfaces use one execution model:
+
+- Dashboard, CLI, pi extension, and engine agent tools **enqueue** runs through `ResearchStore.createRun(...)`.
+- The engine is the **only** execution dispatcher. `ProjectEngine` owns a single shared `ResearchOrchestrator`, and `ResearchRunDispatcher` polls queued runs and calls `ResearchOrchestrator.startRun(...)`.
+- Surfaces do not construct ad-hoc orchestrators.
+
+If no engine is running, enqueue still succeeds but the run remains `queued` until an engine starts and the dispatcher picks it up. CLI `--wait` and pi-extension `wait_for_completion` poll persisted status and return a timeout/no-progress message that explicitly calls out this engine requirement.
+
 ---
 
 > **Not pi-autoresearch:** Fusion Research is a cited search/synthesis pipeline. The autonomous try-measure-keep-revert loop from upstream `pi-autoresearch` is a separate domain (experiment sessions); see [naming-decision-2026-05.md](./research/naming-decision-2026-05.md).
