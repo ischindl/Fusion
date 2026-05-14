@@ -1,0 +1,40 @@
+.todo-aging-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.todo-aging-chip {
+  align-items: center;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  transition: box-shadow var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.todo-aging-chip-count {
+  font-family: var(--font-mono);
+}
+
+.todo-aging-chip--fresh {
+  background: var(--surface);
+}
+
+.todo-aging-chip--aging {
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+}
+
+.todo-aging-chip--stale {
+  background: color-mix(in srgb, var(--color-warning) 20%, transparent);
+}
+
+.todo-aging-chip--active {
+  box-shadow: var(--focus-ring-strong);
+}
+
+@media (max-width: 768px) {
+  .todo-aging-chip {
+    padding: var(--space-xs);
+  }
+}
