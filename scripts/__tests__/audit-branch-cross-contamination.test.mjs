@@ -21,8 +21,6 @@ test("flags branch as tainted when foreign task commits are present", () => {
     fs.writeFileSync(path.join(dir, "README.md"), "base\n");
     run(dir, "git", ["add", "README.md"]);
     run(dir, "git", ["commit", "-m", "chore: base"]);
-    const base = run(dir, "git", ["rev-parse", "HEAD"]);
-
     run(dir, "git", ["checkout", "-b", "fusion/fn-0001"]);
     fs.writeFileSync(path.join(dir, "feature.txt"), "foreign\n");
     run(dir, "git", ["add", "feature.txt"]);
@@ -32,7 +30,7 @@ test("flags branch as tainted when foreign task commits are present", () => {
     fs.mkdirSync(fusionDir, { recursive: true });
     const dbPath = path.join(fusionDir, "fusion.db");
     run(dir, "sqlite3", [dbPath, `CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, branch TEXT, baseCommitSha TEXT, "column" TEXT);`]);
-    run(dir, "sqlite3", [dbPath, `INSERT INTO tasks (id, title, branch, baseCommitSha, "column") VALUES ('FN-0001', 'Task 1', 'fusion/fn-0001', '${base}', 'in-progress');`]);
+    run(dir, "sqlite3", [dbPath, `INSERT INTO tasks (id, title, branch, baseCommitSha, "column") VALUES ('FN-0001', 'Task 1', 'fusion/fn-0001', NULL, 'in-progress');`]);
 
     const report = auditBranchCrossContamination({ projectRoot: dir });
     assert.equal(report.taintedTaskCount, 1);
@@ -40,6 +38,7 @@ test("flags branch as tainted when foreign task commits are present", () => {
     assert.ok(task);
     assert.equal(task.tainted, true);
     assert.equal(task.recommendation, "force-reset");
+    assert.equal(task.baseResolutionSource.startsWith("merge-base("), true);
     assert.equal(task.taintedCommits[0].foreignTaskId, "FN-0002");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

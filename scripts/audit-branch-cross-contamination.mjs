@@ -60,6 +60,25 @@ function branchExists(projectRoot, branchName) {
   return runGit(projectRoot, ["rev-parse", "--verify", `refs/heads/${branchName}`], { allowFailure: true }) !== null;
 }
 
+function resolveMainRef(projectRoot) {
+  if (runGit(projectRoot, ["rev-parse", "--verify", "origin/main"], { allowFailure: true })) {
+    return "origin/main";
+  }
+  return "main";
+}
+
+function resolveBaseCommit(projectRoot, branchName, taskBaseCommitSha) {
+  if (taskBaseCommitSha && String(taskBaseCommitSha).trim()) {
+    return { baseCommitSha: String(taskBaseCommitSha).trim(), source: "task.baseCommitSha" };
+  }
+  const mainRef = resolveMainRef(projectRoot);
+  const fallback = runGit(projectRoot, ["merge-base", mainRef, branchName], { allowFailure: true });
+  if (fallback) {
+    return { baseCommitSha: fallback.trim(), source: `merge-base(${mainRef},${branchName})` };
+  }
+  return { baseCommitSha: null, source: "unresolved" };
+}
+
 function parseCommits(raw) {
   if (!raw) return [];
   const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -97,20 +116,8 @@ export function auditBranchCrossContamination({ projectRoot = process.cwd() } = 
   for (const task of taskRows) {
     const taskId = String(task.id).toUpperCase();
     const branchName = expectedBranch(taskId, task.branch);
-    const baseCommitSha = task.baseCommitSha ? String(task.baseCommitSha).trim() : null;
-
-    if (!baseCommitSha) {
-      report.tasks.push({
-        taskId,
-        title: task.title,
-        branchName,
-        baseCommitSha: null,
-        column: task.columnName,
-        skipped: true,
-        reason: "missing-baseCommitSha",
-      });
-      continue;
-    }
+    const baseResolution = resolveBaseCommit(projectRoot, branchName, task.baseCommitSha);
+    const baseCommitSha = baseResolution.baseCommitSha;
 
     if (!branchExists(projectRoot, branchName)) {
       report.missingBranchCount += 1;
@@ -123,6 +130,20 @@ export function auditBranchCrossContamination({ projectRoot = process.cwd() } = 
         column: task.columnName,
         skipped: true,
         reason: "branch-missing-local",
+      });
+      continue;
+    }
+
+    if (!baseCommitSha) {
+      report.tasks.push({
+        taskId,
+        title: task.title,
+        branchName,
+        baseCommitSha: null,
+        baseResolutionSource: baseResolution.source,
+        column: task.columnName,
+        skipped: true,
+        reason: "missing-baseCommitSha",
       });
       continue;
     }
@@ -140,6 +161,7 @@ export function auditBranchCrossContamination({ projectRoot = process.cwd() } = 
       title: task.title,
       branchName,
       baseCommitSha,
+      baseResolutionSource: baseResolution.source,
       column: task.columnName,
       totalCommits: commits.length,
       taskAttributedCommitCount: ownCommits.length,
