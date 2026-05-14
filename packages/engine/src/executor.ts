@@ -6546,35 +6546,6 @@ ${failureFeedback}
     });
   }
 
-  /** Parse structured JSON verdict from workflow step output. */
-  private parseWorkflowStepOutput(rawOutput: string): {
-    output: string;
-    verdict?: "APPROVE" | "APPROVE_WITH_NOTES" | "REVISE";
-    notes?: string;
-    malformed?: boolean;
-  } {
-    const trimmed = rawOutput.trim();
-    const parsed = parseWorkflowStepVerdict(trimmed);
-    if (parsed) {
-      return {
-        output: parsed.notes || "",
-        verdict: parsed.verdict,
-        notes: parsed.notes,
-      };
-    }
-
-    const inferred = inferWorkflowStepVerdictFromProse(trimmed);
-    if (inferred) {
-      return {
-        output: inferred.notes || trimmed,
-        verdict: inferred.verdict,
-        notes: inferred.notes,
-      };
-    }
-
-    return { output: trimmed, malformed: true };
-  }
-
   /**
    * Parse structured JSON verdict from workflow step output.
    *
