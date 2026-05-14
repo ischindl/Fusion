@@ -73,7 +73,7 @@ import { withRateLimitRetry } from "./rate-limit-retry.js";
 import { resolveAgentInstructions, buildSystemPromptWithInstructions } from "./agent-instructions.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { createRunAuditor, generateSyntheticRunId, type EngineRunContext } from "./run-audit.js";
+import { createRunAuditor, generateSyntheticRunId, type EngineRunContext, type RunAuditor } from "./run-audit.js";
 import { createWebFetchTool } from "./agent-tools.js";
 import { auditSquashMerge, MERGER_MAIN_OVERLAP_LOOKBACK_COMMITS, type PostMergeAuditStrategy, type SquashAuditFindings } from "./merger-squash-audit.js";
 import { detectMergeOverlap, restoreBranchWinsFiles } from "./merger-overlap-guard.js";
@@ -4838,6 +4838,71 @@ export function resolvePostMergeAuditAction(opts: {
   return { action: "block", reason: "mode-block" };
 }
 
+export async function handleDirtyPostMergeAuditOutcome(opts: {
+  taskId: string;
+  auditSha: string;
+  mode: PostMergeAuditMode;
+  strategy: PostMergeAuditStrategy;
+  findings: SquashAuditFindings;
+  verificationPassed: boolean;
+  audit: RunAuditor;
+  store: TaskStore;
+  mergerLog: Pick<ReturnType<typeof createLogger>, "warn" | "log">;
+}): Promise<PostMergeAuditAction> {
+  const decision = resolvePostMergeAuditAction({
+    mode: opts.mode,
+    strategy: opts.strategy,
+    findings: opts.findings,
+    verificationPassed: opts.verificationPassed,
+  });
+
+  try {
+    await opts.audit.git({
+      type: "merge:audit-failure",
+      target: opts.auditSha,
+      metadata: {
+        mode: opts.mode,
+        strategy: opts.strategy,
+        action: decision.action,
+        reason: decision.reason,
+        issueCount: opts.findings.issueCount,
+        duplicateSubjectCount: opts.findings.duplicateSubjects.length,
+        touchedFileOverlapCount: opts.findings.touchedFileOverlaps.length,
+        verificationPassed: opts.verificationPassed,
+        auditTargetLabel: opts.findings.auditTargetLabel,
+      },
+    });
+  } catch (err) {
+    opts.mergerLog.warn(`${opts.taskId}: failed to record merge:audit-failure run_audit event: ${String(err)}`);
+  }
+
+  if (decision.action === "block") {
+    const auditError = new SquashAuditError(opts.taskId, opts.auditSha, opts.findings);
+    await opts.store.appendAgentLog(
+      opts.taskId,
+      auditError.message,
+      "tool_error",
+      formatSquashAuditAgentLog(opts.findings),
+      "merger",
+    );
+    await opts.store.updateTask(opts.taskId, { status: null });
+    throw auditError;
+  }
+
+  const passLabel = decision.reason === "verified-short-circuit"
+    ? `${opts.strategy === "rebase" ? "post-rebase" : "post-squash"} audit overlap cleared by deterministic verification`
+    : `${opts.strategy === "rebase" ? "post-rebase" : "post-squash"} audit found ${opts.findings.issueCount} risk(s) — continuing (mode=warn)`;
+  await opts.store.appendAgentLog(
+    opts.taskId,
+    passLabel,
+    "text",
+    formatSquashAuditAgentLog(opts.findings),
+    "merger",
+  );
+  opts.mergerLog.log(`${opts.taskId}: ${passLabel}`);
+  return decision;
+}
+
 function buildPostMergeAuditBlockingMessage(taskId: string, findings: SquashAuditFindings): string {
   const riskParts: string[] = [];
   if (findings.duplicateSubjects.length > 0) {
@@ -6950,57 +7015,17 @@ export async function aiMergeTask(
           }
         }
 
-        const decision = resolvePostMergeAuditAction({
+        await handleDirtyPostMergeAuditOutcome({
+          taskId,
+          auditSha,
           mode: postMergeAuditMode,
           strategy: selectedPostMergeAuditStrategy,
           findings: auditFindings,
           verificationPassed,
+          audit,
+          store,
+          mergerLog,
         });
-
-        try {
-          await audit.git({
-            type: "merge:audit-failure",
-            target: auditSha,
-            metadata: {
-              mode: postMergeAuditMode,
-              strategy: selectedPostMergeAuditStrategy,
-              action: decision.action,
-              reason: decision.reason,
-              issueCount: auditFindings.issueCount,
-              duplicateSubjectCount: auditFindings.duplicateSubjects.length,
-              touchedFileOverlapCount: auditFindings.touchedFileOverlaps.length,
-              verificationPassed,
-              auditTargetLabel: auditFindings.auditTargetLabel,
-            },
-          });
-        } catch (err) {
-          mergerLog.warn(`${taskId}: failed to record merge:audit-failure run_audit event: ${String(err)}`);
-        }
-
-        if (decision.action === "block") {
-          const auditError = new SquashAuditError(taskId, auditSha, auditFindings);
-          await store.appendAgentLog(
-            taskId,
-            auditError.message,
-            "tool_error",
-            formatSquashAuditAgentLog(auditFindings),
-            "merger",
-          );
-          await store.updateTask(taskId, { status: null });
-          throw auditError;
-        }
-
-        const passLabel = decision.reason === "verified-short-circuit"
-          ? `${selectedPostMergeAuditStrategy === "rebase" ? "post-rebase" : "post-squash"} audit overlap cleared by deterministic verification`
-          : `${selectedPostMergeAuditStrategy === "rebase" ? "post-rebase" : "post-squash"} audit found ${auditFindings.issueCount} risk(s) — continuing (mode=warn)`;
-        await store.appendAgentLog(
-          taskId,
-          passLabel,
-          "text",
-          formatSquashAuditAgentLog(auditFindings),
-          "merger",
-        );
-        mergerLog.log(`${taskId}: ${passLabel}`);
       } else {
         await store.appendAgentLog(
           taskId,
