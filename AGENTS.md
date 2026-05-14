@@ -526,6 +526,7 @@ When debugging agent execution issues (agents stuck on "starting"), check these 
 9. **`[stuck-detector] Tracking task FN-XXX`** — Confirms heartbeat monitoring started
 10. **`[auto-claim-snapshot] rebuild generated=N reason=<ttl|invalidate>`** — Confirms project-wide auto-claim snapshot rebuild cadence
 11. **`[auto-claim-prompt] agent=<id> chars=<n> count=<n>`** — Tracks rendered no-task candidate section size
+12. **`[prompt-size] prompt-size { agentId, role, runId, template, systemChars, execChars, totalChars, isNoTaskRun }`** — Per-heartbeat prompt-size audit record
 
 ### Semaphore Resilience
 

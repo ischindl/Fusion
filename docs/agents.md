@@ -512,6 +512,7 @@ The `runtimeConfig` field on agents supports the following options:
 | `skipHeartbeatWhenIdle` | `boolean` | `false` | When `true`, scheduled timer heartbeats are skipped while the agent has no assigned task. Assignment-triggered and on-demand runs still fire |
 | `messageResponseMode` | `"immediate" \| "on-heartbeat"` | `"immediate"` | Whether agent wakes immediately on message (immediate) or processes during heartbeat (on-heartbeat). See [Heartbeat Run Mailbox Checking](#heartbeat-run-mailbox-checking) |
 | `heartbeatScopeDiscipline` | `"strict" \| "lite" \| "off"` | inherits project (`"strict"`) | Per-agent heartbeat procedure template mode. Unset inherits project setting; `strict` is coordination-focused, `lite` is pre-2026-05-11 behavior, `off` is minimal. |
+| `heartbeatPromptTemplate` | `"default" \| "compact"` | role default (`executor`→`default`, others→`compact`) | Per-agent heartbeat execution-prompt template override. Unset inherits project `heartbeatPromptTemplate` (`default`). |
 | `selfImproveEnabled` | `boolean` | `true` | Enable periodic self-improvement reflection prompts during heartbeat runs |
 | `selfImproveIntervalMs` | `number` | `14400000` (4h) | Minimum delay between self-improvement cycles (minimum enforced: 3600000 ms) |
 | `lastSelfImproveAt` | `string` (ISO timestamp) | — | Last recorded self-improvement checkpoint timestamp |
@@ -523,6 +524,7 @@ Heartbeat values are validated and minimum-clamped to 5 minutes (300,000 ms).
 Project setting `heartbeatMultiplier` (default `1`) scales resolved heartbeat intervals globally; per-agent `heartbeatIntervalMs` remains the base interval before multiplier scaling. This setting is configured from the **Agents** screen's **Controls** popup under "Heartbeat Speed".
 
 Project setting `heartbeatScopeDiscipline` defaults to `strict`; set per-agent `runtimeConfig.heartbeatScopeDiscipline` to `strict`, `lite`, or `off` in **Agent Detail → Settings → Heartbeat Settings** to override.
+Project setting `heartbeatPromptTemplate` defaults to `default`; per-agent `runtimeConfig.heartbeatPromptTemplate` overrides it. Role defaults are `executor` → `default`, and coordination roles (`triage`, `reviewer`, `merger`) → `compact`.
 
 `runMissedHeartbeatOnStartup` defaults to `false` and is configured in **Agent Detail → Settings → Heartbeat Settings → Run Missed Heartbeat On Startup**.
 

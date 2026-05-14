@@ -2843,6 +2843,7 @@ describe("executeHeartbeat", () => {
         triggeringCommentIds: ["comment-1"],
         triggeringCommentType: "task",
         heartbeatScopeDiscipline: "strict",
+        heartbeatPromptTemplate: "default",
       });
     });
 
