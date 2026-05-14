@@ -5,6 +5,7 @@ export interface LayoutOptions {
   nodeHeight?: number;
   horizontalGap?: number;
   verticalGap?: number;
+  orientation?: "vertical" | "horizontal";
 }
 
 const DEFAULT_LAYOUT_OPTIONS: Required<LayoutOptions> = {
@@ -12,6 +13,7 @@ const DEFAULT_LAYOUT_OPTIONS: Required<LayoutOptions> = {
   nodeHeight: 100,
   horizontalGap: 40,
   verticalGap: 80,
+  orientation: "vertical",
 };
 
 export function computeAutoLayout(
@@ -77,11 +79,21 @@ export function computeAutoLayout(
   for (const depth of sortedDepths) {
     const layer = layers.get(depth) ?? [];
     layer.sort();
-    const layerWidth = layer.length * settings.nodeWidth + Math.max(0, layer.length - 1) * settings.horizontalGap;
-    const startX = -layerWidth / 2;
+    const isHorizontal = settings.orientation === "horizontal";
+    const layerSpan =
+      layer.length * (isHorizontal ? settings.nodeHeight : settings.nodeWidth) +
+      Math.max(0, layer.length - 1) * (isHorizontal ? settings.verticalGap : settings.horizontalGap);
+    const startOffset = -layerSpan / 2;
 
     layer.forEach((id, index) => {
-      const x = startX + index * (settings.nodeWidth + settings.horizontalGap);
+      if (isHorizontal) {
+        const x = depth * (settings.nodeWidth + settings.horizontalGap);
+        const y = startOffset + index * (settings.nodeHeight + settings.verticalGap);
+        positions.set(id, { x, y });
+        return;
+      }
+
+      const x = startOffset + index * (settings.nodeWidth + settings.horizontalGap);
       const y = depth * (settings.nodeHeight + settings.verticalGap);
       positions.set(id, { x, y });
     });
