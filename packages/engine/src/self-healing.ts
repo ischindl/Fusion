@@ -1347,7 +1347,13 @@ export class SelfHealingManager {
             startPoint: task.baseCommitSha ?? task.mergeDetails?.mergeTargetBranch ?? "main",
           });
 
-          if (inspection.kind !== "reclaimable" || inspection.taskAttributedCommitCount <= 0) {
+          if (inspection.kind === "stale" || inspection.kind === "stale-resolved") {
+            continue;
+          }
+          if (inspection.kind === "live-foreign") {
+            throw inspection.error;
+          }
+          if (inspection.taskAttributedCommitCount <= 0) {
             continue;
           }
 

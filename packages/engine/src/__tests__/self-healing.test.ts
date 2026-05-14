@@ -5751,6 +5751,26 @@ describe("SelfHealingManager reclaimSelfOwnedBranchConflicts", () => {
     expect(store.listTasks).toHaveBeenNthCalledWith(2, { column: "in-progress", slim: true });
   });
 
+  it("escalates live-foreign conflicts to in-review failed", async () => {
+    (store.listTasks as any)
+      .mockResolvedValueOnce([{ id: "FN-503", checkedOutBy: null, branch: "fusion/fn-503", worktree: "/tmp/fn-503" }])
+      .mockResolvedValueOnce([]);
+    vi.spyOn(branchConflictModule, "inspectBranchConflict").mockResolvedValueOnce({
+      kind: "live-foreign",
+      livePath: "/tmp/fn-503",
+      error: new Error("foreign branch owner"),
+    } as any);
+
+    const recovered = await manager.reclaimSelfOwnedBranchConflicts();
+    expect(recovered).toBe(0);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-503", expect.objectContaining({
+      status: "failed",
+      paused: true,
+      pausedReason: "branch-conflict-unrecoverable",
+    }));
+    expect(store.moveTask).toHaveBeenCalledWith("FN-503", "in-review");
+  });
+
   it("escalates unrecoverable reclaim failures to in-review failed", async () => {
     (store.listTasks as any)
       .mockResolvedValueOnce([{ id: "FN-502", checkedOutBy: null, branch: "fusion/fn-502", worktree: "/tmp/fn-502" }])
