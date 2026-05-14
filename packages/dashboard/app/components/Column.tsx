@@ -12,6 +12,9 @@ import type { ToastType } from "../hooks/useToast";
 import { ChevronDown, ChevronUp, Archive, MoreVertical } from "lucide-react";
 import type { ModelInfo } from "../api";
 import type { BlockerFanoutEntry } from "../hooks/useBlockerFanout";
+import { TodoAgingSummary } from "./TodoAgingSummary";
+import type { TodoAgeBucket } from "../utils/todoAging";
+import { getTodoAgeBucket } from "../utils/todoAging";
 
 const PAGINATED_COLUMN_THRESHOLD = 100;
 const VISIBLE_TASKS_INITIAL = 50;
@@ -78,6 +81,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
   const [isReplanning, setIsReplanning] = useState(false);
   const [isPausingAll, setIsPausingAll] = useState(false);
   const [isMovingAllToTodo, setIsMovingAllToTodo] = useState(false);
+  const [agingBucket, setAgingBucket] = useState<TodoAgeBucket | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const countFlashing = useFlashOnIncrease(tasks.length);
   const { confirm } = useConfirm();
@@ -185,12 +189,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     return groupByWorktree(tasks, tasks, maxConcurrent);
   }, [column, tasks, maxConcurrent]);
 
-  const visibleTasks = useMemo(() => {
-    if (!shouldPaginate) return tasks;
-    return tasks.slice(0, visibleTaskCount);
-  }, [shouldPaginate, tasks, visibleTaskCount]);
+  const filteredTasks = useMemo(() => {
+    if (column !== "todo" || !agingBucket) {
+      return tasks;
+    }
+    return tasks.filter((task) => getTodoAgeBucket(task, lastFetchTimeMs) === agingBucket);
+  }, [agingBucket, column, lastFetchTimeMs, tasks]);
 
-  const hiddenTaskCount = Math.max(0, tasks.length - visibleTasks.length);
+  const visibleTasks = useMemo(() => {
+    if (!shouldPaginate) return filteredTasks;
+    return filteredTasks.slice(0, visibleTaskCount);
+  }, [filteredTasks, shouldPaginate, visibleTaskCount]);
+
+  const hiddenTaskCount = Math.max(0, filteredTasks.length - visibleTasks.length);
 
   const handleLoadMore = useCallback(() => {
     setVisibleTaskCount((current) => Math.min(current + VISIBLE_TASKS_INCREMENT, tasks.length));
@@ -345,7 +356,18 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
       <div className="column-header">
         <div className={`column-dot dot-${column}`} />
         <h2>{COLUMN_LABELS[column]}</h2>
-        <span className={`column-count${countFlashing ? " count-flash" : ""}`}>{tasks.length}</span>
+        <span className={`column-count${countFlashing ? " count-flash" : ""}`}>
+          {tasks.length}
+          {column === "todo" && agingBucket && <span>{` ${filteredTasks.length} / ${tasks.length}`}</span>}
+        </span>
+        {column === "todo" && (
+          <TodoAgingSummary
+            tasks={tasks}
+            activeBucket={agingBucket}
+            onSelectBucket={setAgingBucket}
+            dataAsOfMs={lastFetchTimeMs}
+          />
+        )}
         {column === "in-review" && onToggleAutoMerge && (
           <label className="auto-merge-toggle" title={autoMerge ? "Auto-merge enabled" : "Auto-merge disabled"}>
             <input
@@ -495,8 +517,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                 />
               ))
             )
-          ) : tasks.length === 0 ? (
-            <div className="empty-column">No tasks</div>
+          ) : filteredTasks.length === 0 ? (
+            agingBucket ? (
+              <div className="empty-column">
+                No tasks in this bucket
+                <div>
+                  <button type="button" className="btn btn-sm" onClick={() => setAgingBucket(null)}>
+                    Clear filter
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="empty-column">No tasks</div>
+            )
           ) : (
             <>
               {visibleTasks.map((task) => (
