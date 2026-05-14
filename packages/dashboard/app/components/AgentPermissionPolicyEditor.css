@@ -1,0 +1,46 @@
+.agent-policy-editor {
+  padding: var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.agent-policy-table {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.agent-policy-row {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: var(--space-md);
+  padding: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.agent-policy-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.agent-policy-description {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.agent-policy-inherit-note {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .agent-policy-row {
+    grid-template-columns: 1fr;
+  }
+}
