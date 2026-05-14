@@ -81,6 +81,11 @@ Rules:
 | Baseline/current best pointers | `baselineRunId`, `bestRunId` |
 | Finalization summary | `finalize` record payload + session status/finalizedAt |
 
+## Store API Notes
+
+- `recordKept(sessionId, runRecordId)` is idempotent and only appends missing run IDs.
+- `updateRecordPayload(recordId, patch)` applies additive payload patches for existing records (used by executor to backfill run commit SHA after keep commits).
+
 ## Follow-ups
 
 - **FN-4219**: executor/orchestrator loop (`init/run/log`) and runtime integration.

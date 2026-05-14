@@ -22,8 +22,7 @@ const baseSession: ExperimentSession = {
   currentSegment: 1,
   maxIterations: 10,
   tags: [],
-  bestRunId: null,
-  baselineCommit: null,
+  bestRunId: undefined,
   keptRunIds: [],
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
@@ -33,8 +32,9 @@ const baseRunRecord: ExperimentSessionRecord = {
   id: "EXPR-001",
   sessionId: "EXP-001",
   segment: 1,
+  seq: 1,
   type: "run",
-  payload: { status: "keep", secondaryMetrics: [] },
+  payload: { status: "keep", primaryMetric: 0.91, secondaryMetrics: [] },
   createdAt: new Date().toISOString(),
 };
 

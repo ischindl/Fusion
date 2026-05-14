@@ -58,8 +58,6 @@ export async function runBenchmark(
     let truncatedTempFile: string | undefined;
     let progressStdoutChunk = "";
     let progressStderrChunk = "";
-    let finished = false;
-
     const emitProgress = () => {
       if (!opts.onProgress) {
         progressStdoutChunk = "";
@@ -121,7 +119,6 @@ export async function runBenchmark(
     child.on("error", (error) => {
       cleanup();
       if ((error as NodeJS.ErrnoException).name === "AbortError") {
-        finished = true;
         resolve({
           exitCode: 1,
           stdout: truncated ? (stdoutFull + stdoutTail).slice(-STDOUT_TAIL_BYTES) : stdoutFull,
@@ -157,7 +154,6 @@ export async function runBenchmark(
       const effectiveStdout = truncated
         ? (stdoutFull + stdoutTail).slice(-STDOUT_TAIL_BYTES)
         : stdoutFull;
-      finished = true;
       resolve({
         exitCode: code ?? (signal ? 1 : 0),
         stdout: effectiveStdout,
