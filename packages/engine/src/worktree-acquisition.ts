@@ -62,14 +62,13 @@ async function maybeWarnForeignTaskStartPoint(
     baseBranch: string | null;
     rootDir: string;
     worktreePath: string;
-    branch: string;
     taskId: string;
     logger?: { warn: (m: string) => void };
     store: TaskStore;
     runContext?: RunMutationContext;
   },
 ): Promise<void> {
-  const { baseBranch, rootDir, worktreePath, branch, taskId, logger, store, runContext } = input;
+  const { baseBranch, rootDir, worktreePath, taskId, logger, store, runContext } = input;
   if (!baseBranch || !/^fusion\/fn-\d+$/i.test(baseBranch)) return;
 
   try {
@@ -207,7 +206,6 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           baseBranch,
           rootDir,
           worktreePath,
-          branch,
           taskId: task.id,
           logger,
           store,
@@ -276,7 +274,6 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     baseBranch,
     rootDir,
     worktreePath,
-    branch,
     taskId: task.id,
     logger,
     store,
