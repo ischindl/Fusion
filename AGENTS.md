@@ -706,7 +706,7 @@ A `prefetchLazyViews()` function runs once on mount via `requestIdleCallback` to
 
 ### File browser editor
 
-`packages/dashboard/app/components/FileEditor.tsx` is CodeMirror 6-backed (not a plain textarea). Language resolution lives in `packages/dashboard/app/utils/codemirror-language.ts` via `resolveCodeMirrorLanguage(filePath)`, currently mapping JS/TS, CSS, JSON, and Markdown extensions; unknown extensions intentionally fall back to plain text.
+`packages/dashboard/app/components/FileEditor.tsx` is CodeMirror 6-backed as the single edit surface (no fallback `<textarea>` pane). Language resolution lives in `packages/dashboard/app/utils/codemirror-language.ts` via `resolveCodeMirrorLanguage(filePath)`, currently mapping JS/TS, CSS, JSON, and Markdown extensions; unknown extensions intentionally fall back to plain text.
 
 ### Design Tokens
 
