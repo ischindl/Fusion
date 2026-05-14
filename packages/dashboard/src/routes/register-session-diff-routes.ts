@@ -3,6 +3,7 @@ import type { Request, Router } from "express";
 import type { RunAuditEvent, RunAuditEventFilter } from "@fusion/core";
 import { ApiError, notFound, rethrowAsApiError } from "../api-error.js";
 import { resolveDiffBase, runGitCommand } from "./resolve-diff-base.js";
+import { countPatchLines } from "./diff-counts.js";
 import type { ProjectContext } from "./types.js";
 
 export interface SessionDiffRouteDeps {
@@ -135,8 +136,7 @@ async function tryBranchRefFallbackDetailedDiff(
       patch = "";
     }
 
-    const additions = (patch.match(/^\+[^+]/gm) || []).length;
-    const deletions = (patch.match(/^-[^-]/gm) || []).length;
+    const { additions, deletions } = countPatchLines(patch);
     files.push({ path: filePath, status, additions, deletions, patch });
   }
 
@@ -299,8 +299,7 @@ async function collectDoneRangeFiles(range: string, rootDir: string): Promise<Ag
       patch = "";
     }
 
-    const additions = (patch.match(/^\+[^+]/gm) || []).length;
-    const deletions = (patch.match(/^-[^-]/gm) || []).length;
+    const { additions, deletions } = countPatchLines(patch);
     const status = parseStatusCode(statusCode);
     files.push(oldPath ? { path: filePath, status, additions, deletions, patch: patch || `rename from ${oldPath}\nrename to ${filePath}\n` } : { path: filePath, status, additions, deletions, patch });
   }
@@ -680,8 +679,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           files: [],
           stats: {
             filesChanged,
-            additions: (patch.match(/^\+[^+]/gm) || []).length,
-            deletions: (patch.match(/^-[^-]/gm) || []).length,
+            ...countPatchLines(patch),
           },
         });
         return;
@@ -783,8 +781,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           // ignore individual file errors
         }
 
-        const additions = (patch.match(/^\+[^+]/gm) || []).length;
-        const deletions = (patch.match(/^-[^-]/gm) || []).length;
+        const { additions, deletions } = countPatchLines(patch);
 
         files.push({ path: filePath, status, additions, deletions, patch });
       }
