@@ -965,10 +965,13 @@ The run-audit system records every mutation performed by the engine across three
 
 Events are tied to specific run IDs for end-to-end traceability.
 
-**Run audit endpoint:**
+**Run audit endpoints:**
 - `GET /api/agents/:id/runs/:runId/audit` — Returns audit trail for a specific agent run
   - Query params: `?domain=database|git|filesystem` for filtering
   - Requires agent ownership or admin access
+- `GET /api/health/reliability` — Aggregates rolling reliability metrics from run-audit and task activity signals.
+  - Query params: `?windowDays=<1..30>` (default `7`)
+  - Response shape: `{ windowDays, generatedAt, headline, perDay, duration, mergeAttempts }` where missing instrumentation/samples surface as `null` with a `reason` field.
 
 ---
 

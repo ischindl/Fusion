@@ -12,6 +12,7 @@ const EXPECTED_DOCUMENTED_VIEWS = new Set([
   "DocumentsView",
   "SkillsView",
   "ResearchView",
+  "ReliabilityView",
   "EvalsView",
   "TodoView",
   "StashRecoveryView",
@@ -31,6 +32,7 @@ const EXPECTED_APP_LEVEL_VIEWS = new Set([
   "ChatView",
   "SkillsView",
   "MemoryView",
+  "ReliabilityView",
   "DevServerView",
   "TodoView",
   "StashRecoveryView",
@@ -57,18 +59,18 @@ function extractAppLazyViews(appSource: string): Set<string> {
 }
 
 describe("AGENTS lazy-loaded views inventory", () => {
-  it("documents the App-level lazy views accurately and keeps the curated 15-view list in sync", () => {
+  it("documents the App-level lazy views accurately and keeps the curated 17-view list in sync", () => {
     const agentsDoc = readFileSync(resolve(__dirname, "../../../../AGENTS.md"), "utf-8");
     const appSource = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8");
 
     const section = extractLazyLoadedSection(agentsDoc);
     const countMatch = section.match(/These\s+(\d+)\s+views\s+are lazy-loaded/);
     expect(countMatch).toBeTruthy();
-    expect(Number(countMatch?.[1])).toBe(16);
+    expect(Number(countMatch?.[1])).toBe(17);
 
     const documentedViews = extractBacktickedNamesFromBullets(section);
     expect(new Set(documentedViews)).toEqual(EXPECTED_DOCUMENTED_VIEWS);
-    expect(documentedViews).toHaveLength(16);
+    expect(documentedViews).toHaveLength(17);
 
     expect(section).toContain("`ResearchView`");
     expect(section).toContain("`TodoView`");
