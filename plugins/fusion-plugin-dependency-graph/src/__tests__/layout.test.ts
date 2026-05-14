@@ -67,4 +67,59 @@ describe("computeAutoLayout", () => {
     });
     expect(Math.abs((positions.get("A")?.x ?? 0) - (positions.get("B")?.x ?? 0))).toBe(300);
   });
+
+  describe("horizontal orientation", () => {
+    it("places linear chain in increasing depth along x", () => {
+      const positions = computeAutoLayout(
+        graph(["A", "B", "C"], [
+          { source: "A", target: "B" },
+          { source: "B", target: "C" },
+        ]),
+        { orientation: "horizontal" },
+      );
+
+      expect((positions.get("C")?.x ?? 0)).toBeLessThan(positions.get("B")?.x ?? 0);
+      expect((positions.get("B")?.x ?? 0)).toBeLessThan(positions.get("A")?.x ?? 0);
+      expect(positions.get("A")?.y).toBe(positions.get("B")?.y);
+      expect(positions.get("B")?.y).toBe(positions.get("C")?.y);
+    });
+
+    it("spreads wide layer vertically", () => {
+      const positions = computeAutoLayout(graph(["A", "B", "C"]), { orientation: "horizontal" });
+      const ys = [positions.get("A")?.y, positions.get("B")?.y, positions.get("C")?.y].filter((y): y is number => y !== undefined);
+      const xs = [positions.get("A")?.x, positions.get("B")?.x, positions.get("C")?.x].filter((x): x is number => x !== undefined);
+
+      expect(new Set(ys).size).toBe(3);
+      expect(new Set(xs).size).toBe(1);
+    });
+
+    it("handles diamond dependencies mirrored onto x", () => {
+      const positions = computeAutoLayout(
+        graph(["A", "B", "C", "D"], [
+          { source: "A", target: "B" },
+          { source: "A", target: "C" },
+          { source: "B", target: "D" },
+          { source: "C", target: "D" },
+        ]),
+        { orientation: "horizontal" },
+      );
+
+      expect((positions.get("D")?.x ?? 0)).toBeLessThan(positions.get("B")?.x ?? 0);
+      expect((positions.get("D")?.x ?? 0)).toBeLessThan(positions.get("C")?.x ?? 0);
+      expect((positions.get("B")?.x ?? 0)).toBeLessThan(positions.get("A")?.x ?? 0);
+      expect((positions.get("C")?.x ?? 0)).toBeLessThan(positions.get("A")?.x ?? 0);
+    });
+
+    it("handles cycles without crashing", () => {
+      const positions = computeAutoLayout(
+        graph(["A", "B"], [
+          { source: "A", target: "B" },
+          { source: "B", target: "A" },
+        ]),
+        { orientation: "horizontal" },
+      );
+
+      expect(positions.size).toBe(2);
+    });
+  });
 });
