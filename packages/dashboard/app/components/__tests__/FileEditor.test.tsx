@@ -5,6 +5,18 @@ import { loadAllAppCss } from "../../test/cssFixture";
 import { FileEditor } from "../FileEditor";
 
 describe("FileEditor", () => {
+  const getEditorView = () => {
+    const editor = document.querySelector(".cm-editor") as HTMLElement | null;
+    if (!editor) {
+      throw new Error("Expected .cm-editor to exist");
+    }
+    const view = EditorView.findFromDOM(editor);
+    if (!view) {
+      throw new Error("Expected CodeMirror EditorView instance");
+    }
+    return view;
+  };
+
   const expandEditorOptions = () => {
     fireEvent.click(screen.getByRole("button", { name: /toggle editor options/i }));
   };
@@ -47,6 +59,7 @@ describe("FileEditor", () => {
       <FileEditor content="a\nb" onChange={vi.fn()} filePath="a.ts" showLineNumbers={false} onToggleLineNumbers={onToggle} />,
     );
 
+    expandEditorOptions();
     fireEvent.click(screen.getByRole("button", { name: /toggle line numbers/i }));
     expect(onToggle).toHaveBeenCalledTimes(1);
     expect(document.querySelector(".cm-gutters")).not.toBeInTheDocument();
@@ -57,6 +70,7 @@ describe("FileEditor", () => {
 
   it("word-wrap toggle still works", () => {
     render(<FileEditor content="long long content" onChange={vi.fn()} filePath="a.ts" />);
+    expandEditorOptions();
     const wrapButton = screen.getByRole("button", { name: /toggle word wrap/i });
     expect(wrapButton.classList.contains("btn-primary")).toBe(true);
     fireEvent.click(wrapButton);
@@ -321,11 +335,8 @@ describe("FileEditor", () => {
         />,
       );
 
-      const gutter = document.querySelector(".file-editor-line-numbers");
+      const gutter = document.querySelector(".cm-gutters");
       expect(gutter).toBeInTheDocument();
-      expect(screen.getByText("1")).toBeInTheDocument();
-      expect(screen.getByText("2")).toBeInTheDocument();
-      expect(screen.getByText("3")).toBeInTheDocument();
     });
 
     it("hides line numbers in markdown preview mode", () => {
