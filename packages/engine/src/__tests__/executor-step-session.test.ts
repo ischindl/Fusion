@@ -2132,6 +2132,7 @@ describe("Workflow Steps Execution", () => {
       id: "WS-001",
       name: "Security Audit",
       description: "Check for vulnerabilities",
+      gateMode: "gate",
       prompt: "Scan for security issues.",
       gateMode: "gate",
       enabled: true,
@@ -2233,6 +2234,114 @@ describe("Workflow Steps Execution", () => {
     );
   });
 
+  it("treats prompt advisory workflow revision requests as non-blocking findings", async () => {
+    const store = createMockStore();
+
+    store.getTask.mockResolvedValue({
+      id: "FN-001",
+      title: "Test",
+      description: "Test task",
+      column: "in-progress",
+      dependencies: [],
+      steps: [{ name: "Preflight", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      enabledWorkflowSteps: ["WS-001"],
+      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    store.getWorkflowStep.mockResolvedValue({
+      id: "WS-001",
+      name: "Frontend UX Design",
+      description: "Polish pass",
+      gateMode: "advisory",
+      mode: "prompt",
+      prompt: "Review polish quality.",
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    store.parseFileScopeFromPrompt.mockResolvedValue(["src/auth.ts"]);
+
+    let callIdx = 0;
+    let subscribeHandler: any;
+    mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+      callIdx++;
+      if (callIdx === 1) {
+        const customTools = opts.customTools || [];
+        const session = {
+          prompt: vi.fn().mockImplementation(async () => {
+            const taskDoneTool = customTools.find((t: any) => t.name === "fn_task_done");
+            if (taskDoneTool) await taskDoneTool.execute("tool-1", {});
+          }),
+          dispose: vi.fn(),
+          subscribe: vi.fn(),
+          on: vi.fn(),
+          sessionManager: { getLeafId: vi.fn().mockReturnValue("leaf-1") },
+          state: {},
+        };
+        return { session };
+      }
+
+      const session = {
+        prompt: vi.fn().mockImplementation(async () => {
+          subscribeHandler?.({
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", delta: "REQUEST REVISION\n\nPolish note: tighten auth error copy." },
+          });
+        }),
+        dispose: vi.fn(),
+        subscribe: vi.fn((handler: any) => {
+          subscribeHandler = handler;
+        }),
+        state: {},
+      };
+      return { session };
+    }) as any);
+
+    const onComplete = vi.fn();
+    const executor = new TaskExecutor(store, "/tmp/test", { onComplete });
+
+    await executor.execute({
+      id: "FN-001",
+      title: "Test",
+      description: "Test task",
+      column: "in-progress",
+      dependencies: [],
+      steps: [{ name: "Preflight", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      enabledWorkflowSteps: ["WS-001"],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-001",
+      expect.objectContaining({
+        workflowStepResults: expect.arrayContaining([
+          expect.objectContaining({
+            workflowStepId: "WS-001",
+            status: "advisory_failure",
+            notes: expect.stringContaining("Polish note"),
+          }),
+        ]),
+      }),
+    );
+    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "in-review");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-001",
+      expect.stringContaining("gateMode=advisory"),
+    );
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "FN-001",
+      expect.objectContaining({ status: "failed", error: "Workflow step failed" }),
+    );
+    expect(onComplete).toHaveBeenCalled();
+  });
+
   it("forks out-of-scope workflow revision feedback into a follow-up task and leaves the original task untouched", async () => {
     const store = createMockStore();
 
@@ -2256,6 +2365,7 @@ describe("Workflow Steps Execution", () => {
       id: "WS-001",
       name: "Security Audit",
       description: "Check for vulnerabilities",
+      gateMode: "gate",
       prompt: "Scan for security issues.",
       gateMode: "gate",
       enabled: true,
@@ -2354,6 +2464,7 @@ describe("Workflow Steps Execution", () => {
       id: "WS-001",
       name: "Security Audit",
       description: "Check for vulnerabilities",
+      gateMode: "gate",
       prompt: "Scan for security issues.",
       gateMode: "gate",
       enabled: true,
@@ -2459,6 +2570,7 @@ describe("Workflow Steps Execution", () => {
       id: "WS-001",
       name: "Security Audit",
       description: "Check for vulnerabilities",
+      gateMode: "gate",
       prompt: "Scan for security issues.",
       gateMode: "gate",
       enabled: true,

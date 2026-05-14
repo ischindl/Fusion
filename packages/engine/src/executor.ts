@@ -2167,13 +2167,26 @@ export class TaskExecutor {
    */
   async recoverFailedPreMergeWorkflowStep(task: Task): Promise<boolean> {
     try {
-      const failed = (task.workflowStepResults ?? [])
+      const preMergeFailed = (task.workflowStepResults ?? [])
         .filter((r) => (r.phase || "pre-merge") === "pre-merge" && r.status === "failed")
         .sort((a, b) => {
           const aTs = Date.parse(a.completedAt || a.startedAt || "");
           const bTs = Date.parse(b.completedAt || b.startedAt || "");
           return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
         });
+
+      const gateModeCache = new Map<string, "gate" | "advisory">();
+      const failed: typeof preMergeFailed = [];
+      for (const result of preMergeFailed) {
+        let mode = gateModeCache.get(result.workflowStepId);
+        if (!mode) {
+          const step = await this.store.getWorkflowStep(result.workflowStepId).catch(() => null);
+          mode = step?.gateMode || (step?.mode === "script" ? "gate" : "advisory");
+          gateModeCache.set(result.workflowStepId, mode);
+        }
+        if (mode === "gate") failed.push(result);
+      }
+
       const target = failed[0];
       if (!target) {
         executorLog.warn(`${task.id}: no failed pre-merge workflow step to recover from`);
@@ -6185,6 +6198,7 @@ ${failureFeedback}
                       ...results[existingIdx],
                       status: gateMode === "advisory" ? "advisory_failure" : "failed",
                       output: scopeLeakMessage,
+                      notes: scopeLeakMessage,
                       completedAt,
                     };
                   }
@@ -6235,6 +6249,7 @@ ${failureFeedback}
               ...results[existingIdx],
               status: gateMode === "advisory" ? "advisory_failure" : "failed",
               output: result.output || "Revision requested",
+              notes: result.output || "Revision requested",
               completedAt,
             };
           }
@@ -6265,6 +6280,7 @@ ${failureFeedback}
               ...results[existingIdx],
               status: gateMode === "advisory" ? "advisory_failure" : "failed",
               output: result.error || "Workflow step failed",
+              notes: result.error || "Workflow step failed",
               completedAt,
             };
           }
@@ -6300,6 +6316,7 @@ ${failureFeedback}
             ...results[existingIdx],
             status: gateMode === "advisory" ? "advisory_failure" : "failed",
             output: errorMessage || "Workflow step error",
+            notes: errorMessage || "Workflow step error",
             completedAt,
           };
         }

@@ -172,6 +172,20 @@ describe("getTaskMergeBlocker", () => {
     expect(result).toContain("pre-merge workflow steps");
   });
 
+  it("does NOT block merge on advisory pre-merge workflow findings", () => {
+    const result = getTaskMergeBlocker({
+      ...baseTask,
+      workflowStepResults: [{
+        workflowStepId: "WS-001",
+        workflowStepName: "Frontend UX Design",
+        phase: "pre-merge",
+        status: "advisory_failure",
+        notes: "Polish spacing in header actions.",
+      }],
+    });
+    expect(result).toBeUndefined();
+  });
+
   it("blocks merge when legacy workflow step (no phase) has failed", () => {
     const result = getTaskMergeBlocker({
       ...baseTask,

@@ -4116,6 +4116,32 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
+    it("ignores advisory pre-merge workflow findings", async () => {
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverFailedPreMergeStep: recoverFn,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        maxPostReviewFixes: 1,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          ...baseTask,
+          workflowStepResults: [{
+            ...baseTask.workflowStepResults[0],
+            status: "advisory_failure" as const,
+          }],
+        },
+      ]);
+
+      const result = await managerWithRecovery.recoverReviewTasksWithFailedPreMergeSteps();
+
+      expect(result).toBe(0);
+      expect(recoverFn).not.toHaveBeenCalled();
+      managerWithRecovery.stop();
+    });
+
     it("disables itself when maxPostReviewFixes is 0", async () => {
       const recoverFn = vi.fn().mockResolvedValue(true);
       const managerWithRecovery = new SelfHealingManager(store, {
