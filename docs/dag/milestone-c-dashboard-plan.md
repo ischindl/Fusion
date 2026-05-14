@@ -92,3 +92,56 @@ Notes:
 - All status visuals reuse existing semantic status tokens and `--status-*-bg` conventions.
 - No row introduces hardcoded px/hex/rgba contracts; implementation must remain token-driven.
 - No row proposes button restyling, `.btn` min-height overrides, or mobile button-row reflow.
+
+## Run Control Contract
+
+### Pause
+
+Pause means: stop enqueuing new DAG nodes for the run while allowing currently in-flight Fusion tasks to finish through their existing executor lease + merge path. Pause does **not** cancel running tasks mid-flight and does not mutate checkout ownership.
+
+This preserves `AGENTS.md` checkout-leasing conflict semantics (409 ownership contention) and avoids violating merger file-scope protections (file-scope invariant remains authoritative).
+
+### Resume
+
+Resume means: re-enable node enqueueing for a paused run. Any node whose dependencies are now satisfied becomes eligible through the existing scheduler path defined by the FN-4490 ADR (`DagCoordinator` as upstream readiness producer into normal queueing/dispatch), with no direct scheduler-internal bypass.
+
+### Cancel
+
+Cancel means: stop future enqueueing, mark run aborted, and finalize run state with `dag:run:abort`. In-flight tasks may finish/fail naturally, but their outcomes do not trigger downstream nodes after cancellation.
+
+Cancel explicitly does **not**:
+- issue task moves (including `moveTask(in-progress → todo)`),
+- cancel executor sessions mid-flight,
+- bypass merger/workflow gates,
+- alter user-initiated cancel contracts in `AGENTS.md` Engine Process Rules.
+
+### UI affordance contract
+
+- Controls are single buttons using existing classes only: `.btn`, `.btn-sm`, `.btn-warning`, `.btn-danger`.
+- Cancel is destructive and must be confirmation-gated via `ConfirmDialog`.
+- No new button styling, no button mobile reflow, and no touch-target inflation for these controls (Buttons Frozen directive applies).
+
+### Proposed API surface (planning only)
+
+- `POST /api/dag/runs/:id/pause`
+- `POST /api/dag/runs/:id/resume`
+- `POST /api/dag/runs/:id/cancel`
+
+Success response shape (proposed): `{ ok: true, runId, state }`.
+Illegal state transition: `409` (mirrors existing 409 conflict semantics).
+
+Schema details, persistence model, and endpoint implementation are out-of-scope for FN-4492 and should be handled in FN-4491 / downstream Milestone C implementation.
+
+### Observability + run-audit tie-in
+
+- Control actions must emit DAG lifecycle events and run-audit mutations.
+- `dag:run:abort` already exists in FN-4490 contract.
+- `dag:run:pause` and `dag:run:resume` are required follow-up additions to FN-4490 vocabulary before implementation.
+- Run-audit should record state transitions in database-domain audit entries per existing run-audit model.
+
+### Explicit out-of-scope control behaviors
+
+- No force-kill of running tasks
+- No rollback of already-merged commits
+- No automatic retry/replay of cancelled runs
+- No cross-mesh fan-out cancellation
