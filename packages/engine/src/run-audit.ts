@@ -74,6 +74,7 @@ export type GitMutationType =
   | "reset:hard"
   | "merge:start"
   | "merge:resolve"
+  | "merge:file-scope-violation"
   | "merge:audit-failure"
   | "branch:auto-reclaim"
   | "stash:push"
