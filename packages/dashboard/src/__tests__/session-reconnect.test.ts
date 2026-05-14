@@ -46,6 +46,12 @@ vi.mock("@fusion/engine", () => ({
     session: { state: { messages: [] }, prompt: vi.fn(), dispose: vi.fn() },
     runtimeModel: undefined,
   })),
+  ExperimentFinalizeService: class {
+    async finalize() {
+      return { keptRuns: [], droppedRuns: [], branches: [] };
+    }
+  },
+  defaultGitOps: vi.fn(() => ({})),
   promptWithFallback: vi.fn(async (session: { prompt: (message: string) => Promise<void> }, prompt: string) => {
     await session.prompt(prompt);
   }),
