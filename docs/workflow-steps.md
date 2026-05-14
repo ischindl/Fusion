@@ -49,7 +49,7 @@ The **Browser Verification** template uses browser automation style checks and i
 
 The **Frontend UX Design** template verifies visual polish and consistency with existing UI patterns and design tokens, including visual hierarchy, spacing/typography consistency, color/token consistency, component reuse, responsive behavior, and fit with existing design language.
 
-> **FN-3906 auto-skip behavior:** The pre-merge orchestrator now auto-skips the built-in `frontend-ux-design` step before pause/defer checks when the task diff scope has no frontend/UI files. Scope relevance includes extensions (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.html`, `.css`, `.scss`, `.sass`, `.less`, `.styl`), common UI path segments (`/components/`, `/app/components/`, `/dashboard/`, `/frontend/`, `/ui/`, `/styles/`, `/themes/`, `/design-system/`, `/design-tokens/`), and token/theme filenames (`tokens.(ts|js|json|css)`, `theme.(ts|js|json|css)`). If scope capture is uncertain (error/empty list), the step falls back to normal execution and relies on the agent-side FAST-BAIL rule.
+> **FN-3906 + FN-4343 auto-skip behavior:** The pre-merge orchestrator auto-skips the built-in `frontend-ux-design` step before pause/defer checks when workflow relevance signals show no frontend/UI scope. It now evaluates both (1) the task diff scope and (2) declared `## File Scope` from `PROMPT.md`. Scope relevance includes extensions (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.html`, `.css`, `.scss`, `.sass`, `.less`, `.styl`), common UI path segments (`/components/`, `/app/components/`, `/dashboard/`, `/frontend/`, `/ui/`, `/styles/`, `/themes/`, `/design-system/`, `/design-tokens/`), and token/theme filenames (`tokens.(ts|js|json|css)`, `theme.(ts|js|json|css)`). If both signals are empty (or capture fails), Fusion preserves legacy behavior and runs the step.
 
 ## Plugin-Contributed Steps
 
@@ -124,6 +124,17 @@ REQUEST REVISION
 The revision block replaces any prior revision instructions (no accumulation).
 
 By default this split-and-fork behavior is enabled through the project setting `workflowRevisionForkOnScopeMismatch`. Set it to `false` to restore the legacy behavior that appends all workflow revision feedback to the original task even when it references files outside the declared File Scope.
+
+### End-of-step file-scope invariant for prompt pre-merge steps (FN-4343)
+
+After each successful **prompt-mode pre-merge** workflow step, Fusion runs a scope invariant check on files newly touched by that step (committed delta plus uncommitted working-tree edits):
+
+- If declared `## File Scope` is empty, the invariant is skipped.
+- If task `scopeOverride === true`, the invariant is bypassed (same semantics as merge-time scope enforcement).
+- If touched files have zero overlap with declared scope, Fusion emits a scope-leak log and applies `workflowStepScopeEnforcement`:
+  - `"block"` (default): mark the workflow step `failed`, request revision, and route through the normal executor revision loop.
+  - `"warn"`: log the violation but allow the step to pass.
+  - `"off"`: disable this pre-merge workflow-step invariant entirely.
 
 ### Hard Failures vs Revisions
 

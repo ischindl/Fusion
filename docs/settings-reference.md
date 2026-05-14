@@ -243,6 +243,7 @@ Override precedence for direct merges is:
 | `autoResolveConflicts` | `boolean` | `true` | Enable automatic merge conflict resolution. |
 | `smartConflictResolution` | `boolean` | `true` | Alias/preferred flag for smart conflict handling. |
 | `mergerAutostashMaxAgeHours` | `number` | `24` | Maximum autostash age in hours before startup/periodic stale-stash sweep drops `fusion-merger-autostash:*` leftovers (minimum `1`). |
+| `workflowStepScopeEnforcement` | `"block" \| "warn" \| "off"` | `"block"` | Controls pre-merge **prompt-mode workflow-step** file-scope enforcement. `block` requests revision on off-scope writes, `warn` logs and passes, `off` disables the check. Task-level `scopeOverride` bypasses this check. |
 | `workflowRevisionForkOnScopeMismatch` | `boolean` | `true` | When enabled, workflow revision feedback that explicitly names files outside the task's declared File Scope is forked into a dependent follow-up triage task instead of being appended to the original task's `PROMPT.md`. Set to `false` to keep the legacy append-and-rerun behavior. |
 | `strictScopeEnforcement` | `boolean` | `false` | Block merges on out-of-scope file changes. |
 | `buildRetryCount` | `number` | `0` | Build retry attempts during merge. |
