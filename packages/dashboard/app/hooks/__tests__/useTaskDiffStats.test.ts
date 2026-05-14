@@ -53,25 +53,25 @@ describe("useTaskDiffStats", () => {
     expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, "proj-1");
   });
 
-  it("does not fetch for active columns without a worktree", async () => {
+  it("fetches for active columns without a worktree", async () => {
+    mockFetchTaskDiff.mockResolvedValue({
+      files: [],
+      stats: { filesChanged: 2, additions: 4, deletions: 1 },
+    });
+
     const { result: inProgress } = renderHook(() =>
       useTaskDiffStats("FN-123", "in-progress", "abc1234", undefined),
-    );
-    const { result: todo } = renderHook(() =>
-      useTaskDiffStats("FN-123", "todo", "abc1234", undefined),
     );
     const { result: inReview } = renderHook(() =>
       useTaskDiffStats("FN-123", "in-review", "abc1234", undefined),
     );
 
     await waitFor(() => expect(inProgress.current.loading).toBe(false));
-    await waitFor(() => expect(todo.current.loading).toBe(false));
     await waitFor(() => expect(inReview.current.loading).toBe(false));
 
-    expect(inProgress.current.stats).toBeNull();
-    expect(todo.current.stats).toBeNull();
-    expect(inReview.current.stats).toBeNull();
-    expect(mockFetchTaskDiff).not.toHaveBeenCalled();
+    expect(inProgress.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
+    expect(inReview.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined);
   });
 
   it("fetches diff stats for active tasks with a worktree", async () => {
@@ -167,6 +167,16 @@ describe("useTaskDiffStats", () => {
     // The cancelled response should not have been stored
     expect(result.current.stats).toEqual({ filesChanged: 3, additions: 5, deletions: 1 });
     expect(mockFetchTaskDiff).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fetch for inactive columns", async () => {
+    const { result: todo } = renderHook(() =>
+      useTaskDiffStats("FN-123", "todo", "abc1234", undefined),
+    );
+
+    await waitFor(() => expect(todo.current.loading).toBe(false));
+    expect(todo.current.stats).toBeNull();
+    expect(mockFetchTaskDiff).not.toHaveBeenCalled();
   });
 
   it("resets stats when column changes from done to non-done", async () => {

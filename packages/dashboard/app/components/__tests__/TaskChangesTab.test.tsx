@@ -116,6 +116,28 @@ describe("TaskChangesTab — worktree-backed (non-done tasks)", () => {
     });
   });
 
+  it("renders fetched file rows for active task without worktree when branch fallback has files", async () => {
+    mockFetchTaskDiff.mockResolvedValue({
+      files: [
+        { path: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@" },
+      ],
+      stats: { filesChanged: 1, additions: 1, deletions: 0 },
+    });
+
+    render(
+      <TaskChangesTab
+        taskId="FN-001"
+        worktree={undefined}
+        column="in-progress"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("a.ts")).toBeTruthy();
+    });
+    expect(screen.queryByText("No worktree available for this task.")).toBeNull();
+  });
+
   it("shows modifiedFiles fallback when an active task has no worktree diff", async () => {
     mockFetchTaskDiff.mockResolvedValue({ files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } });
 

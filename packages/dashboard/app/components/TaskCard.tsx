@@ -1301,13 +1301,10 @@ function TaskCardComponent({
     if (task.column === "in-progress") {
       const activeDiffCount = diffStats?.filesChanged;
       const fallbackCount =
-        activeDiffCount == null || activeDiffCount === 0
+        activeDiffCount == null
           ? task.modifiedFiles?.length
           : undefined;
-      const displayCount =
-        activeDiffCount != null && activeDiffCount > 0
-          ? activeDiffCount
-          : fallbackCount;
+      const displayCount = activeDiffCount ?? fallbackCount;
       if (displayCount == null || displayCount === 0) {
         return null;
       }
@@ -1328,13 +1325,10 @@ function TaskCardComponent({
     if (task.column === "in-review") {
       const reviewDiffCount = diffStats?.filesChanged;
       const fallbackCount =
-        reviewDiffCount == null || reviewDiffCount === 0
+        reviewDiffCount == null
           ? task.modifiedFiles?.length
           : undefined;
-      const displayCount =
-        reviewDiffCount != null && reviewDiffCount > 0
-          ? reviewDiffCount
-          : fallbackCount;
+      const displayCount = reviewDiffCount ?? fallbackCount;
       if (displayCount == null || displayCount === 0) {
         return null;
       }

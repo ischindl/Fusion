@@ -31,12 +31,12 @@ interface UseTaskDiffStatsOptions {
 const diffStatsCache = new Map<string, { stats: DiffStats; expiresAt: number }>();
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
-function getCacheKey(taskId: string, projectId?: string, worktree?: string, stepVersion?: string): string {
-  return `${taskId}:${projectId ?? ""}:${worktree ?? ""}:${stepVersion ?? ""}`;
+function getCacheKey(taskId: string, projectId?: string, worktree?: string, stepVersion?: string, mode?: "done" | "active"): string {
+  return `${taskId}:${projectId ?? ""}:${worktree ?? ""}:${stepVersion ?? ""}:${mode ?? ""}`;
 }
 
-function getCachedStats(taskId: string, projectId?: string, worktree?: string, stepVersion?: string): DiffStats | null {
-  const key = getCacheKey(taskId, projectId, worktree, stepVersion);
+function getCachedStats(taskId: string, projectId?: string, worktree?: string, stepVersion?: string, mode?: "done" | "active"): DiffStats | null {
+  const key = getCacheKey(taskId, projectId, worktree, stepVersion, mode);
   const entry = diffStatsCache.get(key);
 
   if (!entry) return null;
@@ -50,8 +50,8 @@ function getCachedStats(taskId: string, projectId?: string, worktree?: string, s
   return entry.stats;
 }
 
-function setCachedStats(taskId: string, projectId: string | undefined, worktree: string | undefined, stepVersion: string | undefined, stats: DiffStats): void {
-  const key = getCacheKey(taskId, projectId, worktree, stepVersion);
+function setCachedStats(taskId: string, projectId: string | undefined, worktree: string | undefined, stepVersion: string | undefined, mode: "done" | "active", stats: DiffStats): void {
+  const key = getCacheKey(taskId, projectId, worktree, stepVersion, mode);
   diffStatsCache.set(key, {
     stats,
     expiresAt: Date.now() + CACHE_TTL_MS,
@@ -103,7 +103,7 @@ export function useTaskDiffStats(
     }
 
     const shouldFetchDoneTask = column === "done";
-    const shouldFetchActiveTask = (column === "in-progress" || column === "in-review") && Boolean(worktree);
+    const shouldFetchActiveTask = column === "in-progress" || column === "in-review";
 
     if (!taskId || (!shouldFetchDoneTask && !shouldFetchActiveTask)) {
       setStats(null);
@@ -113,12 +113,13 @@ export function useTaskDiffStats(
 
     const activeWorktree = shouldFetchActiveTask ? worktree : undefined;
     const stepVersionStr = stepVersion !== undefined ? String(stepVersion) : undefined;
+    const mode: "done" | "active" = shouldFetchDoneTask ? "done" : "active";
     let cancelled = false;
 
     async function load(forceRefresh = false) {
       // Check cache first - return immediately without loading flicker (unless force refresh)
       if (!forceRefresh) {
-        const cached = getCachedStats(taskId, projectId, activeWorktree, stepVersionStr);
+        const cached = getCachedStats(taskId, projectId, activeWorktree, stepVersionStr, mode);
         if (cached) {
           if (!cancelled) {
             setStats(cached);
@@ -134,7 +135,7 @@ export function useTaskDiffStats(
         if (!cancelled) {
           setStats(data.stats);
           // Store in cache
-          setCachedStats(taskId, projectId, activeWorktree, stepVersionStr, data.stats);
+          setCachedStats(taskId, projectId, activeWorktree, stepVersionStr, mode, data.stats);
         }
       } catch {
         if (!cancelled) {

@@ -231,8 +231,8 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
     );
   }
 
-  // Non-done task without a worktree → show worktree empty state
-  if (!isDone && !worktree) {
+  // Non-done task without a worktree → only show fallback state when branch-fallback diff is empty.
+  if (!isDone && !worktree && files.length === 0) {
     if (modifiedFiles && modifiedFiles.length > 0) {
       return renderModifiedFilesFallback(modifiedFiles, false);
     }
