@@ -892,11 +892,11 @@ export class HeartbeatMonitor {
     return this.approvalRequestStore;
   }
 
-  private buildActionGateContext(agent: Agent, taskId?: string, runId?: string): AgentActionGateContext | undefined {
+  private buildActionGateContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: import("@fusion/core").AgentPermissionPolicy["rules"] }): AgentActionGateContext | undefined {
     if (isEphemeralAgent(agent)) {
       return undefined;
     }
-    const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy);
+    const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy);
     return {
       agentId: agent.id,
       agentName: agent.name,
@@ -945,13 +945,13 @@ export class HeartbeatMonitor {
     };
   }
 
-  private buildPermanentAgentGatingContext(agent: Agent, taskId?: string, runId?: string): import("@fusion/core").PermanentAgentGatingContext | undefined {
+  private buildPermanentAgentGatingContext(agent: Agent, taskId?: string, runId?: string, projectDefaultPolicy?: { rules?: import("@fusion/core").AgentPermissionPolicy["rules"] }): import("@fusion/core").PermanentAgentGatingContext | undefined {
     if (isEphemeralAgent(agent)) {
       return undefined;
     }
 
     return {
-      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy),
+      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy),
       requester: { actorId: agent.id, actorType: "agent", actorName: agent.name },
       taskId,
       runId,
@@ -2330,8 +2330,8 @@ export class HeartbeatMonitor {
           },
           // Skill selection: use waking agent's skills (heartbeat has no role fallback)
           ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
-          actionGateContext: this.buildActionGateContext(agent, taskId, run.id),
-          permanentAgentGating: this.buildPermanentAgentGatingContext(agent, taskId, run.id),
+          actionGateContext: this.buildActionGateContext(agent, taskId, run.id, heartbeatModelSettings.defaultAgentPermissionPolicy),
+          permanentAgentGating: this.buildPermanentAgentGatingContext(agent, taskId, run.id, heartbeatModelSettings.defaultAgentPermissionPolicy),
         });
 
         // Track for monitoring

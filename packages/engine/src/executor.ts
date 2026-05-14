@@ -974,11 +974,11 @@ export class TaskExecutor {
     return this._approvalRequestStore;
   }
 
-  private buildActionGateContext(taskId: string | undefined, agent: Agent | null | undefined): AgentActionGateContext | undefined {
+  private buildActionGateContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: import("@fusion/core").AgentPermissionPolicy["rules"] }): AgentActionGateContext | undefined {
     if (!agent || isEphemeralAgent(agent)) {
       return undefined;
     }
-    const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy);
+    const policy = resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy);
     return {
       agentId: agent.id,
       agentName: agent.name,
@@ -1040,13 +1040,13 @@ export class TaskExecutor {
     };
   }
 
-  private buildPermanentAgentGatingContext(taskId: string | undefined, agent: Agent | null | undefined): import("@fusion/core").PermanentAgentGatingContext | undefined {
+  private buildPermanentAgentGatingContext(taskId: string | undefined, agent: Agent | null | undefined, projectDefaultPolicy?: { rules?: import("@fusion/core").AgentPermissionPolicy["rules"] }): import("@fusion/core").PermanentAgentGatingContext | undefined {
     if (!agent || isEphemeralAgent(agent)) {
       return undefined;
     }
 
     return {
-      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy),
+      permissionPolicy: resolveEffectiveAgentPermissionPolicy(agent.permissionPolicy, projectDefaultPolicy),
       requester: {
         actorId: agent.id,
         actorType: "agent",
@@ -2809,8 +2809,8 @@ export class TaskExecutor {
           pluginRunner: this.options.pluginRunner,
           runtimeHint: stepSessionRuntimeHint,
           assignedAgentRuntimeConfig: (stepSessionAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
-          actionGateContext: this.buildActionGateContext(task.id, stepSessionAgent),
-          permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, stepSessionAgent),
+          actionGateContext: this.buildActionGateContext(task.id, stepSessionAgent, settings.defaultAgentPermissionPolicy),
+          permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, stepSessionAgent, settings.defaultAgentPermissionPolicy),
           // Pass skill selection context from the main executor session
           skillSelection: skillContext.skillSelectionContext,
           // Pass agentStore and messageStore for delegation and messaging tools
@@ -3416,8 +3416,8 @@ export class TaskExecutor {
           taskEnv,
           // Skill selection: use assigned agent skills if available, otherwise role fallback
           ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
-          actionGateContext: this.buildActionGateContext(task.id, assignedAgent),
-          permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, assignedAgent),
+          actionGateContext: this.buildActionGateContext(task.id, assignedAgent, settings.defaultAgentPermissionPolicy),
+          permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, assignedAgent, settings.defaultAgentPermissionPolicy),
           taskId: task.id,
           taskTitle: detail.title,
           onFallbackModelUsed: createFallbackModelObserver({
@@ -3770,8 +3770,8 @@ export class TaskExecutor {
                 taskEnv,
                 // Skill selection: use assigned agent skills if available, otherwise role fallback
                 ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
-                actionGateContext: this.buildActionGateContext(task.id, assignedAgent),
-                permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, assignedAgent),
+                actionGateContext: this.buildActionGateContext(task.id, assignedAgent, settings.defaultAgentPermissionPolicy),
+                permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, assignedAgent, settings.defaultAgentPermissionPolicy),
               });
               if (retrySessionFile) {
                 this.store.updateTask(task.id, { sessionFile: retrySessionFile }).catch((err: unknown) => {
