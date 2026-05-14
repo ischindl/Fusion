@@ -1407,6 +1407,7 @@ function buildPermanentAgentApprovalDedupeKey(input: {
 const GATE_BYPASS_TOOL_NAMES = new Set([
   "fn_heartbeat_done",
   "fn_send_message",
+  "fn_post_room_message",
 ]);
 
 export function wrapToolsWithBoundary(
