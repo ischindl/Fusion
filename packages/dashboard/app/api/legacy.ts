@@ -378,6 +378,7 @@ export function updateTask(
     thinkingLevel?: string | null;
     reviewLevel?: number | null;
     executionMode?: "standard" | "fast" | null;
+    noCommitsExpected?: boolean;
     priority?: TaskPriority | null;
     noCommitsExpected?: boolean;
     sourceIssue?: TaskSourceIssue | null;
