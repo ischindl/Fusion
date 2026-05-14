@@ -43,6 +43,8 @@ import {
   BranchConflictError,
   BranchCrossContaminationError,
   assertCleanBranchAtBase,
+  autoRecoverCrossContamination,
+  classifyForeignCommits,
   isBranchConflictError,
   inspectBranchConflict,
 } from "./branch-conflicts.js";
@@ -4012,11 +4014,80 @@ export class TaskExecutor {
             nextRecoveryAt: null,
           });
           // Fall through to terminal failure marking
+        // Contamination recovery lives in executor because branch cross-contamination
+        // is surfaced here from task execution preflight; merger empty-cherry-pick
+        // handling does not throw BranchCrossContaminationError in its own path.
         } else if (err instanceof BranchCrossContaminationError) {
           const details = err.foreignCommits
             .map((commit) => `${commit.sha.slice(0, 12)}:${commit.foreignTaskId}`)
             .join(", ");
           await this.store.logEntry(task.id, `[recovery] branch cross-contamination detected on ${err.branchName} since ${err.baseSha}: ${details}`, undefined, this.currentRunContext);
+
+          try {
+            const classified = await classifyForeignCommits({
+              repoDir: this.rootDir,
+              branchName: err.branchName,
+              baseSha: err.baseSha,
+              foreignCommits: err.foreignCommits,
+            });
+
+            const alreadyShas = classified.alreadyUpstream.map((commit) => commit.sha.slice(0, 12)).join(", ") || "none";
+            const uniqueShas = classified.unique.map((commit) => commit.sha.slice(0, 12)).join(", ") || "none";
+            await this.store.logEntry(
+              task.id,
+              `[recovery] contamination classification: already-upstream=[${alreadyShas}] unique=[${uniqueShas}]`,
+              undefined,
+              this.currentRunContext,
+            );
+
+            const alreadyAttemptedRecovery = (task.recoveryRetryCount ?? 0) > 0;
+            if (classified.unique.length === 0 && !alreadyAttemptedRecovery) {
+              const recovery = await autoRecoverCrossContamination({
+                repoDir: this.rootDir,
+                branchName: err.branchName,
+                baseSha: err.baseSha,
+                taskId: task.id,
+                alreadyUpstreamShas: classified.alreadyUpstream.map((commit) => commit.sha),
+              });
+
+              await this.store.logEntry(
+                task.id,
+                `[recovery] auto-recovered branch-cross-contamination: dropped ${recovery.droppedShas.length} already-upstream commits (SHAs: ${recovery.droppedShas.map((sha) => sha.slice(0, 12)).join(", ")}); new tip ${recovery.newTipSha.slice(0, 12)}`,
+                undefined,
+                this.currentRunContext,
+              );
+
+              await this.store.updateTask(task.id, {
+                recoveryRetryCount: 1,
+                nextRecoveryAt: null,
+                paused: false,
+                pausedReason: null,
+                error: null,
+              });
+              await this.store.moveTask(task.id, "todo", { preserveResumeState: true });
+              return;
+            }
+
+            if (alreadyAttemptedRecovery) {
+              await this.store.logEntry(
+                task.id,
+                "[recovery] auto-recovery already attempted; escalating to human adjudication",
+                undefined,
+                this.currentRunContext,
+              );
+            } else if (classified.unique.length > 0) {
+              await this.store.logEntry(
+                task.id,
+                `[recovery] unique foreign commits require human adjudication: ${classified.unique.map((commit) => commit.sha.slice(0, 12)).join(", ")}`,
+                undefined,
+                this.currentRunContext,
+              );
+            }
+          } catch (recoveryError: unknown) {
+            const recoveryMessage = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+            await this.store.logEntry(task.id, `[recovery] contamination auto-recovery failed: ${recoveryMessage}`, undefined, this.currentRunContext);
+          }
+
           await this.store.updateTask(task.id, {
             status: "failed",
             error: err.message,

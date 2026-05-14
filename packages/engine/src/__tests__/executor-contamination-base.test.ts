@@ -1,19 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
-import { createMockStore, mockedExec, resetExecutorMocks } from "./executor-test-helpers.js";
+import { createMockStore, mockedCreateFnAgent, mockedExec, resetExecutorMocks } from "./executor-test-helpers.js";
+import * as branchConflicts from "../branch-conflicts.js";
 
 /**
  * FN-4417 regression: the contamination check must compute its own fresh
  * merge-base against the integration branch, not reuse `task.baseCommitSha`.
- *
- * Before FN-4417, on a freshly pool-acquired worktree (branch force-reset to
- * current main) the executor passed `task.baseCommitSha` to the contamination
- * `git log <base>..<branch>` query. When that stored SHA was stale, every
- * legitimately-merged commit on main since the stale SHA appeared as a
- * "foreign task-attributed commit" and the task was paused with
- * `pausedReason: "branch-cross-contamination"`. FN-4403 hit this with 157
- * false-positive foreign commits across ~39 unrelated FN-* tasks.
  */
 describe("resolveContaminationBaseRef (FN-4417)", () => {
   beforeEach(() => {
@@ -24,31 +17,17 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
     const calls: string[] = [];
     mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
       calls.push(String(cmd));
-      if (String(cmd).includes("merge-base")) {
-        cb(null, "fresh_main_sha\n");
-      } else {
-        cb(null, "");
-      }
+      if (String(cmd).includes("merge-base")) cb(null, "fresh_main_sha\n");
+      else cb(null, "");
       return {} as any;
     }) as any);
 
-    const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
-
-    const result = await (executor as any).resolveContaminationBaseRef(
-      "/tmp/test/.worktrees/swift-delta",
-    );
+    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
+    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("fresh_main_sha");
-    // Must have asked for merge-base against local main first (preferred
-    // over origin/main, which can lag local main by hundreds of commits on
-    // dev machines and re-introduce the FN-4417 false positive). Must not
-    // fall back to HEAD~1 (which on a force-reset branch is a commit on
-    // main itself).
     const mergeBaseCall = calls.find((c) => c.includes("merge-base"));
     expect(mergeBaseCall).toBeDefined();
-    // Local `main` must appear before `origin/main` in the command so the
-    // shell `||` fallback prefers it.
     const localMainIdx = mergeBaseCall!.indexOf("merge-base HEAD main");
     const originMainIdx = mergeBaseCall!.indexOf("merge-base HEAD origin/main");
     expect(localMainIdx).toBeGreaterThanOrEqual(0);
@@ -62,39 +41,111 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
-
-    const result = await (executor as any).resolveContaminationBaseRef(
-      "/tmp/test/.worktrees/swift-delta",
-    );
-
-    // Caller (execute()) treats undefined as "skip contamination check"
-    // rather than crash the run on git failure.
+    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
+    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
     expect(result).toBeUndefined();
   });
 
   it("does NOT fall back to task.baseCommitSha (FN-4417 false-positive guard)", async () => {
-    // Simulate the exact FN-4403 condition: merge-base succeeds with a fresh
-    // SHA. Even if a stale baseCommitSha is on the task, the contamination
-    // base resolver must use the fresh merge-base output.
     mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
       cb(null, String(cmd).includes("merge-base") ? "currentMainSHA\n" : "");
       return {} as any;
     }) as any);
 
-    const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
-
-    // resolveContaminationBaseRef takes only worktreePath — it has no API
-    // surface that accepts task.baseCommitSha. That is the structural
-    // guarantee of the fix.
-    const result = await (executor as any).resolveContaminationBaseRef(
-      "/tmp/test/.worktrees/swift-delta",
-    );
+    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
+    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("currentMainSHA");
-    // Sanity: function arity is 1, not 2 (no baseCommitSha parameter).
     expect((executor as any).resolveContaminationBaseRef.length).toBe(1);
+  });
+});
+
+describe("branch cross-contamination recovery (FN-4428)", () => {
+  beforeEach(() => {
+    resetExecutorMocks();
+    mockedExec.mockImplementation(((_cmd: any, _opts: any, cb: any) => {
+      cb(null, "");
+      return {} as any;
+    }) as any);
+    mockedCreateFnAgent.mockResolvedValue({ session: { prompt: vi.fn(), close: vi.fn(), dispose: vi.fn() }, sessionFile: null } as any);
+  });
+
+  function makeTask(recoveryRetryCount?: number) {
+    return {
+      id: "FN-4428",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      recoveryRetryCount,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as any;
+  }
+
+  it("auto-recovers when all foreign commits are already-upstream", async () => {
+    const store = createMockStore();
+    const contamination = new branchConflicts.BranchCrossContaminationError({
+      branchName: "fusion/fn-4428",
+      baseSha: "abc123",
+      taskId: "FN-4428",
+      foreignCommits: [{ sha: "1111111111111111111111111111111111111111", subject: "feat(FN-4412): upstream", foreignTaskId: "FN-4412" }],
+    });
+
+    mockedCreateFnAgent.mockRejectedValueOnce(contamination);
+    vi.spyOn(branchConflicts, "classifyForeignCommits").mockResolvedValueOnce({ alreadyUpstream: contamination.foreignCommits, unique: [] });
+    vi.spyOn(branchConflicts, "autoRecoverCrossContamination").mockResolvedValueOnce({
+      newTipSha: "2222222222222222222222222222222222222222",
+      droppedShas: ["1111111111111111111111111111111111111111"],
+    });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await executor.execute(makeTask());
+
+    expect(store.moveTask).toHaveBeenCalledWith("FN-4428", "todo", { preserveResumeState: true });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4428", expect.objectContaining({ paused: false, pausedReason: null, recoveryRetryCount: 1 }));
+    expect(store.logEntry).toHaveBeenCalledWith("FN-4428", expect.stringContaining("auto-recovered branch-cross-contamination"), undefined, expect.any(Object));
+  });
+
+  it("escalates to paused failure when unique foreign commits remain", async () => {
+    const store = createMockStore();
+    const contamination = new branchConflicts.BranchCrossContaminationError({
+      branchName: "fusion/fn-4428",
+      baseSha: "abc123",
+      taskId: "FN-4428",
+      foreignCommits: [{ sha: "3333333333333333333333333333333333333333", subject: "feat(FN-4410): unique", foreignTaskId: "FN-4410" }],
+    });
+
+    mockedCreateFnAgent.mockRejectedValueOnce(contamination);
+    vi.spyOn(branchConflicts, "classifyForeignCommits").mockResolvedValueOnce({ alreadyUpstream: [], unique: contamination.foreignCommits });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await executor.execute(makeTask());
+
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4428", expect.objectContaining({ status: "failed", paused: true, pausedReason: "branch-cross-contamination" }));
+  });
+
+  it("escalates immediately when auto-recovery was already attempted", async () => {
+    const store = createMockStore();
+    const contamination = new branchConflicts.BranchCrossContaminationError({
+      branchName: "fusion/fn-4428",
+      baseSha: "abc123",
+      taskId: "FN-4428",
+      foreignCommits: [{ sha: "4444444444444444444444444444444444444444", subject: "feat(FN-4412): upstream", foreignTaskId: "FN-4412" }],
+    });
+
+    mockedCreateFnAgent.mockRejectedValueOnce(contamination);
+    vi.spyOn(branchConflicts, "classifyForeignCommits").mockResolvedValueOnce({ alreadyUpstream: contamination.foreignCommits, unique: [] });
+    const autoRecoverSpy = vi.spyOn(branchConflicts, "autoRecoverCrossContamination");
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await executor.execute(makeTask(1));
+
+    expect(autoRecoverSpy).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-4428", expect.stringContaining("auto-recovery already attempted"), undefined, expect.objectContaining({ agentId: "executor" }));
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4428", expect.objectContaining({ status: "failed", paused: true, pausedReason: "branch-cross-contamination" }));
   });
 });
