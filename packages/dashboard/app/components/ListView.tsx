@@ -88,6 +88,19 @@ function readHideDoneTasks(projectId?: string): boolean {
   return false;
 }
 
+function readStaleOnlyFilter(projectId?: string): boolean {
+  try {
+    const saved = getScopedItem("kb-dashboard-stale-only-filter", projectId);
+    if (saved !== null) {
+      return saved === "true";
+    }
+  } catch {
+    // Invalid localStorage data - fall through to default
+  }
+
+  return false;
+}
+
 function readCollapsedSections(projectId?: string): Set<Column> {
   try {
     const saved = getScopedItem("kb-dashboard-list-collapsed", projectId);
@@ -272,6 +285,7 @@ export function ListView({
 
   // Hide done tasks state - initialize from localStorage
   const [hideDoneTasks, setHideDoneTasks] = useState<boolean>(() => readHideDoneTasks(projectId));
+  const [staleOnlyFilter, setStaleOnlyFilter] = useState<boolean>(() => readStaleOnlyFilter(projectId));
 
   // Collapsed sections state - initialize from localStorage
   const [collapsedSections, setCollapsedSections] = useState<Set<Column>>(() =>
@@ -291,6 +305,13 @@ export function ListView({
       setScopedItem("kb-dashboard-hide-done", hideDoneTasks.toString(), projectId);
     }
   }, [hideDoneTasks, projectId]);
+
+  // Persist stale-only filter state to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setScopedItem("kb-dashboard-stale-only-filter", staleOnlyFilter.toString(), projectId);
+    }
+  }, [projectId, staleOnlyFilter]);
 
   // Persist collapsed sections state to localStorage
   useEffect(() => {
@@ -313,6 +334,7 @@ export function ListView({
   useEffect(() => {
     setVisibleColumns(readVisibleColumns(projectId));
     setHideDoneTasks(readHideDoneTasks(projectId));
+    setStaleOnlyFilter(readStaleOnlyFilter(projectId));
     setCollapsedSections(readCollapsedSections(projectId));
     setSelectedTaskIds(readSelectedTaskIds(projectId));
     const persistedSelection = readSelectedTaskId(projectId);
@@ -506,6 +528,11 @@ export function ListView({
       filtered = filtered.filter((t) => t.column !== "done" && t.column !== "archived");
     }
 
+    // Then apply stale-only filter if selected
+    if (staleOnlyFilter) {
+      filtered = filtered.filter((t) => t.ageStaleness != null);
+    }
+
     // Then apply column filter if selected
     const columnFiltered = selectedColumn
       ? filtered.filter((t) => t.column === selectedColumn)
@@ -548,7 +575,7 @@ export function ListView({
       });
     }
     return groups;
-  }, [tasks, searchQuery, sortField, sortDirection, hideDoneTasks, selectedColumn]);
+  }, [tasks, searchQuery, sortField, sortDirection, hideDoneTasks, staleOnlyFilter, selectedColumn]);
 
   // Calculate total filtered count from groups
   const filteredCount = useMemo(() => {
@@ -1231,6 +1258,14 @@ export function ListView({
         {hideDoneTasks ? <Eye size={14} /> : <EyeOff size={14} />}
         {hideDoneTasks ? "Show Done" : "Hide Done"}
       </button>
+      <button
+        className="btn btn-sm list-hide-done-toggle"
+        onClick={() => setStaleOnlyFilter((prev) => !prev)}
+        aria-pressed={staleOnlyFilter}
+        title={staleOnlyFilter ? "Show all tasks" : "Show stale tasks only"}
+      >
+        {staleOnlyFilter ? "Show all" : "Stale only"}
+      </button>
       <div className="list-drop-zones list-drop-zones--sidebar">
         {COLUMNS.map((column) => {
           const totalCount = tasks.filter((t) => t.column === column).length;
@@ -1330,6 +1365,7 @@ export function ListView({
                       </button>
                     ) : null}
                     {hideDoneTasks ? <span className="list-sidebar-chip">Done hidden</span> : null}
+                    {staleOnlyFilter ? <span className="list-sidebar-chip">Stale only</span> : null}
                     {bulkEditEnabled ? (
                       <span className="list-sidebar-chip">Bulk edit</span>
                     ) : null}

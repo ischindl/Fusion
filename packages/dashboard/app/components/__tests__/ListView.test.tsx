@@ -1767,6 +1767,26 @@ describe("ListView Hide Done Tasks", () => {
     expect(localStorage.getItem(scopedStorageKey("kb-dashboard-hide-done"))).toBe("true");
   });
 
+  it("filters tasks when stale only is enabled", () => {
+    const tasks = [
+      createMockTask({ id: "FN-001", column: "in-progress", ageStaleness: { level: "warning", reason: "r", observedAt: "2026-05-14T00:00:00.000Z", ageMs: 5 * 60 * 60_000, warningThresholdMs: 4 * 60 * 60_000, criticalThresholdMs: 24 * 60 * 60_000, column: "in-progress", paused: false } as any }),
+      createMockTask({ id: "FN-002", column: "in-progress", ageStaleness: undefined }),
+    ];
+
+    renderListView({ tasks });
+
+    fireEvent.click(screen.getByRole("button", { name: /stale only/i }));
+
+    expect(screen.getByText("FN-001")).toBeDefined();
+    expect(screen.queryByText("FN-002")).toBeNull();
+  });
+
+  it("persists stale-only preference to localStorage", () => {
+    renderListView({ tasks: [createMockTask({ id: "FN-001", column: "in-progress" })] });
+    fireEvent.click(screen.getByRole("button", { name: /stale only/i }));
+    expect(localStorage.getItem(scopedStorageKey("kb-dashboard-stale-only-filter"))).toBe("true");
+  });
+
   it("initializes hide done state from localStorage", () => {
     // Set up localStorage with hide done enabled
     localStorage.setItem(scopedStorageKey("kb-dashboard-hide-done"), "true");

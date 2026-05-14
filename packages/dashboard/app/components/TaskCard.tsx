@@ -20,6 +20,7 @@ import { useTaskDiffStats } from "../hooks/useTaskDiffStats";
 import { isTaskStuck } from "../utils/taskStuck";
 import { getStalledReviewSignal } from "../utils/taskStalledReview";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
+import { getTaskAgeStalenessCopy, shouldShowTaskAgeStalenessBadge } from "../utils/taskAgeStalenessCopy";
 import { getUnifiedTaskProgress } from "../utils/taskProgress";
 import { getEndToEndDurationMs, getTimedDurationMs, getWorkflowRuntimeMs, parseTimestampToMs } from "../utils/taskTiming";
 import type { ToastType } from "../hooks/useToast";
@@ -472,6 +473,14 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previousTask.stalledReview?.matchCount === nextTask.stalledReview?.matchCount &&
     previousTask.stalledReview?.firstMatchAt === nextTask.stalledReview?.firstMatchAt &&
     previousTask.stalledReview?.lastMatchAt === nextTask.stalledReview?.lastMatchAt &&
+    previousTask.ageStaleness?.level === nextTask.ageStaleness?.level &&
+    previousTask.ageStaleness?.reason === nextTask.ageStaleness?.reason &&
+    previousTask.ageStaleness?.observedAt === nextTask.ageStaleness?.observedAt &&
+    previousTask.ageStaleness?.ageMs === nextTask.ageStaleness?.ageMs &&
+    previousTask.ageStaleness?.warningThresholdMs === nextTask.ageStaleness?.warningThresholdMs &&
+    previousTask.ageStaleness?.criticalThresholdMs === nextTask.ageStaleness?.criticalThresholdMs &&
+    previousTask.ageStaleness?.column === nextTask.ageStaleness?.column &&
+    previousTask.ageStaleness?.paused === nextTask.ageStaleness?.paused &&
     areAttachmentsEqual(previousTask.attachments, nextTask.attachments) &&
     areCommentsEqual(previousTask.comments, nextTask.comments) &&
     areTaskDependenciesEqual(previousTask.dependencies, nextTask.dependencies) &&
@@ -754,6 +763,8 @@ function TaskCardComponent({
   const showStalledReview = Boolean(stalledReview && task.column === "in-review" && !isPaused);
   const hasInReviewStall = shouldShowInReviewStallBadge(task);
   const stallCopy = task.inReviewStall ? getInReviewStallCopy(task.inReviewStall) : undefined;
+  const hasTaskAgeStaleness = shouldShowTaskAgeStalenessBadge(task);
+  const taskAgeStalenessCopy = getTaskAgeStalenessCopy(task.ageStaleness);
   const isAwaitingApproval = task.column === "triage" && task.status === "awaiting-approval";
   const isArchived = task.column === "archived";
   const isAgentActive = !globalPaused && !queued && !isFailed && !isPaused && !isStuck && !isAwaitingApproval && (task.column === "in-progress" || ACTIVE_STATUSES.has(task.status as string));
@@ -1453,6 +1464,14 @@ function TaskCardComponent({
             data-stall-code={stallCopy.code}
           >
             {stallCopy.badgeLabel}
+          </span>
+        )}
+        {hasTaskAgeStaleness && taskAgeStalenessCopy && (
+          <span
+            className={`card-status-badge card-task-age-staleness-badge card-task-age-staleness-badge--${taskAgeStalenessCopy.badgeTone}`}
+            title={`${taskAgeStalenessCopy.headline} — ${taskAgeStalenessCopy.description}`}
+          >
+            {taskAgeStalenessCopy.badgeLabel}
           </span>
         )}
         {isStuck && (isPaused || !task.status || task.status === "queued") && (

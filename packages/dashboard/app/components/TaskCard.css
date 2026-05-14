@@ -214,6 +214,18 @@
   border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
 }
 
+.card-status-badge.card-task-age-staleness-badge--warning {
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+.card-status-badge.card-task-age-staleness-badge--critical {
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  color: var(--color-error);
+  border-color: color-mix(in srgb, var(--color-error) 45%, transparent);
+}
+
 .card-status-badge.paused {
   background: var(--status-done-bg-deep);
   color: var(--text-muted);

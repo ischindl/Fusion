@@ -509,6 +509,58 @@ describe("TaskCard", () => {
     expect(screen.queryByText("Stall")).toBeNull();
   });
 
+  it("renders warning task-age staleness badge", () => {
+    render(
+      <TaskCard
+        task={makeTask({
+          ageStaleness: {
+            level: "warning",
+            reason: "in-progress age exceeded warning threshold",
+            observedAt: "2026-05-14T00:00:00.000Z",
+            ageMs: 5 * 60 * 60_000,
+            warningThresholdMs: 4 * 60 * 60_000,
+            criticalThresholdMs: 24 * 60 * 60_000,
+            column: "in-progress",
+            paused: false,
+          },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByText("Stale")).toBeDefined();
+  });
+
+  it("renders critical task-age staleness badge", () => {
+    render(
+      <TaskCard
+        task={makeTask({
+          ageStaleness: {
+            level: "critical",
+            reason: "in-review age exceeded critical threshold",
+            observedAt: "2026-05-14T00:00:00.000Z",
+            ageMs: 80 * 60 * 60_000,
+            warningThresholdMs: 24 * 60 * 60_000,
+            criticalThresholdMs: 72 * 60 * 60_000,
+            column: "in-review",
+            paused: true,
+          },
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByText("Stale (critical)")).toBeDefined();
+  });
+
+  it("hides task-age staleness badge when signal is absent", () => {
+    render(<TaskCard task={makeTask({ ageStaleness: undefined })} onOpenDetail={noop} addToast={noop} />);
+    expect(screen.queryByText("Stale")).toBeNull();
+    expect(screen.queryByText("Stale (critical)")).toBeNull();
+  });
+
   it("shows paused by agent label when pausedByAgentId is set", () => {
     render(
       <TaskCard task={makeTask({ paused: true, pausedByAgentId: "agent-1" })} onOpenDetail={noop} addToast={noop} />,

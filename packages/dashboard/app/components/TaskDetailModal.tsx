@@ -46,6 +46,7 @@ import { computeBlockerFanoutMap } from "../hooks/useBlockerFanout";
 import { resolveEffectiveGithubRepoDefault } from "./githubTracking";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
+import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
 import { findInReviewStallLogEntry, IN_REVIEW_STALL_LOG_REGEX } from "../utils/findInReviewStallLogEntry";
 
 interface ModelSelection {
@@ -258,6 +259,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDurationCompact(ageMs: number): string {
+  const totalMinutes = Math.max(1, Math.floor(ageMs / 60_000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 type TabId = "definition" | "logs" | "changes" | "review" | "comments" | "model" | "workflow" | "documents" | "stats" | "routing" | `plugin-${string}`;
@@ -3023,6 +3034,25 @@ export function TaskDetailContent({
               <div className="detail-empty-inline">(no downstream tasks blocked)</div>
             )}
           </div>
+          {workingTask.ageStaleness && (() => {
+            const copy = getTaskAgeStalenessCopy(workingTask.ageStaleness);
+            if (!copy) return null;
+            return (
+              <div className="detail-section">
+                <div className="detail-sidebar-title">Task age staleness</div>
+                <div>{copy.headline}</div>
+                <div className="detail-description">{copy.description}</div>
+                <div className="detail-in-review-stall-meta">
+                  <span>Column {workingTask.ageStaleness.column}</span>
+                  <span>Age {formatDurationCompact(workingTask.ageStaleness.ageMs)}</span>
+                  <span>Warning {formatDurationCompact(workingTask.ageStaleness.warningThresholdMs)}</span>
+                  <span>Critical {formatDurationCompact(workingTask.ageStaleness.criticalThresholdMs)}</span>
+                  <span>Observed {formatTimestamp(workingTask.ageStaleness.observedAt)}</span>
+                  <span>{workingTask.ageStaleness.paused ? "Paused" : "Active"}</span>
+                </div>
+              </div>
+            );
+          })()}
           {/* PR Section - only for in-review tasks */}
           {task.column === "in-review" && (
             <>
