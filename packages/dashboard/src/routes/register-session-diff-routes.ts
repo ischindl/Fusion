@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import type { Request, Router } from "express";
+import type { RunAuditEvent, RunAuditEventFilter } from "@fusion/core";
 import { ApiError, notFound, rethrowAsApiError } from "../api-error.js";
 import { resolveDiffBase, runGitCommand } from "./resolve-diff-base.js";
 import type { ProjectContext } from "./types.js";
@@ -236,12 +237,7 @@ type DoneTaskAggregationTask = {
 type DoneTaskAggregationStore = {
   getRootDir: () => string;
   getTaskCommitAssociationsByLineageId: (lineageId: string) => Promise<Array<{ commitSha: string; authoredAt?: string | null }>>;
-  getRunAuditEvents?: (filter: {
-    taskId?: string;
-    domain?: string;
-    mutationType?: string;
-    limit?: number;
-  }) => Array<{ target?: unknown; metadata?: unknown; payload?: unknown; newValue?: unknown }> | Promise<Array<{ target?: unknown; metadata?: unknown; payload?: unknown; newValue?: unknown }>>;
+  getRunAuditEvents?: (options?: RunAuditEventFilter) => RunAuditEvent[] | Promise<RunAuditEvent[]>;
 };
 
 async function resolveCommitDiffSpec(sha: string, rootDir: string): Promise<
@@ -334,8 +330,9 @@ async function resolveAuditCommitSha(taskId: string, scopedStore: DoneTaskAggreg
   const rootDir = scopedStore.getRootDir();
   const mutationTypes = ["git:commit", "commit:create", "commit:amend"];
   for (const mutationType of mutationTypes) {
-    const events = await Promise.resolve(scopedStore.getRunAuditEvents({ taskId, domain: "git", mutationType, limit: 5 }));
-    for (const event of events) {
+    const eventsRaw = await Promise.resolve(scopedStore.getRunAuditEvents({ taskId, domain: "git", mutationType: mutationType as RunAuditEventFilter["mutationType"], limit: 5 }));
+    const events = Array.isArray(eventsRaw) ? eventsRaw : [];
+    for (const event of events as Array<{ target?: unknown; metadata?: unknown; payload?: unknown; newValue?: unknown }>) {
       const candidate = extractCommitShaCandidate(event);
       if (!candidate) continue;
       try {
