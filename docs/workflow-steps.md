@@ -75,6 +75,8 @@ Fusion ships seven templates:
 6. Browser Verification
 7. Frontend UX Design
 
+All seven built-in templates emit the structured `{"verdict":"APPROVE|APPROVE_WITH_NOTES|REVISE","notes":"..."}` envelope introduced in FN-4367 (final line JSON only). The legacy `REQUEST REVISION` prose path remains as a backward-compatible fallback. See [Prompt-mode Structured Verdict Contract](#prompt-mode-structured-verdict-contract).
+
 The **Browser Verification** template uses browser automation style checks and is designed for UI validation flows.
 
 The **Frontend UX Design** template verifies visual polish and consistency with existing UI patterns and design tokens, including visual hierarchy, spacing/typography consistency, color/token consistency, component reuse, responsive behavior, and fit with existing design language.

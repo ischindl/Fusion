@@ -53,6 +53,13 @@ test("replaces seeded workflow prompts and remains idempotent", async () => {
       },
     ]);
 
+    const runCheckStale = spawnSync("node", [scriptPath, `--db=${dbPath}`, "--check"], {
+      encoding: "utf8",
+      cwd: root,
+    });
+    assert.equal(runCheckStale.status, 0);
+    assert.match(runCheckStale.stdout, /WS-004: differs/);
+
     const run1 = spawnSync("node", [scriptPath, `--db=${dbPath}`], { encoding: "utf8", cwd: root });
     assert.equal(run1.status, 0);
     assert.match(run1.stdout, /WS-004: updated/);
