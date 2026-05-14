@@ -6940,7 +6940,7 @@ export async function aiMergeTask(
             });
             const treeSha = treeOut.trim();
             if (!treeSha) continue;
-            const cacheHit = store.getVerificationCacheHit(treeSha, effectiveTestCommand, effectiveBuildCommand);
+            const cacheHit = store.getVerificationCacheHit(treeSha, effectiveTestCommand ?? "", effectiveBuildCommand ?? "");
             if (cacheHit) {
               verificationPassed = true;
               break;
