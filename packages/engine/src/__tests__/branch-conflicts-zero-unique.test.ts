@@ -15,7 +15,6 @@ async function run(command: string, cwd: string): Promise<string> {
 
 describe("inspectBranchConflict zero-unique behavior", () => {
   const dirs: string[] = [];
-
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
@@ -31,7 +30,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     return repoDir;
   }
 
-  it("returns fully-subsumed when branch tip is ancestor of main", async () => {
+  it("returns tip-already-merged when branch tip is ancestor of main", async () => {
     const repoDir = await setupRepo();
     await run("git checkout -b fusion/fn-9001", repoDir);
     await run("git checkout main", repoDir);
@@ -40,26 +39,17 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     const stalePath = path.join(repoDir, "wt-stale-9001");
     await mkdir(stalePath, { recursive: true });
 
-    const result = await inspectBranchConflict({
-      repoDir,
-      branchName: "fusion/fn-9001",
-      conflictingWorktreePath: stalePath,
-      requestingTaskId: "FN-9001",
-      ownerTaskId: "FN-9001",
-      startPoint: "main",
-    });
-
-    expect(result.kind).toBe("fully-subsumed");
+    const result = await inspectBranchConflict({ repoDir, branchName: "fusion/fn-9001", conflictingWorktreePath: stalePath, requestingTaskId: "FN-9001", ownerTaskId: "FN-9001", startPoint: "main" });
+    expect(result.kind).toBe("tip-already-merged");
   });
 
-  it("returns fully-subsumed when branch patch already exists upstream", async () => {
+  it("returns tip-already-merged when branch patch already exists upstream", async () => {
     const repoDir = await setupRepo();
     await run("git checkout -b fusion/fn-9001", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "change\n", "utf-8");
     await run("git add note.txt", repoDir);
     await run("git commit -m 'feat(FN-9001): change' -m 'Fusion-Task-Id: FN-9001'", repoDir);
     const branchCommit = await run("git rev-parse HEAD", repoDir);
-
     await run("git checkout main", repoDir);
     await run(`git cherry-pick ${branchCommit}`, repoDir);
 
@@ -68,16 +58,8 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     const stalePath = path.join(repoDir, "wt-stale-9001-upstream");
     await mkdir(stalePath, { recursive: true });
 
-    const result = await inspectBranchConflict({
-      repoDir,
-      branchName: "fusion/fn-9001",
-      conflictingWorktreePath: stalePath,
-      requestingTaskId: "FN-9001",
-      ownerTaskId: "FN-9001",
-      startPoint: "main",
-    });
-
-    expect(result.kind).toBe("fully-subsumed");
+    const result = await inspectBranchConflict({ repoDir, branchName: "fusion/fn-9001", conflictingWorktreePath: stalePath, requestingTaskId: "FN-9001", ownerTaskId: "FN-9001", startPoint: "main" });
+    expect(result.kind).toBe("tip-already-merged");
   });
 
   it("returns reclaimable when branch still has unique commit", async () => {
@@ -93,15 +75,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     const stalePath = path.join(repoDir, "wt-stale-9001-unique");
     await mkdir(stalePath, { recursive: true });
 
-    const result = await inspectBranchConflict({
-      repoDir,
-      branchName: "fusion/fn-9001",
-      conflictingWorktreePath: stalePath,
-      requestingTaskId: "FN-9001",
-      ownerTaskId: "FN-9001",
-      startPoint: "main",
-    });
-
+    const result = await inspectBranchConflict({ repoDir, branchName: "fusion/fn-9001", conflictingWorktreePath: stalePath, requestingTaskId: "FN-9001", ownerTaskId: "FN-9001", startPoint: "main" });
     expect(result.kind).toBe("reclaimable");
   });
 
@@ -118,15 +92,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     const stalePath = path.join(repoDir, "wt-stale-other");
     await mkdir(stalePath, { recursive: true });
 
-    const result = await inspectBranchConflict({
-      repoDir,
-      branchName: "topic/other",
-      conflictingWorktreePath: stalePath,
-      requestingTaskId: "FN-9001",
-      ownerTaskId: "FN-9001",
-      startPoint: "main",
-    });
-
+    const result = await inspectBranchConflict({ repoDir, branchName: "topic/other", conflictingWorktreePath: stalePath, requestingTaskId: "FN-9001", ownerTaskId: "FN-9001", startPoint: "main" });
     expect(result.kind).toBe("live-foreign");
   });
 });
