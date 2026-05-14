@@ -21,10 +21,10 @@ describe("FileEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: /toggle editor options/i }));
   };
 
-  it("renders textarea with correct class names", () => {
-    render(<FileEditor content="" onChange={vi.fn()} />);
-    const textarea = screen.getByRole("textbox");
-    expect(textarea.classList.contains("file-editor-textarea")).toBe(true);
+  it("renders CodeMirror editor with file-path aria-label", () => {
+    render(<FileEditor content="" onChange={vi.fn()} filePath="a.ts" />);
+    expect(screen.getByLabelText("Editor for a.ts")).toBeInTheDocument();
+    expect(document.querySelector(".cm-editor")).toBeInTheDocument();
   });
 
   it("calls onChange when document changes", () => {
@@ -117,39 +117,29 @@ describe("FileEditor", () => {
 
     it("defaults to edit mode for markdown files", () => {
       render(<FileEditor content="# Hello World" onChange={vi.fn()} filePath="readme.md" />);
-      
-      // Textarea should be visible
-      const textarea = screen.getByRole("textbox");
-      expect(textarea).toBeInTheDocument();
-      expect(textarea.tagName.toLowerCase()).toBe("textarea");
+      expect(document.querySelector(".cm-editor")).toBeInTheDocument();
     });
 
     it("switches to preview mode when preview button is clicked", () => {
       render(<FileEditor content="# Hello World" onChange={vi.fn()} filePath="readme.md" />);
-      
-      // Click preview button
+
       const previewButton = screen.getByRole("button", { name: /preview/i });
       fireEvent.click(previewButton);
-      
-      // Preview should be visible (no textarea)
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+
+      expect(document.querySelector(".cm-editor")).not.toBeInTheDocument();
       expect(document.querySelector(".file-editor-preview")).toBeInTheDocument();
     });
 
     it("switches back to edit mode when edit button is clicked", () => {
       render(<FileEditor content="# Hello World" onChange={vi.fn()} filePath="readme.md" />);
-      
-      // Switch to preview first
+
       const previewButton = screen.getByRole("button", { name: /preview/i });
       fireEvent.click(previewButton);
-      
-      // Then switch back to edit
+
       const editButton = screen.getByRole("button", { name: /edit mode/i });
       fireEvent.click(editButton);
-      
-      // Textarea should be visible again
-      const textarea = screen.getByRole("textbox");
-      expect(textarea).toBeInTheDocument();
+
+      expect(document.querySelector(".cm-editor")).toBeInTheDocument();
     });
 
     it("renders markdown content in preview mode", () => {
@@ -174,9 +164,8 @@ describe("FileEditor", () => {
 
     it("defaults to preview mode in readOnly mode for markdown files", () => {
       render(<FileEditor content="# Hello World" onChange={vi.fn()} filePath="readme.md" readOnly />);
-      
-      // Preview should be active by default (no textarea in readOnly)
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+
+      expect(document.querySelector(".cm-editor")).not.toBeInTheDocument();
       expect(document.querySelector(".file-editor-preview")).toBeInTheDocument();
     });
 
@@ -224,8 +213,7 @@ describe("FileEditor", () => {
     it("word wrap is enabled by default", () => {
       render(<FileEditor content="const x = 1;" onChange={vi.fn()} filePath="script.ts" />);
 
-      const textarea = screen.getByRole("textbox");
-      expect(textarea.classList.contains("file-editor-textarea--wrap")).toBe(true);
+      expect(document.querySelector(".cm-content.cm-lineWrapping")).toBeInTheDocument();
     });
 
     it("toggle button shows active state when word wrap is enabled", () => {
@@ -243,8 +231,7 @@ describe("FileEditor", () => {
       const wrapButton = screen.getByRole("button", { name: /toggle word wrap/i });
       fireEvent.click(wrapButton);
 
-      const textarea = screen.getByRole("textbox");
-      expect(textarea.classList.contains("file-editor-textarea--wrap")).toBe(false);
+      expect(document.querySelector(".cm-content.cm-lineWrapping")).not.toBeInTheDocument();
     });
 
     it("clicking toggle button again re-enables word wrap", () => {
@@ -255,8 +242,7 @@ describe("FileEditor", () => {
       fireEvent.click(wrapButton);
       fireEvent.click(wrapButton);
 
-      const textarea = screen.getByRole("textbox");
-      expect(textarea.classList.contains("file-editor-textarea--wrap")).toBe(true);
+      expect(document.querySelector(".cm-content.cm-lineWrapping")).toBeInTheDocument();
     });
 
     it("toggle button loses active state when word wrap is disabled", () => {
