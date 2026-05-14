@@ -669,8 +669,19 @@
   min-height: 0;
 }
 
-.file-editor-container .cm-editor {
+.file-editor-codemirror {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-editor-codemirror .cm-editor {
   height: 100%;
+}
+
+.file-editor-codemirror .cm-scroller {
+  font-family: var(--font-mono);
+  font-size: calc(var(--space-md) + var(--space-xs) * 0.5);
 }
 
 /* File Editor Toolbar */

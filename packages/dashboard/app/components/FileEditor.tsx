@@ -19,6 +19,10 @@ function isMarkdownFile(filePath?: string): boolean {
   return lowerPath.endsWith(".md") || lowerPath.endsWith(".markdown") || lowerPath.endsWith(".mdx");
 }
 
+function isDarkTheme(): boolean {
+  return document.documentElement.dataset.theme !== "light";
+}
+
 export function FileEditor({
   content,
   onChange,
@@ -45,8 +49,7 @@ export function FileEditor({
       return 0;
     }
 
-    return content.split("\n").length;
-  }, [content, shouldRenderLineNumbers]);
+  const languageExtension = useMemo(() => resolveCodeMirrorLanguage(filePath), [filePath]);
 
   const handleEditClick = useCallback(() => {
     setShowPreview(false);
@@ -69,8 +72,147 @@ export function FileEditor({
       return;
     }
 
-    lineNumbersRef.current.scrollTop = event.currentTarget.scrollTop;
-  }, []);
+    const themeOverlay = EditorView.theme({
+      "&": {
+        height: "100%",
+        fontFamily: "var(--font-mono)",
+        backgroundColor: "var(--bg)",
+        color: "var(--text)",
+      },
+      ".cm-scroller": {
+        fontFamily: "var(--font-mono)",
+        fontSize: "calc(var(--space-md) + var(--space-xs) * 0.5)",
+      },
+      ".cm-content": {
+        caretColor: "var(--text)",
+      },
+      ".cm-gutters": {
+        backgroundColor: "var(--surface)",
+        color: "var(--text-muted)",
+        borderRight: "calc(var(--space-xs) * 0.25) solid var(--border)",
+      },
+      ".cm-activeLineGutter": {
+        backgroundColor: "color-mix(in srgb, var(--surface) 80%, transparent)",
+      },
+      ".cm-selectionBackground, .cm-content ::selection": {
+        backgroundColor: "color-mix(in srgb, var(--todo) 30%, transparent)",
+      },
+      "&.cm-focused": {
+        outline: "none",
+      },
+    });
+
+    const lineNumbersExtension = shouldRenderLineNumbers ? lineNumbers() : [];
+    const wrapExtension = wordWrap ? EditorView.lineWrapping : [];
+    const readOnlyExtensions = readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+    const themeExtension = darkThemeActive ? [oneDark] : [];
+
+    const state = EditorState.create({
+      doc: content,
+      extensions: [
+        lineNumbersCompartmentRef.current.of(lineNumbersExtension),
+        wordWrapCompartmentRef.current.of(wrapExtension),
+        readOnlyCompartmentRef.current.of(readOnlyExtensions),
+        languageCompartmentRef.current.of(languageExtension ?? []),
+        themeCompartmentRef.current.of(themeExtension),
+        themeOverlay,
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) {
+            return;
+          }
+
+          if (syncingFromPropsRef.current) {
+            return;
+          }
+
+          onChangeRef.current(update.state.doc.toString());
+        }),
+      ],
+    });
+
+    const view = new EditorView({
+      state,
+      parent: editorHostRef.current,
+    });
+
+    editorViewRef.current = view;
+
+    return () => {
+      editorViewRef.current = null;
+      view.destroy();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveShowPreview]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const extensions = shouldRenderLineNumbers ? lineNumbers() : [];
+    view.dispatch({ effects: lineNumbersCompartmentRef.current.reconfigure(extensions) });
+  }, [shouldRenderLineNumbers]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const extension = wordWrap ? EditorView.lineWrapping : [];
+    view.dispatch({ effects: wordWrapCompartmentRef.current.reconfigure(extension) });
+  }, [wordWrap]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const extensions = readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+    view.dispatch({ effects: readOnlyCompartmentRef.current.reconfigure(extensions) });
+  }, [readOnly]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({ effects: languageCompartmentRef.current.reconfigure(languageExtension ?? []) });
+  }, [languageExtension]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({ effects: themeCompartmentRef.current.reconfigure(darkThemeActive ? [oneDark] : []) });
+  }, [darkThemeActive]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const currentContent = view.state.doc.toString();
+    if (currentContent === content) {
+      return;
+    }
+
+    syncingFromPropsRef.current = true;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: content,
+      },
+    });
+    syncingFromPropsRef.current = false;
+  }, [content]);
 
   return (
     <div className="file-editor-container">
@@ -190,26 +332,11 @@ export function FileEditor({
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       ) : (
-        <div className={`file-editor-textarea-shell ${shouldRenderLineNumbers ? "file-editor-textarea-shell--line-numbers" : ""}`}>
-          {shouldRenderLineNumbers && (
-            <div className="file-editor-line-numbers" ref={lineNumbersRef} aria-hidden="true">
-              {Array.from({ length: lineCount }, (_, index) => (
-                <div key={`line-${index + 1}`} className="file-editor-line-number">
-                  {index + 1}
-                </div>
-              ))}
-            </div>
-          )}
-          <textarea
-            className={`file-editor-textarea ${wordWrap ? "file-editor-textarea--wrap" : ""}`}
-            value={content}
-            onChange={(e) => onChange(e.target.value)}
-            onScroll={handleTextareaScroll}
-            readOnly={readOnly}
-            spellCheck={false}
-            aria-label={filePath ? `Editor for ${filePath}` : "File editor"}
-          />
-        </div>
+        <div
+          className="file-editor-codemirror"
+          ref={editorHostRef}
+          aria-label={filePath ? `Editor for ${filePath}` : "File editor"}
+        />
       )}
     </div>
   );
