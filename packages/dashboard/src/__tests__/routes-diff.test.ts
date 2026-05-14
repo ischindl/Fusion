@@ -339,6 +339,27 @@ describe("FN-4308 multi-commit done task aggregation", () => {
     expect(response.body.files.length).toBe(response.body.stats.filesChanged);
   });
 
+  it("enumerates done commitSha even when commit is unreachable from HEAD", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({ column: "done", mergeDetails: { commitSha: "orphaned", filesChanged: 2 } }));
+
+    runGitCommandMock.mockImplementation(async (args: string[]) => {
+      const key = args.join(" ");
+      if (key === "merge-base --is-ancestor orphaned HEAD") throw new Error("unreachable");
+      if (key === "rev-list --parents -n 1 orphaned") return "orphaned porphan";
+      if (key === "diff --name-status -M porphan..orphaned") return "A\tone.ts\nA\ttwo.ts";
+      if (key === "diff -M porphan..orphaned -- one.ts") return "+1\n";
+      if (key === "diff -M porphan..orphaned -- two.ts") return "+2\n";
+      throw new Error(`Unexpected git command: ${key}`);
+    });
+
+    const app = createServer(store as any);
+    const response = await requestDiff(app);
+    expect(response.status).toBe(200);
+    expect(response.body.files.map((f: any) => f.path).sort()).toEqual(["one.ts", "two.ts"]);
+    expect(response.body.files.length).toBe(response.body.stats.filesChanged);
+  });
+
   it("uses empty tree fallback for root commit done tasks", async () => {
     const store = new MockStore();
     store.addTask(createTask({ column: "done", mergeDetails: { commitSha: "root" } }));
@@ -354,6 +375,26 @@ describe("FN-4308 multi-commit done task aggregation", () => {
     const response = await requestDiff(app);
     expect(response.status).toBe(200);
     expect(response.body.files[0].path).toBe("initial.ts");
+    expect(response.body.files.length).toBe(response.body.stats.filesChanged);
+  });
+
+  it("uses renamed path when done task includes rename status", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({ column: "done", mergeDetails: { commitSha: "rename-sha" } }));
+
+    gitResponses({
+      "merge-base --is-ancestor rename-sha HEAD": "",
+      "rev-list --parents -n 1 rename-sha": "rename-sha p0",
+      "diff --name-status -M p0..rename-sha": "R100\tfoo.ts\tbar.ts",
+      "diff -M p0..rename-sha -- bar.ts": "rename from foo.ts\nrename to bar.ts\n",
+    });
+
+    const app = createServer(store as any);
+    const response = await requestDiff(app);
+    expect(response.status).toBe(200);
+    expect(response.body.files).toHaveLength(1);
+    expect(response.body.files[0].path).toBe("bar.ts");
+    expect(response.body.files[0].patch.length).toBeGreaterThan(0);
     expect(response.body.files.length).toBe(response.body.stats.filesChanged);
   });
 
