@@ -1,0 +1,66 @@
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
+const GIT_TIMEOUT_MS = 30_000;
+const GIT_MAX_BUFFER = 10 * 1024 * 1024;
+
+export interface GitOps {
+  head(): Promise<string>;
+  add(paths: string[]): Promise<void>;
+  commit(message: string): Promise<string>;
+  resetHard(ref: string): Promise<void>;
+  stashPush(message: string): Promise<string | null>;
+  stashPop(ref: string): Promise<void>;
+  statusPorcelain(): Promise<string>;
+}
+
+async function runGit(cwd: string, args: string[]): Promise<string> {
+  const command = `git ${args.join(" ")}`;
+  try {
+    const { stdout } = await execAsync(command, {
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const err = error as Error & { stderr?: string; stdout?: string };
+    const stderr = err.stderr?.trim();
+    const stdout = err.stdout?.trim();
+    const detail = stderr || stdout || err.message;
+    throw new Error(`Git command failed (${command}): ${detail}`);
+  }
+}
+
+export function defaultGitOps(cwd: string): GitOps {
+  return {
+    async head() {
+      return await runGit(cwd, ["rev-parse", "HEAD"]);
+    },
+    async add(paths: string[]) {
+      await runGit(cwd, ["add", ...paths]);
+    },
+    async commit(message: string) {
+      await runGit(cwd, ["commit", "-m", JSON.stringify(message)]);
+      return await runGit(cwd, ["rev-parse", "HEAD"]);
+    },
+    async resetHard(ref: string) {
+      await runGit(cwd, ["reset", "--hard", ref]);
+    },
+    async stashPush(message: string) {
+      const output = await runGit(cwd, ["stash", "push", "-m", JSON.stringify(message)]);
+      if (output.includes("No local changes to save")) {
+        return null;
+      }
+      const match = output.match(/(stash@\{\d+\})/);
+      return match?.[1] ?? "stash@{0}";
+    },
+    async stashPop(ref: string) {
+      await runGit(cwd, ["stash", "pop", ref]);
+    },
+    async statusPorcelain() {
+      return await runGit(cwd, ["status", "--porcelain"]);
+    },
+  };
+}
