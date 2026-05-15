@@ -74,5 +74,8 @@ describe("policyToBwrapArgs", () => {
     expect(preset.allowedWritePaths).toContain("/repo/.worktrees/fn-1");
     expect(preset.allowedWritePaths).toContain("/home/u/.pnpm-store");
     expect((preset.allowedWritePaths ?? []).some((path) => path.includes(".fusion"))).toBe(false);
+
+    const args = policyToBwrapArgs(preset, baseCtx());
+    expect(args.join(" ")).not.toContain(".fusion/fusion.db");
   });
 });

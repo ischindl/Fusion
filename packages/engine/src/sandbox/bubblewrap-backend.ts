@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import { detectBwrap } from "./bubblewrap-detect.js";
@@ -17,13 +17,10 @@ export class SandboxUnavailableError extends Error {
   }
 }
 
-function quote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 export class BubblewrapBackend implements SandboxBackend {
   private policy: BubblewrapPolicy = { allowNetwork: true };
   private useNativeFallback = false;
+  private pnpmStorePathByCwd = new Map<string, string>();
 
   constructor(private readonly nativeBackend: SandboxBackend = new NativeSandboxBackend()) {}
 
@@ -71,7 +68,7 @@ export class BubblewrapBackend implements SandboxBackend {
     }
 
     const pnpmStorePath = await this.resolvePnpmStorePath(options.cwd);
-    const args = policyToBwrapArgs(this.policy, {
+    const policyArgs = policyToBwrapArgs(this.policy, {
       worktreePath: options.cwd,
       repoRootPath: options.cwd,
       pnpmStorePath,
@@ -81,55 +78,18 @@ export class BubblewrapBackend implements SandboxBackend {
     });
 
     const bwrapPath = detect.path ?? "bwrap";
-    const shellCommand = `${quote(bwrapPath)} ${args.map(quote).join(" ")} -- /bin/sh -lc ${quote(command)}`;
-
-    try {
-      const { stdout, stderr } = await execAsync(shellCommand, {
-        cwd: options.cwd,
-        timeout: options.timeoutMs,
-        maxBuffer: options.maxBuffer,
-        ...(options.encoding !== undefined && { encoding: options.encoding }),
-        ...(options.env !== undefined && { env: options.env }),
-        ...(options.signal !== undefined && { signal: options.signal }),
-      } as any);
-
-      return {
-        stdout: stdout?.toString?.() ?? "",
-        stderr: stderr?.toString?.() ?? "",
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        bufferExceeded: false,
-      };
-    } catch (error) {
-      const errObj = error as Record<string, unknown>;
-      const code = errObj.code;
-      const status = typeof errObj.status === "number" ? errObj.status : null;
-      const exitCode = typeof code === "number" ? code : status;
-      const message = String(errObj.message ?? "");
-
-      return {
-        stdout: typeof (errObj.stdout as { toString?: unknown })?.toString === "function" ? String(errObj.stdout) : "",
-        stderr: typeof (errObj.stderr as { toString?: unknown })?.toString === "function" ? String(errObj.stderr) : "",
-        exitCode,
-        signal: (errObj.signal as NodeJS.Signals | null | undefined) ?? null,
-        bufferExceeded:
-          code === "ENOBUFS"
-          || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
-          || message.includes("maxBuffer"),
-        timedOut:
-          code === "ETIMEDOUT"
-          || (errObj.killed === true && (errObj.signal === "SIGTERM" || message.includes("timed out"))),
-        spawnError: code === "ENOENT" || code === "EACCES" ? (error as Error) : undefined,
-      };
-    }
+    return this.runBwrapSpawn(bwrapPath, [...policyArgs, "--", "/bin/sh", "-lc", command], options);
   }
 
   async dispose(): Promise<void> {
     this.useNativeFallback = false;
+    this.pnpmStorePathByCwd.clear();
   }
 
   private async resolvePnpmStorePath(cwd: string): Promise<string> {
+    const cached = this.pnpmStorePathByCwd.get(cwd);
+    if (cached) return cached;
+    let resolved = `${process.env.HOME ?? ""}/.local/share/pnpm`;
     try {
       const { stdout } = await execAsync("pnpm store path --silent", {
         cwd,
@@ -137,10 +97,73 @@ export class BubblewrapBackend implements SandboxBackend {
         maxBuffer: 256 * 1024,
         encoding: "utf-8",
       });
-      const path = stdout.trim();
-      return path || `${process.env.HOME ?? ""}/.local/share/pnpm`;
+      resolved = stdout.trim() || resolved;
     } catch {
-      return `${process.env.HOME ?? ""}/.local/share/pnpm`;
+      // fallback path above
     }
+    this.pnpmStorePathByCwd.set(cwd, resolved);
+    return resolved;
+  }
+
+  private runBwrapSpawn(command: string, args: string[], options: SandboxRunOptions): Promise<SandboxRunResult> {
+    return new Promise((resolve) => {
+      const child = spawn(command, args, {
+        cwd: options.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let timedOut = false;
+      let bufferExceeded = false;
+      let spawnError: Error | undefined;
+
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, options.timeoutMs);
+
+      const maxBuffer = options.maxBuffer;
+      const onChunk = (target: Buffer[], chunk: Buffer, isStdout: boolean): void => {
+        if (bufferExceeded) return;
+        if (isStdout) {
+          stdoutBytes += chunk.length;
+        } else {
+          stderrBytes += chunk.length;
+        }
+        if (stdoutBytes + stderrBytes > maxBuffer) {
+          bufferExceeded = true;
+          child.kill("SIGTERM");
+          return;
+        }
+        target.push(chunk);
+      };
+
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        onChunk(stdoutChunks, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk), true);
+      });
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        onChunk(stderrChunks, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk), false);
+      });
+
+      child.on("error", (error) => {
+        spawnError = error;
+      });
+
+      child.on("close", (code, signal) => {
+        clearTimeout(timeoutHandle);
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString(options.encoding ?? "utf-8"),
+          stderr: Buffer.concat(stderrChunks).toString(options.encoding ?? "utf-8"),
+          exitCode: code,
+          signal,
+          timedOut,
+          bufferExceeded,
+          spawnError,
+        });
+      });
+    });
   }
 }

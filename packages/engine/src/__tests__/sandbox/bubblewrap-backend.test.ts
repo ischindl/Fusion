@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { cwd } from "node:process";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,14 @@ vi.mock("../../sandbox/bubblewrap-detect.js", () => ({
 
 import { BubblewrapBackend, SandboxUnavailableError } from "../../sandbox/bubblewrap-backend.js";
 import type { SandboxBackend, SandboxRunResult } from "../../sandbox/types.js";
+
+const hasBwrap = (() => {
+  try {
+    return !!execSync("command -v bwrap", { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return false;
+  }
+})();
 
 describe("BubblewrapBackend", () => {
   beforeEach(() => {
@@ -69,5 +78,22 @@ describe("BubblewrapBackend", () => {
 
     expect(result).toHaveProperty("stdout");
     expect(result).toHaveProperty("stderr");
+  });
+
+  it.skipIf(process.platform !== "linux" || !hasBwrap)("runs real bubblewrap hello integration", async () => {
+    vi.doUnmock("../../sandbox/bubblewrap-detect.js");
+    const { BubblewrapBackend: RealBackend } = await import("../../sandbox/bubblewrap-backend.js");
+    const backend = new RealBackend();
+    await backend.prepare({ allowNetwork: true });
+
+    const result = await backend.run("echo hello", {
+      cwd: cwd(),
+      timeoutMs: 5_000,
+      maxBuffer: 1024 * 1024,
+      encoding: "utf-8",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello");
   });
 });
