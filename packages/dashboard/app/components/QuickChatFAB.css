@@ -451,6 +451,14 @@
   padding: var(--space-sm);
   text-align: left;
   transition: background var(--transition-fast), color var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.quick-chat-session-unread-dot {
+  margin-inline-start: auto;
 }
 
 .quick-chat-session-option:hover {

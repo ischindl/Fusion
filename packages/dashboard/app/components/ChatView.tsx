@@ -2444,14 +2444,16 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                       }}
                     >
                       <span className="chat-room-item-details">
-                        <span className="chat-room-item-name">#{room.name}</span>
-                        {showUnreadDot ? (
-                          <span
-                            className="chat-unread-dot"
-                            data-testid={`chat-unread-dot-${room.id}`}
-                            aria-label="Unread messages"
-                          />
-                        ) : null}
+                        <span className="chat-room-item-name-row">
+                          <span className="chat-room-item-name">#{room.name}</span>
+                          {showUnreadDot ? (
+                            <span
+                              className="chat-unread-dot"
+                              data-testid={`chat-unread-dot-${room.id}`}
+                              aria-label="Unread messages"
+                            />
+                          ) : null}
+                        </span>
                         {isActive ? (
                           <span className="chat-room-item-meta">
                             {rooms.activeRoomMembers.length} {rooms.activeRoomMembers.length === 1 ? "member" : "members"}
