@@ -5,6 +5,7 @@ import {
   PROJECT_SETTINGS_KEYS,
   SANDBOX_BACKEND_NAMES,
   SANDBOX_FAILURE_MODES,
+  isSandboxExperimentalEnabled,
   validateSandboxBackendName,
   validateSandboxFailureMode,
   validateSandboxPolicy,
@@ -100,6 +101,24 @@ describe("sandbox settings", () => {
       expect(validateSandboxProjectSettings({})).toBeUndefined();
       expect(validateSandboxProjectSettings({ backend: "firejail", policy: { allowedPaths: [""] } })).toBeUndefined();
       expect(validateSandboxProjectSettings("nope")).toBeUndefined();
+    });
+  });
+
+  describe("isSandboxExperimentalEnabled", () => {
+    it("returns false for undefined settings", () => {
+      expect(isSandboxExperimentalEnabled(undefined)).toBe(false);
+    });
+
+    it("returns false when sandbox flag is missing", () => {
+      expect(isSandboxExperimentalEnabled({ experimentalFeatures: {} })).toBe(false);
+    });
+
+    it("returns false when sandbox flag is false", () => {
+      expect(isSandboxExperimentalEnabled({ experimentalFeatures: { sandbox: false } })).toBe(false);
+    });
+
+    it("returns true when sandbox flag is true", () => {
+      expect(isSandboxExperimentalEnabled({ experimentalFeatures: { sandbox: true } })).toBe(true);
     });
   });
 });
