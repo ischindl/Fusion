@@ -3790,11 +3790,12 @@ export class TaskExecutor {
             let retryAbortedDueToReclaim = false;
             while (!taskDone && taskDoneSessionRetries < MAX_TASK_DONE_SESSION_RETRIES) {
               const liveTask = await this.store.getTask(task.id);
-              const worktreeContractIntact = liveTask.worktree === worktreePath
-                && typeof liveTask.branch === "string"
-                && liveTask.branch.length > 0
-                && liveTask.column === "in-progress"
-                && !liveTask.paused;
+              const hasExplicitWorktreeBinding = typeof liveTask.worktree === "string" || liveTask.worktree === null;
+              const hasExplicitBranchBinding = typeof liveTask.branch === "string" || liveTask.branch === null;
+              const worktreeContractIntact = liveTask.column === "in-progress"
+                && !liveTask.paused
+                && (!hasExplicitWorktreeBinding || liveTask.worktree === worktreePath)
+                && (!hasExplicitBranchBinding || (typeof liveTask.branch === "string" && liveTask.branch.length > 0));
               if (!worktreeContractIntact) {
                 const reclaimMessage = `${task.id}: worktree/branch reclaimed during no-fn_task_done retry — aborting retry and requeueing`;
                 executorLog.log(reclaimMessage);
