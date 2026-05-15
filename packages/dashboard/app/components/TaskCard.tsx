@@ -1377,9 +1377,11 @@ function TaskCardComponent({
     }
 
     if (task.column === "done") {
-      // Per FN-4527: /api/tasks/:id/diff is authoritative for done-task file
-      // counts. mergeDetails.filesChanged can be stale after rebase-and-push
-      // (FN-4526), so only use it as a transient loading placeholder.
+      // Per FN-4527/FN-4647: /api/tasks/:id/diff is authoritative for done-task
+      // landed file counts. mergeDetails.filesChanged can be stale after
+      // rebase-and-push (FN-4526), so only use it as a transient loading
+      // placeholder. Executor-captured modifiedFiles are labeled as
+      // "touched during execution" and never as landed "files changed".
       let displayCount: number | undefined;
       if (diffStats) {
         displayCount = diffStats.filesChanged;
@@ -1403,16 +1405,17 @@ function TaskCardComponent({
       }
 
       const modifiedCount = task.modifiedFiles?.length;
-      if (modifiedCount != null && modifiedCount > 0) {
+      if (!diffLoading && (modifiedCount ?? 0) > 0) {
         return (
           <button
             type="button"
             className="card-session-files"
             onClick={handleOpenFiles}
             disabled={!onOpenDetailWithTab}
+            title="Captured from worktree during execution; may not match the landed diff. Open the task to view the recorded merge."
           >
             <Folder size={12} />
-            <span>{modifiedCount} {modifiedCount === 1 ? "file" : "files"} changed</span>
+            <span>{modifiedCount} {modifiedCount === 1 ? "file" : "files"} touched during execution</span>
           </button>
         );
       }
