@@ -28,7 +28,7 @@ class FakeChild extends EventEmitter {
 
 describe("NativeSandboxBackend.runStreaming", () => {
   const processKillSpy = vi.spyOn(process, "kill");
-  let platformSpy: ReturnType<typeof vi.spyOn<typeof process, "platform">>;
+  let platformSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.useFakeTimers();

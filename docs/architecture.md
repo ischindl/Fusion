@@ -593,6 +593,7 @@ See [Memory Plugin Contract](./memory-plugin-contract.md) for the full plan.
 
 ### Sandbox backend seam (FN-4636)
 - Engine user-configured command runners now route through `packages/engine/src/sandbox/` via a shared `SandboxBackend` abstraction (`resolveSandboxBackend()`), currently implemented only by the transparent `NativeSandboxBackend` passthrough (no behavior change).
+- The seam now covers both exec-shaped commands (`run`) and spawn-shaped verification commands (`runStreaming`), with `packages/engine/src/verification-utils.ts` delegating `runVerificationCommand`/`execWithProcessGroup` through `runStreaming`.
 - Follow-up chain: FN-4637 (bubblewrap), FN-4638 (sandbox-exec), FN-4639 (settings selection), FN-4640 (run-audit telemetry), FN-4641 (action-gate), FN-4642 (container backends).
 
 ### Execution context + skills
