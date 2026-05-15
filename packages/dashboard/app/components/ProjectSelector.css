@@ -419,6 +419,39 @@
   color: var(--todo);
 }
 
+.mobile-project-switch-divider {
+  height: 1px;
+  margin: var(--space-xs) 0;
+  background: var(--border);
+}
+
+.mobile-project-switch-manage {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) calc(var(--space-sm) + var(--space-xs));
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 1.25);
+  cursor: pointer;
+  text-align: center;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.mobile-project-switch-manage:hover {
+  background: var(--card-hover);
+  color: var(--text);
+}
+
+.mobile-project-switch-manage:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-strong);
+}
+
 /* Compact styles for mobile-project-switch (mobile + tablet) */
 @media (max-width: 768px), (min-width: 769px) and (max-width: 1024px) {
   .mobile-project-switch {
