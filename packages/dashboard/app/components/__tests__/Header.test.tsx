@@ -1426,6 +1426,56 @@ describe("Header", () => {
         expect(screen.queryByTestId("mobile-project-switch-dropdown")).toBeNull();
       });
     });
+
+    it("shows View Projects action in mobile project switch when onViewAllProjects is provided", () => {
+      const projects = [
+        { id: "1", name: "Project One", path: "/path/one", status: "active" as const },
+      ];
+      renderHeader({
+        projects,
+        currentProject: projects[0],
+        onSelectProject: vi.fn(),
+        onViewAllProjects: vi.fn(),
+      }, "mobile");
+
+      fireEvent.click(screen.getByTestId("mobile-project-switch-trigger"));
+      expect(screen.getByTestId("mobile-project-switch-view-all")).toBeInTheDocument();
+    });
+
+    it("calls onViewAllProjects and closes dropdown from mobile View Projects action", async () => {
+      const projects = [
+        { id: "1", name: "Project One", path: "/path/one", status: "active" as const },
+      ];
+      const onViewAllProjects = vi.fn();
+      renderHeader({
+        projects,
+        currentProject: projects[0],
+        onSelectProject: vi.fn(),
+        onViewAllProjects,
+      }, "mobile");
+
+      fireEvent.click(screen.getByTestId("mobile-project-switch-trigger"));
+      fireEvent.click(screen.getByTestId("mobile-project-switch-view-all"));
+
+      expect(onViewAllProjects).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(screen.queryByTestId("mobile-project-switch-dropdown")).toBeNull();
+      });
+    });
+
+    it("hides View Projects action in mobile project switch when onViewAllProjects is not provided", () => {
+      const projects = [
+        { id: "1", name: "Project One", path: "/path/one", status: "active" as const },
+      ];
+      renderHeader({
+        projects,
+        currentProject: projects[0],
+        onSelectProject: vi.fn(),
+      }, "mobile");
+
+      fireEvent.click(screen.getByTestId("mobile-project-switch-trigger"));
+      expect(screen.queryByTestId("mobile-project-switch-view-all")).toBeNull();
+    });
   });
 
   describe("Manage Projects action", () => {
