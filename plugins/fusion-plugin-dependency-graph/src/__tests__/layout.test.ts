@@ -68,6 +68,76 @@ describe("computeAutoLayout", () => {
     expect(Math.abs((positions.get("A")?.x ?? 0) - (positions.get("B")?.x ?? 0))).toBe(300);
   });
 
+  describe("vertical orientation with measured heights", () => {
+    it("adds cumulative row offsets from measured layer heights", () => {
+      const verticalGap = 80;
+      const nodeHeight = 100;
+      const positions = computeAutoLayout(
+        graph(["A", "B", "C"], [
+          { source: "A", target: "B" },
+          { source: "B", target: "C" },
+        ]),
+        {
+          orientation: "vertical",
+          nodeHeight,
+          verticalGap,
+          measuredHeights: new Map([["A", 300]]),
+        },
+      );
+
+      const aY = positions.get("A")?.y ?? 0;
+      const bY = positions.get("B")?.y ?? 0;
+      const cY = positions.get("C")?.y ?? 0;
+      expect(bY).toBeGreaterThanOrEqual(aY + 300 + verticalGap);
+      expect(cY).toBeGreaterThanOrEqual(bY + nodeHeight + verticalGap);
+    });
+
+    it("uses per-layer max measured heights for wide layers", () => {
+      const verticalGap = 80;
+      const nodeHeight = 100;
+      const positions = computeAutoLayout(
+        graph(["A", "B", "C", "D"], [
+          { source: "C", target: "A" },
+          { source: "D", target: "A" },
+        ]),
+        {
+          orientation: "vertical",
+          nodeHeight,
+          verticalGap,
+          measuredHeights: new Map([
+            ["A", 140],
+            ["B", 220],
+          ]),
+        },
+      );
+
+      expect(positions.get("A")?.y).toBe(0);
+      expect(positions.get("B")?.y).toBe(0);
+      const expectedDepthOneY = 220 + verticalGap;
+      expect(positions.get("C")?.y).toBe(expectedDepthOneY);
+      expect(positions.get("D")?.y).toBe(expectedDepthOneY);
+    });
+
+    it.each([
+      { nodeHeight: 100, verticalGap: 80 },
+      { nodeHeight: 140, verticalGap: 24 },
+    ])("matches fixed-height behavior when no measurements exist (%o)", ({ nodeHeight, verticalGap }) => {
+      const graphData = graph(["A", "B", "C"], [
+        { source: "A", target: "B" },
+        { source: "B", target: "C" },
+      ]);
+      const withoutHeights = computeAutoLayout(graphData, { orientation: "vertical", nodeHeight, verticalGap });
+      const emptyHeights = computeAutoLayout(graphData, {
+        orientation: "vertical",
+        nodeHeight,
+        verticalGap,
+        measuredHeights: new Map(),
+      });
+
+      expect(Array.from(withoutHeights.entries())).toEqual(Array.from(emptyHeights.entries()));
+    });
+  });
+
   describe("horizontal orientation", () => {
     it("places linear chain in increasing depth along x", () => {
       const positions = computeAutoLayout(
