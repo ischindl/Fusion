@@ -21,15 +21,16 @@ export class NativeSandboxBackend implements SandboxBackend {
 
   async run(command: string, options: SandboxRunOptions): Promise<SandboxRunResult> {
     try {
-      const { stdout, stderr } = await execAsync(command, {
+      const execOptions: Parameters<typeof exec>[1] = {
         cwd: options.cwd,
         timeout: options.timeoutMs,
         maxBuffer: options.maxBuffer,
         ...(options.encoding !== undefined && { encoding: options.encoding }),
-        ...(options.shell !== undefined && { shell: options.shell as any }),
+        ...(typeof options.shell === "string" && { shell: options.shell }),
         ...(options.env !== undefined && { env: options.env }),
         ...(options.signal !== undefined && { signal: options.signal }),
-      } as any);
+      };
+      const { stdout, stderr } = await execAsync(command, execOptions);
 
       return {
         stdout: stdout?.toString?.() ?? "",

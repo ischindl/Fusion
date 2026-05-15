@@ -827,10 +827,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       if (data.milestones.length > 0) {
         const firstMilestoneId = data.milestones[0].id;
         const milestoneIds = new Set(data.milestones.map((milestone) => milestone.id));
-        const selectedMilestoneStillExists = selectedMilestoneIdRef.current
-          && milestoneIds.has(selectedMilestoneIdRef.current);
+        const currentSelectedMilestoneId = selectedMilestoneIdRef.current;
+        const selectedMilestoneStillExists =
+          typeof currentSelectedMilestoneId === "string" && milestoneIds.has(currentSelectedMilestoneId);
         const nextSelectedMilestoneId = selectedMilestoneStillExists
-          ? selectedMilestoneIdRef.current
+          ? currentSelectedMilestoneId
           : firstMilestoneId;
 
         setSelectedMilestoneId(nextSelectedMilestoneId);
