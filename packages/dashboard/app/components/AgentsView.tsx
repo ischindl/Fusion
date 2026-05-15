@@ -868,7 +868,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   }, [handleCloseDetail, isMobileViewport, selectedAgentId]);
 
   const getRoleLabel = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.label ?? role;
-  const getRoleIcon = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.icon ?? "◆";
   const orgChartLayoutMode: OrgChartLayoutMode = useMemo(() => resolveOrgChartLayoutMode({
     tree: displayOrgTree,
     availableWidth: orgChartViewportWidth,
