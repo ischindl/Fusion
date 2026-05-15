@@ -528,27 +528,37 @@ describe("ResearchView", () => {
     await waitFor(() => expect(enrichButton).not.toBeDisabled());
   });
 
-  it("FN-3912: keeps the desktop research split view as a bounded grid", () => {
+  it("FN-4548: enforces desktop layout containment contracts", () => {
     const baseCss = loadAllAppCssBaseOnly();
 
-    expect(baseCss).toMatch(/\.research-view__layout\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*2fr\);[^}]*overflow:\s*hidden;[^}]*\}/);
-    expect(baseCss).toMatch(/\.research-view__stats\s*\{[^}]*margin-top:\s*auto;[^}]*border-top:\s*var\(--btn-border-width\)\s+solid\s+var\(--border\);[^}]*\}/);
-    expect(baseCss).not.toMatch(/\.research-view__stats\s*\{[^}]*position:\s*absolute;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__layout\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__layout\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*2fr\);[^}]*\}/);
   });
 
-  it("FN-3912: keeps the desktop reader pane scroll-contained", () => {
+  it("FN-4548: keeps history as the sidebar scroll container", () => {
     const baseCss = loadAllAppCssBaseOnly();
 
-    expect(baseCss).toMatch(/\.research-view__sidebar,\s*\.research-view__reader\s*\{[^}]*min-height:\s*0;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__history\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__sidebar-content\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__sidebar,\s*\.research-view__reader\s*\{[^}]*overflow:\s*hidden;[^}]*\}/);
+  });
+
+  it("FN-4548: keeps reader scroll ownership and stats separation explicit", () => {
+    const baseCss = loadAllAppCssBaseOnly();
+
     expect(baseCss).toMatch(/\.research-view__reader\s*\{[^}]*overflow:\s*auto;[^}]*\}/);
-    expect(baseCss).not.toMatch(/\.research-view__reader\s*\{[^}]*position:\s*(absolute|fixed);[^}]*\}/);
-    expect(baseCss).toMatch(/\.research-view__reader-content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1(?:\s+1\s+0%)?;[^}]*min-height:\s*0;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__reader-content\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*\}/);
+    expect(baseCss).not.toMatch(/\.research-view__reader-content\s*\{[^}]*overflow:\s*auto;[^}]*\}/);
+    expect(baseCss).toMatch(/\.research-view__stats\s*\{[^}]*margin-top:\s*var\(--space-sm\);[^}]*padding-top:\s*var\(--space-sm\);[^}]*border-top:\s*var\(--btn-border-width\)\s+solid\s+var\(--border\);[^}]*\}/);
+    expect(baseCss).not.toMatch(/\.research-view__stats\s*\{[^}]*margin-top:\s*auto;[^}]*\}/);
   });
 
-  it("FN-3912: research view content is scrollable on mobile", () => {
+  it("FN-4548: preserves mobile single-column flow without nested overflow traps", () => {
     const css = loadAllAppCss();
 
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.research-view\s*\{[^}]*overflow-y:\s*auto;[^}]*padding-bottom:\s*calc\(var\(--space-md\)\s*\+\s*var\(--mobile-nav-height\)\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\s*\+\s*var\(--standalone-bottom-gap\)\);[^}]*\}/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.research-view__layout\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*var\(--space-md\);[^}]*\}/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.research-view\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden;[^}]*padding-bottom:\s*calc\(var\(--space-md\)\s*\+\s*var\(--mobile-nav-height\)\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\s*\+\s*var\(--standalone-bottom-gap\)\);[^}]*\}/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.research-view__layout\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*visible;[^}]*\}/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.research-view__history\s*\{[^}]*overflow:\s*visible;[^}]*\}/);
   });
 });
