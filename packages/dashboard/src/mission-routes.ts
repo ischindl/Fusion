@@ -792,6 +792,7 @@ export function createMissionRouter(
             title: milestoneData.title,
             description: milestoneData.description || undefined,
             verification: milestoneData.verification,
+            acceptanceCriteria: milestoneData.acceptanceCriteria,
           });
 
           // Milestone-level assertion remains on the milestone even when it has no slices.
@@ -844,6 +845,8 @@ export function createMissionRouter(
               missionStore.linkFeatureToAssertion(feature.id, assertion.id);
             }
           }
+
+          missionStore.applyDerivedMilestoneAcceptanceCriteria(milestone.id);
         }
 
         // Cleanup the interview session

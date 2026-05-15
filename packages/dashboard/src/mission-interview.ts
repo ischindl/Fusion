@@ -147,6 +147,7 @@ PREFER structured question types over free-text. This makes the interview faster
 - Features should be specific and actionable
 - ALWAYS include verification/acceptance criteria at every level:
   - Milestone: "verification" field — how to confirm this phase is complete (e.g., "All API endpoints return correct responses, integration tests pass")
+  - Milestone: optional "acceptanceCriteria" field for explicit milestone-level completion bars (if omitted, acceptance can be auto-derived from child feature criteria/descriptions)
   - Slice: "verification" field — how to confirm this work unit is done (e.g., "Auth flow works end-to-end from signup through login")
   - Feature: "acceptanceCriteria" field — how to verify this specific deliverable (e.g., "JWT tokens expire after 1 hour and refresh correctly")
 - Suggest sensible defaults and push for specificity
@@ -169,7 +170,7 @@ For text question (use ONLY for names, URLs, or truly unique free-form input):
 {"type": "question", "data": {"id": "q-project-name", "type": "text", "question": "What is the project or product name?", "description": "Used in documentation and configuration"}}
 
 For completion (when you have enough information):
-{"type": "complete", "data": {"missionTitle": "Refined mission title", "missionDescription": "Comprehensive mission description based on the conversation", "milestones": [{"title": "Milestone title", "description": "What this phase achieves", "verification": "How to confirm this milestone is complete", "slices": [{"title": "Slice title", "description": "What this work unit covers", "verification": "How to confirm this slice is done", "features": [{"title": "Feature title", "description": "What to build", "acceptanceCriteria": "How to verify this feature works"}]}]}]}}`;
+{"type": "complete", "data": {"missionTitle": "Refined mission title", "missionDescription": "Comprehensive mission description based on the conversation", "milestones": [{"title": "Milestone title", "description": "What this phase achieves", "verification": "How to confirm this milestone is complete", "acceptanceCriteria": "Optional explicit milestone criteria (omit to auto-derive from features)", "slices": [{"title": "Slice title", "description": "What this work unit covers", "verification": "How to confirm this slice is done", "features": [{"title": "Feature title", "description": "What to build", "acceptanceCriteria": "How to verify this feature works"}]}]}]}}`;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -193,6 +194,7 @@ export interface MissionPlanMilestone {
   title: string;
   description?: string;
   verification?: string;
+  acceptanceCriteria?: string;
   slices: MissionPlanSlice[];
 }
 
