@@ -125,7 +125,7 @@ describe("foreign start-point no-owned-commit interactions (real git)", () => {
         baseCommitSha: foreignBaseSha,
         modifiedFiles: ["foreign.txt"],
         paused: false,
-        status: null,
+        status: undefined,
         worktree: `${dir}/.worktrees/fn-b2`,
         mergeDetails: undefined,
         dependencies: [],

@@ -2093,6 +2093,16 @@ export class SelfHealingManager {
     }
   }
 
+  private async recordIntegrityAudit(taskId: string, mutationType: "task:finalize-unproven-blocked" | "task:integrity-reconcile-modified-files" | "task:integrity-warning", metadata: Record<string, unknown>): Promise<void> {
+    const auditor = createRunAuditor(this.store, {
+      runId: generateSyntheticRunId("self-healing-integrity", taskId),
+      agentId: "self-healing",
+      taskId,
+      phase: "self-healing",
+    });
+    await auditor.database({ type: mutationType, target: taskId, metadata });
+  }
+
   async finalizeNoOpReviewTasks(): Promise<number> {
     try {
       const settings = await this.store.getSettings();
@@ -2133,14 +2143,12 @@ export class SelfHealingManager {
               JSON.stringify(classification.details, null, 2),
             );
           }
-          await (this.store as any).recordRunAuditEvent?.({
-            taskId: task.id,
-            domain: "database",
-            mutationType: "task:finalize-unproven-blocked",
-            target: task.id,
-            metadata: { reason: classification.reason, details: classification.details, autoRetry: true },
+          await this.recordIntegrityAudit(task.id, "task:finalize-unproven-blocked", {
+            reason: classification.reason,
+            details: classification.details,
+            autoRetry: true,
           });
-          await this.store.moveTask(task.id, "todo", { preserveProgress: true, moveSource: "engine" } as any);
+          await this.store.moveTask(task.id, "todo", { preserveProgress: true, moveSource: "engine" });
           continue;
         }
 
@@ -2171,12 +2179,9 @@ export class SelfHealingManager {
             mergeTargetBranch: classification.baseRef,
           };
           await this.store.updateTask(task.id, { mergeDetails, modifiedFiles: [] });
-          await (this.store as any).recordRunAuditEvent?.({
-            taskId: task.id,
-            domain: "database",
-            mutationType: "task:integrity-reconcile-modified-files",
-            target: task.id,
-            metadata: { reason: "proven-no-op-finalize", clearedCount: task.modifiedFiles?.length ?? 0 },
+          await this.recordIntegrityAudit(task.id, "task:integrity-reconcile-modified-files", {
+            reason: "proven-no-op-finalize",
+            clearedCount: task.modifiedFiles?.length ?? 0,
           });
           await this.store.logEntry(task.id, `Auto-finalized no-op (proven): start point on ${classification.baseRef}; modifiedFiles cleared`);
         }
@@ -2225,12 +2230,9 @@ export class SelfHealingManager {
               mergeCommitMessage: classification.commit.subject,
             },
           });
-          await (this.store as any).recordRunAuditEvent?.({
-            taskId: task.id,
-            domain: "database",
-            mutationType: "task:integrity-reconcile-modified-files",
-            target: task.id,
-            metadata: { reason: "recovered-owned-commit", commitSha: classification.commit.sha },
+          await this.recordIntegrityAudit(task.id, "task:integrity-reconcile-modified-files", {
+            reason: "recovered-owned-commit",
+            commitSha: classification.commit.sha,
           });
           reconciled++;
           continue;
@@ -2247,12 +2249,9 @@ export class SelfHealingManager {
               landedFiles: [],
             },
           });
-          await (this.store as any).recordRunAuditEvent?.({
-            taskId: task.id,
-            domain: "database",
-            mutationType: "task:integrity-reconcile-modified-files",
-            target: task.id,
-            metadata: { reason: "proven-no-op", clearedCount: task.modifiedFiles?.length ?? 0 },
+          await this.recordIntegrityAudit(task.id, "task:integrity-reconcile-modified-files", {
+            reason: "proven-no-op",
+            clearedCount: task.modifiedFiles?.length ?? 0,
           });
           reconciled++;
           continue;
@@ -2266,16 +2265,10 @@ export class SelfHealingManager {
             JSON.stringify(classification.details, null, 2),
           );
         }
-        await (this.store as any).recordRunAuditEvent?.({
-          taskId: task.id,
-          domain: "database",
-          mutationType: "task:integrity-warning",
-          target: task.id,
-          metadata: {
-            reason: classification.reason,
-            modifiedFilesCount: task.modifiedFiles?.length ?? 0,
-            details: classification.details,
-          },
+        await this.recordIntegrityAudit(task.id, "task:integrity-warning", {
+          reason: classification.reason,
+          modifiedFilesCount: task.modifiedFiles?.length ?? 0,
+          details: classification.details,
         });
       }
 

@@ -1435,6 +1435,13 @@ When a tracked task transitions into `done`, Fusion closes the linked GitHub iss
 - FN-4232/FN-4605 extends that bootstrap to cover stale dist consumers comprehensively: `@fusion/{core,dashboard,engine,plugin-sdk}` and `@fusion-plugin-examples/{dependency-graph,hermes-runtime,openclaw-runtime,paperclip-runtime}` are checked for missing/stale artifacts (staleness compares newest `src/` mtime against the oldest required `dist/` artifact mtime for configured packages). Package-level `pretest` hooks in `@fusion/dashboard` and `@fusion-plugin-examples/dependency-graph` invoke the same bootstrap for filtered test runs.
 - When stale or missing artifacts are found, the preamble logs `[test-bootstrap] rebuilding workspace dist artifacts (missing or stale): ...`; if rebuild fails, remediation now prints exact artifact-path diagnostics (`[test-bootstrap] missing: ...` / `[test-bootstrap] stale (src newer than dist): ...`) plus the FN-4232/FN-4605 reference and recovery commands.
 
+#### Finalize integrity gate
+- Finalize-to-done now runs an ownership classifier with three outcomes: `owned-commit` (task trailer/subject commit proven landed on merge target), `proven-no-op` (zero-ahead branch plus start point reachable from target), and `unproven` (missing ownership evidence, including foreign start-point inheritance).
+- `owned-commit` and `proven-no-op` can finalize. `proven-no-op` explicitly reconciles metadata by clearing stale `task.modifiedFiles` and stamping `mergeDetails.noOpMerge=true` with `landedFiles: []`.
+- `unproven` no longer silently completes as done; merger/self-healing emit `task:finalize-unproven-blocked` audit events and auto-retry by requeuing to `todo` for a fresh execution pass.
+- Historical cleanup is additive: `reconcileDoneTaskIntegrity()` scans done tasks missing `mergeDetails.commitSha` but still carrying `modifiedFiles`, then either recovers owned commit metadata, clears no-op stale files, or emits `task:integrity-warning` without regressing done tasks back to review.
+- This integrity gate complements FN-4646 landed-file capture (metadata truth source) and FN-4647 dashboard labeling (UI presentation); gate enforcement is in merger/self-healing, while display semantics remain UI-owned.
+
 #### Autostash lifecycle
 - Before destructive merge prep, `stashUnrelatedRootDirChanges()` snapshots dirty root-dir edits into `fusion-merger-autostash:<taskId>:<ts>` (plus optional `race-rescue-*` stashes for late writes).
 - During verification-fix finalize fallback, `commitOrAmendMergeWithFixes()` now snapshots any still-dirty root-dir state into `fusion-merger-autostash:<taskId>:finalize-reset:<ts>` *before* its hard reset/clean recovery path, preventing silent mixed-worktree leftovers from being discarded.
