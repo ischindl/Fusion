@@ -438,6 +438,7 @@ export class SelfHealingManager {
       { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks().then(() => undefined) },
       { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy().then(() => undefined) },
       { name: "reclaim-self-owned-branch-conflicts", fn: () => this.reclaimSelfOwnedBranchConflicts().then(() => undefined) },
+      { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches().then(() => undefined) },
       { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls().then(() => undefined) },
       { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews().then(() => undefined) },
       { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates().then(() => undefined) },
@@ -1152,6 +1153,7 @@ export class SelfHealingManager {
           { name: "recover-drifted-agent-task-links", fn: () => this.recoverDriftedAgentTaskLinks() },
           { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy() },
           { name: "reclaim-self-owned-branch-conflicts", fn: () => this.reclaimSelfOwnedBranchConflicts() },
+          { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches() },
           { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls() },
           { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews() },
           { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates() },
@@ -1782,6 +1784,122 @@ export class SelfHealingManager {
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Self-owned branch conflict reclaim sweep failed: ${errorMessage}`);
+      return 0;
+    }
+  }
+
+  async reclaimStaleActiveBranches(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause || settings.enginePaused) return 0;
+
+      const activeTaskIds = new Set<string>();
+      if (this.options.agentStore) {
+        try {
+          const activeRuns = await this.options.agentStore.listActiveHeartbeatRuns();
+          const activeWindowMs = RUNNING_ON_INACTIVE_TASK_STALE_RUN_MS;
+          const now = Date.now();
+          for (const run of activeRuns) {
+            const startedAtMs = Date.parse(run.startedAt ?? "");
+            if (!Number.isFinite(startedAtMs) || now - startedAtMs > activeWindowMs) continue;
+            const taskId = run.contextSnapshot && typeof run.contextSnapshot.taskId === "string"
+              ? run.contextSnapshot.taskId.toUpperCase()
+              : null;
+            if (taskId) activeTaskIds.add(taskId);
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn(`Unable to enumerate active heartbeat runs for stale-active branch reclaim sweep: ${message}`);
+        }
+      }
+
+      const branchesRaw = String(execSync("git branch --list 'fusion/*'", {
+        cwd: this.options.rootDir,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }) || "");
+      const branches = branchesRaw
+        .split("\n")
+        .map((line) => line.replace(/^\*\s*/, "").trim())
+        .filter(Boolean);
+      if (branches.length === 0) return 0;
+
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: true });
+      const taskById = new Map(tasks.map((task) => [task.id.toUpperCase(), task]));
+
+      let reclaimed = 0;
+      for (const branch of branches) {
+        const derivedTaskId = this.deriveTaskIdFromFusionBranch(branch);
+        if (!derivedTaskId) continue;
+
+        const task = taskById.get(derivedTaskId.toUpperCase());
+        if (!task || task.column === "archived" || task.checkedOutBy || task.userPaused) continue;
+        if (activeTaskIds.has(task.id.toUpperCase())) continue;
+
+        if (task.worktree && await isUsableTaskWorktree(this.options.rootDir, task.worktree)) continue;
+
+        const inspection = await this.inspectOrphanedBranch(branch);
+        if (!inspection) continue;
+
+        if (inspection.uniqueCommitCount > 0) {
+          log.warn(`[recovery] stale-active-branch-rescue-needed ${task.id} branch=${branch} unique=${inspection.uniqueCommitCount} tip=${inspection.tipSha.slice(0, 12)}`);
+          continue;
+        }
+
+        await execAsync(`git branch -D ${JSON.stringify(branch)}`, {
+          cwd: this.options.rootDir,
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        await execAsync("git worktree prune", {
+          cwd: this.options.rootDir,
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+
+        await this.store.updateTask(task.id, {
+          worktree: null,
+          branch: null,
+          baseCommitSha: null,
+        });
+        await this.store.logEntry(
+          task.id,
+          `[recovery] stale-active-branch-reclaim ${task.id} branch=${branch} reason=zero-unique-commits-no-worktree`,
+        );
+
+        try {
+          const auditor = createRunAuditor(this.store, {
+            runId: generateSyntheticRunId("self-heal", task.id),
+            agentId: "self-healing",
+            taskId: task.id,
+            taskLineageId: task.lineageId,
+            phase: "reclaim-stale-active-branches",
+          });
+          await auditor.git({
+            type: "branch:stale-active-reclaim",
+            target: branch,
+            metadata: {
+              taskId: task.id,
+              branch,
+              tipSha: inspection.tipSha,
+              uniqueCommitCount: inspection.uniqueCommitCount,
+              reason: "zero-unique-commits-no-worktree",
+            },
+          });
+        } catch (auditErr: unknown) {
+          log.warn(`Failed to write branch:stale-active-reclaim run-audit event for ${task.id}: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`);
+        }
+
+        reclaimed++;
+      }
+
+      if (reclaimed > 0) {
+        log.log(`Reclaimed ${reclaimed} stale active fusion branch(es) with no usable worktree`);
+      }
+      return reclaimed;
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.error(`Stale active branch reclaim sweep failed: ${errorMessage}`);
       return 0;
     }
   }
