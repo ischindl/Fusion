@@ -218,6 +218,98 @@ describe("useTasks", () => {
     expect(result.current.tasks[0]?.id).toBe("FN-200");
   });
 
+  describe("view-transition refresh behavior", () => {
+    it("does not refetch just because sseEnabled flips from false to true, but refreshTasks fetches once and updates state", async () => {
+      const initialTask = createMockTask({ id: "FN-001", title: "Before return" });
+      const refreshedTask = createMockTask({ id: "FN-002", title: "After return" });
+      mockFetchTasks
+        .mockResolvedValueOnce([initialTask])
+        .mockResolvedValueOnce([refreshedTask]);
+
+      const { result, rerender } = renderHook(
+        ({ sseEnabled }: { sseEnabled: boolean }) => useTasks({ sseEnabled }),
+        { initialProps: { sseEnabled: false } },
+      );
+
+      await waitFor(() => {
+        expect(result.current.tasks[0]?.id).toBe("FN-001");
+      });
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        rerender({ sseEnabled: true });
+      });
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await result.current.refreshTasks();
+      });
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(2);
+      expect(result.current.tasks[0]?.id).toBe("FN-002");
+    });
+
+    it("refreshTasks preserves active searchQuery when returning to task views", async () => {
+      vi.useFakeTimers();
+      const filteredTask = createMockTask({ id: "FN-SEARCH", title: "match" });
+      mockFetchTasks
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([filteredTask]);
+
+      const { result, rerender } = renderHook(
+        ({ searchQuery, sseEnabled }: { searchQuery?: string; sseEnabled: boolean }) =>
+          useTasks({ searchQuery, sseEnabled }),
+        { initialProps: { searchQuery: undefined, sseEnabled: false } },
+      );
+
+      await act(async () => {
+        await flushPromises();
+      });
+
+      await act(async () => {
+        rerender({ searchQuery: "match", sseEnabled: false });
+        vi.advanceTimersByTime(300);
+        await flushPromises();
+      });
+
+      mockFetchTasks.mockClear();
+
+      await act(async () => {
+        rerender({ searchQuery: "match", sseEnabled: true });
+      });
+
+      await act(async () => {
+        await result.current.refreshTasks();
+      });
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+      expect(mockFetchTasks).toHaveBeenLastCalledWith(undefined, undefined, undefined, "match", false);
+      expect(result.current.tasks[0]?.id).toBe("FN-SEARCH");
+    });
+
+    it("does not refetch when toggling between already-live task views", async () => {
+      const initialTask = createMockTask({ id: "FN-001" });
+      mockFetchTasks.mockResolvedValueOnce([initialTask]);
+
+      const { rerender } = renderHook(
+        ({ sseEnabled }: { sseEnabled: boolean }) => useTasks({ sseEnabled }),
+        { initialProps: { sseEnabled: true } },
+      );
+
+      await waitFor(() => {
+        expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+      });
+
+      await act(async () => {
+        rerender({ sseEnabled: true });
+      });
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("SSE event: task:created", () => {
     it("adds new task to the list", async () => {
       mockFetchTasks.mockResolvedValueOnce([]);
