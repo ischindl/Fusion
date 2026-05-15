@@ -1070,23 +1070,29 @@
     justify-content: center;
   }
 
-  .bulk-edit-toolbar {
+  .list-mobile-bulk-actions-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: 0 var(--space-md) var(--space-sm);
+  }
+
+  .list-mobile-bulk-actions-wrapper .bulk-edit-toolbar {
     flex-wrap: wrap;
     width: 100%;
-    margin-left: 0;
-    margin-top: var(--space-sm);
+    margin: 0;
   }
 
-  .bulk-edit-dropdown {
-    min-width: 140px;
-    flex: 1;
+  .list-mobile-bulk-actions-wrapper .bulk-edit-dropdown {
+    flex: 1 1 100%;
+    min-width: 0;
   }
 
-  .bulk-node-select {
-    min-height: 36px;
+  .list-mobile-bulk-actions-wrapper .bulk-node-select {
+    min-height: calc(var(--space-xl) + var(--space-md));
   }
 
-  .bulk-delete-btn {
+  .list-mobile-bulk-actions-wrapper .bulk-delete-btn {
     width: 100%;
     justify-content: center;
   }
