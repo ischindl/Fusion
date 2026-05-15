@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPostRoomMessageTool, createSendMessageTool } from "../../agent-tools.js";
 
+function firstText(result: { content: Array<{ type: string; text?: string }> }): string {
+  const first = result.content[0];
+  return first?.type === "text" ? (first.text ?? "") : "";
+}
+
 describe("reliability interaction: message delivery auto-recovery", () => {
   it("recovers transient direct-message delivery and returns success", async () => {
     const sendMessage = vi
@@ -10,9 +15,9 @@ describe("reliability interaction: message delivery auto-recovery", () => {
     const messageStore = { sendMessage } as any;
     const tool = createSendMessageTool(messageStore, "agent-a", { autoRecovery: { mode: "programmatic", maxRetries: 3 } as any });
 
-    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any);
+    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any, undefined, undefined, {} as any);
     expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(result.content[0]?.text).toContain("Message sent to agent-b");
+    expect(firstText(result as any)).toContain("Message sent to agent-b");
   });
 
   it("recovers transient room-message delivery and returns success", async () => {
@@ -26,9 +31,9 @@ describe("reliability interaction: message delivery auto-recovery", () => {
     } as any;
     const tool = createPostRoomMessageTool(chatStore, "agent-a", { autoRecovery: { mode: "programmatic", maxRetries: 3 } as any });
 
-    const result = await tool.execute("1", { roomId: "room-1", content: "hello" } as any);
+    const result = await tool.execute("1", { roomId: "room-1", content: "hello" } as any, undefined, undefined, {} as any);
     expect(addRoomMessage).toHaveBeenCalledTimes(2);
-    expect(result.content[0]?.text).toContain("Room message posted");
+    expect(firstText(result as any)).toContain("Room message posted");
   });
 
   it("preserves ERROR contract for permanent failures", async () => {
@@ -36,8 +41,8 @@ describe("reliability interaction: message delivery auto-recovery", () => {
     const messageStore = { sendMessage } as any;
     const tool = createSendMessageTool(messageStore, "agent-a", { autoRecovery: { mode: "programmatic", maxRetries: 3 } as any });
 
-    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any);
-    expect(result.content[0]?.text).toBe("ERROR: Failed to send message: recipient not found");
+    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any, undefined, undefined, {} as any);
+    expect(firstText(result as any)).toBe("ERROR: Failed to send message: recipient not found");
   });
 
   it("mode off preserves first-throw ERROR contract", async () => {
@@ -47,8 +52,8 @@ describe("reliability interaction: message delivery auto-recovery", () => {
     const messageStore = { sendMessage } as any;
     const tool = createSendMessageTool(messageStore, "agent-a", { autoRecovery: { mode: "off", maxRetries: 3 } as any });
 
-    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any);
+    const result = await tool.execute("1", { to_id: "agent-b", content: "hello" } as any, undefined, undefined, {} as any);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(result.content[0]?.text).toBe("ERROR: Failed to send message: SQLITE_BUSY");
+    expect(firstText(result as any)).toBe("ERROR: Failed to send message: SQLITE_BUSY");
   });
 });
