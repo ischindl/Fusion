@@ -921,6 +921,7 @@
 }
 
 .agent-org-chart-canvas {
+  --org-chart-connector-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   width: max-content;
   position: relative;
   transform-origin: top left;
@@ -951,7 +952,6 @@
   --org-chart-connector-gap: var(--space-sm);
   --org-chart-children-offset: calc(var(--space-lg) + var(--space-sm));
   --org-chart-root-gap: var(--space-xl);
-  --org-chart-connector-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
