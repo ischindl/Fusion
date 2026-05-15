@@ -818,6 +818,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     });
     // Start the TUI
     await tui.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     tui.setLoadingStatus("Initializing task store…");
 
     // Wire the TUI into the log sink so all console output routes through TUI
@@ -834,6 +835,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
   store = new TaskStore(cwd);
   await store.init();
+  if (tui) tui.setLoadingStatus("Starting file watcher…");
   await store.watch();
 
   // Set up database health check for diagnostics
@@ -1035,7 +1037,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   if (tui) tui.setLoadingStatus("Initializing agent store…");
   agentStore = new AgentStore({ rootDir: store.getFusionDir() });
   await agentStore.init();
-  if (tui) tui.setLoadingStatus("Starting engine…");
+  if (tui) tui.setLoadingStatus("Starting agents…");
 
   // ── Reactive TUI Updates ─────────────────────────────────────────────
   //
@@ -1466,6 +1468,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   let localNodeIdForMesh: string | undefined;
 
   // Start the AI engine (unless in dev mode)
+  if (tui) tui.setLoadingStatus("Starting engine…");
   if (!opts.dev) {
     // ── ProjectEngineManager: uniform engine lifecycle for all projects ──
     //
@@ -2096,6 +2099,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       // Determine engine mode
       const settings = await store.getSettings();
       const engineMode = opts.dev ? "dev" : settings.enginePaused ? "paused" : "active";
+      const startupDurationMs = Date.now() - dashboardStartedAt;
 
       const systemInfo: SystemInfo = {
         host: displayHost,
@@ -2107,8 +2111,10 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         engineMode,
         fileWatcher: true,
         startTimeMs: dashboardStartedAt,
+        startupDurationMs,
       };
       tui.setSystemInfo(systemInfo);
+      tui.setReady(true);
       tui.setSettings({
         maxConcurrent: settings.maxConcurrent ?? 1,
         maxWorktrees: settings.maxWorktrees ?? 2,
