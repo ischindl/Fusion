@@ -611,6 +611,7 @@ export function ModelOnboardingModal({
   const modalRef = useRef<HTMLDivElement | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [loginOutcomes, setLoginOutcomes] = useState<Record<string, LoginOutcome>>({});
+  const lastAutoCopiedDeviceCodesRef = useRef<Record<string, string>>({});
   const [isGithubSkipped, setIsGithubSkipped] = useState<boolean>(() => {
     const state = getOnboardingState();
     return state?.stepData?.github?.skipped === true;
@@ -632,6 +633,20 @@ export function ModelOnboardingModal({
     if (!content) return;
     content.scrollTop = 0;
   }, [step]);
+
+  useEffect(() => {
+    const copilotDeviceCode = deviceCodes["github-copilot"];
+    if (!copilotDeviceCode?.userCode) {
+      return;
+    }
+
+    if (lastAutoCopiedDeviceCodesRef.current["github-copilot"] === copilotDeviceCode.userCode) {
+      return;
+    }
+
+    lastAutoCopiedDeviceCodesRef.current["github-copilot"] = copilotDeviceCode.userCode;
+    void navigator.clipboard?.writeText(copilotDeviceCode.userCode);
+  }, [deviceCodes]);
 
   // Initialize skippedProviders from persisted state
   const [skippedProviders, setSkippedProviders] = useState<Record<string, boolean>>(
@@ -1084,6 +1099,11 @@ export function ModelOnboardingModal({
       });
 
       const clearAuthLoginUiState = () => {
+        if (providerId in lastAutoCopiedDeviceCodesRef.current) {
+          const next = { ...lastAutoCopiedDeviceCodesRef.current };
+          delete next[providerId];
+          lastAutoCopiedDeviceCodesRef.current = next;
+        }
         setLoginInstructions((prev) => {
           if (!(providerId in prev)) {
             return prev;
@@ -1136,7 +1156,9 @@ export function ModelOnboardingModal({
         if (deviceCode && providerId === "github-copilot") {
           setDeviceCodes((prev) => ({ ...prev, [providerId]: deviceCode }));
         }
-        window.open(appendTokenQuery(deviceCode?.verificationUri ?? url), "_blank");
+        if (providerId !== "github-copilot" || !deviceCode) {
+          window.open(appendTokenQuery(deviceCode?.verificationUri ?? url), "_blank");
+        }
 
         // Poll for auth completion
         pollIntervalRef.current = setInterval(async () => {

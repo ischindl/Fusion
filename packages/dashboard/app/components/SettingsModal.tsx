@@ -546,6 +546,7 @@ export function SettingsModal({
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [apiKeyErrors, setApiKeyErrors] = useState<Record<string, string>>({});
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAutoCopiedDeviceCodesRef = useRef<Record<string, string>>({});
 
   // Model state
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
@@ -993,6 +994,11 @@ export function SettingsModal({
   }, []);
 
   const clearAuthLoginUiState = useCallback((providerId: string) => {
+    if (providerId in lastAutoCopiedDeviceCodesRef.current) {
+      const next = { ...lastAutoCopiedDeviceCodesRef.current };
+      delete next[providerId];
+      lastAutoCopiedDeviceCodesRef.current = next;
+    }
     setLoginInstructions((prev) => {
       if (!(providerId in prev)) {
         return prev;
@@ -1027,6 +1033,20 @@ export function SettingsModal({
     });
   }, []);
 
+  useEffect(() => {
+    const copilotDeviceCode = deviceCodes["github-copilot"];
+    if (!copilotDeviceCode?.userCode) {
+      return;
+    }
+
+    if (lastAutoCopiedDeviceCodesRef.current["github-copilot"] === copilotDeviceCode.userCode) {
+      return;
+    }
+
+    lastAutoCopiedDeviceCodesRef.current["github-copilot"] = copilotDeviceCode.userCode;
+    void navigator.clipboard?.writeText(copilotDeviceCode.userCode);
+  }, [deviceCodes]);
+
   const handleLogin = useCallback(async (providerId: string) => {
     const provider = authProviders.find((entry) => entry.id === providerId);
     if (provider?.requiresManualCode === true) {
@@ -1056,7 +1076,9 @@ export function SettingsModal({
       if (deviceCode && providerId === "github-copilot") {
         setDeviceCodes((prev) => ({ ...prev, [providerId]: deviceCode }));
       }
-      window.open(appendTokenQuery(deviceCode?.verificationUri ?? url), "_blank");
+      if (providerId !== "github-copilot" || !deviceCode) {
+        window.open(appendTokenQuery(deviceCode?.verificationUri ?? url), "_blank");
+      }
 
       // Poll for auth completion every 2 seconds
       pollIntervalRef.current = setInterval(async () => {
