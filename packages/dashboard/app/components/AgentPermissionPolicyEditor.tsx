@@ -132,7 +132,7 @@ export function AgentPermissionPolicyEditor({ value, projectDefault, mode, onCha
           const effective = rules[category] ?? "allow";
           const rowValue = mode === "agent-override" && !value ? "inherit" : effective;
           return (
-            <div key={category} className="agent-policy-row" role="row">
+            <div key={category} className="agent-policy-row" role="row" data-category={category}>
               <div className="agent-policy-cell">
                 <strong>{meta.label}</strong>
                 <div className="agent-policy-description">{meta.description}</div>

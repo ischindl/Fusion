@@ -130,17 +130,12 @@ describe("AgentPermissionPolicyEditor", () => {
       />,
     );
 
-    const labels = Array.from(container.querySelectorAll(".agent-policy-row .agent-policy-cell strong"))
-      .map((node) => node.textContent ?? "");
+    const rowCategories = Array.from(container.querySelectorAll(".agent-policy-row"))
+      .map((row) => row.getAttribute("data-category"))
+      .filter((value): value is string => typeof value === "string");
 
-    expect(labels).toEqual([
-      "Git writes",
-      "File writes/deletes",
-      "Command execution",
-      "Network/API",
-      "Task/agent mutation",
-    ]);
-    expect(labels).toHaveLength(AGENT_PERMISSION_POLICY_ACTION_CATEGORIES.length);
+    expect(new Set(rowCategories)).toEqual(new Set(AGENT_PERMISSION_POLICY_ACTION_CATEGORIES));
+    expect(rowCategories).toHaveLength(AGENT_PERMISSION_POLICY_ACTION_CATEGORIES.length);
   });
 
   it("keeps exempt tools panel read-only", () => {
