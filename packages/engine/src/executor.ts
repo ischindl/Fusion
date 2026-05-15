@@ -72,6 +72,7 @@ import { buildPromptLayers, collapsePromptLayers } from "./prompt-layers.js";
 import type { AgentReflectionService } from "./agent-reflection.js";
 import { createRunAuditor, generateSyntheticRunId, type EngineRunContext, type RunAuditor } from "./run-audit.js";
 import { AutoRecoveryDispatcher } from "./auto-recovery.js";
+import { BranchWorktreeAutoRecoveryHandler } from "./auto-recovery-handlers/branch-worktree.js";
 import { createFileScopeAutoRecoveryHandler } from "./auto-recovery-handlers/file-scope.js";
 import { ReadonlyViolationError, filterCustomToolsForReadonly } from "./workflow-step-tool-policy.js";
 import { evaluateSpecStaleness, getPromptPath } from "./spec-staleness.js";
@@ -842,12 +843,27 @@ export class TaskExecutor {
       classifyPatchIds: async () => ({ unique: [], alreadyUpstream: [] }),
       settings: () => ({ autoRecovery: { mode: "deterministic-only", maxRetries: 3 } } as ProjectSettings),
     });
+    const branchWorktreeHandler = new BranchWorktreeAutoRecoveryHandler({
+      taskStore: this.store,
+      runAudit: audit,
+      logger: executorLog,
+    });
     return new AutoRecoveryDispatcher({
       taskStore: this.store,
       auditEmitter: audit,
       handlers: {
-        issueRetry: fileScopeHandler.issueRetry.bind(fileScopeHandler),
-        spawnAiRecovery: fileScopeHandler.spawnAiRecovery.bind(fileScopeHandler),
+        issueRetry: async (failure, decision, ctx) => {
+          if (failure.class === "branch-conflict-unrecoverable") {
+            return branchWorktreeHandler.issueRetry(failure, decision, ctx);
+          }
+          return fileScopeHandler.issueRetry(failure, decision, ctx);
+        },
+        spawnAiRecovery: async (failure, decision, ctx) => {
+          if (failure.class === "branch-conflict-unrecoverable") {
+            return branchWorktreeHandler.spawnAiRecovery(failure, decision, ctx);
+          }
+          return fileScopeHandler.spawnAiRecovery(failure, decision, ctx);
+        },
       },
     });
   }
