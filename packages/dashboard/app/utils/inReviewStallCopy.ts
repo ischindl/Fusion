@@ -83,6 +83,16 @@ export function getInReviewStallCopy(
   };
 }
 
-export function shouldShowInReviewStallBadge(task: Pick<Task, "column" | "paused" | "inReviewStall">): boolean {
-  return task.column === "in-review" && task.paused !== true && task.inReviewStall != null;
+const ACTIVE_MERGE_STATUSES: ReadonlySet<Task["status"]> = new Set(["merging", "merging-pr", "merging-fix"]);
+
+export function shouldShowInReviewStallBadge(task: Pick<Task, "column" | "paused" | "inReviewStall" | "status">): boolean {
+  if (task.column !== "in-review" || task.paused === true || task.inReviewStall == null) {
+    return false;
+  }
+
+  return !(
+    task.inReviewStall.code === "merge-blocker" &&
+    task.status != null &&
+    ACTIVE_MERGE_STATUSES.has(task.status)
+  );
 }
