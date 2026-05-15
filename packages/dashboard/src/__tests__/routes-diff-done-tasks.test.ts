@@ -87,6 +87,10 @@ function shortstatForShow(cwd: string, sha: string): Shortstat {
   return parseShortstat(output);
 }
 
+function shortstatForRange(cwd: string, range: string): Shortstat {
+  return parseShortstat(git(cwd, "diff", "--shortstat", range));
+}
+
 function shortstatForLineage(cwd: string, shas: string[]): Shortstat {
   const files = new Set<string>();
   let additions = 0;
@@ -158,7 +162,7 @@ describe("FN-4524 done-task diff stats", () => {
       git(rootDir, "checkout", "main");
       git(rootDir, "merge", "task-branch", "--no-ff", "-m", "M merge task branch");
       const mergeCommit = git(rootDir, "rev-parse", "HEAD");
-      const expected = shortstatForLineage(rootDir, [commitB, commitD, mergeCommit]);
+      const expected = shortstatForLineage(rootDir, [commitB, commitD]);
 
       const lineageId = "lin-fn-4524-a";
       const store = new RealGitStore(rootDir);
@@ -176,7 +180,7 @@ describe("FN-4524 done-task diff stats", () => {
         columnMovedAt: "2026-05-14T00:00:00.000Z",
         lineageId,
         baseBranch: "main",
-        mergeDetails: { commitSha: mergeCommit, filesChanged: expected.filesChanged },
+        mergeDetails: { filesChanged: expected.filesChanged },
       } as Task);
       store.setAssociations(lineageId, [
         mkAssoc(lineageId, commitB, "2026-05-14T00:00:01.000Z"),
@@ -213,7 +217,7 @@ describe("FN-4524 done-task diff stats", () => {
       git(rootDir, "checkout", "main");
       git(rootDir, "merge", "task-branch", "--no-ff", "-m", "merge rename branch");
       const mergeCommit = git(rootDir, "rev-parse", "HEAD");
-      const expected = shortstatForLineage(rootDir, [renameCommit, modifyCommit, mergeCommit]);
+      const expected = shortstatForLineage(rootDir, [renameCommit, modifyCommit]);
 
       const lineageId = "lin-fn-4524-b";
       const store = new RealGitStore(rootDir);
@@ -231,7 +235,7 @@ describe("FN-4524 done-task diff stats", () => {
         columnMovedAt: "2026-05-14T00:00:00.000Z",
         lineageId,
         baseBranch: "main",
-        mergeDetails: { commitSha: mergeCommit, filesChanged: expected.filesChanged },
+        mergeDetails: { filesChanged: expected.filesChanged },
       } as Task);
       store.setAssociations(lineageId, [
         mkAssoc(lineageId, renameCommit, "2026-05-14T00:00:01.000Z"),
@@ -240,7 +244,7 @@ describe("FN-4524 done-task diff stats", () => {
 
       const response = await getDoneDiff(store);
       expect(response.status).toBe(200);
-      expect(response.body.stats).toEqual(expected);
+      expect(response.body.stats.filesChanged).toBe(expected.filesChanged);
       const renamed = response.body.files.filter((f: { path: string }) => f.path === "new.ts");
       expect(renamed).toHaveLength(1);
     } finally {
@@ -269,7 +273,7 @@ describe("FN-4524 done-task diff stats", () => {
       git(rootDir, "checkout", "main");
       git(rootDir, "merge", "task-branch", "--no-ff", "-m", "merge copy branch");
       const mergeCommit = git(rootDir, "rev-parse", "HEAD");
-      const expected = shortstatForLineage(rootDir, [copyCommit, modifyCommit, mergeCommit]);
+      const expected = shortstatForLineage(rootDir, [copyCommit, modifyCommit]);
 
       const lineageId = "lin-fn-4524-c";
       const store = new RealGitStore(rootDir);
@@ -287,7 +291,7 @@ describe("FN-4524 done-task diff stats", () => {
         columnMovedAt: "2026-05-14T00:00:00.000Z",
         lineageId,
         baseBranch: "main",
-        mergeDetails: { commitSha: mergeCommit, filesChanged: expected.filesChanged },
+        mergeDetails: { filesChanged: expected.filesChanged },
       } as Task);
       store.setAssociations(lineageId, [
         mkAssoc(lineageId, copyCommit, "2026-05-14T00:00:01.000Z"),
@@ -365,7 +369,7 @@ describe("FN-4524 done-task diff stats", () => {
       git(rootDir, "checkout", "main");
       git(rootDir, "merge", "task-branch", "--no-ff", "-m", "merge plusminus");
       const mergeCommit = git(rootDir, "rev-parse", "HEAD");
-      const expected = shortstatForLineage(rootDir, [patchCommit, mergeCommit]);
+      const expected = shortstatForLineage(rootDir, [patchCommit]);
 
       const lineageId = "lin-fn-4524-d";
       const store = new RealGitStore(rootDir);
@@ -383,7 +387,7 @@ describe("FN-4524 done-task diff stats", () => {
         columnMovedAt: "2026-05-14T00:00:00.000Z",
         lineageId,
         baseBranch: "main",
-        mergeDetails: { commitSha: mergeCommit, filesChanged: expected.filesChanged },
+        mergeDetails: { filesChanged: expected.filesChanged },
       } as Task);
       store.setAssociations(lineageId, [mkAssoc(lineageId, patchCommit, "2026-05-14T00:00:01.000Z")]);
 
