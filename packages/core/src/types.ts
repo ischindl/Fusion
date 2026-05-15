@@ -4618,8 +4618,9 @@ export interface AgentPromptsConfig {
 /** Domain categories for run-audit events.
  *  - "database": TaskStore mutations (task updates, comments, etc.)
  *  - "git": Git operations (commits, branches, merges)
- *  - "filesystem": File system mutations (file reads/writes, attachments) */
-export type RunAuditDomain = "database" | "git" | "filesystem";
+ *  - "filesystem": File system mutations (file reads/writes, attachments)
+ *  - "sandbox": Sandbox backend lifecycle events for user-configured command execution */
+export type RunAuditDomain = "database" | "git" | "filesystem" | "sandbox";
 
 /** Input for recording a run-audit event. */
 export interface RunAuditEventInput {

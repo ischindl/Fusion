@@ -240,6 +240,27 @@ describe("Run Audit Integration", () => {
       expect(gitEvents).toHaveLength(1);
       expect(gitEvents[0].domain).toBe("git");
     });
+
+    it("round-trips sandbox domain events and filters by sandbox", () => {
+      const runId = "integration-test-run-sandbox-001";
+
+      const created = store.recordRunAuditEvent({
+        runId,
+        agentId: "agent-sandbox",
+        taskId: "FN-SANDBOX-001",
+        domain: "sandbox",
+        mutationType: "sandbox:run",
+        target: "native",
+        metadata: { timeoutMs: 15000, exitCode: 0 },
+      });
+
+      expect(created.domain).toBe("sandbox");
+
+      const sandboxEvents = store.getRunAuditEvents({ runId, domain: "sandbox" });
+      expect(sandboxEvents).toHaveLength(1);
+      expect(sandboxEvents[0].domain).toBe("sandbox");
+      expect(sandboxEvents[0].mutationType).toBe("sandbox:run");
+    });
   });
 
   describe("complete event shape verification", () => {
