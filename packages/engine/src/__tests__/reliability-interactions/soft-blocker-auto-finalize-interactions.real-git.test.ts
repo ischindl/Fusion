@@ -224,6 +224,76 @@ describe("soft-blocker auto-finalize reliability interactions (real git)", () =>
     }
   });
 
+  it("respects globalPause gating before applying soft-blocker auto-finalize", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fn-4653-ri-governance-pause-"));
+    try {
+      git(dir, "git init -b main");
+      git(dir, 'git config user.email "test@example.com"');
+      git(dir, 'git config user.name "Test"');
+      git(dir, "git commit --allow-empty -m init");
+
+      seedLandedContent(dir, "fusion/fn-4653-governance", "FN-4653-GOV", "gov.txt");
+
+      const task = makeTask({ id: "FN-4653-GOV", branch: "fusion/fn-4653-governance" });
+      const pausedStore = makeStore([task], [], { globalPause: true });
+      const pausedManager = new SelfHealingManager(pausedStore, { rootDir: dir, getExecutingTaskIds: () => new Set() });
+
+      const blocked = await pausedManager.recoverAlreadyMergedReviewTasks();
+      expect(blocked).toBe(0);
+      expect(task.column).toBe("in-review");
+
+      pausedManager.stop();
+
+      const unpausedStore = makeStore([task], [], { globalPause: false });
+      const unpausedManager = new SelfHealingManager(unpausedStore, { rootDir: dir, getExecutingTaskIds: () => new Set() });
+      const recovered = await unpausedManager.recoverAlreadyMergedReviewTasks();
+
+      expect(recovered).toBe(1);
+      expect(task.column).toBe("done");
+      expect(task.paused).toBe(false);
+
+      unpausedManager.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never bypasses hard blockers like awaiting-user-review even when paused", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fn-4653-ri-governance-hard-"));
+    try {
+      git(dir, "git init -b main");
+      git(dir, 'git config user.email "test@example.com"');
+      git(dir, 'git config user.name "Test"');
+      git(dir, "git commit --allow-empty -m init");
+
+      seedLandedContent(dir, "fusion/fn-4653-awaiting", "FN-4653-AWAITING", "awaiting.txt");
+
+      const task = makeTask({
+        id: "FN-4653-AWAITING",
+        branch: "fusion/fn-4653-awaiting",
+        status: "awaiting-user-review",
+        error: "needs operator review",
+      });
+      const auditEvents: unknown[] = [];
+      const store = makeStore([task], auditEvents);
+      const manager = new SelfHealingManager(store, { rootDir: dir, getExecutingTaskIds: () => new Set() });
+
+      const recovered = await manager.recoverAlreadyMergedReviewTasks();
+
+      expect(recovered).toBe(0);
+      expect(task.column).toBe("in-review");
+      expect(task.paused).toBe(true);
+      expect(task.status).toBe("awaiting-user-review");
+      expect(
+        auditEvents.some((event: any) => event?.mutationType === "task:auto-recover-finalize-already-on-main"),
+      ).toBe(false);
+
+      manager.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("composes scheduler inReviewWithWorktree filtering with auto-finalize and stale blockedBy cleanup", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4653-ri-scheduler-"));
     try {
