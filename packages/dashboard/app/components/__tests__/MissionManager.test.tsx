@@ -4339,7 +4339,7 @@ describe("MissionManager", () => {
       expect(within(rollup).getByText("Feature two acceptance criteria", { exact: false })).toBeInTheDocument();
     });
 
-    it("keeps milestone acceptance precedence over feature rollup", async () => {
+    it("shows feature rollup alongside milestone acceptance criteria", async () => {
       const missionDetail = createFn4613MissionDetail();
       globalThis.fetch = createDetailFetchMockForMissionDetail(missionDetail);
 
@@ -4351,7 +4351,57 @@ describe("MissionManager", () => {
       await waitFor(() => {
         expect(screen.getByText("Milestone two acceptance criteria", { exact: false })).toBeInTheDocument();
       });
-      expect(screen.queryByTestId("milestone-feature-acceptance-rollup")).not.toBeInTheDocument();
+      const rollup = await screen.findByTestId("milestone-feature-acceptance-rollup");
+      expect(within(rollup).getByText("Feature Two")).toBeInTheDocument();
+      expect(within(rollup).getByText("Feature two acceptance criteria", { exact: false })).toBeInTheDocument();
+      expect(rollup).toHaveClass("mission-assertions__list");
+    });
+  });
+
+  describe("FN-4652: feature acceptance coexists with milestone acceptance", () => {
+    it("renders milestone acceptance text and feature rollup together for milestone M1-like shape", async () => {
+      const missionDetail = JSON.parse(JSON.stringify(mockMissionDetail)) as typeof mockMissionDetail;
+      missionDetail.milestones[0].acceptanceCriteria = "Milestone-level acceptance summary for M1";
+      missionDetail.milestones[0].slices = [
+        {
+          ...missionDetail.milestones[0].slices[0],
+          id: "SL-M1-A",
+          title: "Slice A",
+          features: [
+            {
+              ...missionDetail.milestones[0].slices[0].features[0],
+              id: "F-M1-A",
+              title: "Orchestration flow",
+              acceptanceCriteria: "DAG branches execute in dependency order",
+            },
+          ],
+        },
+        {
+          ...missionDetail.milestones[0].slices[0],
+          id: "SL-M1-B",
+          title: "Slice B",
+          features: [
+            {
+              ...missionDetail.milestones[0].slices[0].features[0],
+              id: "F-M1-B",
+              title: "Recovery behavior",
+              acceptanceCriteria: "Failed nodes retry with bounded backoff",
+            },
+          ],
+        },
+      ];
+
+      globalThis.fetch = createDetailFetchMockForMissionDetail(missionDetail);
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      fireEvent.click(await screen.findByText("Build Auth System"));
+      await waitForDetailLoaded();
+
+      expect(screen.getByText("Milestone-level acceptance summary for M1", { exact: false })).toBeInTheDocument();
+      const rollup = await screen.findByTestId("milestone-feature-acceptance-rollup");
+      expect(rollup).toHaveClass("mission-assertions__list");
+      expect(within(rollup).getByText("DAG branches execute in dependency order", { exact: false })).toBeInTheDocument();
+      expect(within(rollup).getByText("Failed nodes retry with bounded backoff", { exact: false })).toBeInTheDocument();
     });
   });
 
@@ -4377,7 +4427,7 @@ describe("MissionManager", () => {
       expect(screen.getAllByText(emptyAssertionsCopy)).toHaveLength(1);
     });
 
-    it("hides feature acceptance rollup when milestone acceptance criteria already exists", async () => {
+    it("shows feature acceptance rollup when milestone acceptance criteria already exists", async () => {
       const missionDetail = JSON.parse(JSON.stringify(mockMissionDetail)) as typeof mockMissionDetail;
       missionDetail.milestones[0].acceptanceCriteria = "- Session handling: Session refresh succeeds without logout";
       missionDetail.milestones[0].slices[0].features = [
@@ -4396,7 +4446,9 @@ describe("MissionManager", () => {
       await waitForDetailLoaded();
 
       expect(screen.getAllByText(/Acceptance:/).length).toBeGreaterThan(0);
-      expect(screen.queryByTestId("milestone-feature-acceptance-rollup")).not.toBeInTheDocument();
+      const rollup = await screen.findByTestId("milestone-feature-acceptance-rollup");
+      expect(within(rollup).getByText("Session handling")).toBeInTheDocument();
+      expect(within(rollup).getByText("Session refresh succeeds without logout", { exact: false })).toBeInTheDocument();
     });
 
     it("shows feature acceptance rollup instead of false empty-state when assertions are absent", async () => {
