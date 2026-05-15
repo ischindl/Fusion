@@ -1985,6 +1985,21 @@ describe("TaskCard", () => {
     expect(fullCss).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.card-github-badge\s*\{[^}]*font-size:\s*0\.625rem;[^}]*\}/);
   });
 
+  it("FN-4525 defines shared card-chip height tokens and applies them to both badges", () => {
+    const baseCss = loadAllAppCssBaseOnly();
+
+    expect(baseCss).toMatch(/:root\s*\{[^}]*--card-chip-height:\s*22px;[^}]*--card-chip-height-mobile:\s*20px;[^}]*\}/);
+    expect(baseCss).toMatch(/\.card-github-badge\s*\{[^}]*height:\s*var\(--card-chip-height\);[^}]*\}/);
+    expect(baseCss).toMatch(/\.card-time-indicator\s*\{[^}]*height:\s*var\(--card-chip-height\);[^}]*\}/);
+  });
+
+  it("FN-4525 applies shared mobile card-chip height token to both badges", () => {
+    const fullCss = loadAllAppCss();
+
+    expect(fullCss).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.card-github-badge\s*\{[^}]*height:\s*var\(--card-chip-height-mobile\);[^}]*\}/);
+    expect(fullCss).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.card-time-indicator\s*\{[^}]*height:\s*var\(--card-chip-height-mobile\);[^}]*\}/);
+  });
+
   it("FN-4511 keeps GitHub badge and timer chip geometry in parity", () => {
     const cleanupCss = mountCssForBadgeTests();
     try {
@@ -2025,6 +2040,13 @@ describe("TaskCard", () => {
       expect(githubBorderTopWidth).toBe(timeBorderTopWidth);
       expect(githubBorderBottomWidth).toBe(timeBorderBottomWidth);
       expect(githubStyles.gap).toBe(timeStyles.gap);
+
+      if (githubBadge.offsetHeight > 0 || timeIndicator.offsetHeight > 0) {
+        expect(githubBadge.offsetHeight).toBe(timeIndicator.offsetHeight);
+      } else {
+        expect(githubStyles.height).not.toBe("");
+        expect(githubStyles.height).toBe(timeStyles.height);
+      }
     } finally {
       cleanupCss();
     }

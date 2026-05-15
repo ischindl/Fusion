@@ -143,6 +143,8 @@ html {
   --header-height: 57px;
   --executor-footer-height: 0px;
   --executor-footer-height-mobile: 0px;
+  --card-chip-height: 22px;
+  --card-chip-height-mobile: 20px;
 
   /* PWA standalone mode bottom gap (FN-1626): extra breathing room for iOS home indicator */
   --standalone-bottom-gap: 0px;
@@ -1997,6 +1999,8 @@ input[type="range"]:focus-visible {
   line-height: 1;
   font-family: var(--font-mono);
   padding: var(--space-xs) var(--space-sm);
+  height: var(--card-chip-height);
+  min-height: var(--card-chip-height);
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   box-sizing: border-box;
@@ -2011,6 +2015,8 @@ input[type="range"]:focus-visible {
   .card-github-badge {
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.625rem;
+    height: var(--card-chip-height-mobile);
+    min-height: var(--card-chip-height-mobile);
   }
 }
 

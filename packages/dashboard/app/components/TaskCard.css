@@ -774,6 +774,8 @@
   margin-left: auto;
   flex-shrink: 0;
   padding: var(--space-xs) var(--space-sm);
+  height: var(--card-chip-height);
+  min-height: var(--card-chip-height);
   border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--text-muted) 12%, transparent);
@@ -1291,6 +1293,8 @@
   .card-time-indicator {
     padding: var(--space-xs) var(--space-sm);
     font-size: 0.625rem;
+    height: var(--card-chip-height-mobile);
+    min-height: var(--card-chip-height-mobile);
   }
 
   .card-github-tracking-chip {
