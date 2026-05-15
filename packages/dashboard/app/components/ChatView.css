@@ -141,8 +141,23 @@
   gap: var(--space-xs);
 }
 
+.chat-room-item-name-row {
+  display: inline-flex;
+  align-items: center;
+}
+
 .chat-room-item-name {
   font-weight: 500;
+}
+
+.chat-unread-dot {
+  display: inline-block;
+  width: var(--space-sm);
+  height: var(--space-sm);
+  border-radius: 50%;
+  background: var(--color-info);
+  flex-shrink: 0;
+  margin-inline-start: var(--space-xs);
 }
 
 .chat-room-item-meta {
