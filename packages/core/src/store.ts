@@ -2202,7 +2202,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ...DEFAULT_SETTINGS,
       ...globalSettings,
       ...projectSettings,
-      worktrunk: resolveWorktrunkSettings(globalSettings.worktrunk, projectSettings.worktrunk),
+      worktrunk: resolveWorktrunkSettings(
+        globalSettings.worktrunk,
+        (projectSettings as Partial<Settings>).worktrunk,
+      ),
     };
     return canonicalizeSettings(merged);
   }
