@@ -701,7 +701,15 @@
   margin-left: auto;
 }
 
+.card-footer-row > .card-github-tracking-chip:first-of-type {
+  margin-left: auto;
+}
+
 .card-source-provenance + .card-source-provenance {
+  margin-left: 0;
+}
+
+.card-footer-row > .card-source-provenance + .card-github-tracking-chip:first-of-type {
   margin-left: 0;
 }
 
