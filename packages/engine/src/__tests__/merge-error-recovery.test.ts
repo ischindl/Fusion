@@ -49,6 +49,7 @@ type MockTask = {
   mergeRetries: number;
   status: string | null;
   error: string | null;
+  paused?: boolean;
   steps?: Array<{ status: string }>;
   mergeDetails?: { mergeConfirmed?: boolean } | null;
   verificationFailureCount?: number;
