@@ -224,6 +224,29 @@ Override precedence for direct merges is:
 1. Task `PROMPT.md` line `**Direct Merge Commit Strategy:** ...`
 2. Project `directMergeCommitStrategy`
 3. Default `"auto"`
+
+### Sandbox settings
+
+Sandbox settings are project-scoped under `sandbox.*` and currently define schema/defaults/validation only (foundation from FN-4635 for FN-4637/FN-4638 backend rollout).
+
+| Setting | Type | Default | Description |
+|---|---|---:|---|
+| `sandbox.backend` | `"native" \| "sandbox-exec" \| "bubblewrap" \| "docker" \| "podman" \| "custom"` | `"native"` | Selects command-execution backend. `native` preserves current passthrough behavior, `sandbox-exec`/`bubblewrap` are Linux sandbox backends, `docker`/`podman` are containerized backends, and `custom` is reserved for project-specific adapters. |
+| `sandbox.policy.allowNetwork` | `boolean` | `true` | Backend policy hint for outbound network access. |
+| `sandbox.policy.allowedPaths` | `string[]` | `[]` | Backend policy hint for allowed filesystem paths (repo-relative paths/globs). |
+| `sandbox.failureMode` | `"fail-hard" \| "fallback-native"` | `"fail-hard"` | Failure handling mode: `fail-hard` aborts when sandbox setup fails; `fallback-native` allows controlled fallback to native execution. |
+
+Per-task PROMPT override line:
+
+```md
+**Sandbox:** <backend>
+```
+
+Sandbox backend precedence is:
+1. Task `PROMPT.md` line `**Sandbox:** ...`
+2. Project `sandbox.backend`
+3. Default `"native"`
+
 | `pushAfterMerge` | `boolean` | `false` | Auto-push to remote after successful direct merge. Includes pulling latest and AI conflict resolution. |
 | `pushRemote` | `string` | `"origin"` | Git remote (and optional branch) to push to after merge. |
 | `worktreeInitCommand` | `string` | `undefined` | Shell command run after worktree creation. For pnpm repos, prefer `pnpm install --frozen-lockfile` for deterministic bootstrap. |
