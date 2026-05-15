@@ -1,16 +1,24 @@
 import type { InReviewStallCode, InReviewStallSignal, Task } from "@fusion/core";
 
+import { MAX_AUTO_MERGE_RETRIES } from "../hooks/useBlockerFanout";
+
 export interface InReviewStallCopy {
   badgeLabel: string;
+  counter?: string;
   headline: string;
   description: string;
   suggestedAction: string;
   code: InReviewStallCode;
 }
 
-const BADGE_LABEL = "Stall";
+const BADGE_LABEL_BY_CODE: Record<InReviewStallCode, string> = {
+  "merge-blocker": "Merge blocked",
+  "transient-merge-status-no-owner": "Merge stalled",
+  "merge-retries-exhausted": "Retries exhausted",
+  "no-worktree-no-merge-confirmed": "No worktree",
+};
 
-const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabel" | "code">> = {
+const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabel" | "counter" | "code">> = {
   "merge-blocker": {
     headline: "Merge blocked by a pre-merge check",
     description:
@@ -43,7 +51,7 @@ function defaultCopy(signal: InReviewStallSignal): InReviewStallCopy {
     console.warn(`Unhandled inReviewStall code in dashboard copy map: ${signal.code}`);
   }
   return {
-    badgeLabel: BADGE_LABEL,
+    badgeLabel: "In-review stall",
     code: signal.code,
     headline: "In-review stall surfaced",
     description: signal.reason,
@@ -51,14 +59,26 @@ function defaultCopy(signal: InReviewStallSignal): InReviewStallCopy {
   };
 }
 
-export function getInReviewStallCopy(signal: InReviewStallSignal): InReviewStallCopy {
+export function getInReviewStallCopy(
+  signal: InReviewStallSignal,
+  options?: { mergeRetries?: number | null; maxAutoMergeRetries?: number },
+): InReviewStallCopy {
   const mapped = COPY_BY_CODE[signal.code];
   if (!mapped) {
     return defaultCopy(signal);
   }
+
+  const maxAutoMergeRetries = options?.maxAutoMergeRetries ?? MAX_AUTO_MERGE_RETRIES;
+  const mergeRetries = options?.mergeRetries;
+  const counter =
+    signal.code === "merge-retries-exhausted" && Number.isFinite(mergeRetries) && mergeRetries != null && mergeRetries >= 0
+      ? `${Math.max(mergeRetries, maxAutoMergeRetries)}/${maxAutoMergeRetries}`
+      : undefined;
+
   return {
-    badgeLabel: BADGE_LABEL,
+    badgeLabel: BADGE_LABEL_BY_CODE[signal.code],
     code: signal.code,
+    counter,
     ...mapped,
   };
 }
