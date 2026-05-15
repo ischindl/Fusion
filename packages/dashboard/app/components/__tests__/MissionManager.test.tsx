@@ -4234,6 +4234,127 @@ describe("MissionManager", () => {
     });
   });
 
+  describe("FN-4613: persisted acceptance criteria visibility", () => {
+    const createFn4613MissionDetail = () => {
+      const missionDetail = JSON.parse(JSON.stringify(mockMissionDetail)) as typeof mockMissionDetail;
+      missionDetail.milestones = [
+        {
+          ...missionDetail.milestones[0],
+          id: "MS-001",
+          title: "Milestone One",
+          acceptanceCriteria: "",
+          slices: [
+            {
+              ...missionDetail.milestones[0].slices[0],
+              id: "SL-001",
+              title: "Slice One",
+              features: [
+                {
+                  ...missionDetail.milestones[0].slices[0].features[0],
+                  id: "F-001",
+                  title: "Feature One",
+                  acceptanceCriteria: "",
+                },
+              ],
+            },
+          ],
+        },
+        {
+          ...missionDetail.milestones[0],
+          id: "MS-002",
+          title: "Milestone Two",
+          acceptanceCriteria: "Milestone two acceptance criteria",
+          slices: [
+            {
+              ...missionDetail.milestones[0].slices[0],
+              id: "SL-002",
+              title: "Slice Two",
+              milestoneId: "MS-002",
+              features: [
+                {
+                  ...missionDetail.milestones[0].slices[0].features[0],
+                  id: "F-002",
+                  title: "Feature Two",
+                  sliceId: "SL-002",
+                  acceptanceCriteria: "Feature two acceptance criteria",
+                },
+              ],
+            },
+          ],
+        },
+      ];
+      return missionDetail;
+    };
+
+    it("keeps non-first milestone acceptance discoverable on initial load", async () => {
+      globalThis.fetch = createDetailFetchMockForMissionDetail(createFn4613MissionDetail());
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      fireEvent.click(await screen.findByText("Build Auth System"));
+      await waitForDetailLoaded("Milestone One");
+
+      fireEvent.click(screen.getByText("Milestone Two"));
+      expect(screen.getByText("Milestone two acceptance criteria", { exact: false })).toBeInTheDocument();
+    });
+
+    it("preserves expanded non-first milestone after mission detail refetch", async () => {
+      globalThis.EventSource = MockEventSource as unknown as typeof globalThis.EventSource;
+      const missionDetail = createFn4613MissionDetail();
+      const fetchMock = createDetailFetchMockForMissionDetail(missionDetail);
+      globalThis.fetch = fetchMock;
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      fireEvent.click(await screen.findByText("Build Auth System"));
+      await waitForDetailLoaded("Milestone One");
+
+      fireEvent.click(screen.getByText("Milestone Two"));
+      await waitFor(() => {
+        expect(screen.getByText("Milestone two acceptance criteria", { exact: false })).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        for (const source of MockEventSource.instances) {
+          source.emit("mission:updated", { id: "M-001", title: "Build Auth System", status: "active" });
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Milestone two acceptance criteria", { exact: false })).toBeInTheDocument();
+      });
+      expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("/api/missions/M-001")).length).toBeGreaterThan(1);
+    });
+
+    it("surfaces feature acceptance for selected milestone without requiring slice expansion", async () => {
+      const missionDetail = createFn4613MissionDetail();
+      missionDetail.milestones[1].acceptanceCriteria = "";
+      globalThis.fetch = createDetailFetchMockForMissionDetail(missionDetail);
+
+      render(<MissionManager isOpen={true} isInline={true} onClose={vi.fn()} addToast={vi.fn()} />);
+      fireEvent.click(await screen.findByText("Build Auth System"));
+      await waitForDetailLoaded("Milestone One");
+
+      fireEvent.click(screen.getByText("Milestone Two"));
+      const rollup = await screen.findByTestId("milestone-feature-acceptance-rollup");
+      expect(within(rollup).getByText("Feature Two")).toBeInTheDocument();
+      expect(within(rollup).getByText("Feature two acceptance criteria", { exact: false })).toBeInTheDocument();
+    });
+
+    it("keeps milestone acceptance precedence over feature rollup", async () => {
+      const missionDetail = createFn4613MissionDetail();
+      globalThis.fetch = createDetailFetchMockForMissionDetail(missionDetail);
+
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+      fireEvent.click(await screen.findByText("Build Auth System"));
+      await waitForDetailLoaded("Milestone One");
+
+      fireEvent.click(screen.getByText("Milestone Two"));
+      await waitFor(() => {
+        expect(screen.getByText("Milestone two acceptance criteria", { exact: false })).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId("milestone-feature-acceptance-rollup")).not.toBeInTheDocument();
+    });
+  });
+
   describe("milestone assertions empty-state", () => {
     const emptyAssertionsCopy = "No assertions defined. Add one to define completion criteria.";
 

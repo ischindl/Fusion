@@ -824,30 +824,56 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         return;
       }
       setSelectedMission(data);
-      // Auto-expand first milestone and slice
       if (data.milestones.length > 0) {
         const firstMilestoneId = data.milestones[0].id;
-        setSelectedMilestoneId(firstMilestoneId);
+        const milestoneIds = new Set(data.milestones.map((milestone) => milestone.id));
+        const selectedMilestoneStillExists = selectedMilestoneIdRef.current
+          && milestoneIds.has(selectedMilestoneIdRef.current);
+        const nextSelectedMilestoneId = selectedMilestoneStillExists
+          ? selectedMilestoneIdRef.current
+          : firstMilestoneId;
+
+        setSelectedMilestoneId(nextSelectedMilestoneId);
         setValidationRoundsExpanded(true);
-        setExpandedMilestones(new Set([firstMilestoneId]));
-        // Load assertions and validation rollup for the first milestone (inline to avoid forward ref)
-        fetchAssertions(firstMilestoneId, projectId).then((assertions) => {
+
+        // FN-4613: preserve user-expanded milestones/slices across refetch instead of resetting to first-only.
+        setExpandedMilestones((prev) => {
+          const next = new Set(Array.from(prev).filter((milestoneId) => milestoneIds.has(milestoneId)));
+          next.add(nextSelectedMilestoneId);
+          return next;
+        });
+
+        const availableSliceIds = new Set(
+          data.milestones.flatMap((milestone) => milestone.slices.map((slice) => slice.id)),
+        );
+        const selectedMilestone = data.milestones.find((milestone) => milestone.id === nextSelectedMilestoneId);
+        const selectedMilestoneFirstSliceId = selectedMilestone?.slices[0]?.id ?? null;
+        setExpandedSlices((prev) => {
+          const next = new Set(Array.from(prev).filter((sliceId) => availableSliceIds.has(sliceId)));
+          if (selectedMilestoneFirstSliceId) {
+            const hasExpandedSliceForSelectedMilestone = selectedMilestone?.slices.some((slice) => next.has(slice.id)) ?? false;
+            if (!hasExpandedSliceForSelectedMilestone) {
+              next.add(selectedMilestoneFirstSliceId);
+            }
+          }
+          return next;
+        });
+
+        // Load assertions and validation rollup for the selected milestone.
+        fetchAssertions(nextSelectedMilestoneId, projectId).then((assertions) => {
           setAssertionsByMilestone((prev) => {
             const next = new Map(prev);
-            next.set(firstMilestoneId, assertions);
+            next.set(nextSelectedMilestoneId, assertions);
             return next;
           });
         }).catch(() => { /* silently fail */ });
-        fetchMilestoneValidation(firstMilestoneId, projectId).then((rollup) => {
+        fetchMilestoneValidation(nextSelectedMilestoneId, projectId).then((rollup) => {
           setValidationRollupByMilestone((prev) => {
             const next = new Map(prev);
-            next.set(firstMilestoneId, rollup);
+            next.set(nextSelectedMilestoneId, rollup);
             return next;
           });
         }).catch(() => { /* silently fail */ });
-        if (data.milestones[0].slices.length > 0) {
-          setExpandedSlices(new Set([data.milestones[0].slices[0].id]));
-        }
       } else {
         setSelectedMilestoneId(null);
         setValidationTelemetry(null);
@@ -898,6 +924,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   useEffect(() => {
     setValidationRoundsExpanded(true);
+    if (!selectedMilestoneId) {
+      return;
+    }
+    // FN-4613: selecting a milestone from any navigation path keeps its acceptance criteria visible.
+    setExpandedMilestones((prev) => {
+      if (prev.has(selectedMilestoneId)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.add(selectedMilestoneId);
+      return next;
+    });
   }, [selectedMilestoneId]);
 
   const refreshValidationTelemetry = useCallback((milestoneId: string) => {
