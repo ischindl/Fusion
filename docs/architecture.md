@@ -1293,15 +1293,21 @@ Dashboard session-diff route registration (`packages/dashboard/src/routes/regist
 - `legacy` = recovered via legacy task-id/subject matching
 - `ambiguous` = manual reconciliation where historical task-id attribution could be misleading
 
-### Done-task changed-file aggregation provenance
+### Done-task files-changed sources of truth
 
-Done-task `files changed` data shown on Task Cards and Task Changes tabs comes from the dashboard diff endpoints (`/api/tasks/:id/diff` and `/api/tasks/:id/file-diffs`) using this precedence:
+Done-task file-count surfaces intentionally distinguish three data sources:
 
-1. If the task has a `lineageId`, aggregate reachable lineage commits from `task_commit_associations` (plus `mergeDetails.commitSha` when missing), then recompute net file patches/counts from the earliest reachable parent through the latest reachable SHA.
-2. If lineage aggregation is unavailable or appears incomplete versus `mergeDetails.filesChanged`, fall back to commit-sha enumeration from `mergeDetails.commitSha` using merge-aware ranges (`^..` for normal commits, `^1...^2` for merge commits, empty-tree base for root commits).
-3. If no commit SHA is available, return merge summary numbers only (`mergeDetails.filesChanged/insertions/deletions`) without file patches.
+1. **`/api/tasks/:id/diff` (lineage union, authoritative landed diff)**
+   - This route aggregates the task's landed lineage and returns `stats.filesChanged` plus the file list used by the Changes tab.
+   - Task cards and done-task diff views should treat this as the canonical "files changed" source.
+2. **`task.mergeDetails.filesChanged` / `insertions` / `deletions` (final-commit shortstat)**
+   - These fields describe only the recorded final merge/squash commit shortstat.
+   - In multi-commit lineages this can undercount the full landed diff and is therefore labeled as commit-level metadata (for example, "Files in merge commit" / "Final commit summary").
+3. **`task.modifiedFiles` (execution-time worktree snapshot)**
+   - Captured in the executor worktree during implementation (`git diff <base>..HEAD` snapshot), before final merge outcomes are known.
+   - Can include transient/superset paths that did not land; UI labels this as "files touched during execution" rather than "files changed" for done tasks.
 
-This keeps multi-commit landed tasks accurate while preserving compatibility for legacy/self-healed done tasks.
+**FN-4647 decision:** `mergeDetails` shortstat fields remain commit-level metadata. No additional persisted lineage-level summary field is introduced at this time; done-task landed totals continue to be served live via `/api/tasks/:id/diff`.
 
 ### Task branch field plumbing (`branch` + `baseBranch`)
 
