@@ -202,6 +202,7 @@ Defaults from `DEFAULT_PROJECT_SETTINGS`; key scope from `PROJECT_SETTINGS_KEYS`
 | `autoRecovery.mode` | `"off" \| "deterministic-only" \| "programmatic" \| "ai-assisted"` | `"deterministic-only"` | Dispatcher mode for recoverable executor/self-healing failure classes. `"off"` is byte-identical legacy parking behavior (exact legacy `pausedReason` preserved). |
 | `autoRecovery.perClass` | `Partial<Record<AutoRecoveryFailureClass, AutoRecoveryMode>>` | `undefined` | Optional per-class mode override map. Overrides `autoRecovery.mode` for listed classes only. Taxonomy strings follow FN-4533 design. |
 | `autoRecovery.maxRetries` | `number` | `3` | Retry budget for dispatcher decisions. When `retryCount >= maxRetries`, dispatcher forces `pause` with rationale `retry-budget-exhausted`. |
+| `reliabilityStatsResetAt` | `string` (ISO-8601) | `undefined` | Optional reliability baseline cursor used by `/api/health/reliability`; events older than this timestamp are excluded from reliability aggregates but retained in storage. |
 
 ### Per-task direct-merge override
 
