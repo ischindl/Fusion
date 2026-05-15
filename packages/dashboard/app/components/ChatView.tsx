@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { useChat, type ChatMessageInfo, type FailureInfo, type ToolCallInfo } from "../hooks/useChat";
 import { useChatRooms } from "../hooks/useChatRooms";
+import { useChatUnread } from "../hooks/useChatUnread";
 import { useViewportMode } from "./Header";
 import { fetchAgents, fetchDiscoveredSkills, fetchModels, updateGlobalSettings } from "../api";
 import type { Agent } from "@fusion/core";
@@ -898,6 +899,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   // Keep this hook unconditional to preserve hook ordering and test stability.
   // Rooms UI and interactions are fully gated by `chatRoomsEnabled`.
   const rooms = useChatRooms(projectId, addToast);
+  const { isUnread, markRead } = useChatUnread(projectId);
   const [messageInput, setMessageInput] = useState(() => {
     const initialDraftKey = getChatDraftKey(
       chatScope,
@@ -973,6 +975,40 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   const copyFeedbackTimeoutsRef = useRef<Map<string, number>>(new Map());
   const mode = useViewportMode();
   const isMobile = mode === "mobile";
+
+  useEffect(() => {
+    if (!activeSession?.id) {
+      return;
+    }
+
+    markRead("direct", activeSession.id, activeSession.lastMessageAt ?? activeSession.updatedAt);
+  }, [activeSession?.id, activeSession?.lastMessageAt, activeSession?.updatedAt, markRead]);
+
+  useEffect(() => {
+    if (!rooms.activeRoom?.id) {
+      return;
+    }
+
+    markRead("room", rooms.activeRoom.id, rooms.activeRoom.updatedAt);
+  }, [rooms.activeRoom?.id, rooms.activeRoom?.updatedAt, markRead]);
+
+  useEffect(() => {
+    if (!activeSession?.id || messages.length === 0) {
+      return;
+    }
+
+    const latestMessage = messages[messages.length - 1];
+    markRead("direct", activeSession.id, latestMessage?.createdAt ?? activeSession.lastMessageAt ?? activeSession.updatedAt);
+  }, [activeSession?.id, activeSession?.lastMessageAt, activeSession?.updatedAt, markRead, messages]);
+
+  useEffect(() => {
+    if (!rooms.activeRoom?.id || rooms.messages.length === 0) {
+      return;
+    }
+
+    const latestMessage = rooms.messages[rooms.messages.length - 1];
+    markRead("room", rooms.activeRoom.id, latestMessage?.createdAt ?? rooms.activeRoom.updatedAt);
+  }, [markRead, rooms.activeRoom?.id, rooms.activeRoom?.updatedAt, rooms.messages]);
 
   useEffect(() => {
     try {
@@ -2031,11 +2067,13 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   // Handle session click
   const handleSessionClick = useCallback(
     (id: string) => {
+      const selectedSession = filteredSessions.find((session) => session.id === id);
+      markRead("direct", id, selectedSession?.lastMessageAt ?? selectedSession?.updatedAt);
       selectSession(id);
       setMobileSessionMenuOpen(false);
       if (isMobile) setSidebarVisible(false);
     },
-    [selectSession, isMobile],
+    [filteredSessions, isMobile, markRead, selectSession],
   );
 
   // Handle back to sidebar (mobile)
@@ -2298,10 +2336,13 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
               ) : filteredSessions.length === 0 ? (
                 <div className="chat-empty-state chat-empty-state--padded">No conversations yet</div>
               ) : (
-                filteredSessions.map((session) => (
+                filteredSessions.map((session) => {
+                  const isActive = activeSession?.id === session.id;
+                  const showUnreadDot = !isActive && isUnread("direct", session.id, session.lastMessageAt ?? session.updatedAt);
+                  return (
                   <div
                     key={session.id}
-                    className={`chat-session-item${activeSession?.id === session.id ? " chat-session-item--active" : ""}`}
+                    className={`chat-session-item${isActive ? " chat-session-item--active" : ""}`}
                     onClick={() => handleSessionClick(session.id)}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -2320,7 +2361,16 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                     >
                       <Trash2 size={14} />
                     </button>
-                    <div className="chat-session-title">{session.title || "Untitled"}</div>
+                    <div className="chat-session-title">
+                      {session.title || "Untitled"}
+                      {showUnreadDot ? (
+                        <span
+                          className="chat-unread-dot"
+                          data-testid={`chat-unread-dot-${session.id}`}
+                          aria-label="Unread messages"
+                        />
+                      ) : null}
+                    </div>
                     <div className="chat-session-preview">
                       {session.lastMessagePreview || "No messages"}
                     </div>
@@ -2339,7 +2389,8 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                       <span>{session.updatedAt ? formatRelativeTime(session.updatedAt) : ""}</span>
                     </div>
                   </div>
-                ))
+                );
+                })
               )}
             </div>
           </>
@@ -2366,6 +2417,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
               <div className="chat-session-list chat-sidebar-list">
                 {rooms.rooms.map((room) => {
                   const isActive = rooms.activeRoom?.id === room.id;
+                  const showUnreadDot = !isActive && isUnread("room", room.id, room.updatedAt);
                   return (
                     <div
                       key={room.id}
@@ -2374,6 +2426,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                       className={`chat-room-item${isActive ? " chat-room-item--active" : ""}`}
                       data-testid={`chat-room-item-${room.slug}`}
                       onClick={() => {
+                        markRead("room", room.id, room.updatedAt);
                         rooms.selectRoom(room.id);
                         if (isMobile) {
                           setSidebarVisible(false);
@@ -2382,6 +2435,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
+                          markRead("room", room.id, room.updatedAt);
                           rooms.selectRoom(room.id);
                           if (isMobile) {
                             setSidebarVisible(false);
@@ -2391,6 +2445,13 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                     >
                       <span className="chat-room-item-details">
                         <span className="chat-room-item-name">#{room.name}</span>
+                        {showUnreadDot ? (
+                          <span
+                            className="chat-unread-dot"
+                            data-testid={`chat-unread-dot-${room.id}`}
+                            aria-label="Unread messages"
+                          />
+                        ) : null}
                         {isActive ? (
                           <span className="chat-room-item-meta">
                             {rooms.activeRoomMembers.length} {rooms.activeRoomMembers.length === 1 ? "member" : "members"}
@@ -2576,6 +2637,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                           className={`chat-room-switcher-option${room.id === rooms.activeRoom?.id ? " chat-room-switcher-option--active" : ""}`}
                           data-testid={`chat-room-switcher-option-${room.id}`}
                           onClick={() => {
+                            markRead("room", room.id, room.updatedAt);
                             rooms.selectRoom(room.id);
                             setRoomSwitcherOpen(false);
                           }}
