@@ -390,6 +390,7 @@
 
   .file-editor-toolbar {
     align-items: center;
+    flex-wrap: nowrap;
   }
 
   .file-editor-toolbar-actions {
