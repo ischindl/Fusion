@@ -115,6 +115,8 @@ AI-guided interactive planning for creating well-specified tasks from high-level
 
 Any mobile list→detail surface that swaps panes in place (for example Chat, Missions, or Planning) must push a `view` entry when detail opens, with an idempotent `revert` callback that returns to the list. This keeps iOS swipe-back and Android/browser back aligned with the in-app back button instead of skipping the intermediate list state.
 
+Chat conversation lists (ChatView sidebar and QuickChat session/room dropdown) show a small unread dot when a conversation has activity newer than the locally stored last-read timestamp. Read state is persisted per-project in scoped localStorage.
+
 For surfaces with multiple entry paths into detail (for example selecting an existing row and creating a new item/session), key the push effect on the visible detail-pane signal rather than selected-item ID transitions so every path registers the back-stack entry.
 
 ### Responsive Header
