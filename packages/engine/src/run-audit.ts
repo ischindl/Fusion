@@ -140,6 +140,8 @@ export type FilesystemMutationType =
   | "session:write"
   | "session:delete";
 
+export type SandboxMutationType = "sandbox:prepare" | "sandbox:run" | "sandbox:failure" | "sandbox:fallback";
+
 /** Input for a git-domain audit event. */
 export interface GitAuditInput {
   type: GitMutationType;
@@ -167,6 +169,15 @@ export interface FilesystemAuditInput {
   metadata?: Record<string, unknown>;
 }
 
+/** Input for a sandbox-domain audit event. */
+export interface SandboxAuditInput {
+  type: SandboxMutationType;
+  /** Target of the mutation (e.g., backend id). */
+  target: string;
+  /** Optional structured metadata. */
+  metadata?: Record<string, unknown>;
+}
+
 /** Interface for emitting run-audit events. */
 export interface RunAuditor {
   /** Emit a git-domain audit event. No-op if no run context is available. */
@@ -175,6 +186,8 @@ export interface RunAuditor {
   database(input: DatabaseAuditInput): Promise<void>;
   /** Emit a filesystem-domain audit event. No-op if no run context is available. */
   filesystem(input: FilesystemAuditInput): Promise<void>;
+  /** Emit a sandbox-domain audit event. No-op if no run context is available. */
+  sandbox(input: SandboxAuditInput): Promise<void>;
 }
 
 /**
@@ -194,6 +207,7 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
       git: async () => { /* no-op */ },
       database: async () => { /* no-op */ },
       filesystem: async () => { /* no-op */ },
+      sandbox: async () => { /* no-op */ },
     };
   }
 
@@ -206,6 +220,7 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
       git: async () => { /* no-op */ },
       database: async () => { /* no-op */ },
       filesystem: async () => { /* no-op */ },
+      sandbox: async () => { /* no-op */ },
     };
   }
 
@@ -259,6 +274,24 @@ export function createRunAuditor(store: TaskStore, context: EngineRunContext | n
         agentId: context.agentId,
         runId: context.runId,
         domain: "filesystem",
+        mutationType: input.type,
+        target: input.target,
+        metadata: {
+          phase: context.phase,
+          ...(context.source ? { source: context.source } : {}),
+          ...(context.taskLineageId ? { taskLineageId: context.taskLineageId } : {}),
+          ...input.metadata,
+        },
+      };
+      await store.recordRunAuditEvent(eventInput);
+    },
+
+    sandbox: async (input: SandboxAuditInput) => {
+      const eventInput: RunAuditEventInput = {
+        taskId: context.taskId,
+        agentId: context.agentId,
+        runId: context.runId,
+        domain: "sandbox",
         mutationType: input.type,
         target: input.target,
         metadata: {
