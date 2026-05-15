@@ -74,29 +74,39 @@ describe("inReviewStallCopy", () => {
   );
 
   it.each([
-    { column: "in-review", paused: false, inReviewStall: undefined },
+    { column: "in-review", paused: false, inReviewStall: undefined, status: undefined },
     {
       column: "in-review",
       paused: true,
       inReviewStall: { code: "merge-blocker", reason: "r", observedAt: "2026-05-13T00:00:00.000Z" },
+      status: undefined,
     },
     {
       column: "in-progress",
       paused: false,
       inReviewStall: { code: "merge-blocker", reason: "r", observedAt: "2026-05-13T00:00:00.000Z" },
+      status: undefined,
     },
   ] as const)("hides badge for non-canonical visibility cases", (task) => {
     expect(shouldShowInReviewStallBadge(task)).toBe(false);
   });
 
-  it("shows badge only for in-review non-paused task with signal", () => {
+  it.each([
+    ["merge-blocker", "merging", false],
+    ["merge-blocker", "merging-pr", false],
+    ["merge-blocker", "merging-fix", false],
+    ["merge-blocker", undefined, true],
+    ["merge-retries-exhausted", "merging", true],
+    ["transient-merge-status-no-owner", "merging", true],
+  ] as const)("badge visibility for %s with status %s is %s", (code, status, expected) => {
     expect(
       shouldShowInReviewStallBadge({
         column: "in-review",
         paused: false,
-        inReviewStall: { code: "merge-blocker", reason: "r", observedAt: "2026-05-13T00:00:00.000Z" },
+        status,
+        inReviewStall: { code, reason: "r", observedAt: "2026-05-13T00:00:00.000Z" },
       }),
-    ).toBe(true);
+    ).toBe(expected);
   });
 
   it("falls back to defensive default for unknown codes", () => {
