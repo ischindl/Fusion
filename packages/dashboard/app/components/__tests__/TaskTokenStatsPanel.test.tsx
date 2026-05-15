@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TaskTokenStatsPanel } from "../TaskTokenStatsPanel";
 import type { Task } from "@fusion/core";
@@ -186,6 +186,33 @@ describe("TaskTokenStatsPanel", () => {
 
     expect(screen.getByText("Total execution time")).toBeInTheDocument();
     expect(screen.getByText("5m 0s")).toBeInTheDocument();
+  });
+
+  it("shows cumulative active runtime for in-progress tasks", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T13:16:00.000Z"));
+    try {
+      render(
+        <TaskTokenStatsPanel
+          loading={false}
+          tokenUsage={undefined}
+          task={makeTask({
+            column: "in-progress",
+            cumulativeActiveMs: 240_000,
+            executionStartedAt: "2026-05-15T13:15:00.000Z",
+            firstExecutionAt: "2026-05-15T08:42:00.000Z",
+            timedExecutionMs: undefined,
+            workflowStepResults: [],
+            log: [],
+          })}
+        />,
+      );
+
+      const metric = screen.getByText("Total execution time").closest(".task-token-stats-panel__metric");
+      expect(metric).toHaveTextContent("5m 0s");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not double count workflow runtime when timedExecutionMs is present", () => {

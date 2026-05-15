@@ -23,7 +23,7 @@ import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inR
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy, shouldShowTaskAgeStalenessBadge } from "../utils/taskAgeStalenessCopy";
 import { getUnifiedTaskProgress } from "../utils/taskProgress";
-import { getEndToEndDurationMs, getTimedDurationMs, getWorkflowRuntimeMs, parseTimestampToMs } from "../utils/taskTiming";
+import { getActiveRuntimeMs, getEndToEndDurationMs, getTimedDurationMs, getWorkflowRuntimeMs, parseTimestampToMs } from "../utils/taskTiming";
 import type { ToastType } from "../hooks/useToast";
 import { useConfirm } from "../hooks/useConfirm";
 import { extractDependencyDeleteConflict } from "../utils/taskDelete";
@@ -161,7 +161,10 @@ function getInProgressElapsedMs(task: Task, nowMs: number): number | null {
 // inside instrumented code paths. Returns null on legacy tasks that completed
 // before `executionStartedAt` was tracked, so callers can fall back.
 function getTaskEndToEndDurationMs(task: Task, nowMs: number): number | null {
-  return getEndToEndDurationMs(task.executionStartedAt, task.executionCompletedAt, nowMs);
+  if (task.cumulativeActiveMs == null && task.firstExecutionAt == null) {
+    return getEndToEndDurationMs(task.executionStartedAt, task.executionCompletedAt, nowMs);
+  }
+  return getActiveRuntimeMs(task, nowMs);
 }
 
 function getInReviewCompletionMs(task: Task): number | null {
@@ -866,7 +869,7 @@ function TaskCardComponent({
     }, LIVE_TIME_INDICATOR_POLL_MS);
 
     return () => window.clearInterval(interval);
-  }, [task.column, task.status, task.columnMovedAt, task.updatedAt, task.workflowStepResults, task.timedExecutionMs, task.executionStartedAt, task.executionCompletedAt]);
+  }, [task.column, task.status, task.columnMovedAt, task.updatedAt, task.workflowStepResults, task.timedExecutionMs, task.firstExecutionAt, task.cumulativeActiveMs, task.executionStartedAt, task.executionCompletedAt]);
 
   const timeIndicator = useMemo(() => {
     if (!TIME_INDICATOR_COLUMNS.has(task.column)) {
@@ -948,7 +951,7 @@ function TaskCardComponent({
       title: `Execution time ${elapsedLabel}. Completed ${completedAt}`,
       ariaLabel: `Execution time ${elapsedLabel}. Completed ${completedAt}`,
     };
-  }, [task.column, task.status, task.columnMovedAt, task.timedExecutionMs, task.updatedAt, task.workflowStepResults, task.log, task.executionStartedAt, task.executionCompletedAt, timeIndicatorNowMs]);
+  }, [task.column, task.status, task.columnMovedAt, task.timedExecutionMs, task.updatedAt, task.workflowStepResults, task.log, task.firstExecutionAt, task.cumulativeActiveMs, task.executionStartedAt, task.executionCompletedAt, timeIndicatorNowMs]);
 
   const liveBadgeData = badgeUpdates.get(`${projectId ?? "default"}:${task.id}`);
 

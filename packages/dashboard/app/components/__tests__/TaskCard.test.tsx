@@ -2323,6 +2323,31 @@ describe("TaskCard", () => {
     expect(container.querySelector(".card-time-indicator")?.getAttribute("title")).toBe("Execution time 35m");
   });
 
+  it("shows cumulative runtime across a user reopen", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T13:17:00.000Z"));
+
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          column: "in-review",
+          firstExecutionAt: "2026-05-15T08:42:00.000Z",
+          cumulativeActiveMs: 6 * 60_000,
+          executionStartedAt: "2026-05-15T13:15:00.000Z",
+          columnMovedAt: "2026-05-15T13:17:00.000Z",
+          updatedAt: "2026-05-15T13:17:00.000Z",
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const timer = container.querySelector(".card-time-indicator");
+    expect(timer).not.toBeNull();
+    expect(timer?.textContent).toContain("6m");
+    expect(timer?.getAttribute("title")).toBe("Execution time 6m");
+  });
+
   it.each(["merging", "merging-fix"] as const)("shows live merge elapsed in timer chip while task.status is %s", (status) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-25T13:45:00.000Z"));

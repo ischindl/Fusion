@@ -402,7 +402,10 @@ The task detail modal exposes multiple tabs:
 - **Workflow** — workflow step results (pass/fail/skip)
 - **Review** — actionable feedback surface (PR reviews/threads or reviewer-agent findings), manual refresh controls, and same-task revision actions for selected items
 - **Stats** — execution timing + token usage breakdown
-  - `Total execution time` prefers durable wall-clock execution window (`executionStartedAt` → `executionCompletedAt`)
+  - `Total execution time` prefers cumulative active runtime (`cumulativeActiveMs` + live in-progress segment)
+  - `executionStartedAt` is a current-attempt anchor and may reset on reopen bounces; cards no longer rely on it alone for lifetime runtime
+  - `firstExecutionAt` is the immutable first-dispatch wall-clock anchor; `executionCompletedAt` remains first-time-reaching-done
+  - Task Detail also shows `Wall-clock since first execution` when it differs from active runtime (for bounced/reopened tasks)
   - Fallback order for legacy tasks: `timedExecutionMs` when present, otherwise `[timing]` log sum + workflow runtime
   - Workflow runtime is shown as a separate metric and is not double-counted into totals when `timedExecutionMs` is already available
 - **Comments** — collaboration thread + steering controls

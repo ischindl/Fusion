@@ -1,4 +1,4 @@
-import type { TaskLogEntry, WorkflowStepResult } from "@fusion/core";
+import type { Task, TaskLogEntry, WorkflowStepResult } from "@fusion/core";
 
 export interface TimingEvent {
   timestamp: string;
@@ -91,4 +91,38 @@ export function getEndToEndDurationMs(
   const completedMs = parseTimestampToMs(executionCompletedAt);
   const endMs = completedMs != null && completedMs >= startedMs ? completedMs : nowMs;
   return Math.max(0, endMs - startedMs);
+}
+
+export function getActiveRuntimeMs(
+  task: Pick<Task, "column" | "cumulativeActiveMs" | "executionStartedAt" | "columnMovedAt">,
+  nowMs: number,
+): number | null {
+  const persisted = task.cumulativeActiveMs;
+  const base = persisted ?? 0;
+
+  if (task.column === "in-progress") {
+    const startedMs = parseTimestampToMs(task.executionStartedAt);
+    if (startedMs != null) {
+      return base + Math.max(0, nowMs - startedMs);
+    }
+  }
+
+  if (persisted != null) {
+    return Math.max(0, persisted);
+  }
+
+  return null;
+}
+
+export function getWallClockSinceFirstExecutionMs(
+  firstExecutionAt: string | undefined,
+  executionCompletedAt: string | undefined,
+  nowMs: number,
+): number | null {
+  const firstMs = parseTimestampToMs(firstExecutionAt);
+  if (firstMs == null) return null;
+
+  const completedMs = parseTimestampToMs(executionCompletedAt);
+  const endMs = completedMs != null ? completedMs : nowMs;
+  return Math.max(0, endMs - firstMs);
 }

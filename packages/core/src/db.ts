@@ -119,7 +119,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 80;
+const SCHEMA_VERSION = 81;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -233,6 +233,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   createdAt TEXT NOT NULL,
   updatedAt TEXT NOT NULL,
   columnMovedAt TEXT,
+  firstExecutionAt TEXT,
+  cumulativeActiveMs INTEGER,
   executionStartedAt TEXT,
   executionCompletedAt TEXT,
   -- JSON columns for nested arrays/objects
@@ -3295,6 +3297,23 @@ export class Database {
     if (version < 80) {
       this.applyMigration(80, () => {
         this.addColumnIfMissing("milestones", "acceptanceCriteria", "TEXT");
+      });
+    }
+
+    if (version < 81) {
+      this.applyMigration(81, () => {
+        this.addColumnIfMissing("tasks", "firstExecutionAt", "TEXT");
+        this.addColumnIfMissing("tasks", "cumulativeActiveMs", "INTEGER");
+        if (this.hasColumn("tasks", "executionStartedAt")) {
+          this.db
+            .prepare(
+              `UPDATE tasks
+               SET firstExecutionAt = executionStartedAt
+               WHERE firstExecutionAt IS NULL
+                 AND executionStartedAt IS NOT NULL`
+            )
+            .run();
+        }
       });
     }
 

@@ -1,5 +1,5 @@
 import type { Task, TaskTokenUsage, WorkflowStepResult } from "@fusion/core";
-import { extractTimingEvents, getEndToEndDurationMs, getTimedDurationMs, getWorkflowRuntimeMs, type TimingEvent } from "../utils/taskTiming";
+import { extractTimingEvents, getActiveRuntimeMs, getEndToEndDurationMs, getTimedDurationMs, getWallClockSinceFirstExecutionMs, getWorkflowRuntimeMs, type TimingEvent } from "../utils/taskTiming";
 import "./TaskTokenStatsPanel.css";
 
 interface TaskTokenStatsPanelProps {
@@ -28,6 +28,10 @@ interface TaskTokenStatsPanelProps {
     | "sessionFile"
     | "executionStartedAt"
     | "executionCompletedAt"
+    | "firstExecutionAt"
+    | "cumulativeActiveMs"
+    | "column"
+    | "columnMovedAt"
   >;
 }
 
@@ -126,15 +130,26 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
   }, undefined);
 
   const workflowTiming = summarizeWorkflowTiming(task?.workflowStepResults ?? []);
+  const activeRuntimeMs = task ? getActiveRuntimeMs(task, nowMs) : null;
   const endToEndDurationMs = getEndToEndDurationMs(task?.executionStartedAt, task?.executionCompletedAt, nowMs);
+  const wallClockSinceFirstExecutionMs = getWallClockSinceFirstExecutionMs(
+    task?.firstExecutionAt,
+    task?.executionCompletedAt,
+    nowMs,
+  );
   // Canonical fallback order for Task Detail Stats total runtime:
   // 1) durable wall-clock execution window (`executionStartedAt` → `executionCompletedAt`),
   // 2) server aggregate `timedExecutionMs` when present,
   // 3) legacy local aggregate (`[timing]` sum + workflow runtime).
   // This avoids double counting when workflow timings appear in both `[timing]`
   // logs and `workflowStepResults`.
-  const totalExecutionMs = endToEndDurationMs
-    ?? (typeof task?.timedExecutionMs === "number" ? task.timedExecutionMs : totalTimingDurationMs + workflowTiming.totalDurationMs);
+  const totalExecutionMs = activeRuntimeMs
+    ?? (typeof task?.timedExecutionMs === "number"
+      ? task.timedExecutionMs
+      : endToEndDurationMs ?? (totalTimingDurationMs + workflowTiming.totalDurationMs));
+  const showWallClockSinceFirstExecution =
+    wallClockSinceFirstExecutionMs != null
+    && wallClockSinceFirstExecutionMs !== totalExecutionMs;
   const taskStepCount = task?.steps?.length ?? 0;
 
   return (
@@ -164,6 +179,12 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
             <span className="task-token-stats-panel__label">Total execution time</span>
             <span className="task-token-stats-panel__value">{formatDuration(totalExecutionMs)}</span>
           </div>
+          {showWallClockSinceFirstExecution ? (
+            <div className="task-token-stats-panel__metric" role="listitem">
+              <span className="task-token-stats-panel__label">Wall-clock since first execution</span>
+              <span className="task-token-stats-panel__value">{formatDuration(wallClockSinceFirstExecutionMs)}</span>
+            </div>
+          ) : null}
         </div>
 
         <dl className="task-token-stats-panel__timestamps">

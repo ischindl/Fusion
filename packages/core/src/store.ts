@@ -105,6 +105,8 @@ interface TaskRow {
   createdAt: string;
   updatedAt: string;
   columnMovedAt: string | null;
+  firstExecutionAt: string | null;
+  cumulativeActiveMs: number | null;
   executionStartedAt: string | null;
   executionCompletedAt: string | null;
   dependencies: string | null;
@@ -1026,6 +1028,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       columnMovedAt: row.columnMovedAt || undefined,
+      firstExecutionAt: row.firstExecutionAt || undefined,
+      cumulativeActiveMs: row.cumulativeActiveMs ?? undefined,
       executionStartedAt: row.executionStartedAt || undefined,
       executionCompletedAt: row.executionCompletedAt || undefined,
       dependencies: fromJson<string[]>(row.dependencies) || [],
@@ -1159,6 +1163,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
       columnMovedAt: entry.columnMovedAt,
+      firstExecutionAt: entry.firstExecutionAt,
+      cumulativeActiveMs: entry.cumulativeActiveMs,
       executionStartedAt: entry.executionStartedAt,
       executionCompletedAt: entry.executionCompletedAt,
       modelPresetId: entry.modelPresetId,
@@ -1288,6 +1294,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
       columnMovedAt: task.columnMovedAt,
+      firstExecutionAt: task.firstExecutionAt,
+      cumulativeActiveMs: task.cumulativeActiveMs,
       executionStartedAt: task.executionStartedAt,
       executionCompletedAt: task.executionCompletedAt,
       archivedAt,
@@ -1360,7 +1368,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       "error", "summary", "thinkingLevel", "executionMode",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
-      "createdAt", "updatedAt", "columnMovedAt", "executionStartedAt", "executionCompletedAt",
+      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "comments", "review", "reviewState", "workflowStepResults", "steeringComments",
       "attachments", "prInfo", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles",
@@ -1409,7 +1417,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       "error", "summary", "thinkingLevel", "executionMode",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
-      "createdAt", "updatedAt", "columnMovedAt", "executionStartedAt", "executionCompletedAt",
+      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "attachments", "steeringComments",
       "comments", "review", "reviewState", "workflowStepResults", "prInfo", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "mergeDetails",
       "breakIntoSubtasks", "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles",
@@ -1498,6 +1506,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.createdAt,
       task.updatedAt,
       task.columnMovedAt ?? null,
+      task.firstExecutionAt ?? null,
+      task.cumulativeActiveMs ?? null,
       task.executionStartedAt ?? null,
       task.executionCompletedAt ?? null,
       toJson(task.dependencies || []),
@@ -1563,7 +1573,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         workflowStepRetries, stuckKillCount, postReviewFixCount, recoveryRetryCount, taskDoneRetryCount, verificationFailureCount, mergeConflictBounceCount, mergeAuditBounceCount, branchConflictRecoveryCount, reviewerContextRetryCount, reviewerFallbackRetryCount, nextRecoveryAt, error,
         summary, thinkingLevel, executionMode, tokenUsageInputTokens, tokenUsageOutputTokens, tokenUsageCachedTokens,
         tokenUsageCacheWriteTokens, tokenUsageTotalTokens, tokenUsageFirstUsedAt, tokenUsageLastUsedAt, tokenBudgetSoftAlertedAt, tokenBudgetHardAlertedAt, tokenBudgetOverride, createdAt, updatedAt, columnMovedAt,
-        executionStartedAt, executionCompletedAt,
+        firstExecutionAt, cumulativeActiveMs, executionStartedAt, executionCompletedAt,
         dependencies, steps, log, attachments, steeringComments,
         comments, review, reviewState, workflowStepResults, prInfo, issueInfo, githubTracking,
         sourceIssueProvider, sourceIssueRepository, sourceIssueExternalIssueId, sourceIssueNumber, sourceIssueUrl,
@@ -1588,7 +1598,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         workflowStepRetries, stuckKillCount, postReviewFixCount, recoveryRetryCount, taskDoneRetryCount, verificationFailureCount, mergeConflictBounceCount, mergeAuditBounceCount, branchConflictRecoveryCount, reviewerContextRetryCount, reviewerFallbackRetryCount, nextRecoveryAt, error,
         summary, thinkingLevel, executionMode, tokenUsageInputTokens, tokenUsageOutputTokens, tokenUsageCachedTokens,
         tokenUsageCacheWriteTokens, tokenUsageTotalTokens, tokenUsageFirstUsedAt, tokenUsageLastUsedAt, tokenBudgetSoftAlertedAt, tokenBudgetHardAlertedAt, tokenBudgetOverride, createdAt, updatedAt, columnMovedAt,
-        executionStartedAt, executionCompletedAt,
+        firstExecutionAt, cumulativeActiveMs, executionStartedAt, executionCompletedAt,
         dependencies, steps, log, attachments, steeringComments,
         comments, review, reviewState, workflowStepResults, prInfo, issueInfo, githubTracking,
         sourceIssueProvider, sourceIssueRepository, sourceIssueExternalIssueId, sourceIssueNumber, sourceIssueUrl,
@@ -1650,6 +1660,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         createdAt = excluded.createdAt,
         updatedAt = excluded.updatedAt,
         columnMovedAt = excluded.columnMovedAt,
+        firstExecutionAt = excluded.firstExecutionAt,
+        cumulativeActiveMs = excluded.cumulativeActiveMs,
         executionStartedAt = excluded.executionStartedAt,
         executionCompletedAt = excluded.executionCompletedAt,
         dependencies = excluded.dependencies,
@@ -3794,13 +3806,27 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.columnMovedAt = new Date().toISOString();
       task.updatedAt = task.columnMovedAt;
 
+      if (fromColumn === "in-progress" && toColumn !== "in-progress") {
+        const segmentStartMs = Date.parse(task.executionStartedAt ?? task.columnMovedAt);
+        const segmentEndMs = Date.parse(task.columnMovedAt);
+        const segmentDeltaMs =
+          Number.isFinite(segmentStartMs) && Number.isFinite(segmentEndMs)
+            ? Math.max(0, segmentEndMs - segmentStartMs)
+            : 0;
+        task.cumulativeActiveMs = Math.max(0, task.cumulativeActiveMs ?? 0) + segmentDeltaMs;
+      }
+
       // Wall-clock end-to-end runtime: set on first transition into in-progress
       // and first transition into done. Never overwritten — see retry-clear
       // logic below for the path that resets these for a fresh run.
-      if (toColumn === "in-progress" && !task.executionStartedAt) {
-        task.executionStartedAt = task.columnMovedAt;
-      }
       if (toColumn === "in-progress") {
+        task.cumulativeActiveMs ??= 0;
+        if (!task.firstExecutionAt) {
+          task.firstExecutionAt = task.columnMovedAt;
+        }
+        if (!task.executionStartedAt) {
+          task.executionStartedAt = task.columnMovedAt;
+        }
         task.userPaused = undefined;
       }
       if (toColumn === "done" && !task.executionCompletedAt) {
@@ -3965,7 +3991,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async updateTask(
     id: string,
-    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
+    updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
     runContext?: RunMutationContext,
   ): Promise<Task> {
     return this.withTaskLock(id, async () => {
@@ -4333,6 +4359,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         task.sessionFile = undefined;
       } else if (updates.sessionFile !== undefined) {
         task.sessionFile = updates.sessionFile;
+      }
+      if (updates.firstExecutionAt === null) {
+        task.firstExecutionAt = undefined;
+      } else if (updates.firstExecutionAt !== undefined) {
+        task.firstExecutionAt = updates.firstExecutionAt;
+      }
+      if (updates.cumulativeActiveMs === null) {
+        task.cumulativeActiveMs = undefined;
+      } else if (updates.cumulativeActiveMs !== undefined) {
+        task.cumulativeActiveMs = updates.cumulativeActiveMs;
       }
       if (updates.executionStartedAt === null) {
         task.executionStartedAt = undefined;
