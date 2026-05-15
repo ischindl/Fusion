@@ -550,6 +550,42 @@ describe("PlanningModeModal", () => {
         }, undefined);
       }, { timeout: 2000 });
     });
+
+    it("shows streamed thinking in loading view before first question arrives", async () => {
+      mockConnectPlanningStream.mockImplementation((_sessionId: string, _projectId: string | undefined, handlers: any) => {
+        setTimeout(() => {
+          handlers.onThinking?.("Analyzing requirements...");
+        }, 0);
+
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Draft a migration plan" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("AI is thinking...")).toBeDefined();
+        expect(screen.getByText("Analyzing requirements...")).toBeDefined();
+      });
+
+      expect(screen.getByRole("button", { name: "Hide thinking" })).toBeDefined();
+      expect(document.querySelector(".planning-thinking-output")).not.toBeNull();
+    });
   });
 
   describe("modal height constraint regression", () => {
