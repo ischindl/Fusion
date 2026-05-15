@@ -109,7 +109,7 @@ describe("gating-classifications parity", () => {
   it("classifies fn_web_fetch as network_api in both action and permanent sets", () => {
     expect(ACTION_GATE_NETWORK_API_TOOLS.has("fn_web_fetch")).toBe(true);
     expect(NETWORK_API_TOOLS.has("fn_web_fetch")).toBe(true);
-    expect(COORDINATION_EXEMPT_TOOLS.includes("fn_web_fetch")).toBe(false);
+    expect((COORDINATION_EXEMPT_TOOLS as readonly string[]).includes("fn_web_fetch")).toBe(false);
   });
 
   it("keeps fn_* category equivalence mappings across gates", () => {
