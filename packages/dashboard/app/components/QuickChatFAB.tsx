@@ -2496,22 +2496,6 @@ export function QuickChatFAB({
               {sessionMenuOpen && (
                 <div className="quick-chat-session-dropdown" role="menu" data-testid="quick-chat-session-dropdown-menu">
                   {showRoomGroups && (
-                    <div className="quick-chat-session-dropdown-group-label">Sessions</div>
-                  )}
-                  {sessionOptions.map((sessionOption) => (
-                    <button
-                      key={sessionOption.id}
-                      type="button"
-                      role="menuitem"
-                      data-testid={`quick-chat-session-option-${sessionOption.id}`}
-                      className={`quick-chat-session-option${roomsState.activeRoom === null && activeSession?.id === sessionOption.id ? " quick-chat-session-option--active" : ""}`}
-                      onClick={() => handleSessionSwitch(sessionOption.id)}
-                    >
-                      {sessionOption.label}
-                    </button>
-                  ))}
-
-                  {showRoomGroups && (
                     <>
                       <div className="quick-chat-session-dropdown-group-label">Rooms</div>
                       {roomOptions.map((room) => (
@@ -2526,8 +2510,21 @@ export function QuickChatFAB({
                           #{room.name}
                         </button>
                       ))}
+                      <div className="quick-chat-session-dropdown-group-label">Sessions</div>
                     </>
                   )}
+                  {sessionOptions.map((sessionOption) => (
+                    <button
+                      key={sessionOption.id}
+                      type="button"
+                      role="menuitem"
+                      data-testid={`quick-chat-session-option-${sessionOption.id}`}
+                      className={`quick-chat-session-option${roomsState.activeRoom === null && activeSession?.id === sessionOption.id ? " quick-chat-session-option--active" : ""}`}
+                      onClick={() => handleSessionSwitch(sessionOption.id)}
+                    >
+                      {sessionOption.label}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
