@@ -1,6 +1,6 @@
 import "./AgentsView.css";
-import { useState, useEffect, useCallback, useRef, useMemo, useId, lazy, Suspense, type CSSProperties, type ReactNode } from "react";
-import { Plus, Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Info } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useMemo, useId, useLayoutEffect, lazy, Suspense, type CSSProperties, type ReactNode, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Plus, Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Move, Info } from "lucide-react";
 import type { Agent, AgentCapability, AgentOnboardingSummary, AgentState, OrgTreeNode } from "../api";
 import { updateAgent, updateAgentState, deleteAgent, startAgentRun, fetchOrgTree, fetchSettings, updateSettings } from "../api";
 
@@ -54,7 +54,10 @@ const AGENT_ROLES: { value: AgentCapability; label: string; icon: string }[] = [
 
 const HEARTBEAT_MULTIPLIER_PRESETS = [0.1, 0.25, 0.5, 1, 2, 3, 5, 10] as const;
 
-const ORG_CHART_ZOOM_LEVELS = [0.75, 1, 1.25, 1.5] as const;
+const ORG_CHART_SCALE_MIN = 0.25;
+const ORG_CHART_SCALE_MAX = 3;
+const ORG_CHART_KEYBOARD_PAN_STEP = 16;
+const ORG_CHART_OVERSCROLL = 32;
 
 function getStateBadgeClass(state: AgentState): string {
   switch (state) {
@@ -111,19 +114,19 @@ function getHealthSummary(agent: Agent, health: AgentHealthStatus): { title: str
   };
 }
 
-function OrgChartNode({
-  node,
-  onSelect,
-  getHealthStatus,
-  getRoleIcon,
-  selectedAgentId,
-}: {
+type OrgChartLink = { parentId: string; childId: string };
+type OrgChartTransform = { scale: number; x: number; y: number };
+
+type OrgChartNodeProps = {
   node: OrgTreeNode;
   onSelect: (id: string) => void;
   getHealthStatus: (agent: Agent) => AgentHealthStatus;
-  getRoleIcon: (role: AgentCapability) => string;
   selectedAgentId: string | null;
-}) {
+  registerNodeElement: (id: string, element: HTMLDivElement | null) => void;
+  linksRef: MutableRefObject<OrgChartLink[]>;
+};
+
+function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, registerNodeElement, linksRef }: OrgChartNodeProps) {
   const { agent, children } = node;
   const health = getHealthStatus(agent);
   const healthSummary = getHealthSummary(agent, health);
@@ -131,20 +134,13 @@ function OrgChartNode({
   const stateNodeClass = getStateCardClass("org-chart-node-card", agent.state);
   const subtreeLeafCount = getOrgChartLeafCount(node);
   const nodeStyle = { "--org-chart-subtree-leaves": String(subtreeLeafCount) } as CSSProperties;
-  const firstChildLeafCount = children.length > 0 ? getOrgChartLeafCount(children[0]) : 1;
-  const lastChildLeafCount = children.length > 0 ? getOrgChartLeafCount(children[children.length - 1]) : 1;
-  const childrenStyle = {
-    "--org-chart-first-child-leaves": String(firstChildLeafCount),
-    "--org-chart-last-child-leaves": String(lastChildLeafCount),
-  } as CSSProperties;
 
   return (
-    <div
-      className={`org-chart-node${children.length > 0 ? " org-chart-node--has-children" : ""}`}
-      style={nodeStyle}
-    >
+    <div className={`org-chart-node${children.length > 0 ? " org-chart-node--has-children" : ""}`} style={nodeStyle}>
       <div
-        className={`${stateNodeClass}${selectedAgentId === agent.id ? " agent-card--selected" : ""}`}
+        ref={(element) => registerNodeElement(agent.id, element)}
+        data-agent-id={agent.id}
+        className={`org-chart-node-card ${stateNodeClass}${selectedAgentId === agent.id ? " agent-card--selected" : ""}`}
         onClick={() => onSelect(agent.id)}
         role="button"
         tabIndex={0}
@@ -162,11 +158,7 @@ function OrgChartNode({
           <span className="org-chart-node__name">{agent.name}</span>
         </div>
         <div className="org-chart-node__meta">
-          <span
-            className={`org-chart-node__badge ${stateBadgeClass}`}
-          >
-            {agent.state}
-          </span>
+          <span className={`org-chart-node__badge ${stateBadgeClass}`}>{agent.state}</span>
           <span className="org-chart-node__health" style={{ color: health.color }} title={healthSummary.title}>
             {health.icon}
             {healthSummary.label && <span className="text-secondary">{healthSummary.label}</span>}
@@ -174,20 +166,98 @@ function OrgChartNode({
         </div>
       </div>
       {children.length > 0 && (
-        <div className="org-chart-children" style={childrenStyle} role="group" aria-label={`${agent.name} employees`}>
-          {children.map((child) => (
-            <OrgChartNode
-              key={child.agent.id}
-              node={child}
-              onSelect={onSelect}
-              getHealthStatus={getHealthStatus}
-              getRoleIcon={getRoleIcon}
-              selectedAgentId={selectedAgentId}
-            />
-          ))}
+        <div className="org-chart-children" role="group" aria-label={`${agent.name} employees`}>
+          {children.map((child) => {
+            linksRef.current.push({ parentId: agent.id, childId: child.agent.id });
+            return (
+              <OrgChartNode
+                key={child.agent.id}
+                node={child}
+                onSelect={onSelect}
+                getHealthStatus={getHealthStatus}
+                selectedAgentId={selectedAgentId}
+                registerNodeElement={registerNodeElement}
+                linksRef={linksRef}
+              />
+            );
+          })}
         </div>
       )}
     </div>
+  );
+}
+
+function OrgChartConnectors({
+  links,
+  nodeElements,
+  canvasRef,
+  viewportRef,
+  layoutMode,
+  transform,
+}: {
+  links: OrgChartLink[];
+  nodeElements: Map<string, HTMLDivElement>;
+  canvasRef: RefObject<HTMLDivElement | null>;
+  viewportRef: RefObject<HTMLDivElement | null>;
+  layoutMode: OrgChartLayoutMode;
+  transform: OrgChartTransform;
+}) {
+  const [paths, setPaths] = useState<string[]>([]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const viewport = viewportRef.current;
+    if (!canvas || !viewport || links.length === 0) {
+      setPaths([]);
+      return;
+    }
+
+    const recompute = () => {
+      const canvasRect = canvas.getBoundingClientRect();
+      const next = links.flatMap(({ parentId, childId }) => {
+        const parent = nodeElements.get(parentId);
+        const child = nodeElements.get(childId);
+        if (!parent || !child) return [];
+        const parentRect = parent.getBoundingClientRect();
+        const childRect = child.getBoundingClientRect();
+        const pLeft = (parentRect.left - canvasRect.left) / transform.scale;
+        const pTop = (parentRect.top - canvasRect.top) / transform.scale;
+        const cLeft = (childRect.left - canvasRect.left) / transform.scale;
+        const cTop = (childRect.top - canvasRect.top) / transform.scale;
+
+        if (layoutMode === "vertical") {
+          const startX = pLeft;
+          const startY = pTop + parentRect.height / transform.scale / 2;
+          const endX = cLeft;
+          const endY = cTop + childRect.height / transform.scale / 2;
+          const midX = startX - (startX - endX) / 2;
+          return [`M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`];
+        }
+
+        const startX = pLeft + parentRect.width / transform.scale / 2;
+        const startY = pTop + parentRect.height / transform.scale;
+        const endX = cLeft + childRect.width / transform.scale / 2;
+        const endY = cTop;
+        const midY = startY + (endY - startY) / 2;
+        return [`M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`];
+      });
+      setPaths(next);
+    };
+
+    recompute();
+    const resizeObserver = new ResizeObserver(recompute);
+    resizeObserver.observe(canvas);
+    resizeObserver.observe(viewport);
+    nodeElements.forEach((node) => resizeObserver.observe(node));
+    return () => resizeObserver.disconnect();
+  }, [canvasRef, layoutMode, links, nodeElements, transform.scale, viewportRef]);
+
+  return (
+    <svg className="agent-org-chart-connectors" aria-hidden="true">
+      {paths.map((d, index) => (
+        <path key={`${index}-${d}`} d={d} />
+      ))}
+    </svg>
   );
 }
 
@@ -224,9 +294,17 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   const [orgChartViewportWidth, setOrgChartViewportWidth] = useState(0);
   const [isControlsPanelOpen, setIsControlsPanelOpen] = useState(false);
   const [isOverviewOpen, setIsOverviewOpen] = useState(false);
-  const [orgChartZoomIndex, setOrgChartZoomIndex] = useState(1);
+  const [orgChartTransform, setOrgChartTransform] = useState<OrgChartTransform>({ scale: 1, x: 0, y: 0 });
+  const [isOrgChartPanning, setIsOrgChartPanning] = useState(false);
   const controlsPanelRef = useRef<HTMLDivElement>(null);
   const orgChartViewportRef = useRef<HTMLDivElement>(null);
+  const orgChartCanvasRef = useRef<HTMLDivElement>(null);
+  const orgChartNodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const orgChartLinksRef = useRef<OrgChartLink[]>([]);
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const panStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const pinchStartRef = useRef<{ distance: number; scale: number; centerX: number; centerY: number } | null>(null);
+  const orgChartFitDoneRef = useRef(false);
   const { confirm } = useConfirm();
   const controlsTriggerRef = useRef<HTMLButtonElement>(null);
   const controlsPanelId = useId();
@@ -724,10 +802,65 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
     }
   };
 
+  const clampScale = useCallback((scale: number) => Math.min(ORG_CHART_SCALE_MAX, Math.max(ORG_CHART_SCALE_MIN, scale)), []);
+
+  const clampTransform = useCallback((next: OrgChartTransform): OrgChartTransform => {
+    const viewport = orgChartViewportRef.current;
+    const chart = orgChartCanvasRef.current?.querySelector(".agent-org-chart") as HTMLDivElement | null;
+    if (!viewport || !chart) return { ...next, scale: clampScale(next.scale) };
+    const scale = clampScale(next.scale);
+    const contentWidth = chart.scrollWidth * scale;
+    const contentHeight = chart.scrollHeight * scale;
+    const viewportWidth = viewport.clientWidth;
+    const viewportHeight = viewport.clientHeight;
+    const minX = Math.min(ORG_CHART_OVERSCROLL, viewportWidth - contentWidth - ORG_CHART_OVERSCROLL);
+    const maxX = ORG_CHART_OVERSCROLL;
+    const minY = Math.min(ORG_CHART_OVERSCROLL, viewportHeight - contentHeight - ORG_CHART_OVERSCROLL);
+    const maxY = ORG_CHART_OVERSCROLL;
+    return {
+      scale,
+      x: Math.max(minX, Math.min(maxX, next.x)),
+      y: Math.max(minY, Math.min(maxY, next.y)),
+    };
+  }, [clampScale]);
+
+  const zoomAtPoint = useCallback((nextScale: number, clientX: number, clientY: number) => {
+    const viewport = orgChartViewportRef.current;
+    if (!viewport) return;
+    setOrgChartTransform((current) => {
+      const scale = clampScale(nextScale);
+      const viewportRect = viewport.getBoundingClientRect();
+      const offsetX = clientX - viewportRect.left;
+      const offsetY = clientY - viewportRect.top;
+      const worldX = (offsetX - current.x) / current.scale;
+      const worldY = (offsetY - current.y) / current.scale;
+      return clampTransform({
+        scale,
+        x: offsetX - worldX * scale,
+        y: offsetY - worldY * scale,
+      });
+    });
+  }, [clampScale, clampTransform]);
+
+  const fitToViewport = useCallback(() => {
+    const viewport = orgChartViewportRef.current;
+    const chart = orgChartCanvasRef.current?.querySelector(".agent-org-chart") as HTMLDivElement | null;
+    if (!viewport || !chart) return;
+    const viewportWidth = viewport.clientWidth;
+    const viewportHeight = viewport.clientHeight;
+    const contentWidth = chart.scrollWidth;
+    const contentHeight = chart.scrollHeight;
+    if (contentWidth <= 0 || contentHeight <= 0) return;
+    const scale = clampScale(Math.min(viewportWidth / contentWidth, viewportHeight / contentHeight, 1));
+    const x = (viewportWidth - contentWidth * scale) / 2;
+    const y = (viewportHeight - contentHeight * scale) / 2;
+    setOrgChartTransform(clampTransform({ scale, x, y }));
+  }, [clampScale, clampTransform]);
+
   const handleAgentViewChange = useCallback((nextView: "list" | "board" | "org") => {
     setAgentView(nextView);
     if (nextView !== "org") {
-      setOrgChartZoomIndex(1);
+      setOrgChartTransform({ scale: 1, x: 0, y: 0 });
     }
     if (isMobileViewport && selectedAgentId) {
       handleCloseDetail();
@@ -736,7 +869,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
   const getRoleLabel = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.label ?? role;
   const getRoleIcon = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.icon ?? "◆";
-  const orgChartZoom = ORG_CHART_ZOOM_LEVELS[orgChartZoomIndex];
   const orgChartLayoutMode: OrgChartLayoutMode = useMemo(() => resolveOrgChartLayoutMode({
     tree: displayOrgTree,
     availableWidth: orgChartViewportWidth,
@@ -744,16 +876,120 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   }), [displayOrgTree, orgChartLayoutPreference, orgChartViewportWidth]);
   const handleOrgChartLayoutPreferenceChange = useCallback((preference: OrgChartLayoutPreference) => {
     setOrgChartLayoutPreference(preference);
-    const isEdgeZoom = orgChartZoomIndex === 0 || orgChartZoomIndex === ORG_CHART_ZOOM_LEVELS.length - 1;
-    const nextLayoutMode = resolveOrgChartLayoutMode({
-      tree: displayOrgTree,
-      availableWidth: orgChartViewportWidth,
-      preference,
-    });
-    if (isEdgeZoom && nextLayoutMode !== orgChartLayoutMode) {
-      setOrgChartZoomIndex(1);
+    setOrgChartTransform({ scale: 1, x: 0, y: 0 });
+  }, []);
+
+  useEffect(() => {
+    setOrgChartTransform({ scale: 1, x: 0, y: 0 });
+    orgChartFitDoneRef.current = false;
+  }, [projectId, orgChartLayoutMode]);
+
+  useLayoutEffect(() => {
+    if (agentView !== "org" || isOrgTreeLoading || displayOrgTree.length === 0 || orgChartFitDoneRef.current) return;
+    fitToViewport();
+    orgChartFitDoneRef.current = true;
+  }, [agentView, displayOrgTree.length, fitToViewport, isOrgTreeLoading]);
+
+  const registerOrgChartNodeElement = useCallback((id: string, element: HTMLDivElement | null) => {
+    if (element) {
+      orgChartNodeRefs.current.set(id, element);
+    } else {
+      orgChartNodeRefs.current.delete(id);
     }
-  }, [displayOrgTree, orgChartLayoutMode, orgChartViewportWidth, orgChartZoomIndex]);
+  }, []);
+
+  const renderOrgChartZoomControls = useCallback(() => (
+    <>
+      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 0.9 }))} aria-label="Zoom out org chart" title="Zoom out">
+        <ZoomOut size={16} />
+      </button>
+      <span className="agent-org-chart-controls__zoom-label" aria-live="polite">{Math.round(orgChartTransform.scale * 100)}%</span>
+      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 1.1 }))} aria-label="Zoom in org chart" title="Zoom in">
+        <ZoomIn size={16} />
+      </button>
+      <button type="button" className="btn touch-target btn-sm agent-org-chart-controls__fit-btn" onClick={fitToViewport} aria-label="Fit org chart" title="Fit org chart">
+        <Minimize2 size={16} />
+        Fit
+      </button>
+      <button type="button" className="btn touch-target btn-sm" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, x: 0, y: 0 }))} aria-label="Center org chart" title="Center org chart">
+        <Move size={16} />
+        Center
+      </button>
+    </>
+  ), [clampTransform, fitToViewport, orgChartTransform.scale]);
+
+  const handleOrgChartWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    const factor = event.deltaY > 0 ? 0.9 : 1.1;
+    zoomAtPoint(orgChartTransform.scale * factor, event.clientX, event.clientY);
+  }, [orgChartTransform.scale, zoomAtPoint]);
+
+  const handleOrgChartPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest(".org-chart-node-card")) return;
+    const viewport = event.currentTarget;
+    viewport.setPointerCapture?.(event.pointerId);
+    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointersRef.current.size === 1) {
+      panStartRef.current = { x: event.clientX - orgChartTransform.x, y: event.clientY - orgChartTransform.y, pointerId: event.pointerId };
+      setIsOrgChartPanning(true);
+      return;
+    }
+    if (activePointersRef.current.size === 2) {
+      const points = Array.from(activePointersRef.current.values());
+      const dx = points[0].x - points[1].x;
+      const dy = points[0].y - points[1].y;
+      pinchStartRef.current = {
+        distance: Math.hypot(dx, dy),
+        scale: orgChartTransform.scale,
+        centerX: (points[0].x + points[1].x) / 2,
+        centerY: (points[0].y + points[1].y) / 2,
+      };
+      panStartRef.current = null;
+    }
+  }, [orgChartTransform.scale, orgChartTransform.x, orgChartTransform.y]);
+
+  const handleOrgChartPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!activePointersRef.current.has(event.pointerId)) return;
+    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointersRef.current.size >= 2) {
+      const points = Array.from(activePointersRef.current.values());
+      const start = pinchStartRef.current;
+      if (!start) return;
+      const dx = points[0].x - points[1].x;
+      const dy = points[0].y - points[1].y;
+      const nextDistance = Math.hypot(dx, dy);
+      const nextScale = start.scale * (nextDistance / start.distance);
+      zoomAtPoint(nextScale, start.centerX, start.centerY);
+      return;
+    }
+    if (!panStartRef.current || panStartRef.current.pointerId !== event.pointerId) return;
+    setOrgChartTransform((current) => clampTransform({ ...current, x: event.clientX - panStartRef.current!.x, y: event.clientY - panStartRef.current!.y }));
+  }, [clampTransform, zoomAtPoint]);
+
+  const handleOrgChartPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.delete(event.pointerId);
+    if (activePointersRef.current.size < 2) {
+      pinchStartRef.current = null;
+    }
+    if (activePointersRef.current.size === 0) {
+      panStartRef.current = null;
+      setIsOrgChartPanning(false);
+    }
+  }, []);
+
+  const handleOrgChartKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") setOrgChartTransform((current) => clampTransform({ ...current, x: current.x + ORG_CHART_KEYBOARD_PAN_STEP }));
+    else if (event.key === "ArrowRight") setOrgChartTransform((current) => clampTransform({ ...current, x: current.x - ORG_CHART_KEYBOARD_PAN_STEP }));
+    else if (event.key === "ArrowUp") setOrgChartTransform((current) => clampTransform({ ...current, y: current.y + ORG_CHART_KEYBOARD_PAN_STEP }));
+    else if (event.key === "ArrowDown") setOrgChartTransform((current) => clampTransform({ ...current, y: current.y - ORG_CHART_KEYBOARD_PAN_STEP }));
+    else if (event.key === "+" || event.key === "=") setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 1.1 }));
+    else if (event.key === "-") setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 0.9 }));
+    else if (event.key === "0") fitToViewport();
+    else if (event.key === "Home") setOrgChartTransform({ scale: 1, x: 0, y: 0 });
+    else return;
+    event.preventDefault();
+  }, [clampTransform, fitToViewport]);
 
   const renderOrgChartLayoutToggle = useCallback(() => {
     const options: Array<{ value: OrgChartLayoutPreference; label: string; icon: ReactNode; ariaLabel: string }> = [
@@ -1085,49 +1321,37 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                 {isMobileViewport ? (
                   <div className="agent-org-chart-controls" data-testid="agent-org-chart-controls">
                     {renderOrgChartLayoutToggle()}
-                    <button
-                      type="button"
-                      className="btn-icon touch-target"
-                      onClick={() => setOrgChartZoomIndex((value) => Math.max(0, value - 1))}
-                      disabled={orgChartZoomIndex === 0}
-                      aria-label="Zoom out org chart"
-                      title="Zoom out"
-                    >
-                      <ZoomOut size={16} />
-                    </button>
-                    <span className="agent-org-chart-controls__zoom-label" aria-live="polite">{Math.round(orgChartZoom * 100)}%</span>
-                    <button
-                      type="button"
-                      className="btn-icon touch-target"
-                      onClick={() => setOrgChartZoomIndex((value) => Math.min(ORG_CHART_ZOOM_LEVELS.length - 1, value + 1))}
-                      disabled={orgChartZoomIndex === ORG_CHART_ZOOM_LEVELS.length - 1}
-                      aria-label="Zoom in org chart"
-                      title="Zoom in"
-                    >
-                      <ZoomIn size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn touch-target btn-sm agent-org-chart-controls__fit-btn"
-                      onClick={() => setOrgChartZoomIndex(1)}
-                      aria-label="Fit org chart"
-                      title="Fit org chart"
-                    >
-                      <Minimize2 size={16} />
-                      Fit
-                    </button>
+                    {renderOrgChartZoomControls()}
                   </div>
                 ) : (
                   <div className="agent-org-chart-toolbar">
                     {renderOrgChartLayoutToggle()}
+                    <div className="agent-org-chart-controls" data-testid="agent-org-chart-controls">
+                      {renderOrgChartZoomControls()}
+                    </div>
                   </div>
                 )}
                 <div
                   ref={orgChartViewportRef}
                   className="agent-org-chart-viewport"
                   data-testid="agent-org-chart-viewport"
+                  tabIndex={0}
+                  role="region"
+                  aria-label="Org chart canvas"
+                  onWheel={handleOrgChartWheel}
+                  onPointerDown={handleOrgChartPointerDown}
+                  onPointerMove={handleOrgChartPointerMove}
+                  onPointerUp={handleOrgChartPointerEnd}
+                  onPointerCancel={handleOrgChartPointerEnd}
+                  onKeyDown={handleOrgChartKeyDown}
+                  data-panning={isOrgChartPanning ? "true" : "false"}
                 >
-                  <div className={`agent-org-chart-canvas agent-org-chart-canvas--zoom-${Math.round(orgChartZoom * 100)}`}>
+                  <div
+                    ref={orgChartCanvasRef}
+                    className="agent-org-chart-canvas"
+                    data-panning={isOrgChartPanning ? "true" : "false"}
+                    style={{ transform: `translate(${orgChartTransform.x}px, ${orgChartTransform.y}px) scale(${orgChartTransform.scale})` }}
+                  >
                     <div
                       className={`agent-org-chart${orgChartLayoutMode === "vertical" ? " agent-org-chart--vertical" : ""}`}
                       data-testid="agent-org-chart"
@@ -1141,18 +1365,30 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                       ) : displayOrgTree.length === 0 ? (
                         <AgentEmptyState onCtaClick={handleOpenNewAgent} />
                       ) : (
-                        displayOrgTree.map((node) => (
-                          <OrgChartNode
-                            key={node.agent.id}
-                            node={node}
-                            onSelect={handleOrgChartNodeSelect}
-                            getHealthStatus={getHealthStatus}
-                            getRoleIcon={getRoleIcon}
-                            selectedAgentId={selectedOrgChartAgentId}
-                          />
-                        ))
+                        (() => {
+                          orgChartLinksRef.current = [];
+                          return displayOrgTree.map((node) => (
+                            <OrgChartNode
+                              key={node.agent.id}
+                              node={node}
+                              onSelect={handleOrgChartNodeSelect}
+                              getHealthStatus={getHealthStatus}
+                              selectedAgentId={selectedOrgChartAgentId}
+                              registerNodeElement={registerOrgChartNodeElement}
+                              linksRef={orgChartLinksRef}
+                            />
+                          ));
+                        })()
                       )}
                     </div>
+                    <OrgChartConnectors
+                      links={orgChartLinksRef.current}
+                      nodeElements={orgChartNodeRefs.current}
+                      canvasRef={orgChartCanvasRef}
+                      viewportRef={orgChartViewportRef}
+                      layoutMode={orgChartLayoutMode}
+                      transform={orgChartTransform}
+                    />
                   </div>
                 </div>
               </div>

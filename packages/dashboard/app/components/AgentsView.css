@@ -866,6 +866,7 @@
 .agent-org-chart-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-sm);
 }
 
 .agent-org-chart-layout-toggle {
@@ -904,36 +905,44 @@
 .agent-org-chart-viewport {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   max-width: 100%;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x pan-y;
+  touch-action: none;
+  cursor: grab;
+}
+
+.agent-org-chart-viewport[data-panning="true"] {
+  cursor: grabbing;
 }
 
 .agent-org-chart-canvas {
   width: max-content;
+  position: relative;
   transform-origin: top left;
   transition: transform var(--transition-fast);
 }
 
-.agent-org-chart-canvas--zoom-75 {
-  transform: scale(0.75);
+.agent-org-chart-canvas[data-panning="true"] {
+  transition: none;
 }
 
-.agent-org-chart-canvas--zoom-100 {
-  transform: scale(1);
+.agent-org-chart-connectors {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
-.agent-org-chart-canvas--zoom-125 {
-  transform: scale(1.25);
-}
-
-.agent-org-chart-canvas--zoom-150 {
-  transform: scale(1.5);
+.agent-org-chart-connectors path {
+  stroke: var(--org-chart-connector-color);
+  stroke-width: 1px;
+  fill: none;
+  shape-rendering: crispEdges;
 }
 
 .agent-org-chart {
@@ -943,8 +952,6 @@
   --org-chart-children-offset: calc(var(--space-lg) + var(--space-sm));
   --org-chart-root-gap: var(--space-xl);
   --org-chart-connector-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
-  --org-chart-first-child-leaves: 1;
-  --org-chart-last-child-leaves: 1;
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
@@ -1061,32 +1068,7 @@
   font-size: var(--space-md);
 }
 
-.org-chart-node--has-children > .org-chart-node-card::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(var(--org-chart-connector-gap) * -1);
-  width: 1px;
-  height: var(--org-chart-children-offset);
-  background: var(--org-chart-connector-color);
-}
-
 .org-chart-children {
-  --org-chart-first-child-leaves-number: var(--org-chart-first-child-leaves, 1);
-  --org-chart-last-child-leaves-number: var(--org-chart-last-child-leaves, 1);
-  --org-chart-first-child-center-offset: calc(
-    (
-      var(--org-chart-first-child-leaves-number) * var(--org-chart-node-width) +
-      (var(--org-chart-first-child-leaves-number) - 1) * var(--org-chart-sibling-gap)
-    ) / 2
-  );
-  --org-chart-last-child-center-offset: calc(
-    (
-      var(--org-chart-last-child-leaves-number) * var(--org-chart-node-width) +
-      (var(--org-chart-last-child-leaves-number) - 1) * var(--org-chart-sibling-gap)
-    ) / 2
-  );
   position: relative;
   display: flex;
   align-items: flex-start;
@@ -1095,16 +1077,6 @@
   gap: var(--org-chart-sibling-gap);
   padding-top: var(--org-chart-children-offset);
   margin-top: var(--org-chart-connector-gap);
-}
-
-.org-chart-children::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: var(--org-chart-first-child-center-offset);
-  right: var(--org-chart-last-child-center-offset);
-  height: 1px;
-  background: var(--org-chart-connector-color);
 }
 
 .agent-org-chart--vertical {
@@ -1127,11 +1099,6 @@
   margin-left: 0;
 }
 
-.agent-org-chart--vertical .org-chart-node--has-children > .org-chart-node-card::after {
-  left: calc(var(--space-lg) + var(--space-xs));
-  transform: none;
-}
-
 .agent-org-chart--vertical .org-chart-children {
   display: flex;
   flex-direction: column;
@@ -1141,36 +1108,6 @@
   padding-top: var(--space-sm);
   padding-left: calc(var(--space-lg) + var(--space-sm));
   margin-top: 0;
-}
-
-.agent-org-chart--vertical .org-chart-children::before {
-  top: 0;
-  bottom: var(--space-sm);
-  left: var(--space-sm);
-  right: auto;
-  width: 1px;
-  height: auto;
-  background: var(--org-chart-connector-color);
-}
-
-.agent-org-chart--vertical .org-chart-children > .org-chart-node::before {
-  top: calc(var(--space-md) * -1);
-  left: calc(var(--space-sm) * -1);
-  transform: none;
-  width: var(--space-sm);
-  height: 1px;
-  background: var(--org-chart-connector-color);
-}
-
-.org-chart-children > .org-chart-node::before {
-  content: "";
-  position: absolute;
-  top: calc(var(--org-chart-children-offset) * -1);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 1px;
-  height: var(--org-chart-children-offset);
-  background: var(--org-chart-connector-color);
 }
 
 
@@ -1289,11 +1226,6 @@
     order: 2;
   }
 
-  .agent-org-chart-controls .btn-icon,
-  .agent-org-chart-controls .agent-org-chart-controls__fit-btn {
-    min-height: calc(var(--space-lg) * 2 + var(--space-xs));
-  }
-
   .agent-org-chart-controls .agent-org-chart-controls__fit-btn {
     margin-left: 0;
   }
@@ -1302,7 +1234,7 @@
     min-height: calc(var(--space-2xl) * 4);
     flex: 1;
     min-width: 0;
-    overflow: auto;
+    overflow: hidden;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }
