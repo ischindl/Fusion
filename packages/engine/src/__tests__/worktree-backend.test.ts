@@ -142,7 +142,7 @@ describe("WorktrunkWorktreeBackend", () => {
     ).rejects.toMatchObject({ code: "worktrunk_operation_failed", stderr: "bad news", exitCode: 7 });
   });
 
-  it("passes timeout/maxBuffer and cwd", async () => {
+  it("invokes create mapping with timeout/maxBuffer and cwd", async () => {
     execMock.mockResolvedValue({ stdout: "", stderr: "" });
     const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
 
@@ -150,13 +150,42 @@ describe("WorktrunkWorktreeBackend", () => {
       rootDir: "/repo",
       worktreePath: "/repo/.worktrees/fn-1",
       branch: "fusion/fn-1",
+      startPoint: "main",
       taskId: "FN-1",
     });
 
     expect(execMock).toHaveBeenCalledWith(
-      '"worktrunk" --help',
+      '"worktrunk" "switch" "--create" "fusion/fn-1" "main"',
       expect.objectContaining({ cwd: "/repo", timeout: 120000, maxBuffer: 10485760 }),
     );
+  });
+
+  it("invokes remove mapping", async () => {
+    execMock.mockResolvedValue({ stdout: "", stderr: "" });
+    const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
+
+    await backend.remove({
+      rootDir: "/repo",
+      worktreePath: "/repo/.worktrees/fn-1",
+      branch: "fusion/fn-1",
+    });
+
+    expect(execMock).toHaveBeenCalledWith(
+      '"worktrunk" "remove" "fusion/fn-1"',
+      expect.objectContaining({ cwd: "/repo", timeout: 120000, maxBuffer: 10485760 }),
+    );
+  });
+
+  it("throws unsupported operation for sync/prune", async () => {
+    const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
+
+    await expect(
+      backend.sync({ rootDir: "/repo", worktreePath: "/repo/.worktrees/fn-1", branch: "main" }),
+    ).rejects.toMatchObject({ code: "worktrunk_unsupported_operation", operation: "sync" });
+    await expect(backend.prune({ rootDir: "/repo" })).rejects.toMatchObject({
+      code: "worktrunk_unsupported_operation",
+      operation: "prune",
+    });
   });
 });
 

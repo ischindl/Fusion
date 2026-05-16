@@ -30,6 +30,7 @@ export interface WorktreeCreateResult {
 export interface WorktreeRemoveInput {
   rootDir: string;
   worktreePath: string;
+  branch?: string;
   taskId?: string;
 }
 
@@ -203,11 +204,11 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
     },
   ) {}
 
-  private get binaryPath(): string {
+  private getBinaryPath(operation: WorktreeOperation): string {
     const binaryPath = this.deps.binaryPath?.trim() ?? "";
     if (!binaryPath) {
       throw new WorktrunkOperationError({
-        operation: "create",
+        operation,
         code: "worktrunk_binary_missing",
         stderr: "worktrunk binary not configured",
         exitCode: null,
@@ -216,19 +217,10 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
     return binaryPath;
   }
 
-  private async runPlaceholder(operation: WorktreeOperation, rootDir: string): Promise<void> {
-    let binaryPath: string;
-    try {
-      binaryPath = this.binaryPath;
-    } catch (error) {
-      if (error instanceof WorktrunkOperationError) {
-        throw new WorktrunkOperationError({ ...error, operation });
-      }
-      throw error;
-    }
-
-    // FN-4623: replace placeholder with real worktrunk subcommand mapping.
-    const command = `${quoteShellArg(binaryPath)} --help`;
+  private async runWorktrunk(operation: WorktreeOperation, rootDir: string, args: string[]): Promise<void> {
+    const binaryPath = this.getBinaryPath(operation);
+    const command = `${quoteShellArg(binaryPath)} ${args.map((arg) => quoteShellArg(arg)).join(" ")}`;
+    this.deps.logger?.log?.(`[worktree-backend] running worktrunk command: ${command}`);
 
     try {
       await execAsync(command, {
@@ -251,21 +243,34 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
   }
 
   async create(input: WorktreeCreateInput): Promise<WorktreeCreateResult> {
-    await this.runPlaceholder("create", input.rootDir);
+    // worktrunk mapping: `wt switch --create <branch> [startPoint]`.
+    const args = ["switch", "--create", input.branch];
+    if (input.startPoint) args.push(input.startPoint);
+    await this.runWorktrunk("create", input.rootDir, args);
     return { path: input.worktreePath, branch: input.branch };
   }
 
   async remove(input: WorktreeRemoveInput): Promise<void> {
-    await this.runPlaceholder("remove", input.rootDir);
+    // worktrunk mapping: `wt remove <branch>` from repo root.
+    await this.runWorktrunk("remove", input.rootDir, ["remove", input.branch ?? input.worktreePath]);
   }
 
-  async sync(input: WorktreeSyncInput): Promise<{ skipped: boolean }> {
-    await this.runPlaceholder("sync", input.rootDir);
-    return { skipped: true };
+  async sync(_input: WorktreeSyncInput): Promise<{ skipped: boolean }> {
+    throw new WorktrunkOperationError({
+      operation: "sync",
+      code: "worktrunk_unsupported_operation",
+      stderr: "worktrunk sync operation is not mapped by this backend",
+      exitCode: null,
+    });
   }
 
-  async prune(input: WorktreePruneInput): Promise<void> {
-    await this.runPlaceholder("prune", input.rootDir);
+  async prune(_input: WorktreePruneInput): Promise<void> {
+    throw new WorktrunkOperationError({
+      operation: "prune",
+      code: "worktrunk_unsupported_operation",
+      stderr: "worktrunk prune operation is not mapped by this backend",
+      exitCode: null,
+    });
   }
 }
 
