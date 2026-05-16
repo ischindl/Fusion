@@ -5912,8 +5912,10 @@ export async function aiMergeTask(
       };
     }
 
-    if (classification.kind === "proven-no-op") {
-      const noOpReason = `branch has zero commits ahead of ${classification.baseRef}`;
+    if (classification.kind === "proven-no-op" || classification.kind === "no-changes-finalized") {
+      const noOpReason = classification.kind === "proven-no-op"
+        ? `branch has zero commits ahead of ${classification.baseRef}`
+        : "verification-only finalize: no branch and no owned commits";
       const mergeDetails: MergeDetails = {
         ...(task.mergeDetails || {}),
         mergeConfirmed: true,
@@ -5927,7 +5929,9 @@ export async function aiMergeTask(
       await store.updateTask(taskId, { mergeDetails, modifiedFiles: [] });
       await store.logEntry(
         taskId,
-        `Auto-finalized no-op (proven): start point on ${classification.baseRef}; modifiedFiles cleared`,
+        classification.kind === "proven-no-op"
+          ? `Auto-finalized no-op (proven): start point on ${classification.baseRef}; modifiedFiles cleared`
+          : "Auto-finalized verification-only no-change task: branch absent with no owned commits; modifiedFiles cleared",
       );
       await store.moveTask(taskId, "done");
       return {
