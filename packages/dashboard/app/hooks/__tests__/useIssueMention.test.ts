@@ -76,7 +76,7 @@ describe("useIssueMention", () => {
       "Fix #4 now",
     );
 
-    expect(selection.text).toBe("Fix #42  now");
+    expect(selection.text).toBe("Fix #42 now");
     expect(selection.cursorPosition).toBe(8);
   });
 

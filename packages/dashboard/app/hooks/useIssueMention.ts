@@ -82,9 +82,7 @@ export function useIssueMention(options: UseIssueMentionOptions = {}): UseIssueM
           return false;
         }
 
-        if (query.length > 0 && !/^\d*$/.test(query)) {
-          // active for textual title search when not path-like
-        }
+        // Non-digit, non-path text queries are still valid for title substring search.
 
         setMentionStartIndex(i);
         setMentionQuery(query);
@@ -155,7 +153,8 @@ export function useIssueMention(options: UseIssueMentionOptions = {}): UseIssueM
       const afterMention = currentText.slice(mentionStartIndex + 1);
       const mentionEndMatch = afterMention.match(/[\s]|$/);
       const mentionEndIndex = mentionEndMatch ? mentionEndMatch.index ?? afterMention.length : afterMention.length;
-      const afterCurrentMention = afterMention.slice(mentionEndIndex);
+      const mentionDelimiterLength = mentionEndMatch?.[0]?.length ?? 0;
+      const afterCurrentMention = afterMention.slice(mentionEndIndex + mentionDelimiterLength);
       const replacement = `#${issue.number} `;
       const text = `${beforeMention}${replacement}${afterCurrentMention}`;
       const cursorPosition = beforeMention.length + replacement.length;
