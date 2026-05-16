@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NotificationDispatcher } from "../notification/dispatcher.js";
 import type { NotificationProvider } from "../notification/provider.js";
 import { DEFAULT_GLOBAL_SETTINGS } from "../settings-schema.js";
-import type { NtfyNotificationEvent, NotificationPayload } from "../types.js";
+import { NOTIFICATION_EVENTS, type NtfyNotificationEvent, type NotificationPayload } from "../types.js";
 
 function createProvider(overrides: Partial<NotificationProvider> = {}): NotificationProvider {
   const providerId = overrides.getProviderId?.() ?? "provider-default";
@@ -163,5 +163,9 @@ describe("NotificationDispatcher", () => {
     expect(DEFAULT_GLOBAL_SETTINGS.notificationProviders).toEqual([]);
     expect(DEFAULT_GLOBAL_SETTINGS.failureNotificationDelayMs).toBe(30000);
     expect(DEFAULT_GLOBAL_SETTINGS.failureNotificationMode).toBe("sticky-only");
+  });
+
+  it("includes oauth-token-expired in known notification events", () => {
+    expect(NOTIFICATION_EVENTS).toContain("oauth-token-expired");
   });
 });

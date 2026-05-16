@@ -355,7 +355,8 @@ export type NtfyNotificationEvent =
   | "token-budget"
   | "message:agent-to-user"
   | "message:agent-to-agent"
-  | "message:room";
+  | "message:room"
+  | "oauth-token-expired";
 
 /** Known notification event types. Providers may support additional custom events. */
 export const NOTIFICATION_EVENTS = [
@@ -372,6 +373,7 @@ export const NOTIFICATION_EVENTS = [
   "message:agent-to-user",
   "message:agent-to-agent",
   "message:room",
+  "oauth-token-expired",
 ] as const;
 
 /** Notification event type. Known events plus provider-specific custom events. */

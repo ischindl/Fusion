@@ -33,6 +33,7 @@ export const DEFAULT_NTFY_EVENTS: readonly NtfyNotificationEvent[] = [
   "message:agent-to-user",
   "message:agent-to-agent",
   "message:room",
+  "oauth-token-expired",
 ] as const;
 
 export interface NtfyNotificationConfigInput {
