@@ -4057,26 +4057,43 @@ export class TaskExecutor {
 
               if (priorRequeues < MAX_TASK_DONE_REQUEUE_RETRIES) {
                 await this.store.updateTask(task.id, {
-                  status: "failed",
-                  error: errorMessage,
-                  taskDoneRetryCount: nextRequeueCount,
+                  sessionFile: null,
+                  worktree: null,
+                  branch: null,
+                  baseCommitSha: null,
                 });
-                await this.store.logEntry(
-                  task.id,
-                  `${errorMessage} — requeued to todo immediately (${nextRequeueCount}/${MAX_TASK_DONE_REQUEUE_RETRIES})`,
-                  undefined,
-                  this.currentRunContext,
-                );
+                const reclaimMessage = "Worktree/branch reclaimed mid-retry — requeued to todo (engine self-heal, no failure)";
+                await this.store.logEntry(task.id, reclaimMessage, undefined, this.currentRunContext);
+                executorLog.log(`${task.id}: ${reclaimMessage}`);
                 await this.store.moveTask(task.id, "todo", { preserveProgress: true });
-                executorLog.log(`✗ ${task.id} failed after ${MAX_TASK_DONE_SESSION_RETRIES} retries — requeued to todo (${nextRequeueCount}/${MAX_TASK_DONE_REQUEUE_RETRIES})`);
               } else {
-                await this.store.updateTask(task.id, { status: "failed", error: errorMessage });
-                await this.store.logEntry(task.id, `${errorMessage} — moved to in-review for inspection`, undefined, this.currentRunContext);
-                await this.persistTokenUsage(task.id);
-                await this.store.moveTask(task.id, "in-review");
-                executorLog.log(`✗ ${task.id} failed after ${MAX_TASK_DONE_SESSION_RETRIES} retries — no fn_task_done → in-review`);
+                const priorRequeues = task.taskDoneRetryCount ?? 0;
+                const nextRequeueCount = priorRequeues + 1;
+                const errorMessage = `Agent finished without calling fn_task_done (after ${MAX_TASK_DONE_SESSION_RETRIES} retries)`;
+
+                if (priorRequeues < MAX_TASK_DONE_REQUEUE_RETRIES) {
+                  await this.store.updateTask(task.id, {
+                    status: "failed",
+                    error: errorMessage,
+                    taskDoneRetryCount: nextRequeueCount,
+                  });
+                  await this.store.logEntry(
+                    task.id,
+                    `${errorMessage} — requeued to todo immediately (${nextRequeueCount}/${MAX_TASK_DONE_REQUEUE_RETRIES})`,
+                    undefined,
+                    this.currentRunContext,
+                  );
+                  await this.store.moveTask(task.id, "todo", { preserveProgress: true });
+                  executorLog.log(`✗ ${task.id} failed after ${MAX_TASK_DONE_SESSION_RETRIES} retries — requeued to todo (${nextRequeueCount}/${MAX_TASK_DONE_REQUEUE_RETRIES})`);
+                } else {
+                  await this.store.updateTask(task.id, { status: "failed", error: errorMessage });
+                  await this.store.logEntry(task.id, `${errorMessage} — moved to in-review for inspection`, undefined, this.currentRunContext);
+                  await this.persistTokenUsage(task.id);
+                  await this.store.moveTask(task.id, "in-review");
+                  executorLog.log(`✗ ${task.id} failed after ${MAX_TASK_DONE_SESSION_RETRIES} retries — no fn_task_done → in-review`);
+                }
+                this.options.onError?.(task, new Error(errorMessage));
               }
-              this.options.onError?.(task, new Error(errorMessage));
             }
           }
         } finally {
