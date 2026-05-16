@@ -13,7 +13,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import { ChevronDown, Eye, EyeOff, MessageSquare, Paperclip, Plus, Send, Square, Wrench, X } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Hash, MessageSquare, Paperclip, Plus, Send, Square, Wrench, X } from "lucide-react";
 import { fetchDiscoveredSkills, fetchModels, type Agent, type ModelInfo } from "../api";
 import type { DiscoveredSkill } from "@fusion/dashboard";
 import { CustomModelDropdown } from "./CustomModelDropdown";
@@ -2478,31 +2478,37 @@ export function QuickChatFAB({
           <div className="quick-chat-panel-header">
             <div className="quick-chat-panel-title-wrap">
               <h3>Quick Chat</h3>
-              {chatMode === "model" && selectedModelTag && (() => {
-                const provider =
-                  selectedModelInfo?.provider ?? parsedModelSelection?.modelProvider ?? "";
-                // On mobile the header pill is squeezed by mode toggle + new-chat
-                // + close buttons, so swap a long model name for the provider
-                // icon to keep the title row tidy.
-                const tagTooLong = viewportMode === "mobile" && selectedModelTag.length > 12;
-                if (tagTooLong && provider) {
+              {chatRoomsEnabled && roomsState.activeRoom ? (
+                <span className="quick-chat-model-tag" data-testid="quick-chat-room-tag" title={`#${roomsState.activeRoom.name}`}>
+                  #{roomsState.activeRoom.name}
+                </span>
+              ) : (
+                chatMode === "model" && selectedModelTag && (() => {
+                  const provider =
+                    selectedModelInfo?.provider ?? parsedModelSelection?.modelProvider ?? "";
+                  // On mobile the header pill is squeezed by mode toggle + new-chat
+                  // + close buttons, so swap a long model name for the provider
+                  // icon to keep the title row tidy.
+                  const tagTooLong = viewportMode === "mobile" && selectedModelTag.length > 12;
+                  if (tagTooLong && provider) {
+                    return (
+                      <span
+                        className="quick-chat-model-tag quick-chat-model-tag--icon"
+                        data-testid="quick-chat-model-tag"
+                        title={selectedModelTag}
+                        aria-label={selectedModelTag}
+                      >
+                        <ProviderIcon provider={provider} size="sm" />
+                      </span>
+                    );
+                  }
                   return (
-                    <span
-                      className="quick-chat-model-tag quick-chat-model-tag--icon"
-                      data-testid="quick-chat-model-tag"
-                      title={selectedModelTag}
-                      aria-label={selectedModelTag}
-                    >
-                      <ProviderIcon provider={provider} size="sm" />
+                    <span className="quick-chat-model-tag" data-testid="quick-chat-model-tag" title={selectedModelTag}>
+                      {selectedModelTag}
                     </span>
                   );
-                }
-                return (
-                  <span className="quick-chat-model-tag" data-testid="quick-chat-model-tag" title={selectedModelTag}>
-                    {selectedModelTag}
-                  </span>
-                );
-              })()}
+                })()
+              )}
             </div>
             <div className="quick-chat-panel-header-actions">
               <button
@@ -2540,7 +2546,9 @@ export function QuickChatFAB({
                 data-testid="quick-chat-session-dropdown-trigger"
                 onClick={() => setSessionMenuOpen((current) => !current)}
               >
-                {activeSession?.modelProvider ? (
+                {chatRoomsEnabled && roomsState.activeRoom ? (
+                  <Hash size={16} aria-hidden="true" />
+                ) : activeSession?.modelProvider ? (
                   <ProviderIcon provider={activeSession.modelProvider} size="sm" />
                 ) : (
                   <MessageSquare size={16} aria-hidden="true" />
