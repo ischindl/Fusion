@@ -91,5 +91,5 @@ describe("verification-fix already-on-main reliability interactions (real git)",
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

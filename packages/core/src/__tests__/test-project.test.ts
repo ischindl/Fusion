@@ -128,22 +128,29 @@ describe("test-project fixture", () => {
   });
 
   it("cleans up auto-created temp dirs when setup fails before returning a fixture", async () => {
+    const projectPrefix = `fusion-test-project-failure-${Date.now()}-`;
+    const globalPrefix = `fusion-test-global-failure-${Date.now()}-`;
     const countTmpDirs = (prefix: string) =>
       readdirSync(tmpdir()).filter((entry) => entry.startsWith(prefix)).length;
 
-    const projectCountBefore = countTmpDirs("fusion-test-project-");
-    const globalCountBefore = countTmpDirs("fusion-test-global-");
+    const projectCountBefore = countTmpDirs(projectPrefix);
+    const globalCountBefore = countTmpDirs(globalPrefix);
     const error = new Error("boom");
     const spy = vi.spyOn(TaskStore.prototype, "updateSettings").mockRejectedValueOnce(error);
 
     try {
-      await expect(createTestProject()).rejects.toThrow(error);
+      await expect(
+        createTestProject({
+          rootDirPrefix: projectPrefix,
+          globalDirPrefix: globalPrefix,
+        }),
+      ).rejects.toThrow(error);
     } finally {
       spy.mockRestore();
     }
 
-    expect(countTmpDirs("fusion-test-project-")).toBe(projectCountBefore);
-    expect(countTmpDirs("fusion-test-global-")).toBe(globalCountBefore);
+    expect(countTmpDirs(projectPrefix)).toBe(projectCountBefore);
+    expect(countTmpDirs(globalPrefix)).toBe(globalCountBefore);
   });
 
   it("createTestProject({ seedTasks }) pre-seeds tasks during setup", async () => {

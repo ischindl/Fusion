@@ -16,6 +16,8 @@ export interface CreateTestProjectOptions {
   seedTasks?: number;
   globalSettingsDir?: string;
   settings?: Partial<Settings>;
+  rootDirPrefix?: string;
+  globalDirPrefix?: string;
 }
 
 export interface TestProjectFixture {
@@ -67,10 +69,12 @@ function splitSettings(settings?: Partial<Settings>): {
 export async function createTestProject(
   options: CreateTestProjectOptions = {},
 ): Promise<TestProjectFixture> {
-  const rootDir = mkdtempSync(join(tmpdir(), "fusion-test-project-"));
+  const rootDirPrefix = options.rootDirPrefix ?? "fusion-test-project-";
+  const globalDirPrefix = options.globalDirPrefix ?? "fusion-test-global-";
+  const rootDir = mkdtempSync(join(tmpdir(), rootDirPrefix));
   const globalDir = options.globalSettingsDir
     ? options.globalSettingsDir
-    : mkdtempSync(join(tmpdir(), "fusion-test-global-"));
+    : mkdtempSync(join(tmpdir(), globalDirPrefix));
   const ownsGlobalDir = !options.globalSettingsDir;
 
   assertAbsolutePath(rootDir, "rootDir");

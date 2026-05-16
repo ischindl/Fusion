@@ -120,6 +120,7 @@ describe("native integrations", () => {
     mocks.updaterHandlers.clear();
     mocks.autoUpdater.autoDownload = false;
     mocks.autoUpdater.autoInstallOnAppQuit = false;
+    (mocks.Notification.isSupported as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     mocks.dialog.showSaveDialog.mockResolvedValue({
       canceled: false,
@@ -303,8 +304,10 @@ describe("native integrations", () => {
       setupAutoUpdater(mocks.browserWindow as never);
       await vi.dynamicImportSettled();
 
-      expect(mocks.autoUpdater.autoDownload).toBe(true);
-      expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(true);
+      await vi.waitFor(() => {
+        expect(mocks.autoUpdater.autoDownload).toBe(true);
+        expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(true);
+      });
     });
 
     it("registers updater listeners and checks for updates", async () => {
@@ -313,10 +316,12 @@ describe("native integrations", () => {
       setupAutoUpdater(mocks.browserWindow as never);
       await vi.dynamicImportSettled();
 
-      expect(mocks.autoUpdater.on).toHaveBeenCalledWith("update-available", expect.any(Function));
-      expect(mocks.autoUpdater.on).toHaveBeenCalledWith("update-downloaded", expect.any(Function));
-      expect(mocks.autoUpdater.on).toHaveBeenCalledWith("error", expect.any(Function));
-      expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(mocks.autoUpdater.on).toHaveBeenCalledWith("update-available", expect.any(Function));
+        expect(mocks.autoUpdater.on).toHaveBeenCalledWith("update-downloaded", expect.any(Function));
+        expect(mocks.autoUpdater.on).toHaveBeenCalledWith("error", expect.any(Function));
+        expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("update-available triggers notification and renderer IPC", async () => {

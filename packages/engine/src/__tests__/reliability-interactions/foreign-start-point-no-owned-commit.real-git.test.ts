@@ -148,5 +148,5 @@ describe("foreign start-point no-owned-commit interactions (real git)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

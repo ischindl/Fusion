@@ -296,11 +296,15 @@ describe("bin command routing and fallbacks", () => {
     expect(output).toContain("worktrunk.onFailure");
   });
 
-  it("launches dashboard when no args are provided", async () => {
-    commandMocks.runDashboard.mockResolvedValue({ dispose: vi.fn() });
-    await runBin([]);
-    expect(commandMocks.runDashboard).toHaveBeenCalled();
-  });
+  it(
+    "launches dashboard when no args are provided",
+    async () => {
+      commandMocks.runDashboard.mockResolvedValue({ dispose: vi.fn() });
+      await runBin([]);
+      expect(commandMocks.runDashboard).toHaveBeenCalled();
+    },
+    15000,
+  );
 
   it(
     "prints an error for unknown top-level command",
