@@ -3077,20 +3077,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
 
     let taskStatusMap = new Map<string, string>();
     try {
-      if (typeof (scopedStore as TaskStore & { getTaskColumns?: unknown }).getTaskColumns === "function") {
-        taskStatusMap = await scopedStore.getTaskColumns(taskIds);
-      } else {
-        await Promise.all(
-          taskIds.map(async (taskId) => {
-            try {
-              const task = await scopedStore.getTask(taskId);
-              if (task) taskStatusMap.set(taskId, task.column);
-            } catch {
-              // Per-task lookup failed — treat as non-terminal.
-            }
-          }),
-        );
-      }
+      taskStatusMap = await scopedStore.getTaskColumns(taskIds);
     } catch {
       // Lookup failed — treat all linked tasks as non-terminal (preserve taskId)
       taskStatusMap = new Map<string, string>();
