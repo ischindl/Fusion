@@ -208,6 +208,19 @@ The multi-node mapping/routing contracts are guarded by automated suites:
 - Mapping persistence/backfill invariants: `packages/core/src/__tests__/central-core.test.ts`, `packages/core/src/__tests__/central-db.test.ts`, `packages/core/src/__tests__/central-project-node-mappings.test.ts`.
 - Dispatch blocking on missing mappings + routed working-directory resolution: `packages/engine/src/__tests__/scheduler-node-routing.test.ts`, `packages/engine/src/__tests__/node-dispatch-validation.test.ts`, `packages/engine/src/__tests__/project-engine-manager.test.ts`, `packages/engine/src/__tests__/hybrid-executor.test.ts`.
 
+## HybridExecutor wiring
+
+Runtime startup in `fn serve`, `fn dashboard`, and `fn daemon` now keeps `ProjectEngineManager` as the per-project engine lifecycle owner and conditionally layers `HybridExecutor` for orchestration concerns (`ProjectRuntime` abstraction + `NodeHealthMonitor`).
+
+Gate policy is centralized in `shouldUseHybridExecutor(centralCore)` and evaluated in this order:
+1. `FUSION_HYBRID_EXECUTOR=1|0` env override (`reason: "env-override"`)
+2. multi-node registry state (`reason: "multi-node"`)
+3. multi-project active/initializing state (`reason: "multi-project"`)
+4. otherwise disabled (`reason: "single-project-local-only"`)
+5. central lookup failures degrade to disabled (`reason: "central-unavailable"`)
+
+When enabled, shutdown ordering is deterministic: `hybridExecutor.shutdown()` runs before `engineManager.stopAll()` so runtime orchestration services (including node health monitoring) tear down before project engines.
+
 ## Auto-Migration from Single-Project
 
 On first run after upgrade:
