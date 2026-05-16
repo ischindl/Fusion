@@ -44,6 +44,7 @@ export function useCurrentProject(
   const [loading, setLoading] = useState(true);
   // Track if we've hydrated from global settings (vs just initialized)
   const hydratedRef = useRef(false);
+  const hydratedNodeKeyRef = useRef<string | null>(null);
   // When true, the user explicitly cleared the project (e.g. clicked "Projects")
   // and we should not auto-select until they pick one manually.
   const explicitlyClearedRef = useRef(false);
@@ -66,9 +67,23 @@ export function useCurrentProject(
     setCurrentProjectState(project);
   }, []);
 
-  // Load from global settings on mount
+  // Load from global settings once per node key
   useEffect(() => {
     let cancelled = false;
+
+    if (hydratedNodeKeyRef.current !== nodeKey) {
+      hydratedNodeKeyRef.current = null;
+      hydratedRef.current = false;
+    }
+
+    if (hydratedRef.current && hydratedNodeKeyRef.current === nodeKey) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setLoading(true);
 
     async function loadFromGlobalSettings() {
       try {
@@ -86,9 +101,8 @@ export function useCurrentProject(
           if (found) {
             autoDefaultCountRef.current = 0;
             setCurrentProjectState(found);
-            hydratedRef.current = true;
           }
-          // If project not found, we'll handle in the next effect
+          // If project not found, we'll handle in the validation effect
           // (project may still be loading or was unregistered)
         }
 
@@ -104,7 +118,6 @@ export function useCurrentProject(
                 if (exists) {
                   autoDefaultCountRef.current = 0;
                   setCurrentProjectState(parsed);
-                  hydratedRef.current = true;
                   // Migrate to global settings
                   settingsCacheRef.current = { ...settingsCacheRef.current, [nodeKey]: parsed.id };
                   await updateGlobalSettings({
@@ -124,17 +137,19 @@ export function useCurrentProject(
         // We'll fall back to default behavior
       } finally {
         if (!cancelled) {
+          hydratedRef.current = true;
+          hydratedNodeKeyRef.current = nodeKey;
           setLoading(false);
         }
       }
     }
 
-    loadFromGlobalSettings();
+    void loadFromGlobalSettings();
 
     return () => {
       cancelled = true;
     };
-  }, [nodeKey, availableProjects]);
+  }, [nodeKey]);
 
   // Reset absence tracking when selection changes
   useEffect(() => {
@@ -178,6 +193,16 @@ export function useCurrentProject(
         return;
       }
       if (!explicitlyClearedRef.current) {
+        const savedProjectId = settingsCacheRef.current?.[nodeKey];
+        if (savedProjectId) {
+          const savedProject = availableProjects.find((p) => p.id === savedProjectId) ?? null;
+          if (savedProject) {
+            autoDefaultCountRef.current = 0;
+            setListDrivenSelection(savedProject);
+            return;
+          }
+        }
+
         autoDefaultCountRef.current += 1;
         if (autoDefaultCountRef.current >= CONSECUTIVE_ABSENCE_THRESHOLD) {
           autoDefaultCountRef.current = 0;
