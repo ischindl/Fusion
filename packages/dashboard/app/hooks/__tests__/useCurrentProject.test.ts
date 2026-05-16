@@ -36,6 +36,8 @@ describe("useCurrentProject", () => {
     },
   ];
 
+  const cloneProjects = (): ProjectInfo[] => mockProjects.map((project) => ({ ...project }));
+
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
@@ -114,6 +116,117 @@ describe("useCurrentProject", () => {
     });
   });
 
+  it("does not rehydrate on poll rerenders after manual project switch", async () => {
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_1" },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projects }) => useCurrentProject(projects),
+      { initialProps: { projects: cloneProjects() } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_1");
+    });
+
+    act(() => {
+      result.current.setCurrentProject(mockProjects[1]);
+    });
+    expect(result.current.currentProject?.id).toBe("proj_2");
+
+    for (let i = 0; i < 3; i += 1) {
+      rerender({ projects: cloneProjects() });
+    }
+
+    expect(result.current.currentProject?.id).toBe("proj_2");
+    expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps explicit clear through poll rerenders without rehydrating", async () => {
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_1" },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projects }) => useCurrentProject(projects),
+      { initialProps: { projects: cloneProjects() } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_1");
+    });
+
+    act(() => {
+      result.current.clearCurrentProject();
+    });
+    expect(result.current.currentProject).toBeNull();
+
+    for (let i = 0; i < CONSECUTIVE_ABSENCE_THRESHOLD - 1; i += 1) {
+      rerender({ projects: cloneProjects() });
+    }
+
+    expect(result.current.currentProject).toBeNull();
+    expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("rehydrates once when nodeId changes", async () => {
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        dashboardCurrentProjectIdByNode: { local: "proj_1" },
+      })
+      .mockResolvedValueOnce({
+        dashboardCurrentProjectIdByNode: { "node-123": "proj_2" },
+      });
+
+    const { result, rerender } = renderHook(
+      ({ projects, nodeId }) => useCurrentProject(projects, { nodeId }),
+      { initialProps: { projects: cloneProjects(), nodeId: null as string | null } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_1");
+    });
+
+    rerender({ projects: cloneProjects(), nodeId: "node-123" });
+
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_2");
+    });
+    expect(fetchGlobalSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores saved project when it appears in later polls", async () => {
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_2" },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projects }) => useCurrentProject(projects),
+      { initialProps: { projects: [mockProjects[0]] as ProjectInfo[] } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.currentProject).toBeNull();
+
+    rerender({ projects: cloneProjects() });
+
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_2");
+    });
+    expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
+  });
 
   it("clears selection when project no longer exists and defaults to first active", async () => {
     (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
