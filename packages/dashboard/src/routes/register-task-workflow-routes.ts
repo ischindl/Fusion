@@ -1237,21 +1237,19 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         return res.json({ task, expedited: false, requiresOperatorAction: "retry-stuck" });
       }
 
-      if (task.expediteRequestedAt && !task.nextRecoveryAt) {
+      if (!task.nextRecoveryAt) {
         return res.json({ task, expedited: true, alreadyExpedited: true });
       }
 
-      const nowIso = new Date().toISOString();
       const updated = await scopedStore.updateTask(task.id, {
         nextRecoveryAt: undefined,
-        expediteRequestedAt: task.expediteRequestedAt ?? nowIso,
       });
-      await scopedStore.logEntry(task.id, "Refinement expedited", "Cleared nextRecoveryAt and set expediteRequestedAt");
+      await scopedStore.logEntry(task.id, "Refinement expedited", "Cleared nextRecoveryAt");
 
       res.json({
         task: updated,
         expedited: true,
-        alreadyExpedited: Boolean(task.expediteRequestedAt),
+        alreadyExpedited: false,
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
