@@ -76,9 +76,14 @@ describe("settings commands", () => {
     expect(parseValue("unavailableNodePolicy", "fallback-local")).toBe("fallback-local");
     expect(() => parseValue("unavailableNodePolicy", "invalid")).toThrow(/block, fallback-local/);
     expect(parseValue("worktrunk.enabled", "true" as any)).toBe(true);
-    expect(parseValue("worktrunk.binaryPath", "/usr/local/bin/worktrunk" as any)).toBe("/usr/local/bin/worktrunk");
+    expect(parseValue("worktrunk.enabled", "yes" as any)).toBe(true);
+    expect(parseValue("worktrunk.enabled", "false" as any)).toBe(false);
+    expect(parseValue("worktrunk.enabled", "no" as any)).toBe(false);
+    expect(() => parseValue("worktrunk.enabled", "maybe" as any)).toThrow(/Invalid boolean value/);
+    expect(parseValue("worktrunk.binaryPath", "  /usr/local/bin/worktrunk  " as any)).toBe("/usr/local/bin/worktrunk");
+    expect(parseValue("worktrunk.onFailure", "fail" as any)).toBe("fail");
     expect(parseValue("worktrunk.onFailure", "fallback-native" as any)).toBe("fallback-native");
-    expect(() => parseValue("worktrunk.onFailure", "ignore" as any)).toThrow(/fail, fallback-native/);
+    expect(() => parseValue("worktrunk.onFailure", "crash" as any)).toThrow(/fail, fallback-native/);
   });
 
   it("runSettingsShow without project uses global settings even if a project could resolve", async () => {
@@ -302,15 +307,14 @@ describe("settings commands", () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Valid options: fail, fallback-native"));
   });
 
+  // Core/project stores use top-level shallow patch merge, so dotted updates must re-emit sibling fields.
   it("runSettingsSet preserves existing project worktrunk sibling fields", async () => {
     const updateSettings = vi.fn().mockResolvedValue(makeSettings());
     const getSettingsByScope = vi.fn().mockResolvedValue({
       global: makeSettings(),
       project: {
         worktrunk: {
-          enabled: true,
-          binaryPath: "/opt/bin/worktrunk",
-          onFailure: "fallback-native",
+          binaryPath: "/x",
         },
       },
     });
@@ -324,15 +328,53 @@ describe("settings commands", () => {
       store: { updateSettings, getSettingsByScope, getSettings } as any,
     });
 
-    await runSettingsSet("worktrunk.enabled", "false", "demo-project");
+    await runSettingsSet("worktrunk.enabled", "true", "demo-project");
 
     expect(updateSettings).toHaveBeenCalledWith({
       worktrunk: {
-        enabled: false,
-        binaryPath: "/opt/bin/worktrunk",
-        onFailure: "fallback-native",
+        binaryPath: "/x",
+        enabled: true,
       },
     });
+  });
+
+  it("runSettingsSet with --project updates project store without mutating global store", async () => {
+    const globalUpdateSettings = vi.fn();
+    (GlobalSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      updateSettings: globalUpdateSettings,
+      getSettings: vi.fn().mockResolvedValue(makeSettings()),
+    }));
+
+    const projectUpdateSettings = vi.fn().mockResolvedValue(makeSettings());
+    const getSettingsByScope = vi.fn().mockResolvedValue({
+      global: makeSettings(),
+      project: { worktrunk: {} },
+    });
+    const projectGetSettings = vi.fn().mockResolvedValue(makeSettings());
+    vi.mocked(resolveProject).mockResolvedValue({
+      projectId: "proj-1",
+      projectName: "demo-project",
+      projectPath: "/projects/demo",
+      isRegistered: true,
+      store: {
+        updateSettings: projectUpdateSettings,
+        getSettingsByScope,
+        getSettings: projectGetSettings,
+      } as any,
+    });
+
+    await runSettingsSet("worktrunk.onFailure", "fallback-native", "demo-project");
+
+    expect(projectUpdateSettings).toHaveBeenCalledWith({
+      worktrunk: { onFailure: "fallback-native" },
+    });
+    expect(globalUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown worktrunk dotted subkeys", async () => {
+    await expect(runSettingsSet("worktrunk.bogus", "true")).rejects.toThrow("process.exit:1");
+    expect(errorSpy).toHaveBeenCalledWith('Error: Unknown setting "worktrunk.bogus"');
   });
 
   it("runSettingsShow includes Worktrunk integration section", async () => {
