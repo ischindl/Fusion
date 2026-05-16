@@ -14,6 +14,7 @@ export {
   NativeWorktreeBackend,
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
+  removeWorktree,
   resolveWorktreeBackend,
 } from "./worktree-backend.js";
 export type { WorktreeBackend, WorktreeBackendKind } from "./worktree-backend.js";

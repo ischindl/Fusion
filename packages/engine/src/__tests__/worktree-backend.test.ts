@@ -3,6 +3,7 @@ import {
   NativeWorktreeBackend,
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
+  removeWorktree,
   resolveWorktreeBackend,
 } from "../worktree-backend.js";
 
@@ -331,6 +332,84 @@ describe("WorktrunkOperationError", () => {
     expect(error.code).toBe("worktrunk_operation_failed");
     expect(error.stderr).toBe("stderr");
     expect(error.exitCode).toBe(2);
+  });
+});
+
+describe("removeWorktree", () => {
+  it("uses native remove and emits worktree:remove audit", async () => {
+    execMock.mockResolvedValue({ stdout: "", stderr: "" });
+    const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await removeWorktree({
+      rootDir: "/repo",
+      worktreePath: "/repo/.worktrees/fn-1",
+      settings: {},
+      audit,
+    });
+
+    expect(execMock).toHaveBeenCalledWith(
+      'git worktree remove --force "/repo/.worktrees/fn-1"',
+      expect.objectContaining({ cwd: "/repo", timeout: 60000 }),
+    );
+    expect(audit.git).toHaveBeenCalledWith({ type: "worktree:remove", target: "/repo/.worktrees/fn-1" });
+  });
+
+  it("uses worktrunk remove and emits worktree:worktrunk-remove", async () => {
+    execMock.mockResolvedValue({ stdout: "", stderr: "" });
+    const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await removeWorktree({
+      rootDir: "/repo",
+      worktreePath: "/repo/.worktrees/fn-1",
+      settings: { worktrunk: { enabled: true, binaryPath: "worktrunk", onFailure: "fail" } as any },
+      audit,
+      taskId: "FN-1",
+    });
+
+    expect(audit.git).toHaveBeenCalledWith({ type: "worktree:worktrunk-remove", target: "/repo/.worktrees/fn-1" });
+  });
+
+  it("falls back to native when worktrunk remove fails and onFailure=fallback-native", async () => {
+    execMock
+      .mockRejectedValueOnce(new WorktrunkOperationError({ operation: "remove", code: "worktrunk_operation_failed", stderr: "boom", exitCode: 1 }))
+      .mockResolvedValueOnce({ stdout: "", stderr: "" });
+    const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await removeWorktree({
+      rootDir: "/repo",
+      worktreePath: "/repo/.worktrees/fn-1",
+      settings: { worktrunk: { enabled: true, binaryPath: "worktrunk", onFailure: "fallback-native" } as any },
+      audit,
+    });
+
+    expect(audit.git).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "worktree:worktrunk-fallback", target: "/repo/.worktrees/fn-1" }),
+    );
+    expect(audit.git).toHaveBeenCalledWith({ type: "worktree:remove", target: "/repo/.worktrees/fn-1" });
+  });
+
+  it("rethrows worktrunk remove failure when onFailure=fail", async () => {
+    execMock.mockRejectedValue(
+      new WorktrunkOperationError({ operation: "remove", code: "worktrunk_operation_failed", stderr: "boom", exitCode: 1 }),
+    );
+
+    await expect(
+      removeWorktree({
+        rootDir: "/repo",
+        worktreePath: "/repo/.worktrees/fn-1",
+        settings: { worktrunk: { enabled: true, binaryPath: "worktrunk", onFailure: "fail" } as any },
+      }),
+    ).rejects.toMatchObject({ code: "worktrunk_operation_failed", operation: "remove" });
+  });
+
+  it("surfaces missing worktrunk binary errors", async () => {
+    await expect(
+      removeWorktree({
+        rootDir: "/repo",
+        worktreePath: "/repo/.worktrees/fn-1",
+        settings: { worktrunk: { enabled: true, onFailure: "fail" } as any },
+      }),
+    ).rejects.toMatchObject({ code: "worktrunk_binary_missing", operation: "remove" });
   });
 });
 

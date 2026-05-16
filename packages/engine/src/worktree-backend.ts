@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Settings } from "@fusion/core";
+import type { RunAuditor } from "./run-audit.js";
 import { resolveTaskWorktreePath } from "./worktree-paths.js";
 import { inspectBranchConflict } from "./branch-conflicts.js";
 import { formatError } from "./logger.js";
@@ -454,6 +455,64 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
       // fall back to documented default template when config cannot be read.
     }
     return "{{ repo_path }}/.worktrees/{{ branch | sanitize }}";
+  }
+}
+
+export async function removeWorktree(input: {
+  worktreePath: string;
+  rootDir: string;
+  settings: Partial<Settings>;
+  taskId?: string;
+  audit?: RunAuditor;
+  force?: boolean;
+  timeout?: number;
+}): Promise<void> {
+  const logger = {
+    log: (_message: string): void => {},
+    warn: (_message: string): void => {},
+  };
+
+  const backend = resolveWorktreeBackend(input.settings, { logger });
+  const removeInput: WorktreeRemoveInput = {
+    rootDir: input.rootDir,
+    worktreePath: input.worktreePath,
+    taskId: input.taskId,
+  };
+
+  if (input.force === false || typeof input.timeout === "number") {
+    // Backwards-compatible helper signature for callers that carried raw git flags/timeouts.
+    // Current backend remove implementations are forceful and use backend-owned timeouts.
+  }
+
+  try {
+    await backend.remove(removeInput);
+    if (input.audit) {
+      await input.audit.git({
+        type: backend.kind === "worktrunk" ? "worktree:worktrunk-remove" : "worktree:remove",
+        target: input.worktreePath,
+      });
+    }
+    return;
+  } catch (error) {
+    if (!(error instanceof WorktrunkOperationError) || input.settings.worktrunk?.onFailure !== "fallback-native") {
+      throw error;
+    }
+
+    logger.warn(`[worktree-backend] falling back to native remove for ${input.worktreePath}`);
+
+    await input.audit?.git({
+      type: "worktree:worktrunk-fallback",
+      target: input.worktreePath,
+      metadata: {
+        op: "fallback-native",
+        stderrPreview: error.stderr?.slice(0, 4096),
+        exitCode: error.exitCode ?? null,
+      },
+    });
+
+    const native = new NativeWorktreeBackend({ logger, settings: input.settings });
+    await native.remove(removeInput);
+    await input.audit?.git({ type: "worktree:remove", target: input.worktreePath });
   }
 }
 
