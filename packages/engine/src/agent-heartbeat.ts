@@ -123,6 +123,14 @@ export interface WakeupOptions {
 }
 
 /** Options for executing a heartbeat run */
+export interface WakeMessageContext {
+  messageId: string;
+  fromType: string;
+  fromId: string;
+  forced: boolean;
+  createdAt: string;
+}
+
 export interface HeartbeatExecutionOptions {
   /** Agent ID to execute heartbeat for */
   agentId: string;
@@ -136,6 +144,8 @@ export interface HeartbeatExecutionOptions {
   triggeringCommentIds?: string[];
   /** Type of comment that triggered this wake */
   triggeringCommentType?: "steering" | "task" | "pr";
+  /** Wake-on-message triggering message metadata for diagnostics */
+  wakeMessage?: WakeMessageContext;
   /** Optional structured context persisted on the run record */
   contextSnapshot?: Record<string, unknown>;
 }
@@ -1591,6 +1601,13 @@ export class HeartbeatMonitor {
       agentId: message.toId,
       source: "on_demand",
       triggerDetail: senderForcedWake ? "wake-on-message-forced" : "wake-on-message",
+      wakeMessage: {
+        messageId: message.id,
+        fromType: message.fromType,
+        fromId: message.fromId,
+        forced: senderForcedWake,
+        createdAt: message.createdAt,
+      },
     }).catch((error) => {
       const errorMessage = error instanceof Error ? error.message : String(error);
       heartbeatLog.warn(`Wake-on-message heartbeat failed for ${message.toId}: ${errorMessage}`);
@@ -1631,6 +1648,7 @@ export class HeartbeatMonitor {
       contextSnapshot,
       triggeringCommentIds,
       triggeringCommentType,
+      wakeMessage,
     } = options;
 
     // Validate execution dependencies
