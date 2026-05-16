@@ -2230,6 +2230,21 @@ export class GitHubClient {
 
     if (this.hasGhAuth()) {
       try {
+        const args = [
+          "search",
+          "issues",
+          "--repo",
+          `${owner}/${repo}`,
+          "--limit",
+          String(limit),
+          "--json",
+          "number,title,body,url,state,updatedAt,isPullRequest",
+        ];
+        if (state !== "all") {
+          args.push("--state", state);
+        }
+        args.push("--", query);
+
         const issues = await runGhJsonAsync<Array<{
           number: number;
           title: string;
@@ -2238,20 +2253,7 @@ export class GitHubClient {
           state: "OPEN" | "CLOSED";
           updatedAt: string;
           isPullRequest?: boolean;
-        }>>([
-          "search",
-          "issues",
-          "--repo",
-          `${owner}/${repo}`,
-          "--state",
-          state,
-          "--limit",
-          String(limit),
-          "--json",
-          "number,title,body,url,state,updatedAt,isPullRequest",
-          "--",
-          query,
-        ]);
+        }>>(args);
 
         return issues
           .filter((issue) => !issue.isPullRequest)
