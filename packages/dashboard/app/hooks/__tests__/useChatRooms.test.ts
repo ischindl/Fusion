@@ -12,6 +12,7 @@ vi.mock("../../api", () => ({
   fetchChatRoomMessages: vi.fn(),
   deleteChatRoom: vi.fn(),
   postChatRoomMessage: vi.fn(),
+  clearChatRoomMessages: vi.fn(),
 }));
 
 vi.mock("../../sse-bus", () => ({
@@ -30,6 +31,7 @@ const mockFetchChatRoomMembers = vi.mocked(apiModule.fetchChatRoomMembers);
 const mockFetchChatRoomMessages = vi.mocked(apiModule.fetchChatRoomMessages);
 const mockDeleteChatRoom = vi.mocked(apiModule.deleteChatRoom);
 const mockPostChatRoomMessage = vi.mocked(apiModule.postChatRoomMessage);
+const mockClearChatRoomMessages = vi.mocked(apiModule.clearChatRoomMessages);
 const mockSubscribeSse = vi.mocked(sseBusModule.subscribeSse);
 
 function room(id: string, name: string, updatedAt: string): ChatRoom {
@@ -82,6 +84,7 @@ describe("useChatRooms", () => {
     mockCreateChatRoom.mockResolvedValue({ room: room("room-new", "new", "2026-05-09T01:00:00.000Z") });
     mockDeleteChatRoom.mockResolvedValue({ success: true });
     mockPostChatRoomMessage.mockResolvedValue({ message: roomMessage("msg-posted", "room-new", "posted") });
+    mockClearChatRoomMessages.mockResolvedValue({ success: true, deletedCount: 1 });
   });
 
   it("loads rooms on mount", async () => {
@@ -310,6 +313,82 @@ describe("useChatRooms", () => {
     await waitFor(() => {
       expect(result.current.messages.map((message) => message.id)).toEqual(["msg-user"]);
     });
+  });
+
+  it("clearRoom empties messages for active room", async () => {
+    const active = room("room-1", "one", "2026-05-09T01:00:00.000Z");
+    mockFetchChatRooms.mockResolvedValueOnce({ rooms: [active] });
+    const { result } = renderHook(() => useChatRooms("proj-1"));
+    await waitFor(() => expect(result.current.rooms.length).toBe(1));
+
+    mockFetchChatRoomMembers.mockResolvedValueOnce({ members: [] });
+    mockFetchChatRoomMessages.mockResolvedValueOnce({ messages: [roomMessage("msg-1", "room-1", "hello")] });
+    act(() => result.current.selectRoom("room-1"));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.clearRoom("room-1");
+    });
+
+    expect(mockClearChatRoomMessages).toHaveBeenCalledWith("room-1", "proj-1");
+    expect(result.current.messages).toEqual([]);
+  });
+
+  it("clearRoom does not mutate messages when another room is active", async () => {
+    const first = room("room-1", "one", "2026-05-09T01:00:00.000Z");
+    const second = room("room-2", "two", "2026-05-09T02:00:00.000Z");
+    mockFetchChatRooms.mockResolvedValueOnce({ rooms: [first, second] });
+    const { result } = renderHook(() => useChatRooms("proj-1"));
+    await waitFor(() => expect(result.current.rooms.length).toBe(2));
+
+    mockFetchChatRoomMembers.mockResolvedValueOnce({ members: [] });
+    mockFetchChatRoomMessages.mockResolvedValueOnce({ messages: [roomMessage("msg-2", "room-2", "hello")] });
+    act(() => result.current.selectRoom("room-2"));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.clearRoom("room-1");
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+  });
+
+  it("SSE clear event empties messages for active room", async () => {
+    const active = room("room-1", "one", "2026-05-09T01:00:00.000Z");
+    mockFetchChatRooms.mockResolvedValueOnce({ rooms: [active] });
+    const { result } = renderHook(() => useChatRooms("proj-1"));
+    await waitFor(() => expect(result.current.rooms.length).toBe(1));
+
+    mockFetchChatRoomMembers.mockResolvedValueOnce({ members: [] });
+    mockFetchChatRoomMessages.mockResolvedValueOnce({ messages: [roomMessage("msg-1", "room-1", "hello")] });
+    act(() => result.current.selectRoom("room-1"));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+    act(() => {
+      capturedEvents["chat:room:messages:cleared"]?.({ data: JSON.stringify({ roomId: "room-1", deletedCount: 3 }) } as MessageEvent);
+    });
+
+    expect(result.current.messages).toEqual([]);
+  });
+
+  it("clearRoom rethrows API failure and preserves messages", async () => {
+    const active = room("room-1", "one", "2026-05-09T01:00:00.000Z");
+    mockFetchChatRooms.mockResolvedValueOnce({ rooms: [active] });
+    const { result } = renderHook(() => useChatRooms("proj-1"));
+    await waitFor(() => expect(result.current.rooms.length).toBe(1));
+
+    mockFetchChatRoomMembers.mockResolvedValueOnce({ members: [] });
+    mockFetchChatRoomMessages.mockResolvedValueOnce({ messages: [roomMessage("msg-1", "room-1", "hello")] });
+    act(() => result.current.selectRoom("room-1"));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+    mockClearChatRoomMessages.mockRejectedValueOnce(new Error("clear failed"));
+
+    await act(async () => {
+      await expect(result.current.clearRoom("room-1")).rejects.toThrow("clear failed");
+    });
+
+    expect(result.current.messages).toHaveLength(1);
   });
 
   it("tears down sse subscription on unmount", async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatAttachment, ChatRoom, ChatRoomMember, ChatRoomMessage } from "@fusion/core";
 import {
+  clearChatRoomMessages,
   createChatRoom,
   deleteChatRoom,
   fetchChatRoomMembers,
@@ -25,6 +26,7 @@ export interface UseChatRoomsResult {
   createRoom: (input: { name: string; memberAgentIds: string[] }) => Promise<ChatRoom>;
   deleteRoom: (roomId: string) => Promise<void>;
   sendRoomMessage: (content: string, opts?: { attachments?: ChatAttachment[] }) => Promise<void>;
+  clearRoom: (roomId: string) => Promise<void>;
   refreshRooms: () => Promise<void>;
 }
 
@@ -228,6 +230,17 @@ export function useChatRooms(
     }
   }, [projectId]);
 
+  const clearRoom = useCallback(async (roomId: string) => {
+    if (!roomId || !roomsRef.current.some((room) => room.id === roomId)) {
+      return;
+    }
+
+    await clearChatRoomMessages(roomId, projectId);
+    if (activeRoomRef.current?.id === roomId) {
+      setMessages([]);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     void refreshRooms();
   }, [refreshRooms]);
@@ -329,6 +342,21 @@ export function useChatRooms(
           if (!payload?.id) return;
           setMessages((previous) => previous.filter((message) => message.id !== payload.id));
         },
+        "chat:room:messages:cleared": (event) => {
+          if (projectContextVersionRef.current !== contextVersionAtStart) return;
+          const payload = parseSsePayload<{ roomId: string; deletedCount: number }>(event);
+          if (!payload?.roomId) return;
+
+          if (activeRoomRef.current?.id === payload.roomId) {
+            setMessages([]);
+          }
+
+          setRooms((previous) => {
+            const room = previous.find((candidate) => candidate.id === payload.roomId);
+            if (!room) return previous;
+            return upsertRoom(previous, { ...room, updatedAt: new Date().toISOString() });
+          });
+        },
       },
     });
   }, [projectId, refreshRooms]);
@@ -355,6 +383,7 @@ export function useChatRooms(
     createRoom: createRoomLocal,
     deleteRoom: deleteRoomLocal,
     sendRoomMessage,
+    clearRoom,
     refreshRooms,
   };
 }
