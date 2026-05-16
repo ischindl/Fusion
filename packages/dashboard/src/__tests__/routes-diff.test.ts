@@ -304,6 +304,97 @@ describe("FN-4308 multi-commit done task aggregation", () => {
     expect(response.body.files.map((f: any) => f.path).sort()).toEqual(["one.ts", "two.ts"]);
   });
 
+  it("FN-4726: prefers rebaseBaseSha..commitSha range over partial lineage aggregate for multi-commit rebase done task", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({
+      column: "done",
+      lineageId: "lin-1",
+      mergeDetails: { commitSha: "tip-sha", rebaseBaseSha: "base-sha", filesChanged: 4 },
+    }));
+    store.setAssociations("lin-1", [makeAssociation("tip-sha", "2026-04-01T00:02:00.000Z")]);
+
+    gitResponses({
+      "merge-base --is-ancestor tip-sha HEAD": "",
+      "rev-list --parents -n 1 tip-sha": "tip-sha parent-sha",
+      "diff --name-status -M parent-sha..tip-sha": "M\tonly-tip.ts",
+      "diff -M parent-sha..tip-sha -- only-tip.ts": "+tip\n",
+      "merge-base --is-ancestor base-sha tip-sha": "",
+      "diff --name-status -M base-sha..tip-sha": "A\tfile-a.ts\nM\tfile-b.ts\nM\tfile-c.ts\nM\tonly-tip.ts",
+      "diff -M base-sha..tip-sha -- file-a.ts": "+a\n",
+      "diff -M base-sha..tip-sha -- file-b.ts": "+b\n",
+      "diff -M base-sha..tip-sha -- file-c.ts": "+c\n",
+      "diff -M base-sha..tip-sha -- only-tip.ts": "+tip\n",
+    });
+
+    const app = createServer(store as any);
+    const response = await requestDiff(app);
+
+    expect(response.status).toBe(200);
+    expect(response.body.stats.filesChanged).toBe(4);
+    expect(response.body.files.map((f: any) => f.path).sort()).toEqual(["file-a.ts", "file-b.ts", "file-c.ts", "only-tip.ts"]);
+  });
+
+  it("FN-4726: prefers rebaseBaseSha..commitSha range over partial lineage aggregate for done task file-diffs", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({
+      column: "done",
+      lineageId: "lin-1",
+      mergeDetails: { commitSha: "tip-sha", rebaseBaseSha: "base-sha", filesChanged: 4 },
+    }));
+    store.setAssociations("lin-1", [makeAssociation("tip-sha", "2026-04-01T00:02:00.000Z")]);
+
+    gitResponses({
+      "merge-base --is-ancestor tip-sha HEAD": "",
+      "rev-list --parents -n 1 tip-sha": "tip-sha parent-sha",
+      "diff --name-status -M parent-sha..tip-sha": "M\tonly-tip.ts",
+      "diff -M parent-sha..tip-sha -- only-tip.ts": "+tip\n",
+      "merge-base --is-ancestor base-sha tip-sha": "",
+      "diff --name-status -M base-sha..tip-sha": "A\tfile-a.ts\nM\tfile-b.ts\nM\tfile-c.ts\nM\tonly-tip.ts",
+      "diff -M base-sha..tip-sha -- file-a.ts": "+a\n",
+      "diff -M base-sha..tip-sha -- file-b.ts": "+b\n",
+      "diff -M base-sha..tip-sha -- file-c.ts": "+c\n",
+      "diff -M base-sha..tip-sha -- only-tip.ts": "+tip\n",
+    });
+
+    const app = createServer(store as any);
+    const response = await requestFileDiffs(app);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveLength(4);
+    expect(response.body.map((f: any) => f.path).sort()).toEqual(["file-a.ts", "file-b.ts", "file-c.ts", "only-tip.ts"]);
+  });
+
+  it("FN-4726: falls back to partial lineage aggregate when rebaseBaseSha is not an ancestor and aggregation is incomplete", async () => {
+    const store = new MockStore();
+    store.addTask(createTask({
+      column: "done",
+      lineageId: "lin-1",
+      mergeDetails: { commitSha: "tip-sha", rebaseBaseSha: "base-sha", filesChanged: 4 },
+    }));
+    store.setAssociations("lin-1", [makeAssociation("tip-sha", "2026-04-01T00:02:00.000Z")]);
+
+    runGitCommandMock.mockImplementation(async (args: string[]) => {
+      const key = args.join(" ");
+      if (key === "merge-base --is-ancestor tip-sha HEAD") return "";
+      if (key === "rev-list --parents -n 1 tip-sha") return "tip-sha parent-sha";
+      if (key === "diff --name-status -M parent-sha..tip-sha") return "M\tonly-tip.ts";
+      if (key === "diff -M parent-sha..tip-sha -- only-tip.ts") return "+tip\n";
+      if (key === "merge-base --is-ancestor base-sha tip-sha") throw new Error("unreachable");
+      throw new Error(`Unexpected git command: ${key}`);
+    });
+
+    const app = createServer(store as any);
+    const diffResponse = await requestDiff(app);
+    expect(diffResponse.status).toBe(200);
+    expect(diffResponse.body.stats.filesChanged).toBe(1);
+    expect(diffResponse.body.files.map((f: any) => f.path)).toEqual(["only-tip.ts"]);
+
+    const fileDiffResponse = await requestFileDiffs(app);
+    expect(fileDiffResponse.status).toBe(200);
+    expect(fileDiffResponse.body).toHaveLength(1);
+    expect(fileDiffResponse.body[0].path).toBe("only-tip.ts");
+  });
+
   it("falls back to single-commit range when rebaseBaseSha is unreachable", async () => {
     const store = new MockStore();
     store.addTask(createTask({ column: "done", mergeDetails: { commitSha: "head-sha", rebaseBaseSha: "base-sha" } }));
