@@ -5,6 +5,7 @@ import {
   useCurrentProject,
 } from "../useCurrentProject";
 import type { ProjectInfo } from "../../api";
+import * as swrCache from "../../utils/swrCache";
 
 // Mock the API functions
 vi.mock("../../api", () => ({
@@ -38,9 +39,13 @@ describe("useCurrentProject", () => {
 
   const cloneProjects = (): ProjectInfo[] => mockProjects.map((project) => ({ ...project }));
 
+  const mockReadCache = vi.spyOn(swrCache, "readCache");
+  const mockWriteCache = vi.spyOn(swrCache, "writeCache");
+
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    mockReadCache.mockReturnValue(null);
     // Default mock implementations
     (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({});
     (updateGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -80,6 +85,14 @@ describe("useCurrentProject", () => {
     await waitFor(() => {
       expect(result.current.currentProject?.id).toBe("proj_1");
     });
+  });
+
+  it("hydrates from cached project id immediately", async () => {
+    mockReadCache.mockReturnValueOnce("proj_2");
+    const { result } = renderHook(() => useCurrentProject(mockProjects));
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.currentProject?.id).toBe("proj_2");
   });
 
   it("loads saved project from global settings", async () => {
@@ -228,6 +241,30 @@ describe("useCurrentProject", () => {
     expect(fetchGlobalSettings).toHaveBeenCalledTimes(1);
   });
 
+  it("stale cached project id falls back after absence threshold", async () => {
+    mockReadCache.mockReturnValueOnce("proj_old");
+    (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dashboardCurrentProjectIdByNode: { local: "proj_old" },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projects }) => useCurrentProject(projects),
+      { initialProps: { projects: mockProjects } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    for (let i = 0; i < CONSECUTIVE_ABSENCE_THRESHOLD; i += 1) {
+      rerender({ projects: [...mockProjects] });
+    }
+
+    await waitFor(() => {
+      expect(result.current.currentProject?.id).toBe("proj_1");
+    });
+  });
+
   it("clears selection when project no longer exists and defaults to first active", async () => {
     (fetchGlobalSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
       dashboardCurrentProjectIdByNode: { local: "proj_old" },
@@ -276,6 +313,7 @@ describe("useCurrentProject", () => {
         dashboardCurrentProjectIdByNode: { local: "proj_2" },
       }),
     );
+    expect(mockWriteCache).toHaveBeenCalledWith(swrCache.SWR_CACHE_KEYS.CURRENT_PROJECT_ID, "proj_2");
   });
 
   it("setCurrentProject uses node ID as key when provided", async () => {

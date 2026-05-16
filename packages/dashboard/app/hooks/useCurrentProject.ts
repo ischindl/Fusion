@@ -1,73 +1,67 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { ProjectInfo } from "../api";
 import { fetchGlobalSettings, updateGlobalSettings } from "../api";
+import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 
 // Legacy localStorage key for migration - no longer used as primary storage
 const LEGACY_STORAGE_KEY = "kb-dashboard-current-project";
 export const CONSECUTIVE_ABSENCE_THRESHOLD = 3;
 
-/**
- * Get the node key used in dashboardCurrentProjectIdByNode.
- * Use "local" for the local node, otherwise use the node ID.
- */
 function getNodeKey(nodeId: string | null): string {
   return nodeId ?? "local";
 }
 
 export interface UseCurrentProjectResult {
-  /** Currently selected project or null if none selected */
   currentProject: ProjectInfo | null;
-  /** Set the current project */
   setCurrentProject: (project: ProjectInfo | null) => void;
-  /** Clear the current project selection (suppresses auto-select) */
   clearCurrentProject: () => void;
-  /** Whether we're still loading from global settings */
   loading: boolean;
 }
 
 interface UseCurrentProjectOptions {
-  /** Node ID from NodeContext - used to key project selection per node */
   nodeId?: string | null;
 }
 
-/**
- * Hook for managing the currently selected project.
- * Persists selection to global settings (server-backed) instead of localStorage.
- * This enables PWA fresh sessions to restore the correct project context.
- */
 export function useCurrentProject(
   availableProjects: ProjectInfo[],
   options: UseCurrentProjectOptions = {},
 ): UseCurrentProjectResult {
   const { nodeId = null } = options;
-  const [currentProject, setCurrentProjectState] = useState<ProjectInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  // Track if we've hydrated from global settings (vs just initialized)
+  const cachedProjectId = readCache<string>(SWR_CACHE_KEYS.CURRENT_PROJECT_ID);
+  const cachedProject =
+    typeof cachedProjectId === "string" && cachedProjectId.length > 0
+      ? availableProjects.find((project) => project.id === cachedProjectId) ?? null
+      : null;
+
+  const [currentProject, setCurrentProjectState] = useState<ProjectInfo | null>(cachedProject);
+  const [loading, setLoading] = useState(() => cachedProject === null);
   const hydratedRef = useRef(false);
   const hydratedNodeKeyRef = useRef<string | null>(null);
-  // When true, the user explicitly cleared the project (e.g. clicked "Projects")
-  // and we should not auto-select until they pick one manually.
   const explicitlyClearedRef = useRef(false);
-  // Cache of current settings to avoid repeated fetches
   const settingsCacheRef = useRef<Record<string, string> | null>(null);
-  // Consecutive poll cycles where current project is missing from availableProjects
   const absentCountRef = useRef(0);
-  // Consecutive poll cycles confirming auto-default is safe when selection is null
   const autoDefaultCountRef = useRef(0);
 
   const nodeKey = getNodeKey(nodeId);
+
+  const persistCurrentProjectId = useCallback((projectId: string | null) => {
+    writeCache(SWR_CACHE_KEYS.CURRENT_PROJECT_ID, projectId ?? "");
+  }, []);
 
   const pickFallbackProject = useCallback((projects: ProjectInfo[]): ProjectInfo | null => {
     return projects.find((p) => p.status === "active") || projects[0] || null;
   }, []);
 
-  const setListDrivenSelection = useCallback((project: ProjectInfo | null) => {
-    absentCountRef.current = 0;
-    autoDefaultCountRef.current = 0;
-    setCurrentProjectState(project);
-  }, []);
+  const setListDrivenSelection = useCallback(
+    (project: ProjectInfo | null) => {
+      absentCountRef.current = 0;
+      autoDefaultCountRef.current = 0;
+      setCurrentProjectState(project);
+      persistCurrentProjectId(project?.id ?? null);
+    },
+    [persistCurrentProjectId],
+  );
 
-  // Load from global settings once per node key
   useEffect(() => {
     let cancelled = false;
 
@@ -83,7 +77,14 @@ export function useCurrentProject(
       };
     }
 
-    setLoading(true);
+    const cacheResolvesToKnownProject =
+      typeof cachedProjectId === "string" &&
+      cachedProjectId.length > 0 &&
+      availableProjects.some((project) => project.id === cachedProjectId);
+
+    if (!cacheResolvesToKnownProject) {
+      setLoading(true);
+    }
 
     async function loadFromGlobalSettings() {
       try {
@@ -91,50 +92,44 @@ export function useCurrentProject(
 
         if (cancelled) return;
 
-        // Build cache from settings
         settingsCacheRef.current = settings.dashboardCurrentProjectIdByNode ?? {};
 
         const savedProjectId = settingsCacheRef.current[nodeKey];
         if (savedProjectId) {
-          // Try to find the saved project in available projects
           const found = availableProjects.find((p) => p.id === savedProjectId);
           if (found) {
             autoDefaultCountRef.current = 0;
             setCurrentProjectState(found);
+            persistCurrentProjectId(found.id);
           }
-          // If project not found, we'll handle in the validation effect
-          // (project may still be loading or was unregistered)
         }
 
-        // Also migrate legacy localStorage if no global settings entry exists
         if (!savedProjectId) {
           try {
             const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
             if (legacy) {
               const parsed = JSON.parse(legacy) as ProjectInfo;
               if (parsed?.id) {
-                // Check if project still exists
                 const exists = availableProjects.some((p) => p.id === parsed.id);
                 if (exists) {
                   autoDefaultCountRef.current = 0;
                   setCurrentProjectState(parsed);
-                  // Migrate to global settings
+                  persistCurrentProjectId(parsed.id);
                   settingsCacheRef.current = { ...settingsCacheRef.current, [nodeKey]: parsed.id };
                   await updateGlobalSettings({
                     dashboardCurrentProjectIdByNode: settingsCacheRef.current,
                   }).catch(() => {
-                    // Non-critical - migration failed, but we have the data in memory
+                    // Non-critical - migration failed, but we have the data in memory.
                   });
                 }
               }
             }
           } catch {
-            // Ignore legacy localStorage errors
+            // Ignore legacy localStorage errors.
           }
         }
       } catch {
-        // Global settings fetch failed - this is non-critical
-        // We'll fall back to default behavior
+        // Global settings fetch failed - non-critical.
       } finally {
         if (!cancelled) {
           hydratedRef.current = true;
@@ -149,43 +144,41 @@ export function useCurrentProject(
     return () => {
       cancelled = true;
     };
-  }, [nodeKey]);
+  }, [availableProjects, cachedProjectId, nodeKey, persistCurrentProjectId]);
 
-  // Reset absence tracking when selection changes
   useEffect(() => {
     absentCountRef.current = 0;
     autoDefaultCountRef.current = 0;
   }, [currentProject?.id]);
 
-  // Validate project still exists and persist to global settings
   useEffect(() => {
     if (loading) return;
 
     if (currentProject) {
       autoDefaultCountRef.current = 0;
-      // Validate project still exists in available projects
       const stillExists = availableProjects.some((p) => p.id === currentProject.id);
       if (stillExists) {
         absentCountRef.current = 0;
       } else if (availableProjects.length === 0) {
-        // Likely a transient total poll failure; keep current selection
         absentCountRef.current = 0;
       } else {
         absentCountRef.current += 1;
-        // Keep threshold-based tolerance: 1-2 missing polls are treated as transient list-shrink drops.
         if (absentCountRef.current >= CONSECUTIVE_ABSENCE_THRESHOLD) {
-          // Project was sustainably absent - fallback through shared list-driven selection reset.
-          setListDrivenSelection(pickFallbackProject(availableProjects));
+          const fallbackProject = pickFallbackProject(availableProjects);
+          setListDrivenSelection(fallbackProject);
+          if (!fallbackProject) {
+            persistCurrentProjectId(null);
+          }
         }
         return;
       }
 
-      // Persist to global settings
       const newCache = { ...settingsCacheRef.current, [nodeKey]: currentProject.id };
       settingsCacheRef.current = newCache;
       updateGlobalSettings({ dashboardCurrentProjectIdByNode: newCache }).catch(() => {
-        // Non-critical - persistence failed
+        // Non-critical - persistence failed.
       });
+      persistCurrentProjectId(currentProject.id);
     } else {
       absentCountRef.current = 0;
       if (availableProjects.length === 0) {
@@ -206,17 +199,16 @@ export function useCurrentProject(
         autoDefaultCountRef.current += 1;
         if (autoDefaultCountRef.current >= CONSECUTIVE_ABSENCE_THRESHOLD) {
           autoDefaultCountRef.current = 0;
-          // No selection but projects available - default to first active
-          // after consecutive poll confirmation.
           setListDrivenSelection(pickFallbackProject(availableProjects));
         }
       }
     }
   }, [
-    currentProject,
     availableProjects,
+    currentProject,
     loading,
     nodeKey,
+    persistCurrentProjectId,
     pickFallbackProject,
     setListDrivenSelection,
   ]);
@@ -227,16 +219,17 @@ export function useCurrentProject(
       absentCountRef.current = 0;
       autoDefaultCountRef.current = 0;
       setCurrentProjectState(project);
+      persistCurrentProjectId(project?.id ?? null);
 
       if (project) {
         const newCache = { ...settingsCacheRef.current, [nodeKey]: project.id };
         settingsCacheRef.current = newCache;
         updateGlobalSettings({ dashboardCurrentProjectIdByNode: newCache }).catch(() => {
-          // Non-critical - persistence failed
+          // Non-critical - persistence failed.
         });
       }
     },
-    [nodeKey],
+    [nodeKey, persistCurrentProjectId],
   );
 
   const clearCurrentProject = useCallback(() => {
@@ -244,15 +237,15 @@ export function useCurrentProject(
     absentCountRef.current = 0;
     autoDefaultCountRef.current = 0;
     setCurrentProjectState(null);
+    persistCurrentProjectId(null);
 
-    // Remove from cache and persist
     const newCache = { ...settingsCacheRef.current };
     delete newCache[nodeKey];
     settingsCacheRef.current = newCache;
     updateGlobalSettings({ dashboardCurrentProjectIdByNode: newCache }).catch(() => {
-      // Non-critical - persistence failed
+      // Non-critical - persistence failed.
     });
-  }, [nodeKey]);
+  }, [nodeKey, persistCurrentProjectId]);
 
   return {
     currentProject,
