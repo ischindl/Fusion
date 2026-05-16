@@ -1,4 +1,11 @@
-import { GlobalSettingsStore, type Settings, type GlobalSettings, DEFAULT_SETTINGS } from "@fusion/core";
+import {
+  GlobalSettingsStore,
+  type Settings,
+  type GlobalSettings,
+  DEFAULT_SETTINGS,
+  resolveWorktrunkSettings,
+} from "@fusion/core";
+import { probeWorktrunk, resolveWorktrunkBinary } from "@fusion/engine";
 import { resolveProject } from "../project-context.js";
 
 // Settings that can be updated via CLI
@@ -348,6 +355,27 @@ export async function runSettingsSet(key: string, value: string, projectName?: s
       console.log(`  ✓ Updated default model to ${provider}/${modelId}`);
       console.log();
       return;
+    }
+
+    if (key === "worktrunk.enabled" && parsedValue === true) {
+      const currentWorktrunk = store
+        ? await store.getSettingsByScope().then((scoped) =>
+            resolveWorktrunkSettings(scoped.global?.worktrunk, scoped.project?.worktrunk),
+          )
+        : resolveWorktrunkSettings((await globalStore!.getSettings()).worktrunk, undefined);
+      const nextWorktrunk = { ...currentWorktrunk, enabled: true };
+
+      try {
+        const resolved = await resolveWorktrunkBinary({ settings: nextWorktrunk });
+        const probe = await probeWorktrunk(resolved.binaryPath);
+        if (!probe.ok) {
+          throw new Error("worktrunk probe failed");
+        }
+      } catch {
+        throw new Error(
+          "worktrunk.enabled cannot be set to true until the binary is installed and verified. Install it from Settings → Worktrunk integration (or /api/worktrunk/install-request) first.",
+        );
+      }
     }
 
     if (store) {

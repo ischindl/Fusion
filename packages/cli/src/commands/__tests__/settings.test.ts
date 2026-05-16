@@ -25,11 +25,26 @@ vi.mock("@fusion/core", () => {
   return {
     GlobalSettingsStore: vi.fn(),
     DEFAULT_SETTINGS,
+    resolveWorktrunkSettings: (globalValue: any, projectValue: any) => ({
+      enabled: projectValue?.enabled ?? globalValue?.enabled ?? false,
+      ...(projectValue?.binaryPath ?? globalValue?.binaryPath ? { binaryPath: projectValue?.binaryPath ?? globalValue?.binaryPath } : {}),
+      onFailure: projectValue?.onFailure ?? globalValue?.onFailure ?? "fail",
+    }),
   };
 });
 
 vi.mock("../../project-context.js", () => ({
   resolveProject: vi.fn(),
+}));
+
+const { resolveWorktrunkBinaryMock, probeWorktrunkMock } = vi.hoisted(() => ({
+  resolveWorktrunkBinaryMock: vi.fn(),
+  probeWorktrunkMock: vi.fn(),
+}));
+
+vi.mock("@fusion/engine", () => ({
+  resolveWorktrunkBinary: resolveWorktrunkBinaryMock,
+  probeWorktrunk: probeWorktrunkMock,
 }));
 
 import { GlobalSettingsStore, DEFAULT_SETTINGS } from "@fusion/core";
@@ -47,6 +62,8 @@ describe("settings commands", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resolveWorktrunkBinaryMock.mockResolvedValue({ binaryPath: "/usr/local/bin/worktrunk" });
+    probeWorktrunkMock.mockResolvedValue({ ok: true, version: "1.0.0" });
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
@@ -263,6 +280,38 @@ describe("settings commands", () => {
     expect(output).toContain("Execution");
     expect(output).toContain("Run Steps In New Sessions");
     expect(output).toContain("Max Parallel Steps");
+  });
+
+  it("rejects enabling worktrunk when binary is not verified", async () => {
+    const updateSettings = vi.fn();
+    const getSettings = vi.fn().mockResolvedValue(makeSettings({ worktrunk: { enabled: false, onFailure: "fail" } }));
+    (GlobalSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      updateSettings,
+      getSettings,
+    }));
+    resolveWorktrunkBinaryMock.mockRejectedValueOnce(new Error("missing"));
+
+    await expect(runSettingsSet("worktrunk.enabled", "true")).rejects.toThrow("process.exit:1");
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("worktrunk.enabled cannot be set to true until the binary is installed and verified"),
+    );
+  });
+
+  it("allows disabling worktrunk without binary verification", async () => {
+    const updateSettings = vi.fn().mockResolvedValue(makeSettings({ worktrunk: { enabled: false, onFailure: "fail" } }));
+    const getSettings = vi.fn().mockResolvedValue(makeSettings({ worktrunk: { enabled: true, onFailure: "fail" } }));
+    (GlobalSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      updateSettings,
+      getSettings,
+    }));
+    await runSettingsSet("worktrunk.enabled", "false");
+
+    expect(updateSettings).toHaveBeenCalledWith({ worktrunk: { enabled: false, onFailure: "fail" } });
+    expect(resolveWorktrunkBinaryMock).not.toHaveBeenCalled();
+    expect(probeWorktrunkMock).not.toHaveBeenCalled();
   });
 
   it("runSettingsSet supports worktrunk dotted keys in global scope", async () => {
