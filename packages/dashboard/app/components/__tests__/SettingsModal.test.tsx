@@ -2189,7 +2189,115 @@ describe("SettingsModal", () => {
       }
     });
 
+    it.each(["missing", "installing", "pending-approval", "denied", "failed", "installed"])(
+      "gates worktrunk toggle enablement by install status (%s)",
+      async (status) => {
+        mockUseWorktrunkInstallStatus.mockReturnValue({
+          status,
+          requestInstall: vi.fn(),
+          requesting: false,
+          version: undefined,
+          installPath: undefined,
+          pendingApprovalId: undefined,
+          error: status === "denied" || status === "failed" ? "Denied" : undefined,
+        });
+
+        renderModal({ initialSection: "worktrees" });
+        await waitForSettingsModalReady();
+
+        const enabledToggle = screen.getByLabelText("Enable worktrunk integration") as HTMLInputElement;
+        expect(enabledToggle.disabled).toBe(status !== "installed");
+
+        if (status !== "installed") {
+          expect(screen.getByText("Install the worktrunk binary below to enable this integration.")).toBeInTheDocument();
+        } else {
+          expect(screen.queryByText("Install the worktrunk binary below to enable this integration.")).not.toBeInTheDocument();
+        }
+      },
+    );
+
+    it("keeps toggle enabled for recovery when worktrunk is already enabled but install is missing", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        worktrunk: {
+          enabled: true,
+          onFailure: "fail",
+        },
+      });
+      mockFetchSettingsByScope.mockResolvedValue({
+        global: {},
+        project: {
+          worktrunk: {
+            enabled: true,
+            onFailure: "fail",
+          },
+        },
+      });
+      mockUseWorktrunkInstallStatus.mockReturnValue({
+        status: "missing",
+        requestInstall: vi.fn(),
+        requesting: false,
+        version: undefined,
+        installPath: undefined,
+        pendingApprovalId: undefined,
+        error: undefined,
+      });
+
+      renderModal({ initialSection: "worktrees" });
+      await waitForSettingsModalReady();
+
+      const enabledToggle = screen.getByLabelText("Enable worktrunk integration") as HTMLInputElement;
+      expect(enabledToggle.disabled).toBe(false);
+    });
+
+    it("clamps worktrunk enabled to false on save when install is not verified", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        worktrunk: {
+          enabled: true,
+          onFailure: "fail",
+        },
+      });
+      mockFetchSettingsByScope.mockResolvedValue({
+        global: {},
+        project: {
+          worktrunk: {
+            enabled: true,
+            onFailure: "fail",
+          },
+        },
+      });
+      mockUseWorktrunkInstallStatus.mockReturnValue({
+        status: "missing",
+        requestInstall: vi.fn(),
+        requesting: false,
+        version: undefined,
+        installPath: undefined,
+        pendingApprovalId: undefined,
+        error: undefined,
+      });
+
+      renderModal({ initialSection: "worktrees" });
+      await waitForSettingsModalReady();
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(mockUpdateSettings).toHaveBeenCalled());
+      const payload = mockUpdateSettings.mock.calls[0][0] as {
+        worktrunk?: { enabled?: boolean };
+      };
+      expect(payload.worktrunk?.enabled).toBe(false);
+    });
+
     it.each(["fail", "fallback-native"])("saves worktrunk payload and defaults onFailure on first enable (%s)", async (onFailure) => {
+      mockUseWorktrunkInstallStatus.mockReturnValue({
+        status: "installed",
+        requestInstall: vi.fn(),
+        requesting: false,
+        version: "v1.2.3",
+        installPath: "~/.fusion/bin/worktrunk",
+        pendingApprovalId: undefined,
+        error: undefined,
+      });
       renderModal();
       await waitForSettingsModalReady();
       await userEvent.click(screen.getByText("Worktrees"));

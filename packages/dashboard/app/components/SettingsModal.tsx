@@ -396,6 +396,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const { confirm } = useConfirm();
   const worktrunkInstall = useWorktrunkInstallStatus(projectId);
+  const worktrunkInstallVerified = worktrunkInstall.status === "installed";
   const viewportMode = useViewportMode();
   useMobileScrollLock(true);
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
@@ -1754,7 +1755,7 @@ export function SettingsModal({
         worktreeInitCommand: form.worktreeInitCommand?.trim() || undefined,
         worktreesDir: form.worktreesDir?.trim() || undefined,
         worktrunk: {
-          enabled: form.worktrunk?.enabled === true,
+          enabled: worktrunkInstallVerified && form.worktrunk?.enabled === true,
           binaryPath: form.worktrunk?.binaryPath?.trim() || undefined,
           onFailure: form.worktrunk?.onFailure ?? "fail",
         },
@@ -4108,6 +4109,7 @@ export function SettingsModal({
                   id="worktrunkEnabled"
                   type="checkbox"
                   checked={form.worktrunk?.enabled === true}
+                  disabled={!worktrunkInstallVerified && form.worktrunk?.enabled !== true}
                   onChange={(e) =>
                     setForm((f) => ({
                       ...f,
@@ -4124,6 +4126,9 @@ export function SettingsModal({
               <small>
                 Disabled by default (opt-in). When enabled, Fusion shells out to <code>worktrunk</code> for worktree create, sync, prune, and remove operations and follows worktrunk&apos;s directory layout.
               </small>
+              {!worktrunkInstallVerified && form.worktrunk?.enabled !== true && (
+                <small className="settings-muted">Install the worktrunk binary below to enable this integration.</small>
+              )}
             </div>
             <div className="form-group">
               <label htmlFor="worktrunkBinaryPath">Worktrunk binary path</label>
