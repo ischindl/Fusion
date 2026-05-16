@@ -37,6 +37,7 @@ import {
 } from "../api";
 import { MailboxMessageContent } from "./MailboxMessageContent";
 import { MessageComposer } from "./MessageComposer";
+import { WorktrunkInstallApprovalDetails } from "./WorktrunkInstallApprovalDetails";
 import { subscribeSse } from "../sse-bus";
 import { useViewportMode } from "../hooks/useViewportMode";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
@@ -1079,6 +1080,9 @@ export function MailboxView({
             {selectedApproval.taskId && <p>Task: {selectedApproval.taskId}</p>}
             <p>Requested: {formatTimestamp(selectedApproval.createdAt)}</p>
           </div>
+          {selectedApproval.targetAction.category === "network_api" && selectedApproval.targetAction.action === "worktrunk_install" && (
+            <WorktrunkInstallApprovalDetails targetAction={selectedApproval.targetAction} />
+          )}
           <div className="mailbox-conversation" data-testid="mailbox-approval-history">
             {selectedApproval.history.map((event) => (
               <div key={event.id} className="mailbox-conversation-msg">

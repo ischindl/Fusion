@@ -297,6 +297,47 @@ describe("MailboxView", () => {
     });
   });
 
+  it("renders worktrunk install details for worktrunk approvals", async () => {
+    const now = new Date().toISOString();
+    mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
+    mockFetchApprovals.mockResolvedValue({
+      requests: [{ id: "apr-1", status: "pending", actionCategory: "network_api", actionSummary: "Install worktrunk", agentId: "user", createdAt: now, updatedAt: now }],
+      total: 1,
+      pendingCount: 1,
+    });
+    mockFetchApprovalDetail.mockResolvedValue({
+      id: "apr-1", status: "pending", actionCategory: "network_api", actionSummary: "Install worktrunk", agentId: "user", createdAt: now, updatedAt: now,
+      requester: { actorId: "user", actorType: "user", actorName: "User" }, requestedAt: now,
+      targetAction: {
+        category: "network_api",
+        action: "worktrunk_install",
+        summary: "Install worktrunk",
+        resourceType: "binary",
+        resourceId: "~/.fusion/bin/worktrunk",
+        context: {
+          version: "v1.2.3",
+          installPath: "~/.fusion/bin/worktrunk",
+          assets: {
+            darwin_arm64: {
+              url: "https://example.com/worktrunk.tar.gz",
+              sha256: "abc123",
+            },
+          },
+        },
+      },
+      history: [{ id: "evt-1", eventType: "created", actor: { actorId: "user", actorType: "user", actorName: "User" }, createdAt: now }],
+    });
+
+    render(<MailboxView {...defaultProps} />);
+    await act(async () => { fireEvent.click(screen.getByTestId("mailbox-tab-approvals")); });
+    await act(async () => { fireEvent.click(await screen.findByTestId("mailbox-approval-item-apr-1")); });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worktrunk-install-approval-details")).toBeInTheDocument();
+      expect(screen.getByText("v1.2.3")).toBeInTheDocument();
+    });
+  });
+
   it("allows approving a pending approval request", async () => {
     const now = new Date().toISOString();
     mockFetchInbox.mockResolvedValue({ messages: [], unreadCount: 0, total: 0 });
