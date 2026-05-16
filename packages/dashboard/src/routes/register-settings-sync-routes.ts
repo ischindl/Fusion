@@ -5,6 +5,26 @@ import { getFusionAuthPath } from "../auth-paths.js";
 import { fetchFromRemoteNode, readStoredAuthProvidersFromDisk, toProviderAuthEntries } from "./register-settings-sync-helpers.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
+function computeSettingsDiff(
+  remoteSettings: { global?: Record<string, unknown>; project?: Record<string, unknown> },
+  localGlobalSettings: Record<string, unknown>,
+  localProjectSettings: Record<string, unknown>,
+): { global: string[]; project: string[] } {
+  const globalKeys = Array.from(new Set([
+    ...Object.keys(remoteSettings.global ?? {}),
+    ...Object.keys(localGlobalSettings ?? {}),
+  ]));
+  const projectKeys = Array.from(new Set([
+    ...Object.keys(remoteSettings.project ?? {}),
+    ...Object.keys(localProjectSettings ?? {}),
+  ]));
+
+  return {
+    global: globalKeys.filter((key) => JSON.stringify(remoteSettings.global?.[key]) !== JSON.stringify(localGlobalSettings[key])),
+    project: projectKeys.filter((key) => JSON.stringify(remoteSettings.project?.[key]) !== JSON.stringify(localProjectSettings[key])),
+  };
+}
+
 export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
   const { router, store, emitAuthSyncAuditLog, rethrowAsApiError } = ctx;
 
@@ -155,11 +175,10 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
         const localGlobalSettings = await store.getGlobalSettingsStore().getSettings();
 
         // Compute diff: field names that differ between local and remote
-        const diffGlobal = Object.keys(remoteSettings.global || {}).filter(
-          (key) => JSON.stringify(remoteSettings.global?.[key]) !== JSON.stringify(localGlobalSettings[key as keyof typeof localGlobalSettings]),
-        );
-        const diffProject = Object.keys(remoteSettings.project || {}).filter(
-          (key) => JSON.stringify(remoteSettings.project?.[key]) !== JSON.stringify(localProjectSettings.project?.[key as keyof typeof localProjectSettings.project]),
+        const { global: diffGlobal, project: diffProject } = computeSettingsDiff(
+          remoteSettings,
+          localGlobalSettings as Record<string, unknown>,
+          localProjectSettings.project as Record<string, unknown>,
         );
 
         await central.close();
@@ -268,12 +287,13 @@ export const registerSettingsSyncRoutes: ApiRouteRegistrar = (ctx) => {
 
         // Compute diff
         const rs = remoteSettings;
-        diffGlobal = Object.keys(rs.global || {}).filter(
-          (key) => JSON.stringify(rs.global?.[key]) !== JSON.stringify(localGlobalSettings[key as keyof typeof localGlobalSettings]),
+        const diff = computeSettingsDiff(
+          rs,
+          localGlobalSettings as Record<string, unknown>,
+          localProjectSettings.project as Record<string, unknown>,
         );
-        diffProject = Object.keys(rs.project || {}).filter(
-          (key) => JSON.stringify(rs.project?.[key]) !== JSON.stringify(localProjectSettings.project?.[key as keyof typeof localProjectSettings.project]),
-        );
+        diffGlobal = diff.global;
+        diffProject = diff.project;
       } catch {
         // Remote unreachable - diff will be empty arrays
       }
