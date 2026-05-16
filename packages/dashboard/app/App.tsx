@@ -1727,6 +1727,7 @@ function AppInner() {
           devServerView: devServerEnabled,
           researchView: researchEnabled,
           evalsView: evalsEnabled,
+          goalsView: goalsEnabled,
         }}
         pluginDashboardViews={pluginDashboardViews}
         shellConnectionControl={
@@ -1871,6 +1872,7 @@ function AppInner() {
           todoView: todosEnabled,
           researchView: researchEnabled,
           evalsView: evalsEnabled,
+          goalsView: goalsEnabled,
           nodesView: nodesEnabled,
         }}
         pluginDashboardViews={pluginDashboardViews}
