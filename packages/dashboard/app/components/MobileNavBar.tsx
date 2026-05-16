@@ -84,6 +84,7 @@ export interface MobileNavBarProps {
     todoView?: boolean;
     researchView?: boolean;
     evalsView?: boolean;
+    goalsView?: boolean;
     nodesView?: boolean;
   };
   onOpenNodes?: () => void;
@@ -231,6 +232,7 @@ export function MobileNavBar({
     view === "documents"
     || view === "reliability"
     || (Boolean(experimentalFeatures?.evalsView) && view === "evals")
+    || (Boolean(experimentalFeatures?.goalsView) && view === "goalsView")
     || view === "research"
     || view === "insights"
     || view === "memory"
@@ -626,6 +628,17 @@ export function MobileNavBar({
               >
                 <Target />
                 <span>Evals</span>
+              </button>
+            )}
+            {experimentalFeatures?.goalsView && (
+              <button
+                type="button"
+                className="mobile-more-item"
+                data-testid="mobile-more-item-goals"
+                onClick={() => handleMoreAction(() => onChangeView("goalsView"))}
+              >
+                <Target />
+                <span>Goals</span>
               </button>
             )}
 
