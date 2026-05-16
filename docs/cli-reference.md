@@ -122,6 +122,42 @@ fn research retry RR-001 --json
 
 ---
 
+## `fn experiment finalize`
+
+Group kept experiment-session commits into reviewable branches that share a merge-base with your integration branch. This command consumes a finalized experiment session produced by the experiment executor and can either preview the finalize plan or create branches.
+
+```bash
+fn experiment finalize ES-001
+fn experiment finalize ES-001 --dry-run
+fn experiment finalize ES-001 --dry-run --json
+fn experiment finalize ES-001 --summary "Finalize experiment branches for review"
+fn experiment finalize ES-001 --plan-file ./plan-override.json
+```
+
+| Option | Description |
+|---|---|
+| `<sessionId>` | Required positional session ID to finalize. |
+| `--integration-branch <name>` | Integration branch used for merge-base calculation (default: `main`). |
+| `--dry-run` | Preview the finalize plan without creating branches. |
+| `--json` | Emit machine-readable output (`{ plan }` for dry-run, `{ result }` for finalize). |
+| `--summary <text>` | Optional finalize summary stored with the session result. |
+| `--plan-file <path>` | JSON file containing a plan override payload. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Generic error. |
+| `2` | `state_error`. |
+| `3` | `no_kept_runs`. |
+| `4` | `plan_error`. |
+| `5` | `merge_base_error`. |
+| `6` | `cherry_pick_conflict` (also prints `{ groupId, commit, stderr }` JSON to stderr). |
+| `7` | `branch_exists`. |
+
+For plan-override schema, finalize algorithm details, and the full error taxonomy (including HTTP-status and CLI-exit mappings), see [`docs/research/experiment-finalize.md`](./research/experiment-finalize.md).
+
+---
+
 ## `fn dashboard`
 
 Start the web dashboard (default port `4040`, bound to `127.0.0.1`).
