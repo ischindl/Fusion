@@ -849,6 +849,18 @@ Heartbeat prompts derive wake reason from trigger context plus current inbox sna
 
 The Wake Delta block now includes an inbox snapshot line (`- inbox snapshot: <N> message(s)` or `- inbox snapshot: empty (already consumed)`) so agents can distinguish a true message payload from a stale wake trigger.
 
+For `wake-on-message` / `wake-on-message-forced` runs, Wake Delta also adds:
+
+- `- wake trigger source: message <messageId> from <fromType>:<fromId> (forced when applicable), <still unread|already consumed at snapshot>`
+
+And engine logs emit a structured correlation line keyed by `[wake-trigger-diagnostics]` with the triggering message metadata plus snapshot counters (`inboxUnreadCount`, `wakeMessageStillUnread`, `pendingRoomMessages`).
+
+**Debugging empty-inbox wake noise**
+
+1. `grep "\[wake-trigger-diagnostics\]" <engine-log>`
+2. Find lines where `triggerDetail=wake-on-message` (or forced variant) and `inboxUnreadCount=0 wakeMessageStillUnread=false`.
+3. Correlate `messageId`, `from=`, and `run=` with the run's Wake Delta block; this indicates a false-positive wake where the trigger message had already been consumed by snapshot time.
+
 ### Default Procedure: Bound-Task Scope Discipline
 
 The shipped default `HEARTBEAT_PROCEDURE` (in `packages/engine/src/agent-heartbeat.ts`) now requires bound-task classification on each tick: `executor-class`, `blocked`, or `coordination-class`.

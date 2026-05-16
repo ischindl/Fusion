@@ -538,7 +538,8 @@ When debugging agent execution issues (agents stuck on "starting"), check these 
 10. **`[auto-claim-snapshot] rebuild generated=N reason=<ttl|invalidate>`** — Confirms project-wide auto-claim snapshot rebuild cadence
 11. **`[auto-claim-prompt] agent=<id> chars=<n> count=<n>`** — Tracks rendered no-task candidate section size
 12. **`[prompt-size] prompt-size { agentId, role, runId, template, systemChars, execChars, totalChars, isNoTaskRun }`** — Per-heartbeat prompt-size audit record
-13. **`[retry-burned] retry-burned { taskId, agentId, role, category, attempt, total, breakdown }`** — Unified retry-burn telemetry and retry-cap circuit-breaker context
+13. **`[wake-trigger-diagnostics] agent=<id> run=<id> triggerDetail=<wake-on-message*> source=<source> messageId=<id|none> from=<type:id|none> forced=<bool> createdAt=<iso|none> inboxUnreadCount=<n> wakeMessageStillUnread=<true|false|unknown> pendingRoomMessages=<n>`** — Correlates wake-on-message triggers with inbox snapshot state to diagnose empty-inbox false-positive wakes
+14. **`[retry-burned] retry-burned { taskId, agentId, role, category, attempt, total, breakdown }`** — Unified retry-burn telemetry and retry-cap circuit-breaker context
 
 ### Semaphore Resilience
 
