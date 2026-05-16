@@ -3072,23 +3072,29 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     agents: Array<import("@fusion/core").Agent>,
     scopedStore: TaskStore,
   ): Promise<Array<import("@fusion/core").Agent>> {
-    // Batch lookup all unique taskIds to minimize individual store calls
+    // Batch lookup all unique taskIds to avoid per-task detail hydration.
     const taskIds = [...new Set(agents.map((a) => a.taskId).filter((id): id is string => id !== undefined))];
-    const taskStatusMap = new Map<string, string>();
 
-    // Parallel fetch all linked tasks
-    await Promise.all(
-      taskIds.map(async (taskId) => {
-        try {
-          const task = await scopedStore.getTask(taskId);
-          if (task) {
-            taskStatusMap.set(taskId, task.column);
-          }
-        } catch {
-          // Task lookup failed — treat as non-terminal (preserve taskId)
-        }
-      }),
-    );
+    let taskStatusMap = new Map<string, string>();
+    try {
+      if (typeof (scopedStore as TaskStore & { getTaskColumns?: unknown }).getTaskColumns === "function") {
+        taskStatusMap = await scopedStore.getTaskColumns(taskIds);
+      } else {
+        await Promise.all(
+          taskIds.map(async (taskId) => {
+            try {
+              const task = await scopedStore.getTask(taskId);
+              if (task) taskStatusMap.set(taskId, task.column);
+            } catch {
+              // Per-task lookup failed — treat as non-terminal.
+            }
+          }),
+        );
+      }
+    } catch {
+      // Lookup failed — treat all linked tasks as non-terminal (preserve taskId)
+      taskStatusMap = new Map<string, string>();
+    }
 
     return agents.map((agent) => {
       if (!agent.taskId) return agent;
