@@ -195,25 +195,18 @@ export async function executeApprovedWorktrunkInstall(opts: {
   return result;
 }
 
-export async function installWorktrunk(opts: {
-  settings: WorktrunkSettings;
+async function applyInstallGate(opts: {
   auditor?: RunAuditor;
   runContext?: EngineRunContext;
   gateOverride?: "pre-approved";
-}): Promise<{ binaryPath: string; source: "installed-release" | "installed-cargo" }> {
+}): Promise<{ satisfied: boolean }> {
   if (opts.gateOverride === "pre-approved") {
     await emitBinaryAudit(opts.auditor, "binary:install-requested", {
       reason: "pre-approved",
       taskId: opts.runContext?.taskId,
       runId: opts.runContext?.runId,
     });
-    await emitBinaryAudit(opts.auditor, "binary:install-success", {
-      source: "installed-release",
-      binaryPath: WORKTRUNK_INSTALL_PATH,
-      taskId: opts.runContext?.taskId,
-      runId: opts.runContext?.runId,
-    });
-    return { binaryPath: WORKTRUNK_INSTALL_PATH, source: "installed-release" };
+    return { satisfied: true };
   }
 
   await emitBinaryAudit(opts.auditor, "binary:install-denied", {
@@ -222,6 +215,22 @@ export async function installWorktrunk(opts: {
     runId: opts.runContext?.runId,
   });
   throw new WorktrunkInstallFailedError(AUTO_INSTALL_DISABLED_MESSAGE, { stage: "auto-install-disabled" });
+}
+
+export async function installWorktrunk(opts: {
+  settings: WorktrunkSettings;
+  auditor?: RunAuditor;
+  runContext?: EngineRunContext;
+  gateOverride?: "pre-approved";
+}): Promise<{ binaryPath: string; source: "installed-release" | "installed-cargo" }> {
+  await applyInstallGate(opts);
+  await emitBinaryAudit(opts.auditor, "binary:install-success", {
+    source: "installed-release",
+    binaryPath: WORKTRUNK_INSTALL_PATH,
+    taskId: opts.runContext?.taskId,
+    runId: opts.runContext?.runId,
+  });
+  return { binaryPath: WORKTRUNK_INSTALL_PATH, source: "installed-release" };
 }
 
 export function clearWorktrunkResolveCache(): void {
