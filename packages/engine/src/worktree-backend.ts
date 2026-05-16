@@ -2,7 +2,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { Settings } from "@fusion/core";
 import { inspectBranchConflict } from "./branch-conflicts.js";
-import { formatError, worktreePoolLog } from "./logger.js";
+import { formatError } from "./logger.js";
 
 const execAsync = promisify(exec);
 const NATIVE_TIMEOUT_MS = 120_000;
