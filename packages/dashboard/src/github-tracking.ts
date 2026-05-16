@@ -182,12 +182,29 @@ export async function maybeCreateTrackingIssue(
   task: Task,
   deps: MaybeCreateTrackingIssueDeps,
 ): Promise<{ created: false; reason: MaybeCreateTrackingIssueReason } | { created: true; issue: CreatedIssue }> {
-  const tracking = task.githubTracking;
+  const inlineTracking = task.githubTracking;
   const resolvedTracking = resolveTaskGithubTracking(task, deps.projectSettings, deps.globalSettings);
   if (!resolvedTracking.enabled) {
     return { created: false, reason: "tracking_disabled" };
   }
 
+  if (inlineTracking?.issue) {
+    return { created: false, reason: "issue_already_linked" };
+  }
+
+  let latestTask = task;
+  if (typeof deps.taskStore.getTask === "function") {
+    try {
+      const loadedTask = await deps.taskStore.getTask(task.id);
+      if (loadedTask) {
+        latestTask = loadedTask;
+      }
+    } catch {
+      // Best-effort refresh only; continue with provided task if lookup fails.
+    }
+  }
+
+  const tracking = latestTask.githubTracking ?? inlineTracking;
   if (tracking?.issue) {
     return { created: false, reason: "issue_already_linked" };
   }
@@ -199,24 +216,24 @@ export async function maybeCreateTrackingIssue(
     await deps.taskStore.recordActivity({
       type: "task:updated",
       taskId: task.id,
-      taskTitle: task.title,
+      taskTitle: latestTask.title,
       details: "GitHub tracking issue not created: no repository configured",
       metadata: { type: "github-tracking-no-repo" },
     });
     return { created: false, reason: "no_repo_configured" };
   }
 
-  const titleMissing = collapseWhitespace(task.title ?? "").length === 0;
+  const titleMissing = collapseWhitespace(latestTask.title ?? "").length === 0;
   const resolvedSummarizer = resolveTrackingTitleSummarizerModel(deps.projectSettings, deps.globalSettings);
   const canSummarizeTitle = titleMissing
-    && typeof task.description === "string"
-    && task.description.length >= MIN_DESCRIPTION_LENGTH
+    && typeof latestTask.description === "string"
+    && latestTask.description.length >= MIN_DESCRIPTION_LENGTH
     && Boolean(resolvedSummarizer.provider && resolvedSummarizer.modelId);
 
   if (canSummarizeTitle) {
     try {
       const generatedTitle = await summarizeTitle(
-        task.description,
+        latestTask.description,
         deps.rootDir,
         resolvedSummarizer.provider,
         resolvedSummarizer.modelId,
@@ -225,6 +242,7 @@ export async function maybeCreateTrackingIssue(
       if (generatedTitle) {
         const updatedTask = await deps.taskStore.updateTask(task.id, { title: generatedTitle });
         task.title = updatedTask.title;
+        latestTask = updatedTask;
         await deps.taskStore.recordActivity({
           type: "task:updated",
           taskId: task.id,
@@ -242,15 +260,15 @@ export async function maybeCreateTrackingIssue(
     }
   }
 
-  const effectiveTitle = collapseWhitespace(task.title ?? "")
-    || deriveTitleFromDescription(task.description, TRACKING_ISSUE_TITLE_LIMIT - `[${task.id}] `.length);
+  const effectiveTitle = collapseWhitespace(latestTask.title ?? "")
+    || deriveTitleFromDescription(latestTask.description, TRACKING_ISSUE_TITLE_LIMIT - `[${task.id}] `.length);
 
   if (!effectiveTitle) {
     deps.logger?.info?.(`[github-tracking] ${task.id}: deferred — no usable title; waiting for title or summarizer`);
     await deps.taskStore.recordActivity({
       type: "task:updated",
       taskId: task.id,
-      taskTitle: task.title,
+      taskTitle: latestTask.title,
       details: "GitHub tracking issue not created: task has no title yet",
       metadata: { type: "github-tracking-no-title" },
     });
@@ -267,7 +285,7 @@ export async function maybeCreateTrackingIssue(
     await deps.taskStore.recordActivity({
       type: "task:updated",
       taskId: task.id,
-      taskTitle: task.title,
+      taskTitle: latestTask.title,
       details: `GitHub tracking issue not created: ${resolution.message}`,
       metadata: {
         type: "github-issue-skipped",
@@ -283,8 +301,8 @@ export async function maybeCreateTrackingIssue(
     ? new GitHubClient({ token: resolution.auth.token, forceMode: "token" })
     : new GitHubClient({ forceMode: "gh-cli" });
 
-  const title = formatTrackingIssueTitle(task);
-  const body = formatTrackingIssueBody(task);
+  const title = formatTrackingIssueTitle(latestTask);
+  const body = formatTrackingIssueBody(latestTask);
 
   try {
     const issue = await githubClient.createIssue({ owner: repo.owner, repo: repo.repo, title, body });
@@ -300,7 +318,7 @@ export async function maybeCreateTrackingIssue(
     await deps.taskStore.recordActivity({
       type: "task:updated",
       taskId: task.id,
-      taskTitle: task.title,
+      taskTitle: latestTask.title,
       details: `Linked tracking issue ${repo.owner}/${repo.repo}#${issue.number}`,
       metadata: {
         type: "github-issue-created",
@@ -317,7 +335,7 @@ export async function maybeCreateTrackingIssue(
     await deps.taskStore.recordActivity({
       type: "task:updated",
       taskId: task.id,
-      taskTitle: task.title,
+      taskTitle: latestTask.title,
       details: `GitHub tracking issue not created: ${message}`,
       metadata: {
         type: "github-issue-failed",
