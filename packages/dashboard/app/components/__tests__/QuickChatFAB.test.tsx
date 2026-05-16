@@ -453,6 +453,57 @@ describe("QuickChatFAB session-first UX", () => {
     expect(screen.getByTestId("quick-chat-input")).toHaveAttribute("placeholder", "Message GPT-4o");
   });
 
+  describe("FN-4708 room reflection", () => {
+    it("shows room placeholder and room tag when an active room exists", async () => {
+      mockUseAppSettings.mockReturnValue({ experimentalFeatures: { chatRooms: true } } as ReturnType<typeof useAppSettings>);
+      mockUseChatRooms.mockReturnValue({
+        rooms: [{ id: "room-1", name: "engineering", slug: "engineering", memberCount: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+        roomsLoading: false,
+        roomsError: null,
+        activeRoom: { id: "room-1", name: "engineering", slug: "engineering", memberCount: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+        activeRoomMembers: [],
+        messages: [],
+        messagesLoading: false,
+        selectRoom: vi.fn(),
+        createRoom: vi.fn(),
+        deleteRoom: vi.fn(),
+        sendRoomMessage: vi.fn(),
+        refreshRooms: vi.fn(),
+      });
+
+      render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
+      fireEvent.click(screen.getByTestId("quick-chat-fab"));
+
+      expect(await screen.findByTestId("quick-chat-input")).toHaveAttribute("placeholder", "Message #engineering");
+      expect(screen.getByTestId("quick-chat-room-tag")).toHaveTextContent("#engineering");
+      expect(screen.queryByTestId("quick-chat-model-tag")).toBeNull();
+    });
+
+    it("preserves model placeholder/tag behavior when no active room is selected", async () => {
+      mockUseAppSettings.mockReturnValue({ experimentalFeatures: { chatRooms: true } } as ReturnType<typeof useAppSettings>);
+      mockUseChatRooms.mockReturnValue({
+        rooms: [{ id: "room-1", name: "engineering", slug: "engineering", memberCount: 2, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+        roomsLoading: false,
+        roomsError: null,
+        activeRoom: null,
+        activeRoomMembers: [],
+        messages: [],
+        messagesLoading: false,
+        selectRoom: vi.fn(),
+        createRoom: vi.fn(),
+        deleteRoom: vi.fn(),
+        sendRoomMessage: vi.fn(),
+        refreshRooms: vi.fn(),
+      });
+
+      render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
+      fireEvent.click(screen.getByTestId("quick-chat-fab"));
+
+      expect(await screen.findByTestId("quick-chat-model-tag")).toHaveTextContent("GPT-4o");
+      expect(screen.getByTestId("quick-chat-input")).toHaveAttribute("placeholder", "Message GPT-4o");
+    });
+  });
+
   it("creates fresh model session from inline chooser and closes chooser", async () => {
     render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
     fireEvent.click(screen.getByTestId("quick-chat-fab"));
