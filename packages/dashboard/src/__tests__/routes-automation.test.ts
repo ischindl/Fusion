@@ -869,7 +869,7 @@ describe("Automation routes", () => {
       );
     });
 
-    it("create-task automation step attempts tracking issue creation and links metadata", async () => {
+    it("create-task automation step remains successful without explicit tracking issue creation", async () => {
       const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockResolvedValue({
         owner: "task",
         repo: "repo",
@@ -914,13 +914,13 @@ describe("Automation routes", () => {
       const res = await REQUEST(app, "POST", "/api/automations/sched-001/run");
 
       expect(res.status).toBe(200);
-      expect(createIssueSpy).toHaveBeenCalledWith(expect.objectContaining({ owner: "task", repo: "repo" }));
-      expect(linkGithubIssue).toHaveBeenCalledWith("FN-9002", expect.objectContaining({ owner: "task", repo: "repo", number: 17 }));
-      expect(recordActivity).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ type: "github-issue-created" }) }));
+      expect(createIssueSpy).not.toHaveBeenCalled();
+      expect(linkGithubIssue).not.toHaveBeenCalled();
+      expect(recordActivity).not.toHaveBeenCalled();
       createIssueSpy.mockRestore();
     });
 
-    it("create-task automation step keeps success when tracking issue creation fails", async () => {
+    it("create-task automation step keeps success even if GitHub client would fail", async () => {
       const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockRejectedValue(new Error("github down"));
       const mockStore = createMockAutomationStore();
       mockStore.getSchedule.mockResolvedValue({
@@ -952,7 +952,7 @@ describe("Automation routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.result.stepResults[0]).toEqual(expect.objectContaining({ success: true }));
-      expect(createIssueSpy).toHaveBeenCalledTimes(1);
+      expect(createIssueSpy).not.toHaveBeenCalled();
       createIssueSpy.mockRestore();
     });
     it("does not create tracking issue in automation create-task when task already linked", async () => {

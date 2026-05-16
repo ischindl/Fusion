@@ -1918,7 +1918,7 @@ describe("POST /subtasks/*", () => {
     expect(store.updateTask).toHaveBeenCalledWith("FN-102", { dependencies: ["FN-101"] });
   });
 
-  it("subtask batch creation attempts tracking issue creation and links metadata", async () => {
+  it("subtask batch creation succeeds without explicit tracking issue creation", async () => {
     const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockResolvedValue({
       owner: "task",
       repo: "repo",
@@ -1955,13 +1955,13 @@ describe("POST /subtasks/*", () => {
     );
 
     expect(createRes.status).toBe(201);
-    expect(createIssueSpy).toHaveBeenCalledWith(expect.objectContaining({ owner: "task", repo: "repo" }));
-    expect(store.linkGithubIssue).toHaveBeenCalledWith("FN-103", expect.objectContaining({ owner: "task", repo: "repo", number: 55 }));
-    expect(store.recordActivity).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ type: "github-issue-created" }) }));
+    expect(createIssueSpy).not.toHaveBeenCalled();
+    expect(store.linkGithubIssue).not.toHaveBeenCalled();
+    expect(store.recordActivity).not.toHaveBeenCalled();
     createIssueSpy.mockRestore();
   });
 
-  it("subtask batch creation remains successful when tracking issue creation fails", async () => {
+  it("subtask batch creation remains successful even if GitHub client would fail", async () => {
     const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockRejectedValue(new Error("boom"));
 
     (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -1993,7 +1993,7 @@ describe("POST /subtasks/*", () => {
 
     expect(createRes.status).toBe(201);
     expect(createRes.body.tasks).toHaveLength(1);
-    expect(createIssueSpy).toHaveBeenCalledTimes(1);
+    expect(createIssueSpy).not.toHaveBeenCalled();
     createIssueSpy.mockRestore();
   });
 
