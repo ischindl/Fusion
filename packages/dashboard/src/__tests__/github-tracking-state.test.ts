@@ -255,9 +255,10 @@ describe("GitHubTrackingStateService", () => {
     expect(mockResolveGithubTrackingAuth).toHaveBeenCalledTimes(2);
   });
 
-  it("closes issue for late-registered project stores after service start", async () => {
+  it("closes issue for late-registered project stores after attach", async () => {
     const lateStore = new MockStore();
     service.start();
+    service.attach(lateStore as unknown as TaskStore);
 
     lateStore.emit("task:moved", { task: createTask({ id: "FN-late" }), from: "todo", to: "done" });
     await flushAsync();

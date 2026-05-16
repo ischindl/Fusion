@@ -36,6 +36,7 @@ const pendingCreations = new Map<string, Promise<TaskStore>>();
  * lookups.
  */
 const initializedProjects = new Set<string>();
+const projectRegisteredListeners = new Set<(projectId: string, store: TaskStore) => void>();
 
 /**
  * Optional callback invoked once when a new project store is first created.
@@ -102,6 +103,10 @@ export async function getOrCreateProjectStore(projectId: string): Promise<TaskSt
       _onProjectFirstCreated(projectId);
     }
 
+    for (const listener of projectRegisteredListeners) {
+      listener(projectId, store);
+    }
+
     return store;
   })();
 
@@ -147,4 +152,15 @@ export function invalidateAllGlobalSettingsCaches(): void {
   for (const store of storeCache.values()) {
     store.getGlobalSettingsStore().invalidateCache();
   }
+}
+
+export function listRegisteredProjectStores(): Array<{ projectId: string; store: TaskStore }> {
+  return Array.from(storeCache.entries(), ([projectId, store]) => ({ projectId, store }));
+}
+
+export function onProjectStoreRegistered(listener: (projectId: string, store: TaskStore) => void): () => void {
+  projectRegisteredListeners.add(listener);
+  return () => {
+    projectRegisteredListeners.delete(listener);
+  };
 }

@@ -24,6 +24,7 @@ import { GitHubIssueCommentService } from "../github-issue-comment.js";
 import { GitHubTrackingCommentService } from "../github-tracking-comments.js";
 import { GitHubTrackingStateService } from "../github-tracking-state.js";
 import { githubRateLimiter } from "../github-poll.js";
+import { listRegisteredProjectStores, onProjectStoreRegistered } from "../project-store-resolver.js";
 import {
   classifyWebhookEvent,
   getGitHubAppConfig,
@@ -1126,7 +1127,32 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
     const githubTrackingStateService = new GitHubTrackingStateService(store);
     githubTrackingStateService.start();
-    ctx.registerDispose(() => githubTrackingStateService.stop());
+
+    const attachedStateStores = new Set<TaskStore>();
+    const attachStateStore = (projectStore: TaskStore) => {
+      if (attachedStateStores.has(projectStore)) {
+        return;
+      }
+      attachedStateStores.add(projectStore);
+      githubTrackingStateService.attach(projectStore);
+    };
+
+    attachStateStore(store);
+    for (const { store: projectStore } of listRegisteredProjectStores()) {
+      attachStateStore(projectStore);
+    }
+
+    const unsubscribeProjectStoreRegistration = onProjectStoreRegistered((_projectId, projectStore) => {
+      attachStateStore(projectStore);
+    });
+
+    ctx.registerDispose(() => {
+      unsubscribeProjectStoreRegistration();
+      for (const projectStore of attachedStateStores) {
+        githubTrackingStateService.detach(projectStore);
+      }
+      githubTrackingStateService.stop();
+    });
   }
 
   /**

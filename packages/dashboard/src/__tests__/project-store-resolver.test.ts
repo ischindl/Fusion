@@ -14,6 +14,8 @@ import {
   getOrCreateProjectStore,
   evictProjectStore,
   evictAllProjectStores,
+  listRegisteredProjectStores,
+  onProjectStoreRegistered,
   setOnProjectFirstCreated,
 } from "../project-store-resolver.js";
 import type { TaskStore } from "@fusion/core";
@@ -77,6 +79,29 @@ describe("project-store-resolver", () => {
     expect(store).toBeDefined();
     expect(createdStores).toHaveLength(1);
     expect(createdStores[0].projectId).toBe("proj_abc");
+  });
+
+  it("lists registered stores", async () => {
+    const storeA = await getOrCreateProjectStore("proj_list_a");
+    const storeB = await getOrCreateProjectStore("proj_list_b");
+
+    const registered = listRegisteredProjectStores();
+    expect(registered).toEqual(expect.arrayContaining([
+      { projectId: "proj_list_a", store: storeA },
+      { projectId: "proj_list_b", store: storeB },
+    ]));
+  });
+
+  it("notifies on project store registration", async () => {
+    const listener = vi.fn();
+    const unsubscribe = onProjectStoreRegistered(listener);
+
+    const store = await getOrCreateProjectStore("proj_listener");
+    expect(listener).toHaveBeenCalledWith("proj_listener", store);
+
+    unsubscribe();
+    await getOrCreateProjectStore("proj_listener_2");
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("reuses the same TaskStore instance for repeated calls with the same projectId", async () => {
