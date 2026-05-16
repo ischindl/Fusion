@@ -32,6 +32,7 @@ import { WebSocketManager, type BadgeSnapshot } from "./websocket.js";
 import type { BadgePubSub } from "./badge-pubsub.js";
 import { createBadgePubSub, type BadgePubSubMessage } from "./badge-pubsub.js";
 import { createRuntimeLogger, type RuntimeLogger } from "./runtime-logger.js";
+import { registerGithubTrackingHook } from "./github-tracking-hook.js";
 import { createTerminalWebSocketDiagnostics } from "./terminal-websocket-diagnostics.js";
 import {
   AiSessionStore,
@@ -529,6 +530,10 @@ export function loadTlsCredentialsFromEnv(
 }
 
 export function createServer(store: TaskStore, options?: ServerOptions): ReturnType<typeof express> {
+  // Register the universal post-create hook so every task-creation path
+  // (HTTP routes, CLI, pi extension, mission triage, etc.) triggers
+  // GitHub tracking issue creation when enabled.
+  registerGithubTrackingHook();
   const cliPackageVersion = getCliPackageVersion(import.meta.url);
   // ── Derive defaults from engine when provided (explicit options override) ──
   const engine = options?.engine;
