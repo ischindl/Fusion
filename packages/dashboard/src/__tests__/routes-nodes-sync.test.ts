@@ -435,6 +435,38 @@ describe("Node settings sync routes", () => {
       expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
     });
 
+    it("manual diff includes local-only keys that are absent from remote", async () => {
+      const remoteNode = createMockRemoteNode();
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          global: { defaultProvider: "openai" },
+          project: { maxConcurrent: 3 },
+        }),
+      });
+      vi.spyOn(store, "getSettingsByScope").mockResolvedValue({
+        global: {},
+        project: { worktreesDir: "/tmp/wt" },
+      });
+      vi.spyOn(store, "getGlobalSettingsStore").mockReturnValue({
+        getSettings: vi.fn().mockResolvedValue({ defaultModelId: "gpt-5" }),
+      } as ReturnType<MockStore["getGlobalSettingsStore"]>);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/nodes/node-remote-001/settings/pull",
+        JSON.stringify({ conflictResolution: "manual" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.diff.global).toEqual(expect.arrayContaining(["defaultProvider", "defaultModelId"]));
+      expect(res.body.diff.project).toEqual(expect.arrayContaining(["maxConcurrent", "worktreesDir"]));
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+
     it("returns 404 for unknown node", async () => {
       mockGetNode.mockResolvedValue(null);
 
@@ -515,6 +547,54 @@ describe("Node settings sync routes", () => {
       mockGetNode.mockResolvedValue(remoteNode);
       mockGetSettingsSyncState.mockResolvedValue(null);
       mockFetch.mockRejectedValue(new Error("Network error"));
+
+      const res = await get(app, "/api/nodes/node-remote-001/settings/sync-status");
+
+      expect(res.status).toBe(200);
+      expect(res.body.remoteReachable).toBe(false);
+      expect(res.body.diff.global).toEqual([]);
+      expect(res.body.diff.project).toEqual([]);
+    });
+
+    it("diff includes local-only keys when remote reachable", async () => {
+      const remoteNode = createMockRemoteNode();
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockGetSettingsSyncState.mockResolvedValue(null);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          global: { defaultProvider: "openai" },
+          project: { maxConcurrent: 3 },
+        }),
+      });
+      vi.spyOn(store, "getSettingsByScope").mockResolvedValue({
+        global: {},
+        project: { worktreesDir: "/tmp/wt" },
+      });
+      vi.spyOn(store, "getGlobalSettingsStore").mockReturnValue({
+        getSettings: vi.fn().mockResolvedValue({ defaultModelId: "gpt-5" }),
+      } as ReturnType<MockStore["getGlobalSettingsStore"]>);
+
+      const res = await get(app, "/api/nodes/node-remote-001/settings/sync-status");
+
+      expect(res.status).toBe(200);
+      expect(res.body.remoteReachable).toBe(true);
+      expect(res.body.diff.global).toEqual(expect.arrayContaining(["defaultProvider", "defaultModelId"]));
+      expect(res.body.diff.project).toEqual(expect.arrayContaining(["maxConcurrent", "worktreesDir"]));
+    });
+
+    it("diff stays empty when remote unreachable even if local has unique keys", async () => {
+      const remoteNode = createMockRemoteNode();
+      mockGetNode.mockResolvedValue(remoteNode);
+      mockGetSettingsSyncState.mockResolvedValue(null);
+      mockFetch.mockRejectedValue(new Error("Network error"));
+      vi.spyOn(store, "getSettingsByScope").mockResolvedValue({
+        global: {},
+        project: { worktreesDir: "/tmp/wt" },
+      });
+      vi.spyOn(store, "getGlobalSettingsStore").mockReturnValue({
+        getSettings: vi.fn().mockResolvedValue({ defaultModelId: "gpt-5" }),
+      } as ReturnType<MockStore["getGlobalSettingsStore"]>);
 
       const res = await get(app, "/api/nodes/node-remote-001/settings/sync-status");
 
