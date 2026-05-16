@@ -25,7 +25,7 @@ import { GitHubTrackingCommentService } from "../github-tracking-comments.js";
 import { GitHubTrackingStateService } from "../github-tracking-state.js";
 import { GitHubTrackingReconciler } from "../github-tracking-reconciler.js";
 import { githubRateLimiter } from "../github-poll.js";
-import { listRegisteredProjectStores, onProjectStoreRegistered } from "../project-store-resolver.js";
+import * as projectStoreResolver from "../project-store-resolver.js";
 import {
   classifyWebhookEvent,
   getGitHubAppConfig,
@@ -1142,17 +1142,48 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       if (!reconcileScheduledStores.has(projectStore)) {
         reconcileScheduledStores.add(projectStore);
         setImmediate(() => {
-          void githubTrackingReconciler.reconcile(projectStore);
+          if (typeof (projectStore as Partial<TaskStore>).listTasks !== "function"
+            || typeof (projectStore as Partial<TaskStore>).getSettings !== "function"
+            || typeof (projectStore as Partial<TaskStore>).logEntry !== "function") {
+            return;
+          }
+          void githubTrackingReconciler.reconcile(projectStore).catch(() => {});
         });
       }
     };
 
     attachStateStore(store);
-    for (const { store: projectStore } of listRegisteredProjectStores()) {
+
+    const listProjectStores = (): Array<{ store: TaskStore }> => {
+      try {
+        const value = Reflect.get(projectStoreResolver as object, "listRegisteredProjectStores");
+        if (typeof value !== "function") {
+          return [];
+        }
+        const listed = value();
+        return Array.isArray(listed) ? listed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const subscribeProjectStoreRegistered = (handler: (projectId: string, projectStore: TaskStore) => void): (() => void) => {
+      try {
+        const value = Reflect.get(projectStoreResolver as object, "onProjectStoreRegistered");
+        if (typeof value !== "function") {
+          return () => {};
+        }
+        return value(handler) as () => void;
+      } catch {
+        return () => {};
+      }
+    };
+
+    for (const { store: projectStore } of listProjectStores()) {
       attachStateStore(projectStore);
     }
 
-    const unsubscribeProjectStoreRegistration = onProjectStoreRegistered((_projectId, projectStore) => {
+    const unsubscribeProjectStoreRegistration = subscribeProjectStoreRegistered((_projectId, projectStore) => {
       attachStateStore(projectStore);
     });
 

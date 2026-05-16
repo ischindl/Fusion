@@ -1453,6 +1453,8 @@ When a tracked task later moves to `in-progress` or `done`, Fusion posts one sho
 
 When a tracked task transitions into `done`, Fusion closes the linked GitHub issue with `state_reason: completed`. When a task transitions out of `done` into any active column (`triage`, `todo`, `in-progress`, `in-review`), Fusion reopens it with `state_reason: reopened`. When a tracked task is permanently deleted, Fusion closes the linked GitHub issue with `state_reason: not_planned`. Moves from `done` to `archived` leave the issue closed. Tasks without `githubTracking.enabled` or without a linked issue are unaffected, and GitHub failures are logged to task activity without blocking the move.
 
+The GitHub tracking state listener now attaches to every registered project store (including projects registered after startup), and each store gets a one-time asynchronous startup reconciliation sweep. That sweep scans bounded done tasks with tracking enabled and closes any linked GitHub issue still open, so missed/momentary failures are caught up without blocking server boot.
+
 ### Worktree model
 - Each active task runs in isolated worktree under `.worktrees/*`
 - Executor creates branches like `fusion/{task-id}` (`executor.ts`)

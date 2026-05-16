@@ -1,4 +1,4 @@
-import type { GlobalSettings, ProjectSettings, Task, TaskStore } from "@fusion/core";
+import type { GlobalSettings, ProjectSettings, TaskStore } from "@fusion/core";
 import { resolveGithubTrackingAuth } from "./github-auth.js";
 import { GitHubClient } from "./github.js";
 
@@ -7,11 +7,12 @@ const RECONCILE_CONCURRENCY_LIMIT = 4;
 
 export class GitHubTrackingReconciler {
   async reconcile(store: TaskStore): Promise<{ scanned: number; closed: number; skipped: number; errors: number }> {
-    const tasks = (await store.listTasks({ slim: true, includeArchived: false }))
+    const listedTasks = await store.listTasks({ slim: true, includeArchived: false });
+    const tasks = (Array.isArray(listedTasks) ? listedTasks : [])
       .filter((task) => task.status === "done")
       .slice(0, RECONCILE_SCAN_LIMIT);
 
-    const projectSettings = await store.getSettings() as Pick<ProjectSettings, "githubAuthMode" | "githubAuthToken">;
+    const projectSettings = ((await store.getSettings()) ?? {}) as Pick<ProjectSettings, "githubAuthMode" | "githubAuthToken">;
     const globalSettings = (await store.getGlobalSettingsStore?.()?.getSettings?.() ?? {}) as Pick<GlobalSettings, never>;
     const resolution = resolveGithubTrackingAuth({ projectSettings, globalSettings });
     if (!resolution.ok) {
