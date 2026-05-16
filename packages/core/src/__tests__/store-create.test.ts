@@ -7,6 +7,7 @@ import * as projectMemory from "../project-memory.js";
 import { AgentStore } from "../agent-store.js";
 import { CentralDatabase } from "../central-db.js";
 import { TaskStore, TaskHasDependentsError } from "../store.js";
+import { setTaskCreatedHook } from "../task-creation-hooks.js";
 import { buildResearchDocumentKey, type Task } from "../types.js";
 import { createTaskStoreTestHarness, makeTmpDir } from "./store-test-helpers.js";
 
@@ -24,6 +25,7 @@ describe("TaskStore", () => {
   });
 
   afterEach(async () => {
+    setTaskCreatedHook(undefined);
     await harness.afterEach();
   });
 
@@ -99,6 +101,22 @@ describe("TaskStore", () => {
   });
 
 
+
+  describe("createTask task-created hook invocation", () => {
+    it("skips hook when invokeTaskCreatedHook is false and defaults to invoking", async () => {
+      const hookSpy = vi.fn();
+      setTaskCreatedHook(hookSpy);
+
+      await store.createTask(
+        { description: "Hook should be skipped" },
+        { invokeTaskCreatedHook: false },
+      );
+      expect(hookSpy).not.toHaveBeenCalled();
+
+      await store.createTask({ description: "Hook should run" });
+      expect(hookSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 
   describe("createTask — model overrides", () => {
     it("persists executor and validator model overrides on creation", async () => {

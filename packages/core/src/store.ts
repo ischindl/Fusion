@@ -2811,6 +2811,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     options?: {
       onSummarize?: (description: string) => Promise<string | null>;
       settings?: { autoSummarizeTitles?: boolean };
+      invokeTaskCreatedHook?: boolean;
     }
   ): Promise<Task> {
     if (!input.description?.trim()) {
@@ -2824,6 +2825,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       input.description.length > 200 &&
       (input.summarize === true || options?.settings?.autoSummarizeTitles === true);
     const hasPendingSummarization = shouldSummarize && typeof options?.onSummarize === "function";
+    const shouldInvokeTaskCreatedHook = options?.invokeTaskCreatedHook !== false;
 
     // Determine enabledWorkflowSteps: explicit input takes precedence, otherwise auto-apply default-on steps
     let resolvedWorkflowSteps: string[] | undefined = input.enabledWorkflowSteps?.length
@@ -2861,12 +2863,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
           title,
           resolvedWorkflowSteps,
           taskId,
-          { invokeTaskCreatedHook: !hasPendingSummarization },
+          { invokeTaskCreatedHook: shouldInvokeTaskCreatedHook && !hasPendingSummarization },
         );
       },
     });
 
-    if (hasPendingSummarization) {
+    if (hasPendingSummarization && shouldInvokeTaskCreatedHook) {
       const id = task.id;
       Promise.resolve().then(async () => {
         try {
