@@ -391,7 +391,7 @@ Navigation:
 - Mobile: **More** sheet → **Reliability**
 
 Features:
-- Headline 7-day in-review failure rate with color thresholds: success for `<5%`, warning for `<10%`, error for `≥10%`; shows **Insufficient data** when the metric is null
+- Headline 7-day in-review success rate (derived as `1 - inReviewFailureRate7d`) with color thresholds: success for `≥95%`, warning for `≥90%`, error below `90%`; shows **Insufficient data** when the metric is null
 - Per-day in-review flow table showing tasks that entered in-review versus tasks bounced back to in-progress
 - In-review duration percentiles (P50 and P95) plus sample count
 - Merge-attempt distribution stats including mean, max, and histogram buckets
