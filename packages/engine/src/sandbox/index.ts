@@ -5,6 +5,8 @@ import { withSandboxAudit } from "./audit.js";
 import type { RunAuditor } from "../run-audit.js";
 import type { SandboxBackend, SandboxCapabilities } from "./types.js";
 
+export { SandboxProvisioningPendingError, requireSandboxProvisioningApproval } from "./provisioning-gate.js";
+
 export type {
   SandboxBackend,
   SandboxCapabilities,
