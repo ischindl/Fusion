@@ -1,4 +1,5 @@
 import { exec } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -342,24 +343,68 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
     if (input.startPoint) args.push("--base", input.startPoint);
     await this.runWorktrunk(args, { cwd: input.rootDir, operation: "create" });
 
-    let resolved = input.worktreePath;
-    try {
-      const { stdout } = await execAsync("git worktree list --porcelain", {
-        cwd: input.rootDir,
-        encoding: "utf-8",
-        timeout: WORKTRUNK_TIMEOUTS_MS.layout,
-        maxBuffer: MAX_BUFFER,
-      });
-      const rows = parseWorktreesFromPorcelain(stdout);
-      resolved =
-        rows.find((row) => row.branch === input.branch)?.path ??
-        rows.find((row) => row.path.endsWith(input.branch) || row.path === input.worktreePath)?.path ??
-        input.worktreePath;
-    } catch {
-      resolved = input.worktreePath;
+    const resolvedPath = await this.resolveCreatedWorktreePath({
+      rootDir: input.rootDir,
+      branch: input.branch,
+    });
+    if (resolvedPath !== input.worktreePath) {
+      this.deps.logger?.warn?.(
+        `[worktree-backend] worktrunk created branch ${input.branch} at ${resolvedPath} (fusion assumed ${input.worktreePath}); using worktrunk-assigned path`,
+      );
     }
-    return { path: resolved, branch: input.branch };
+
+    return { path: resolvedPath, branch: input.branch };
   }
++
++  private async resolveCreatedWorktreePath(input: { rootDir: string; branch: string }): Promise<string> {
++    let rows: Array<{ path: string; branch?: string }>;
++    try {
++      const { stdout } = await execAsync("git worktree list --porcelain", {
++        cwd: input.rootDir,
++        encoding: "utf-8",
++        timeout: 30_000,
++        maxBuffer: MAX_BUFFER,
++      });
++      rows = parseWorktreesFromPorcelain(stdout);
++    } catch (error) {
++      throw new WorktrunkOperationError({
++        operation: "create",
++        code: "worktrunk_operation_failed",
++        stderr: getErrorStderr(error) ?? String(error),
++        exitCode: getErrorExitCode(error),
++      });
++    }
++
++    const matches = rows.filter((row) => row.branch === input.branch);
++    if (matches.length === 0) {
++      throw new WorktrunkOperationError({
++        operation: "create",
++        code: "worktrunk_operation_failed",
++        stderr: `worktrunk created branch ${input.branch} but no registered worktree was found`,
++        exitCode: null,
++      });
++    }
++    if (matches.length > 1) {
++      throw new WorktrunkOperationError({
++        operation: "create",
++        code: "worktrunk_operation_failed",
++        stderr: `worktrunk created branch ${input.branch} but multiple registered worktrees claim it: ${matches.map((match) => match.path).join(", ")}`,
++        exitCode: null,
++      });
++    }
++
++    const resolvedPath = matches[0]?.path;
++    if (!resolvedPath || !existsSync(resolvedPath)) {
++      throw new WorktrunkOperationError({
++        operation: "create",
++        code: "worktrunk_operation_failed",
++        stderr: `worktrunk reported worktree at ${resolvedPath ?? "<unknown>"} but the path does not exist`,
++        exitCode: null,
++      });
++    }
++
++    return resolvedPath;
++  }
 
   async remove(input: WorktreeRemoveInput): Promise<void> {
     const target = input.branch ?? input.worktreePath;
