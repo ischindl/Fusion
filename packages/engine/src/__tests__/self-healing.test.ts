@@ -55,6 +55,7 @@ vi.mock("../worktree-pool.js", () => ({
   cleanupOrphanedWorktrees: vi.fn().mockResolvedValue(0),
   scanOrphanedBranches: vi.fn().mockResolvedValue([]),
   isUsableTaskWorktree: vi.fn().mockResolvedValue(true),
+  resolveWorktreeBackend: vi.fn(),
 }));
 
 const { selfHealingLoggerMock } = vi.hoisted(() => ({
@@ -82,7 +83,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isUsableTaskWorktree, scanOrphanedBranches } from "../worktree-pool.js";
+import { isUsableTaskWorktree, resolveWorktreeBackend, scanOrphanedBranches } from "../worktree-pool.js";
 import * as branchConflictModule from "../branch-conflicts.js";
 import { createLogger } from "../logger.js";
 import { NotificationService } from "../notification/notification-service.js";
@@ -92,6 +93,7 @@ const mockedExecSync = vi.mocked(execSync);
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedScanOrphanedBranches = vi.mocked(scanOrphanedBranches);
 const mockedIsUsableTaskWorktree = vi.mocked(isUsableTaskWorktree);
+const mockedResolveWorktreeBackend = vi.mocked(resolveWorktreeBackend);
 const mockedCreateLogger = vi.mocked(createLogger);
 const mockedClassifyOwnedLandedEvidence = vi.mocked(classifyOwnedLandedEvidence);
 
@@ -6253,6 +6255,82 @@ describe("recoverDoneTaskMergeMetadata", () => {
     expect(store.updateTask).toHaveBeenCalledWith("FN-3373", { mergeDetails: undefined });
 
     manager.stop();
+  });
+});
+
+describe("pruneWorktrees", () => {
+  let store: TaskStore & EventEmitter;
+  let manager: SelfHealingManager;
+
+  beforeEach(() => {
+    store = createMockStore();
+    manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    mockedResolveWorktreeBackend.mockReturnValue({
+      kind: "native",
+      create: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+      prune: vi.fn(),
+      resolveWorktreePath: vi.fn(),
+    } as any);
+  });
+
+  afterEach(() => {
+    manager.stop();
+  });
+
+  it("delegates prune to worktrunk backend when enabled", async () => {
+    const prune = vi.fn().mockResolvedValue(undefined);
+    mockedResolveWorktreeBackend.mockReturnValue({
+      kind: "worktrunk",
+      create: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+      prune,
+      resolveWorktreePath: vi.fn(),
+    } as any);
+    vi.mocked(store.getSettings).mockResolvedValue({ worktrunk: { enabled: true, onFailure: "fail" } } as any);
+
+    await (manager as any).pruneWorktrees();
+
+    expect(prune).toHaveBeenCalledWith({ rootDir: "/tmp/test-project" });
+    expect(mockedExecSync).not.toHaveBeenCalledWith(expect.stringContaining("git worktree prune"), expect.anything());
+  });
+
+  it("does not run native prune when worktrunk fail-hard prune fails", async () => {
+    const prune = vi.fn().mockRejectedValue(new Error("boom"));
+    mockedResolveWorktreeBackend.mockReturnValue({
+      kind: "worktrunk",
+      create: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+      prune,
+      resolveWorktreePath: vi.fn(),
+    } as any);
+    vi.mocked(store.getSettings).mockResolvedValue({ worktrunk: { enabled: true, onFailure: "fail" } } as any);
+
+    await (manager as any).pruneWorktrees();
+
+    expect(prune).toHaveBeenCalledTimes(1);
+    expect(mockedExecSync).not.toHaveBeenCalledWith(expect.stringContaining("git worktree prune"), expect.anything());
+  });
+
+  it("falls back to native prune when worktrunk fallback-native prune fails", async () => {
+    const prune = vi.fn().mockRejectedValue(new Error("boom"));
+    mockedResolveWorktreeBackend.mockReturnValue({
+      kind: "worktrunk",
+      create: vi.fn(),
+      remove: vi.fn(),
+      sync: vi.fn(),
+      prune,
+      resolveWorktreePath: vi.fn(),
+    } as any);
+    vi.mocked(store.getSettings).mockResolvedValue({ worktrunk: { enabled: true, onFailure: "fallback-native" } } as any);
+
+    await (manager as any).pruneWorktrees();
+
+    expect(prune).toHaveBeenCalledTimes(1);
+    expect(mockedExecSync).toHaveBeenCalledWith("git worktree prune", expect.objectContaining({ cwd: "/tmp/test-project", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }));
   });
 });
 

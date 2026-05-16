@@ -20,7 +20,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { getInReviewStallReason, getStalePausedReviewSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, type AgentStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger } from "./logger.js";
-import { getRegisteredWorktreePaths, isUsableTaskWorktree, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
+import { getRegisteredWorktreePaths, isUsableTaskWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
 import {
   extractMissingWorktreePathFromSessionStartFailure,
   isMissingWorktreeSessionStartFailure,
@@ -4772,6 +4772,34 @@ export class SelfHealingManager {
   /** Run `git worktree prune` to clean stale metadata. */
   private async pruneWorktrees(): Promise<void> {
     try {
+      const settings = await this.store.getSettings();
+      const worktrunkEnabled = settings.worktrunk?.enabled === true;
+      if (worktrunkEnabled) {
+        const backend = resolveWorktreeBackend(settings, { logger: log });
+        if (backend.kind === "worktrunk") {
+          const auditor = createRunAuditor(this.store, {
+            runId: generateSyntheticRunId("self-heal", "worktrunk-prune"),
+            agentId: "self-healing",
+            phase: "maintenance-prune",
+          });
+
+          try {
+            await backend.prune({ rootDir: this.options.rootDir });
+            await auditor.git({ type: "worktree:worktrunk-prune", target: this.options.rootDir, metadata: { success: true } });
+            log.log("Worktree prune delegated to worktrunk backend");
+            return;
+          } catch (err: unknown) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            await auditor.git({ type: "worktree:worktrunk-prune", target: this.options.rootDir, metadata: { success: false, error: errorMessage } });
+            if (settings.worktrunk?.onFailure === "fail") {
+              log.error(`Worktrunk prune failed (fail-hard): ${errorMessage}`);
+              return;
+            }
+            log.warn(`Worktrunk prune failed; falling back to native git prune: ${errorMessage}`);
+          }
+        }
+      }
+
       await execAsync("git worktree prune", {
         cwd: this.options.rootDir,
         timeout: 30_000,
