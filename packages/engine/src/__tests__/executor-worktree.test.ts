@@ -1148,7 +1148,12 @@ describe("TaskExecutor worktree recovery", () => {
     );
   });
 
-  it("generates new worktree name when conflicting worktree belongs to active task in legacy rename mode", async () => {
+  it("generates new worktree name when conflicting worktree belongs to active task in legacy rename mode (FN-4811: refuses force-removal of active worktree)", async () => {
+    // FN-4811: When the conflicting worktree is bound to a live in-progress task, the
+    // executor MUST NOT force-remove it (doing so yanks the active session's filesystem
+    // and produces FN-4781/FN-4804-style cascade failures). Instead, with sibling-rename
+    // enabled, it falls through to the suffix-rename path so the requesting task gets a
+    // fresh worktree name without disturbing the live owner.
     const store = createMockStore();
     store.getSettings.mockResolvedValue({
       maxConcurrent: 2,
@@ -1165,6 +1170,7 @@ describe("TaskExecutor worktree recovery", () => {
         description: "Other task",
         column: "in-progress",
         worktree: "/tmp/test/.worktrees/green-sage",
+        paused: false,
         dependencies: [],
         steps: [],
         currentStep: 0,
@@ -1180,7 +1186,7 @@ describe("TaskExecutor worktree recovery", () => {
     let callCount = 0;
     mockedExecSync.mockImplementation((cmd: string | string[]) => {
       const command = typeof cmd === "string" ? cmd : cmd[0];
-      // First attempt fails with conflict
+      // First attempt fails with conflict, subsequent attempts (suffix-rename path) succeed.
       if (command.includes("git worktree add") && callCount++ === 0) {
         const error: any = new Error(
           "fatal: 'fusion/fn-050' is already used by worktree at '/tmp/test/.worktrees/green-sage'",
@@ -1193,19 +1199,29 @@ describe("TaskExecutor worktree recovery", () => {
       return Buffer.from("");
     });
 
-    // Second generated name
+    // Second generated name for the suffix-rename path.
     mockedGenerateWorktreeName.mockReturnValueOnce("jade-finch");
 
     const executor = new TaskExecutor(store, "/tmp/test");
     await executor.execute({ ...makeTask(), executionStartBranch: "fusion/fn-049" });
 
-    expect(store.logEntry).toHaveBeenCalledWith(
-      "FN-050",
-      expect.stringContaining("Removed foreign conflicting worktree and retrying"),
-      "/tmp/test/.worktrees/green-sage",
-    );
-    expect(mockedGenerateWorktreeName).toHaveBeenCalled();
+    // FN-4811 contract: the active worktree must NOT have been force-removed.
+    const removeCalls = mockedExecSync.mock.calls
+      .map((call) => String(call[0]))
+      .filter((command) => command.includes("git worktree remove"));
+    expect(
+      removeCalls.some((command) => command.includes("/tmp/test/.worktrees/green-sage")),
+    ).toBe(false);
 
+    // The legacy "Removed foreign conflicting worktree and retrying" log must NOT fire
+    // for the actively-owned worktree (that path is the bug FN-4811 fixes).
+    const removalLogCalls = store.logEntry.mock.calls.map((c: any[]) => String(c[1] ?? ""));
+    expect(
+      removalLogCalls.some((m: string) => m.includes("Removed foreign conflicting worktree")),
+    ).toBe(false);
+
+    // The suffix-rename path was taken instead.
+    expect(mockedGenerateWorktreeName).toHaveBeenCalled();
     const worktreeAddCalls = mockedExecSync.mock.calls
       .map((call) => String(call[0]))
       .filter((command) => command.includes("git worktree add -b"));

@@ -7341,6 +7341,18 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
   }
 
   private async handleBranchConflict(task: Task, error: BranchConflictError): Promise<"retry" | "reclaimed" | "sticky"> {
+    // FN-4811: Before invoking inspection-based recovery (which may force-remove the
+    // conflicting worktree), verify the conflict isn't currently bound to a live session.
+    // If it is, refuse the whole recovery dance — a force-remove here would yank an active
+    // task's filesystem out from under it, producing FN-4781/FN-4804-style cascade failures.
+    const activeOwner = await this.findActiveWorktreeOwner(error.conflictingWorktreePath, task.id);
+    if (activeOwner !== null) {
+      const refusalMessage = `[FN-4811] Branch conflict on ${error.branchName} deferred: conflicting worktree ${error.conflictingWorktreePath} is actively owned by ${activeOwner}`;
+      executorLog.warn(refusalMessage);
+      await this.store.logEntry(task.id, refusalMessage, undefined, this.currentRunContext);
+      return "sticky";
+    }
+
     const inspection = await inspectBranchConflict({
       repoDir: this.rootDir,
       branchName: error.branchName,
@@ -8103,7 +8115,11 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
           await this.store.logEntry(taskId, `Cleaned up conflicting worktree, retrying`, path);
           return this.tryCreateWorktree(branch, path, taskId, startPoint, attemptNumber, 0, allowSiblingBranchRename, settings);
         }
-        return null;
+        // FN-4811: When git classifies a worktree as stale but the DB liveness gate refuses
+        // removal (an active task still has this worktree bound), fall through to the
+        // sibling-rename path rather than failing the whole conflict-recovery attempt. This
+        // preserves the live task while letting the requesting task proceed with a fresh
+        // worktree name.
       }
 
       if (inspection.kind === "reclaimable") {
@@ -8130,7 +8146,11 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
           await this.store.logEntry(taskId, `Removed foreign conflicting worktree and retrying`, inspection.livePath);
           return this.tryCreateWorktree(branch, path, taskId, startPoint, attemptNumber, 0, allowSiblingBranchRename, settings);
         }
-        return null;
+        // FN-4811: Cleanup was refused because the foreign worktree is actively bound to a
+        // live session. Force-removing would yank an active task's filesystem. Fall through
+        // to the sibling-rename path (suffix-2 through suffix-6) so the requesting task can
+        // proceed without disturbing the live owner. If sibling-rename is disabled, the
+        // generic conflict error below will trigger the caller's auto-recovery dispatcher.
       }
 
       if (!allowSiblingBranchRename) {
@@ -8242,6 +8262,45 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
   }
 
   /**
+   * FN-4811: Determine whether `worktreePath` is currently bound to an active executor or
+   * merger session. If so, removing it would pull the rug out from under a live agent,
+   * producing the FN-4781/FN-4804 symptoms (worktree disappears mid-task, two parallel runs,
+   * cross-task contamination). Returns the task ID currently using the worktree, or null if
+   * the worktree is safe to remove.
+   *
+   * Liveness sources, in order:
+   *  1. In-memory `activeWorktrees` map (per-executor session tracking).
+   *  2. DB-level: any non-done, non-paused, in-progress task with `task.worktree === path`.
+   *
+   * The requesting task is excluded from the check because `cleanupConflictingWorktree` is
+   * only called for worktrees the requesting task is trying to displace.
+   */
+  private async findActiveWorktreeOwner(
+    worktreePath: string,
+    requestingTaskId: string,
+  ): Promise<string | null> {
+    for (const [taskId, path] of this.activeWorktrees) {
+      if (taskId !== requestingTaskId && path === worktreePath) {
+        return taskId;
+      }
+    }
+    try {
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false });
+      for (const t of tasks) {
+        if (t.id === requestingTaskId) continue;
+        if (t.worktree !== worktreePath) continue;
+        if (t.column !== "in-progress") continue;
+        if (t.paused === true) continue;
+        return t.id;
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      executorLog.warn(`findActiveWorktreeOwner: DB liveness check failed for ${worktreePath}: ${msg}`);
+    }
+    return null;
+  }
+
+  /**
    * Clean up a conflicting worktree and its branch.
    * Handles locked worktrees by unlocking first.
    * Returns true if cleanup succeeded.
@@ -8251,6 +8310,19 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
     branch: string,
     taskId: string,
   ): Promise<boolean> {
+    // FN-4811: Hard liveness gate — refuse to remove a worktree that is currently bound to
+    // an active executor/merger session, regardless of git-level conflict classification.
+    // This is the canonical guard against the FN-4781/FN-4804 race where a startup cleanup
+    // pass or branch-conflict recovery yanked the worktree of a still-running session, causing
+    // "assigned worktree path disappeared mid-task" + parallel-runs + cross-task contamination.
+    const activeOwner = await this.findActiveWorktreeOwner(worktreePath, taskId);
+    if (activeOwner !== null) {
+      const refusalMessage = `[FN-4811] Refused to remove worktree ${worktreePath}: actively owned by ${activeOwner} (requested by ${taskId})`;
+      executorLog.warn(refusalMessage);
+      await this.store.logEntry(taskId, `Refused to remove conflicting worktree — actively owned by another task`, `${worktreePath} (owner: ${activeOwner})`);
+      return false;
+    }
+
     try {
       // Check if worktree is locked and unlock if needed
       try {
