@@ -143,7 +143,11 @@ export type FilesystemMutationType =
   | "prompt:write"
   | "prompt:update"
   | "session:write"
-  | "session:delete";
+  | "session:delete"
+  | "binary:install-requested"
+  | "binary:install-success"
+  | "binary:install-failed"
+  | "binary:install-denied";
 
 export type SandboxMutationType = "sandbox:prepare" | "sandbox:run" | "sandbox:failure" | "sandbox:fallback";
 

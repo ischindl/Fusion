@@ -112,6 +112,22 @@ export { generateReservedWorktreeName, generateWorktreeName, planTaskWorktreePat
 export { createLogger, type Logger } from "./logger.js";
 export { fetchWebContent, assertSafeUrl, WebFetchError, type WebFetchOptions, type WebFetchResult, type WebFetchErrorCode } from "./web-fetch.js";
 export { classifyTaskError, type ErrorClass, type TaskErrorClassification } from "./error-classifier.js";
+export {
+  resolveWorktrunkBinary,
+  installWorktrunk,
+  probeWorktrunk,
+  clearWorktrunkResolveCache,
+  WorktrunkBinaryUnavailableError,
+  WorktrunkInstallDeniedError,
+  WorktrunkInstallFailedError,
+  WORKTRUNK_PINNED_RELEASE,
+  WORKTRUNK_INSTALL_DIR,
+  WORKTRUNK_INSTALL_PATH,
+  WORKTRUNK_PROBE_TIMEOUT_MS,
+  WORKTRUNK_DOWNLOAD_TIMEOUT_MS,
+  WORKTRUNK_DOWNLOAD_MAX_BYTES,
+  WORKTRUNK_CARGO_TIMEOUT_MS,
+} from "./worktrunk-installer.js";
 export { isUsageLimitError, UsageLimitPauser } from "./usage-limit-detector.js";
 export { withRateLimitRetry } from "./rate-limit-retry.js";
 export { ResearchOrchestrator, type ResearchOrchestratorOptions, type ResearchOrchestratorStatus, type ResearchOrchestratorStartOptions } from "./research-orchestrator.js";

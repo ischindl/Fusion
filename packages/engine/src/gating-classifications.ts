@@ -65,11 +65,13 @@ export const NETWORK_API_TOOLS: ReadonlySet<string> = new Set([
   "fn_research_cancel",
   "fn_research_retry",
   "fn_web_fetch", // FN-4603: outbound HTTP fetch should be network-classified.
+  "worktrunk_install", // FN-4624: binary auto-install downloads from GitHub.
 ]);
 
 export const ACTION_GATE_NETWORK_API_TOOLS: ReadonlySet<string> = new Set([
   "fn_research_run",
   "fn_web_fetch", // FN-4603: honor network_api approval policy for web fetches.
+  "worktrunk_install", // FN-4624: gate binary auto-install under network_api policy.
 ]);
 
 export const READONLY_FN_TOOLS: ReadonlySet<string> = new Set([

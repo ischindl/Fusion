@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import type { AgentPermissionPolicy, WorktrunkSettings } from "@fusion/core";
 import { evaluateAgentActionGate, type AgentActionGateContext } from "./agent-action-gate.js";
@@ -187,14 +187,14 @@ async function applyInstallGate(opts: {
 
 async function downloadReleaseAsset(url: string, targetPath: string): Promise<string> {
   await assertSafeUrl(url, false);
-  const hash = createHash("sha256");
-
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const req = https.get(url, (res) => {
       const statusCode = res.statusCode ?? 0;
       if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
         req.destroy();
-        downloadReleaseAsset(new URL(res.headers.location, url).toString(), targetPath).then(() => resolve()).catch(reject);
+        downloadReleaseAsset(new URL(res.headers.location, url).toString(), targetPath)
+          .then((hash) => resolve(hash))
+          .catch(reject);
         return;
       }
       if (statusCode < 200 || statusCode >= 300) {
@@ -202,28 +202,56 @@ async function downloadReleaseAsset(url: string, targetPath: string): Promise<st
         return;
       }
 
+      const hash = createHash("sha256");
+      const file = createWriteStream(targetPath);
       let bytes = 0;
-      res.on("data", (chunk: Buffer) => {
+      let sizeExceeded = false;
+
+      const meter = new PassThrough();
+      meter.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
         if (bytes > WORKTRUNK_DOWNLOAD_MAX_BYTES) {
+          sizeExceeded = true;
           req.destroy(new Error("download exceeded size cap"));
-          return;
         }
-        hash.update(chunk);
       });
 
-      pipeline(res, createWriteStream(targetPath)).then(resolve).catch(reject);
+      // Hash transform: updates sha256 as data passes through.
+      const hashTransform = new PassThrough();
+      hashTransform.on("data", (chunk: Buffer) => hash.update(chunk));
+
+      // Pipe: res -> meter -> hashTransform -> file
+      // meter tracks bytes; hashTransform feeds sha256; file writes to disk.
+      meter.pipe(hashTransform).pipe(file);
+
+      // Feed the response into the meter
+      res.on("data", (chunk: Buffer) => meter.write(chunk));
+      res.on("end", () => meter.end());
+      res.on("error", (err) => { meter.destroy(err); });
+
+      file.on("finish", () => {
+        if (sizeExceeded) {
+          reject(new Error("download exceeded size cap"));
+        } else {
+          resolve(hash.digest("hex"));
+        }
+      });
+      file.on("error", reject);
+      meter.on("error", reject);
     });
 
-    req.setTimeout(WORKTRUNK_DOWNLOAD_TIMEOUT_MS, () => req.destroy(new Error("download timed out")));
+    req.setTimeout(WORKTRUNK_DOWNLOAD_TIMEOUT_MS, () =>
+      req.destroy(new Error("download timed out")),
+    );
     req.on("error", reject);
   });
-
-  return hash.digest("hex");
 }
 
 async function extractAsset(archivePath: string, innerBinaryName: string, targetPath: string): Promise<void> {
-  if (archivePath.endsWith(".tar.gz")) {
+  // NOTE: tar.gz archives extracted via system `tar`, .zip via system `unzip`.
+  // No heavy archive dependencies bundled; relies on POSIX tooling.
+  const name = path.basename(archivePath, ".download");
+  if (name.endsWith(".tar.gz")) {
     await execAsync(`tar -xzf "${archivePath}" -O "${innerBinaryName}" > "${targetPath}"`, {
       timeout: WORKTRUNK_PROBE_TIMEOUT_MS,
       maxBuffer: WORKTRUNK_DOWNLOAD_MAX_BYTES,
@@ -231,7 +259,7 @@ async function extractAsset(archivePath: string, innerBinaryName: string, target
     return;
   }
 
-  if (archivePath.endsWith(".zip")) {
+  if (name.endsWith(".zip")) {
     await execAsync(`unzip -p "${archivePath}" "${innerBinaryName}" > "${targetPath}"`, {
       timeout: WORKTRUNK_PROBE_TIMEOUT_MS,
       maxBuffer: WORKTRUNK_DOWNLOAD_MAX_BYTES,
