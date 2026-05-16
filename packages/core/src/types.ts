@@ -2858,6 +2858,9 @@ export interface ProjectSettings {
   /** Project default GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Falls back to global githubTrackingDefaultRepo when unset. */
   githubTrackingDefaultRepo?: string;
+  /** When true, tracking issue creation searches open/closed repo issues for likely duplicates before opening a new issue.
+   *  Default: true (set false to opt out). */
+  githubTrackingDedupEnabled?: boolean;
   /** GitHub auth strategy for issue-tracking API calls in this project (FN-3868).
    *  Default: "gh-cli". */
   githubAuthMode?: GithubAuthMode;

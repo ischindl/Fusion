@@ -11,6 +11,13 @@ import {
 import type { CreatedIssue } from "./github.js";
 import { GitHubClient } from "./github.js";
 import { resolveGithubTrackingAuth } from "./github-auth.js";
+import {
+  buildIssueSearchQueries,
+  DEDUP_MATCH_THRESHOLD,
+  extractFileScopePaths,
+  extractSymptomKeywords,
+  scoreCandidateIssue,
+} from "./github-tracking-dedup.js";
 
 const TRACKING_ISSUE_TITLE_LIMIT = 240;
 const TRACKING_ISSUE_BODY_SUMMARY_LIMIT = 500;
@@ -144,6 +151,7 @@ export type MaybeCreateTrackingIssueReason =
   | "issue_already_linked"
   | "no_repo_configured"
   | "no_title_available"
+  | "existing_issue_found"
   | "github_error"
   | "auth_token_missing"
   | "auth_gh_not_installed"
@@ -310,6 +318,72 @@ export async function maybeCreateTrackingIssue(
 
   const title = formatTrackingIssueTitle(latestTask);
   const body = formatTrackingIssueBody(latestTask);
+
+  if (deps.projectSettings.githubTrackingDedupEnabled !== false) {
+    try {
+      const paths = extractFileScopePaths(latestTask as Task & { prompt?: string });
+      const keywords = extractSymptomKeywords(latestTask, { max: 6 });
+      if (paths.length > 0 || keywords.length > 0) {
+        const queries = buildIssueSearchQueries(paths, keywords);
+        const byNumber = new Map<number, {
+          number: number;
+          title: string;
+          body: string | null;
+          html_url: string;
+          state: "open" | "closed";
+          updatedAt?: string;
+        }>();
+
+        for (const query of queries) {
+          const candidates = await githubClient.searchIssues(repo.owner, repo.repo, query, { state: "all", limit: 10 });
+          for (const candidate of candidates) {
+            if (!byNumber.has(candidate.number)) {
+              byNumber.set(candidate.number, candidate);
+            }
+          }
+
+          const scored = [...byNumber.values()]
+            .map((candidate) => ({ candidate, ...scoreCandidateIssue(candidate, paths, keywords) }))
+            .filter((entry) => entry.score >= DEDUP_MATCH_THRESHOLD)
+            .filter((entry) => entry.matchedPaths.length > 0 || entry.matchedKeywords.length >= 2)
+            .sort((a, b) => b.score - a.score);
+
+          const bestMatch = scored[0];
+          if (bestMatch) {
+            await deps.taskStore.linkGithubIssue(task.id, {
+              owner: repo.owner,
+              repo: repo.repo,
+              number: bestMatch.candidate.number,
+              url: bestMatch.candidate.html_url,
+              createdAt: bestMatch.candidate.updatedAt ?? new Date().toISOString(),
+            });
+
+            await deps.taskStore.recordActivity({
+              type: "task:updated",
+              taskId: task.id,
+              taskTitle: latestTask.title,
+              details: `Linked existing issue ${repo.owner}/${repo.repo}#${bestMatch.candidate.number} (dedup match; see docs/triage-duplicate-detection-postmortem.md)`,
+              metadata: {
+                type: "github-issue-dedup-matched",
+                repo: `${repo.owner}/${repo.repo}`,
+                number: bestMatch.candidate.number,
+                htmlUrl: bestMatch.candidate.html_url,
+                score: bestMatch.score,
+                matchedPaths: bestMatch.matchedPaths,
+                matchedKeywords: bestMatch.matchedKeywords,
+                state: bestMatch.candidate.state,
+              },
+            });
+
+            return { created: false, reason: "existing_issue_found" };
+          }
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger?.warn?.(`[github-tracking] ${task.id}: duplicate-search failed; falling back to issue creation: ${message}`);
+    }
+  }
 
   try {
     const issue = await githubClient.createIssue({ owner: repo.owner, repo: repo.repo, title, body });
