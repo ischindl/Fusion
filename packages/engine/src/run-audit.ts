@@ -111,6 +111,7 @@ export type DatabaseMutationType =
   | "task:auto-recover-branch-misbound"
   | "task:auto-recover-completion-fanout"
   | "task:auto-recover-worktree-session-exhausted"
+  | "task:auto-recover-starved-refinement"
   | "task:finalize-unproven-blocked"
   | "task:integrity-reconcile-modified-files"
   | "task:integrity-warning"

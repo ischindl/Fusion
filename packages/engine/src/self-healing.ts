@@ -17,7 +17,7 @@ import { exec, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { getInReviewStallReason, getStalePausedReviewSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, type AgentStore, type TaskStore, type Settings, type Task, type MergeDetails } from "@fusion/core";
+import { getInReviewStallReason, getStalePausedReviewSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, type AgentStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger } from "./logger.js";
 import { getRegisteredWorktreePaths, isUsableTaskWorktree, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
@@ -191,6 +191,9 @@ export interface SelfHealingOptions {
 }
 
 const APPROVED_TRIAGE_RECOVERY_GRACE_MS = 60_000;
+const STARVED_REFINEMENT_RECOVERY_GRACE_MS = 10 * 60_000;
+const STARVED_PEER_PROGRESS_THRESHOLD = 3;
+const STARVED_REFINEMENT_ESCALATION_COOLDOWN_MS = STARVED_REFINEMENT_RECOVERY_GRACE_MS * 4;
 const ORPHANED_EXECUTION_RECOVERY_GRACE_MS = 60_000;
 const ACTIVE_MERGE_STATUSES = new Set(["merging", "merging-pr", "merging-fix"]);
 const NON_TERMINAL_STEP_STATUSES = new Set(["pending", "in-progress"]);
@@ -239,6 +242,19 @@ const DURABLE_ERROR_RECOVERY_BASE_COOLDOWN_MS = 30_000;
 const DURABLE_ERROR_RECOVERY_MAX_COOLDOWN_MS = 15 * 60_000;
 const RUNNING_ON_INACTIVE_TASK_STALE_RUN_MS = 5 * 60_000;
 const ORPHAN_RESCUE_SUBJECT_CAP = 10;
+
+function bumpTaskPriority(priority: TaskPriority | undefined): TaskPriority {
+  switch (priority ?? "normal") {
+    case "low":
+      return "normal";
+    case "normal":
+      return "high";
+    case "high":
+      return "urgent";
+    case "urgent":
+      return "urgent";
+  }
+}
 
 interface OrphanBranchInspection {
   branch: string;
@@ -433,6 +449,7 @@ export class SelfHealingManager {
       { name: "partial-progress-no-task-done", fn: () => this.recoverPartialProgressNoTaskDoneFailures().then(() => undefined) },
       { name: "orphaned-executions", fn: () => this.recoverOrphanedExecutions().then(() => undefined) },
       { name: "approved-triage", fn: () => this.recoverApprovedTriageTasks().then(() => undefined) },
+      { name: "recover-starved-refinement", fn: () => this.recoverStarvedRefinementTriageTasks().then(() => undefined) },
       { name: "orphaned-planning", fn: () => this.recoverOrphanedPlanningTasks().then(() => undefined) },
       { name: "recover-orphaned-agents", fn: () => this.recoverOrphanedAgents().then(() => undefined) },
       { name: "recover-stale-heartbeat-runs", fn: () => this.recoverStaleHeartbeatRuns().then(() => undefined) },
@@ -962,6 +979,7 @@ export class SelfHealingManager {
           { name: "recover-partial-progress-no-task-done", fn: () => this.recoverPartialProgressNoTaskDoneFailures() },
           { name: "recover-orphaned-executions", fn: () => this.recoverOrphanedExecutions() },
           { name: "recover-approved-triage", fn: () => this.recoverApprovedTriageTasks() },
+          { name: "recover-starved-refinement", fn: () => this.recoverStarvedRefinementTriageTasks() },
           { name: "recover-orphaned-planning", fn: () => this.recoverOrphanedPlanningTasks() },
           { name: "recover-ghost-review", fn: () => this.recoverGhostReviewTasks() },
           { name: "recover-orphaned-agents", fn: () => this.recoverOrphanedAgents() },
@@ -4578,6 +4596,114 @@ export class SelfHealingManager {
       return recovered;
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
       log.error(`Approved triage recovery failed: ${errorMessage}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Recover refinement tasks that have sat in triage long enough to indicate
+   * starvation while the rest of the board keeps progressing.
+   *
+   * Recovery is a bounded priority nudge only; tasks still route through the
+   * normal triage specification + approval pipeline.
+   */
+  async recoverStarvedRefinementTriageTasks(): Promise<number> {
+    try {
+      this.options.evictStaleTriageProcessing?.();
+
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false });
+      const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
+      const now = Date.now();
+
+      const candidates = tasks.filter((task) => {
+        if (task.column !== "triage") return false;
+        if (task.sourceType !== "task_refine") return false;
+        if (task.paused) return false;
+        if (task.status !== null && task.status !== "planning") return false;
+        if (planningIds.has(task.id)) return false;
+
+        const createdAtMs = new Date(task.createdAt).getTime();
+        const updatedAtMs = new Date(task.updatedAt).getTime();
+        if (!Number.isFinite(createdAtMs) || !Number.isFinite(updatedAtMs)) return false;
+        if (now - createdAtMs < STARVED_REFINEMENT_RECOVERY_GRACE_MS) return false;
+        if (now - updatedAtMs < STARVED_REFINEMENT_ESCALATION_COOLDOWN_MS) return false;
+
+        const peerProgressCount = tasks.filter((peer) =>
+          peer.id !== task.id &&
+          peer.column === "todo" &&
+          peer.sourceType !== "task_refine" &&
+          new Date(peer.updatedAt).getTime() > createdAtMs,
+        ).length;
+
+        return peerProgressCount >= STARVED_PEER_PROGRESS_THRESHOLD;
+      });
+
+      if (candidates.length === 0) return 0;
+
+      log.warn(`Found ${candidates.length} starved refinement triage task(s)`);
+
+      let recovered = 0;
+      for (const task of candidates) {
+        try {
+          const nextPriority = bumpTaskPriority(task.priority);
+          if (nextPriority === task.priority) continue;
+
+          const createdAtMs = new Date(task.createdAt).getTime();
+          const peerProgressCount = tasks.filter((peer) =>
+            peer.id !== task.id &&
+            peer.column === "todo" &&
+            peer.sourceType !== "task_refine" &&
+            new Date(peer.updatedAt).getTime() > createdAtMs,
+          ).length;
+
+          await this.store.updateTask(task.id, { priority: nextPriority });
+          await this.store.logEntry(
+            task.id,
+            `Auto-recovered starved refinement triage task: priority ${task.priority ?? "normal"} -> ${nextPriority} (age=${Math.max(0, now - createdAtMs)}ms, peerProgress=${peerProgressCount})`,
+          );
+
+          try {
+            const auditor = createRunAuditor(this.store, {
+              runId: generateSyntheticRunId("self-heal", task.id),
+              agentId: "self-healing",
+              taskId: task.id,
+              taskLineageId: task.lineageId ?? undefined,
+              phase: "triage-recovery",
+            });
+            await auditor.database({
+              type: "task:auto-recover-starved-refinement",
+              target: task.id,
+              metadata: {
+                taskId: task.id,
+                ageMs: Math.max(0, now - createdAtMs),
+                peerProgressCount,
+                escalation: "priority-bump",
+                previousPriority: task.priority ?? "normal",
+                nextPriority,
+                graceMs: STARVED_REFINEMENT_RECOVERY_GRACE_MS,
+                cooldownMs: STARVED_REFINEMENT_ESCALATION_COOLDOWN_MS,
+                peerThreshold: STARVED_PEER_PROGRESS_THRESHOLD,
+              },
+            });
+          } catch (auditErr: unknown) {
+            const auditErrMessage = auditErr instanceof Error ? auditErr.message : String(auditErr);
+            log.warn(`Failed to record starved refinement recovery audit for ${task.id}: ${auditErrMessage}`);
+          }
+
+          recovered++;
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          log.error(`Failed to recover starved refinement task ${task.id}: ${errorMessage}`);
+        }
+      }
+
+      if (recovered > 0) {
+        log.log(`Recovered ${recovered} starved refinement triage task(s)`);
+      }
+      return recovered;
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.error(`Starved refinement triage recovery failed: ${errorMessage}`);
       return 0;
     }
   }
