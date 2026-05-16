@@ -27,7 +27,19 @@ import {
   stopAllDevServers,
   type RuntimeLogger,
 } from "@fusion/dashboard";
-import { aiMergeTask, MissionAutopilot, MissionExecutionLoop, HeartbeatMonitor, HeartbeatTriggerScheduler, type WakeContext, ProjectEngineManager, PeerExchangeService, setHostExtensionPaths } from "@fusion/engine";
+import {
+  aiMergeTask,
+  MissionAutopilot,
+  MissionExecutionLoop,
+  HeartbeatMonitor,
+  HeartbeatTriggerScheduler,
+  type WakeContext,
+  ProjectEngineManager,
+  PeerExchangeService,
+  HybridExecutor,
+  shouldUseHybridExecutor,
+  setHostExtensionPaths,
+} from "@fusion/engine";
 import { AuthStorage, DefaultPackageManager, ModelRegistry, SettingsManager, discoverAndLoadExtensions, createExtensionRuntime } from "@mariozechner/pi-coding-agent";
 import {
   getMergeStrategy,
@@ -1494,6 +1506,17 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     // Start engines for all registered projects eagerly
     await engineManager.startAll();
 
+    let hybridExecutor: HybridExecutor | null = null;
+    const hybridGate = await shouldUseHybridExecutor(centralCoreForEngine);
+    logSink.log(
+      `hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`,
+      "dashboard",
+    );
+    if (hybridGate.enabled) {
+      hybridExecutor = new HybridExecutor(centralCoreForEngine);
+      await hybridExecutor.initialize();
+    }
+
     // Start background reconciliation to detect and start engines for projects
     // registered after startup (without requiring dashboard UI access).
     // This ensures project task execution starts from backend runtime alone.
@@ -1558,6 +1581,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     }
 
     disposeCallbacks.push(async () => {
+      if (hybridExecutor) {
+        await hybridExecutor.shutdown();
+      }
       await engineManager.stopAll();
       await closeCentralCoreBestEffort(centralCoreForEngine, "dispose cleanup");
     });
@@ -1565,6 +1591,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     app = createServer(store, {
       engine: cwdEngine,
       engineManager,
+      hybridExecutor,
       centralCore: centralCoreForEngine,
       authStorage: dashboardAuthStorage,
       modelRegistry,
@@ -1673,6 +1700,10 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logSink.warn(`Failed to stop dev servers: ${message}`, "dashboard");
+      }
+
+      if (hybridExecutor) {
+        await hybridExecutor.shutdown();
       }
 
       // Stop all project engines uniformly

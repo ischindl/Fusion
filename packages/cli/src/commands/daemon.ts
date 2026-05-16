@@ -24,7 +24,13 @@ import {
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getProjectSettingsPath, loadTlsCredentialsFromEnv } from "@fusion/dashboard";
-import { ProjectEngineManager, PeerExchangeService, setHostExtensionPaths } from "@fusion/engine";
+import {
+  ProjectEngineManager,
+  PeerExchangeService,
+  HybridExecutor,
+  shouldUseHybridExecutor,
+  setHostExtensionPaths,
+} from "@fusion/engine";
 import {
   AuthStorage,
   DefaultPackageManager,
@@ -327,6 +333,15 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   });
 
   await engineManager.startAll();
+
+  let hybridExecutor: HybridExecutor | null = null;
+  const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
+  console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
+  if (hybridGate.enabled) {
+    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    await hybridExecutor.initialize();
+  }
+
   engineManager.startReconciliation();
 
   // Backfill Claude Code skills for all registered projects. No-op when
@@ -778,6 +793,10 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     shuttingDown = true;
 
     // Stop all project engines uniformly
+    if (hybridExecutor) {
+      await hybridExecutor.shutdown();
+    }
+
     await engineManager.stopAll();
 
     // Stop peer exchange service

@@ -24,7 +24,13 @@ import {
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getProjectSettingsPath, loadTlsCredentialsFromEnv } from "@fusion/dashboard";
-import { ProjectEngineManager, PeerExchangeService, setHostExtensionPaths } from "@fusion/engine";
+import {
+  ProjectEngineManager,
+  PeerExchangeService,
+  HybridExecutor,
+  shouldUseHybridExecutor,
+  setHostExtensionPaths,
+} from "@fusion/engine";
 import {
   AuthStorage,
   DefaultPackageManager,
@@ -354,6 +360,14 @@ export async function runServe(
 
   // Start engines for all registered projects eagerly
   await engineManager.startAll();
+
+  let hybridExecutor: HybridExecutor | null = null;
+  const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
+  console.log(`[serve] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
+  if (hybridGate.enabled) {
+    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    await hybridExecutor.initialize();
+  }
 
   // Backfill Claude Code skills for any registered project that's missing
   // `.claude/skills/fusion`. Runs only when pi-claude-cli is configured; for
@@ -972,6 +986,10 @@ export async function runServe(
       console.log(`[serve] active handles at shutdown: ${handleSummary}`);
     } catch {
       // Ignore errors getting handle types
+    }
+
+    if (hybridExecutor) {
+      await hybridExecutor.shutdown();
     }
 
     // Stop all project engines uniformly
