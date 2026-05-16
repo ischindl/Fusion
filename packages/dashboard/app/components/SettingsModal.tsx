@@ -2291,6 +2291,25 @@ export function SettingsModal({
               </select>
               <small>Delete chat sessions and rooms that have been idle for this many days. Default: Off.</small>
             </div>
+            <div className="form-group">
+              <label htmlFor="mailAutoCleanupDays">Auto-prune old mail</label>
+              <select
+                id="mailAutoCleanupDays"
+                className="select"
+                value={form.mailAutoCleanupDays ?? 0}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, mailAutoCleanupDays: Number(e.target.value) || 0 }))
+                }
+              >
+                <option value={0}>Off</option>
+                <option value={7}>7 days</option>
+                <option value={14}>14 days</option>
+                <option value={30}>30 days</option>
+                <option value={60}>60 days</option>
+                <option value={90}>90 days</option>
+              </select>
+              <small>Delete inbox/outbox messages older than this many days. Default: Off. 7 days is the suggested setting.</small>
+            </div>
             <h4 className="settings-section-heading settings-section-heading--spaced">Chat Rooms</h4>
             <div className="form-group">
               <label htmlFor="chatRoomRecentVerbatimMessages">Recent verbatim room messages</label>

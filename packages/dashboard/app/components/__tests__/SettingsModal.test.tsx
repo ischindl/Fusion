@@ -904,6 +904,36 @@ describe("SettingsModal", () => {
       expect(payload.chatAutoCleanupDays).toBe(14);
     });
 
+    it("renders and saves mail auto-prune retention", async () => {
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      const mailCleanupSelect = screen.getByLabelText("Auto-prune old mail") as HTMLSelectElement;
+      expect(mailCleanupSelect.value).toBe("0");
+
+      await userEvent.selectOptions(mailCleanupSelect, "7");
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.mailAutoCleanupDays).toBe(7);
+
+      mockUpdateSettings.mockClear();
+
+      await userEvent.selectOptions(mailCleanupSelect, "0");
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      const offPayload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(offPayload.mailAutoCleanupDays).toBe(0);
+    });
+
     it("renders and saves chat room compaction controls", async () => {
       renderModal({ initialSection: "general" });
       await waitForSettingsModalReady();
