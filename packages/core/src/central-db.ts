@@ -29,7 +29,7 @@ export { toJson, toJsonNullable, fromJson };
 
 // ── Schema Definition ───────────────────────────────────────────────────
 
-const CENTRAL_SCHEMA_VERSION = 11;
+const CENTRAL_SCHEMA_VERSION = 12;
 
 const CENTRAL_SCHEMA_SQL = `
 -- Projects table (project registry)
@@ -263,6 +263,25 @@ CREATE TABLE IF NOT EXISTS meshWriteQueue (
 );
 CREATE INDEX IF NOT EXISTS idxMeshWriteQueueReplay ON meshWriteQueue(targetNodeId, status, createdAt, id);
 
+-- FN-4788…FN-4800: pre-allocate secrets storage schema for upcoming secrets subsystem.
+CREATE TABLE IF NOT EXISTS secrets_global (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  value_ciphertext BLOB NOT NULL,
+  nonce BLOB NOT NULL,
+  description TEXT,
+  access_policy TEXT NOT NULL DEFAULT 'auto'
+    CHECK (access_policy IN ('auto', 'prompt', 'deny')),
+  env_exportable INTEGER NOT NULL DEFAULT 0
+    CHECK (env_exportable IN (0, 1)),
+  env_export_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_read_at TEXT,
+  last_read_by TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idxSecretsGlobalKey ON secrets_global(key);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS __meta (
   key TEXT PRIMARY KEY,
@@ -452,6 +471,26 @@ INSERT OR IGNORE INTO centralSettings (id, defaultProjectId, updatedAt)
 VALUES (1, NULL, CURRENT_TIMESTAMP);
 `;
 
+const CENTRAL_SCHEMA_V12_MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS secrets_global (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  value_ciphertext BLOB NOT NULL,
+  nonce BLOB NOT NULL,
+  description TEXT,
+  access_policy TEXT NOT NULL DEFAULT 'auto'
+    CHECK (access_policy IN ('auto', 'prompt', 'deny')),
+  env_exportable INTEGER NOT NULL DEFAULT 0
+    CHECK (env_exportable IN (0, 1)),
+  env_export_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_read_at TEXT,
+  last_read_by TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idxSecretsGlobalKey ON secrets_global(key);
+`;
+
 // ── Central Database Class ────────────────────────────────────────────────
 
 export class CentralDatabase {
@@ -596,6 +635,11 @@ export class CentralDatabase {
 
     if (currentVersion < 11) {
       this.db.exec(CENTRAL_SCHEMA_V11_MIGRATION_SQL);
+      migrated = true;
+    }
+
+    if (currentVersion < 12) {
+      this.db.exec(CENTRAL_SCHEMA_V12_MIGRATION_SQL);
       migrated = true;
     }
 
