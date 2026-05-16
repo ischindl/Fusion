@@ -420,6 +420,11 @@ export function SettingsModal({
     executorAllowSiblingBranchRename: false,
     worktreeNaming: "random",
     worktreesDir: "",
+    worktrunk: {
+      enabled: false,
+      binaryPath: "",
+      onFailure: "fail",
+    },
     includeTaskIdInCommit: true,
     worktreeInitCommand: "",
     ntfyEnabled: false,
@@ -1742,6 +1747,11 @@ export function SettingsModal({
         ...form,
         worktreeInitCommand: form.worktreeInitCommand?.trim() || undefined,
         worktreesDir: form.worktreesDir?.trim() || undefined,
+        worktrunk: {
+          enabled: form.worktrunk?.enabled === true,
+          binaryPath: form.worktrunk?.binaryPath?.trim() || undefined,
+          onFailure: form.worktrunk?.onFailure ?? "fail",
+        },
         taskPrefix: form.taskPrefix?.trim() || undefined,
         githubTrackingDefaultRepo: form.githubTrackingDefaultRepo?.trim() || undefined,
         githubAuthToken: form.githubAuthToken?.trim() || undefined,
