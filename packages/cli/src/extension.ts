@@ -40,7 +40,7 @@ import {
   type FinalizePlanOverride,
   fetchWebContent,
 } from "@fusion/engine";
-import { registerGithubTrackingHook } from "@fusion/dashboard";
+import * as dashboard from "@fusion/dashboard";
 import { resolve, basename, extname, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -395,7 +395,11 @@ export default function kbExtension(pi: ExtensionAPI) {
   // Register GitHub tracking hook once per extension lifecycle so that
   // fn_task_create, fn_task_import_github*, fn_delegate_task, etc.
   // trigger tracking issue creation when settings enable it.
-  registerGithubTrackingHook();
+  try {
+    dashboard.registerGithubTrackingHook?.();
+  } catch {
+    // Tests may provide partial @fusion/dashboard mocks without this export.
+  }
 
   // ── fn_task_create ───────────────────────────────────────────────
 

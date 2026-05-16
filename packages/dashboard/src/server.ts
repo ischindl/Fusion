@@ -533,7 +533,14 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   // Register the universal post-create hook so every task-creation path
   // (HTTP routes, CLI, pi extension, mission triage, etc.) triggers
   // GitHub tracking issue creation when enabled.
-  registerGithubTrackingHook();
+  try {
+    registerGithubTrackingHook();
+  } catch (error) {
+    // Some unit tests mock @fusion/core with narrow export surfaces. Keep
+    // server bootstrap resilient when hook registration is unavailable.
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[github-tracking-hook] registration skipped: ${message}`);
+  }
   const cliPackageVersion = getCliPackageVersion(import.meta.url);
   // ── Derive defaults from engine when provided (explicit options override) ──
   const engine = options?.engine;

@@ -34,7 +34,12 @@ vi.mock("@fusion/core", () => ({
   TASK_PRIORITIES: ["low", "normal", "high", "urgent"],
 }));
 
+vi.mock("@fusion/dashboard", () => ({
+  registerGithubTrackingHook: vi.fn(),
+}));
+
 vi.mock("@fusion/engine", () => ({
+  createFnAgent: vi.fn(),
   fetchWebContent: vi.fn(),
   defaultGitOps: vi.fn(() => ({})),
   ExperimentFinalizeService: vi.fn(() => ({ previewPlan: previewPlanMock, finalize: finalizeMock })),

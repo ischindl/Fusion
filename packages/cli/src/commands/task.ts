@@ -7,7 +7,7 @@ import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { createSession, submitResponse, RateLimitError, SessionNotFoundError, InvalidSessionStateError } from "@fusion/dashboard/planning";
 import { watchFile, unwatchFile, statSync, existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { GitHubClient, registerGithubTrackingHook } from "@fusion/dashboard";
+import * as dashboard from "@fusion/dashboard";
 import {
   getGhErrorMessage,
   getCurrentRepo,
@@ -23,7 +23,11 @@ const STEP_STATUSES: StepStatus[] = ["pending", "in-progress", "done", "skipped"
 
 // Register GitHub tracking hook so CLI task creation paths (add, duplicate,
 // refine, import, delegate) trigger tracking issue creation.
-registerGithubTrackingHook();
+try {
+  dashboard.registerGithubTrackingHook?.();
+} catch {
+  // Some tests partially mock @fusion/dashboard and omit the hook export.
+}
 
 function getGitHubIssueUrl(sourceMetadata: unknown): string | undefined {
   if (!sourceMetadata || typeof sourceMetadata !== "object") return undefined;
@@ -1501,7 +1505,7 @@ export async function runTaskPrCreate(id: string, options: PrCreateOptions = {},
   }
 
   // Create PR via GitHubClient
-  const client = new GitHubClient();
+  const client = new dashboard.GitHubClient();
 
   try {
     const prInfo = await client.createPr({

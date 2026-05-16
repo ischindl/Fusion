@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 const fetchWebContentMock = vi.hoisted(() => vi.fn());
 
+vi.mock("@fusion/dashboard", () => ({
+  registerGithubTrackingHook: vi.fn(),
+}));
+
 vi.mock("@fusion/engine", () => ({
+  createFnAgent: vi.fn(),
   fetchWebContent: fetchWebContentMock,
 }));
 
