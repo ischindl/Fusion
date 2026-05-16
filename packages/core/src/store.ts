@@ -3412,6 +3412,75 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return sorted.slice(offset, offset + Math.max(0, limit));
   }
 
+  async listStrandedRefinements(options?: {
+    freshnessThresholdMs?: number;
+  }): Promise<Array<{
+    task: Task;
+    reasons: Array<"untriaged-stale" | "awaiting-approval" | "failed" | "stuck-killed" | "recovery-backoff">;
+    nextRecoveryAt?: string;
+    ageMs: number;
+  }>> {
+    const defaultFreshnessThresholdMs = 10 * 60 * 1000;
+    const requestedThresholdMs = options?.freshnessThresholdMs;
+    const freshnessThresholdMs = Number.isFinite(requestedThresholdMs) && (requestedThresholdMs ?? 0) >= 0
+      ? requestedThresholdMs as number
+      : defaultFreshnessThresholdMs;
+
+    const selectClause = this.getTaskSelectClause(false);
+    const rows = this.db.prepare(
+      `SELECT ${selectClause} FROM tasks WHERE "sourceType" = 'task_refine' AND "column" = 'triage' ORDER BY createdAt ASC`,
+    ).all() as unknown as TaskRow[];
+
+    const now = Date.now();
+    const stranded: Array<{
+      task: Task;
+      reasons: Array<"untriaged-stale" | "awaiting-approval" | "failed" | "stuck-killed" | "recovery-backoff">;
+      nextRecoveryAt?: string;
+      ageMs: number;
+    }> = [];
+
+    for (const row of rows) {
+      const task = this.rowToTask(row);
+      if (task.paused) {
+        continue;
+      }
+
+      const reasons: Array<"untriaged-stale" | "awaiting-approval" | "failed" | "stuck-killed" | "recovery-backoff"> = [];
+      const createdAtMs = Date.parse(task.createdAt);
+      const ageMs = Number.isFinite(createdAtMs) ? Math.max(0, now - createdAtMs) : 0;
+
+      if (task.status === undefined && ageMs > freshnessThresholdMs) {
+        reasons.push("untriaged-stale");
+      }
+      if (task.status === "awaiting-approval") {
+        reasons.push("awaiting-approval");
+      }
+      if (task.status === "failed") {
+        reasons.push("failed");
+      }
+      if (task.status === "stuck-killed") {
+        reasons.push("stuck-killed");
+      }
+      if (task.nextRecoveryAt) {
+        const nextRecoveryAtMs = Date.parse(task.nextRecoveryAt);
+        if (Number.isFinite(nextRecoveryAtMs) && nextRecoveryAtMs > now) {
+          reasons.push("recovery-backoff");
+        }
+      }
+
+      if (reasons.length > 0) {
+        stranded.push({
+          task,
+          reasons,
+          nextRecoveryAt: task.nextRecoveryAt,
+          ageMs,
+        });
+      }
+    }
+
+    return stranded;
+  }
+
   private clearStartupSlimListMemo(): void {
     this.startupSlimListMemo.clear();
   }
