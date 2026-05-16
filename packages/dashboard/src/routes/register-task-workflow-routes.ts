@@ -605,6 +605,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const newTask = await scopedStore.duplicateTask(req.params.id);
+      await maybeCreateTaskTrackingIssue(scopedStore, newTask, options?.githubToken);
       res.status(201).json(newTask);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -631,6 +632,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       const refinedTask = await scopedStore.refineTask(req.params.id, trimmedFeedback);
+      await maybeCreateTaskTrackingIssue(scopedStore, refinedTask, options?.githubToken);
       await scopedStore.logEntry(req.params.id, "Refinement requested", trimmedFeedback);
       res.status(201).json(refinedTask);
     } catch (err: unknown) {

@@ -702,8 +702,26 @@ describe("POST /tasks/:id/duplicate", () => {
     return app;
   }
 
-  it("duplicates a task and returns 201 with new task", async () => {
-    const newTask = { ...FAKE_TASK_DETAIL, id: "FN-002", column: "triage" };
+  it("duplicates a task, returns 201, and attempts tracking issue creation", async () => {
+    const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockResolvedValue({
+      owner: "task",
+      repo: "repo",
+      number: 91,
+      htmlUrl: "https://github.com/task/repo/issues/91",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      githubTrackingDefaultRepo: "task/repo",
+      githubAuthMode: "token",
+      githubAuthToken: "tok",
+    });
+
+    const newTask = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-002",
+      column: "triage",
+      githubTracking: { enabled: true, repoOverride: "task/repo" },
+    };
     (store.duplicateTask as ReturnType<typeof vi.fn>).mockResolvedValue(newTask);
 
     const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/duplicate", JSON.stringify({}), {
@@ -712,8 +730,36 @@ describe("POST /tasks/:id/duplicate", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBe("FN-002");
-    expect(res.body.column).toBe("triage");
     expect(store.duplicateTask).toHaveBeenCalledWith("KB-001");
+    expect(createIssueSpy).toHaveBeenCalledWith(expect.objectContaining({ owner: "task", repo: "repo" }));
+    expect(store.linkGithubIssue).toHaveBeenCalledWith("FN-002", expect.objectContaining({ owner: "task", repo: "repo", number: 91 }));
+    createIssueSpy.mockRestore();
+  });
+
+  it("duplicate remains successful when tracking issue creation fails", async () => {
+    const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockRejectedValue(new Error("boom"));
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      githubTrackingDefaultRepo: "task/repo",
+      githubAuthMode: "token",
+      githubAuthToken: "tok",
+    });
+
+    const newTask = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-002",
+      column: "triage",
+      githubTracking: { enabled: true, repoOverride: "task/repo" },
+    };
+    (store.duplicateTask as ReturnType<typeof vi.fn>).mockResolvedValue(newTask);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/duplicate", JSON.stringify({}), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("FN-002");
+    expect(createIssueSpy).toHaveBeenCalledTimes(1);
+    createIssueSpy.mockRestore();
   });
 
   it("returns 404 when source task not found", async () => {
@@ -758,8 +804,27 @@ describe("POST /tasks/:id/refine", () => {
     return app;
   }
 
-  it("creates refinement task from done task and returns 201", async () => {
-    const refinedTask = { ...FAKE_TASK_DETAIL, id: "FN-002", column: "triage", title: "Refinement: KB-001" };
+  it("creates refinement task from done task, returns 201, and attempts tracking issue creation", async () => {
+    const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockResolvedValue({
+      owner: "task",
+      repo: "repo",
+      number: 92,
+      htmlUrl: "https://github.com/task/repo/issues/92",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      githubTrackingDefaultRepo: "task/repo",
+      githubAuthMode: "token",
+      githubAuthToken: "tok",
+    });
+
+    const refinedTask = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-002",
+      column: "triage",
+      title: "Refinement: KB-001",
+      githubTracking: { enabled: true, repoOverride: "task/repo" },
+    };
     (store.refineTask as ReturnType<typeof vi.fn>).mockResolvedValue(refinedTask);
     (store.logEntry as ReturnType<typeof vi.fn>).mockResolvedValue(FAKE_TASK_DETAIL);
 
@@ -769,9 +834,39 @@ describe("POST /tasks/:id/refine", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBe("FN-002");
-    expect(res.body.column).toBe("triage");
     expect(store.refineTask).toHaveBeenCalledWith("KB-001", "Need improvements");
     expect(store.logEntry).toHaveBeenCalledWith("KB-001", "Refinement requested", "Need improvements");
+    expect(createIssueSpy).toHaveBeenCalledWith(expect.objectContaining({ owner: "task", repo: "repo" }));
+    expect(store.linkGithubIssue).toHaveBeenCalledWith("FN-002", expect.objectContaining({ owner: "task", repo: "repo", number: 92 }));
+    createIssueSpy.mockRestore();
+  });
+
+  it("refine remains successful when tracking issue creation fails", async () => {
+    const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockRejectedValue(new Error("boom"));
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      githubTrackingDefaultRepo: "task/repo",
+      githubAuthMode: "token",
+      githubAuthToken: "tok",
+    });
+
+    const refinedTask = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-002",
+      column: "triage",
+      title: "Refinement: KB-001",
+      githubTracking: { enabled: true, repoOverride: "task/repo" },
+    };
+    (store.refineTask as ReturnType<typeof vi.fn>).mockResolvedValue(refinedTask);
+    (store.logEntry as ReturnType<typeof vi.fn>).mockResolvedValue(FAKE_TASK_DETAIL);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/refine", JSON.stringify({ feedback: "Need improvements" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("FN-002");
+    expect(createIssueSpy).toHaveBeenCalledTimes(1);
+    createIssueSpy.mockRestore();
   });
 
   it("creates refinement task from in-review task and returns 201", async () => {

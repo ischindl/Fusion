@@ -717,6 +717,67 @@ describe("POST /tasks", () => {
     createIssueSpy.mockRestore();
   });
 
+  it.each([
+    {
+      name: "project default when task override is omitted",
+      projectSettings: { githubTrackingEnabledByDefault: true, githubTrackingDefaultRepo: "task/repo", githubAuthMode: "token", githubAuthToken: "tok" },
+      globalSettings: {},
+      expectedCreatesIssue: true,
+    },
+    {
+      name: "global default when project default is omitted",
+      projectSettings: { githubTrackingDefaultRepo: "task/repo", githubAuthMode: "token", githubAuthToken: "tok" },
+      globalSettings: { githubTrackingEnabledByDefault: true },
+      expectedCreatesIssue: true,
+    },
+    {
+      name: "disabled when defaults are off at every level",
+      projectSettings: { githubTrackingDefaultRepo: "task/repo", githubAuthMode: "token", githubAuthToken: "tok" },
+      globalSettings: { githubTrackingEnabledByDefault: false },
+      expectedCreatesIssue: false,
+    },
+  ])("honors tracking precedence: $name", async ({ projectSettings, globalSettings, expectedCreatesIssue }) => {
+    const createIssueSpy = vi.spyOn(GitHubClient.prototype, "createIssue").mockResolvedValue({
+      owner: "task",
+      repo: "repo",
+      number: 43,
+      htmlUrl: "https://github.com/task/repo/issues/43",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue(projectSettings);
+    const mockGlobalSettingsStore = {
+      getSettings: vi.fn().mockResolvedValue(globalSettings),
+      updateSettings: vi.fn().mockResolvedValue({}),
+      getSettingsPath: vi.fn().mockReturnValue("/fake/home/.fusion/settings.json"),
+      init: vi.fn().mockResolvedValue(false),
+      invalidateCache: vi.fn(),
+    };
+    (store.getGlobalSettingsStore as ReturnType<typeof vi.fn>).mockReturnValue(mockGlobalSettingsStore);
+    (store.createTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...FAKE_TASK_DETAIL,
+      githubTracking: expectedCreatesIssue ? { enabled: true, repoOverride: "task/repo" } : undefined,
+    });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/tasks",
+      JSON.stringify({ description: "Track settings precedence" }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(201);
+    if (expectedCreatesIssue) {
+      expect(createIssueSpy).toHaveBeenCalledTimes(1);
+      expect(store.linkGithubIssue).toHaveBeenCalledWith("FN-001", expect.objectContaining({ owner: "task", repo: "repo", number: 43 }));
+    } else {
+      expect(createIssueSpy).not.toHaveBeenCalled();
+    }
+
+    createIssueSpy.mockRestore();
+  });
+
   it("uses store.createTask for local task creation", async () => {
     const createTask = vi.fn().mockResolvedValue({
       ...FAKE_TASK_DETAIL,
