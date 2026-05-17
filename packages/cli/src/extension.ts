@@ -22,6 +22,7 @@ import {
   resolveAgentProvisioningPolicy,
   TASK_PRIORITIES,
   resolveSecretAccessPolicy,
+  type SecretScope,
 } from "@fusion/core";
 import {
   getGhErrorMessage,
@@ -1521,7 +1522,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
       const secretsStore = await store.getSecretsStore();
-      const scopes = params.scope ? [params.scope] : ["project", "global"];
+      const scopes: SecretScope[] = params.scope ? [params.scope] : ["project", "global"];
 
       let record: import("@fusion/core").SecretRecord | null = null;
       let resolvedScope: "project" | "global" | null = null;
