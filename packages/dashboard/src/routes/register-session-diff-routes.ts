@@ -51,8 +51,8 @@ type BranchFallbackTask = {
   baseCommitSha?: string;
 };
 
-async function resolveTaskBranchRef(task: BranchFallbackTask, rootDir: string): Promise<string | undefined> {
-  const branch = task.branch?.trim();
+async function resolveTaskBranchRef(task: BranchFallbackTask, rootDir: string, derivedBranchHint?: string): Promise<string | undefined> {
+  const branch = task.branch?.trim() || derivedBranchHint?.trim();
   if (!branch) return undefined;
 
   try {
@@ -73,8 +73,8 @@ async function resolveTaskBranchRef(task: BranchFallbackTask, rootDir: string): 
   return undefined;
 }
 
-async function resolveBranchDiffBaseInRoot(task: BranchFallbackTask, rootDir: string): Promise<{ baseRef: string; branchRef: string } | undefined> {
-  const branchRef = await resolveTaskBranchRef(task, rootDir);
+async function resolveBranchDiffBaseInRoot(task: BranchFallbackTask, rootDir: string, derivedBranchHint?: string): Promise<{ baseRef: string; branchRef: string } | undefined> {
+  const branchRef = await resolveTaskBranchRef(task, rootDir, derivedBranchHint);
   if (!branchRef) return undefined;
 
   const baseRef = await resolveDiffBase(task, rootDir, branchRef, runGitCommand, { enableDisplayRecovery: true });
@@ -86,8 +86,9 @@ async function resolveBranchDiffBaseInRoot(task: BranchFallbackTask, rootDir: st
 async function tryBranchRefFallbackFiles(
   task: BranchFallbackTask & { id: string },
   rootDir: string,
+  derivedBranchHint?: string,
 ): Promise<string[]> {
-  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir);
+  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir, derivedBranchHint);
   if (!resolved) return [];
 
   try {
@@ -101,11 +102,12 @@ async function tryBranchRefFallbackFiles(
 async function tryBranchRefFallbackDetailedDiff(
   task: BranchFallbackTask,
   rootDir: string,
+  derivedBranchHint?: string,
 ): Promise<{
   files: Array<{ path: string; status: "added" | "modified" | "deleted"; additions: number; deletions: number; patch: string }>;
   stats: { filesChanged: number; additions: number; deletions: number };
 }> {
-  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir);
+  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir, derivedBranchHint);
   if (!resolved) {
     return { files: [], stats: { filesChanged: 0, additions: 0, deletions: 0 } };
   }
@@ -152,8 +154,9 @@ async function tryBranchRefFallbackDetailedDiff(
 async function tryBranchRefFallbackFileDiffs(
   task: BranchFallbackTask,
   rootDir: string,
+  derivedBranchHint?: string,
 ): Promise<Array<{ path: string; status: "added" | "modified" | "deleted" | "renamed"; diff: string; oldPath?: string }>> {
-  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir);
+  const resolved = await resolveBranchDiffBaseInRoot(task, rootDir, derivedBranchHint);
   if (!resolved) return [];
 
   const fileMap = new Map<string, { statusCode: string; oldPath?: string }>();
@@ -511,8 +514,10 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         return;
       }
 
+      const derivedBranchHint = task.branch?.trim() ? undefined : `fusion/${task.id.toLowerCase()}`;
+
       if (!task.worktree) {
-        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir());
+        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
         sessionFilesCache.set(task.id, {
           files,
           expiresAt: Date.now() + 10000,
@@ -530,7 +535,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       }
 
       if (!worktreeExists) {
-        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir());
+        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
         sessionFilesCache.set(task.id, {
           files,
           expiresAt: Date.now() + 10000,
@@ -541,7 +546,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       const worktree = task.worktree;
       if (!(await worktreeStillBelongsToTask(worktree, task.branch))) {
-        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir());
+        const files = await tryBranchRefFallbackFiles(task, scopedStore.getRootDir(), derivedBranchHint);
         sessionFilesCache.set(task.id, {
           files,
           expiresAt: Date.now() + 10000,
@@ -746,9 +751,10 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       const worktree = typeof req.query.worktree === "string" ? req.query.worktree : undefined;
       const resolvedWorktree = worktree || task.worktree;
+      const derivedBranchHint = task.branch?.trim() ? undefined : `fusion/${task.id.toLowerCase()}`;
 
       if (!resolvedWorktree) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir());
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
         res.json(fallback);
         return;
       }
@@ -760,12 +766,12 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         worktreeExists = false;
       }
       if (!worktreeExists) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir());
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
         res.json(fallback);
         return;
       }
       if (!(await worktreeStillBelongsToTask(resolvedWorktree, task.branch))) {
-        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir());
+        const fallback = await tryBranchRefFallbackDetailedDiff(task, scopedStore.getRootDir(), derivedBranchHint);
         res.json(fallback);
         return;
       }
@@ -948,9 +954,10 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         return;
       }
 
+      const derivedBranchHint = task.branch?.trim() ? undefined : `fusion/${task.id.toLowerCase()}`;
 
       if (!task.worktree) {
-        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir());
+        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
         fileDiffsCache.set(task.id, {
           files: fallbackFiles,
           expiresAt: Date.now() + 10000,
@@ -968,7 +975,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
       }
 
       if (!worktreeExists) {
-        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir());
+        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
         fileDiffsCache.set(task.id, {
           files: fallbackFiles,
           expiresAt: Date.now() + 10000,
@@ -979,7 +986,7 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
 
       const worktree = task.worktree;
       if (!(await worktreeStillBelongsToTask(worktree, task.branch))) {
-        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir());
+        const fallbackFiles = await tryBranchRefFallbackFileDiffs(task, scopedStore.getRootDir(), derivedBranchHint);
         fileDiffsCache.set(task.id, {
           files: fallbackFiles,
           expiresAt: Date.now() + 10000,

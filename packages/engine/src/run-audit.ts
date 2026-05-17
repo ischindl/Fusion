@@ -163,6 +163,8 @@ export type DatabaseMutationType =
   | "task:auto-recover-finalize-already-on-main"
   | "task:auto-recover-branch-misbound"
   | "task:auto-recover-node-unreachable"
+  | "task:auto-recover-worktree-metadata-rebound"
+  | "task:auto-recover-worktree-metadata-cleared"
   | "task:auto-reconciled-self-defeating-dep"
   /**
    * Metadata shape for node:handoff:* and node:lease:* events:

@@ -2321,7 +2321,7 @@ export class SelfHealingManager {
         phase: "worktree-metadata-reconcile",
       });
       await auditor.database({
-        type: input.mutationType as never,
+        type: input.mutationType,
         target: input.taskId,
         metadata: {
           taskId: input.taskId,
