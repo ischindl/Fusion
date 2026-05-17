@@ -207,6 +207,47 @@ describe("branch contamination recovery classification", () => {
     expect(range).toBe("0");
   });
 
+  it("reanchors without checkout -B when detached worktree is already at base on bound branch", async () => {
+    const { repoDir, baseSha } = await setupRepo();
+    const secondaryWorktree = path.join(repoDir, "../feature-secondary");
+    await run(`git worktree add --detach ${JSON.stringify(secondaryWorktree)} ${baseSha}`, repoDir);
+    dirs.push(secondaryWorktree);
+
+    await expect(
+      run(`git checkout -B feature ${baseSha}`, secondaryWorktree),
+    ).rejects.toThrow(/already used by worktree/i);
+
+    const result = await reanchorBranchToBase({
+      repoDir,
+      worktreePath: secondaryWorktree,
+      branchName: "feature",
+      baseSha,
+      taskId: "FN-4884",
+    });
+
+    const headSha = await run("git rev-parse HEAD", secondaryWorktree);
+    expect(result.previousTipSha).toBe(baseSha);
+    expect(result.newTipSha).toBe(baseSha);
+    expect(headSha).toBe(baseSha);
+  });
+
+  it("treats already-bound branch-at-base as a no-op fast-path", async () => {
+    const { repoDir, baseSha } = await setupRepo();
+
+    const result = await reanchorBranchToBase({
+      repoDir,
+      worktreePath: repoDir,
+      branchName: "feature",
+      baseSha,
+      taskId: "FN-4884",
+    });
+
+    const currentBranch = await run("git symbolic-ref --quiet --short HEAD", repoDir);
+    expect(result.previousTipSha).toBe(baseSha);
+    expect(result.newTipSha).toBe(baseSha);
+    expect(currentBranch).toBe("feature");
+  });
+
   it("auto-recovers by dropping already-upstream foreign commits and preserving remaining branch work", async () => {
     const { repoDir, baseSha } = await setupRepo();
     await writeFile(path.join(repoDir, "foreign.txt"), "", "utf-8");

@@ -558,6 +558,29 @@ export async function reanchorBranchToBase(
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
   });
+
+  const worktreeHeadSha = await revParse(worktreePath, "HEAD");
+  const branchTipSha = previousTipSha;
+  const worktreeHeadBranch = await runGit(worktreePath, "git symbolic-ref --quiet --short HEAD").catch(() => "");
+
+  if (worktreeHeadSha === baseSha && branchTipSha === baseSha) {
+    if (worktreeHeadBranch !== branchName) {
+      try {
+        await runGit(worktreePath, `git checkout ${quoteShellArg(branchName)}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("already used by worktree")) {
+          throw error;
+        }
+      }
+    }
+    await assertCleanBranchAtBase(repoDir, branchName, baseSha, taskId);
+    return {
+      previousTipSha,
+      newTipSha: previousTipSha,
+    };
+  }
+
   await runGit(worktreePath, `git checkout --detach ${quoteShellArg(baseSha)}`);
   await runGit(worktreePath, `git checkout -B ${quoteShellArg(branchName)} ${quoteShellArg(baseSha)}`);
   await assertCleanBranchAtBase(repoDir, branchName, baseSha, taskId);
