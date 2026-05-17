@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { subscribeSse } from "../sse-bus";
 import { getScopedItem, removeScopedItem, setScopedItem } from "../utils/projectStorage";
+import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 
 const ACTIVE_ROOM_STORAGE_KEY = "fusion:chat-active-room";
 
@@ -68,10 +69,21 @@ export function useChatRooms(
   projectId?: string,
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
 ): UseChatRoomsResult {
-  const [rooms, setRooms] = useState<ChatRoom[]>([]);
-  const [roomsLoading, setRoomsLoading] = useState(true);
+  const roomsCacheKey = `${SWR_CACHE_KEYS.CHAT_ROOMS}:${projectId ?? "global"}`;
+  const activeRoomCacheKey = `${SWR_CACHE_KEYS.ACTIVE_CHAT_ROOM_ID}:${projectId ?? "global"}`;
+  const [rooms, setRooms] = useState<ChatRoom[]>(() => {
+    const cached = readCache<ChatRoom[]>(roomsCacheKey);
+    return Array.isArray(cached) ? cached : [];
+  });
+  const [roomsLoading, setRoomsLoading] = useState(() => rooms.length === 0);
   const [roomsError, setRoomsError] = useState<string | null>(null);
-  const [activeRoom, setActiveRoom] = useState<ChatRoom | null>(null);
+  const [activeRoom, setActiveRoom] = useState<ChatRoom | null>(() => {
+    const cachedRoomId = readCache<string>(activeRoomCacheKey);
+    if (!cachedRoomId) {
+      return null;
+    }
+    return rooms.find((room) => room.id === cachedRoomId) ?? null;
+  });
   const [activeRoomMembers, setActiveRoomMembers] = useState<ChatRoomMember[]>([]);
   const [messages, setMessages] = useState<ChatRoomMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -117,14 +129,17 @@ export function useChatRooms(
   }, [projectId]);
 
   const refreshRooms = useCallback(async () => {
-    setRoomsLoading(true);
+    if (roomsRef.current.length === 0) {
+      setRoomsLoading(true);
+    }
     try {
       const data = await fetchChatRooms({}, projectId);
       const sortedRooms = sortRooms(data.rooms);
       setRooms(sortedRooms);
+      writeCache(roomsCacheKey, sortedRooms, { maxBytes: 500_000 });
       setRoomsError(null);
 
-      const persistedRoomId = getScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+      const persistedRoomId = readCache<string>(activeRoomCacheKey) ?? getScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
       if (persistedRoomId) {
         const persistedRoom = sortedRooms.find((room) => room.id === persistedRoomId) ?? null;
         if (persistedRoom) {
@@ -132,6 +147,7 @@ export function useChatRooms(
           void loadRoomData(persistedRoom, true);
         } else {
           removeScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+          writeCache(activeRoomCacheKey, "", { maxBytes: 500_000 });
         }
       }
     } catch (error) {
@@ -141,12 +157,13 @@ export function useChatRooms(
     } finally {
       setRoomsLoading(false);
     }
-  }, [addToast, loadRoomData, projectId]);
+  }, [activeRoomCacheKey, addToast, loadRoomData, projectId, roomsCacheKey]);
 
   const selectRoom = useCallback((roomId: string | null) => {
     if (!roomId) {
       setActiveRoom(null);
       removeScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+      writeCache(activeRoomCacheKey, "", { maxBytes: 500_000 });
       void loadRoomData(null, true);
       return;
     }
@@ -155,9 +172,10 @@ export function useChatRooms(
     setActiveRoom(room);
     if (room) {
       setScopedItem(ACTIVE_ROOM_STORAGE_KEY, room.id, projectId);
+      writeCache(activeRoomCacheKey, room.id, { maxBytes: 500_000 });
       void loadRoomData(room, true);
     }
-  }, [loadRoomData, projectId]);
+  }, [activeRoomCacheKey, loadRoomData, projectId]);
 
   const createRoomLocal = useCallback(async (input: { name: string; memberAgentIds: string[] }) => {
     const created = await createChatRoom({ name: input.name, memberAgentIds: input.memberAgentIds }, projectId);
@@ -166,10 +184,11 @@ export function useChatRooms(
     setRooms((previous) => upsertRoom(previous, nextRoom));
     setActiveRoom(nextRoom);
     setScopedItem(ACTIVE_ROOM_STORAGE_KEY, nextRoom.id, projectId);
+    writeCache(activeRoomCacheKey, nextRoom.id, { maxBytes: 500_000 });
     await loadRoomData(nextRoom, true);
 
     return nextRoom;
-  }, [loadRoomData, projectId]);
+  }, [activeRoomCacheKey, loadRoomData, projectId]);
 
   const deleteRoomLocal = useCallback(async (roomId: string) => {
     await deleteChatRoom(roomId, projectId);
@@ -180,8 +199,9 @@ export function useChatRooms(
       setActiveRoomMembers([]);
       setMessages([]);
       removeScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+      writeCache(activeRoomCacheKey, "", { maxBytes: 500_000 });
     }
-  }, [projectId]);
+  }, [activeRoomCacheKey, projectId]);
 
   const sendRoomMessage = useCallback(async (content: string, opts?: { attachments?: ChatAttachment[] }) => {
     const activeRoomSnapshot = activeRoomRef.current;
@@ -279,6 +299,7 @@ export function useChatRooms(
             setActiveRoomMembers([]);
             setMessages([]);
             removeScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+            writeCache(activeRoomCacheKey, "", { maxBytes: 500_000 });
           }
         },
         "chat:room:member:added": (event) => {
@@ -359,7 +380,7 @@ export function useChatRooms(
         },
       },
     });
-  }, [projectId, refreshRooms]);
+  }, [activeRoomCacheKey, projectId, refreshRooms]);
 
   useEffect(() => {
     if (!activeRoom) return;
@@ -368,8 +389,9 @@ export function useChatRooms(
       setActiveRoomMembers([]);
       setMessages([]);
       removeScopedItem(ACTIVE_ROOM_STORAGE_KEY, projectId);
+      writeCache(activeRoomCacheKey, "", { maxBytes: 500_000 });
     }
-  }, [activeRoom, projectId, rooms]);
+  }, [activeRoom, activeRoomCacheKey, projectId, rooms]);
 
   return {
     rooms,
