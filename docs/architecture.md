@@ -994,7 +994,7 @@ The client treats mapping persistence as part of onboarding success. If mapping 
 | GET | `/api/nodes/:id/settings` | Fetch settings from a remote node. |
 | POST | `/api/nodes/:id/settings/push` | Push local settings to a remote node. |
 | POST | `/api/nodes/:id/settings/pull` | Pull settings from a remote node. |
-| GET | `/api/nodes/:id/settings/sync-status` | Get sync status and diff summary. |
+| GET | `/api/nodes/:id/settings/sync-status` | Get sync status and diff summary (includes `actionableDenialReason` when remote probe fails). |
 | POST | `/api/nodes/:id/auth/sync` | Sync model auth snapshots (push/pull, checksum/version validated). |
 | POST | `/api/nodes/:id/secrets/push` | Push local secrets snapshot to a remote node *(planned; follow-up FN-4867)*. |
 | POST | `/api/nodes/:id/secrets/pull` | Pull secrets snapshot from a remote node *(planned; follow-up FN-4867)*. |
