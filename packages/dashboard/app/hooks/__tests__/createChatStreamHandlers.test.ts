@@ -2,7 +2,23 @@ import { describe, expect, it, vi } from "vitest";
 import { createChatStreamHandlers } from "../createChatStreamHandlers";
 
 describe("createChatStreamHandlers", () => {
-  it("preserves whitespace across streamed text deltas", () => {
+  it.each([
+    {
+      name: "empty delta sandwiched between spaced chunks",
+      chunks: ["Hello.", "", " World."],
+      expected: "Hello. World.",
+    },
+    {
+      name: "multiple sentence boundaries across four chunks",
+      chunks: ["One.", " Two.", " Three.", " Four."],
+      expected: "One. Two. Three. Four.",
+    },
+    {
+      name: "whitespace-only final delta immediately before done",
+      chunks: ["Trailing", " "],
+      expected: "Trailing ",
+    },
+  ])("preserves whitespace across streamed text deltas (%s)", ({ chunks, expected }) => {
     vi.useFakeTimers();
 
     let text = "";
@@ -23,20 +39,20 @@ describe("createChatStreamHandlers", () => {
       onError,
     });
 
-    handlers.onText("Hello.");
-    handlers.onText("");
-    handlers.onText(" World.");
+    for (const chunk of chunks) {
+      handlers.onText(chunk);
+    }
 
     vi.advanceTimersToNextTimer();
 
-    expect(text).toBe("Hello. World.");
+    expect(text).toBe(expected);
 
     handlers.onDone({ messageId: "m-1" });
     expect(onDone).toHaveBeenCalledWith({
       messageId: "m-1",
       message: undefined,
       accumulated: {
-        text: "Hello. World.",
+        text: expected,
         thinking: "",
         toolCalls: [],
         fallbackInfo: undefined,
