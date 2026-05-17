@@ -1173,7 +1173,13 @@ async function mergeTaskPr(
   }
 }
 
-export async function refreshPrInBackground(store: TaskStore, taskId: string, currentPrInfo: PrInfo, token?: string): Promise<void> {
+export async function refreshPrInBackground(
+  store: TaskStore,
+  taskId: string,
+  currentPrInfo: PrInfo,
+  token?: string,
+  options?: { onConflictDetected?: (taskId: string) => Promise<void> },
+): Promise<void> {
   try {
     let owner: string;
     let repo: string;
@@ -1210,6 +1216,7 @@ export async function refreshPrInBackground(store: TaskStore, taskId: string, cu
     const prInfo = {
       ...prior,
       ...mergeStatus.prInfo,
+      mergeable: mergeStatus.prInfo.mergeable,
       autoMergeOnGreen: prior?.autoMergeOnGreen,
       autoMergeStrategy: prior?.autoMergeStrategy,
       lastMergeError: prior?.lastMergeError,
@@ -1222,6 +1229,10 @@ export async function refreshPrInBackground(store: TaskStore, taskId: string, cu
     await store.updatePrInfo(taskId, prInfo);
     await syncPrReviewsToTask(store, task, reviewSnapshot);
     await applyChangesRequestedTransition(store, task, reviewSnapshot, prInfo);
+
+    if (prInfo.mergeable === "conflicting" && task?.branch && task?.worktree && options?.onConflictDetected) {
+      await options.onConflictDetected(taskId);
+    }
 
     if (prInfo.status === "merged") {
       await store.applyPrMergedTransition(taskId, {
@@ -3322,7 +3333,12 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
       // Trigger background refresh if stale (don't await, let it run)
       if (isStale) {
-        refreshPrInBackground(scopedStore, task.id, task.prInfo, githubToken);
+        const selfHealingManager = engine?.getSelfHealingManager?.();
+        refreshPrInBackground(scopedStore, task.id, task.prInfo, githubToken, {
+          onConflictDetected: async (taskId) => {
+            await selfHealingManager?.reclaimPrConflictForTask(taskId);
+          },
+        });
       }
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -3343,7 +3359,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
    */
   router.post("/tasks/:id/pr/refresh", async (req, res) => {
     try {
-      const { store: scopedStore } = await getProjectContext(req);
+      const { store: scopedStore, engine } = await getProjectContext(req);
       const task = await scopedStore.getTask(req.params.id);
 
       if (!task.prInfo) {
@@ -3395,6 +3411,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       const prInfo: PrInfo = {
         ...task.prInfo,
         ...mergeStatus.prInfo,
+        mergeable: mergeStatus.prInfo.mergeable,
         autoMergeOnGreen: task.prInfo.autoMergeOnGreen,
         autoMergeStrategy: task.prInfo.autoMergeStrategy,
         lastMergeError: task.prInfo.lastMergeError,
@@ -3407,6 +3424,15 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       await scopedStore.updatePrInfo(task.id, prInfo);
       await syncPrReviewsToTask(scopedStore, task, reviewSnapshot);
       await applyChangesRequestedTransition(scopedStore, task, reviewSnapshot, prInfo);
+
+      let conflictReclaimQueued = false;
+      if (prInfo.mergeable === "conflicting" && task.branch && task.worktree) {
+        const selfHealingManager = engine?.getSelfHealingManager?.();
+        if (selfHealingManager) {
+          await selfHealingManager.reclaimPrConflictForTask(task.id);
+          conflictReclaimQueued = true;
+        }
+      }
 
       if (prInfo.status === "merged") {
         await scopedStore.applyPrMergedTransition(task.id, {
@@ -3425,10 +3451,12 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       res.json({
         prInfo: refreshedTask.prInfo ?? prInfo,
         mergeReady: mergeStatus.mergeReady,
+        mergeable: prInfo.mergeable,
         blockingReasons: mergeStatus.blockingReasons,
         reviewDecision: reviewSnapshot.decision,
         checks: mergeStatus.checks,
         automationStatus: refreshedTask.status ?? task.status ?? null,
+        conflictReclaimQueued,
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -3441,6 +3469,30 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       } else {
         rethrowAsApiError(err);
       }
+    }
+  });
+
+  router.post("/tasks/:id/pr/reclaim-conflict", async (req, res) => {
+    try {
+      const { store: scopedStore, engine } = await getProjectContext(req);
+      const task = await scopedStore.getTask(req.params.id);
+      if (!task.prInfo) {
+        throw notFound("Task has no associated PR");
+      }
+      if (!task.branch || !task.worktree) {
+        throw conflict("Task has no branch/worktree to reclaim");
+      }
+
+      const selfHealingManager = engine?.getSelfHealingManager?.();
+      if (!selfHealingManager) {
+        return res.json({ queued: false, reason: "engine-unavailable" });
+      }
+
+      await selfHealingManager.reclaimPrConflictForTask(task.id);
+      res.json({ queued: true });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to queue PR conflict reclaim");
     }
   });
 

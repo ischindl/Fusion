@@ -2419,3 +2419,166 @@ describe("POST /tasks/:id/review/refresh", () => {
 
 // --- Git Management route tests ---
 // These are integration tests that run against the actual git repository
+
+describe("PR conflict refresh + reclaim routes", () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = createMockStore({
+      getTask: vi.fn(),
+      updatePrInfo: vi.fn().mockResolvedValue(undefined),
+      applyPrMergedTransition: vi.fn().mockResolvedValue(undefined),
+    });
+    mockIsGhAuthenticated.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function buildApp(options?: Parameters<typeof createApiRoutes>[1]) {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, options));
+    return app;
+  }
+
+  it("queues conflict reclaim during refresh when mergeable is conflicting", async () => {
+    const task = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-900",
+      branch: "fusion/fn-900",
+      worktree: "/tmp/test/.worktrees/fn-900",
+      prInfo: {
+        url: "https://github.com/owner/repo/pull/900",
+        number: 900,
+        status: "open",
+        title: "PR",
+        headBranch: "fusion/fn-900",
+        baseBranch: "main",
+        commentCount: 0,
+      },
+    };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    vi.spyOn(GitHubClient.prototype, "getPrReviewSnapshot").mockResolvedValue({
+      decision: "approved",
+      items: [],
+      summary: { approved: 0, changesRequested: 0, commented: 0 },
+    } as any);
+    vi.spyOn(GitHubClient.prototype, "getPrMergeStatus").mockResolvedValue({
+      mergeReady: false,
+      blockingReasons: ["conflict"],
+      checks: [],
+      prInfo: { status: "open", merged: false, mergeable: "conflicting" },
+    } as any);
+
+    const reclaimSpy = vi.fn().mockResolvedValue({ outcome: "reclaimed" });
+    const engine = {
+      getTaskStore: () => store,
+      getSelfHealingManager: () => ({ reclaimPrConflictForTask: reclaimSpy }),
+    };
+
+    const res = await REQUEST(buildApp({ engine } as any), "POST", `/api/tasks/${task.id}/pr/refresh`, JSON.stringify({}), { "content-type": "application/json" });
+    expect(res.status).toBe(200);
+    expect(res.body.conflictReclaimQueued).toBe(true);
+    expect(reclaimSpy).toHaveBeenCalledWith(task.id);
+  });
+
+  it("does not queue reclaim during refresh for non-conflicting PR", async () => {
+    const task = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-901",
+      branch: "fusion/fn-901",
+      worktree: "/tmp/test/.worktrees/fn-901",
+      prInfo: {
+        url: "https://github.com/owner/repo/pull/901",
+        number: 901,
+        status: "open",
+        title: "PR",
+        headBranch: "fusion/fn-901",
+        baseBranch: "main",
+        commentCount: 0,
+      },
+    };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    vi.spyOn(GitHubClient.prototype, "getPrReviewSnapshot").mockResolvedValue({
+      decision: "approved",
+      items: [],
+      summary: { approved: 0, changesRequested: 0, commented: 0 },
+    } as any);
+    vi.spyOn(GitHubClient.prototype, "getPrMergeStatus").mockResolvedValue({
+      mergeReady: true,
+      blockingReasons: [],
+      checks: [],
+      prInfo: { status: "open", merged: false, mergeable: "clean" },
+    } as any);
+
+    const reclaimSpy = vi.fn().mockResolvedValue({ outcome: "skipped" });
+    const engine = {
+      getTaskStore: () => store,
+      getSelfHealingManager: () => ({ reclaimPrConflictForTask: reclaimSpy }),
+    };
+
+    const res = await REQUEST(buildApp({ engine } as any), "POST", `/api/tasks/${task.id}/pr/refresh`, JSON.stringify({}), { "content-type": "application/json" });
+    expect(res.status).toBe(200);
+    expect(res.body.conflictReclaimQueued).toBe(false);
+    expect(reclaimSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns queued true for manual reclaim when conflict reclaim is available", async () => {
+    const task = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-904",
+      branch: "fusion/fn-904",
+      worktree: "/tmp/test/.worktrees/fn-904",
+      prInfo: {
+        url: "https://github.com/owner/repo/pull/904",
+        number: 904,
+        status: "open",
+        title: "PR",
+        headBranch: "fusion/fn-904",
+        baseBranch: "main",
+        commentCount: 0,
+        mergeable: "conflicting",
+      },
+    };
+    const reclaimSpy = vi.fn().mockResolvedValue({ outcome: "reclaimed" });
+    const engine = {
+      getTaskStore: () => store,
+      getSelfHealingManager: () => ({ reclaimPrConflictForTask: reclaimSpy }),
+    };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    const res = await REQUEST(buildApp({ engine } as any), "POST", `/api/tasks/${task.id}/pr/reclaim-conflict`, JSON.stringify({}), { "content-type": "application/json" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ queued: true });
+  });
+
+  it("returns 404 for manual reclaim when task has no PR", async () => {
+    const task = { ...FAKE_TASK_DETAIL, id: "FN-902", prInfo: undefined };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    const res = await REQUEST(buildApp(), "POST", `/api/tasks/${task.id}/pr/reclaim-conflict`, JSON.stringify({}), { "content-type": "application/json" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 409 for manual reclaim when task has no branch/worktree", async () => {
+    const task = {
+      ...FAKE_TASK_DETAIL,
+      id: "FN-903",
+      branch: null,
+      worktree: null,
+      prInfo: {
+        url: "https://github.com/owner/repo/pull/903",
+        number: 903,
+        status: "open",
+        title: "PR",
+        headBranch: "fusion/fn-903",
+        baseBranch: "main",
+        commentCount: 0,
+        mergeable: "conflicting",
+      },
+    };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    const res = await REQUEST(buildApp(), "POST", `/api/tasks/${task.id}/pr/reclaim-conflict`, JSON.stringify({}), { "content-type": "application/json" });
+    expect(res.status).toBe(409);
+  });
+});

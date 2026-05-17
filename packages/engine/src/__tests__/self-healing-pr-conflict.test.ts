@@ -28,9 +28,19 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function makeStore(task: Task | null, paused = false, enginePaused = false): TaskStore & EventEmitter {
+function makeStore(
+  task: Task | null,
+  paused = false,
+  enginePaused = false,
+  settingsOverrides: Partial<Settings> = {},
+): TaskStore & EventEmitter {
   const emitter = new EventEmitter();
-  const settings = { globalPause: paused, enginePaused, autoRecovery: { mode: "deterministic-only", maxRetries: 3 } } as Settings;
+  const settings = {
+    globalPause: paused,
+    enginePaused,
+    autoRecovery: { mode: "deterministic-only", maxRetries: 3 },
+    ...settingsOverrides,
+  } as Settings;
   return Object.assign(emitter, {
     getSettings: vi.fn(async () => settings),
     getTask: vi.fn((id: string) => (task && id === task.id ? task : null)),
@@ -156,6 +166,24 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
     const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
     const result = await manager.reclaimPrConflictForTask(task.id);
     expect(result).toEqual({ outcome: "skipped", reason: "missing-branch-or-worktree" });
+  });
+
+  it("skips checked out tasks", async () => {
+    const task = makeTask({ checkedOutBy: "agent-1" as any });
+    const store = makeStore(task);
+    const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
+    const result = await manager.reclaimPrConflictForTask(task.id);
+    expect(result).toEqual({ outcome: "skipped", reason: "checked-out" });
+  });
+
+  it("only sweeps tasks marked as conflicting", async () => {
+    const task = makeTask({ prInfo: { ...makeTask().prInfo!, mergeable: "clean" } as any });
+    const store = makeStore(task, false, false, { worktrunk: { enabled: true } as any });
+    const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
+    const reclaimSpy = vi.spyOn(manager, "reclaimPrConflictForTask");
+    const reclaimed = await manager.reclaimPrConflicts();
+    expect(reclaimed).toBe(0);
+    expect(reclaimSpy).not.toHaveBeenCalled();
   });
 
   it("skips when worktree has an active session", async () => {
