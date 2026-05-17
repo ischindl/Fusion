@@ -1136,9 +1136,12 @@ export function QuickChatFAB({
     }
     return roomsState.messages.map((message) => ({
       id: message.id,
+      sessionId: message.roomId,
       role: message.role,
       content: message.content,
+      thinkingOutput: message.thinkingOutput,
       toolCalls: undefined,
+      createdAt: message.createdAt,
     }));
   }, [messages, roomThreadActive, roomsState.messages]);
   const inputDisabled = roomThreadActive ? false : (!hasChatTarget || !activeSession);
