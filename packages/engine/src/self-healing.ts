@@ -40,6 +40,7 @@ import { classifyError, extractMissingModulePath, isOperatorActionableAgentError
 import { deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./branch-conflicts.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
 import { AutoRecoveryDispatcher } from "./auto-recovery.js";
+import { activeSessionRegistry } from "./active-session-registry.js";
 import { findAlreadyMergedTaskCommit } from "./already-merged-detector.js";
 import { resolveWorktreesDir } from "./worktree-paths.js";
 import type { OwnedLandedClassification } from "./merger.js";
@@ -1382,6 +1383,18 @@ export class SelfHealingManager {
         if (task.userPaused) continue;
         if (task.pausedReason === "worktrunk_operation_failed") {
           log.log(`[self-healing] skipping worktrunk-paused task ${task.id}`);
+          continue;
+        }
+        // FN-4811 follow-up (FN-4819): defer reclaim when the worktree is currently bound
+        // to a live executor/merger/step session. Without this, the sweep tries to
+        // `removeWorktree` and trips the active-session gate, which throws, which the outer
+        // catch escalates to AutoRecoveryDispatcher with class "branch-conflict-unrecoverable".
+        // That escalation marks the task `failed + paused`, even though the active session
+        // is making real progress. The right behavior is to skip this task this sweep and
+        // let the session complete — the reclaim will retry on a later sweep when no one
+        // is using the worktree.
+        if (activeSessionRegistry.isPathActive(task.worktree)) {
+          log.log(`[self-healing] deferring reclaim for ${task.id}: worktree ${task.worktree} has active session`);
           continue;
         }
         if (!await isUsableTaskWorktree(this.options.rootDir, task.worktree)) continue;
