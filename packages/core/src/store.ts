@@ -300,8 +300,10 @@ function normalizeTaskReviewState(reviewState: Task["reviewState"] | undefined):
   };
 }
 
-const TASK_ACTIVITY_LOG_ENTRY_LIMIT = 1_000;
-const TASK_ACTIVITY_LOG_OUTCOME_LIMIT = 4_000;
+const DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT = 1_000;
+const DEFAULT_TASK_ACTIVITY_LOG_OUTCOME_LIMIT = 4_000;
+let taskActivityLogEntryLimit = DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT;
+let taskActivityLogOutcomeLimit = DEFAULT_TASK_ACTIVITY_LOG_OUTCOME_LIMIT;
 const ARCHIVE_AGENT_LOG_SNAPSHOT_LIMIT = 25;
 const ARCHIVE_AGENT_LOG_SNIPPET_LIMIT = 160;
 const AGENT_LOG_TOOL_DETAIL_LIMIT = 4_096;
@@ -358,11 +360,40 @@ function assertSafeAbsolutePath(path: string): void {
   }
 }
 
+/**
+ * Test-only seam for overriding task activity log retention/truncation limits.
+ * Must not be used by production code. Tests overriding limits must restore
+ * defaults in afterEach/afterAll by passing null.
+ */
+export function __setTaskActivityLogLimitsForTesting(
+  overrides: { entryLimit?: number; outcomeLimit?: number } | null,
+): void {
+  if (overrides == null || (overrides.entryLimit == null && overrides.outcomeLimit == null)) {
+    taskActivityLogEntryLimit = DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT;
+    taskActivityLogOutcomeLimit = DEFAULT_TASK_ACTIVITY_LOG_OUTCOME_LIMIT;
+    return;
+  }
+
+  if (overrides.entryLimit != null) {
+    if (!Number.isInteger(overrides.entryLimit) || overrides.entryLimit < 1) {
+      throw new Error("Task activity log entryLimit must be an integer >= 1");
+    }
+    taskActivityLogEntryLimit = overrides.entryLimit;
+  }
+
+  if (overrides.outcomeLimit != null) {
+    if (!Number.isInteger(overrides.outcomeLimit) || overrides.outcomeLimit < 1) {
+      throw new Error("Task activity log outcomeLimit must be an integer >= 1");
+    }
+    taskActivityLogOutcomeLimit = overrides.outcomeLimit;
+  }
+}
+
 function truncateTaskLogOutcome(outcome: string | undefined): string | undefined {
-  if (!outcome || outcome.length <= TASK_ACTIVITY_LOG_OUTCOME_LIMIT) {
+  if (!outcome || outcome.length <= taskActivityLogOutcomeLimit) {
     return outcome;
   }
-  return `${outcome.slice(0, TASK_ACTIVITY_LOG_OUTCOME_LIMIT)}\n... outcome truncated to ${TASK_ACTIVITY_LOG_OUTCOME_LIMIT} characters ...`;
+  return `${outcome.slice(0, taskActivityLogOutcomeLimit)}\n... outcome truncated to ${taskActivityLogOutcomeLimit} characters ...`;
 }
 
 function truncateAgentLogDetail(
@@ -376,7 +407,7 @@ function truncateAgentLogDetail(
 }
 
 function compactTaskActivityLog(entries: TaskLogEntry[]): TaskLogEntry[] {
-  const recentEntries = entries.slice(-TASK_ACTIVITY_LOG_ENTRY_LIMIT);
+  const recentEntries = entries.slice(-taskActivityLogEntryLimit);
   return recentEntries.map((entry) => ({
     ...entry,
     outcome: truncateTaskLogOutcome(entry.outcome),
@@ -4946,8 +4977,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
         entry.runContext = runContext;
         task.log.push(entry);
-        if (task.log.length > TASK_ACTIVITY_LOG_ENTRY_LIMIT) {
-          task.log.splice(0, task.log.length - TASK_ACTIVITY_LOG_ENTRY_LIMIT);
+        if (task.log.length > taskActivityLogEntryLimit) {
+          task.log.splice(0, task.log.length - taskActivityLogEntryLimit);
         }
         task.updatedAt = new Date().toISOString();
 
@@ -4985,8 +5016,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
       const log = fromJson<TaskLogEntry[]>(row.log) || [];
       log.push(entry);
-      if (log.length > TASK_ACTIVITY_LOG_ENTRY_LIMIT) {
-        log.splice(0, log.length - TASK_ACTIVITY_LOG_ENTRY_LIMIT);
+      if (log.length > taskActivityLogEntryLimit) {
+        log.splice(0, log.length - taskActivityLogEntryLimit);
       }
       const updatedAt = new Date().toISOString();
 
