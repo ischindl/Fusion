@@ -2570,13 +2570,23 @@ export class TaskExecutor {
     executorLog.log(`execute() called for ${task.id} (already executing=${this.executing.has(task.id)})`);
     if (this.executing.has(task.id)) return;
 
+    // FN-4811 follow-up (FN-4814/FN-4811 production failure): claim the executing slot
+    // SYNCHRONOUSLY before any await. Without this, two concurrent execute() calls
+    // (e.g., scheduler dispatch + restart-recovery + task:moved event) both pass the
+    // `has()` check, both await `shouldDeferForHeartbeat`, both proceed past it, and
+    // both end up creating the same worktree path — producing two parallel runs for
+    // the same task with duplicate "Worktree created at /..." log entries within the
+    // same second. This is the canonical source of FN-4781/FN-4804/FN-4814/FN-4811
+    // mid-task worktree disappearance and cross-task contamination.
+    this.executing.add(task.id);
+
     const assignedAgentId = task.assignedAgentId;
     if (assignedAgentId && await this.shouldDeferForHeartbeat(assignedAgentId)) {
       executorLog.log(`${task.id}: skipping execute — agent ${assignedAgentId} has active heartbeat run (allowParallelExecution=false)`);
+      // Release the slot we just claimed — we never actually ran.
+      this.executing.delete(task.id);
       return;
     }
-
-    this.executing.add(task.id);
 
     executorLog.log(`Starting ${task.id}: ${task.title || task.description.slice(0, 60)}`);
 
