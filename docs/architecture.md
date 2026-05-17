@@ -235,6 +235,44 @@ Lifecycle contract (`types.ts` `isValidApprovalRequestTransition`):
 - Direct `pending -> completed` and all transitions from `denied`/`completed` (except no-op self-transition) are rejected
 - Same-state transitions (`from === to`) are treated as valid by the helper even though the intended lifecycle is forward-only
 
+### Secrets Store (`SecretsStore`)
+
+`SecretsStore` (`packages/core/src/secrets-store.ts`) provides encrypted key-value secret persistence for tasks/agents (FN-4791). It is designed so plaintext values are only available at explicit reveal time and are never persisted or logged in plaintext.
+
+Scope model:
+- `project` scope stores rows in `secrets` inside `.fusion/fusion.db` (project database, FN-4788).
+- `global` scope stores rows in `secrets_global` inside `~/.fusion/fusion-central.db` (central database, FN-4788).
+
+Encryption model:
+- Uses `createSecretCipher` from `packages/core/src/secrets-crypto.ts` (FN-4790).
+- Cipher is AES-256-GCM with a fresh random nonce per row encryption.
+- Key material comes from a `MasterKeyProvider`; resolver flow prefers OS keychain and falls back to `~/.fusion/master.key` when keychain storage is unavailable (FN-4789).
+
+Per-secret policy/metadata:
+- `SecretAccessPolicy` is a per-row union: `"auto" | "prompt" | "deny"`.
+  - `auto`: policy layer allows direct reads for trusted callers.
+  - `prompt`: reads are expected to be approval-gated through the approvals flow.
+  - `deny`: programmatic reveal is disallowed by policy.
+- Environment materialization metadata is stored on each secret:
+  - `envExportable: boolean`
+  - `envExportKey: string | null`
+  - Actual worktree `.env` materialization behavior is tracked separately (FN-4794); these fields are the metadata contract that drives that future flow.
+- Read provenance is captured on reveal via `lastReadAt` and `lastReadBy`.
+
+Error contract:
+- `SecretsStoreError` with `code` in `"duplicate-key" | "not-found" | "invalid-policy" | "invalid-key" | "decrypt-failed"`.
+
+Public API surface:
+- `listSecrets(scope?: SecretScope): SecretRecord[]`
+- `getSecretMetadata(id, scope): SecretRecord | null`
+- `createSecret({ scope, key, plaintextValue, description?, accessPolicy?, envExportable?, envExportKey? }): Promise<SecretRecord>`
+- `updateSecret(id, scope, patch): Promise<SecretRecord>` (`plaintextValue` updates re-encrypt and rotate nonce)
+- `deleteSecret(id, scope): void`
+- `revealSecret(id, scope, { agentId?, userId? }): Promise<{ key, plaintextValue }>` (the only decrypting method; updates read provenance)
+
+Settings boundary:
+- There is currently no top-level project/global setting that governs secrets behavior; access policy is defined per secret row. A global default policy is future work (FN-4792).
+
 ### Mesh state read path for dashboard topology
 
 - `GET /api/mesh/state` in `packages/dashboard/src/routes/register-mesh-routes.ts` is the authoritative dashboard/API read path for topology.
