@@ -293,8 +293,11 @@ Fusion has a Node Dashboard view for managing mesh network nodes. See [docs/arch
 | POST | `/api/nodes/:id/settings/pull` | Pull settings from a remote node |
 | GET | `/api/nodes/:id/settings/sync-status` | Get sync status and diff summary |
 | POST | `/api/nodes/:id/auth/sync` | Sync model auth credentials |
+| POST | `/api/nodes/:id/secrets/push` | Push local secrets snapshot to a remote node *(planned; follow-up FN-4867)* |
+| POST | `/api/nodes/:id/secrets/pull` | Pull remote secrets snapshot into local node *(planned; follow-up FN-4867)* |
 | POST | `/api/settings/sync-receive` | Receive pushed settings (inbound) |
 | POST | `/api/settings/auth-receive` | Receive auth credentials (inbound) |
+| POST | `/api/secrets/sync-receive` | Receive pushed secrets payload (inbound) *(planned; follow-up FN-4867)* |
 | GET | `/api/settings/auth-export` | Export local auth credentials |
 
 All remote node endpoints require the target node to have an `apiKey` configured. Inbound endpoints validate the `Authorization: Bearer <apiKey>` header against the local node's apiKey.
@@ -322,6 +325,14 @@ Use `fn_web_fetch` for lightweight URL reads from agent/chat sessions. It perfor
 - Security: blocks private/loopback/link-local hosts (including DNS-resolved private addresses) unless explicitly overridden in internal/test contexts
 - Scope: read-only fetch (no JS rendering, no auth flows, no POST/cookie workflows)
 - Use `agent-browser` skill when pages require JavaScript execution, interactive navigation, or richer browser behavior
+
+### `fn_secret_get`
+
+`fn_secret_get` is planned as the agent-facing secret-read tool, but it is not shipped in `packages/cli/src/extension.ts` yet in this branch.
+
+- Status: pending follow-up **FN-4867**
+- Do not assume parameters/response contract until implementation lands
+- Use [docs/secrets.md](./docs/secrets.md) for current shipped capabilities and pending integration status
 
 ## Agent Spawning (`spawn_agent` tool)
 
@@ -570,6 +581,17 @@ There is no separate `@fusion/tui` package or `pnpm tui` command anymore. Refer 
 The `fn serve` command starts Fusion as a headless node (API server + AI engine, no frontend). It binds to `0.0.0.0` by default for remote accessibility.
 
 See [docs/architecture.md](./docs/architecture.md) for the full reference including health endpoint and startup banner.
+
+## Secrets
+
+Fusion includes encrypted secret storage in project (`.fusion/fusion.db` → `secrets`) and global (`~/.fusion/fusion-central.db` → `secrets_global`) scopes.
+
+- Encryption: AES-256-GCM ciphertext + nonce storage; plaintext is not persisted
+- Per-secret access policy metadata: `auto` | `prompt` | `deny`
+- Policy default: `secretsAccessPolicy` with resolution `row → global default → "prompt"`
+- Master key today is provided through the core `MasterKeyProvider` abstraction
+
+See [docs/secrets.md](./docs/secrets.md) for implementation details and current availability gaps (FN-4867: tool/sync/env materialization wiring).
 
 ## Settings
 
