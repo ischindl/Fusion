@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EvalCategoryScore, EvalEvidenceReference, EvalFollowUpSuggestion } from "@fusion/core";
 import { getEval, listEvalRuns, listEvals } from "../api";
+import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 
 const FILTER_DEBOUNCE_MS = 300;
 const POLL_INTERVAL_MS = 15_000;
@@ -74,19 +75,32 @@ function normalizeDetail(raw: unknown): NormalizedEvalDetail {
 
 export function useEvals(options?: { projectId?: string }) {
   const projectId = options?.projectId;
+  const cacheSuffix = projectId ?? "";
+  const runsCacheKey = `${SWR_CACHE_KEYS.EVALS_RUNS_PREFIX}${cacheSuffix}`;
+  const resultsCacheKey = `${SWR_CACHE_KEYS.EVALS_RESULTS_PREFIX}${cacheSuffix}`;
+  const initialRuns = readCache<Array<{ id: string; createdAt: string; completedAt?: string; status: string; evaluatedTaskCount: number }>>(runsCacheKey);
+  const initialResults = readCache<NormalizedEvalSummary[]>(resultsCacheKey);
+  const hasHydratedRef = useRef(
+    (Array.isArray(initialRuns) && initialRuns.length > 0) || (Array.isArray(initialResults) && initialResults.length > 0),
+  );
   const [filters, setFilters] = useState<EvalFilters>({ q: "", runId: "", scoreMin: "", scoreMax: "" });
-  const [runs, setRuns] = useState<Array<{ id: string; createdAt: string; completedAt?: string; status: string; evaluatedTaskCount: number }>>([]);
-  const [results, setResults] = useState<NormalizedEvalSummary[]>([]);
-  const [selectedEvalId, setSelectedEvalId] = useState<string | null>(null);
+  const [runs, setRuns] = useState<Array<{ id: string; createdAt: string; completedAt?: string; status: string; evaluatedTaskCount: number }>>(() => (Array.isArray(initialRuns) ? initialRuns : []));
+  const [results, setResults] = useState<NormalizedEvalSummary[]>(() => (Array.isArray(initialResults) ? initialResults : []));
+  const [selectedEvalId, setSelectedEvalIdState] = useState<string | null>(null);
   const [selectedEval, setSelectedEval] = useState<NormalizedEvalDetail | null>(null);
   const [count, setCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!hasHydratedRef.current);
   const [error, setError] = useState<string | null>(null);
   const requestVersionRef = useRef(0);
+  const previousProjectIdRef = useRef<string | undefined>(projectId);
+  const selectedEvalIdRef = useRef<string | null>(selectedEvalId);
+  selectedEvalIdRef.current = selectedEvalId;
 
   const refresh = useCallback(async () => {
     const version = ++requestVersionRef.current;
-    setLoading(true);
+    if (!hasHydratedRef.current) {
+      setLoading(true);
+    }
     setError(null);
 
     try {
@@ -106,10 +120,15 @@ export function useEvals(options?: { projectId?: string }) {
       const rawResults = firstArray(listResponse.results, (listResponse as unknown as Record<string, unknown>).evals, (listResponse as unknown as Record<string, unknown>).items);
       const normalizedResults = rawResults.map(normalizeSummary);
       setResults(normalizedResults);
+      writeCache(
+        resultsCacheKey,
+        normalizedResults.length > 500 ? normalizedResults.slice(0, 500) : normalizedResults,
+        { maxBytes: 500_000 },
+      );
       setCount(typeof listResponse.count === "number" ? listResponse.count : normalizedResults.length);
 
       const rawRuns = firstArray(runsResponse.runs, (runsResponse as unknown as Record<string, unknown>).items);
-      setRuns(rawRuns.map((run) => {
+      const normalizedRuns = rawRuns.map((run) => {
         const runRecord = asRecord(run);
         const counts = asRecord(runRecord.counts);
         return {
@@ -119,10 +138,13 @@ export function useEvals(options?: { projectId?: string }) {
           status: String(runRecord.status ?? "pending"),
           evaluatedTaskCount: typeof counts.totalTasks === "number" ? counts.totalTasks : 0,
         };
-      }));
+      });
+      setRuns(normalizedRuns);
+      writeCache(runsCacheKey, normalizedRuns, { maxBytes: 500_000 });
+      hasHydratedRef.current = true;
 
-      if (selectedEvalId && !normalizedResults.some((result) => result.id === selectedEvalId)) {
-        setSelectedEvalId(null);
+      if (selectedEvalIdRef.current && !normalizedResults.some((result) => result.id === selectedEvalIdRef.current)) {
+        setSelectedEvalIdState(null);
         setSelectedEval(null);
       }
     } catch (err) {
@@ -133,13 +155,31 @@ export function useEvals(options?: { projectId?: string }) {
         setLoading(false);
       }
     }
-  }, [filters.q, filters.runId, filters.scoreMax, filters.scoreMin, projectId, selectedEvalId]);
+  }, [filters.q, filters.runId, filters.scoreMax, filters.scoreMin, projectId, resultsCacheKey, runsCacheKey]);
 
   const loadDetail = useCallback(async (evalId: string) => {
     const response = await getEval(evalId, projectId);
     const payload = (response as unknown as Record<string, unknown>).result ?? response;
     setSelectedEval(normalizeDetail(payload));
   }, [projectId]);
+
+  useEffect(() => {
+    if (previousProjectIdRef.current === projectId) {
+      return;
+    }
+    previousProjectIdRef.current = projectId;
+
+    const cachedRuns = readCache<Array<{ id: string; createdAt: string; completedAt?: string; status: string; evaluatedTaskCount: number }>>(runsCacheKey);
+    const cachedResults = readCache<NormalizedEvalSummary[]>(resultsCacheKey);
+    const hasCached =
+      (Array.isArray(cachedRuns) && cachedRuns.length > 0) ||
+      (Array.isArray(cachedResults) && cachedResults.length > 0);
+
+    setRuns(Array.isArray(cachedRuns) ? cachedRuns : []);
+    setResults(Array.isArray(cachedResults) ? cachedResults : []);
+    setLoading(!hasCached);
+    hasHydratedRef.current = hasCached;
+  }, [projectId, resultsCacheKey, runsCacheKey]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -165,6 +205,11 @@ export function useEvals(options?: { projectId?: string }) {
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
   }, [loadDetail, refresh, selectedEvalId]);
+
+  const setSelectedEvalId = useCallback((value: string | null) => {
+    selectedEvalIdRef.current = value;
+    setSelectedEvalIdState(value);
+  }, []);
 
   return {
     loading,

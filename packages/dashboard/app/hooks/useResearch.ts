@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { subscribeSse } from "../sse-bus";
 import type { ResearchAvailability, ResearchRunDetail, ResearchRunListItem } from "../research-types";
+import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const POLL_INTERVAL_MS = 4000;
@@ -102,11 +103,17 @@ function getRunActionState(run: ResearchRunDetail | null) {
 
 export function useResearch(options?: { projectId?: string }) {
   const projectId = options?.projectId;
-  const [runs, setRuns] = useState<ResearchRunListItem[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const cacheSuffix = projectId ?? "";
+  const runsCacheKey = `${SWR_CACHE_KEYS.RESEARCH_RUNS_PREFIX}${cacheSuffix}`;
+  const selectedIdCacheKey = `${SWR_CACHE_KEYS.RESEARCH_SELECTED_ID_PREFIX}${cacheSuffix}`;
+  const initialRuns = readCache<ResearchRunListItem[]>(runsCacheKey);
+  const initialSelectedId = readCache<string | null>(selectedIdCacheKey);
+  const hasHydratedRef = useRef(Array.isArray(initialRuns) && initialRuns.length > 0);
+  const [runs, setRuns] = useState<ResearchRunListItem[]>(() => (Array.isArray(initialRuns) ? initialRuns : []));
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialSelectedId ?? null);
   const [selectedRun, setSelectedRun] = useState<ResearchRunDetail | null>(null);
   const [availability, setAvailability] = useState<ResearchAvailability>({ available: true });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!(Array.isArray(initialRuns) && initialRuns.length > 0));
   const [error, setError] = useState<string | null>(null);
   const [uiError, setUiError] = useState<ResearchUiError | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -119,12 +126,25 @@ export function useResearch(options?: { projectId?: string }) {
       previousProjectIdRef.current = projectId;
       projectContextVersionRef.current++;
     }
-  }, [projectId]);
+
+    const cachedRuns = readCache<ResearchRunListItem[]>(runsCacheKey);
+    const cachedSelectedId = readCache<string | null>(selectedIdCacheKey);
+    const hasCachedRuns = Array.isArray(cachedRuns) && cachedRuns.length > 0;
+
+    setRuns(Array.isArray(cachedRuns) ? cachedRuns : []);
+    setSelectedRunId(cachedSelectedId ?? null);
+    setSelectedRun(null);
+    setLoading(!hasCachedRuns);
+    hasHydratedRef.current = hasCachedRuns;
+  }, [projectId, runsCacheKey, selectedIdCacheKey]);
 
   const refreshRuns = useCallback(async (query = searchQuery) => {
     const requestVersion = ++fetchVersionRef.current;
     const requestProjectId = projectId;
 
+    if (!hasHydratedRef.current) {
+      setLoading(true);
+    }
     setError(null);
     setUiError(null);
 
@@ -132,9 +152,12 @@ export function useResearch(options?: { projectId?: string }) {
       const response = await listResearchRuns({ q: query || undefined, limit: 100 }, requestProjectId);
       if (requestVersion !== fetchVersionRef.current || requestProjectId !== projectId) return;
       setRuns(response.runs);
+      writeCache(runsCacheKey, response.runs, { maxBytes: 500_000 });
+      hasHydratedRef.current = true;
       setAvailability(response.availability);
       if (selectedRunId && !response.runs.some((run) => run.id === selectedRunId)) {
         setSelectedRunId(null);
+        writeCache(selectedIdCacheKey, null, { maxBytes: 500_000 });
         setSelectedRun(null);
       }
     } catch (err) {
@@ -147,7 +170,7 @@ export function useResearch(options?: { projectId?: string }) {
         setLoading(false);
       }
     }
-  }, [projectId, searchQuery, selectedRunId]);
+  }, [projectId, runsCacheKey, searchQuery, selectedIdCacheKey, selectedRunId]);
 
   const loadRun = useCallback(async (runId: string) => {
     const response = await getResearchRun(runId, projectId);
@@ -157,7 +180,9 @@ export function useResearch(options?: { projectId?: string }) {
   }, [projectId]);
 
   useEffect(() => {
-    setLoading(true);
+    if (!hasHydratedRef.current) {
+      setLoading(true);
+    }
     const timer = window.setTimeout(() => {
       void refreshRuns(searchQuery);
     }, SEARCH_DEBOUNCE_MS);
@@ -206,11 +231,16 @@ export function useResearch(options?: { projectId?: string }) {
     };
   }, [projectId, refreshRuns, selectedRunId, loadRun]);
 
+  const setSelectedRunIdAndCache = useCallback((value: string | null) => {
+    setSelectedRunId(value);
+    writeCache(selectedIdCacheKey, value, { maxBytes: 500_000 });
+  }, [selectedIdCacheKey]);
+
   return {
     runs,
     selectedRun,
     selectedRunId,
-    setSelectedRunId,
+    setSelectedRunId: setSelectedRunIdAndCache,
     availability,
     loading,
     error,
