@@ -1606,4 +1606,231 @@ describe("Node settings sync routes", () => {
       expect(JSON.stringify(authEvent)).not.toContain("Bearer ");
     });
   });
+
+  describe("FN-4862 node-settings sync auth/ownership backstop", () => {
+    it("blocks POST /api/nodes/:id/settings/push when remote node apiKey is empty string and never calls fetch", async () => {
+      mockGetNode.mockResolvedValue({ ...createMockRemoteNode(), apiKey: "" });
+
+      const res = await request(app, "POST", "/api/nodes/node-remote-001/settings/push", JSON.stringify({}), { "content-type": "application/json" });
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Empty-string apiKey must be rejected the same as missing apiKey to prevent unauthenticated outbound sync.
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(MISSING_REMOTE_NODE_API_KEY_MESSAGE);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("blocks POST /api/nodes/:id/settings/pull when remote node apiKey is empty string and never calls fetch", async () => {
+      mockGetNode.mockResolvedValue({ ...createMockRemoteNode(), apiKey: "" });
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/nodes/node-remote-001/settings/pull",
+        JSON.stringify({ conflictResolution: "last-write-wins" }),
+        { "content-type": "application/json" },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Pull must short-circuit before remote calls when apiKey is empty to avoid unauthorized fetch attempts.
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(MISSING_REMOTE_NODE_API_KEY_MESSAGE);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["empty Authorization header", ""],
+      ["wrong scheme: Basic", "Basic test-api-key-123"],
+      ["wrong scheme: lowercase bearer", "bearer test-api-key-123"],
+      ["Bearer with empty token", "Bearer "],
+      ["Bearer with trailing whitespace token", "Bearer test-api-key-123 "],
+    ])("rejects %s on POST /api/settings/sync-receive with 401", async (_name, authorization) => {
+      mockListNodes.mockResolvedValue([createMockLocalNode()]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-remote-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: authorization },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Malformed or mismatched bearer variants must fail auth before any remote settings apply mutation.
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Missing or invalid Authorization header|Invalid apiKey/);
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["empty Authorization header", ""],
+      ["wrong scheme: Basic", "Basic test-api-key-123"],
+      ["wrong scheme: lowercase bearer", "bearer test-api-key-123"],
+      ["Bearer with empty token", "Bearer "],
+      ["Bearer with trailing whitespace token", "Bearer test-api-key-123 "],
+    ])("rejects %s on POST /api/settings/auth-receive with 401", async (_name, authorization) => {
+      mockListNodes.mockResolvedValue([createMockLocalNode()]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/auth-receive",
+        JSON.stringify({
+          authMaterial: { version: 1, exportedAt: "2026-05-17T00:00:00.000Z", checksum: "auth-checksum", payload: { providerAuth: {} } },
+          sourceNodeId: "node-remote-001",
+          timestamp: "2026-05-17T00:00:00.000Z",
+        }),
+        { "content-type": "application/json", Authorization: authorization },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Auth-receive must reject malformed bearer variants without touching auth snapshot apply/storage writes.
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Missing or invalid Authorization header|Invalid apiKey/);
+      expect(mockApplyAuthMaterialSnapshot).not.toHaveBeenCalled();
+      expect(mockAuthStorageSet).not.toHaveBeenCalled();
+    });
+
+    it("rejects sync-receive when sourceNodeId matches local node id but bearer is wrong", async () => {
+      mockListNodes.mockResolvedValue([createMockLocalNode()]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-local-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: "Bearer wrong-token" },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // sourceNodeId is informational and must never bypass bearer validation.
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain("Invalid apiKey");
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+
+    it("does NOT auto-trust sourceNodeId matching local node id — still requires bearer match", async () => {
+      const localNode = createMockLocalNode();
+      mockListNodes.mockResolvedValue([localNode]);
+      mockApplyRemoteSettings.mockResolvedValue({ success: true, globalCount: 0, projectCount: 0, authCount: 0 });
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-local-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: `Bearer ${localNode.apiKey}` },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Matching sourceNodeId is allowed only after valid bearer auth succeeds and reaches applyRemoteSettings.
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(mockApplyRemoteSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a bearer that is a strict prefix of the local apiKey", async () => {
+      const localNode = createMockLocalNode();
+      mockListNodes.mockResolvedValue([localNode]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-remote-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: "Bearer local-api-key" },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Exact token equality is required so prefix matches cannot authenticate.
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain("Invalid apiKey");
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+
+    it("rejects a bearer that is a strict suffix of the local apiKey", async () => {
+      const localNode = createMockLocalNode();
+      mockListNodes.mockResolvedValue([localNode]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-remote-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: "Bearer key-456" },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Exact token equality is required so suffix matches cannot authenticate.
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain("Invalid apiKey");
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+
+    it("accepts POST /api/settings/sync-receive with correct bearer and applies remote settings", async () => {
+      const localNode = createMockLocalNode();
+      mockListNodes.mockResolvedValue([localNode]);
+      mockApplyRemoteSettings.mockResolvedValue({ success: true, globalCount: 1, projectCount: 1, authCount: 0 });
+      const payload = { sourceNodeId: "node-remote-001", exportedAt: "2026-05-17T00:00:00.000Z", global: { theme: "dark" }, projects: { kb: { model: "gpt-5" } } };
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify(payload),
+        { "content-type": "application/json", Authorization: `Bearer ${localNode.apiKey}` },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Correct local bearer must still permit the ownership happy path and apply settings exactly once.
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(mockApplyRemoteSettings).toHaveBeenCalledTimes(1);
+      expect(mockApplyRemoteSettings).toHaveBeenCalledWith(payload);
+    });
+
+    it("accepts POST /api/settings/auth-receive with correct bearer and applies auth material", async () => {
+      const localNode = createMockLocalNode();
+      mockListNodes.mockResolvedValue([localNode]);
+      const authPayload = {
+        authMaterial: { version: 1, exportedAt: "2026-05-17T00:00:00.000Z", checksum: "auth-checksum", payload: { providerAuth: {} } },
+        sourceNodeId: "node-remote-001",
+        timestamp: "2026-05-17T00:00:00.000Z",
+      };
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/auth-receive",
+        JSON.stringify(authPayload),
+        { "content-type": "application/json", Authorization: `Bearer ${localNode.apiKey}` },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // Correct local bearer must still allow auth material import and AuthStorage write side effects.
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(mockApplyAuthMaterialSnapshot).toHaveBeenCalledTimes(1);
+      expect(mockAuthStorageSet).toHaveBeenCalled();
+    });
+
+    it("POST /api/settings/sync-receive does not echo the attempted bearer token in the 401 response body", async () => {
+      mockListNodes.mockResolvedValue([createMockLocalNode()]);
+
+      const res = await request(
+        app,
+        "POST",
+        "/api/settings/sync-receive",
+        JSON.stringify({ sourceNodeId: "node-remote-001", exportedAt: "2026-05-17T00:00:00.000Z", global: {}, projects: {} }),
+        { "content-type": "application/json", Authorization: "Bearer leaked-token-should-never-appear" },
+      );
+
+      // FN-4862 node-settings sync auth/ownership backstop.
+      // 401 bodies must avoid reflecting supplied bearer data to prevent credential leak-by-error-response.
+      expect(res.status).toBe(401);
+      expect(JSON.stringify(res.body)).not.toContain("leaked-token-should-never-appear");
+      expect(JSON.stringify(res.body)).not.toContain("Bearer ");
+      expect(mockApplyRemoteSettings).not.toHaveBeenCalled();
+    });
+  });
 });
