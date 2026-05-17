@@ -4,6 +4,7 @@ import {
   SWR_CACHE_KEYS,
   SWR_DEFAULT_MAX_AGE_MS,
   SWR_LONG_MAX_AGE_MS,
+  SWR_TASKS_MAX_AGE_MS,
   clearCache,
   readCache,
   writeCache,
@@ -123,6 +124,7 @@ describe("swrCache", () => {
     expect(SWR_CACHE_KEYS.MAILBOX_OUTBOX_PREFIX).toBe("kb-dashboard-mailbox-outbox-cache:");
     expect(SWR_CACHE_KEYS.MAILBOX_UNREAD_COUNT_PREFIX).toBe("kb-dashboard-mailbox-unread-cache:");
     expect(SWR_DEFAULT_MAX_AGE_MS).toBe(10 * 60 * 1000);
+    expect(SWR_TASKS_MAX_AGE_MS).toBe(60_000);
     expect(SWR_LONG_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000);
   });
 

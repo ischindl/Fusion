@@ -1,6 +1,9 @@
 /**
  * Lightweight stale-while-revalidate cache helpers for dashboard reload hydration.
  *
+ * Board task hydration uses a dedicated soft bound (`SWR_TASKS_MAX_AGE_MS`) so reloads do not present obviously stale task snapshots.
+ * Failed task revalidation clears the per-project tasks envelope to avoid re-hydrating stale data on the next reload.
+ *
  * Invalidation contract:
  * - Per-project task entries use `SWR_CACHE_KEYS.TASKS_PREFIX + projectId`.
  * - Version updates clear TASKS_PREFIX plus PROJECTS and CURRENT_PROJECT_ID.
@@ -35,7 +38,10 @@ interface CacheEnvelope<T> {
   data: T;
 }
 
+// Shared default for non-live dashboard hydration paths.
 export const SWR_DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
+// Board hydration soft bound: keep stale tasks visible briefly while forcing immediate revalidation.
+export const SWR_TASKS_MAX_AGE_MS = 60_000;
 export const SWR_LONG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function getLocalStorage(): Storage | null {
