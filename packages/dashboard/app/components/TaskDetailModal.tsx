@@ -26,6 +26,7 @@ import { useConfirm } from "../hooks/useConfirm";
 import { AgentLogViewer } from "./AgentLogViewer";
 import { ModelSelectorTab } from "./ModelSelectorTab";
 import { PrPanel } from "./PrPanel";
+import { PrCreateModal } from "./PrCreateModal";
 import { TaskComments } from "./TaskComments";
 import { TaskReviewTab } from "./TaskReviewTab";
 import { MergeDetails } from "./MergeDetails";
@@ -570,6 +571,7 @@ export function TaskDetailContent({
   const [specEditContent, setSpecEditContent] = useState(workingTask.prompt || "");
   const [specFeedback, setSpecFeedback] = useState("");
   const [showRefineModal, setShowRefineModal] = useState(false);
+  const [prCreateOpen, setPrCreateOpen] = useState(false);
 
   useEffect(() => {
     if (activeTab !== "logs" || logSubview !== "activity") {
@@ -3294,10 +3296,20 @@ export function TaskDetailContent({
                 isManualPrFlow={isManualPrFlow}
                 directMergeCommitStrategy={settings?.directMergeCommitStrategy}
                 prAuthAvailable={prAuthAvailable ?? false}
-                // TODO(FN-4758): wire create-PR modal trigger
-                onRequestCreatePr={undefined}
+                onRequestCreatePr={() => setPrCreateOpen(true)}
                 onPrUpdated={(prInfo) => {
                   (task as TaskDetail).prInfo = prInfo;
+                }}
+                addToast={addToast}
+              />
+              <PrCreateModal
+                open={prCreateOpen}
+                taskId={task.id}
+                projectId={projectId}
+                onClose={() => setPrCreateOpen(false)}
+                onCreated={(prInfo) => {
+                  (task as TaskDetail).prInfo = prInfo;
+                  setPrCreateOpen(false);
                 }}
                 addToast={addToast}
               />
