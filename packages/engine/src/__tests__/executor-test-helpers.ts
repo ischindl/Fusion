@@ -109,8 +109,12 @@ vi.mock("../worktree-names.js", async () => {
 });
 vi.mock("../worktree-pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worktree-pool.js")>();
+  const backend = await vi.importActual<typeof import("../worktree-backend.js")>("../worktree-backend.js");
   return {
     ...actual,
+    ActiveSessionWorktreeRemovalError: backend.ActiveSessionWorktreeRemovalError,
+    RemovalReason: backend.RemovalReason,
+    removeWorktree: vi.fn(actual.removeWorktree),
     classifyTaskWorktree: vi.fn().mockResolvedValue({ ok: true }),
     describeRegisteredWorktrees: vi.fn().mockResolvedValue({ rawOutput: "", canonicalized: [] }),
     isUsableTaskWorktree: vi.fn().mockResolvedValue(true),
