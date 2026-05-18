@@ -1903,7 +1903,7 @@ function TaskCardComponent({
           {showCreatePrQuickAction && (
             <button
               type="button"
-              className="btn btn-sm"
+              className="card-create-pr-action"
               title="Create a PR for this task"
               aria-label="Create pull request"
               onClick={(event) => {
@@ -1911,7 +1911,7 @@ function TaskCardComponent({
                 setIsPrCreateOpen(true);
               }}
             >
-              <GitPullRequest />
+              <GitPullRequest size={12} />
               Create PR
             </button>
           )}
