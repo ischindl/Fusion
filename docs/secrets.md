@@ -135,12 +135,22 @@ Fusion can materialize env-exportable secrets into each acquired task worktree w
 
 Settings shape is project-scoped in `ProjectSettings` (`packages/core/src/types.ts:2599-2609`): `secretsEnv` (env materialization config) and `secretsSyncPassphrase` (ciphertext already wrapped under local master key by caller; see `types.ts:2602-2604`).
 
-**Canonical test locations:**
-- `packages/core/src/__tests__/secrets-env.test.ts` — settings-contract tests (type shape, defaults, deprecated alias, store round-trip).
-- `packages/engine/src/__tests__/secrets-env-writer.test.ts` — materialization implementation (write/cleanup/fingerprint/overwrite-policy).
-- `packages/engine/src/__tests__/worktree-acquisition-secrets-env.test.ts` — worktree acquisition lifecycle integration.
-- `packages/engine/src/__tests__/worktree-pool-secrets-env-cleanup.test.ts` — worktree pool teardown cleanup.
-- `packages/engine/src/__tests__/reliability-interactions/secrets-env-materialization.test.ts` — reliability-layer interaction tests.
+### Test locations
+
+The settings contract (`SecretsEnvSettings` shape, defaults, project round-trip) is covered in `@fusion/core`:
+
+- `packages/core/src/__tests__/secrets-env.test.ts` — type contract + defaults
+- `packages/core/src/__tests__/store-settings.test.ts` — `secretsEnv` + `secretsSyncPassphrase` project round-trip
+
+The materialization implementation lives in `@fusion/engine` and is covered there:
+
+- `packages/engine/src/secrets-env-writer.ts` — `writeSecretsEnvFile` / `cleanupSecretsEnvFile`
+- `packages/engine/src/__tests__/secrets-env-writer.test.ts` — writer/cleanup unit coverage
+- `packages/engine/src/__tests__/worktree-acquisition-secrets-env.test.ts` — acquisition-time write
+- `packages/engine/src/__tests__/worktree-pool-secrets-env-cleanup.test.ts` — pool prune cleanup
+- `packages/engine/src/__tests__/reliability-interactions/secrets-env-materialization.test.ts` — cross-layer backstop
+
+New FN tasks that need to verify env materialization should target the engine-side files; the core-side test only guards the settings contract.
 
 ## Cross-node Sync
 
