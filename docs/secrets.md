@@ -23,7 +23,7 @@ Fusion's secrets subsystem provides encrypted-at-rest secret storage with projec
 | `secretsSyncPassphrase` project setting integration | Shipped | — | `packages/core/src/types.ts`, `packages/dashboard/src/routes/register-secrets-sync-routes.ts` |
 | Cross-node sync REST endpoints (`/api/nodes/:id/secrets/{push,pull}`, `/api/secrets/sync-receive`, `/api/secrets/sync-export`) | Shipped | — | `packages/dashboard/src/routes/register-secrets-sync-routes.ts`, `packages/dashboard/src/routes/register-secrets-sync-inbound-routes.ts` |
 | Audit-event registration on `FilesystemMutationType` for `secret:env-*` and `secret:sync-*` | Shipped | — | `packages/engine/src/run-audit.ts` |
-| Master-key rotation UX | Pending | FN-4867 (historical umbrella; implementation still open) | n/a |
+| Master-key rotation UX | Pending | — | n/a |
 | Per-secret TTL / rotation, KMS/Vault backends, per-node asymmetric sync | Out of scope | — | n/a |
 
 Current shipped behavior in this branch includes:
@@ -109,7 +109,7 @@ Approval integration is active through `fn_secret_get` policy handling (`package
 
 ## Dashboard CRUD
 
-Secret persistence primitives are shipped at the store/API layer; a dedicated end-user `SecretsView` remains separate product work.
+Dashboard secrets CRUD is shipped via `SecretsView` (`packages/dashboard/app/components/SecretsView.tsx`), backed by the existing secrets API/store surfaces.
 
 ## Agent Access (`fn_secret_get`)
 
