@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Task } from "@fusion/core";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import { BranchAttributionError } from "../branch-attribution.js";
@@ -108,4 +109,74 @@ describe("FN-5039 executor captureModifiedFiles attribution", () => {
     expect(files).toEqual([]);
     expect(filterFilesToOwnTaskCommitsMock).not.toHaveBeenCalled();
   });
+
+  it("scope-leak guard excludes foreign-only contamination from warning", async () => {
+    const store = createMockStore();
+    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
+    const executor = new TaskExecutor(store as any, "/repo");
+    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts"]);
+    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue([]);
+
+    const result = await (executor as any).evaluateTaskDoneScopeLeak(
+      { id: "FN-5039", baseCommitSha: "base123" } as Task,
+      "/repo/.worktrees/wt",
+      "## Review Level: 1",
+      { planOnlyScopeLeakEnforcement: "block" },
+    );
+
+    expect(result).toEqual({ blocked: false });
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      "FN-5039",
+      expect.stringMatching(/\[scope-leak\].*off-scope/),
+      undefined,
+      undefined,
+    );
+  });
+
+  it("scope-leak guard still warns for own committed off-scope files", async () => {
+    const store = createMockStore();
+    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
+    const executor = new TaskExecutor(store as any, "/repo");
+    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts", "AGENTS.md"]);
+    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue([]);
+
+    const result = await (executor as any).evaluateTaskDoneScopeLeak(
+      { id: "FN-5039", baseCommitSha: "base123" } as Task,
+      "/repo/.worktrees/wt",
+      "## Review Level: 1",
+      { planOnlyScopeLeakEnforcement: "block" },
+    );
+
+    expect(result).toEqual(expect.objectContaining({ blocked: true }));
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-5039",
+      expect.stringMatching(/\[scope-leak\].*AGENTS\.md/),
+      undefined,
+      undefined,
+    );
+  });
+
+  it("scope-leak guard still warns for uncommitted off-scope files", async () => {
+    const store = createMockStore();
+    store.parseFileScopeFromPrompt.mockResolvedValue(["task-file.ts"]);
+    const executor = new TaskExecutor(store as any, "/repo");
+    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue(["task-file.ts"]);
+    vi.spyOn(executor as any, "captureUncommittedModifiedFiles").mockResolvedValue(["AGENTS.md"]);
+
+    const result = await (executor as any).evaluateTaskDoneScopeLeak(
+      { id: "FN-5039", baseCommitSha: "base123" } as Task,
+      "/repo/.worktrees/wt",
+      "## Review Level: 1",
+      { planOnlyScopeLeakEnforcement: "block" },
+    );
+
+    expect(result).toEqual(expect.objectContaining({ blocked: true }));
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-5039",
+      expect.stringMatching(/\[scope-leak\].*AGENTS\.md/),
+      undefined,
+      undefined,
+    );
+  });
+
 });
