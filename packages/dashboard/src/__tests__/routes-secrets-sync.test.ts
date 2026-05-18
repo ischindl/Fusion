@@ -151,6 +151,20 @@ describe("routes secrets sync", () => {
     expect((await secrets.revealSecret(secrets.listSecrets("project").find((r) => r.key === "EXISTING")!.id, "project", { agentId: null, userId: null })).plaintextValue).toBe("new");
   });
 
+  it.each([
+    ["/api/nodes/node-remote-001/secrets/push"],
+    ["/api/nodes/node-remote-001/secrets/pull"],
+  ])("apiKey guard fires before passphrase lookup for %s", async (path) => {
+    vi.spyOn(CentralCore.prototype, "getNode").mockResolvedValue({ ...remoteNode, url: "http://remote.test", apiKey: "" } as any);
+
+    const res = await request(fixture.app, "POST", path, JSON.stringify({}), { "content-type": "application/json" });
+
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe(MISSING_REMOTE_NODE_API_KEY_MESSAGE);
+    expect((res.body as any).error).not.toBe("passphrase-not-configured");
+    expect(mockedFetchFromRemoteNode).not.toHaveBeenCalled();
+  });
+
   it("POST /api/nodes/:id/secrets/pull wrong passphrase", async () => {
     await setSyncPassphrase(secrets, "local");
     mockedFetchFromRemoteNode.mockResolvedValue(await wrapSecretsBundle([{ key: "K", value: "V", scope: "project", accessPolicy: "prompt", envExportable: false }], "remote") as any);
