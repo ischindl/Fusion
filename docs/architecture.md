@@ -361,6 +361,7 @@ Intentional exclusions from shared snapshots:
   - true live conflicts continue returning HTTP 409 with structured payload details `{ code: "ACTIVE_RUN_CONFLICT", activeRunId, activeRunStatus, trigger }` so the dashboard can hydrate and display the existing active run instead of surfacing a raw backend exception
 - `POST /api/insights/:id/create-task` remains a draft-payload endpoint (returns `suggestedTitle`/`suggestedDescription`); the dashboard `InsightsView` now uses that payload to create a real task through the normal app task-creation path (`column: triage`, `sourceType: dashboard_ui`, source metadata indicating insights origin)
 - Backed by `project_insights`, `project_insight_runs`, and `project_insight_run_events`
+- **Architecture invariant:** stale `pending`/`running` insight runs auto-recover at dashboard startup and on periodic/drive-by sweeps; active-row conflicts must be evaluated by age plus live `activeRunControllers` ownership instead of assuming all active rows block forever.
 
 ### Research Runs
 
@@ -710,6 +711,7 @@ Guardrails: this routine does **not** retry merges, does **not** apply to mixed/
 - `[self-healing]` — startup/maintenance recovery pass outcomes.
 - `[worktree-metadata-reconcile]` — FN-4962 stale `task.worktree`/`task.branch` rebind-or-clear decisions and audit emission failures.
 - `[scheduler]`, `[executor]`, `[merger]` — core execution/dispatch/merge lanes.
+- `[insight-sweeper]` — startup/periodic/drive-by stale insight-run recovery outcomes and fail-soft sweep errors.
 - `Notifier` (`notifier.ts`) — legacy ntfy compatibility shim (`NtfyNotifier`) plus shared ntfy helpers
   - Runtime ownership: `NtfyNotifier` no longer owns an independent task-lifecycle listener graph; `ProjectEngine` injects the canonical `NotificationService` instance so task lifecycle notifications (`task:moved`, `task:updated`, `task:merged`) are emitted through a single path.
   - Merge dedup safety: all merge-success → done code paths (direct merger completion, owned/no-op auto-finalize, mergeConfirmed fast-path, PR-strategy finalize, and merge-success self-healing finalizers) emit `store.emit("task:merged", result)` with a merged `MergeResult`. `NotificationService.notifiedEvents` remains the single dedup source of truth, so duplicate upstream emits still produce exactly one canonical `merged` ntfy lifecycle notification per task.
