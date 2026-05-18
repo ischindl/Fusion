@@ -13,7 +13,9 @@ import {
   setAutoReloadEnabled,
   _isAutoReloadEnabled,
   MIN_CHECK_INTERVAL_MS,
+  _resetMismatchState,
 } from "../versionCheck";
+import { clearTraces, getTraces } from "../utils/dashboardTraceBuffer";
 
 // Mock __BUILD_VERSION__ (declared as const in the module)
 vi.stubGlobal("__BUILD_VERSION__", "test-build-abc123");
@@ -100,7 +102,7 @@ describe("consumeVersionUpdateFlag", () => {
   });
 });
 
-describe("checkVersion cooldown", () => {
+describe("checkVersion cooldown + mismatch gating", () => {
   const reloadSpy = vi.fn();
 
   beforeEach(() => {
@@ -108,6 +110,8 @@ describe("checkVersion cooldown", () => {
     window.sessionStorage.clear();
     reloadSpy.mockClear();
     _resetCheckState();
+    _resetMismatchState();
+    clearTraces();
     // Ensure tab is visible
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   });
@@ -176,6 +180,82 @@ describe("checkVersion cooldown", () => {
 
     await checkVersion();
     expect(reloadSpy).not.toHaveBeenCalled();
+    expect(getTraces().some((t) => t.event === "remote-unavailable")).toBe(true);
+  });
+
+  it("single mismatch pushes trace and does not reload", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.resolve({ version: "different-version" }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await checkVersion("focus");
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+    const mismatchTrace = getTraces().find((t) => t.event === "mismatch");
+    expect(mismatchTrace?.detail).toMatchObject({ trigger: "focus", remote: "different-version" });
+    expect(getTraces().some((t) => t.event === "mismatch-pending")).toBe(true);
+  });
+
+  it("reloads once after two consecutive identical mismatches", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.resolve({ version: "different-version" }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await checkVersion("initial");
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    await checkVersion("visibilitychange");
+
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("mismatch then match resets gating", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => Promise.resolve({ version: "different-version" }) })
+      .mockResolvedValueOnce({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => Promise.resolve({ version: "test-build-abc123" }) })
+      .mockResolvedValueOnce({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => Promise.resolve({ version: "different-version" }) })
+      .mockResolvedValueOnce({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => Promise.resolve({ version: "different-version" }) });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await checkVersion("initial");
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    await checkVersion("focus");
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    await checkVersion("focus");
+    expect(reloadSpy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    await checkVersion("focus");
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("captures trigger source in mismatch traces", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.fn()
+      .mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => Promise.resolve({ version: "different-version" }) });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await checkVersion("initial");
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    await checkVersion("visibilitychange");
+    vi.advanceTimersByTime(MIN_CHECK_INTERVAL_MS + 1);
+    _resetMismatchState();
+    await checkVersion("focus");
+
+    const mismatchTriggers = getTraces()
+      .filter((entry) => entry.event === "mismatch")
+      .map((entry) => entry.detail.trigger);
+    expect(mismatchTriggers).toEqual(expect.arrayContaining(["initial", "visibilitychange", "focus"]));
+    vi.useRealTimers();
   });
 });
 

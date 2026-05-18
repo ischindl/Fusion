@@ -1,3 +1,5 @@
+import { pushTrace } from "./utils/dashboardTraceBuffer";
+
 declare const __BUILD_VERSION__: string;
 
 const RELOAD_FLAG = "fusion:version-reload";
@@ -28,6 +30,7 @@ export function _resetState(): void {
   lastCheckTime = 0;
   checkInFlight = false;
   autoReloadEnabled = true;
+  _resetMismatchState();
 }
 
 export function consumeVersionUpdateFlag(): boolean {
@@ -43,7 +46,9 @@ export function consumeVersionUpdateFlag(): boolean {
 }
 
 export function reloadOnce(reason: string): void {
-  if (sessionStorage.getItem(RELOAD_FLAG)) {
+  const alreadySet = Boolean(sessionStorage.getItem(RELOAD_FLAG));
+  pushTrace("versionCheck", "reload-attempt", { reason, alreadySet });
+  if (alreadySet) {
     console.warn("[versionCheck] reload already attempted, suppressing", reason);
     return;
   }
@@ -118,28 +123,73 @@ async function bootstrapAutoReloadSetting(): Promise<void> {
 export const MIN_CHECK_INTERVAL_MS = 60_000; // 1 minute
 let lastCheckTime = 0;
 let checkInFlight = false;
+let lastMismatchedRemote: string | null = null;
+let lastMismatchAt = 0;
 
 /** Exported for testing — resets internal cooldown state */
 export function _resetCheckState(): void {
   lastCheckTime = 0;
   checkInFlight = false;
+  _resetMismatchState();
 }
 
-export async function checkVersion(): Promise<void> {
+export function _resetMismatchState(): void {
+  lastMismatchedRemote = null;
+  lastMismatchAt = 0;
+}
+
+export async function checkVersion(trigger: "visibilitychange" | "focus" | "initial" = "initial"): Promise<void> {
   if (checkInFlight || document.visibilityState !== "visible") return;
   if (Date.now() - lastCheckTime < MIN_CHECK_INTERVAL_MS) return;
   lastCheckTime = Date.now();
   checkInFlight = true;
   try {
     const remote = await fetchRemoteVersion();
-    if (remote && remote !== __BUILD_VERSION__) {
-      try {
-        sessionStorage.setItem(VERSION_UPDATE_FLAG, "1");
-      } catch {
-        // ignore
-      }
-      reloadOnce(`build version changed: ${__BUILD_VERSION__} -> ${remote}`);
+    if (remote === null) {
+      pushTrace("versionCheck", "remote-unavailable", {
+        trigger,
+        visibilityState: document.visibilityState,
+      });
+      lastMismatchedRemote = null;
+      return;
     }
+
+    if (remote === __BUILD_VERSION__) {
+      lastMismatchedRemote = null;
+      return;
+    }
+
+    pushTrace("versionCheck", "mismatch", {
+      local: __BUILD_VERSION__,
+      remote,
+      trigger,
+      visibilityState: document.visibilityState,
+    });
+    console.info("[versionCheck] mismatch", { local: __BUILD_VERSION__, remote, trigger });
+
+    if (lastMismatchedRemote !== remote) {
+      lastMismatchedRemote = remote;
+      lastMismatchAt = Date.now();
+      pushTrace("versionCheck", "mismatch-pending", {
+        local: __BUILD_VERSION__,
+        remote,
+        trigger,
+        visibilityState: document.visibilityState,
+      });
+      return;
+    }
+
+    pushTrace("versionCheck", "mismatch-confirmed", {
+      remote,
+      trigger,
+      elapsedMs: Date.now() - lastMismatchAt,
+    });
+    try {
+      sessionStorage.setItem(VERSION_UPDATE_FLAG, "1");
+    } catch {
+      // ignore
+    }
+    reloadOnce(`build version changed: ${__BUILD_VERSION__} -> ${remote}`);
   } finally {
     checkInFlight = false;
   }
@@ -152,11 +202,11 @@ export function installVersionCheck(): void {
   // Clear stale flag once a fresh page has rendered successfully.
   window.setTimeout(() => sessionStorage.removeItem(RELOAD_FLAG), 5_000);
   document.addEventListener("visibilitychange", () => {
-    void checkVersion();
+    void checkVersion("visibilitychange");
   });
   window.addEventListener("focus", () => {
-    void checkVersion();
+    void checkVersion("focus");
   });
   // Initial check after load to catch tabs restored from bfcache.
-  window.setTimeout(() => void checkVersion(), 2_000);
+  window.setTimeout(() => void checkVersion("initial"), 2_000);
 }

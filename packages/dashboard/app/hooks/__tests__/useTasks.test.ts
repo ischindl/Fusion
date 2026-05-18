@@ -20,6 +20,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { useTasks } from "../useTasks";
 import * as api from "../../api";
 import * as swrCache from "../../utils/swrCache";
+import { clearTraces, getTraces } from "../../utils/dashboardTraceBuffer";
 import type { Task, Column } from "@fusion/core";
 
 // Mock the api module
@@ -102,6 +103,7 @@ beforeEach(() => {
   
   // Ensure we start with real timers for every test
   vi.useRealTimers();
+  clearTraces();
 });
 
 afterEach(() => {
@@ -639,6 +641,77 @@ describe("useTasks", () => {
     expect(result.current.tasks[0]?.title).toBe("Fresh title");
   });
 
+  it("applies post-reconnect events without stale-drop trace when context matches", async () => {
+    vi.useFakeTimers();
+    mockFetchTasks.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const { result } = renderHook(() => useTasks({ projectId: "project-a" }));
+
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const first = MockEventSource.instances[0];
+    act(() => {
+      first._emit("error");
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+      await flushPromises();
+    });
+
+    const second = MockEventSource.instances[1];
+    act(() => {
+      second._emit("task:created", createMockTask({ id: "FN-POST" }));
+    });
+
+    expect(result.current.tasks.find((task) => task.id === "FN-POST")).toBeDefined();
+    expect(getTraces().some((entry) => entry.event === "dropped-stale-event")).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("refreshes immediately when project context changes while tab is hidden", async () => {
+    vi.useFakeTimers();
+    const visibilityState = { value: "visible" as VisibilityState };
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState.value,
+    });
+
+    mockFetchTasks.mockResolvedValue([]);
+
+    const { rerender } = renderHook(
+      ({ projectId }: { projectId: string }) => useTasks({ projectId }),
+      { initialProps: { projectId: "project-a" } },
+    );
+
+    await act(async () => {
+      await flushPromises();
+    });
+
+    mockFetchTasks.mockClear();
+
+    visibilityState.value = "hidden";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await act(async () => {
+      rerender({ projectId: "project-b" });
+      await flushPromises();
+    });
+
+    mockFetchTasks.mockClear();
+    visibilityState.value = "visible";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    expect(getTraces().some((entry) => entry.event === "visibility-context-version-changed")).toBe(true);
+    vi.useRealTimers();
+  });
 
   describe("SSE event: task:updated", () => {
     it("updates task fields", async () => {
@@ -1672,7 +1745,7 @@ describe("useTasks", () => {
 
       mockFetchTasks.mockResolvedValueOnce([initialTask]).mockResolvedValueOnce([refreshedTask]);
 
-      const { result } = renderHook(() => useTasks());
+      const { result } = renderHook(() => useTasks({ sseEnabled: false }));
 
       await act(async () => {
         await Promise.resolve();
@@ -1702,7 +1775,7 @@ describe("useTasks", () => {
       const initialTask = createMockTask({ id: "FN-001" });
       mockFetchTasks.mockResolvedValueOnce([initialTask]);
 
-      renderHook(() => useTasks());
+      renderHook(() => useTasks({ sseEnabled: false }));
 
       await act(async () => {
         await Promise.resolve();
@@ -1723,7 +1796,7 @@ describe("useTasks", () => {
       const initialTask = createMockTask({ id: "FN-001" });
       mockFetchTasks.mockResolvedValue([initialTask]);
 
-      renderHook(() => useTasks());
+      renderHook(() => useTasks({ sseEnabled: false }));
 
       await act(async () => {
         await Promise.resolve();
@@ -1760,12 +1833,46 @@ describe("useTasks", () => {
       expect(mockFetchTasks).toHaveBeenCalledTimes(2);
     });
 
+    it("forces immediate refresh on visible when project context changed while hidden", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+
+      mockFetchTasks
+        .mockResolvedValueOnce([createMockTask({ id: "FN-A", title: "A" })])
+        .mockResolvedValueOnce([createMockTask({ id: "FN-B", title: "B" })]);
+
+      const { rerender } = renderHook(
+        ({ projectId }: { projectId?: string }) => useTasks({ projectId, sseEnabled: false }),
+        { initialProps: { projectId: "project-a" } },
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      setVisibilityState("hidden");
+      await dispatchVisibilityChange();
+
+      await act(async () => {
+        rerender({ projectId: "project-b" });
+      });
+
+      mockFetchTasks.mockClear();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.200Z"));
+      setVisibilityState("visible");
+      await dispatchVisibilityChange();
+
+      expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+      expect(getTraces().some((entry) => entry.event === "visibility-context-version-changed")).toBe(true);
+      vi.useRealTimers();
+    });
+
     it("cleans up visibility change listener on unmount", async () => {
       mockFetchTasks.mockResolvedValueOnce([]);
 
       const removeEventListenerSpy = vi.spyOn(document, "removeEventListener");
 
-      const { unmount } = renderHook(() => useTasks());
+      const { unmount } = renderHook(() => useTasks({ sseEnabled: false }));
 
       await waitFor(() => {
         expect(mockFetchTasks).toHaveBeenCalledTimes(1);

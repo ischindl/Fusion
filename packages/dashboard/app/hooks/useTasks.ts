@@ -4,6 +4,7 @@ import { normalizeColumn } from "@fusion/core";
 import * as api from "../api";
 import { subscribeSse } from "../sse-bus";
 import { clearCache, readCache, SWR_CACHE_KEYS, SWR_TASKS_MAX_AGE_MS, writeCache } from "../utils/swrCache";
+import { pushTrace } from "../utils/dashboardTraceBuffer";
 
 const loggedTaskCacheHitProjects = new Set<string>();
 
@@ -115,15 +116,17 @@ export function useTasks(options?: UseTasksOptions) {
   includeArchivedRef.current = includeArchived;
   const tasksRef = useRef(tasks);
   const fetchVersionRef = useRef(0);
+  // Tracks the project context version to detect stale SSE events after project switches.
+  // Incremented whenever projectId changes, invalidating any in-flight SSE handlers.
+  const projectContextVersionRef = useRef(0);
   const lastVisibilityRefreshRef = useRef<number>(0);
+  const contextVersionAtLastVisibilityRef = useRef(projectContextVersionRef.current);
+  const droppedStaleEventsRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
   const refreshTasksRef = useRef<typeof refreshTasks>(null!);
   // Tracks when task data was last confirmed fresh by the server.
   // Used to prevent false positives in stuck detection when tab has been in background.
   const lastFetchTimeMs = useRef<number | undefined>(undefined);
-  // Tracks the project context version to detect stale SSE events after project switches.
-  // Incremented whenever projectId changes, invalidating any in-flight SSE handlers.
-  const projectContextVersionRef = useRef(0);
   // Track previous projectId to detect changes
   const previousProjectIdRef = useRef<string | undefined>(projectId);
   tasksRef.current = tasks;
@@ -226,6 +229,22 @@ export function useTasks(options?: UseTasksOptions) {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
+        contextVersionAtLastVisibilityRef.current = projectContextVersionRef.current;
+        return;
+      }
+
+      const previousContextVersion = contextVersionAtLastVisibilityRef.current;
+      const contextChangedWhileHidden = previousContextVersion !== projectContextVersionRef.current;
+      contextVersionAtLastVisibilityRef.current = projectContextVersionRef.current;
+
+      if (contextChangedWhileHidden) {
+        lastVisibilityRefreshRef.current = Date.now();
+        pushTrace("useTasks", "visibility-context-version-changed", {
+          projectId,
+          previousContextVersion,
+          currentContextVersion: projectContextVersionRef.current,
+        });
+        void refreshTasks();
         return;
       }
 
@@ -254,10 +273,19 @@ export function useTasks(options?: UseTasksOptions) {
   useEffect(() => {
     if (sseEnabled === false) return;
 
-    const contextVersionAtStart = projectContextVersionRef.current;
+    let contextVersionAtStart = projectContextVersionRef.current;
     const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
 
     const isStale = () => projectContextVersionRef.current !== contextVersionAtStart;
+    const traceDroppedStaleEvent = () => {
+      droppedStaleEventsRef.current += 1;
+      pushTrace("useTasks", "dropped-stale-event", {
+        count: droppedStaleEventsRef.current,
+        contextVersionAtStart,
+        currentContextVersion: projectContextVersionRef.current,
+        projectId,
+      });
+    };
     // Guards against reconnect callbacks firing after the effect has cleaned up
     // (e.g., sseEnabled flipped to false during a pending reconnect timer in sse-bus).
     let active = true;
@@ -266,7 +294,10 @@ export function useTasks(options?: UseTasksOptions) {
     // effect unmounts, these handlers must not fire refreshTasks into a
     // missions-only view where the SSE should be inactive.
     const handleCreated = (e: MessageEvent) => {
-      if (isStale()) return;
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
       const task = normalizeTask(JSON.parse(e.data) as Task);
       if (searchQueryRef.current) {
         void refreshTasksRef.current({ searchQueryOverride: searchQueryRef.current });
@@ -292,7 +323,10 @@ export function useTasks(options?: UseTasksOptions) {
     };
 
     const handleMoved = (e: MessageEvent) => {
-      if (isStale()) return;
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
       if (searchQueryRef.current) {
         void refreshTasksRef.current({ searchQueryOverride: searchQueryRef.current });
         return;
@@ -315,7 +349,10 @@ export function useTasks(options?: UseTasksOptions) {
     };
 
     const handleUpdated = (e: MessageEvent) => {
-      if (isStale()) return;
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
       if (searchQueryRef.current) {
         void refreshTasksRef.current({ searchQueryOverride: searchQueryRef.current });
         return;
@@ -337,7 +374,10 @@ export function useTasks(options?: UseTasksOptions) {
     };
 
     const handleDeleted = (e: MessageEvent) => {
-      if (isStale()) return;
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
       if (searchQueryRef.current) {
         void refreshTasksRef.current({ searchQueryOverride: searchQueryRef.current });
         return;
@@ -347,7 +387,10 @@ export function useTasks(options?: UseTasksOptions) {
     };
 
     const handleMerged = (e: MessageEvent) => {
-      if (isStale()) return;
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
       if (searchQueryRef.current) {
         void refreshTasksRef.current({ searchQueryOverride: searchQueryRef.current });
         return;
@@ -377,8 +420,12 @@ export function useTasks(options?: UseTasksOptions) {
       // Guard onReconnect against stale SSE callbacks: do not call refreshTasks
       // if the SSE was disabled or the effect unmounted while reconnect was pending.
       onReconnect: () => {
+        contextVersionAtStart = projectContextVersionRef.current;
         if (!active) return;
-        if (isStale()) return;
+        if (isStale()) {
+          traceDroppedStaleEvent();
+          return;
+        }
         void refreshTasksRef.current();
       },
     });

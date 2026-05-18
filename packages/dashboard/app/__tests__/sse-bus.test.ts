@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
 import { MockEventSource } from "../../vitest.setup";
 import { subscribeSse, __resetSseBus, __sseBusChannelCount } from "../sse-bus";
+import { clearTraces, getTraces } from "../utils/dashboardTraceBuffer";
 
 function expectEventsUrl(url: string, projectId?: string): void {
   const parsed = new URL(url, "http://localhost");
@@ -11,6 +12,7 @@ function expectEventsUrl(url: string, projectId?: string): void {
 
 beforeEach(() => {
   window.sessionStorage.clear();
+  clearTraces();
 });
 
 afterEach(() => {
@@ -173,15 +175,76 @@ describe("sse-bus", () => {
       unsub();
     }
     expect(__sseBusChannelCount()).toBe(0);
-    // After 5 subscribe/unsubscribe cycles the channel has been opened and closed 5
-    // times, creating 5 EventSource instances (channel is deleted from the map on
-    // every unsubscribe). The key leak concern is zombie reconnect timers — verify
-    // no additional instances are created when reconnect delay fires after teardown.
     const countBeforeTimers = MockEventSource.instances.length;
     vi.useFakeTimers();
     vi.advanceTimersByTime(4_000);
     vi.useRealTimers();
-    // No new instances should be created by the (blocked) reconnect timer
     expect(MockEventSource.instances.length).toBe(countBeforeTimers);
+  });
+
+  it("reopens subscribed channel on pageshow even when event.persisted is false", () => {
+    subscribeSse("/api/events?projectId=p1", {});
+    expect(MockEventSource.instances).toHaveLength(1);
+
+    window.dispatchEvent(new Event("pagehide"));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+
+    expect(MockEventSource.instances).toHaveLength(2);
+  });
+
+  it("does not reopen on pageshow when there are no subscribers", () => {
+    const unsub = subscribeSse("/api/events", {});
+    unsub();
+    const count = MockEventSource.instances.length;
+
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+
+    expect(MockEventSource.instances).toHaveLength(count);
+  });
+
+  it("reopens null channels on visibilitychange visible", () => {
+    subscribeSse("/api/events", {});
+    window.dispatchEvent(new Event("pagehide"));
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(MockEventSource.instances).toHaveLength(2);
+  });
+
+  it("reopens CLOSED channels on visibilitychange visible", () => {
+    subscribeSse("/api/events", {});
+    const first = MockEventSource.instances[0]!;
+    first.readyState = MockEventSource.CLOSED;
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(MockEventSource.instances).toHaveLength(2);
+  });
+
+  it("does not reopen on visibilitychange hidden", () => {
+    subscribeSse("/api/events", {});
+    const count = MockEventSource.instances.length;
+
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(MockEventSource.instances).toHaveLength(count);
+  });
+
+  it("pushes traces for pageshow, visibilitychange, and forceReconnect", () => {
+    subscribeSse("/api/events", {});
+    const first = MockEventSource.instances[0]!;
+
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    first._emit("error");
+
+    const events = getTraces().map((entry) => entry.event);
+    expect(events).toContain("pageshow");
+    expect(events).toContain("visibilitychange");
+    expect(events).toContain("forceReconnect");
   });
 });

@@ -1,4 +1,5 @@
 import { appendTokenQuery } from "./auth";
+import { pushTrace } from "./utils/dashboardTraceBuffer";
 
 // Shared EventSource multiplexer.
 //
@@ -16,6 +17,7 @@ const HEARTBEAT_TIMEOUT_MS = 45_000;
 const RECONNECT_DELAY_MS = 3_000;
 const CLIENT_KEEPALIVE_INTERVAL_MS = 2_000;
 const CLIENT_KEEPALIVE_TIMEOUT_MS = 1_500;
+const VISIBILITY_REOPEN_DEDUPE_MS = 1_000;
 const CLIENT_ID_STORAGE_KEY = "fusion:sse-client-id";
 
 let memoryClientId: string | null = null;
@@ -41,6 +43,7 @@ interface Channel {
 }
 
 const channels = new Map<string, Channel>();
+let lastVisibilityReopenAt = 0;
 
 function createClientId(): string {
   const cryptoApi = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
@@ -140,29 +143,36 @@ function stopClientKeepalive(channel: Channel): void {
   }
 }
 
-function sendClientKeepalive(channel: Channel): void {
-  if (typeof window === "undefined" || typeof window.fetch !== "function") return;
+async function probeClientKeepalive(channel: Channel): Promise<"ok" | "definite-dead" | "inconclusive"> {
+  if (typeof window === "undefined" || typeof window.fetch !== "function") return "inconclusive";
 
   const url = createControlUrl(channel.url, "keepalive");
-  if (!url) return;
+  if (!url) return "inconclusive";
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeout = controller
     ? window.setTimeout(() => controller.abort(), CLIENT_KEEPALIVE_TIMEOUT_MS)
     : null;
 
-  void window.fetch(url, {
-    method: "POST",
-    cache: "no-store",
-    signal: controller?.signal,
-  }).catch(() => {
-    // If this page is suspended or the network drops, the server-side stale
-    // timer will reap the stream and EventSource will reconnect later.
-  }).finally(() => {
+  try {
+    const res = await window.fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      signal: controller?.signal,
+    });
+    return res.ok ? "ok" : "definite-dead";
+  } catch (error) {
+    const aborted = error instanceof DOMException && error.name === "AbortError";
+    return aborted ? "inconclusive" : "definite-dead";
+  } finally {
     if (timeout !== null) {
       window.clearTimeout(timeout);
     }
-  });
+  }
+}
+
+function sendClientKeepalive(channel: Channel): void {
+  void probeClientKeepalive(channel);
 }
 
 function startClientKeepalive(channel: Channel): void {
@@ -182,8 +192,10 @@ function startClientKeepalive(channel: Channel): void {
 // few refreshes the browser hits its 6-connection-per-origin limit
 // and every subsequent fetch stalls. Using `pagehide` (fires reliably
 // on bfcache navigations too) plus `beforeunload` as a fallback.
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && typeof document !== "undefined") {
   const closeAllChannels = () => {
+    console.info("[sse-bus] pagehide", { channelCount: channels.size });
+    pushTrace("sse-bus", "pagehide", { channelCount: channels.size });
     for (const channel of Array.from(channels.values())) {
       if (channel.closed) continue;
       stopClientKeepalive(channel);
@@ -199,27 +211,72 @@ if (typeof window !== "undefined") {
       channel.closed = true;
     }
   };
-  const reopenPersistedChannels = (event: PageTransitionEvent) => {
-    if (!event.persisted) return;
+
+  const reopenSubscribedChannels = (event: PageTransitionEvent) => {
+    console.info("[sse-bus] pageshow", { persisted: event.persisted, channelCount: channels.size });
+    pushTrace("sse-bus", "pageshow", { persisted: event.persisted, channelCount: channels.size });
     for (const channel of Array.from(channels.values())) {
       if (channel.subscribers.size === 0) continue;
+      if (channel.es !== null && !channel.closed) continue;
       channel.closed = false;
       openChannel(channel);
     }
   };
+
+  const reopenVisibleChannels = () => {
+    if (document.visibilityState !== "visible") return;
+    const now = Date.now();
+    if (now - lastVisibilityReopenAt < VISIBILITY_REOPEN_DEDUPE_MS) return;
+    lastVisibilityReopenAt = now;
+
+    console.info("[sse-bus] visibilitychange", { visibilityState: document.visibilityState, channelCount: channels.size });
+    pushTrace("sse-bus", "visibilitychange", { visibilityState: document.visibilityState, channelCount: channels.size });
+
+    for (const channel of Array.from(channels.values())) {
+      if (channel.subscribers.size === 0) continue;
+      if (channel.es === null || channel.es.readyState === EventSource.CLOSED) {
+        channel.closed = false;
+        if (channel.es && channel.es.readyState === EventSource.CLOSED) {
+          channel.es = null;
+        }
+        openChannel(channel);
+        continue;
+      }
+
+      void probeClientKeepalive(channel).then((status) => {
+        if (status === "definite-dead") {
+          forceReconnect(channel, "external");
+        }
+      });
+    }
+  };
+
   window.addEventListener("pagehide", closeAllChannels);
   window.addEventListener("beforeunload", closeAllChannels);
-  window.addEventListener("pageshow", reopenPersistedChannels);
+  window.addEventListener("pageshow", reopenSubscribedChannels);
+  document.addEventListener("visibilitychange", reopenVisibleChannels);
 }
 
 function resetHeartbeat(channel: Channel): void {
   if (channel.heartbeatTimer) clearTimeout(channel.heartbeatTimer);
   channel.heartbeatTimer = setTimeout(() => {
-    forceReconnect(channel);
+    forceReconnect(channel, "heartbeat-timeout");
   }, HEARTBEAT_TIMEOUT_MS);
 }
 
-function forceReconnect(channel: Channel): void {
+function forceReconnect(channel: Channel, cause: "heartbeat-timeout" | "error" | "external" = "external"): void {
+  console.warn("[sse-bus] forceReconnect", {
+    cause,
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+  });
+  pushTrace("sse-bus", "forceReconnect", {
+    cause,
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+  });
   if (channel.heartbeatTimer) {
     clearTimeout(channel.heartbeatTimer);
     channel.heartbeatTimer = null;
@@ -258,6 +315,19 @@ function forceReconnect(channel: Channel): void {
 }
 
 function openChannel(channel: Channel): void {
+  pushTrace("sse-bus", "openChannel", {
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+    closed: channel.closed,
+    hasEventSource: channel.es !== null,
+  });
+  console.info("[sse-bus] openChannel", {
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+    closed: channel.closed,
+  });
   if (channel.es) return;
   if (channel.closed) return;
   if (channel.reconnectTimer) {
@@ -287,8 +357,7 @@ function openChannel(channel: Channel): void {
     // Any error triggers a forced reconnect cycle — matches the pre-bus
     // behavior in useTasks and ensures the stream recovers even when
     // EventSource's own retry has stalled.
-    forceReconnect(channel);
-  });
+    forceReconnect(channel, "error");  });
 
   // Unnamed `message` events and server "heartbeat" events both count as
   // liveness signals, regardless of whether a subscriber registered them.
@@ -322,6 +391,16 @@ function reattachNativeListeners(channel: Channel): void {
 }
 
 function closeChannel(channel: Channel): void {
+  pushTrace("sse-bus", "closeChannel", {
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+  });
+  console.info("[sse-bus] closeChannel", {
+    url: channel.url,
+    subscriberCount: channel.subscribers.size,
+    hasOpenedOnce: channel.hasOpenedOnce,
+  });
   channel.closed = true;
   if (channel.heartbeatTimer) clearTimeout(channel.heartbeatTimer);
   stopClientKeepalive(channel);
@@ -414,6 +493,7 @@ export function subscribeSse(url: string, sub: SseSubscription = {}): () => void
 export function __resetSseBus(): void {
   for (const channel of Array.from(channels.values())) closeChannel(channel);
   memoryClientId = null;
+  lastVisibilityReopenAt = 0;
 }
 
 /** Test-only: inspect the number of live channels. */
