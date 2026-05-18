@@ -28,6 +28,13 @@ const mockPrInfo = {
   lastCommentAt: "2026-01-01T00:00:00.000Z",
 };
 
+const checksByRollup = {
+  success: [{ name: "build", required: true, state: "success", detailsUrl: "https://ci.example/build" }],
+  failure: [{ name: "build", required: true, state: "failure", detailsUrl: "https://ci.example/build" }],
+  pending: [{ name: "build", required: true, state: "pending", detailsUrl: "https://ci.example/build" }],
+  none: [],
+} as const;
+
 describe("PrPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -145,6 +152,42 @@ describe("PrPanel", () => {
     expect(await screen.findByText(/No checks reported yet/i)).toBeInTheDocument();
   });
 
+  it.each([
+    { status: "open", rollup: "success", expectMerge: true, expectReadonly: false, expectChecksVisible: true },
+    { status: "draft", rollup: "failure", expectMerge: false, expectReadonly: true, expectChecksVisible: true },
+    { status: "merged", rollup: "pending", expectMerge: false, expectReadonly: true, expectChecksVisible: false },
+    { status: "closed", rollup: "none", expectMerge: false, expectReadonly: true, expectChecksVisible: false },
+  ])("handles state=$status and checks=$rollup", async ({ status, rollup, expectMerge, expectReadonly, expectChecksVisible }) => {
+    (refreshPrStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      prInfo: { ...mockPrInfo, status, draft: status === "draft" },
+      checks: checksByRollup[rollup],
+      reviewDecision: null,
+      blockingReasons: status === "open" && rollup === "success" ? [] : ["waiting"],
+      mergeReady: status === "open" && rollup === "success",
+    });
+
+    render(<PrPanel taskId="FN-001" prInfo={{ ...mockPrInfo, status, draft: status === "draft" }} prAuthAvailable={true} onPrUpdated={mockOnPrUpdated} addToast={mockAddToast} />);
+    fireEvent.click(screen.getByTitle("Refresh PR status"));
+
+    await screen.findByText(/View on GitHub/i);
+    if (expectChecksVisible) {
+      expect(screen.getByText(/passing, .*failing, .*pending/i)).toBeInTheDocument();
+    } else {
+      expect(screen.queryByText(/passing, .*failing, .*pending/i)).toBeNull();
+    }
+
+    const mergeButton = screen.queryByRole("button", { name: /merge pull request/i });
+    if (expectMerge) {
+      expect(mergeButton).toBeInTheDocument();
+    } else {
+      expect(mergeButton).toBeNull();
+    }
+
+    if (expectReadonly) {
+      expect(screen.queryByRole("combobox")).toBeNull();
+    }
+  });
+
   it("renders review decision states", async () => {
     (refreshPrStatus as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce({ prInfo: mockPrInfo, checks: [], reviewDecision: "CHANGES_REQUESTED", blockingReasons: [] })
@@ -190,6 +233,29 @@ describe("PrPanel", () => {
       expect(reclaimPrConflict).toHaveBeenCalledWith("FN-001", "project-1");
       expect(refreshPrStatus).toHaveBeenCalledWith("FN-001", "project-1");
     });
+  });
+
+  it("shows reviewer feedback hint when changes are requested and task is in todo", async () => {
+    (fetchPrReviews as ReturnType<typeof vi.fn>).mockResolvedValue({
+      snapshot: {
+        decision: "CHANGES_REQUESTED",
+        items: [
+          {
+            id: "gh-review-1",
+            state: "CHANGES_REQUESTED",
+            body: "Please split this function",
+            author: { login: "reviewer" },
+            htmlUrl: "https://github.com/owner/repo/pull/42#review-1",
+          },
+        ],
+      },
+      comments: [],
+    });
+
+    render(<PrPanel taskId="FN-001" taskColumn="todo" prInfo={mockPrInfo} prAuthAvailable={true} onPrUpdated={mockOnPrUpdated} addToast={mockAddToast} />);
+
+    expect(await screen.findByText(/Auto-moved to Todo/i)).toBeInTheDocument();
+    expect(screen.getByText(/Please split this function/i)).toBeInTheDocument();
   });
 
   it("shows conflict hint from blocking reasons after refresh", async () => {

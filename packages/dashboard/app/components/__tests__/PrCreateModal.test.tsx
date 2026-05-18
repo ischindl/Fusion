@@ -18,7 +18,7 @@ vi.mock("../../api", () => ({
   createPr: mocks.createPr,
 }));
 
-const metadata = { title: "AI title", body: "AI body", templateUsed: true };
+const metadata = { title: "AI title", body: "## Summary\n\n## Changes\n\n## Testing\n\n## Linked Task\n", templateUsed: true };
 const preflight = {
   branchOnRemote: true,
   commitsPresent: true,
@@ -67,7 +67,7 @@ describe("PrCreateModal", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("loads metadata/preflight/options on open", async () => {
+  it("loads metadata/preflight/options on open and renders key sections", async () => {
     renderModal();
     await waitFor(() => {
       expect(mocks.generatePrMetadata).toHaveBeenCalledTimes(1);
@@ -75,7 +75,23 @@ describe("PrCreateModal", () => {
       expect(mocks.fetchPrOptions).toHaveBeenCalledTimes(1);
     });
     expect(await screen.findByDisplayValue("AI title")).toBeInTheDocument();
-    expect(await screen.findByDisplayValue("AI body")).toBeInTheDocument();
+    const bodyInput = (await screen.findByLabelText(/body/i)) as HTMLTextAreaElement;
+    expect(bodyInput).toBeInTheDocument();
+    expect(bodyInput.value).toContain("## Summary");
+    expect(bodyInput.value).toContain("## Changes");
+    expect(bodyInput.value).toContain("## Testing");
+    expect(bodyInput.value).toContain("## Linked Task");
+
+    expect(screen.getByText(/pre-flight checks/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/base branch/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/create as draft/i)).toBeInTheDocument();
+    expect(screen.getByText("Reviewers")).toBeInTheDocument();
+    expect(screen.getByText("Assignees")).toBeInTheDocument();
+    expect(screen.getByText("Labels")).toBeInTheDocument();
+    expect(screen.getByText(/diff & commit preview/i)).toBeInTheDocument();
+    expect(screen.getByText("Commits")).toBeInTheDocument();
+    expect(screen.getByText("Changed files")).toBeInTheDocument();
+    expect(screen.getByText(/using/i)).toBeInTheDocument();
   });
 
   it("regenerates and reverts AI content", async () => {
@@ -104,6 +120,8 @@ describe("PrCreateModal", () => {
     const { onCreated, addToast, onClose } = renderModal();
     await screen.findByDisplayValue("AI title");
 
+    fireEvent.change(screen.getByLabelText(/base branch/i), { target: { value: "develop" } });
+    fireEvent.click(screen.getByLabelText(/create as draft/i));
     fireEvent.change(screen.getByPlaceholderText("Filter reviewers"), { target: { value: "rev" } });
     fireEvent.click(screen.getByRole("button", { name: /reviewer 1/i }));
     fireEvent.change(screen.getByPlaceholderText("Filter assignees"), { target: { value: "assign" } });
@@ -111,9 +129,20 @@ describe("PrCreateModal", () => {
     fireEvent.change(screen.getByPlaceholderText("Filter labels"), { target: { value: "bug" } });
     fireEvent.click(screen.getByRole("button", { name: "bug" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    const submitButton = screen.getByRole("button", { name: "Create draft PR" });
+    expect(submitButton).toHaveClass("btn-primary");
+    fireEvent.click(submitButton);
+
     await waitFor(() => expect(mocks.createPr).toHaveBeenCalledTimes(1));
-    expect(mocks.createPr.mock.calls[0][1]).toMatchObject({ reviewers: ["rev1"], assignees: ["assign1"], labels: ["bug"] });
+    expect(mocks.createPr.mock.calls[0][1]).toMatchObject({
+      title: "AI title",
+      body: metadata.body.trim(),
+      base: "develop",
+      draft: true,
+      reviewers: ["rev1"],
+      assignees: ["assign1"],
+      labels: ["bug"],
+    });
     expect(onCreated).toHaveBeenCalled();
     expect(addToast).toHaveBeenCalledWith("Created PR #12", "success");
     expect(onClose).toHaveBeenCalled();
