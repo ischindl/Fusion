@@ -12,6 +12,7 @@ import {
   type PrPreflightResponse,
 } from "../api";
 import type { ToastType } from "../hooks/useToast";
+import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import "./PrCreateModal.css";
 
 interface PrCreateModalProps {
@@ -148,6 +149,8 @@ export function PrCreateModal({
   const [reviewers, setReviewers] = useState<PrOptionsUser[]>([]);
   const [assignees, setAssignees] = useState<PrOptionsUser[]>([]);
   const [labels, setLabels] = useState<PrOptionsLabel[]>([]);
+
+  useModalResizePersist(modalRef, open, "fusion:pr-create-modal-size");
 
   const loadData = useCallback(async (baseOverride?: string) => {
     const requestId = ++requestSeqRef.current;
