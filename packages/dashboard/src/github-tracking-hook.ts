@@ -39,13 +39,13 @@ export async function createTrackingIssueForTask(
  * Idempotent: calling this twice replaces the previous hook (no chaining).
  */
 export function registerGithubTrackingHook(
-  options?: { logger?: Pick<Console, "warn" | "info"> },
+  options?: { githubToken?: string; logger?: Pick<Console, "warn" | "info"> },
 ): void {
   const logger = options?.logger ?? console;
 
   setTaskCreatedHook(async (task: Task, store: TaskStore) => {
     try {
-      await createTrackingIssueForTask(store, task, { logger });
+      await createTrackingIssueForTask(store, task, { githubToken: options?.githubToken, logger });
     } catch (error) {
       // Best-effort: never propagate out of the hook.
       const message = error instanceof Error ? error.message : String(error);

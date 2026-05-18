@@ -182,6 +182,25 @@ describe("registerGithubTrackingHook", () => {
     spy.mockRestore();
   });
 
+  it("passes registered hook githubToken fallback when settings token is missing", async () => {
+    registerGithubTrackingHook({ githubToken: "hook-token" });
+
+    await store.updateSettings({
+      githubTrackingDefaultRepo: "o/r",
+      githubAuthMode: "token",
+    });
+
+    await store.createTask({
+      description: "hook token fallback",
+      title: "Hook token fallback",
+      githubTracking: { enabled: true },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("prefers settings token over request token", async () => {
     await store.updateSettings({ githubAuthToken: "settings-token" });
     const task = await store.createTask({
@@ -399,6 +418,31 @@ describe("registerGithubTrackingHook", () => {
     expect(enabledLogsBefore).toBe(0);
     expect(enabledLogsAfter).toBe(0);
     expect(mockCreateIssue).not.toHaveBeenCalled();
+  });
+
+  it("creates exactly one issue per planning-style createTask invocation", async () => {
+    registerGithubTrackingHook();
+
+    await store.updateSettings({
+      githubTrackingEnabledByDefault: true,
+      githubTrackingDefaultRepo: "owner/repo",
+      githubAuthMode: "token",
+      githubAuthToken: "tok",
+    });
+
+    await store.createTask({
+      title: "Planning single task",
+      description: "planning summary output",
+      source: { sourceType: "api" },
+    });
+
+    await store.createTask({
+      title: "Planning subtask A",
+      description: "planning subtask output",
+      source: { sourceType: "api", sourceMetadata: { planningSessionId: "sess-1" } },
+    });
+
+    expect(mockCreateIssue).toHaveBeenCalledTimes(2);
   });
 
   it("creates issue during createTask await when summarization is disabled", async () => {

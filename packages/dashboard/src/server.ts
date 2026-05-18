@@ -537,7 +537,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   // (HTTP routes, CLI, pi extension, mission triage, etc.) triggers
   // GitHub tracking issue creation when enabled.
   try {
-    registerGithubTrackingHook();
+    registerGithubTrackingHook({ githubToken: options?.githubToken });
   } catch (error) {
     // Some unit tests mock @fusion/core with narrow export surfaces. Keep
     // server bootstrap resilient when hook registration is unavailable.

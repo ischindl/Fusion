@@ -458,7 +458,6 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         createInput,
         { onSummarize, settings: { autoSummarizeTitles: settings.autoSummarizeTitles } },
       );
-      await createTrackingIssueForTask(scopedStore, task, { githubToken: options?.githubToken });
 
       if (acknowledgedDuplicateIds.length > 0) {
         try {
@@ -732,7 +731,6 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const newTask = await scopedStore.duplicateTask(req.params.id);
-      await createTrackingIssueForTask(scopedStore, newTask, { githubToken: options?.githubToken });
       res.status(201).json(newTask);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -759,7 +757,6 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       const refinedTask = await scopedStore.refineTask(req.params.id, trimmedFeedback);
-      await createTrackingIssueForTask(scopedStore, refinedTask, { githubToken: options?.githubToken });
       await scopedStore.logEntry(req.params.id, "Refinement requested", trimmedFeedback);
       res.status(201).json(refinedTask);
     } catch (err: unknown) {
