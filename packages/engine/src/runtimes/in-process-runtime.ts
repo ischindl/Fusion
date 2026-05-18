@@ -482,7 +482,7 @@ export class InProcessRuntime
               agentId: "system",
               phase: "execute",
             });
-            await audit.db({
+            await audit.database({
               type: "worktree:pool-double-lease-detected",
               target: violation.path,
               metadata: violation,
