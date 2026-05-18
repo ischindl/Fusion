@@ -26,6 +26,7 @@ Dashboard `POST /tasks` now performs a pre-create duplicate gate using token-ove
   - `task.source.sourceMetadata.duplicateWarningOverridden = true`
   - `task.source.sourceMetadata.acknowledgedDuplicateIds = [...]`
 - Override creates emit activity type `task:duplicate-warning-overridden` with acknowledged IDs and scored candidate metadata.
+- Duplicate lineage is persisted on the task row via canonical source fields (`sourceType: "task_duplicate"`, `sourceParentTaskId`) plus `sourceMetadata.duplicateOfTaskIds` when available, so `fn task show <id>` and Task Detail views can render duplicate-of linkage directly from task provenance.
 
 ### Intake auto-archive (ghost-bug preflight + same-agent duplicate)
 
