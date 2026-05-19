@@ -8610,7 +8610,13 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
 
     const installGuardOrCleanup = async () => {
       try {
-        await installTaskWorktreeIdentityGuard({ worktreePath: path, taskId });
+        await installTaskWorktreeIdentityGuard({
+          worktreePath: path,
+          taskId,
+          commitMsgHookEnabled: settings.commitMsgHookEnabled,
+          taskPrefix: settings.taskPrefix,
+          taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
+        });
       } catch (error) {
         try {
           await execAsync(`rm -rf "${path}"`, { cwd: this.rootDir });

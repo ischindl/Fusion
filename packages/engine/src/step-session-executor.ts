@@ -1357,6 +1357,9 @@ Follow instructions precisely and avoid unrelated changes.`,
       await installTaskWorktreeIdentityGuard({
         worktreePath,
         taskId: this.options.taskDetail.id,
+        commitMsgHookEnabled: settings.commitMsgHookEnabled,
+        taskPrefix: settings.taskPrefix,
+        taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
       });
     } catch (err) {
       try {

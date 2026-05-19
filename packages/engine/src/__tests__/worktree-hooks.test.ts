@@ -1,10 +1,10 @@
 import { mkdtempSync } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
-import { buildIdentityGuardHook, installTaskWorktreeIdentityGuard } from "../worktree-hooks.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildCommitMsgTrailerHook, buildIdentityGuardHook, installTaskWorktreeIdentityGuard } from "../worktree-hooks.js";
 
 describe("worktree-hooks", () => {
   it("builds a hook with expected guard lines", () => {
@@ -16,7 +16,27 @@ describe("worktree-hooks", () => {
     expect(hook).toContain("fusion/step-[0-9]*-[a-z0-9-]*");
   });
 
-  it("installs metadata and pre-commit hook in linked worktree", async () => {
+  it("builds commit-msg trailer hook with expected lines", () => {
+    const hook = buildCommitMsgTrailerHook("FN-42");
+    expect(hook).toContain("#!/bin/sh");
+    expect(hook).toContain("TASK_FILE=$(git rev-parse --git-path fusion-task-id)");
+    expect(hook).toContain("[ -f \"$TASK_FILE\" ] || exit 0");
+    expect(hook).toContain("[ -n \"$TASK_ID\" ] || exit 0");
+    expect(hook).toContain("git interpret-trailers");
+    expect(hook).toContain("--in-place");
+    expect(hook).toContain("--if-exists doNothing");
+    expect(hook).toContain("--trailer \"$TRAILER_NAME: $TASK_ID\"");
+    expect(hook).toContain("s/^FN-//i");
+  });
+
+  it("parameterizes commit-msg hook for custom prefix and trailer name", () => {
+    const hook = buildCommitMsgTrailerHook("KB-9", { taskPrefix: "KB", trailerName: "Task-Id" });
+    expect(hook).toContain('PREFIX="KB"');
+    expect(hook).toContain('TRAILER_NAME="Task-Id"');
+    expect(hook).toContain("s/^KB-//i");
+  });
+
+  it("installs metadata and pre-commit + commit-msg hooks in linked worktree", async () => {
     const root = mkdtempSync(join(tmpdir(), "wt-hook-root-"));
     execFileSync("git", ["init"], { cwd: root });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
@@ -30,16 +50,23 @@ describe("worktree-hooks", () => {
 
     const taskIdRaw = execFileSync("git", ["rev-parse", "--git-path", "fusion-task-id"], { cwd: wt, encoding: "utf-8" }).trim();
     const taskIdPath = isAbsolute(taskIdRaw) ? taskIdRaw : resolve(wt, taskIdRaw);
-    const hookRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/pre-commit"], {
+    const preCommitRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/pre-commit"], {
       cwd: wt,
       encoding: "utf-8",
     }).trim();
-    const hookPath = isAbsolute(hookRaw) ? hookRaw : resolve(wt, hookRaw);
+    const preCommitPath = isAbsolute(preCommitRaw) ? preCommitRaw : resolve(wt, preCommitRaw);
+    const commitMsgRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/commit-msg"], {
+      cwd: wt,
+      encoding: "utf-8",
+    }).trim();
+    const commitMsgPath = isAbsolute(commitMsgRaw) ? commitMsgRaw : resolve(wt, commitMsgRaw);
 
     expect((await readFile(taskIdPath, "utf-8")).trim()).toBe("FN-1");
-    await access(hookPath);
-    const mode = (await stat(hookPath)).mode & 0o777;
-    expect(mode).toBe(0o755);
+    await access(preCommitPath);
+    await access(commitMsgPath);
+    expect((await stat(preCommitPath)).mode & 0o777).toBe(0o755);
+    expect((await stat(commitMsgPath)).mode & 0o777).toBe(0o755);
+    expect(await readFile(commitMsgPath, "utf-8")).toContain('git interpret-trailers');
   });
 
   it("is idempotent when run twice", async () => {
@@ -53,17 +80,69 @@ describe("worktree-hooks", () => {
     execFileSync("git", ["worktree", "add", "-b", "fusion/fn-2", wt], { cwd: root });
 
     await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2" });
-    const hookRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/pre-commit"], {
+    const preCommitRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/pre-commit"], {
       cwd: wt,
       encoding: "utf-8",
     }).trim();
-    const hookPath = isAbsolute(hookRaw) ? hookRaw : resolve(wt, hookRaw);
-    const first = (await stat(hookPath)).mtimeMs;
+    const preCommitPath = isAbsolute(preCommitRaw) ? preCommitRaw : resolve(wt, preCommitRaw);
+    const commitMsgRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/commit-msg"], {
+      cwd: wt,
+      encoding: "utf-8",
+    }).trim();
+    const commitMsgPath = isAbsolute(commitMsgRaw) ? commitMsgRaw : resolve(wt, commitMsgRaw);
+    const firstPreCommit = (await stat(preCommitPath)).mtimeMs;
+    const firstCommitMsg = (await stat(commitMsgPath)).mtimeMs;
 
     await new Promise((r) => setTimeout(r, 20));
     await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-2" });
-    const second = (await stat(hookPath)).mtimeMs;
-    expect(second).toBe(first);
+    const secondPreCommit = (await stat(preCommitPath)).mtimeMs;
+    const secondCommitMsg = (await stat(commitMsgPath)).mtimeMs;
+    expect(secondPreCommit).toBe(firstPreCommit);
+    expect(secondCommitMsg).toBe(firstCommitMsg);
+  });
+
+  it("skips commit-msg install when disabled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wt-hook-disabled-"));
+    execFileSync("git", ["init"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: root });
+
+    const wt = join(root, "wt");
+    execFileSync("git", ["worktree", "add", "-b", "fusion/fn-3", wt], { cwd: root });
+
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-3", commitMsgHookEnabled: false });
+
+    const commitMsgRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/commit-msg"], {
+      cwd: wt,
+      encoding: "utf-8",
+    }).trim();
+    const commitMsgPath = isAbsolute(commitMsgRaw) ? commitMsgRaw : resolve(wt, commitMsgRaw);
+    await expect(access(commitMsgPath)).rejects.toBeDefined();
+  });
+
+  it("refuses to overwrite existing commit-msg hook", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wt-hook-existing-"));
+    execFileSync("git", ["init"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: root });
+
+    const wt = join(root, "wt");
+    execFileSync("git", ["worktree", "add", "-b", "fusion/fn-4", wt], { cwd: root });
+
+    const commitMsgRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks/commit-msg"], {
+      cwd: wt,
+      encoding: "utf-8",
+    }).trim();
+    const commitMsgPath = isAbsolute(commitMsgRaw) ? commitMsgRaw : resolve(wt, commitMsgRaw);
+    await writeFile(commitMsgPath, "#!/bin/sh\necho custom\n", "utf-8");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await installTaskWorktreeIdentityGuard({ worktreePath: wt, taskId: "FN-4" });
+    expect(await readFile(commitMsgPath, "utf-8")).toContain("echo custom");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 
   it("throws when not in git worktree", async () => {

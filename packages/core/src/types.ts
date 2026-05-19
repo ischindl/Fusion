@@ -2724,6 +2724,10 @@ export interface ProjectSettings {
    *  Defaults to `"KB"`. Only affects new tasks — existing tasks retain
    *  their original IDs. */
   taskPrefix?: string;
+  /** When true, Fusion installs a commit-msg hook in managed task worktrees
+   *  that appends the configured task attribution trailer (e.g. `Fusion-Task-Id: FN-123`).
+   *  Set to false for projects with custom hook infrastructure. Default: true. */
+  commitMsgHookEnabled?: boolean;
   /** When true, merge commit messages include the task ID as the conventional
    *  commit scope (e.g. `feat(KB-001): ...`). When false, the scope is
    *  omitted (e.g. `feat: ...`). Default: true. */

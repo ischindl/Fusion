@@ -172,7 +172,7 @@ export class NativeWorktreeBackend implements WorktreeBackend {
   constructor(
     private readonly deps: {
       logger?: { log: (m: string) => void; warn: (m: string) => void };
-      settings?: Pick<Settings, "worktreesDir">;
+      settings?: Pick<Settings, "worktreesDir" | "commitMsgHookEnabled" | "taskPrefix" | "taskAttributionTrailerNames">;
       audit?: Pick<RunAuditor, "git">;
     } = {},
   ) {}
@@ -181,7 +181,13 @@ export class NativeWorktreeBackend implements WorktreeBackend {
     const startArg = input.startPoint ? ` ${quoteShellArg(input.startPoint)}` : "";
     const installGuardOrCleanup = async (worktreePath: string) => {
       try {
-        await installTaskWorktreeIdentityGuard({ worktreePath, taskId: input.taskId });
+        await installTaskWorktreeIdentityGuard({
+          worktreePath,
+          taskId: input.taskId,
+          commitMsgHookEnabled: this.deps.settings?.commitMsgHookEnabled,
+          taskPrefix: this.deps.settings?.taskPrefix,
+          taskAttributionTrailerName: this.deps.settings?.taskAttributionTrailerNames?.[0],
+        });
       } catch (error) {
         await execAsync(`rm -rf ${quoteShellArg(worktreePath)}`, {
           cwd: input.rootDir,
@@ -543,7 +549,13 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
     }
 
     try {
-      await installTaskWorktreeIdentityGuard({ worktreePath: resolvedPath, taskId: input.taskId });
+      await installTaskWorktreeIdentityGuard({
+        worktreePath: resolvedPath,
+        taskId: input.taskId,
+        commitMsgHookEnabled: this.deps.settings?.commitMsgHookEnabled,
+        taskPrefix: this.deps.settings?.taskPrefix,
+        taskAttributionTrailerName: this.deps.settings?.taskAttributionTrailerNames?.[0],
+      });
     } catch (error) {
       await execAsync(`rm -rf ${quoteShellArg(resolvedPath)}`, {
         cwd: input.rootDir,

@@ -237,6 +237,7 @@ User-initiated `moveTask(in-progress → todo)` is a hard cancel: executor liste
 - Commit messages: `feat(FN-XXX):`, `fix(FN-XXX):`, `test(FN-XXX):`
 - One commit per step (not per file change)
 - Always include the task ID prefix
+- Fusion-managed task worktrees install both identity-guard `pre-commit` and trailer-appending `commit-msg` hooks; task-worktree commits should carry a `Fusion-Task-Id: FN-NNNN` trailer (FN-5089, configurable via `commitMsgHookEnabled`). Attribution still falls back to branch/subject when the trailer hook is disabled.
 
 ## Merging Branches Into Main
 
