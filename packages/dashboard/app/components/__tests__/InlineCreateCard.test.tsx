@@ -349,6 +349,21 @@ describe("InlineCreateCard duplicate warning", () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ acknowledgedDuplicates: ["FN-002"] })));
   });
 
+  it("dismisses modal and avoids submit when cancel is clicked", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-001" } as Task);
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([{ id: "FN-002", title: "dup", description: "dup", column: "todo", score: 1 }]);
+
+    renderCard([], { onSubmit });
+    expandCard();
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "duplicate" } });
+    fireEvent.click(screen.getByTestId("save-button"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByText(/Possible duplicates/i)).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("fails open when duplicate check throws", async () => {
     const onSubmit = vi.fn().mockResolvedValue({ id: "FN-001" } as Task);
     vi.mocked(checkDuplicateTasks).mockRejectedValueOnce(new Error("boom"));
@@ -359,6 +374,19 @@ describe("InlineCreateCard duplicate warning", () => {
     fireEvent.click(screen.getByTestId("save-button"));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+  });
+
+  it("submits immediately when duplicate check returns no matches", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-001" } as Task);
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([]);
+
+    renderCard([], { onSubmit });
+    expandCard();
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "brand new" } });
+    fireEvent.click(screen.getByTestId("save-button"));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(screen.queryByText(/Possible duplicates/i)).toBeNull();
   });
 });
 
