@@ -115,6 +115,35 @@ describe("TaskStore soft delete", () => {
     expect((store as any).archiveDb.get(doneTask.id)?.id).toBe(doneTask.id);
   });
 
+  it("is idempotent on re-delete and does not re-emit task:deleted", async () => {
+    const store = harness.store();
+    const task = await store.createTask({ column: "todo", description: "idempotent re-delete target" });
+
+    const deletedEvents: string[] = [];
+    store.on("task:deleted", (event) => deletedEvents.push(event.id));
+
+    const firstResult = await store.deleteTask(task.id);
+    const firstRow = (store as any).db
+      .prepare("SELECT deletedAt, updatedAt FROM tasks WHERE id = ?")
+      .get(task.id) as { deletedAt: string | null; updatedAt: string | null };
+
+    const secondResult = await store.deleteTask(task.id);
+    const secondRow = (store as any).db
+      .prepare("SELECT deletedAt, updatedAt FROM tasks WHERE id = ?")
+      .get(task.id) as { deletedAt: string | null; updatedAt: string | null };
+
+    const thirdResult = await store.deleteTask(task.id);
+
+    expect(firstRow.deletedAt).toBeTruthy();
+    expect(secondResult.deletedAt).toBe(firstRow.deletedAt);
+    expect(thirdResult.deletedAt).toBe(firstRow.deletedAt);
+    expect(deletedEvents).toEqual([task.id]);
+    expect(secondRow.deletedAt).toBe(firstRow.deletedAt);
+    expect(secondRow.updatedAt).toBe(firstRow.updatedAt);
+
+    await expect(store.deleteTask("FN-DOES-NOT-EXIST")).rejects.toThrow("Task FN-DOES-NOT-EXIST not found");
+  });
+
   it("unlinks mission feature task references when task is soft-deleted", async () => {
     const store = harness.store();
     const unlinkFeatureFromTask = vi.fn();
