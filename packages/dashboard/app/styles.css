@@ -1992,6 +1992,9 @@ input[type="range"]:focus-visible {
 .card-github-badge {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   gap: var(--space-xs);
   font-size: 0.6875rem;
   font-weight: 600;
