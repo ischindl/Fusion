@@ -5687,6 +5687,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   /**
    * Soft-delete a live task by setting tasks.deletedAt/updatedAt while leaving
    * the row and on-disk task artifacts in place for potential recovery.
+   *
+   * Idempotent (FN-5127): calling deleteTask on an already-soft-deleted task is
+   * a no-op and does not re-emit task:deleted.
    */
   async deleteTask(
     id: string,
@@ -5696,9 +5699,13 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       // Flush buffered agent logs inside the lock so no new appends for this
       // task can sneak in between flush and soft-delete mutation.
       this.flushAgentLogBuffer();
-      const task = this.readTaskFromDb(id);
+      const task = this.readTaskFromDb(id, { includeDeleted: true });
       if (!task) {
         throw new Error(`Task ${id} not found`);
+      }
+
+      if (task.deletedAt) {
+        return task;
       }
 
       // Refuse to delete a task that is still referenced as a dependency
