@@ -81,7 +81,9 @@ Important execution nuance:
 - `task.modifiedFiles` stores the executor's last captured worktree snapshot. During in-progress/in-review this is the primary fallback and may include files later reverted before merge or changed by verification rebuilds.
 - `task.mergeDetails.landedFiles` stores the authoritative landed file list on the merge target:
   - squash path: `git show --name-only --format= <commitSha>`
-  - rebase/cherry-pick path: `git diff --name-only <rebaseBaseSha>..<commitSha>`
+  - rebase/cherry-pick path: union of files from task-attributable commits returned by `filterFilesToOwnTaskCommits` (`landedFilesAttributionRestricted: true`)
+  - attribution fallback path: if commit attribution fails, merger falls back to `git diff --name-only <rebaseBaseSha>..<commitSha>` and sets `landedFilesCaptureFallback: "attribution-failed"`
+- `mergeDetails.noOpVerifiedShortCircuit` marks rebase captures where zero commits are attributable to the task (`landedFiles: []`, stats zero); this indicates the branch's work was already on main.
 - After merge (and during self-healing reconciliation), Fusion updates `task.modifiedFiles` to match `landedFiles` when the landed set is available and non-empty.
 - Consumer guidance:
   - done tasks: prefer `mergeDetails.landedFiles`
