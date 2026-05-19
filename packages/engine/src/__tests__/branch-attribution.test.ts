@@ -19,6 +19,7 @@ describe("FN-5039 branch-attribution", () => {
       files: [],
       foreignCommits: [],
       ownCommitCount: 0,
+      ownCommitShas: [],
       rawDiffFileCount: 0,
       commitAttributions: [],
     });

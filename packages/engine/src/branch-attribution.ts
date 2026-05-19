@@ -25,6 +25,7 @@ export interface AttributionResult {
   files: string[];
   foreignCommits: { sha: string; subject: string; attributedTaskId: string | null }[];
   ownCommitCount: number;
+  ownCommitShas?: string[];
   rawDiffFileCount: number;
   commitAttributions: { sha: string; subject: string; source: AttributionSource; attributed: boolean; attributedTaskId: string | null }[];
 }
@@ -134,7 +135,7 @@ export async function filterFilesToOwnTaskCommits(opts: BranchAttributionOptions
   );
 
   if (!logOutput.trim()) {
-    return { files: [], foreignCommits: [], ownCommitCount: 0, rawDiffFileCount, commitAttributions: [] };
+    return { files: [], foreignCommits: [], ownCommitCount: 0, ownCommitShas: [], rawDiffFileCount, commitAttributions: [] };
   }
 
   const fileSet = new Set<string>();
@@ -188,6 +189,7 @@ export async function filterFilesToOwnTaskCommits(opts: BranchAttributionOptions
     files: [...fileSet].sort((a, b) => a.localeCompare(b)),
     foreignCommits,
     ownCommitCount: ownCommitShas.length,
+    ownCommitShas,
     rawDiffFileCount,
     commitAttributions,
   };
