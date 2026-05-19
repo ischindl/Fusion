@@ -549,7 +549,7 @@ Behavior:
 ### Archive behavior
 
 - `fn task archive <id>` moves done task to `archived`
-- Dashboard delete confirmations for `done` tasks now include an **Archive Instead** action so users can preserve history without permanently deleting the task. This option is shown only for `done` tasks because the store-level archive contract only allows archiving from the `done` column.
+- Dashboard delete confirmations for `done` tasks now include an **Archive Instead** action so users can preserve history without soft-deleting the task. This option is shown only for `done` tasks because the store-level archive contract only allows archiving from the `done` column.
 - Cleanup mode can persist compact metadata and remove the task directory
 - Archived tasks are read-only for task log/document writes:
   - `logEntry()` throws `Task <id> is archived — logging is read-only`
