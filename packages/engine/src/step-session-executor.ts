@@ -507,7 +507,7 @@ function countSteps(prompt: string): number {
  * Extract a named section from the prompt (e.g. "File Scope", "Do NOT").
  * Returns the section from the heading to the next ## or ### heading, or end.
  */
-function extractSection(prompt: string, sectionName: string): string {
+export function extractSection(prompt: string, sectionName: string): string {
   // Match ## Section Name or **Section Name** as a heading
   const regex = new RegExp(`^## ${escapeRegex(sectionName)}\\s*$`, "m");
   const match = regex.exec(prompt);
