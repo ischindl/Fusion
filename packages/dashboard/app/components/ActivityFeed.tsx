@@ -36,6 +36,7 @@ const TYPE_CONFIG: Record<ActivityFeedEntry["type"], {
   "task:auto-archived-ghost-bug": { label: "Auto-Archived (Ghost Bug)", icon: AlertTriangle, color: "var(--color-warning)" },
   "task:auto-archived-duplicate": { label: "Auto-Archived (Duplicate)", icon: Trash2, color: "var(--text-muted)" },
   "task:auto-archived-deterministic-duplicate": { label: "Auto-Archived (Deterministic Duplicate)", icon: Trash2, color: "var(--text-muted)" },
+  "task:auto-archived-near-duplicate": { label: "Auto-Archived (Near-Duplicate)", icon: Trash2, color: "var(--text-muted)" },
   "settings:updated": { label: "Settings", icon: Settings, color: "var(--text-muted)" },
   "project:isolation-transition": { label: "Isolation", icon: Folder, color: "var(--color-info)" },
 };
