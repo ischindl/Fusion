@@ -652,35 +652,52 @@ vi.mock("@fusion/engine", async (importOriginal) => {
     ProjectEngine,
     ProjectEngineManager: vi.fn().mockImplementation((centralCore: any, options: any) => {
       const engines = new Map<string, any>();
-      return {
-        startAll: vi.fn(async () => {
-          // Grab the most recently created TaskStore mock — this is the one
-          // the dashboard created at startup. By passing it as externalTaskStore,
-          // the engine shares the same store, so settings listeners and events
-          // in tests work as expected.
+      const starting = new Map<string, Promise<any>>();
+      const startEngine = async (id: string, pathHint?: string) => {
+        const existing = engines.get(id);
+        if (existing) return existing;
+        const pending = starting.get(id);
+        if (pending) return pending;
+
+        const promise = (async () => {
           const { TaskStore: TSMock } = await import("@fusion/core");
           const lastStore = (TSMock as any).mock?.results?.at(-1)?.value;
+          const project = pathHint ? { path: pathHint } : await centralCore.getProject(id);
+          const engine = new ProjectEngine(
+            { workingDirectory: project?.path ?? process.cwd() },
+            centralCore,
+            { ...options, externalTaskStore: lastStore, projectId: id },
+          );
+          await engine.start();
+          engines.set(id, engine);
+          starting.delete(id);
+          return engine;
+        })();
+
+        starting.set(id, promise);
+        return promise;
+      };
+
+      return {
+        startAll: vi.fn(async () => {
           const projects = await centralCore.listProjects();
           for (const project of projects) {
-            const engine = new ProjectEngine(
-              { workingDirectory: project.path },
-              centralCore,
-              { ...options, externalTaskStore: lastStore, projectId: project.id },
-            );
-            await engine.start();
-            engines.set(project.id, engine);
+            await startEngine(project.id, project.path);
           }
         }),
         getEngine: vi.fn((id: string) => engines.get(id)),
         getAllEngines: vi.fn(() => engines),
         getStore: vi.fn((id: string) => engines.get(id)?.getTaskStore()),
-        has: vi.fn((id: string) => engines.has(id)),
-        ensureEngine: vi.fn(async (id: string) => engines.get(id)),
+        has: vi.fn((id: string) => engines.has(id) || starting.has(id)),
+        ensureEngine: vi.fn(async (id: string) => startEngine(id)),
         stopAll: vi.fn(async () => {
           for (const engine of engines.values()) await engine.stop();
           engines.clear();
+          starting.clear();
         }),
-        onProjectAccessed: vi.fn(),
+        onProjectAccessed: vi.fn((id: string) => {
+          void startEngine(id);
+        }),
         startReconciliation: vi.fn(),
       };
     }),

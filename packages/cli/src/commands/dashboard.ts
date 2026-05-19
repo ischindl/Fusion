@@ -1585,7 +1585,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     try {
       const registered = await centralCoreForEngine.getProjectByPath(cwd).catch(() => null);
       if (registered) {
-        cwdEngine = engineManager.getEngine(registered.id);
+        // Ensure the cwd project's engine exists before handing HTTP defaults to
+        // createServer; background startAll may still be warming other projects.
+        cwdEngine = await engineManager.ensureEngine(registered.id);
       }
     } catch {
       // cwd not registered — no engine defaults for HTTP layer

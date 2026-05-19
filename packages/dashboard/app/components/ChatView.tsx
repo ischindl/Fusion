@@ -1149,17 +1149,17 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     enabled: isMobile && (!!activeSession || roomThreadActive),
   });
 
-  // Only opt into visual-viewport sizing when we have concrete keyboard
-  // displacement (overlap or offset). The shared hook can report `keyboardOpen`
-  // during iOS settle/shrink phases with zero overlap; forcing vv-height in that
-  // transient state shrinks the thread and pushes the composer upward.
-  const hasKeyboardViewportDisplacement = keyboardOverlap > 0 || viewportOffsetTop > 0;
+  // FN-5155: only publish keyboard-active viewport vars once the hook has a
+  // self-consistent open sample. A transient offsetTop without vvHeight causes
+  // mobile ChatView to shrink/translate the thread before the keyboard settles.
+  const hasKeyboardViewportMetrics = viewportHeight !== null;
+  const hasKeyboardViewportDisplacement = hasKeyboardViewportMetrics && (keyboardOverlap > 0 || viewportOffsetTop > 0);
   const threadKeyboardStyle: CSSProperties =
     keyboardOpen && hasKeyboardViewportDisplacement
       ? ({
           "--keyboard-overlap": `${keyboardOverlap}px`,
           "--vv-offset-top": `${viewportOffsetTop}px`,
-          ...(viewportHeight !== null ? { "--vv-height": `${viewportHeight}px` } : {}),
+          "--vv-height": `${viewportHeight}px`,
         } as CSSProperties)
       : {};
   const threadClassName = `chat-thread${keyboardOpen && hasKeyboardViewportDisplacement ? " chat-thread--keyboard-active" : ""}`;
