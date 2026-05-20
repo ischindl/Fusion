@@ -2607,6 +2607,9 @@ export interface GitPullResult {
   success: boolean;
   message: string;
   conflict?: boolean;
+  autostashed?: boolean;
+  stashReapplied?: boolean;
+  stashConflict?: boolean;
 }
 
 /** Result of a push operation */

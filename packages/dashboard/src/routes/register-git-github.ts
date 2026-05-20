@@ -692,24 +692,130 @@ export interface GitPullResult {
   success: boolean;
   message: string;
   conflict?: boolean;
+  autostashed?: boolean;
+  stashReapplied?: boolean;
+  stashConflict?: boolean;
+}
+
+interface PullAutostashHandle {
+  sha: string;
+  label: string;
+}
+
+function isGitConflictMessage(message: string): boolean {
+  return message.includes("CONFLICT") || message.includes("Merge conflict") || message.includes("could not apply");
+}
+
+async function hasLocalChangesForPull(cwd?: string): Promise<boolean> {
+  const output = await runGitCommand(["status", "--porcelain=v1", "--untracked-files=all"], cwd, 10_000);
+  return output.trim().length > 0;
+}
+
+async function findStashRefBySha(sha: string, cwd?: string): Promise<string | null> {
+  const output = await runGitCommand(["stash", "list", '--format=%H|%gd'], cwd, 5_000);
+  for (const line of output.split("\n")) {
+    const [entrySha, ref] = line.trim().split("|");
+    if (entrySha === sha && ref) {
+      return ref;
+    }
+  }
+  return null;
+}
+
+async function dropStashBySha(sha: string, cwd?: string): Promise<void> {
+  const ref = await findStashRefBySha(sha, cwd);
+  if (!ref) return;
+  await runGitCommand(["stash", "drop", ref], cwd, 10_000);
+}
+
+async function createPullAutostash(cwd?: string): Promise<PullAutostashHandle | null> {
+  if (!(await hasLocalChangesForPull(cwd))) {
+    return null;
+  }
+  const label = `fusion-dashboard-pull-autostash:${Date.now()}`;
+  const output = await runGitCommand(["stash", "push", "-u", "-m", label], cwd, 15_000);
+  if (output.includes("No local changes to save")) {
+    return null;
+  }
+  const sha = (await runGitCommand(["rev-parse", "stash@{0}"], cwd, 5_000)).trim();
+  if (!sha) {
+    throw new Error("Pull autostash failed: could not resolve created stash");
+  }
+  return { sha, label };
+}
+
+async function reapplyPullAutostash(
+  handle: PullAutostashHandle,
+  cwd?: string,
+): Promise<{ applied: boolean; conflict: boolean; message?: string }> {
+  try {
+    await runGitCommand(["stash", "apply", handle.sha], cwd, 20_000);
+  } catch (err: unknown) {
+    const message = getCommandErrorMessage(err);
+    if (isGitConflictMessage(message) || message.includes("Command failed: git stash apply")) {
+      return {
+        applied: false,
+        conflict: true,
+        message:
+          `Pulled latest changes, but reapplying your local edits conflicted. ` +
+          `Your work was preserved in stash ${handle.sha.slice(0, 7)} (${handle.label}). ` +
+          `Resolve the conflicts in the working tree or reapply later from the Stashes view.`,
+      };
+    }
+    throw err;
+  }
+
+  await dropStashBySha(handle.sha, cwd).catch(() => undefined);
+  return { applied: true, conflict: false };
 }
 
 export async function pullGitBranch(cwd?: string, options?: { rebase?: boolean }): Promise<GitPullResult> {
   const rebase = options?.rebase === true;
+  const autostash = await createPullAutostash(cwd);
   try {
-    const output = await runGitCommand(rebase ? ["pull", "--rebase"] : ["pull"], cwd, 30000);
-    const message = output.trim();
-    if (message) {
+    const output = await runGitCommand(rebase ? ["pull", "--rebase"] : ["pull", "--ff-only"], cwd, 30_000);
+    const message = output.trim() || (rebase ? "Pull completed (rebase)" : "Pull completed");
+
+    if (!autostash) {
       return { success: true, message };
     }
-    return { success: true, message: rebase ? "Pull completed (rebase)" : "Pull completed" };
+
+    const reapply = await reapplyPullAutostash(autostash, cwd);
+    if (reapply.conflict) {
+      return {
+        success: false,
+        conflict: true,
+        message: reapply.message ?? "Pulled latest changes, but reapplying local edits conflicted.",
+        autostashed: true,
+        stashConflict: true,
+      };
+    }
+
+    return {
+      success: true,
+      message: `${message}\n\nRestored your local changes from an automatic pre-pull stash.`,
+      autostashed: true,
+      stashReapplied: true,
+    };
   } catch (err: unknown) {
     if (err instanceof ApiError) {
       throw err;
     }
     const message = getCommandErrorMessage(err);
-    if (message.includes("CONFLICT") || message.includes("Merge conflict") || message.includes("could not apply")) {
-      return { success: false, message: "Merge conflict detected. Resolve manually.", conflict: true };
+    if (isGitConflictMessage(message)) {
+      const preservedMessage = autostash
+        ? `Merge conflict detected during pull. Your local edits were preserved in stash ${autostash.sha.slice(0, 7)} (${autostash.label}). Resolve the pull conflict first, then reapply from the Stashes view.`
+        : "Merge conflict detected. Resolve manually.";
+      return { success: false, message: preservedMessage, conflict: true, autostashed: Boolean(autostash) };
+    }
+    if (autostash) {
+      const restored = await reapplyPullAutostash(autostash, cwd).catch(() => null);
+      if (restored?.applied) {
+        throw new Error(`${message || "Pull failed"}\n\nYour local changes were restored from the automatic pre-pull stash.`);
+      }
+      if (restored?.conflict) {
+        throw new Error(`${message || "Pull failed"}\n\n${restored.message}`);
+      }
     }
     throw new Error(message || "Pull failed");
   }

@@ -22,6 +22,7 @@ import type { TaskStore, TaskAttachment, Routine, RoutineCreateInput, RoutineUpd
 import type { TaskDetail } from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "../routes.js";
 import { __resetBatchImportRateLimiter, __setCreateFnAgentForRefine } from "../routes.js";
+import { pullGitBranch } from "../routes/register-git-github.js";
 import * as agentGenerationModule from "../agent-generation.js";
 import { __resetPlanningState, __setCreateFnAgent, planningStreamManager } from "../planning.js";
 import * as planningModule from "../planning.js";
@@ -296,6 +297,34 @@ type GitTestRepo = {
 };
 
 let sharedGitTestRepo: GitTestRepo | null = null;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: "pipe" }).trim();
+}
+
+function createIsolatedPullRepo() {
+  const root = mkdtempSync(join(tmpdir(), "kb-dashboard-pull-"));
+  const remoteDir = join(root, "remote.git");
+  const repoDir = join(root, "repo");
+  const upstreamDir = join(root, "upstream");
+
+  mkdirSync(repoDir, { recursive: true });
+  execFileSync("git", ["init", "--bare", "--initial-branch=main", remoteDir], { stdio: "pipe" });
+  execFileSync("git", ["init", "--initial-branch=main", repoDir], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoDir, "config", "user.email", "kb-tests@example.com"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoDir, "config", "user.name", "KB Tests"], { stdio: "pipe" });
+  writeFileSync(join(repoDir, "README.md"), "base\n");
+  writeFileSync(join(repoDir, "LOCAL.md"), "local-base\n");
+  execFileSync("git", ["-C", repoDir, "add", "README.md", "LOCAL.md"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoDir, "commit", "-m", "Initial commit"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoDir, "remote", "add", "origin", remoteDir], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoDir, "push", "-u", "origin", "HEAD"], { stdio: "pipe" });
+  execFileSync("git", ["clone", remoteDir, upstreamDir], { stdio: "pipe" });
+  execFileSync("git", ["-C", upstreamDir, "config", "user.email", "kb-upstream@example.com"], { stdio: "pipe" });
+  execFileSync("git", ["-C", upstreamDir, "config", "user.name", "KB Upstream"], { stdio: "pipe" });
+
+  return { root, remoteDir, repoDir, upstreamDir };
+}
 
 function getSharedGitTestRepo(): GitTestRepo {
   if (sharedGitTestRepo) {
@@ -872,6 +901,54 @@ describe("Git Management endpoints", () => {
       if (res.status === 200 || res.status === 409) {
         expect(res.body).toHaveProperty("success");
         expect(res.body).toHaveProperty("message");
+      }
+    });
+
+    it("autostashes dirty local changes, fast-forwards, and reapplies them", async () => {
+      const repo = createIsolatedPullRepo();
+      try {
+        writeFileSync(join(repo.upstreamDir, "README.md"), "base\nremote\n");
+        git(repo.upstreamDir, "add", "README.md");
+        git(repo.upstreamDir, "commit", "-m", "Remote update");
+        git(repo.upstreamDir, "push", "origin", "HEAD");
+
+        writeFileSync(join(repo.repoDir, "LOCAL.md"), "local-base\nlocal-edit\n");
+        writeFileSync(join(repo.repoDir, "local.txt"), "untracked\n");
+
+        const result = await pullGitBranch(repo.repoDir);
+
+        expect(result.success).toBe(true);
+        expect(result.autostashed).toBe(true);
+        expect(result.stashReapplied).toBe(true);
+        expect(readFileSync(join(repo.repoDir, "README.md"), "utf-8")).toContain("remote\n");
+        expect(readFileSync(join(repo.repoDir, "LOCAL.md"), "utf-8")).toContain("local-edit\n");
+        expect(readFileSync(join(repo.repoDir, "local.txt"), "utf-8")).toBe("untracked\n");
+        expect(git(repo.repoDir, "stash", "list")).toBe("");
+      } finally {
+        rmSync(repo.root, { recursive: true, force: true });
+      }
+    });
+
+    it("preserves the stash when reapplying local edits conflicts after pull", async () => {
+      const repo = createIsolatedPullRepo();
+      try {
+        writeFileSync(join(repo.upstreamDir, "README.md"), "remote-only\n");
+        git(repo.upstreamDir, "add", "README.md");
+        git(repo.upstreamDir, "commit", "-m", "Remote conflict update");
+        git(repo.upstreamDir, "push", "origin", "HEAD");
+
+        writeFileSync(join(repo.repoDir, "README.md"), "local-only\n");
+
+        const result = await pullGitBranch(repo.repoDir);
+
+        expect(result.success).toBe(false);
+        expect(result.conflict).toBe(true);
+        expect(result.autostashed).toBe(true);
+        expect(result.stashConflict).toBe(true);
+        expect(result.message).toContain("reapplying your local edits conflicted");
+        expect(git(repo.repoDir, "stash", "list")).toContain("fusion-dashboard-pull-autostash");
+      } finally {
+        rmSync(repo.root, { recursive: true, force: true });
       }
     });
   });
