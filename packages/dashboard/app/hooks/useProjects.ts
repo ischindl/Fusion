@@ -11,6 +11,7 @@ import {
   type ProjectNodeAvailability,
 } from "../api";
 import { SWR_CACHE_KEYS, SWR_DEFAULT_MAX_AGE_MS, clearCache, readCache, writeCache } from "../utils/swrCache";
+import { recordResumeEvent } from "../utils/resumeInstrumentation";
 
 export interface UseProjectsResult {
   /** List of all registered projects (local + remote) */
@@ -147,10 +148,25 @@ export function useProjects(): UseProjectsResult {
       const now = Date.now();
       const timeSinceLastRefresh = now - lastVisibilityRefreshRef.current;
       if (timeSinceLastRefresh < VISIBILITY_REFRESH_DEBOUNCE_MS) {
+        recordResumeEvent({
+          view: "useProjects",
+          trigger: "visibility",
+          projectId: undefined,
+          replayAttempted: false,
+          reason: "debounce-skipped",
+          detail: { timeSinceLastRefreshMs: timeSinceLastRefresh },
+        });
         return;
       }
 
       lastVisibilityRefreshRef.current = now;
+      recordResumeEvent({
+        view: "useProjects",
+        trigger: "visibility",
+        projectId: undefined,
+        replayAttempted: false,
+        reason: "debounced-refresh",
+      });
       void refresh();
     };
 

@@ -90,3 +90,5 @@ Dashboard Phase 1 resume instrumentation adds observation-only client/server tra
   - Server ring (5000, in-memory): `GET /api/diagnostics/resume-events?limit=&since=&view=` returns `{ events, droppedSinceLastRead }`
 - Client batching: POST `/api/diagnostics/resume-events` in idle batches (`<=25` per POST).
 - Disable knob: `window.__fusionDebug.resumeInstrumentation.setEnabled(false)`.
+
+FN-5415 extends this coverage across remaining board/data visibility hooks: `useNodes`, `useMeshState`, `useProjects`, and `useManagedDockerNodes`. Each now emits `trigger: "visibility"` with `reason: "debounced-refresh"` when refresh is taken and `reason: "debounce-skipped"` (including `detail.timeSinceLastRefreshMs`) when suppressed by debounce. This completes board/data-hook resume-correlation coverage needed for FN-5392 Phase 2 remediation analysis.

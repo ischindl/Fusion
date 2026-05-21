@@ -7,6 +7,7 @@ import {
   fetchManagedDockerNodeContainerStatus,
   fetchManagedDockerNodes,
 } from "../api";
+import { recordResumeEvent } from "../utils/resumeInstrumentation";
 
 export interface UseManagedDockerNodesResult {
   dockerNodes: ManagedDockerNodeInfo[];
@@ -68,11 +69,27 @@ export function useManagedDockerNodes(): UseManagedDockerNodesResult {
       }
 
       const now = Date.now();
-      if (now - lastVisibilityRefreshRef.current < VISIBILITY_REFRESH_DEBOUNCE_MS) {
+      const timeSinceLastRefresh = now - lastVisibilityRefreshRef.current;
+      if (timeSinceLastRefresh < VISIBILITY_REFRESH_DEBOUNCE_MS) {
+        recordResumeEvent({
+          view: "useManagedDockerNodes",
+          trigger: "visibility",
+          projectId: undefined,
+          replayAttempted: false,
+          reason: "debounce-skipped",
+          detail: { timeSinceLastRefreshMs: timeSinceLastRefresh },
+        });
         return;
       }
 
       lastVisibilityRefreshRef.current = now;
+      recordResumeEvent({
+        view: "useManagedDockerNodes",
+        trigger: "visibility",
+        projectId: undefined,
+        replayAttempted: false,
+        reason: "debounced-refresh",
+      });
       void refresh();
     };
 

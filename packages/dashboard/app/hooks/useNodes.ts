@@ -12,6 +12,7 @@ import {
   discoverRemoteNodeProjects,
 } from "../api";
 import { persistNodeProjectPathMappings } from "../api-node";
+import { recordResumeEvent } from "../utils/resumeInstrumentation";
 
 export interface UseNodesResult {
   nodes: NodeInfo[];
@@ -86,10 +87,25 @@ export function useNodes(): UseNodesResult {
       const now = Date.now();
       const timeSinceLastRefresh = now - lastVisibilityRefreshRef.current;
       if (timeSinceLastRefresh < VISIBILITY_REFRESH_DEBOUNCE_MS) {
+        recordResumeEvent({
+          view: "useNodes",
+          trigger: "visibility",
+          projectId: undefined,
+          replayAttempted: false,
+          reason: "debounce-skipped",
+          detail: { timeSinceLastRefreshMs: timeSinceLastRefresh },
+        });
         return;
       }
 
       lastVisibilityRefreshRef.current = now;
+      recordResumeEvent({
+        view: "useNodes",
+        trigger: "visibility",
+        projectId: undefined,
+        replayAttempted: false,
+        reason: "debounced-refresh",
+      });
       void refresh();
     };
 

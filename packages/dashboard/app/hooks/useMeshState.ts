@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NodeMeshState } from "@fusion/core";
 import { fetchMeshState } from "../api";
+import { recordResumeEvent } from "../utils/resumeInstrumentation";
 
 const POLL_INTERVAL_MS = 10000;
 const VISIBILITY_REFRESH_DEBOUNCE_MS = 1000;
@@ -56,8 +57,26 @@ export function useMeshState(): UseMeshStateResult {
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       const now = Date.now();
-      if (now - lastVisibilityRefreshRef.current < VISIBILITY_REFRESH_DEBOUNCE_MS) return;
+      const timeSinceLastRefresh = now - lastVisibilityRefreshRef.current;
+      if (timeSinceLastRefresh < VISIBILITY_REFRESH_DEBOUNCE_MS) {
+        recordResumeEvent({
+          view: "useMeshState",
+          trigger: "visibility",
+          projectId: undefined,
+          replayAttempted: false,
+          reason: "debounce-skipped",
+          detail: { timeSinceLastRefreshMs: timeSinceLastRefresh },
+        });
+        return;
+      }
       lastVisibilityRefreshRef.current = now;
+      recordResumeEvent({
+        view: "useMeshState",
+        trigger: "visibility",
+        projectId: undefined,
+        replayAttempted: false,
+        reason: "debounced-refresh",
+      });
       void refresh();
     };
 
