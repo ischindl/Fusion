@@ -55,7 +55,6 @@ Features:
 - PR/issue badges with live updates
 - GitHub provenance marker on task cards imported from GitHub (`sourceType: github_import`), shown alongside existing footer metadata like timers
 - Agent-created provenance badge in task card headers for agent-originated tasks (`sourceType: agent_heartbeat` or `sourceType: automation`, or legacy tasks with `sourceAgentId`), with labels preferring `sourceMetadata.agentName` over raw agent IDs
-- Broad-scope advisory surfacing from `task.sourceMetadata.broadScopeFlag`: TaskCard shows a warning-tinted `Broad scope` chip with score/reasons tooltip, and TaskDetailModal shows a read-only `Triage broad-scope advisory` banner with score, humanized reasons, and signal summary. This is informational only and does not alter lifecycle, scheduling, pause state, or merge behavior.
 - Column ordering semantics: `todo` mirrors scheduler pickup order (priority descending, then oldest `createdAt`, then task ID); `triage`, `in-progress`, `in-review`, and `archived` remain priority-first with task-ID tie-breaks; `done` is ordered by most recent completion first (`columnMovedAt`, then `updatedAt`, then `createdAt` fallback)
 
 ![Board view](./screenshots/dashboard-overview.png)

@@ -188,46 +188,7 @@
   color: var(--text-dim);
 }
 
-.detail-broad-scope-banner {
-  display: flex;
-  gap: var(--space-sm);
-  align-items: flex-start;
-  padding: var(--space-sm) var(--space-md);
-  margin-top: var(--space-sm);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
-  border: var(--btn-border-width) solid color-mix(in srgb, var(--color-warning) 32%, transparent);
-}
-
-.detail-broad-scope-banner-content {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space-xs) / 2);
-  min-width: 0;
-  font-size: 0.75rem;
-}
-
-.detail-broad-scope-banner-heading {
-  font-weight: 600;
-  color: var(--color-warning);
-  font-size: 0.8125rem;
-  line-height: 1.2;
-}
-
-.detail-broad-scope-banner-note {
-  color: var(--text-muted);
-  font-size: 0.6875rem;
-}
-
 @media (max-width: 768px) {
-  .detail-broad-scope-banner {
-    flex-direction: column;
-  }
-
-  .detail-broad-scope-banner-content {
-    gap: var(--space-xs);
-  }
   .detail-provenance {
     align-items: flex-start;
   }

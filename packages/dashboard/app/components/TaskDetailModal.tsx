@@ -1,6 +1,6 @@
 import "./TaskDetailModal.css";
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2, AlertTriangle } from "lucide-react";
+import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2 } from "lucide-react";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
@@ -375,57 +375,6 @@ function parseGithubIssueLabel(url: string): { label: string; href: string } | n
   };
 }
 
-const BROAD_SCOPE_REASON_LABELS: Record<string, string> = {
-  "size-l": "Size L",
-  "steps-high": "many steps",
-  "file-scope-high": "large file scope",
-  "failing-file-mentions-high": "many failing files mentioned",
-  "size-l-with-many-steps": "Size L + many steps",
-};
-
-function getBroadScopeFlag(sourceMetadata: Task["sourceMetadata"]): {
-  score: number;
-  reasons: string[];
-  signals?: {
-    size?: string | null;
-    stepCount?: number;
-    fileScopeCount?: number;
-    failingFileMentions?: number;
-  };
-} | null {
-  const candidate = sourceMetadata?.broadScopeFlag;
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return null;
-  }
-
-  const score = (candidate as { score?: unknown }).score;
-  const reasons = (candidate as { reasons?: unknown }).reasons;
-  const signals = (candidate as { signals?: unknown }).signals;
-
-  if (typeof score !== "number" || !Number.isFinite(score) || !Array.isArray(reasons) || !reasons.every((reason) => typeof reason === "string")) {
-    return null;
-  }
-
-  if (signals != null && (typeof signals !== "object" || Array.isArray(signals))) {
-    return null;
-  }
-
-  return {
-    score,
-    reasons,
-    signals: signals as {
-      size?: string | null;
-      stepCount?: number;
-      fileScopeCount?: number;
-      failingFileMentions?: number;
-    } | undefined,
-  };
-}
-
-function formatBroadScopeReasons(reasons: string[]): string {
-  return reasons.map((reason) => BROAD_SCOPE_REASON_LABELS[reason] ?? reason).join(", ");
-}
-
 function getResearchContextInfo(metadata: Task["sourceMetadata"]): string | undefined {
   const findingLabel = metadata?.findingLabel;
   if (typeof findingLabel === "string" && findingLabel.length > 0) {
@@ -597,7 +546,6 @@ export function TaskDetailContent({
   const provenanceDisplay = getProvenanceLabel(workingTask, {
     sourceAgentName: sourceAgent?.name,
   });
-  const broadScopeFlag = getBroadScopeFlag(workingTask.sourceMetadata);
 
   // Sync activeTab when the caller changes initialTab (e.g. opening a different tab)
   useEffect(() => {
@@ -2489,26 +2437,6 @@ export function TaskDetailContent({
                         ""
                       )}
                     </span>
-                  </div>
-                )}
-                {broadScopeFlag && (
-                  <div className="detail-broad-scope-banner" aria-label="Triage broad-scope advisory">
-                    <AlertTriangle aria-hidden="true" />
-                    <div className="detail-broad-scope-banner-content">
-                      <div className="detail-broad-scope-banner-heading">Triage broad-scope advisory</div>
-                      <div>{`Score ${broadScopeFlag.score} · ${formatBroadScopeReasons(broadScopeFlag.reasons)}`}</div>
-                      <div>
-                        {[
-                          broadScopeFlag.signals?.size ? `Size: ${broadScopeFlag.signals.size}` : null,
-                          typeof broadScopeFlag.signals?.stepCount === "number" ? `Steps: ${broadScopeFlag.signals.stepCount}` : null,
-                          typeof broadScopeFlag.signals?.fileScopeCount === "number" ? `File scope: ${broadScopeFlag.signals.fileScopeCount}` : null,
-                          typeof broadScopeFlag.signals?.failingFileMentions === "number"
-                            ? `Failing-file mentions: ${broadScopeFlag.signals.failingFileMentions}`
-                            : null,
-                        ].filter(Boolean).join(" · ")}
-                      </div>
-                      <div className="detail-broad-scope-banner-note">Advisory only — task lifecycle is unaffected.</div>
-                    </div>
                   </div>
                 )}
                 {(task.prInfo?.number || task.mergeDetails?.prNumber) && (

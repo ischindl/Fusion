@@ -79,11 +79,6 @@ import {
   isResearchToolSurfaceEnabled,
 } from "./tool-availability.js";
 import { runGhostBugPreflight } from "./triage-preflight.js";
-import {
-  BROAD_SCOPE_FLAG_VERSION,
-  decideBroadScopeFlag,
-  extractBroadScopeSignals,
-} from "./triage-broad-scope-heuristics.js";
 import { archiveAsGhostBug } from "./self-healing.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
 
@@ -265,6 +260,13 @@ For tasks you assess as Size M or L, consider whether splitting into 2-5 child t
 - A task with 7-10 focused steps within a coherent scope is fine as one unit; do not split it
 - Coordination overhead (worktrees, dependency wiring, merge sequencing) is real — only split when the parallelism or scope-clarity benefit clearly outweighs it
 - If you decide not to split an M/L task, proceed with a normal PROMPT.md specification
+
+**Broad-scope decomposition signals:**
+- Size L tasks, especially when the planned step count would reach 9 or more.
+- Plans whose implementation-step count would reach 12 or more (additive signal — counts even when the surrounding "more than 7/10 steps" threshold above has not yet fired).
+- Tasks whose declared \`## File Scope\` would list 20 or more entries.
+- Descriptions that quantify large remediation batches (for example "47 failing tests", "30+ broken files") at or above 30 items — treat as a strong signal that the work should be partitioned by subsystem or file group before specifying.
+- When two or more of the signals above fire together, default to splitting via \`fn_task_create\`. If you still choose to keep the task as a single unit, justify the decision explicitly in the PROMPT.md \`## Mission\` paragraph.
 
 ## Triage tools
 You have these extra tools during triage:
@@ -2416,54 +2418,6 @@ export class TriageProcessor {
     } catch {
       // Fail open on persisted PROMPT.md parsing and keep using the in-memory parse.
     }
-    type BroadScopeFlagRecord = {
-      score: number;
-      reasons: string[];
-      signals: {
-        size: "S" | "M" | "L" | null;
-        stepCount: number;
-        fileScopeCount: number;
-        failingFileMentions: number;
-      };
-      thresholds: {
-        stepsHigh: number;
-        fileScopeHigh: number;
-        failingFileMentionsHigh: number;
-        sizeLStepsThreshold: number;
-      };
-      version: number;
-      flaggedAt: string;
-    };
-    let broadScopeFlagRecord: BroadScopeFlagRecord | null = null;
-    try {
-      const broadScopeSignals = extractBroadScopeSignals({
-        size: taskUpdates.size ?? task.size ?? null,
-        stepCount: parsedSteps.length,
-        fileScopeCount: parsedFileScope.length,
-        descriptionText: task.description ?? "",
-      });
-      const broadScopeDecision = decideBroadScopeFlag(broadScopeSignals);
-      if (broadScopeDecision.flagged) {
-        broadScopeFlagRecord = {
-          score: broadScopeDecision.score,
-          reasons: broadScopeDecision.reasons,
-          signals: broadScopeDecision.signals,
-          thresholds: broadScopeDecision.thresholds,
-          version: BROAD_SCOPE_FLAG_VERSION,
-          flaggedAt: new Date().toISOString(),
-        };
-        taskUpdates.sourceMetadataPatch = {
-          ...(taskUpdates.sourceMetadataPatch ?? {}),
-          broadScopeFlag: broadScopeFlagRecord,
-        };
-        planLog.warn(
-          `${task.id}: broad-scope flag at triage — score=${broadScopeDecision.score}, reasons=${broadScopeDecision.reasons.join(",")}`,
-        );
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      planLog.warn(`${task.id}: broad-scope heuristic failed open: ${message}`);
-    }
     let taskIntentSignature: ReturnType<typeof extractIntentSignature> = {
       routePaths: [],
       filePaths: [],
@@ -2499,37 +2453,6 @@ export class TriageProcessor {
     const shouldApplyPromptDeclaredTitle = shouldReplaceTaskTitleFromPrompt(task, promptDeclaredTitle);
 
     await this.store.updateTask(task.id, taskUpdates);
-
-    if (broadScopeFlagRecord) {
-      try {
-        await this.store.logEntry(
-          task.id,
-          "Broad-scope triage flag",
-          `Heuristics suggest this task may benefit from decomposition (score=${broadScopeFlagRecord.score}; signals: ${broadScopeFlagRecord.reasons.join(", ")}). Consider creating child tasks via fn_task_create or marking breakIntoSubtasks=true before execution.`,
-        );
-        const auditor = createRunAuditor(this.store, {
-          taskId: task.id,
-          agentId: task.assignedAgentId ?? "triage",
-          runId: generateSyntheticRunId("triage", task.id),
-          phase: "triage",
-          source: "triage",
-        });
-        await auditor.database({
-          type: "task:broad-scope-flagged-at-triage",
-          target: task.id,
-          metadata: {
-            score: broadScopeFlagRecord.score,
-            reasons: broadScopeFlagRecord.reasons,
-            signals: broadScopeFlagRecord.signals,
-            thresholds: broadScopeFlagRecord.thresholds,
-            version: broadScopeFlagRecord.version,
-          },
-        });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        planLog.warn(`${task.id}: broad-scope heuristic failed open: ${message}`);
-      }
-    }
 
     try {
       const preflightDecision = await Promise.race([

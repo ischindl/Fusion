@@ -1,6 +1,6 @@
 import "./TaskCard.css";
 import { memo, useCallback, useState, useRef, useEffect, useMemo } from "react";
-import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest, AlertTriangle } from "lucide-react";
+import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest } from "lucide-react";
 import type { Task, TaskDetail, Column, PrInfo, IssueInfo, TaskPriority, GithubIssueAction } from "@fusion/core";
 import {
   COLUMN_LABELS,
@@ -346,57 +346,6 @@ function getIssueUrlFromMetadata(metadata: Task["sourceMetadata"]): string | und
   return typeof issueUrl === "string" && issueUrl.length > 0 ? issueUrl : undefined;
 }
 
-const BROAD_SCOPE_REASON_LABELS: Record<string, string> = {
-  "size-l": "Size L",
-  "steps-high": "many steps",
-  "file-scope-high": "large file scope",
-  "failing-file-mentions-high": "many failing files mentioned",
-  "size-l-with-many-steps": "Size L + many steps",
-};
-
-function getBroadScopeFlag(sourceMetadata: Task["sourceMetadata"]): {
-  score: number;
-  reasons: string[];
-  signals?: {
-    size?: string | null;
-    stepCount?: number;
-    fileScopeCount?: number;
-    failingFileMentions?: number;
-  };
-} | null {
-  const candidate = sourceMetadata?.broadScopeFlag;
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return null;
-  }
-
-  const score = (candidate as { score?: unknown }).score;
-  const reasons = (candidate as { reasons?: unknown }).reasons;
-  const signals = (candidate as { signals?: unknown }).signals;
-
-  if (typeof score !== "number" || !Number.isFinite(score) || !Array.isArray(reasons) || !reasons.every((reason) => typeof reason === "string")) {
-    return null;
-  }
-
-  if (signals != null && (typeof signals !== "object" || Array.isArray(signals))) {
-    return null;
-  }
-
-  return {
-    score,
-    reasons,
-    signals: signals as {
-      size?: string | null;
-      stepCount?: number;
-      fileScopeCount?: number;
-      failingFileMentions?: number;
-    } | undefined,
-  };
-}
-
-function formatBroadScopeReasons(reasons: string[]): string {
-  return reasons.map((reason) => BROAD_SCOPE_REASON_LABELS[reason] ?? reason).join(", ");
-}
-
 function parseGithubIssueUrl(url?: string): { owner: string; repo: string; number: number } | null {
   if (!url) return null;
   const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)(?:$|[/?#])/i);
@@ -543,7 +492,6 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previousTask.sourceAgentId === nextTask.sourceAgentId &&
     previousTask.sourceMetadata?.issueUrl === nextTask.sourceMetadata?.issueUrl &&
     previousTask.sourceMetadata?.agentName === nextTask.sourceMetadata?.agentName &&
-    previousTask.sourceMetadata?.broadScopeFlag === nextTask.sourceMetadata?.broadScopeFlag &&
     previousTask.stalledReview?.reason === nextTask.stalledReview?.reason &&
     previousTask.stalledReview?.heuristic === nextTask.stalledReview?.heuristic &&
     previousTask.stalledReview?.matchCount === nextTask.stalledReview?.matchCount &&
@@ -899,10 +847,6 @@ function TaskCardComponent({
   const isAgentCreated = isAgentCreatedTask(task);
   const sourceAgentName = getSourceAgentName(task);
   const agentCreatedTitle = sourceAgentName ? `Created by agent: ${sourceAgentName}` : "Created by agent";
-  const broadScopeFlag = getBroadScopeFlag(task.sourceMetadata);
-  const broadScopeTitle = broadScopeFlag
-    ? `Broad-scope advisory (score ${broadScopeFlag.score}): ${formatBroadScopeReasons(broadScopeFlag.reasons)}`
-    : null;
   const isAgentNameLoading = Boolean(task.assignedAgentId && agentName === null);
   const taskProviders = useMemo(() => {
     const providers: string[] = [];
@@ -1776,13 +1720,6 @@ function TaskCardComponent({
           >
             <Target size={11} />
             {abbreviateMissionTitle(missionTitle ?? task.missionId)}
-          </span>
-        )}
-        {broadScopeFlag && broadScopeTitle && (
-          <span className="card-broad-scope-chip" title={broadScopeTitle} aria-label={broadScopeTitle}>
-            <AlertTriangle aria-hidden="true" />
-            <span className="card-broad-scope-chip-text" aria-hidden="true">Broad scope</span>
-            <span className="visually-hidden">{broadScopeTitle}</span>
           </span>
         )}
         <div className="card-header-actions">

@@ -628,28 +628,6 @@
   white-space: nowrap;
 }
 
-.card-broad-scope-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  font-size: 0.625rem;
-  font-weight: 600;
-  color: var(--color-warning);
-  background: color-mix(in srgb, var(--color-warning) 18%, transparent);
-  border: var(--btn-border-width) solid color-mix(in srgb, var(--color-warning) 35%, transparent);
-  padding: calc(var(--space-xs) / 4) calc(var(--space-sm) - (var(--space-xs) / 4));
-  border-radius: var(--radius-pill);
-  line-height: 1;
-}
-
-.card-broad-scope-chip-text {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @container task-card (max-width: 240px) {
   .card-agent-badge-text {
     display: none;
@@ -658,10 +636,6 @@
 
 @media (max-width: 768px) {
   .card-agent-badge-text {
-    display: none;
-  }
-
-  .card-broad-scope-chip-text {
     display: none;
   }
 }

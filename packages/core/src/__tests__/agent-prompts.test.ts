@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BUILTIN_AGENT_PROMPTS,
   resolveAgentPrompt,
@@ -250,6 +253,38 @@ describe("resolveAgentPrompt", () => {
 
     const result = resolveAgentPrompt("triage", config);
     expect(result).toContain("task_document_write");
+  });
+
+  it("triage prompt broad-scope decomposition block is present and identical in core and engine templates", () => {
+    const corePrompt = resolveAgentPrompt("triage");
+    const triageSource = readFileSync(
+      resolve(fileURLToPath(new URL("..", import.meta.url)), "..", "..", "engine", "src", "triage.ts"),
+      "utf8",
+    );
+    const enginePromptMatch = triageSource.match(/export const TRIAGE_SYSTEM_PROMPT = `([\s\S]*?)`;/);
+    expect(enginePromptMatch?.[1]).toBeTruthy();
+    const enginePrompt = enginePromptMatch![1].replaceAll("\\`", "`");
+
+    for (const prompt of [corePrompt, enginePrompt]) {
+      expect(prompt).toContain("**Broad-scope decomposition signals:**");
+      expect(prompt).toContain("step count would reach 9 or more");
+      expect(prompt).toContain("would reach 12 or more");
+      expect(prompt).toContain("20 or more entries");
+      expect(prompt).toContain("at or above 30 items");
+    }
+
+    const marker = "**Broad-scope decomposition signals:**";
+    const blockRegex = /\*\*Broad-scope decomposition signals:\*\*[\s\S]*?(?=\n\n(?:##|\*\*))/;
+    const coreStart = corePrompt.indexOf(marker);
+    const engineStart = enginePrompt.indexOf(marker);
+    expect(coreStart).toBeGreaterThanOrEqual(0);
+    expect(engineStart).toBeGreaterThanOrEqual(0);
+
+    const coreBlock = corePrompt.slice(coreStart).match(blockRegex)?.[0];
+    const engineBlock = enginePrompt.slice(engineStart).match(blockRegex)?.[0];
+    expect(coreBlock).toBeTruthy();
+    expect(engineBlock).toBeTruthy();
+    expect(coreBlock).toBe(engineBlock);
   });
 
   it("default role prompts include explicit heartbeat run guidance", () => {
