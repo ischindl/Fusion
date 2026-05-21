@@ -1743,7 +1743,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.id,
       task.lineageId ?? generateTaskLineageId(),
       task.title ?? null,
-      task.description,
+      task.description ?? "",
       normalizeTaskPriority(task.priority),
       task.column,
       task.status ?? null,
