@@ -29,7 +29,7 @@ describe("buildCompactedRoomTranscript", () => {
     expect(transcript.match(/\[LATEST USER MESSAGE — ANSWER THIS\]/g)).toHaveLength(1);
   });
 
-  it("prepends a compacted summary and keeps the last 12 messages verbatim", () => {
+  it("prepends a compacted summary and keeps the last 25 messages verbatim by default", () => {
     const messages = Array.from({ length: 30 }, (_, index) => {
       const olderUserLengths = [40, 80, 120, 160, 200, 220, 60, 70, 90];
       const content = index < 18 && index % 2 === 0
@@ -42,7 +42,7 @@ describe("buildCompactedRoomTranscript", () => {
     const transcript = buildCompactedRoomTranscript(messages, latestUserMessageId);
 
     expect(transcript).toContain("## Earlier room context (compacted)");
-    expect(transcript).toContain("- Span: 18 messages from 2026-01-01T00:00:00.000Z to 2026-01-01T00:00:17.000Z");
+    expect(transcript).toContain("- Span: 5 messages from 2026-01-01T00:00:00.000Z to 2026-01-01T00:00:04.000Z");
     expect(transcript).toContain("- Participants: User, Agent agent-a");
     const [summaryBlock] = transcript.split("\n\n");
     const highlightLines = summaryBlock.split("\n").filter((line) => line.startsWith("  - "));
@@ -50,9 +50,10 @@ describe("buildCompactedRoomTranscript", () => {
     const highlightTimestamps = highlightLines.map((line) => line.match(/\[(.*?)\]/)?.[1] ?? "");
     expect(highlightTimestamps).toEqual([...highlightTimestamps].sort());
 
-    for (let index = 18; index < 30; index += 1) {
+    for (let index = 5; index < 30; index += 1) {
       expect(transcript).toContain(`- [2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z]`);
     }
+    expect(transcript).not.toContain("- [2026-01-01T00:00:04.000Z] (user) User:");
     expect(transcript).toContain("(user) User: message-28 [LATEST USER MESSAGE — ANSWER THIS]");
   });
 
@@ -65,7 +66,7 @@ describe("buildCompactedRoomTranscript", () => {
 
     const transcript = buildCompactedRoomTranscript(messages, "msg-29");
 
-    expect(transcript.length).toBeLessThanOrEqual(8000);
+    expect(transcript.length).toBeLessThanOrEqual(20000);
     expect(transcript.match(/\[LATEST USER MESSAGE — ANSWER THIS\]/g)).toHaveLength(1);
     expect(transcript).toContain("message-29-");
   });
@@ -81,7 +82,7 @@ describe("buildCompactedRoomTranscript", () => {
       content: `recent-${index}`,
     }));
 
-    const transcript = buildCompactedRoomTranscript([...olderMessages, ...recentMessages], "msg-29");
+    const transcript = buildCompactedRoomTranscript([...olderMessages, ...recentMessages], "msg-29", { recentVerbatim: 12 });
     const [summaryBlock] = transcript.split("\n\n");
     const highlightLines = summaryBlock.split("\n").filter((line) => line.startsWith("  - "));
 
@@ -89,8 +90,8 @@ describe("buildCompactedRoomTranscript", () => {
     expect(summaryBlock).toContain("- Span: 18 messages");
     expect(summaryBlock).toContain("- Participants: User");
     expect(summaryBlock).toContain("- Highlights:");
-    expect(summaryBlock.length).toBeLessThanOrEqual(1500);
-    expect(highlightLines.length).toBeLessThan(5);
+    expect(summaryBlock.length).toBeLessThanOrEqual(3000);
+    expect(highlightLines.length).toBeLessThanOrEqual(5);
   });
 
   it("keeps the total transcript under the overall cap", () => {
@@ -102,7 +103,7 @@ describe("buildCompactedRoomTranscript", () => {
 
     const transcript = buildCompactedRoomTranscript(messages, "msg-79");
 
-    expect(transcript.length).toBeLessThanOrEqual(8000);
+    expect(transcript.length).toBeLessThanOrEqual(20000);
     expect(transcript).toContain("message-79-");
   });
 
@@ -149,13 +150,13 @@ describe("buildCompactedRoomTranscript", () => {
     }));
 
     const settings = await (manager as any).getRoomCompactionSettings();
-    expect(settings).toEqual({ recentVerbatim: 12, fetchLimit: 80, summaryMaxChars: 1500 });
+    expect(settings).toEqual({ recentVerbatim: 25, fetchLimit: 200, summaryMaxChars: 3000 });
 
     const managerWithThrow = new ChatManager({} as any, "/tmp", undefined, undefined, async () => {
       throw new Error("boom");
     });
     const fallbackSettings = await (managerWithThrow as any).getRoomCompactionSettings();
-    expect(fallbackSettings).toEqual({ recentVerbatim: 12, fetchLimit: 80, summaryMaxChars: 1500 });
+    expect(fallbackSettings).toEqual({ recentVerbatim: 25, fetchLimit: 200, summaryMaxChars: 3000 });
   });
 
   it("computes unique participant labels from older messages", () => {
@@ -172,7 +173,7 @@ describe("buildCompactedRoomTranscript", () => {
       content: `recent-${index}`,
     }));
 
-    const transcript = buildCompactedRoomTranscript([...older, ...recent], "msg-16");
+    const transcript = buildCompactedRoomTranscript([...older, ...recent], "msg-16", { recentVerbatim: 12 });
 
     expect(transcript).toContain("- Participants: User, Agent agent-a, System, Assistant, Agent agent-b");
   });

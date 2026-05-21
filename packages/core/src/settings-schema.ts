@@ -389,9 +389,9 @@ export const DEFAULT_PROJECT_SETTINGS = {
   showQuickChatFAB: false,
   chatAutoCleanupDays: 0,
   mailAutoCleanupDays: 0,
-  chatRoomRecentVerbatimMessages: 12,
-  chatRoomCompactionFetchLimit: 80,
-  chatRoomSummaryMaxChars: 1_500,
+  chatRoomRecentVerbatimMessages: 25,
+  chatRoomCompactionFetchLimit: 200,
+  chatRoomSummaryMaxChars: 3_000,
   researchSettings: {
     enabled: true,
     searchProvider: undefined,

@@ -252,7 +252,7 @@ describe("Chat orchestration — rooms (FN-3805..FN-3811 contract)", () => {
 
       const prompt = promptSpy.mock.calls[0]?.[0] as string;
       expect(prompt).toContain("## Earlier room context (compacted)");
-      expect(prompt).toContain("- Span: 18 messages from 2026-01-01T00:00:00.000Z to 2026-01-01T00:00:17.000Z");
+      expect(prompt).toContain("- Span: 5 messages from 2026-01-01T00:00:00.000Z to 2026-01-01T00:00:04.000Z");
       expect(prompt).toContain("history-item-28");
       expect(prompt).toContain("  - [2026-01-01T00:00:00.000Z] User: history-item-0");
       expect(prompt).not.toContain("- [2026-01-01T00:00:00.000Z] (user) User: history-item-0");

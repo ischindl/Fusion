@@ -119,7 +119,13 @@ describe("reliability interactions: same-agent duplicate intake", () => {
       source: { sourceType: "agent_heartbeat", sourceAgentId: "agent-x" },
     });
 
-    vi.spyOn(fx.store, "listTasks").mockRejectedValueOnce(new Error("boom"));
+    const originalListTasks = fx.store.listTasks.bind(fx.store);
+    vi.spyOn(fx.store, "listTasks").mockImplementation(async (options) => {
+      if (options?.slim === true && options?.includeArchived === false) {
+        throw new Error("boom");
+      }
+      return originalListTasks(options);
+    });
 
     const b = await fx.store.createTask({
       title: "fix: baseline clone",

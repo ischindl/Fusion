@@ -425,9 +425,9 @@ Default notes:
 | `showQuickChatFAB` | `boolean` | `false` | Show floating quick-chat button (chat remains available via More menu). |
 | `chatAutoCleanupDays` | `0 \| 7 \| 14 \| 30 \| 60 \| 90` | `0` | Auto-cleanup retention window for idle chat sessions and chat rooms. `0` is off (default). When enabled, periodic self-healing maintenance deletes rows with `updatedAt` older than the configured day window. |
 | `mailAutoCleanupDays` | `0 \| 7 \| 14 \| 30 \| 60 \| 90` | `0` | Auto-prune retention window for inbox/outbox mail messages. `0` is off (default). When enabled, periodic self-healing maintenance deletes `messages` rows where `updatedAt < cutoff` for the configured day window. Suggested setting: `7`. |
-| `chatRoomRecentVerbatimMessages` | `number` | `12` | Number of newest chat-room messages kept verbatim in responder context before older entries are compacted. |
-| `chatRoomCompactionFetchLimit` | `number` | `80` | Upper bound on room messages fetched for transcript compaction per responder turn. |
-| `chatRoomSummaryMaxChars` | `number` | `1500` | Hard cap for the synthesized “Earlier room context” summary block. |
+| `chatRoomRecentVerbatimMessages` | `number` | `25` | Number of newest chat-room messages kept verbatim in responder context before older entries are compacted (about 2× prior default history). |
+| `chatRoomCompactionFetchLimit` | `number` | `200` | Upper bound on room messages fetched for transcript compaction per responder turn (raised to support larger retained context windows). |
+| `chatRoomSummaryMaxChars` | `number` | `3000` | Hard cap for the synthesized “Earlier room context” summary block (about 2× the prior summary budget). |
 | `researchSettings` | `ResearchProjectSettings` | `{ enabled: true, searchProvider: undefined, synthesisProvider: undefined, synthesisModelId: undefined, enabledSources: { webSearch: true, pageFetch: true, github: false, localDocs: true, llmSynthesis: true }, limits: { maxConcurrentRuns: 3, maxSourcesPerRun: 20, maxDurationMs: 300000, requestTimeoutMs: 30000 } }` | Project-specific Research enablement/overrides. Resolved together with `researchGlobalDefaults` via `resolveResearchSettings()`. |
 | `researchEnabled` | `boolean` | `undefined` | Enable or disable research for this project. **Deprecated:** prefer `researchSettings.enabled`. |
 | `researchMaxConcurrentRuns` | `number` | `undefined` | Project-level max concurrent research runs. |

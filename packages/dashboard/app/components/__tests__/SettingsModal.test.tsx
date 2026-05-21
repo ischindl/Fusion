@@ -1032,9 +1032,9 @@ describe("SettingsModal", () => {
       const fetchLimitInput = screen.getByLabelText("Room compaction fetch limit") as HTMLInputElement;
       const summaryMaxInput = screen.getByLabelText("Room summary max characters") as HTMLInputElement;
 
-      expect(recentInput.placeholder).toBe("12");
-      expect(fetchLimitInput.placeholder).toBe("80");
-      expect(summaryMaxInput.placeholder).toBe("1500");
+      expect(recentInput.placeholder).toBe("25");
+      expect(fetchLimitInput.placeholder).toBe("200");
+      expect(summaryMaxInput.placeholder).toBe("3000");
 
       await userEvent.type(recentInput, "7");
       await userEvent.type(fetchLimitInput, "60");

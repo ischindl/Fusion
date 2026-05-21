@@ -2385,13 +2385,13 @@ export function SettingsModal({
                 type="number"
                 min="1"
                 className="input"
-                placeholder="12"
+                placeholder="25"
                 value={form.chatRoomRecentVerbatimMessages ?? ""}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, chatRoomRecentVerbatimMessages: Number(e.target.value) || undefined }))
                 }
               />
-              <small>Number of most-recent chat-room messages kept verbatim in the responder transcript. Older messages are compacted into a summary block. Default: 12.</small>
+              <small>Number of most-recent chat-room messages kept verbatim in the responder transcript. Older messages are compacted into a summary block. Default: 25.</small>
             </div>
             <div className="form-group">
               <label htmlFor="chatRoomCompactionFetchLimit">Room compaction fetch limit</label>
@@ -2400,13 +2400,13 @@ export function SettingsModal({
                 type="number"
                 min="1"
                 className="input"
-                placeholder="80"
+                placeholder="200"
                 value={form.chatRoomCompactionFetchLimit ?? ""}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, chatRoomCompactionFetchLimit: Number(e.target.value) || undefined }))
                 }
               />
-              <small>Upper bound on messages fetched from the room store for compaction consideration. Default: 80.</small>
+              <small>Upper bound on messages fetched from the room store for compaction consideration. Default: 200.</small>
             </div>
             <div className="form-group">
               <label htmlFor="chatRoomSummaryMaxChars">Room summary max characters</label>
@@ -2415,13 +2415,13 @@ export function SettingsModal({
                 type="number"
                 min="200"
                 className="input"
-                placeholder="1500"
+                placeholder="3000"
                 value={form.chatRoomSummaryMaxChars ?? ""}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, chatRoomSummaryMaxChars: Number(e.target.value) || undefined }))
                 }
               />
-              <small>Hard cap on the synthesized "Earlier room context" summary block. Default: 1500.</small>
+              <small>Hard cap on the synthesized "Earlier room context" summary block. Default: 3000.</small>
             </div>
             <h4 className="settings-section-heading settings-section-heading--spaced">Capacity Risk Banner</h4>
             <div className="form-group">

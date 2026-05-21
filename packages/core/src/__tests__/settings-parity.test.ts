@@ -96,6 +96,18 @@ describe("settings key parity", () => {
     expect(isGlobalSettingsKey("chatAutoCleanupDays")).toBe(false);
   });
 
+  it("keeps room compaction defaults project-scoped with expanded retention", () => {
+    expect(DEFAULT_PROJECT_SETTINGS.chatRoomRecentVerbatimMessages).toBe(25);
+    expect(DEFAULT_PROJECT_SETTINGS.chatRoomCompactionFetchLimit).toBe(200);
+    expect(DEFAULT_PROJECT_SETTINGS.chatRoomSummaryMaxChars).toBe(3_000);
+    expect(isProjectSettingsKey("chatRoomRecentVerbatimMessages")).toBe(true);
+    expect(isProjectSettingsKey("chatRoomCompactionFetchLimit")).toBe(true);
+    expect(isProjectSettingsKey("chatRoomSummaryMaxChars")).toBe(true);
+    expect(isGlobalSettingsKey("chatRoomRecentVerbatimMessages")).toBe(false);
+    expect(isGlobalSettingsKey("chatRoomCompactionFetchLimit")).toBe(false);
+    expect(isGlobalSettingsKey("chatRoomSummaryMaxChars")).toBe(false);
+  });
+
   it("defaults mailAutoCleanupDays to off and keeps it project-scoped", () => {
     expect(DEFAULT_PROJECT_SETTINGS.mailAutoCleanupDays).toBe(0);
     expect(isProjectSettingsKey("mailAutoCleanupDays")).toBe(true);
