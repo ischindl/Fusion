@@ -143,8 +143,8 @@ describe("foreign start-point no-owned-commit interactions (real git)", () => {
       const recovered = await manager.finalizeNoOpReviewTasks();
 
       expect(recovered).toBe(0);
-      expect(task.column).toBe("todo");
-      expect(events.some((event: any) => event?.mutationType === "task:finalize-unproven-blocked")).toBe(true);
+      expect(task.column).toBe("in-review");
+      expect(events.some((event: any) => event?.mutationType === "task:finalize-no-op-review-no-action")).toBe(true);
       manager.stop();
     } finally {
       rmSync(dir, { recursive: true, force: true });

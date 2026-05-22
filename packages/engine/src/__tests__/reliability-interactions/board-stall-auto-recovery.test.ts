@@ -14,6 +14,7 @@ function makeTask(id: string, overrides: Partial<Task> = {}): Task {
     currentStep: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    executionStartedAt: new Date(Date.now() - 61_000).toISOString(),
     log: [],
     ...overrides,
   } as Task;

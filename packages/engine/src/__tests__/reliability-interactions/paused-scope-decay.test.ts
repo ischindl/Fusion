@@ -64,6 +64,7 @@ describe("reliability interactions: paused scope decay", () => {
       column: "in-progress",
       paused: true,
       pausedReason: "waiting",
+      executionStartedAt: new Date(now - 31 * 60_000).toISOString(),
       columnMovedAt: new Date(now - 31 * 60_000).toISOString(),
       currentStep: 2,
       steps: [{ id: "s1", title: "x", status: "done" } as any],
@@ -97,6 +98,7 @@ describe("reliability interactions: paused scope decay", () => {
     const holder = makeTask("FN-3", {
       column: "in-progress",
       paused: true,
+      executionStartedAt: new Date(now - 61_000).toISOString(),
       columnMovedAt: new Date(now - 1_000).toISOString(),
     });
     const follower = makeTask("FN-4", { column: "todo", blockedBy: "FN-3" });

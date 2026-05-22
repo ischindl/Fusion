@@ -86,6 +86,7 @@ describe("reliability interactions: self-healing", () => {
         worktree: "/tmp/wt",
         branch: "fusion/wt",
         steps: [{ id: "s1", title: "Step", status: "pending" }] as any,
+        updatedAt: new Date(Date.now() - 31 * 60_000).toISOString(),
       }),
     ]]);
     const store = makeStore(tasks);

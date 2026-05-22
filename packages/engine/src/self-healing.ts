@@ -30,7 +30,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, parseExplicitDuplicateMarker, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
-import { RemovalReason, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
+import { RemovalReason, classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
 import {
   classifyMissingWorktreeSessionStartFailure,
   extractMissingWorktreePathFromSessionStartFailure,
@@ -40,9 +40,9 @@ import {
 } from "./restart-recovery-coordinator.js";
 import { classifyError, extractMissingModulePath, isOperatorActionableAgentError, isStaleWorktreeModuleResolutionError } from "./transient-error-detector.js";
 import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./branch-conflicts.js";
-import { createRunAuditor, generateSyntheticRunId, type RunAuditor } from "./run-audit.js";
+import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./run-audit.js";
 import { AutoRecoveryDispatcher } from "./auto-recovery.js";
-import { activeSessionRegistry } from "./active-session-registry.js";
+import { activeSessionRegistry, executingTaskLock } from "./active-session-registry.js";
 import { findAlreadyMergedTaskCommit } from "./already-merged-detector.js";
 import { resolveWorktreesDir } from "./worktree-paths.js";
 import { canonicalFusionBranchName } from "./worktree-names.js";
@@ -569,6 +569,107 @@ export class SelfHealingManager {
         agentId: "self-healing",
       },
     });
+  }
+
+  private hasRecentWorktreeIncompleteDetected(taskId: string, graceMs: number): boolean {
+    if (!Number.isFinite(graceMs) || graceMs <= 0) return false;
+    const storeWithRunAudit = this.store as { getRunAuditEvents?: (filter: { taskId: string; mutationType: string; limit: number }) => Array<{ timestamp?: string | null }> };
+    if (typeof storeWithRunAudit.getRunAuditEvents !== "function") return false;
+    let events: Array<{ timestamp?: string | null }> = [];
+    try {
+      events = storeWithRunAudit.getRunAuditEvents({ taskId, mutationType: "worktree:incomplete-detected", limit: 20 }) ?? [];
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(events) || events.length === 0) return false;
+    const cutoff = Date.now() - graceMs;
+    return events.some((event) => {
+      const ts = Date.parse(event.timestamp ?? "");
+      return Number.isFinite(ts) && ts >= cutoff;
+    });
+  }
+
+  private async evaluateBackwardMoveTripleProof(
+    task: Task,
+    input: {
+      stage: string;
+      graceMs: number;
+      stalenessAnchor: string | null | undefined;
+      reason: string;
+      extra?: Record<string, unknown>;
+    },
+  ): Promise<{ ok: boolean; stalenessMs: number; reason: string; metadata: Record<string, unknown> }> {
+    const livePaths = activeSessionRegistry.pathsForTask(task.id);
+    const hasActiveRegisteredPath = livePaths.some((path) => activeSessionRegistry.isPathActive(path));
+    const sessionDead = !hasActiveRegisteredPath && !executingTaskLock.has(task.id) && this.options.isTaskActive?.(task.id) !== true;
+
+    let worktreeUnusable = true;
+    let worktreeClassification: { ok: boolean; classification?: string; reason?: string };
+    if (task.worktree) {
+      const cls = await classifyTaskWorktree(this.options.rootDir, task.worktree);
+      worktreeClassification = cls.ok
+        ? { ok: true }
+        : { ok: false, classification: cls.classification, reason: cls.reason };
+      worktreeUnusable = !cls.ok;
+    } else {
+      const expected = canonicalFusionBranchName(task.id);
+      const registeredPaths = await getRegisteredWorktreePaths(this.options.rootDir);
+      const registeredBranchMap = await getRegisteredWorktreeBranchMap(this.options.rootDir);
+      const matchingRegisteredPaths = [...registeredPaths].filter((path) => {
+        const branch = registeredBranchMap.get(path);
+        return typeof branch === "string" && branch.trim().toLowerCase() === expected;
+      });
+      worktreeClassification = matchingRegisteredPaths.length === 0
+        ? { ok: false, classification: "missing", reason: "task.worktree is null and no registered fusion worktree exists" }
+        : { ok: true, reason: "registered fusion worktree exists while task.worktree is null" };
+      worktreeUnusable = matchingRegisteredPaths.length === 0;
+    }
+
+    const anchorMs = input.stalenessAnchor ? Date.parse(input.stalenessAnchor) : Number.NaN;
+    const stalenessMs = Number.isFinite(anchorMs) ? Math.max(0, Date.now() - anchorMs) : Number.POSITIVE_INFINITY;
+    const noRecentActivity = stalenessMs >= input.graceMs && !this.hasRecentWorktreeIncompleteDetected(task.id, input.graceMs);
+
+    const ok = sessionDead && worktreeUnusable && noRecentActivity;
+    return {
+      ok,
+      stalenessMs,
+      reason: input.reason,
+      metadata: {
+        priorWorktree: task.worktree ?? null,
+        priorBranch: task.branch ?? null,
+        hadWorktree: Boolean(task.worktree),
+        stalenessMs,
+        graceMs: input.graceMs,
+        sessionDead,
+        worktreeUnusable,
+        noRecentActivity,
+        livePaths,
+        hasExecutingTaskLock: executingTaskLock.has(task.id),
+        taskActive: this.options.isTaskActive?.(task.id) === true,
+        worktreeClassification,
+        ...input.extra,
+      },
+    };
+  }
+
+  private async emitBackwardMoveNoAction(task: Task, stage: string, mutationType: string, proof: { stalenessMs: number; reason: string; metadata: Record<string, unknown> }): Promise<void> {
+    try {
+      await createRunAuditor(this.store, {
+        runId: generateSyntheticRunId(`self-healing-${stage}`, task.id),
+        agentId: "self-healing",
+        taskId: task.id,
+        taskLineageId: task.lineageId,
+        phase: stage,
+      }).database({
+        type: mutationType as DatabaseMutationType,
+        target: task.id,
+        metadata: proof.metadata,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn(`[${stage}] ${task.id}: no-action audit emission failed: ${message}`);
+    }
+    log.log(`[${stage}] ${task.id}: triple-proof not satisfied — no action (operator-decides)`);
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -1619,6 +1720,10 @@ export class SelfHealingManager {
     return reclaimed;
   }
 
+  /**
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:reclaim-pr-conflict-no-action` and skips lifecycle mutation.
+   */
   async reclaimPrConflictForTask(taskId: string): Promise<{ outcome: "reclaimed" | "stale-resolved" | "tip-already-merged" | "paused-unrecoverable" | "skipped"; reason?: string; perPr?: Array<{ number: number; outcome: "reclaimed" | "stale-resolved" | "tip-already-merged" | "paused-unrecoverable" | "skipped"; reason?: string }> }> {
     const task = await this.store.getTask(taskId);
     if (!task) return { outcome: "skipped", reason: "task-not-found" };
@@ -1705,20 +1810,40 @@ export class SelfHealingManager {
         }
       }
 
-      await this.store.updateTask(task.id, {
-        worktree: inspection.livePath,
-        branch: task.branch,
-        paused: false,
-        pausedReason: undefined,
-        status: null,
-        error: null,
-      });
       if (task.column === "in-review") {
-        await this.store.moveTask(task.id, "todo", {
-          moveSource: "engine",
-          preserveWorktree: true,
-          preserveProgress: true,
-          preserveResumeState: true,
+        const proof = await this.evaluateBackwardMoveTripleProof(task, {
+          stage: "reclaim-pr-conflict",
+          graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
+          stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+          reason: "reclaim-pr-conflict-candidate",
+        });
+        if (!proof.ok) {
+          await this.emitBackwardMoveNoAction(task, "reclaim-pr-conflict", "task:reclaim-pr-conflict-no-action", proof);
+          return withPerPr({ outcome: "skipped", reason: "triple-proof-not-satisfied" });
+        } else {
+          await this.store.updateTask(task.id, {
+            worktree: inspection.livePath,
+            branch: task.branch,
+            paused: false,
+            pausedReason: undefined,
+            status: null,
+            error: null,
+          });
+          await this.store.moveTask(task.id, "todo", {
+            moveSource: "engine",
+            preserveWorktree: true,
+            preserveProgress: true,
+            preserveResumeState: true,
+          });
+        }
+      } else {
+        await this.store.updateTask(task.id, {
+          worktree: inspection.livePath,
+          branch: task.branch,
+          paused: false,
+          pausedReason: undefined,
+          status: null,
+          error: null,
         });
       }
       await auditor.database({ type: "task:pr-conflict-reclaim", target: task.id, metadata: { outcome: "reclaimed", mode: inspection.kind } });
@@ -1766,6 +1891,9 @@ export class SelfHealingManager {
   /**
    * STANDING: do not auto-discard stranded commits. Reclaim preserves commits;
    * unrecoverable conflicts are escalated for human review.
+   *
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:reclaim-self-owned-branch-conflict-no-action` and skips lifecycle mutation.
    *
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
    */
@@ -1829,6 +1957,15 @@ export class SelfHealingManager {
           continue;
         }
         if (!await isUsableTaskWorktree(this.options.rootDir, task.worktree)) continue;
+
+        const reviewProof = task.column === "in-review"
+          ? await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "reclaim-self-owned-branch-conflict",
+            graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "reclaim-self-owned-candidate",
+          })
+          : null;
 
         try {
           const inspection = await inspectBranchConflict({
@@ -1898,11 +2035,15 @@ export class SelfHealingManager {
               );
 
               if (task.column === "in-review") {
-                await this.store.moveTask(task.id, "todo", {
-                  moveSource: "engine",
-                  preserveProgress: true,
-                  preserveResumeState: true,
-                });
+                if (!reviewProof?.ok) {
+                  await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
+                } else {
+                  await this.store.moveTask(task.id, "todo", {
+                    moveSource: "engine",
+                    preserveProgress: true,
+                    preserveResumeState: true,
+                  });
+                }
               }
 
               try {
@@ -1997,11 +2138,15 @@ export class SelfHealingManager {
                 );
 
                 if (task.column === "in-review") {
-                  await this.store.moveTask(task.id, "todo", {
-                    moveSource: "engine",
-                    preserveProgress: true,
-                    preserveResumeState: true,
-                  });
+                  if (!reviewProof?.ok) {
+                    await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
+                  } else {
+                    await this.store.moveTask(task.id, "todo", {
+                      moveSource: "engine",
+                      preserveProgress: true,
+                      preserveResumeState: true,
+                    });
+                  }
                 }
 
                 try {
@@ -2062,12 +2207,16 @@ export class SelfHealingManager {
           );
 
           if (task.column === "in-review") {
-            await this.store.moveTask(task.id, "todo", {
-              moveSource: "engine",
-              preserveWorktree: true,
-              preserveProgress: true,
-              preserveResumeState: true,
-            });
+            if (!reviewProof?.ok) {
+              await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
+            } else {
+              await this.store.moveTask(task.id, "todo", {
+                moveSource: "engine",
+                preserveWorktree: true,
+                preserveProgress: true,
+                preserveResumeState: true,
+              });
+            }
           }
 
           try {
@@ -2947,6 +3096,23 @@ export class SelfHealingManager {
       const ageMs = Number.isFinite(movedAtMs) ? now - movedAtMs : Number.POSITIVE_INFINITY;
       if (!options?.ignoreAgeGate && ageMs < thresholdMs) continue;
 
+      const proof = await this.evaluateBackwardMoveTripleProof(task, {
+        stage: "auto-rebound-paused-scope-decay",
+        graceMs: thresholdMs,
+        stalenessAnchor: task.executionStartedAt ?? task.updatedAt,
+        reason: "paused-scope-decay-candidate",
+        extra: {
+          followerCount,
+          ignoredAgeGate: options?.ignoreAgeGate === true,
+          thresholdMs,
+          ageMs,
+        },
+      });
+      if (!proof.ok) {
+        await this.emitBackwardMoveNoAction(task, "auto-rebound-paused-scope-decay", "task:auto-rebound-scope-decay-no-action", proof);
+        continue;
+      }
+
       await this.store.moveTask(task.id, "todo", {
         preserveProgress: true,
         preserveWorktree: true,
@@ -3745,6 +3911,9 @@ export class SelfHealingManager {
   }
 
   /**
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the unproven fallback predicate fails, emits `task:finalize-no-op-review-no-action` and skips lifecycle mutation.
+   *
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
    */
   async finalizeNoOpReviewTasks(): Promise<number> {
@@ -3810,6 +3979,16 @@ export class SelfHealingManager {
             details: classification.details,
             autoRetry: true,
           });
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "finalize-no-op-review",
+            graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "finalize-unproven-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "finalize-no-op-review", "task:finalize-no-op-review-no-action", proof);
+            continue;
+          }
           await this.store.moveTask(task.id, "todo", { preserveProgress: true, moveSource: "engine" });
           continue;
         }
@@ -4200,6 +4379,8 @@ export class SelfHealingManager {
    *
    * Moving them back to `todo` lets the normal scheduler/executor resume the
    * incomplete step instead of leaving the task stranded in review.
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:stale-incomplete-review-no-action` and skips lifecycle mutation.
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
    */
   async recoverStaleIncompleteReviewTasks(): Promise<number> {
@@ -4228,6 +4409,17 @@ export class SelfHealingManager {
       let recovered = 0;
       for (const task of staleIncomplete) {
         try {
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "stale-incomplete-review",
+            graceMs: timeoutMs,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "stale-incomplete-review-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "stale-incomplete-review", "task:stale-incomplete-review-no-action", proof);
+            continue;
+          }
+
           await this.store.logEntry(
             task.id,
             "Auto-recovered: in-review task still had incomplete steps — moved back to todo for retry",
@@ -4578,6 +4770,9 @@ export class SelfHealingManager {
   }
 
   /**
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:ghost-review-no-action` and skips lifecycle mutation.
+   *
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
    */
   async recoverGhostReviewTasks(): Promise<number> {
@@ -4608,6 +4803,16 @@ export class SelfHealingManager {
       let recovered = 0;
       for (const task of ghosts) {
         try {
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "ghost-review",
+            graceMs: timeoutMs,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "ghost-review-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "ghost-review", "task:ghost-review-no-action", proof);
+            continue;
+          }
           if (task.status) {
             await this.store.updateTask(task.id, { status: null, error: null });
           }
@@ -5029,6 +5234,9 @@ export class SelfHealingManager {
   /**
    * Recover deadlocked retry-exhausted merge failures that are still blocking
    * dispatch via `blockedBy` or retained worktree ownership.
+   *
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the no-landed predicate fails, emits `task:stuck-merge-deadlock-no-action` and skips lifecycle mutation.
    */
   /**
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
@@ -5120,10 +5328,20 @@ export class SelfHealingManager {
             log.log(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: landedCommit.sha, action: "reattributed" })}`);
             recovered++;
           } else {
-            await this.store.updateTask(task.id, { paused: true });
-            await this.store.logEntry(task.id, "merge-deadlock-detected: requires manual intervention — verified content not on main");
-            log.warn(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: null, action: "paused-for-manual" })}`);
-            recovered++;
+            const proof = await this.evaluateBackwardMoveTripleProof(task, {
+              stage: "stuck-merge-deadlock",
+              graceMs: DEADLOCK_RECOVERY_COOLDOWN_MS,
+              stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+              reason: "stuck-merge-deadlock-candidate",
+            });
+            if (!proof.ok) {
+              await this.emitBackwardMoveNoAction(task, "stuck-merge-deadlock", "task:stuck-merge-deadlock-no-action", proof);
+            } else {
+              await this.store.updateTask(task.id, { paused: true });
+              await this.store.logEntry(task.id, "merge-deadlock-detected: requires manual intervention — verified content not on main");
+              log.warn(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: null, action: "paused-for-manual" })}`);
+              recovered++;
+            }
           }
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
@@ -6443,6 +6661,9 @@ export class SelfHealingManager {
    * Recover `in-progress` tasks that failed only because the agent exited
    * without calling fn_task_done, and where there is no sign of work to preserve.
    *
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:no-progress-no-task-done-no-action` and skips lifecycle mutation.
+   *
    * These are safe to requeue automatically when no steps progressed and git
    * has neither worktree changes nor branch commits. Cases with any evidence
    * of work are left alone for manual inspection or the normal orphan recovery
@@ -6475,6 +6696,17 @@ export class SelfHealingManager {
             continue;
           }
 
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "no-progress-no-task-done",
+            graceMs: ORPHANED_EXECUTION_RECOVERY_GRACE_MS,
+            stalenessAnchor: task.executionStartedAt ?? task.updatedAt,
+            reason: "no-progress-no-task-done-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "no-progress-no-task-done", "task:no-progress-no-task-done-no-action", proof);
+            continue;
+          }
+
           await this.store.updateTask(task.id, {
             status: "stuck-killed",
             worktree: null,
@@ -6504,6 +6736,9 @@ export class SelfHealingManager {
   /**
    * Recover failed `in-review` retries that point at an unusable worktree path.
    *
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:missing-worktree-review-no-action` and skips lifecycle mutation.
+   *
    * This is a narrow guard for session-start failures thrown by
    * `assertValidWorktreeSession()` in `pi.ts`, classified centrally via
    * `MISSING_WORKTREE_SESSION_PREFIXES` /
@@ -6532,6 +6767,17 @@ export class SelfHealingManager {
       let recovered = 0;
       for (const task of candidates) {
         try {
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "missing-worktree-review",
+            graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "missing-worktree-review-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "missing-worktree-review", "task:missing-worktree-review-no-action", proof);
+            continue;
+          }
+
           const auditor = createRunAuditor(this.store, {
             runId: generateSyntheticRunId("self-heal", task.id),
             agentId: "self-healing",
@@ -6565,6 +6811,9 @@ export class SelfHealingManager {
   /**
    * Recover `in-review` tasks marked as `failed` because the agent exited
    * without calling `fn_task_done` *with partial step progress* (some steps done,
+   *
+   * Backward lifecycle move gated on triple proof (FN-5335).
+   * When the predicate fails, emits `task:partial-progress-no-task-done-no-action` and skips lifecycle mutation.
    * some still pending). The work-in-progress is valuable but incomplete —
    * the existing worktree and branch are preserved and the task is moved back
    * to `todo` so the scheduler re-dispatches it for a fresh execution that
@@ -6610,6 +6859,17 @@ export class SelfHealingManager {
       let recovered = 0;
       for (const task of candidates) {
         try {
+          const proof = await this.evaluateBackwardMoveTripleProof(task, {
+            stage: "partial-progress-no-task-done",
+            graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
+            stalenessAnchor: task.columnMovedAt ?? task.updatedAt,
+            reason: "partial-progress-no-task-done-candidate",
+          });
+          if (!proof.ok) {
+            await this.emitBackwardMoveNoAction(task, "partial-progress-no-task-done", "task:partial-progress-no-task-done-no-action", proof);
+            continue;
+          }
+
           const nextCount = (task.taskDoneRetryCount ?? 0) + 1;
           await this.store.updateTask(task.id, {
             status: null,

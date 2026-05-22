@@ -44,6 +44,9 @@ The process supervisor logs when it registers a supervised child, starts teardow
 - `surface-stale-paused-reviews`
   - Log prefix: `Stale paused review surfaced [stale-paused-review]: paused ...`
   - Purpose: paused in-review backlog-health detector gated by `stalePausedReviewThresholdMs`.
+- FN-5335 backward-move annotations
+  - Log prefix shape: `[<stage-name>] <taskId>: triple-proof not satisfied — no action (operator-decides)`
+  - Representative stage names: `no-progress-no-task-done`, `partial-progress-no-task-done`, `stale-incomplete-review`, `ghost-review`, `missing-worktree-review`, `stuck-merge-deadlock`, `finalize-no-op-review`, `reclaim-pr-conflict`, `reclaim-self-owned-branch-conflict`, `auto-rebound-paused-scope-decay`.
 
 ## No-progress churn stuck-task escalation (`[executor]`, `[stuck-detector]`, `[self-healing]`)
 

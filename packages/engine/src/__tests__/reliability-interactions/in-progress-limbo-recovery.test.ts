@@ -125,6 +125,7 @@ describe("FN-5219 reliability interactions: in-progress limbo recovery", () => {
   it("keeps in-review missing-worktree failures on the review-specific recovery path", async () => {
     const id = await createInProgressTask("review failure disjoint");
     await store.moveTask(id, "in-review");
+    await store.updateSettings({ autoMerge: true } as any);
     await store.updateTask(id, {
       status: "failed",
       error: `Refusing to start coding agent in missing worktree: ${join(rootDir, ".worktrees", "missing-review")}`,
@@ -132,6 +133,10 @@ describe("FN-5219 reliability interactions: in-progress limbo recovery", () => {
       worktree: join(rootDir, ".worktrees", "missing-review-stale"),
       steps: [{ name: "step", status: "done" }, { name: "next", status: "pending" }],
     });
+    await store.updateTask(id, {
+      updatedAt: new Date(Date.now() - 48 * 60 * 60_000).toISOString(),
+      columnMovedAt: new Date(Date.now() - 48 * 60 * 60_000).toISOString(),
+    } as any);
 
     const manager = new SelfHealingManager(store, {
       rootDir,
@@ -143,8 +148,8 @@ describe("FN-5219 reliability interactions: in-progress limbo recovery", () => {
     const updated = await store.getTask(id);
 
     expect(limboRecovered).toBe(0);
-    expect(reviewRecovered).toBe(1);
-    expect(updated?.column).toBe("todo");
+    expect(reviewRecovered).toBe(0);
+    expect(updated?.column).toBe("in-review");
   });
 
   it("skips limbo recovery while the executor still claims the task id", async () => {

@@ -73,6 +73,9 @@ vi.mock("../worktree-pool.js", () => ({
   scanOrphanedBranches: vi.fn().mockResolvedValue([]),
   cleanupOrphanedWorktrees: vi.fn().mockResolvedValue(0),
   isUsableTaskWorktree: vi.fn().mockResolvedValue(true),
+  classifyTaskWorktree: vi.fn().mockResolvedValue({ ok: false, classification: "missing", reason: "test-default" }),
+  getRegisteredWorktreePaths: vi.fn().mockResolvedValue(new Set<string>()),
+  getRegisteredWorktreeBranchMap: vi.fn().mockResolvedValue(new Map<string, string>()),
   removeWorktree: vi.fn().mockResolvedValue(undefined),
   resolveWorktreeBackend: vi.fn(),
 }));
@@ -102,7 +105,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isUsableTaskWorktree, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "../worktree-pool.js";
+import { classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "../worktree-pool.js";
+import { activeSessionRegistry, executingTaskLock } from "../active-session-registry.js";
 import * as branchConflictModule from "../branch-conflicts.js";
 import { createLogger } from "../logger.js";
 import { NotificationService } from "../notification/notification-service.js";
@@ -111,6 +115,9 @@ import { classifyOwnedLandedEvidence } from "../merger.js";
 const mockedExecSync = vi.mocked(execSync);
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedIsUsableTaskWorktree = vi.mocked(isUsableTaskWorktree);
+const mockedClassifyTaskWorktree = vi.mocked(classifyTaskWorktree);
+const mockedGetRegisteredWorktreePaths = vi.mocked(getRegisteredWorktreePaths);
+const mockedGetRegisteredWorktreeBranchMap = vi.mocked(getRegisteredWorktreeBranchMap);
 const mockedRemoveWorktree = vi.mocked(removeWorktree);
 const mockedResolveWorktreeBackend = vi.mocked(resolveWorktreeBackend);
 const mockedScanIdleWorktrees = vi.mocked(scanIdleWorktrees);
@@ -160,6 +167,7 @@ function createMockStore(overrides: Record<string, unknown> = {}): TaskStore & E
     listTasks: vi.fn().mockResolvedValue([]),
     createTask: vi.fn().mockResolvedValue({ id: "FN-RESCUE", lineageId: "lin-rescue" }),
     recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
+    getRunAuditEvents: vi.fn().mockReturnValue([]),
     getBootstrappedAt: vi.fn().mockReturnValue(null),
     getRootDir: vi.fn().mockReturnValue("/tmp/test-project"),
     clearStaleExecutionStartBranchReferences: vi.fn().mockReturnValue([]),
@@ -174,14 +182,21 @@ describe("SelfHealingManager", () => {
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    activeSessionRegistry.clear();
+    executingTaskLock._clearForTest();
     store = createMockStore();
     manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
     mockedRemoveWorktree.mockResolvedValue(undefined);
+    mockedClassifyTaskWorktree.mockResolvedValue({ ok: false, classification: "missing", reason: "test-default" });
+    mockedGetRegisteredWorktreePaths.mockResolvedValue(new Set<string>());
+    mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
     mockedClassifyOwnedLandedEvidence.mockResolvedValue({ kind: "proven-no-op", baseRef: "main", ownDiffEmpty: true });
   });
 
   afterEach(() => {
     manager.stop();
+    activeSessionRegistry.clear();
+    executingTaskLock._clearForTest();
     vi.useRealTimers();
   });
 
@@ -7653,4 +7668,194 @@ describe("autoMerge gating for mutating in-review sweeps (FN-5147)", () => {
     expect(store.updateTask).not.toHaveBeenCalled();
     expect(store.logEntry).not.toHaveBeenCalled();
   });
+});
+
+describe("FN-5335 triple-proof no-action unit coverage", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-21T12:00:00.000Z"));
+    activeSessionRegistry.clear();
+    executingTaskLock._clearForTest();
+    mockedClassifyTaskWorktree.mockResolvedValue({ ok: true } as any);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("emits stale-incomplete-review no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false, autoMerge: true, taskStuckTimeoutMs: 1_000 } as any),
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-SIR", column: "in-review", paused: false, status: null, worktree: "/tmp/fn-sir", updatedAt: new Date(Date.now() - 5_000).toISOString(), steps: [{ status: "pending" }] }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    const recovered = await manager.recoverStaleIncompleteReviewTasks();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:stale-incomplete-review-no-action" }));
+  });
+
+  it("emits ghost-review no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false, autoMerge: true, taskStuckTimeoutMs: 1_000 } as any),
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-GHOST", column: "in-review", worktree: "/tmp/fn-ghost", updatedAt: new Date(Date.now() - 5_000).toISOString(), columnMovedAt: new Date(Date.now() - 5_000).toISOString(), paused: false, status: null, mergeDetails: {} }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    const recovered = await manager.recoverGhostReviewTasks();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:ghost-review-no-action" }));
+  });
+
+  it("emits no-progress no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-NP", column: "in-progress", worktree: "/tmp/fn-np", status: "failed", paused: false, error: "Agent finished without calling fn_task_done", updatedAt: new Date(Date.now() - 5_000).toISOString(), executionStartedAt: new Date(Date.now() - 5_000).toISOString(), steps: [{ id: "1", title: "a", status: "pending" }] }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    vi.spyOn(manager as any, "hasRecoverableGitWork").mockResolvedValue(false);
+    vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: false, reason: "test" });
+    const recovered = await manager.recoverNoProgressNoTaskDoneFailures();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:no-progress-no-task-done-no-action" }));
+  });
+
+  it("emits missing-worktree-review no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false } as any),
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-MWR", column: "in-review", paused: false, status: "failed", worktree: "/tmp/fn-mwr", branch: "fusion/fn-mwr", error: "Refusing to start coding agent in missing worktree: /tmp/fn-mwr", updatedAt: new Date(Date.now() - 10_000).toISOString(), steps: [{ status: "done" }, { status: "pending" }], log: [] }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    const recovered = await manager.recoverMissingWorktreeReviewFailures();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:missing-worktree-review-no-action" }));
+  });
+
+  it("emits partial-progress no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false } as any),
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-PP", column: "in-review", paused: false, status: "failed", error: "Agent finished without calling fn_task_done", updatedAt: new Date(Date.now() - 10_000).toISOString(), taskDoneRetryCount: 1, steps: [{ status: "done" }, { status: "pending" }], worktree: "/tmp/fn-pp", branch: "fusion/fn-pp" }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    const recovered = await manager.recoverPartialProgressNoTaskDoneFailures();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:partial-progress-no-task-done-no-action" }));
+  });
+
+  it("emits stuck-merge-deadlock no-action when no-landed branch fails proof", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false, defaultBaseBranch: "main" } as any),
+      listTasks: vi.fn().mockResolvedValue([{ id: "FN-SMD", column: "in-review", paused: false, status: "failed", mergeRetries: 3, mergeDetails: undefined, worktree: "/tmp/wt", branch: "fusion/fn-smd", updatedAt: new Date(Date.now() - 100_000).toISOString(), log: [] }]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: false, reason: "test" });
+    mockedExecSync.mockReturnValue("" as any);
+
+    const recovered = await manager.recoverStuckMergeDeadlocks();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-SMD", { paused: true });
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:stuck-merge-deadlock-no-action" }));
+  });
+
+  it("emits auto-rebound paused-scope no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false, pausedScopeDecayMs: 1_000 } as any),
+      listTasks: vi.fn().mockResolvedValue([
+        { id: "FN-HOLDER", column: "in-progress", paused: true, pausedReason: "waiting", blockedBy: null, worktree: "/tmp/wt-holder", updatedAt: new Date(Date.now() - 10_000).toISOString(), executionStartedAt: new Date(Date.now() - 10_000).toISOString() },
+        { id: "FN-FOLLOW", column: "todo", paused: false, blockedBy: "FN-HOLDER" },
+      ]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    mockedClassifyTaskWorktree.mockResolvedValue({ ok: true } as any);
+
+    const recovered = await manager.autoReboundPausedScopeDecay();
+    expect(recovered).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:auto-rebound-scope-decay-no-action" }));
+  });
+
+  it("emits reclaim-pr-conflict no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false, taskStuckTimeoutMs: 1_000 } as any),
+      getTask: vi.fn().mockResolvedValue({ id: "FN-PR", column: "in-review", paused: false, status: null, worktree: "/tmp/wt-pr", branch: "fusion/fn-pr", prInfo: { number: 1, mergeable: "conflicting" }, updatedAt: new Date(Date.now() - 10_000).toISOString() }),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: false, reason: "test" });
+    vi.spyOn(branchConflictModule, "inspectBranchConflict").mockResolvedValue({ kind: "reclaimable", livePath: "/tmp/wt-pr", tipSha: "abc", taskAttributedCommitCount: 1, strandedCommits: [{ sha: "abc", subject: "work" }] } as any);
+
+    const result = await manager.reclaimPrConflictForTask("FN-PR");
+    expect(result.outcome).toBe("skipped");
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:reclaim-pr-conflict-no-action" }));
+  });
+
+  it("emits reclaim-self-owned-branch-conflict no-action when triple proof fails", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false, taskStuckTimeoutMs: 1_000 } as any),
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          id: "FN-RSBC",
+          column: "in-review",
+          status: "failed",
+          error: "branch-conflict-unrecoverable: conflict",
+          branch: "fusion/fn-rsbc",
+          worktree: "/tmp/wt-rsbc",
+          updatedAt: new Date(Date.now() - 10_000).toISOString(),
+        },
+      ]),
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: false, reason: "test" });
+    vi.spyOn(branchConflictModule, "inspectBranchConflict").mockResolvedValue({ kind: "reclaimable", tipSha: "abc", taskAttributedCommitCount: 1, strandedCommits: [{ sha: "abc", subject: "work" }] } as any);
+
+    const result = await manager.reclaimSelfOwnedBranchConflicts();
+    expect(result).toBeGreaterThanOrEqual(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:reclaim-self-owned-branch-conflict-no-action" }));
+  });
+
+  it("emits finalize-no-op-review no-action when unproven fallback fails triple proof", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false } as any),
+      listTasks: vi.fn().mockResolvedValue([
+        {
+          id: "FN-NOOP",
+          column: "in-review",
+          paused: false,
+          status: null,
+          worktree: "/tmp/test-project/.worktrees/fn-noop",
+          branch: "fusion/fn-noop",
+          steps: [{ name: "Ship it", status: "done" }],
+          workflowStepResults: [{ id: "ws-1", status: "passed", phase: "pre-merge" }],
+          mergeDetails: undefined,
+          updatedAt: new Date(Date.now() - 10_000).toISOString(),
+          log: [],
+        },
+      ]),
+    });
+    (store as any).recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: false, reason: "test" });
+    mockedClassifyOwnedLandedEvidence.mockResolvedValueOnce({
+      kind: "unproven",
+      reason: "foreign-start-point",
+      details: { foreignRef: "fusion/fn-a" },
+    } as any);
+    mockedExecSync.mockImplementation((command) => {
+      const cmd = String(command);
+      if (cmd.includes("rev-parse --verify 'fusion/fn-noop'")) return "ok" as any;
+      if (cmd.includes("rev-parse --verify 'main'")) return "ok" as any;
+      if (cmd.includes("rev-list --count 'main'..'fusion/fn-noop'")) return "0\n" as any;
+      return "" as any;
+    });
+
+    const result = await manager.finalizeNoOpReviewTasks();
+    expect(result).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-NOOP", "todo", expect.anything());
+    expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:finalize-no-op-review-no-action" }));
+  });
+
 });

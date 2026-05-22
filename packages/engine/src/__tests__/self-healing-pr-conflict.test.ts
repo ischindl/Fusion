@@ -107,7 +107,7 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
   });
 
   it("returns reclaimed for reclaimable conflicts", async () => {
-    const task = makeTask({ column: "in-review", paused: true, pausedReason: "branch-conflict-unrecoverable" as any });
+    const task = makeTask({ column: "in-review", paused: true, pausedReason: "branch-conflict-unrecoverable" as any, updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() });
     const store = makeStore(task);
     vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValue({ kind: "reclaimable", livePath: task.worktree, tipSha: "abc123", taskAttributedCommitCount: 1, strandedCommits: [{ sha: "abc123" }] } as any);
     const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);

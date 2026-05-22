@@ -56,7 +56,7 @@ describe("reliability interactions: live-zero reclaim", () => {
       pausedReason: "branch-conflict-unrecoverable",
       userPaused: false,
       lineageId: "lin-9100",
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
     };
 
     const statefulStore = {

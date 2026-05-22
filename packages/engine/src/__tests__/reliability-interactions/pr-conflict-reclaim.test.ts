@@ -76,7 +76,7 @@ describe("reliability interaction: pr conflict reclaim", () => {
   });
 
   it("keeps paused-review reclaim path resumable", async () => {
-    const t = task();
+    const t = task({ updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() });
     const s = store(t);
     vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValue({ kind: "reclaimable", livePath: t.worktree, tipSha: "abc123", taskAttributedCommitCount: 2, strandedCommits: [{ sha: "abc123" }] } as any);
     const manager = new SelfHealingManager(s as any, { rootDir: "/tmp/test" } as any);
