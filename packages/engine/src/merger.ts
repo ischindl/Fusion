@@ -2220,18 +2220,31 @@ async function stashUnrelatedRootDirChanges(
     return rescueShas.length > 0 ? { sha, label, rescueShas } : { sha, label };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    mergerLog.warn(
-      `${taskId}: pre-merge autostash failed (${msg}) — proceeding without stash; concurrent dev edits in rootDir may be wiped`,
-    );
-    // Best-effort: try to unstage anything `git add -A` may have staged
-    // before the failure, so the working tree is at least back to a sane
-    // state for the merge.
+    // Best-effort: unstage anything `git add -A` may have staged before the
+    // failure, so the working tree is at least back to a sane state.
     try {
       await execAsync("git reset", { cwd: rootDir });
     } catch {
       // Nothing more we can do.
     }
-    return null;
+    // Refuse to proceed: the merge flow will issue `git reset --hard` and
+    // forced checkouts that would wipe the dirty edits we just failed to
+    // stash. Better to fail the merge loudly than to silently destroy work.
+    mergerLog.warn(
+      `${taskId}: pre-merge autostash failed (${msg}) — refusing to run destructive merge ops over a dirty tree`,
+    );
+    throw new AutostashCreationFailedError(msg, rootDir);
+  }
+}
+
+/** Thrown when pre-merge autostash cannot capture a dirty working tree.
+ *  The merger catches this and bails before any destructive op runs. */
+export class AutostashCreationFailedError extends Error {
+  readonly rootDir: string;
+  constructor(reason: string, rootDir: string) {
+    super(`pre-merge autostash failed: ${reason}`);
+    this.name = "AutostashCreationFailedError";
+    this.rootDir = rootDir;
   }
 }
 
@@ -7390,7 +7403,29 @@ export async function aiMergeTask(
   // otherwise wipe any unrelated unstaged/untracked dev edits. Stash them
   // here, restore in the finally below — see stashUnrelatedRootDirChanges
   // for the full rationale.
-  const autostashHandle = await stashUnrelatedRootDirChanges(rootDir, taskId);
+  let autostashHandle: AutostashHandle | null;
+  try {
+    autostashHandle = await stashUnrelatedRootDirChanges(rootDir, taskId);
+  } catch (err: unknown) {
+    if (err instanceof AutostashCreationFailedError) {
+      // Surface to the task feed so the developer sees their edits are still
+      // in the working tree (not destroyed) — we just refused to proceed.
+      const message = `Merge aborted: could not autostash dirty working tree in ${rootDir} (${err.message}). Your uncommitted changes are intact. Commit, stash, or revert them and retry the merge.`;
+      await store.logEntry(taskId, "Merge aborted: autostash creation failed (dirty edits preserved)", message).catch(() => undefined);
+      await store.updateTask(taskId, { error: "autostash-create-failed" }).catch(() => undefined);
+      clearActiveMergerStatus(activeStatusPath, taskId);
+      await releaseReuseHandoffEarly("autostash-create-failed");
+      return {
+        task,
+        branch,
+        merged: false,
+        worktreeRemoved: false,
+        branchDeleted: false,
+        error: message,
+      };
+    }
+    throw err;
+  }
   // Surface any race-rescue stashes (mid-run dev edits caught between
   // initial snapshot and the destructive reset) on the task feed so the
   // operator sees the recovery handle without having to grep `git stash list`.

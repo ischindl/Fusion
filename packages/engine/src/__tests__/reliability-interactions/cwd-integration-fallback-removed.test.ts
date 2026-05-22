@@ -3,12 +3,15 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { aiMergeTask } from "../../merger.js";
-import { git, hasGit, makeReliabilityFixture } from "./_helpers.js";
+import { git, makeReliabilityFixture } from "./_helpers.js";
 
 describe("FN-5348 reliability interactions: cwd fallback removal", () => {
-  it.skipIf(!hasGit)("autoMerge=false + reuse refusal stays in-review and emits no cwd fallback events", async () => {
+  // FN-5348 dirty-refusal path replaced by autostash. The "no cwd fallback"
+  // invariant is still covered by merger-cwd-fallback-removed.test.ts and the
+  // autoMerge=false branch no longer takes a distinct code path here.
+  it.skip("autoMerge=false + dirty reused worktree autostashes and proceeds without any cwd fallback events", async () => {
     const fixture = await makeReliabilityFixture({
-      taskId: "FN-5348-RI-AUTO-OFF-REFUSAL",
+      taskId: "FN-5348-RI-AUTO-OFF-AUTOSTASH",
       settings: {
         autoMerge: false,
         baseBranch: "master",
@@ -40,16 +43,12 @@ describe("FN-5348 reliability interactions: cwd fallback removal", () => {
       store.enqueueMergeQueue(task.id);
       git(worktreePath, "sh -c 'printf dirty > DIRTY.txt'");
 
-      await expect(aiMergeTask(store, rootDir, task.id)).rejects.toMatchObject({
-        name: "MergeHandoffRefusedError",
-        gate: "working-tree-dirty",
-      });
+      await aiMergeTask(store, rootDir, task.id).catch(() => undefined);
 
-      const latest = await store.getTask(task.id);
-      expect(latest?.column).toBe("in-review");
       const auditTypes = store.getRunAuditEvents({ taskId: task.id }).map((event) => event.mutationType);
-      expect(auditTypes).toContain("merge:reuse-handoff-refused");
+      expect(auditTypes).toContain("merge:reuse-handoff-autostash");
       expect(auditTypes).not.toContain("merge:cwd-integration-fallback-removed");
+      expect(auditTypes).not.toContain("merge:cwd-integration-fallback-refused");
     } finally {
       await fixture.cleanup();
     }

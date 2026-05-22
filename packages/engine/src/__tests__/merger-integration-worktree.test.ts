@@ -314,7 +314,8 @@ describe("acquireReuseHandoff", () => {
     });
   });
 
-  it("refuses dirty reused worktrees with diagnostics", async () => {
+  it("autostashes dirty reused worktrees instead of refusing the handoff", async () => {
+    const stashSha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     mockedExecSync.mockImplementation((cmd: any) => {
       const command = String(cmd);
       if (command === "git diff -z --name-only") return Buffer.from("packages/engine/src/merger.ts\0");
@@ -322,6 +323,54 @@ describe("acquireReuseHandoff", () => {
       if (command === "git status -z --porcelain") return Buffer.from("?? stray.txt\0");
       if (command === "git diff HEAD") return Buffer.from("diff --git a/x b/x\n");
       if (command === "git rev-parse --abbrev-ref HEAD") return Buffer.from("fusion/fn-5279\n");
+      if (command === "git add -A") return Buffer.from("");
+      if (command === "git stash create") return Buffer.from(`${stashSha}\n`);
+      if (command.startsWith("git stash store ")) return Buffer.from("");
+      if (command === "git reset --hard HEAD") return Buffer.from("");
+      if (command === "git clean -fd") return Buffer.from("");
+      return Buffer.from("");
+    });
+
+    const store = createStore();
+    const auditEmit = vi.fn();
+    const handoff = await acquireReuseHandoff({
+      task: await store.getTask("FN-5279"),
+      store,
+      projectRoot: "/tmp/project-root",
+      settings: {} as any,
+      worktreePath: "/tmp/task-worktree",
+      auditEmit,
+    });
+
+    expect(handoff).toMatchObject({
+      ok: true,
+      taskId: "FN-5279",
+      worktreePath: "/tmp/task-worktree",
+      branch: "fusion/fn-5279",
+    });
+    expect(auditEmit).toHaveBeenCalledWith({
+      type: "merge:reuse-handoff-autostash",
+      target: "/tmp/task-worktree",
+      metadata: expect.objectContaining({
+        taskId: "FN-5279",
+        worktreePath: "/tmp/task-worktree",
+        stashSha,
+        dirtyPathCount: 2,
+        dirtyPathSample: ["packages/engine/src/merger.ts", "stray.txt"],
+      }),
+    });
+  });
+
+  it("refuses the handoff when autostash of a dirty worktree itself fails", async () => {
+    mockedExecSync.mockImplementation((cmd: any) => {
+      const command = String(cmd);
+      if (command === "git diff -z --name-only") return Buffer.from("packages/engine/src/merger.ts\0");
+      if (command === "git diff -z --cached --name-only") return Buffer.from("");
+      if (command === "git status -z --porcelain") return Buffer.from("");
+      if (command === "git diff HEAD") return Buffer.from("diff --git a/x b/x\n");
+      if (command === "git rev-parse --abbrev-ref HEAD") return Buffer.from("fusion/fn-5279\n");
+      if (command === "git add -A") return Buffer.from("");
+      if (command === "git stash create") return Buffer.from("");
       return Buffer.from("");
     });
 
@@ -334,12 +383,11 @@ describe("acquireReuseHandoff", () => {
         worktreePath: "/tmp/task-worktree",
       }),
       "working-tree-dirty",
-      "dirty-worktree",
+      "dirty-worktree-autostash-failed",
     );
     expect(refusal.payload).toMatchObject({
-      dirtyPaths: ["packages/engine/src/merger.ts", "stray.txt"],
+      dirtyPaths: ["packages/engine/src/merger.ts"],
     });
-    expect(refusal.payload.dirtyFingerprint).toEqual(expect.any(String));
   });
 
   it("attempts FN-5083 case canonicalization before continuing", async () => {

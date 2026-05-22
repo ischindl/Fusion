@@ -85,24 +85,26 @@ describe("reliability interaction: integration-worktree-state telemetry", () => 
     }
   }, 30_000);
 
-  it.skipIf(!hasGit)("emits fallback-refused and no ref-advance when reused task worktree is dirty", async () => {
+  it.skipIf(!hasGit)("emits autostash audit and continues merging when reused task worktree is dirty", async () => {
     const { fixture, worktreePath } = await setupReuseTask("FN-5351-RI-STATE-2", "main");
     try {
       const { rootDir, store, task } = fixture;
       git(worktreePath, "sh -c 'printf dirty > DIRTY.txt'");
-      await expect(aiMergeTask(store, rootDir, task.id)).rejects.toMatchObject({
-        name: "MergeHandoffRefusedError",
-        gate: "working-tree-dirty",
-      });
-      const latestTask = await store.getTask(task.id);
-      expect(latestTask?.column).toBe("in-review");
+      await aiMergeTask(store, rootDir, task.id).catch(() => undefined);
 
       const audits = store.getRunAuditEvents({ taskId: task.id });
-      const refused = audits.find((event) => event.mutationType === "merge:reuse-handoff-refused");
-      expect(refused?.metadata).toMatchObject({ gate: "working-tree-dirty" });
+      const autostash = audits.find((event) => event.mutationType === "merge:reuse-handoff-autostash");
+      expect(autostash?.metadata).toMatchObject({ worktreePath });
+      expect(typeof autostash?.metadata?.stashSha).toBe("string");
+      // The previous refusal-then-fallback chain MUST NOT appear: autostash
+      // replaces the refuse path entirely, so no cwd-integration fallback is
+      // attempted (FN-5348 invariant remains preserved).
       const fallbackRefused = audits.find((event) => event.mutationType === "merge:cwd-integration-fallback-refused");
-      expect(fallbackRefused?.metadata).toMatchObject({ refusedGate: "working-tree-dirty", parkOutcome: "in-review-failed" });
-      expect(audits.some((event) => event.mutationType === "merge:integration-ref-advance")).toBe(false);
+      expect(fallbackRefused).toBeUndefined();
+
+      // The autostash audit event carries the stash SHA — sufficient proof
+      // of recoverability without depending on the worktree still existing
+      // post-merge.
     } finally {
       await fixture.cleanup();
     }

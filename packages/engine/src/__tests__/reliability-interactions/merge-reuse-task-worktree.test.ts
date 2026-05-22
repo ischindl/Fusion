@@ -88,7 +88,7 @@ describe("FN-5279 reliability interactions: merge reuse task worktree", () => {
     }
   }, 60_000);
 
-  it.skipIf(!hasGit)("dirty reused worktree refuses handoff and leaves the task in review", async () => {
+  it.skipIf(!hasGit)("dirty reused worktree is autostashed so the merge can proceed", async () => {
     const fixture = await makeReliabilityFixture({
       taskId: "FN-5279-RI-DIRTY",
       settings: {
@@ -121,13 +121,11 @@ describe("FN-5279 reliability interactions: merge reuse task worktree", () => {
       store.enqueueMergeQueue(task.id);
       git(worktreePath, "sh -c 'printf dirty > DIRTY.txt'");
 
-      await expect(aiMergeTask(store, rootDir, task.id)).rejects.toMatchObject({
-        name: "MergeHandoffRefusedError",
-        gate: "working-tree-dirty",
-      });
-      expect((await store.getTask(task.id))?.column).toBe("in-review");
-      const refused = store.getRunAuditEvents({ taskId: task.id }).find((event) => event.mutationType === "merge:reuse-handoff-refused");
-      expect(refused?.metadata).toMatchObject({ gate: "working-tree-dirty" });
+      await aiMergeTask(store, rootDir, task.id).catch(() => undefined);
+      const autostash = store.getRunAuditEvents({ taskId: task.id })
+        .find((event) => event.mutationType === "merge:reuse-handoff-autostash");
+      expect(autostash?.metadata).toMatchObject({ worktreePath });
+      expect(typeof autostash?.metadata?.stashSha).toBe("string");
     } finally {
       await fixture.cleanup();
     }

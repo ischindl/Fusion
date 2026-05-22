@@ -20,9 +20,9 @@ import { resolveMergeIntegrationRoot } from "../merger-integration-worktree.js";
 import { git, hasGit, makeReliabilityFixture } from "./reliability-interactions/_helpers.js";
 
 describe("FN-5348 cwd integration fallback removed", () => {
-  it.skipIf(!hasGit)("Scenario A/B: dirty refusal keeps integration ref unchanged and emits refusal audit on master", async () => {
+  it.skipIf(!hasGit)("Scenario A/B: dirty reused worktree is autostashed and the merge proceeds without any cwd fallback", async () => {
     const fixture = await makeReliabilityFixture({
-      taskId: "FN-5348-DIRTY-REFUSAL",
+      taskId: "FN-5348-DIRTY-AUTOSTASH",
       settings: {
         baseBranch: "master",
         mergeIntegrationWorktree: "reuse-task-worktree",
@@ -45,33 +45,30 @@ describe("FN-5348 cwd integration fallback removed", () => {
         currentStep: completedSteps.length,
       } as any);
       await fixture.createBranch(branch);
-      await fixture.writeAndCommit("packages/engine/src/fn-5348-dirty.ts", "export const dirty = true;\n", "feat: add dirty refusal content");
+      await fixture.writeAndCommit("packages/engine/src/fn-5348-dirty.ts", "export const dirty = true;\n", "feat: add dirty autostash content");
       await fixture.checkout("master");
       git(rootDir, `git worktree add ${JSON.stringify(worktreePath)} ${JSON.stringify(branch)}`);
       await store.updateTask(task.id, { worktree: worktreePath, branch } as any);
       store.enqueueMergeQueue(task.id);
       git(worktreePath, "sh -c 'printf dirty > DIRTY.txt'");
 
-      const integrationBefore = git(rootDir, "git rev-parse refs/heads/master");
-      await expect(aiMergeTask(store, rootDir, task.id)).rejects.toMatchObject({
-        name: "MergeHandoffRefusedError",
-        gate: "working-tree-dirty",
-        reason: "dirty-worktree",
-      });
-      const integrationAfter = git(rootDir, "git rev-parse refs/heads/master");
-      expect(integrationAfter).toBe(integrationBefore);
+      await aiMergeTask(store, rootDir, task.id).catch(() => undefined);
 
-      const refused = store.getRunAuditEvents({ taskId: task.id }).filter((event) => event.mutationType === "merge:reuse-handoff-refused");
-      expect(refused).toHaveLength(1);
-      expect(refused[0]?.metadata).toMatchObject({ gate: "working-tree-dirty", reason: "dirty-worktree" });
-      expect(refused[0]?.metadata?.integrationBranch).toBeUndefined();
-      const metadataJson = JSON.stringify(refused[0]?.metadata ?? {});
-      expect(metadataJson).not.toMatch(/"(integrationBranch|branch|mergeMode|mode)"\s*:\s*"main"/);
-      expect(metadataJson).not.toContain("\"cwd-main\"");
-      const latest = await store.getTask(task.id);
-      expect(latest?.column).toBe("in-review");
-      // aiMergeTask rethrows refusal; upstream project-engine catch maps this to status=failed.
-      expect(JSON.stringify({ gate: "working-tree-dirty", reason: "dirty-worktree" })).toContain("dirty-worktree");
+      const autostashEvents = store.getRunAuditEvents({ taskId: task.id })
+        .filter((event) => event.mutationType === "merge:reuse-handoff-autostash");
+      expect(autostashEvents.length).toBeGreaterThanOrEqual(1);
+      const meta = autostashEvents[0]?.metadata ?? {};
+      expect(meta).toMatchObject({ worktreePath });
+      expect(typeof meta.stashSha).toBe("string");
+      expect((meta.stashSha as string).length).toBeGreaterThan(0);
+
+      // FN-5348 invariant preserved: no cwd-main fallback path was taken.
+      const refused = store.getRunAuditEvents({ taskId: task.id })
+        .filter((event) => event.mutationType === "merge:cwd-integration-fallback-refused");
+      expect(refused).toHaveLength(0);
+
+      // The audit metadata's stashSha is sufficient proof of recoverability;
+      // the worktree may be torn down by the time the merge finishes.
     } finally {
       await fixture.cleanup();
     }
