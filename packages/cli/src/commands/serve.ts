@@ -358,8 +358,8 @@ export async function runServe(
 
   const engineManager = new ProjectEngineManager(sharedCentralCore, {
     getMergeStrategy,
-    processPullRequestMerge: (s, wd, taskId) =>
-      processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker),
+    processPullRequestMerge: (s, wd, taskId, pool) =>
+      processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker, pool),
     getTaskMergeBlocker,
     onInsightRunProcessed: (s: unknown, r: unknown) => onMemoryInsightRunProcessed(s as ScheduledTask, r as AutomationRunResult),
   });

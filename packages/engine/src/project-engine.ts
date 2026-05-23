@@ -14,6 +14,7 @@ import { compareTasksByPriorityThenAgeAndId, getTaskHardMergeBlocker, sortTasksB
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
+import type { WorktreePool } from "./worktree-pool.js";
 import type { ProjectRuntimeConfig } from "./project-runtime.js";
 import { PrMonitor } from "./pr-monitor.js";
 import { PrCommentHandler } from "./pr-comment-handler.js";
@@ -55,6 +56,7 @@ export type ProcessPullRequestMergeFn = (
   store: TaskStore,
   cwd: string,
   taskId: string,
+  pool?: WorktreePool,
 ) => Promise<"merged" | "waiting" | "skipped">;
 
 const execFileAsync = promisify(execFile);
@@ -1483,7 +1485,12 @@ export class ProjectEngine {
           if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge) {
             this.activeMergeTaskId = taskId;
             runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge processing PR flow for ${taskId}...`);
-            const result = await this.options.processPullRequestMerge(store, cwd, taskId);
+            const result = await this.options.processPullRequestMerge(
+              store,
+              cwd,
+              taskId,
+              (this.runtime as any).worktreePool,
+            );
             if (result === "merged") {
               runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge PR merged: ${taskId}`);
               const mergedTask = await store.getTask(taskId).catch(() => null);

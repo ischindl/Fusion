@@ -20,6 +20,7 @@ import type { TaskStore } from "@fusion/core";
 import { resolveTaskMergeTarget } from "@fusion/core";
 import type { Settings, TaskDetail, PrInfo, MergeResult } from "@fusion/core";
 import { resolveIntegrationBranch } from "@fusion/engine";
+import type { WorktreePool } from "@fusion/engine";
 
 /**
  * Minimal interface for GitHub operations needed by the PR merge workflow.
@@ -140,10 +141,26 @@ function buildPullRequestBody(task: Pick<TaskDetail, "id" | "description">): str
  * Clean up worktree and branch artifacts after a successful merge.
  * Both operations are best-effort; errors are logged but don't propagate.
  */
-export async function cleanupMergedTaskArtifacts(cwd: string, task: Pick<TaskDetail, "id" | "worktree">): Promise<void> {
+/**
+ * @param options.pool Optional runtime worktree pool; FN-5455/FN-4954 require best-effort
+ * release before force-removing merged PR worktrees.
+ */
+export async function cleanupMergedTaskArtifacts(
+  cwd: string,
+  task: Pick<TaskDetail, "id" | "worktree">,
+  options?: { pool?: WorktreePool },
+): Promise<void> {
   const branch = getTaskBranchName(task.id);
 
   if (task.worktree) {
+    if (options?.pool) {
+      try {
+        options.pool.release(task.worktree, task.id);
+      } catch {
+        // Best-effort cleanup — release may fail if pool state is already divergent.
+      }
+    }
+
     try {
       await execAsync(`git worktree remove "${task.worktree}" --force`, {
         cwd,
@@ -177,8 +194,9 @@ async function finalizePullRequestMerge(
   task: TaskDetail,
   prInfo: PrInfo,
   message = "Pull request merged",
+  pool?: WorktreePool,
 ): Promise<void> {
-  await cleanupMergedTaskArtifacts(cwd, task);
+  await cleanupMergedTaskArtifacts(cwd, task, { pool });
   await store.updateTask(task.id, { status: null, mergeRetries: 0 });
   const movedTask = await store.moveTask(task.id, "done");
   const mergedTask = movedTask ?? (await store.getTask(task.id));
@@ -240,6 +258,7 @@ export async function processPullRequestMergeTask(
   taskId: string,
   github: GitHubOperations,
   getTaskMergeBlocker: TaskMergeBlockerFn,
+  pool?: WorktreePool,
 ): Promise<ProcessPullRequestResult> {
   const task = await store.getTask(taskId);
   if (getTaskMergeBlocker(task)) {
@@ -304,7 +323,7 @@ export async function processPullRequestMergeTask(
   await store.updatePrInfo(task.id, refreshedPrInfo);
 
   if (mergeStatus.prInfo.status === "merged") {
-    await finalizePullRequestMerge(store, cwd, task, prInfo);
+    await finalizePullRequestMerge(store, cwd, task, prInfo, "Pull request merged", pool);
     return "merged";
   }
 
@@ -359,6 +378,7 @@ export async function processPullRequestMergeTask(
         task,
         refreshedAfterFailure,
         "Pull request already merged after merge command failed; reconciled task state from GitHub",
+        pool,
       );
       return "merged";
     }
@@ -366,6 +386,6 @@ export async function processPullRequestMergeTask(
     throw err;
   }
   await store.updatePrInfo(task.id, { ...mergedPr, lastCheckedAt: new Date().toISOString() });
-  await finalizePullRequestMerge(store, cwd, task, mergedPr);
+  await finalizePullRequestMerge(store, cwd, task, mergedPr, "Pull request merged", pool);
   return "merged";
 }

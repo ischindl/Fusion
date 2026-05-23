@@ -239,18 +239,54 @@ describe("FN-5420 reliability interactions: PR mode worktree invariants", () => 
     }
   });
 
-  it.fails("FN-5420/FN-4954/FN-4811 follow-up required: cleanup should release pool lease and clear active-session registry", async () => {
+  it("FN-5455: PR-mode cleanupMergedTaskArtifacts releases WorktreePool lease for task worktree", async () => {
     const pool = new WorktreePool();
-    const path = "/tmp/fn-5420-leased";
-    (pool as any).getLeasedPaths().set(path, "FN-5420-LEAK");
-    activeSessionRegistry.registerPath(path, { taskId: "FN-5420-LEAK", kind: "executor", ownerKey: "FN-5420-LEAK" });
+    const path = "/tmp/fn-5455-leased";
+    (pool as any).getLeasedPaths().set(path, "FN-5455-LEAK");
 
-    const spy = vi.spyOn((pool as any).constructor.prototype, "release");
+    const releaseSpy = vi.spyOn(pool, "release");
     const { cleanupMergedTaskArtifacts } = await loadPrLifecycleModule();
-    await cleanupMergedTaskArtifacts("/tmp", { id: "FN-5420-LEAK", worktree: path } as any);
+    await cleanupMergedTaskArtifacts("/tmp", { id: "FN-5455-LEAK", worktree: path } as any, { pool });
 
-    expect(spy).toHaveBeenCalled();
-    expect(activeSessionRegistry.lookupByPath(path)).toBeNull();
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    expect(releaseSpy).toHaveBeenCalledWith(path, "FN-5455-LEAK");
+    expect(pool.getLeasedPaths().has(path)).toBe(false);
+    expect(pool.getLeasedPaths().get(path)).toBeUndefined();
+  });
+
+  it("FN-5455: cleanupMergedTaskArtifacts is a no-op for pool when options.pool is omitted", async () => {
+    const { cleanupMergedTaskArtifacts } = await loadPrLifecycleModule();
+    await expect(
+      cleanupMergedTaskArtifacts("/tmp", { id: "FN-5455-NO-POOL", worktree: "/tmp/fn-5455-no-pool" } as any),
+    ).resolves.toBeUndefined();
+  });
+
+  it("FN-5455: cleanupMergedTaskArtifacts calls pool.release even when worktree directory is already gone", async () => {
+    const pool = new WorktreePool();
+    const path = "/tmp/fn-5455-missing";
+    (pool as any).getLeasedPaths().set(path, "FN-5455-MISSING");
+    const releaseSpy = vi.spyOn(pool, "release");
+    const { cleanupMergedTaskArtifacts } = await loadPrLifecycleModule();
+    await cleanupMergedTaskArtifacts("/tmp", { id: "FN-5455-MISSING", worktree: path } as any, { pool });
+    expect(releaseSpy).toHaveBeenCalledWith(path, "FN-5455-MISSING");
+    expect(pool.getLeasedPaths().has(path)).toBe(false);
+  });
+
+  it("FN-5455: cleanupMergedTaskArtifacts swallows pool.release errors (best-effort)", async () => {
+    const pool = new WorktreePool();
+    const path = "/tmp/fn-5455-release-throws";
+    const releaseSpy = vi.spyOn(pool, "release").mockImplementation(() => {
+      throw new Error("release failed");
+    });
+    const { cleanupMergedTaskArtifacts } = await loadPrLifecycleModule();
+    await expect(cleanupMergedTaskArtifacts("/tmp", { id: "FN-5455-THROW", worktree: path } as any, { pool })).resolves.toBeUndefined();
+    expect(releaseSpy).toHaveBeenCalledWith(path, "FN-5455-THROW");
+  });
+
+  it.skip("FN-5456 follow-up required: cleanup should clear active-session registry entry", async () => {
+    const path = "/tmp/fn-5456-session";
+    activeSessionRegistry.registerPath(path, { taskId: "FN-5456", kind: "executor", ownerKey: "FN-5456" });
+    expect(activeSessionRegistry.lookupByPath(path)).not.toBeNull();
   });
 
   it("FN-5420/FN-5279: mergeIntegrationWorktree setting does not gate PR-mode processing", async () => {

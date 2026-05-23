@@ -23,7 +23,11 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
-import { processPullRequestMergeTask, getTaskBranchName } from "../task-lifecycle.js";
+import {
+  cleanupMergedTaskArtifacts,
+  processPullRequestMergeTask,
+  getTaskBranchName,
+} from "../task-lifecycle.js";
 
 interface MockTask {
   id: string;
@@ -913,5 +917,43 @@ describe("processPullRequestMergeTask", () => {
       expect(result).toBe("merged");
       expect(github.mergePr).toHaveBeenCalled();
     });
+  });
+});
+
+describe("cleanupMergedTaskArtifacts FN-5455", () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    execMock.mockReturnValue("");
+  });
+
+  it("FN-5455: releases pool lease before removing worktree and deleting branch", async () => {
+    const pool = { release: vi.fn() };
+    await cleanupMergedTaskArtifacts("/repo", { id: "FN-5455-A", worktree: "/repo/wt" } as never, { pool } as never);
+    expect(pool.release).toHaveBeenCalledWith("/repo/wt", "FN-5455-A");
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git worktree remove "/repo/wt" --force'), expect.any(Object));
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git branch -d "fusion/fn-5455-a"'), expect.any(Object));
+  });
+
+  it("FN-5455: pool omitted keeps backward-compatible cleanup behavior", async () => {
+    await cleanupMergedTaskArtifacts("/repo", { id: "FN-5455-B", worktree: "/repo/wt-b" } as never);
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git worktree remove "/repo/wt-b" --force'), expect.any(Object));
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git branch -d "fusion/fn-5455-b"'), expect.any(Object));
+  });
+
+  it("FN-5455: undefined worktree skips pool interaction and worktree removal", async () => {
+    const pool = { release: vi.fn() };
+    await cleanupMergedTaskArtifacts("/repo", { id: "FN-5455-C", worktree: undefined } as never, { pool } as never);
+    expect(pool.release).not.toHaveBeenCalled();
+    expect(execMock).not.toHaveBeenCalledWith(expect.stringContaining("git worktree remove"), expect.anything());
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git branch -d "fusion/fn-5455-c"'), expect.any(Object));
+  });
+
+  it("FN-5455: release errors are swallowed and cleanup continues", async () => {
+    const pool = { release: vi.fn(() => { throw new Error("boom"); }) };
+    await expect(
+      cleanupMergedTaskArtifacts("/repo", { id: "FN-5455-D", worktree: "/repo/wt-d" } as never, { pool } as never),
+    ).resolves.toBeUndefined();
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git worktree remove "/repo/wt-d" --force'), expect.any(Object));
+    expect(execMock).toHaveBeenCalledWith(expect.stringContaining('git branch -d "fusion/fn-5455-d"'), expect.any(Object));
   });
 });

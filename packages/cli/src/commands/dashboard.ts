@@ -1197,7 +1197,14 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     const settings = await store.getSettings();
     if (getMergeStrategy(settings) === "pull-request") {
       const githubClient = new GitHubClient();
-      const outcome = await processPullRequestMergeTask(store, cwd, taskId, githubClient, getTaskMergeBlocker);
+      const outcome = await processPullRequestMergeTask(
+        store,
+        cwd,
+        taskId,
+        githubClient,
+        getTaskMergeBlocker,
+        worktreePool,
+      );
       const task = await store.getTask(taskId);
       return {
         task,
@@ -1510,8 +1517,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
     const engineManager = new ProjectEngineManager(centralCoreForEngine, {
       getMergeStrategy,
-      processPullRequestMerge: (s, wd, taskId) =>
-        processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker),
+      processPullRequestMerge: (s, wd, taskId, pool) =>
+        processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker, pool),
       getTaskMergeBlocker,
     });
 
