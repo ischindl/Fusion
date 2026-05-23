@@ -55,6 +55,14 @@ export {
   type MergeIntegrationRootResolution,
 } from "./merger-integration-worktree.js";
 export {
+  smartPull,
+  type SmartPullInput,
+  type SmartPullResult,
+  type SmartPullMode,
+  type SmartPullAuditEvent,
+  type SmartPullAuditEmitter,
+} from "./smart-pull.js";
+export {
   generateSyntheticRunId,
 } from "./run-audit.js";
 export {
