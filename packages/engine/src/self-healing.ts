@@ -311,6 +311,44 @@ const ORPHANED_WITH_WORKTREE_GRACE_MS = 300_000;
 const MAX_TASK_DONE_RETRIES = 3;
 export const MAX_WORKTREE_SESSION_RETRIES = 3;
 export const MAX_AUTO_MERGE_RETRIES = 3;
+/**
+ * FN-5627 follow-up: bounded budget for self-healing transient-merge-failure
+ * recovery. After this many cycles of `recoverTransientMergeFailures` resetting
+ * `mergeRetries` and re-enqueueing the same task, the task is considered
+ * genuinely stuck and stays parked as `failed` for manual review. Tracked via
+ * `task.mergeDetails.transientRecoveryCount`.
+ */
+export const MAX_TRANSIENT_MERGE_RECOVERIES = 2;
+
+/**
+ * FN-5627 follow-up: classify an in-review failed-task error message as a
+ * recoverable transient merge failure. Returns a stable class label when the
+ * error matches a known transient pattern; null otherwise.
+ *
+ * Recognized classes:
+ *  - `lease-handoff-target-not-queued`: the merge queue lease acquisition saw
+ *    the task drop out of the queue between enqueue and handoff. Race with
+ *    self-healing sweeps that clean stale `mergeQueue` rows (FN-5353/FN-5363).
+ *  - `spurious-concurrent-advance-same-sha`: the merger reported
+ *    `Integration branch X advanced concurrently (expected SHA, observed SHA)`
+ *    with identical SHA on both sides — the integration ref didn't actually
+ *    move. Pre-FN-5627 misclassification in `merger-ref-update-advance.ts`
+ *    routed real ref-update-refusal failures (lock contention, hook rejection)
+ *    through `IntegrationBranchConcurrentAdvanceError`. The current code
+ *    classifies these as `ref-update-refused`, so this class is here to
+ *    recover legacy stuck rows from before the fix landed.
+ */
+export function classifyTransientMergeError(error: string | null | undefined): string | null {
+  if (!error) return null;
+  if (/lease-handoff-failed[^a-z]+target-not-queued/i.test(error)) {
+    return "lease-handoff-target-not-queued";
+  }
+  const sameSha = error.match(/advanced concurrently \(expected ([0-9a-f]{7,40}),\s+observed ([0-9a-f]{7,40})\)/i);
+  if (sameSha && sameSha[1].toLowerCase() === sameSha[2].toLowerCase()) {
+    return "spurious-concurrent-advance-same-sha";
+  }
+  return null;
+}
 const MAX_STARVATION_DROPS = 3;
 const DEADLOCK_RECOVERY_COOLDOWN_MS = 15 * 60_000;
 const DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS = 5 * 60_000;
@@ -782,6 +820,7 @@ export class SelfHealingManager {
       { name: "stale-incomplete-review", fn: () => this.recoverStaleIncompleteReviewTasks().then(() => undefined) },
       { name: "failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps().then(() => undefined) },
       { name: "interrupted-merging", fn: () => this.recoverInterruptedMergingTasks().then(() => undefined) },
+      { name: "transient-merge-failures", fn: () => this.recoverTransientMergeFailures().then(() => undefined) },
       { name: "done-merge-metadata", fn: () => this.recoverDoneTaskMergeMetadata().then(() => undefined) },
       { name: "reconcile-done-task-integrity", fn: () => this.reconcileDoneTaskIntegrity().then(() => undefined) },
       // FN-5092: must run BEFORE any merger pickup path so the merger queue is
@@ -1437,6 +1476,7 @@ export class SelfHealingManager {
           { name: "recover-stale-incomplete-review", fn: () => this.recoverStaleIncompleteReviewTasks() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
+          { name: "recover-transient-merge-failures", fn: () => this.recoverTransientMergeFailures() },
           { name: "recover-done-merge-metadata", fn: () => this.recoverDoneTaskMergeMetadata() },
           { name: "recover-stale-merging-status", fn: () => this.recoverStaleMergingStatus() },
           { name: "finalize-noop-review", fn: () => this.finalizeNoOpReviewTasks() },
@@ -5107,6 +5147,170 @@ export class SelfHealingManager {
    * No-op when `settings.autoMerge === false` — PR-based review flow owns lifecycle until human merge.
    * @returns Number of tasks finalized or unblocked
    */
+  /**
+   * FN-5627 follow-up: recover in-review tasks that are stuck with
+   * `mergeRetries >= MAX_AUTO_MERGE_RETRIES` and `status='failed'` due to a
+   * TRANSIENT merge failure class (e.g., `target-not-queued` lease handoff
+   * race, legacy same-SHA spurious concurrent-advance). These tasks are
+   * NOT really stuck — they just hit a race or a misclassified ref-update
+   * failure that would have cleared on a fresh attempt. Without this sweep,
+   * the only path forward is manual intervention (the
+   * `AUTO_MERGE_COOLDOWN_MS`-based reset takes hours).
+   *
+   * For each matching task:
+   *  - Reset `mergeRetries=0`, clear `status` and `error`.
+   *  - Increment `mergeDetails.transientRecoveryCount`.
+   *  - Re-enqueue via `requeueForAutoMerge`.
+   *  - Bounded by `MAX_TRANSIENT_MERGE_RECOVERIES`; exhausted tasks stay
+   *    parked as failed and emit `merger:transient-failure-budget-exhausted`
+   *    once for diagnostic visibility.
+   *
+   * No-op when `settings.autoMerge === false`, no `requeueForAutoMerge`
+   * callback is wired, or global/engine pause is active.
+   *
+   * @returns Number of tasks recovered
+   */
+  async recoverTransientMergeFailures(): Promise<number> {
+    const requeue = this.options.requeueForAutoMerge;
+    if (!requeue) return 0;
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.autoMerge === false) return 0;
+      if (settings.globalPause || settings.enginePaused) return 0;
+
+      const slim = await this.store.listTasks({ column: "in-review", slim: true });
+      const candidates = slim.filter((t) =>
+        t.column === "in-review"
+        && t.status === "failed"
+        && (t.mergeRetries ?? 0) >= MAX_AUTO_MERGE_RETRIES
+        && typeof t.error === "string"
+        && t.error.length > 0
+        && classifyTransientMergeError(t.error) !== null,
+      );
+      if (candidates.length === 0) return 0;
+
+      log.warn(
+        `Found ${candidates.length} in-review task(s) with transient merge failures stuck at mergeRetries=${MAX_AUTO_MERGE_RETRIES}; attempting auto-recovery`,
+      );
+
+      let recovered = 0;
+      for (const slimTask of candidates) {
+        const task = await this.store.getTask(slimTask.id).catch(() => null);
+        if (!task) continue;
+        // Re-check selector on the full row — the slim snapshot is best-effort
+        // and may be stale once we await.
+        if (
+          task.column !== "in-review"
+          || task.status !== "failed"
+          || (task.mergeRetries ?? 0) < MAX_AUTO_MERGE_RETRIES
+        ) {
+          continue;
+        }
+        const errorText = task.error ?? "";
+        const transientClass = classifyTransientMergeError(errorText);
+        if (!transientClass) continue;
+
+        const currentCount = task.mergeDetails?.transientRecoveryCount ?? 0;
+        const errorSnippet = errorText.slice(0, 200);
+        const audit = createRunAuditor(this.store, {
+          runId: generateSyntheticRunId("self-heal-transient-merge-recovery", task.id),
+          agentId: "self-healing",
+          taskId: task.id,
+          phase: "recover-transient-merge-failures",
+        });
+
+        if (currentCount >= MAX_TRANSIENT_MERGE_RECOVERIES) {
+          // Budget exhausted — emit once for diagnostic visibility, leave parked.
+          // Repeat-suppression: if the failure error has already accreted the
+          // exhaustion marker, skip emit to avoid log spam.
+          if (!errorText.includes("[transient-recovery-budget-exhausted]")) {
+            await this.store.logEntry(
+              task.id,
+              `[FN-5627] Transient merge failure auto-recovery budget exhausted (${transientClass}, ${currentCount}/${MAX_TRANSIENT_MERGE_RECOVERIES}). Task remains parked in in-review for manual review.`,
+            );
+            await this.store.updateTask(task.id, {
+              error: `${errorText} [transient-recovery-budget-exhausted]`,
+            });
+            try {
+              await audit.database({
+                type: "merger:transient-failure-budget-exhausted",
+                target: task.id,
+                metadata: {
+                  taskId: task.id,
+                  transientClass,
+                  recoveryCount: currentCount,
+                  maxRecoveries: MAX_TRANSIENT_MERGE_RECOVERIES,
+                  errorSnippet,
+                },
+              });
+            } catch (auditErr) {
+              log.warn(
+                `recoverTransientMergeFailures: audit emit failed for ${task.id}: ${
+                  auditErr instanceof Error ? auditErr.message : String(auditErr)
+                }`,
+              );
+            }
+          }
+          continue;
+        }
+
+        const nextCount = currentCount + 1;
+        await this.store.logEntry(
+          task.id,
+          `[FN-5627] Auto-recovering transient merge failure (${transientClass}); resetting mergeRetries=0 and re-enqueueing (recovery ${nextCount}/${MAX_TRANSIENT_MERGE_RECOVERIES}).`,
+        );
+        await this.store.updateTask(task.id, {
+          mergeRetries: 0,
+          status: null,
+          error: null,
+          mergeDetails: {
+            ...task.mergeDetails,
+            transientRecoveryCount: nextCount,
+          },
+        });
+        try {
+          await audit.database({
+            type: "merger:transient-failure-auto-recovered",
+            target: task.id,
+            metadata: {
+              taskId: task.id,
+              transientClass,
+              mergeRetries: task.mergeRetries ?? 0,
+              recoveryCount: nextCount,
+              errorSnippet,
+            },
+          });
+        } catch (auditErr) {
+          log.warn(
+            `recoverTransientMergeFailures: audit emit failed for ${task.id}: ${
+              auditErr instanceof Error ? auditErr.message : String(auditErr)
+            }`,
+          );
+        }
+        try {
+          await requeue(task.id);
+          recovered++;
+        } catch (requeueErr) {
+          log.warn(
+            `recoverTransientMergeFailures: requeue failed for ${task.id}: ${
+              requeueErr instanceof Error ? requeueErr.message : String(requeueErr)
+            }`,
+          );
+        }
+      }
+
+      if (recovered > 0) {
+        log.log(`recoverTransientMergeFailures: re-enqueued ${recovered} stuck in-review task(s)`);
+      }
+      return recovered;
+    } catch (err) {
+      log.warn(
+        `recoverTransientMergeFailures sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
+  }
+
   async recoverInterruptedMergingTasks(): Promise<number> {
     try {
       const settings = await this.store.getSettings();

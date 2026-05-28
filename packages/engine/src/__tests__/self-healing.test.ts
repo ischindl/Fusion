@@ -1757,6 +1757,206 @@ describe("SelfHealingManager", () => {
     });
   });
 
+  describe("FN-5627: recoverTransientMergeFailures", () => {
+    function setupTransientRecoveryStore(opts: {
+      tasks: Array<Record<string, unknown>>;
+      settings?: Record<string, unknown>;
+    }): TaskStore & EventEmitter {
+      const taskMap = new Map(opts.tasks.map((t) => [t.id as string, t]));
+      return createMockStore({
+        getSettings: vi.fn().mockResolvedValue({
+          autoMerge: true,
+          globalPause: false,
+          enginePaused: false,
+          ...(opts.settings ?? {}),
+        } as unknown as Settings),
+        listTasks: vi.fn().mockResolvedValue(opts.tasks),
+        getTask: vi.fn((id: string) => Promise.resolve(taskMap.get(id) as Task | undefined)),
+        updateTask: vi.fn(async (id: string, updates: Partial<Task>) => {
+          const existing = taskMap.get(id) ?? {};
+          const merged = { ...existing, ...updates };
+          if (updates.mergeDetails !== undefined) {
+            merged.mergeDetails = updates.mergeDetails;
+          }
+          taskMap.set(id, merged);
+          return merged as Task;
+        }),
+      });
+    }
+
+    it("resets mergeRetries and re-enqueues lease-handoff-target-not-queued failures", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-5628",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            error: "Merge handoff refused (lease-handoff-failed): target-not-queued",
+            mergeDetails: undefined,
+          },
+        ],
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(1);
+      expect(requeueForAutoMerge).toHaveBeenCalledWith("FN-5628");
+      const updateCalls = (transientStore.updateTask as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, Partial<Task>]>;
+      const recoveryCall = updateCalls.find((call) => call[0] === "FN-5628" && call[1].status === null);
+      expect(recoveryCall).toBeDefined();
+      expect(recoveryCall![1].mergeRetries).toBe(0);
+      expect(recoveryCall![1].error).toBeNull();
+      expect((recoveryCall![1] as { mergeDetails?: { transientRecoveryCount?: number } }).mergeDetails?.transientRecoveryCount).toBe(1);
+
+      mgr.stop();
+    });
+
+    it("recovers same-SHA spurious concurrent-advance failures (pre-FN-5627 legacy)", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-5632",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            error: "Integration branch main advanced concurrently (expected 5b5da2c24fa006b46139ce4566b764126c6b84ca, observed 5b5da2c24fa006b46139ce4566b764126c6b84ca) while applying 283b290aec527f9ba4244f2935700a2823dd106b for FN-5632",
+            mergeDetails: undefined,
+          },
+        ],
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(1);
+      expect(requeueForAutoMerge).toHaveBeenCalledWith("FN-5632");
+      mgr.stop();
+    });
+
+    it("does NOT recover genuine concurrent-advance failures (different SHAs)", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-genuine",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            // Different SHAs — a real concurrent advance happened. Don't auto-recover.
+            error: "Integration branch main advanced concurrently (expected aaa1111aaa1111aaa1111aaa1111aaa1111aaaa, observed bbb2222bbb2222bbb2222bbb2222bbb2222bbbb) while applying ccc3333ccc3333ccc3333ccc3333ccc3333cccc for FN-genuine",
+          },
+        ],
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(0);
+      expect(requeueForAutoMerge).not.toHaveBeenCalled();
+      mgr.stop();
+    });
+
+    it("does NOT recover non-transient merge failures (verification, conflict, etc.)", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-verify",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            error: "Verification failed: pnpm test exit 1",
+          },
+        ],
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(0);
+      expect(requeueForAutoMerge).not.toHaveBeenCalled();
+      mgr.stop();
+    });
+
+    it("parks task as failed once budget is exhausted (transientRecoveryCount >= 2)", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-exhausted",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            error: "Merge handoff refused (lease-handoff-failed): target-not-queued",
+            mergeDetails: { transientRecoveryCount: 2 },
+          },
+        ],
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(0);
+      expect(requeueForAutoMerge).not.toHaveBeenCalled();
+      // updateTask called to add budget-exhausted marker to error
+      const updateCalls = (transientStore.updateTask as ReturnType<typeof vi.fn>).mock.calls as unknown as Array<[string, Partial<Task>]>;
+      const markerCall = updateCalls.find((call) => call[0] === "FN-exhausted" && typeof call[1].error === "string" && (call[1].error as string).includes("[transient-recovery-budget-exhausted]"));
+      expect(markerCall).toBeDefined();
+      mgr.stop();
+    });
+
+    it("is a no-op when autoMerge is disabled", async () => {
+      const transientStore = setupTransientRecoveryStore({
+        tasks: [
+          {
+            id: "FN-no-automerge",
+            column: "in-review",
+            paused: false,
+            status: "failed",
+            mergeRetries: 3,
+            error: "Merge handoff refused (lease-handoff-failed): target-not-queued",
+          },
+        ],
+        settings: { autoMerge: false },
+      });
+      const requeueForAutoMerge = vi.fn();
+      const mgr = new SelfHealingManager(transientStore, {
+        rootDir: "/tmp/test-project",
+        requeueForAutoMerge,
+      });
+
+      const recovered = await mgr.recoverTransientMergeFailures();
+
+      expect(recovered).toBe(0);
+      expect(requeueForAutoMerge).not.toHaveBeenCalled();
+      mgr.stop();
+    });
+  });
+
   describe("recoverStrandedCompletedTodoTasks", () => {
     it("promotes completed todo tasks and calls recover fn once per qualifying task", async () => {
       const recoverFn = vi.fn().mockResolvedValue(true);

@@ -1389,6 +1389,16 @@ export interface MergeDetails {
     warnedAt: string;
     reason: string;
   };
+  /**
+   * FN-5627 follow-up: counts how many times self-healing
+   * `recoverTransientMergeFailures` has reset this task's `mergeRetries` and
+   * re-enqueued it after a transient merge failure (e.g., `target-not-queued`
+   * lease handoff race, or a misclassified same-SHA spurious concurrent-advance
+   * left over from pre-FN-5627 code paths). Bounded by `MAX_TRANSIENT_MERGE_RECOVERIES`
+   * (2) to avoid infinite recovery loops on genuinely-stuck tasks. Distinct from
+   * `task.mergeRetries`, which counts in-cycle aiMergeTask retries.
+   */
+  transientRecoveryCount?: number;
 }
 
 /** Represents an agent's checkout lease on a task. */

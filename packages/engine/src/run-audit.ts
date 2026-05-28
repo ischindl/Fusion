@@ -565,7 +565,22 @@ export type DatabaseMutationType =
    * `merger:fast-path-blocked-foreign-commit` and parks as failed.
    * Metadata: { taskId, commitSha, integrationBranch, reason, diagnostic, mergeRetries, maxRetries }
    */
-  | "merger:fast-path-auto-recovered";
+  | "merger:fast-path-auto-recovered"
+  /**
+   * FN-5627 follow-up: self-healing recovered an `in-review` task that was
+   * stuck at `mergeRetries >= MAX_AUTO_MERGE_RETRIES` with `status='failed'`
+   * due to a TRANSIENT merge failure class (`target-not-queued` lease
+   * handoff race, or spurious same-SHA concurrent-advance left over from
+   * pre-FN-5627 code). The sweep reset `mergeRetries` to 0, cleared
+   * `status`/`error`, incremented `mergeDetails.transientRecoveryCount`,
+   * and re-enqueued the task via `requeueForAutoMerge`. Bounded by
+   * `MAX_TRANSIENT_MERGE_RECOVERIES` (2). Once exhausted, the task stays
+   * parked as `failed` for manual review.
+   * Metadata: { taskId, transientClass, mergeRetries, recoveryCount, errorSnippet }
+   */
+  | "merger:transient-failure-auto-recovered"
+  /** Metadata: { taskId, transientClass, recoveryCount, maxRecoveries, errorSnippet } */
+  | "merger:transient-failure-budget-exhausted";
 
 // ── Filesystem mutation types ─────────────────────────────────────────────────
 
