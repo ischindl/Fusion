@@ -2923,6 +2923,72 @@ describe("MissionManager", () => {
       });
     });
 
+    it("pre-fills target branch when editing a mission", async () => {
+      const missionDetailWithBranch = {
+        ...mockMissionDetail,
+        baseBranch: "develop",
+      };
+      globalThis.fetch = createDetailFetchMockForMissionDetail(missionDetailWithBranch);
+
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Build Auth System")).toBeDefined();
+      });
+      fireEvent.click(screen.getByText("Build Auth System"));
+
+      await waitForDetailLoaded();
+
+      fireEvent.click(screen.getAllByLabelText("Edit mission")[0]);
+
+      const targetBranchInput = await screen.findByLabelText("Mission target branch");
+      expect(targetBranchInput).toHaveValue("develop");
+    });
+
+    it("saves edited target branch via mission patch", async () => {
+      const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("/health")) {
+          const missionId = extractMissionId(url) ?? "M-001";
+          return Promise.resolve(mockApiResponse(getMockMissionHealth(missionId)));
+        }
+        if (url === "/api/missions" || url.includes("/api/missions?")) {
+          return Promise.resolve(mockApiResponse(mockMissions));
+        }
+        if (url === "/api/missions/M-001" && (!init?.method || init.method === "GET")) {
+          return Promise.resolve(mockApiResponse(mockMissionDetail));
+        }
+        if (url === "/api/missions/M-001" && init?.method === "PATCH") {
+          return Promise.resolve(mockApiResponse({ ...mockMissionDetail, baseBranch: "release/2026.05" }));
+        }
+        return Promise.resolve(mockApiResponse({}));
+      });
+      globalThis.fetch = fetchMock;
+
+      render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Build Auth System")).toBeDefined();
+      });
+      fireEvent.click(screen.getByText("Build Auth System"));
+
+      await waitForDetailLoaded();
+
+      fireEvent.click(screen.getAllByLabelText("Edit mission")[0]);
+
+      const targetBranchInput = await screen.findByLabelText("Mission target branch");
+      fireEvent.change(targetBranchInput, { target: { value: "  release/2026.05  " } });
+      fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+      await waitFor(() => {
+        const patchCall = fetchMock.mock.calls.find(
+          (call) => call[0] === "/api/missions/M-001" && call[1]?.method === "PATCH",
+        );
+        expect(patchCall).toBeDefined();
+        const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+        expect(body.baseBranch).toBe("release/2026.05");
+      });
+    });
+
     it("shows delete confirmation with danger variant class", async () => {
       globalThis.fetch = createDetailFetchMock();
       render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);

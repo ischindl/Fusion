@@ -253,6 +253,7 @@ interface MissionFormData {
   description: string;
   status: MissionStatus;
   autopilotEnabled: boolean;
+  baseBranch: string;
 }
 
 interface MilestoneFormData {
@@ -281,6 +282,7 @@ const EMPTY_MISSION_FORM: MissionFormData = {
   description: "",
   status: "planning",
   autopilotEnabled: false,
+  baseBranch: "",
 };
 
 const EMPTY_MILESTONE_FORM: MilestoneFormData = {
@@ -1407,6 +1409,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       description: mission.description || "",
       status: mission.status,
       autopilotEnabled: mission.autopilotEnabled ?? false,
+      baseBranch: mission.baseBranch ?? "",
     });
   }, []);
 
@@ -1439,6 +1442,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           description: missionForm.description.trim() || undefined,
           status: missionForm.status,
           autopilotEnabled: missionForm.autopilotEnabled,
+          baseBranch: missionForm.baseBranch.trim() || "",
         };
         if (missionForm.autopilotEnabled) {
           updates.autoAdvance = true;
@@ -2436,6 +2440,16 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     onChange={(e) => setMissionForm({ ...missionForm, description: e.target.value })}
                     rows={2}
                   />
+                  <label>
+                    Target branch
+                    <input
+                      type="text"
+                      placeholder="e.g. main"
+                      value={missionForm.baseBranch}
+                      onChange={(e) => setMissionForm({ ...missionForm, baseBranch: e.target.value })}
+                      aria-label="Mission target branch"
+                    />
+                  </label>
                   <div className="mission-form-card__row">
                     <select
                       value={missionForm.status}
@@ -4083,6 +4097,16 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     onChange={(e) => setMissionForm({ ...missionForm, description: e.target.value })}
                     rows={2}
                   />
+                  <label>
+                    Target branch
+                    <input
+                      type="text"
+                      placeholder="e.g. main"
+                      value={missionForm.baseBranch}
+                      onChange={(e) => setMissionForm({ ...missionForm, baseBranch: e.target.value })}
+                      aria-label="Mission target branch"
+                    />
+                  </label>
                   <div className="mission-form-card__row">
                     <select
                       value={missionForm.status}
