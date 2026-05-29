@@ -173,6 +173,15 @@
   text-decoration: underline;
 }
 
+.pr-hint--info {
+  background: color-mix(in srgb, var(--color-info) 12%, transparent);
+  border: var(--btn-border-width) solid color-mix(in srgb, var(--color-info) 35%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--color-info);
+  font-size: 0.8125rem;
+  padding: var(--space-md);
+}
+
 .pr-hint--warning {
   background: color-mix(in srgb, var(--color-warning) 12%, transparent);
   border: var(--btn-border-width) solid color-mix(in srgb, var(--color-warning) 35%, transparent);

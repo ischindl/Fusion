@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrInfo } from "../../api";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PrPanel } from "../PrPanel";
 import { mergePr, refreshPrStatus } from "../../api";
@@ -145,6 +146,50 @@ describe("PrPanel merge controls", () => {
     );
 
     expect(screen.getByRole("button", { name: "Merge pull request" })).toBeDisabled();
+  });
+
+  it("shows in-progress merge feedback until merge resolves", async () => {
+    let resolveMerge: ((value: { prInfo: PrInfo }) => void) | undefined;
+    (mergePr as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise((resolve) => {
+      resolveMerge = resolve;
+    }));
+    const addToast = vi.fn();
+
+    render(
+      <PrPanel
+        taskId="FN-1"
+        prAuthAvailable
+        onPrUpdated={() => {}}
+        addToast={addToast}
+        prInfo={{ url: "https://github.com/o/r/pull/1", number: 1, status: "open", title: "t", headBranch: "h", baseBranch: "main", commentCount: 0, mergeable: "clean" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("pr-merge-button"));
+
+    const mergeButton = screen.getByRole("button", { name: /merging/i });
+    expect(mergeButton).toBeDisabled();
+    expect(mergeButton).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Merging pull request…");
+    expect(screen.getByRole("combobox")).toBeDisabled();
+
+    resolveMerge?.({
+      prInfo: {
+        url: "https://github.com/o/r/pull/1",
+        number: 1,
+        status: "merged",
+        title: "t",
+        headBranch: "h",
+        baseBranch: "main",
+        commentCount: 0,
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Merge pull request" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Merging pull request…")).not.toBeInTheDocument();
+    expect(addToast).toHaveBeenCalledWith("Pull request merged", "success");
   });
 
   it("shows error block and retry", () => {
