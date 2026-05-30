@@ -1078,7 +1078,7 @@ const baseOnly = await loadAllAppCssBaseOnly(); // strips @media/@supports
 ### File browser editor & autosize textarea
 
 - `FileEditor.tsx` is CodeMirror 6-only (no `<textarea>` fallback). Language resolution: `packages/dashboard/app/utils/codemirror-language.ts`.
-- For chat-style composer fields use `packages/dashboard/app/hooks/useAutosizeTextarea.ts`. Pattern: `height = "auto"` then clamp `scrollHeight` to min/max in `useLayoutEffect`. Pair with `resize: none` and `overflow-y: auto`.
+- For chat-style composer fields use `packages/dashboard/app/hooks/useAutosizeTextarea.ts`. Pattern: `height = "auto"` then clamp `scrollHeight` to min/max in `useLayoutEffect`. Pair with `resize: none`; keep `overflow-y: hidden` while under the max-height cap and switch to `overflow-y: auto` only after content exceeds the cap.
 
 ### File-path links
 

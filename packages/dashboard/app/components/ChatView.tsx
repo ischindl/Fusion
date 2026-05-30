@@ -59,6 +59,10 @@ export interface ChatViewProps {
 const CHAT_INPUT_MAX_HEIGHT_PX = 640;
 let chatViewWasPreviouslyInactive = false;
 
+export function resolveChatInputOverflowY(scrollHeight: number): "auto" | "hidden" {
+  return scrollHeight > CHAT_INPUT_MAX_HEIGHT_PX ? "auto" : "hidden";
+}
+
 export function clampChatInputHeight(scrollHeight: number): number {
   // Floor matches QuickChat (clampQuickChatInputHeight) and the CSS min-height,
   // so a 0-scrollHeight measurement (e.g. before layout) still yields a
@@ -1770,6 +1774,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
 
     composer.style.height = "auto";
     composer.style.height = `${clampChatInputHeight(composer.scrollHeight)}px`;
+    composer.style.overflowY = resolveChatInputOverflowY(composer.scrollHeight);
   }, []);
 
   const handleComposerRef = useCallback((textarea: HTMLTextAreaElement | null) => {

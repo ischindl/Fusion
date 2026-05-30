@@ -1422,6 +1422,7 @@
   -webkit-appearance: none;
   appearance: none;
   resize: none;
+  overflow-y: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 10px 14px;
