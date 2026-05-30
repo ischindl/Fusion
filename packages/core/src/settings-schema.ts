@@ -1,5 +1,9 @@
 import type { GlobalSettings, ProjectSettings, Settings } from "./types.js";
 
+export interface MergeRequestContractShadowSettingsSource {
+  mergeRequestContractShadowEnabled?: boolean;
+}
+
 type CompleteSettings<T> = { [K in keyof Required<T>]: Required<T>[K] | undefined };
 
 /**
@@ -18,6 +22,7 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   defaultProvider: undefined,
   defaultModelId: undefined,
   testMode: undefined,
+  mergeRequestContractShadowEnabled: false,
   fallbackProvider: undefined,
   fallbackModelId: undefined,
   defaultThinkingLevel: undefined,
@@ -195,6 +200,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   overlapIgnorePaths: [],
   autoMerge: true,
   testMode: undefined,
+  mergeRequestContractShadowEnabled: false,
   mergeStrategy: "direct",
   directMergeCommitStrategy: "always-squash",
   mergeIntegrationWorktree: "reuse-task-worktree",
@@ -472,6 +478,30 @@ export function isProjectSettingsKey(key: string): key is keyof ProjectSettings 
 
 export function isGlobalOnlySettingsKey(key: string): key is keyof GlobalSettings {
   return isGlobalSettingsKey(key) && !isProjectSettingsKey(key);
+}
+
+export function isMergeRequestContractShadowEnabled(
+  sources:
+    | {
+        project?: MergeRequestContractShadowSettingsSource;
+        global?: MergeRequestContractShadowSettingsSource;
+      }
+    | MergeRequestContractShadowSettingsSource
+    | undefined,
+): boolean {
+  if (!sources) return false;
+
+  const scoped = sources as {
+    project?: MergeRequestContractShadowSettingsSource;
+    global?: MergeRequestContractShadowSettingsSource;
+  };
+  if (typeof scoped.project !== "undefined" || typeof scoped.global !== "undefined") {
+    const projectValue = scoped.project?.mergeRequestContractShadowEnabled;
+    if (typeof projectValue === "boolean") return projectValue;
+    return scoped.global?.mergeRequestContractShadowEnabled === true;
+  }
+
+  return (sources as MergeRequestContractShadowSettingsSource).mergeRequestContractShadowEnabled === true;
 }
 
 export function resolvePersistAgentThinkingLog(

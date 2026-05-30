@@ -56,6 +56,8 @@ describe("settings key parity", () => {
     expect(isProjectSettingsKey("remoteAccess")).toBe(false);
     expect(isProjectSettingsKey("researchSettings")).toBe(true);
     expect(isGlobalSettingsKey("researchGlobalDefaults")).toBe(true);
+    expect(isProjectSettingsKey("mergeRequestContractShadowEnabled")).toBe(true);
+    expect(isGlobalSettingsKey("mergeRequestContractShadowEnabled")).toBe(true);
     expect(isProjectSettingsKey("themeMode")).toBe(false);
     expect(isGlobalSettingsKey("remoteAccess")).toBe(true);
     expect(isGlobalSettingsKey("persistAgentToolOutput")).toBe(true);
@@ -307,6 +309,7 @@ describe("settings key parity", () => {
     const overlap = (GLOBAL_SETTINGS_KEYS as readonly string[]).filter((key) => projectKeySet.has(key));
     expect(overlap).toEqual([
       "testMode",
+      "mergeRequestContractShadowEnabled",
       "taskTokenBudget",
       "githubTrackingDefaultRepo",
       "worktrunk",

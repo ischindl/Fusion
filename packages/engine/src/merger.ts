@@ -84,6 +84,7 @@ import {
   type Task,
   type AutostashOrphanRecord,
   normalizeMergeAdvanceAutoSyncMode,
+  isMergeRequestContractShadowEnabled,
 } from "@fusion/core";
 import { describeModel, promptWithFallback } from "./pi.js";
 import { accumulateSessionTokenUsage } from "./session-token-usage.js";
@@ -7821,6 +7822,34 @@ export async function aiMergeTask(
     );
   }
 
+  if (isMergeRequestContractShadowEnabled(settings)) {
+    const initialState = task.autoMerge === false ? "manual-required" : "queued";
+    const existingRecord = store.getMergeRequestRecord(task.id);
+    const currentState = existingRecord?.state ?? initialState;
+    if (!existingRecord) {
+      store.upsertMergeRequestRecord(task.id, { state: initialState });
+    }
+
+    if (task.autoMerge !== false) {
+      if (currentState === "retrying") {
+        store.transitionMergeRequestState(task.id, "queued");
+        store.transitionMergeRequestState(task.id, "running");
+      } else if (currentState === "queued") {
+        store.transitionMergeRequestState(task.id, "running");
+      }
+    }
+
+    await audit.database({
+      type: "merge:request-enqueued",
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        state: initialState,
+        integrationMode: integrationRoot.mode === "reuse-task-worktree" ? "reuse-task-worktree" : "cwd-integration",
+      },
+    });
+  }
+
   if (integrationRoot.mode === "reuse-task-worktree") {
     // FN-5353: ensure the target task is in mergeQueue before attempting strict
     // targetTaskId lease acquisition for reuse handoff.
@@ -12035,10 +12064,18 @@ async function completeTask(
   result: MergeResult,
 ): Promise<void> {
   mergerLog.log(`${taskId}: completeTask — clearing status, moving to done`);
+  const preMoveTask = await store.getTask(taskId);
   // Clear transient status before moving to done
   await store.updateTask(taskId, { status: null });
   // Use moveTask for proper event emission
   const task = await store.moveTask(taskId, "done");
+  const settings = await store.getSettings();
+  if (isMergeRequestContractShadowEnabled(settings) && preMoveTask?.autoMerge !== false) {
+    const mergeRequestRecord = store.getMergeRequestRecord(taskId);
+    if (mergeRequestRecord) {
+      store.transitionMergeRequestState(taskId, "succeeded");
+    }
+  }
   result.task = task;
   store.emit("task:merged", result);
 }

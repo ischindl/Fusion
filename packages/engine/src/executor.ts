@@ -15,6 +15,7 @@ import {
   buildExecutionMemoryInstructions,
   getTaskMergeBlocker,
   isEphemeralAgent,
+  isMergeRequestContractShadowEnabled,
   resolveAgentPrompt,
   resolvePersistAgentThinkingLog,
   resolveEffectiveAgentPermissionPolicy,
@@ -1433,7 +1434,7 @@ export class TaskExecutor {
    */
   private async handoffTaskToReview(task: Task, reason: string, runId = this.getRunContextFor(task.id)?.runId): Promise<Task> {
     const agentId = this.getRunContextFor(task.id)?.agentId;
-    return this.store.handoffToReview(task.id, {
+    const handedOff = await this.store.handoffToReview(task.id, {
       ownerAgentId: agentId ?? null,
       evidence: {
         reason,
@@ -1441,6 +1442,18 @@ export class TaskExecutor {
         agentId,
       },
     });
+
+    const settings = await this.store.getSettings();
+    if (isMergeRequestContractShadowEnabled(settings)) {
+      this.store.setCompletionHandoffAcceptedMarker(task.id, {
+        source: `executor:${reason}`,
+      });
+      this.store.upsertMergeRequestRecord(task.id, {
+        state: handedOff.autoMerge === false ? "manual-required" : "queued",
+      });
+    }
+
+    return handedOff;
   }
 
   private get modelRegistry(): ModelRegistry {

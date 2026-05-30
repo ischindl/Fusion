@@ -28,7 +28,7 @@ import { promisify } from "node:util";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, parseExplicitDuplicateMarker, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult } from "@fusion/core";
+import { IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, parseExplicitDuplicateMarker, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import { RemovalReason, classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree-pool.js";
@@ -627,7 +627,7 @@ export class SelfHealingManager {
   }
 
   private async handoffTaskToReview(taskId: string, reason: string): Promise<Task> {
-    return this.store.handoffToReview(taskId, {
+    const handedOff = await this.store.handoffToReview(taskId, {
       ownerAgentId: null,
       evidence: {
         reason,
@@ -635,6 +635,18 @@ export class SelfHealingManager {
         agentId: "self-healing",
       },
     });
+
+    const settings = await this.store.getSettings();
+    if (isMergeRequestContractShadowEnabled(settings)) {
+      this.store.setCompletionHandoffAcceptedMarker(taskId, {
+        source: `self-healing:${reason}`,
+      });
+      this.store.upsertMergeRequestRecord(taskId, {
+        state: handedOff.autoMerge === false ? "manual-required" : "queued",
+      });
+    }
+
+    return handedOff;
   }
 
   private hasRecentWorktreeIncompleteDetected(taskId: string, graceMs: number): boolean {

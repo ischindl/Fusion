@@ -228,6 +228,10 @@ function createMockStore(taskOverrides: Partial<Task> = {}, allTasks: Task[] = [
     getVerificationCacheHit: vi.fn().mockReturnValue(null),
     recordVerificationCachePass: vi.fn(),
     recordRunAuditEvent: vi.fn(),
+    getMergeRequestRecord: vi.fn().mockReturnValue(null),
+    upsertMergeRequestRecord: vi.fn(),
+    transitionMergeRequestState: vi.fn(),
+    enqueueMergeQueue: vi.fn(),
   } as unknown as TaskStore;
 }
 
@@ -457,6 +461,56 @@ describe("aiMergeTask pre-merge fetch + fast-forward (smart strategies)", () => 
         integrationMode: "cwd-integration",
       }),
     });
+  });
+
+  it("writes merger shadow enqueue events when flag is ON", async () => {
+    const store = createMockStore({ id: "FN-5741", worktree: "/tmp/root", autoMerge: true });
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      mergeIntegrationWorktree: "cwd-main" as const,
+      mergeRequestContractShadowEnabled: true,
+    });
+    setupSyncMock({ behind: 0, ahead: 0 });
+
+    await aiMergeTask(store, "/tmp/root", "FN-5741");
+
+    expect(store.upsertMergeRequestRecord).toHaveBeenCalledWith("FN-5741", { state: "queued" });
+    expect(store.transitionMergeRequestState).toHaveBeenCalledWith("FN-5741", "running");
+    const events = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.map(([event]) => event);
+    expect(events.some((event: any) => event?.mutationType === "merge:request-enqueued")).toBe(true);
+  });
+
+  it("does not write merger shadow enqueue events when flag is OFF", async () => {
+    const store = createMockStore({ id: "FN-5741-OFF", worktree: "/tmp/root", autoMerge: true });
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      mergeIntegrationWorktree: "cwd-main" as const,
+      mergeRequestContractShadowEnabled: false,
+    });
+    setupSyncMock({ behind: 0, ahead: 0 });
+
+    await aiMergeTask(store, "/tmp/root", "FN-5741-OFF");
+
+    expect(store.upsertMergeRequestRecord).not.toHaveBeenCalled();
+    expect(store.transitionMergeRequestState).not.toHaveBeenCalledWith("FN-5741-OFF", "running");
+    const events = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.map(([event]) => event);
+    expect(events.some((event: any) => event?.mutationType === "merge:request-enqueued")).toBe(false);
+  });
+
+  it("keeps autoMerge false records in manual-required", async () => {
+    const store = createMockStore({ id: "FN-5741-MANUAL", worktree: "/tmp/root", autoMerge: false });
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      mergeIntegrationWorktree: "cwd-main" as const,
+      mergeRequestContractShadowEnabled: true,
+      autoMerge: false,
+    });
+    setupSyncMock({ behind: 0, ahead: 0 });
+
+    await aiMergeTask(store, "/tmp/root", "FN-5741-MANUAL");
+
+    expect(store.upsertMergeRequestRecord).toHaveBeenCalledWith("FN-5741-MANUAL", { state: "manual-required" });
+    expect(store.transitionMergeRequestState).not.toHaveBeenCalledWith("FN-5741-MANUAL", "running");
   });
 });
 

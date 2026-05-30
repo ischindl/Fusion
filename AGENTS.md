@@ -160,6 +160,7 @@ When `settings.autoMerge: false`, `in-review` is terminal-until-merged by a huma
 - FN-5403 backstop: `packages/engine/src/__tests__/reliability-interactions/engine-stop-aborts-execution.test.ts` locks stop-ordering behavior so engine shutdown aborts executor AI sessions before drain wait and preserves task-row lifecycle semantics.
 - FN-5704 backstop: `packages/engine/src/__tests__/reliability-interactions/reclaim-self-owned-resume-limbo-escalation.test.ts` guards reclaim/unpause no-progress oscillation recovery by capping repeated no-progress resumes, escalating to preserve-work `todo` rebound, and emitting `task:resume-limbo-escalated` audit metadata while exempting progress/user-paused/autoMerge-off cases.
 - FN-5715 backstop: `packages/engine/src/__tests__/reliability-interactions/mission-validation-trigger-gap.test.ts` guards mission validation trigger continuity so done task completion and startup recovery both route assertion-linked features through validator runs before completion.
+- FN-5741 backstop: `packages/engine/src/__tests__/reliability-interactions/merge-request-shadow-handoff.test.ts` guards Phase-1 write-only-shadow merge-request record + handoff-accepted marker seam (flag OFF = no-op, ON = shadow-only non-authoritative).
 
 ---
 

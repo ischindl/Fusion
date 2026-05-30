@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, SourceType, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, TaskCommitAssociationMatchSource, TaskCommitAssociationConfidence, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate } from "./types.js";
+import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, SourceType, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, TaskCommitAssociationMatchSource, TaskCommitAssociationConfidence, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, MergeRequestRecord, MergeRequestState, CompletionHandoffMarker } from "./types.js";
 import { createActivityLogSnapshot, createRunAuditSnapshot, createTaskMetadataSnapshot, toTaskMetadataRecord, validateSnapshotEnvelope, type ActivityLogSnapshot, type RunAuditSnapshot, type TaskMetadataSnapshot } from "./shared-mesh-state.js";
 import { VALID_TRANSITIONS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
@@ -307,6 +307,21 @@ interface MergeQueueRow {
   leaseExpiresAt: string | null;
   attemptCount: number;
   lastError: string | null;
+}
+
+interface MergeRequestRow {
+  taskId: string;
+  state: string;
+  createdAt: string;
+  updatedAt: string;
+  attemptCount: number;
+  lastError: string | null;
+}
+
+interface CompletionHandoffMarkerRow {
+  taskId: string;
+  acceptedAt: string;
+  source: string;
 }
 
 /** Database row shape for the config table. */
@@ -6516,6 +6531,178 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       attemptCount: row.attemptCount,
       lastError: row.lastError,
     };
+  }
+
+  private normalizeMergeRequestState(value: string): MergeRequestState {
+    switch (value) {
+      case "queued":
+      case "running":
+      case "retrying":
+      case "succeeded":
+      case "exhausted":
+      case "cancelled":
+      case "manual-required":
+        return value;
+      default:
+        return "queued";
+    }
+  }
+
+  private rowToMergeRequestRecord(row: MergeRequestRow): MergeRequestRecord {
+    return {
+      taskId: row.taskId,
+      state: this.normalizeMergeRequestState(row.state),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      attemptCount: row.attemptCount,
+      lastError: row.lastError,
+    };
+  }
+
+  private rowToCompletionHandoffMarker(row: CompletionHandoffMarkerRow): CompletionHandoffMarker {
+    return {
+      taskId: row.taskId,
+      acceptedAt: row.acceptedAt,
+      source: row.source,
+    };
+  }
+
+  private isValidMergeRequestTransition(from: MergeRequestState, to: MergeRequestState): boolean {
+    if (from === to) return true;
+    const allowed: Record<MergeRequestState, ReadonlySet<MergeRequestState>> = {
+      queued: new Set(["running", "cancelled"]),
+      running: new Set(["retrying", "succeeded", "exhausted", "cancelled"]),
+      retrying: new Set(["queued", "cancelled", "exhausted"]),
+      succeeded: new Set([]),
+      exhausted: new Set([]),
+      cancelled: new Set([]),
+      "manual-required": new Set(["succeeded", "cancelled"]),
+    };
+    return allowed[from].has(to);
+  }
+
+  upsertMergeRequestRecord(
+    taskId: string,
+    input: { state: MergeRequestState; now?: string; attemptCount?: number; lastError?: string | null },
+  ): MergeRequestRecord {
+    return this.db.transactionImmediate(() => {
+      const now = input.now ?? new Date().toISOString();
+      this.db.prepare(`
+        INSERT INTO merge_requests (taskId, state, createdAt, updatedAt, attemptCount, lastError)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(taskId) DO UPDATE SET
+          state = excluded.state,
+          updatedAt = excluded.updatedAt,
+          attemptCount = excluded.attemptCount,
+          lastError = excluded.lastError
+      `).run(taskId, input.state, now, now, input.attemptCount ?? 0, input.lastError ?? null);
+
+      const row = this.db.prepare("SELECT * FROM merge_requests WHERE taskId = ?").get(taskId) as MergeRequestRow | undefined;
+      if (!row) throw new Error(`Failed to upsert merge request for ${taskId}`);
+
+      this.insertRunAuditEventRow({
+        taskId,
+        domain: "database",
+        mutationType: "mergeRequest:upsert",
+        target: taskId,
+        metadata: { taskId, state: row.state, attemptCount: row.attemptCount, lastError: row.lastError },
+      });
+
+      return this.rowToMergeRequestRecord(row);
+    });
+  }
+
+  transitionMergeRequestState(
+    taskId: string,
+    toState: MergeRequestState,
+    opts: { now?: string; attemptCount?: number; lastError?: string | null } = {},
+  ): MergeRequestRecord {
+    return this.db.transactionImmediate(() => {
+      const now = opts.now ?? new Date().toISOString();
+      const existing = this.db.prepare("SELECT * FROM merge_requests WHERE taskId = ?").get(taskId) as MergeRequestRow | undefined;
+      if (!existing) {
+        throw new Error(`Merge request record not found for ${taskId}`);
+      }
+      const fromState = this.normalizeMergeRequestState(existing.state);
+      if (!this.isValidMergeRequestTransition(fromState, toState)) {
+        throw new Error(`Invalid merge request state transition for ${taskId}: ${fromState} -> ${toState}`);
+      }
+
+      this.db.prepare(`
+        UPDATE merge_requests
+           SET state = ?,
+               updatedAt = ?,
+               attemptCount = ?,
+               lastError = ?
+         WHERE taskId = ?
+      `).run(toState, now, opts.attemptCount ?? existing.attemptCount, opts.lastError ?? existing.lastError, taskId);
+
+      const updated = this.db.prepare("SELECT * FROM merge_requests WHERE taskId = ?").get(taskId) as MergeRequestRow | undefined;
+      if (!updated) throw new Error(`Merge request record disappeared for ${taskId}`);
+
+      this.insertRunAuditEventRow({
+        taskId,
+        domain: "database",
+        mutationType: "mergeRequest:transition",
+        target: taskId,
+        metadata: { taskId, fromState, toState, attemptCount: updated.attemptCount, lastError: updated.lastError },
+      });
+      return this.rowToMergeRequestRecord(updated);
+    });
+  }
+
+  getMergeRequestRecord(taskId: string): MergeRequestRecord | null {
+    const row = this.db.prepare("SELECT * FROM merge_requests WHERE taskId = ?").get(taskId) as MergeRequestRow | undefined;
+    return row ? this.rowToMergeRequestRecord(row) : null;
+  }
+
+  setCompletionHandoffAcceptedMarker(
+    taskId: string,
+    opts: { source: string; acceptedAt?: string },
+  ): CompletionHandoffMarker {
+    return this.db.transactionImmediate(() => {
+      const acceptedAt = opts.acceptedAt ?? new Date().toISOString();
+      this.db.prepare(`
+        INSERT INTO completion_handoff_markers (taskId, acceptedAt, source)
+        VALUES (?, ?, ?)
+        ON CONFLICT(taskId) DO UPDATE SET
+          acceptedAt = excluded.acceptedAt,
+          source = excluded.source
+      `).run(taskId, acceptedAt, opts.source);
+
+      const row = this.db.prepare("SELECT * FROM completion_handoff_markers WHERE taskId = ?").get(taskId) as CompletionHandoffMarkerRow | undefined;
+      if (!row) throw new Error(`Failed to set completion handoff marker for ${taskId}`);
+
+      this.insertRunAuditEventRow({
+        taskId,
+        domain: "database",
+        mutationType: "task:completion-handoff-accepted",
+        target: taskId,
+        metadata: { taskId, acceptedAt: row.acceptedAt, source: row.source },
+      });
+
+      return this.rowToCompletionHandoffMarker(row);
+    });
+  }
+
+  clearCompletionHandoffAcceptedMarker(taskId: string): void {
+    this.db.transactionImmediate(() => {
+      const existing = this.db.prepare("SELECT * FROM completion_handoff_markers WHERE taskId = ?").get(taskId) as CompletionHandoffMarkerRow | undefined;
+      if (!existing) return;
+      this.db.prepare("DELETE FROM completion_handoff_markers WHERE taskId = ?").run(taskId);
+      this.insertRunAuditEventRow({
+        taskId,
+        domain: "database",
+        mutationType: "task:completion-handoff-cleared",
+        target: taskId,
+        metadata: { taskId, acceptedAt: existing.acceptedAt, source: existing.source },
+      });
+    });
+  }
+
+  getCompletionHandoffAcceptedMarker(taskId: string): CompletionHandoffMarker | null {
+    const row = this.db.prepare("SELECT * FROM completion_handoff_markers WHERE taskId = ?").get(taskId) as CompletionHandoffMarkerRow | undefined;
+    return row ? this.rowToCompletionHandoffMarker(row) : null;
   }
 
   /**

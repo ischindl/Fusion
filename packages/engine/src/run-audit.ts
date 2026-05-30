@@ -400,6 +400,7 @@ export type DatabaseMutationType =
   | "task:pause"
   | "task:unpause"
   | "task:dependency:add"
+  | "merge:request-enqueued"
   | "mergeQueue:lease-target-unavailable"
   | "mergeQueue:enqueue-rejected"
   | "mergeQueue:stale-lease-on-column-exit"

@@ -149,7 +149,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 99;
+const SCHEMA_VERSION = 100;
 
 function normalizeTaskComments(
   steeringComments: SteeringComment[] | undefined,
@@ -544,6 +544,23 @@ CREATE TABLE IF NOT EXISTS mergeQueue (
 );
 CREATE INDEX IF NOT EXISTS idx_mergeQueue_lease_ready ON mergeQueue(leasedBy, priority, enqueuedAt);
 CREATE INDEX IF NOT EXISTS idx_mergeQueue_leaseExpiresAt ON mergeQueue(leaseExpiresAt);
+
+CREATE TABLE IF NOT EXISTS merge_requests (
+  taskId TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  attemptCount INTEGER NOT NULL DEFAULT 0,
+  lastError TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_merge_requests_state_updatedAt ON merge_requests(state, updatedAt);
+
+CREATE TABLE IF NOT EXISTS completion_handoff_markers (
+  taskId TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  acceptedAt TEXT NOT NULL,
+  source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_completion_handoff_markers_acceptedAt ON completion_handoff_markers(acceptedAt);
 
 -- Task documents (key-value store per task with revision tracking)
 CREATE TABLE IF NOT EXISTS task_documents (
@@ -3734,6 +3751,36 @@ export class Database {
         this.addColumnIfMissing("tasks", "resumeLimboCount", "INTEGER DEFAULT 0");
         this.addColumnIfMissing("tasks", "resumeLimboTipSha", "TEXT");
         this.addColumnIfMissing("tasks", "resumeLimboStepSignature", "TEXT");
+      });
+    }
+
+    if (version < 100) {
+      this.applyMigration(100, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS merge_requests (
+            taskId TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            state TEXT NOT NULL,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            attemptCount INTEGER NOT NULL DEFAULT 0,
+            lastError TEXT
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_merge_requests_state_updatedAt
+            ON merge_requests(state, updatedAt)
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS completion_handoff_markers (
+            taskId TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            acceptedAt TEXT NOT NULL,
+            source TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_completion_handoff_markers_acceptedAt
+            ON completion_handoff_markers(acceptedAt)
+        `);
       });
     }
 

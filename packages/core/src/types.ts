@@ -38,6 +38,18 @@ export type TaskPriority = (typeof TASK_PRIORITIES)[number];
  */
 export const DEFAULT_TASK_PRIORITY: TaskPriority = "normal";
 
+export const MERGE_REQUEST_STATES = [
+  "queued",
+  "running",
+  "retrying",
+  "succeeded",
+  "exhausted",
+  "cancelled",
+  "manual-required",
+] as const;
+
+export type MergeRequestState = (typeof MERGE_REQUEST_STATES)[number];
+
 export interface MergeQueueEntry {
   taskId: string;
   enqueuedAt: string;
@@ -47,6 +59,21 @@ export interface MergeQueueEntry {
   leaseExpiresAt: string | null;
   attemptCount: number;
   lastError: string | null;
+}
+
+export interface MergeRequestRecord {
+  taskId: string;
+  state: MergeRequestState;
+  createdAt: string;
+  updatedAt: string;
+  attemptCount: number;
+  lastError: string | null;
+}
+
+export interface CompletionHandoffMarker {
+  taskId: string;
+  acceptedAt: string;
+  source: string;
 }
 
 export interface MergeQueueEnqueueOptions {
@@ -2405,6 +2432,11 @@ export interface GlobalSettings {
    *  of per-task or per-lane overrides. No network calls, zero token cost.
    *  Project `testMode` takes precedence over the global value. */
   testMode?: boolean;
+  /** Phase-1 FN-5741 write-only shadow seam toggle.
+   *  When true, executor/self-healing/merger persist additive merge-request contract
+   *  records and completion-handoff markers without changing merge authority.
+   *  Project value (if set) takes precedence over this global value. Default: false. */
+  mergeRequestContractShadowEnabled?: boolean;
   /** Fallback AI model provider used when the primary default model fails due to
    *  transient provider-side issues such as rate limits or overloaded capacity.
    *  Must be set together with `fallbackModelId`. */
@@ -2894,6 +2926,10 @@ export interface ProjectSettings {
   /** When true, force every AI lane onto the deterministic mock provider regardless
    *  of per-task or per-lane overrides. No network calls, zero token cost. */
   testMode?: boolean;
+  /** Phase-1 FN-5741 write-only shadow seam toggle.
+   *  Overrides global `mergeRequestContractShadowEnabled` when defined.
+   *  Default: false. */
+  mergeRequestContractShadowEnabled?: boolean;
   /** How completed in-review tasks should be finalized when autoMerge is enabled.
    *  - "direct": preserve the existing local squash-merge flow into the current branch
    *  - "pull-request": create or reuse a GitHub PR and wait for GitHub-side checks/reviews
@@ -3680,6 +3716,7 @@ export {
   isGlobalOnlySettingsKey,
   isGlobalSettingsKey,
   isProjectSettingsKey,
+  isMergeRequestContractShadowEnabled,
   resolvePersistAgentThinkingLog,
 } from "./settings-schema.js";
 
