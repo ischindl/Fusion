@@ -1670,11 +1670,12 @@ describe("ChatView", () => {
 
       render(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
 
-      await userEvent.click(screen.getByTestId("chat-sidebar-scope-rooms"));
+      const user = userEvent.setup({ delay: null });
+      await user.click(screen.getByTestId("chat-sidebar-scope-rooms"));
       const textarea = screen.getByTestId("chat-input");
-      await userEvent.type(textarea, "@");
+      await user.type(textarea, "@");
 
-      expect(await screen.findByTestId("agent-mention-members-header")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-mention-members-header")).toBeInTheDocument();
       expect(screen.queryByTestId("agent-mention-others-header")).not.toBeInTheDocument();
 
       const bubble = screen.getByText("Ping", { exact: false }).closest(".chat-message--user");
