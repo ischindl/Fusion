@@ -5672,7 +5672,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         new Map([[id, nextDependencies]]),
       );
 
-      const previousDependencySet = new Set(previousDependencies);
+      const previousDependencySet = new Set(normalizedCurrent);
       const hasNewDependencies = nextDependencies.some((dependencyId) => !previousDependencySet.has(dependencyId));
 
       task.dependencies = nextDependencies;
@@ -5691,8 +5691,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
       task.updatedAt = new Date().toISOString();
       task.log ??= [];
+      let movedToTriage = false;
       if (hasNewDependencies && task.column === "todo") {
         task.column = "triage";
+        movedToTriage = true;
         task.status = undefined;
         task.columnMovedAt = task.updatedAt;
         task.log.push({
@@ -5722,6 +5724,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         },
       };
       await this.atomicWriteTaskJsonWithAudit(dir, task, auditEvent);
+      if (movedToTriage) {
+        this.emit("task:moved", { task, from: "todo" as Column, to: "triage" as Column, source: "engine" });
+      }
       this.emit("task:updated", task);
       return task;
     });
@@ -5805,9 +5810,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       // Detect new dependencies being added to a todo task → auto-move to triage
       let movedToTriage = false;
       if (updates.dependencies !== undefined) {
-        const oldDeps = new Set(task.dependencies);
-        const hasNewDeps = updates.dependencies.some((d) => !oldDeps.has(d));
-        task.dependencies = updates.dependencies;
+        const oldDeps = new Set((task.dependencies ?? []).map((dependency) => dependency.trim()).filter(Boolean));
+        const normalizedDependencies = updates.dependencies.map((dependency) => dependency.trim()).filter(Boolean);
+        const hasNewDeps = normalizedDependencies.some((d) => !oldDeps.has(d));
+        task.dependencies = normalizedDependencies;
 
         if (hasNewDeps && task.column === "todo") {
           task.column = "triage";
