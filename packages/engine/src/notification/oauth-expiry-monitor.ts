@@ -3,6 +3,7 @@ import { schedulerLog } from "../logger.js";
 import type { NotificationService } from "./notification-service.js";
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_MIN_NOTIFY_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 interface OAuthProviderInfo {
   id: string;
@@ -26,19 +27,23 @@ export interface OAuthExpiryMonitorOptions {
   intervalMs?: number;
   clock?: () => number;
   warnBeforeMs?: number;
+  minNotifyIntervalMs?: number;
 }
 
 export class OAuthExpiryMonitor {
   private readonly intervalMs: number;
   private readonly clock: () => number;
   private readonly warnBeforeMs: number;
+  private readonly minNotifyIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private readonly dispatchedExpiryKeys = new Set<string>();
+  private readonly lastNotifiedAt = new Map<string, number>();
 
   constructor(private readonly opts: OAuthExpiryMonitorOptions) {
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.clock = opts.clock ?? Date.now;
     this.warnBeforeMs = opts.warnBeforeMs ?? 0;
+    this.minNotifyIntervalMs = opts.minNotifyIntervalMs ?? DEFAULT_MIN_NOTIFY_INTERVAL_MS;
   }
 
   async start(): Promise<void> {
@@ -68,6 +73,7 @@ export class OAuthExpiryMonitor {
     const providers = this.opts.authStorage.getOAuthProviders?.();
     if (!providers?.length) {
       this.dispatchedExpiryKeys.clear();
+      this.lastNotifiedAt.clear();
       return;
     }
 
@@ -90,6 +96,14 @@ export class OAuthExpiryMonitor {
         continue;
       }
 
+      const previousNotificationAt = this.lastNotifiedAt.get(provider.id);
+      if (
+        typeof previousNotificationAt === "number" &&
+        now - previousNotificationAt < this.minNotifyIntervalMs
+      ) {
+        continue;
+      }
+
       const payload: NotificationPayload = {
         event: "oauth-token-expired",
         metadata: {
@@ -102,6 +116,7 @@ export class OAuthExpiryMonitor {
       try {
         await this.opts.notificationService.dispatch("oauth-token-expired", payload);
         this.dispatchedExpiryKeys.add(expiryKey);
+        this.lastNotifiedAt.set(provider.id, now);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         schedulerLog.warn(`OAuth expiry notification dispatch failed provider=${provider.id}: ${message}`);

@@ -121,6 +121,46 @@ describe("OAuthExpiryMonitor", () => {
     now += 2_000;
     await vi.advanceTimersByTimeAsync(100);
 
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    now += 12 * 60 * 60 * 1000;
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    monitor.stop();
+    vi.useRealTimers();
+  });
+
+  it("throttles changed expiries until min notify interval elapses", async () => {
+    vi.useFakeTimers();
+    let now = Date.now();
+    const authStorage = createAuthStorage({ type: "oauth", expires: now - 1 });
+    const dispatch = vi.fn(async () => undefined);
+
+    const monitor = new OAuthExpiryMonitor({
+      authStorage,
+      notificationService: { dispatch } as any,
+      intervalMs: 100,
+      minNotifyIntervalMs: 1_000,
+      clock: () => now,
+    });
+
+    await monitor.start();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    authStorage.credential = { type: "oauth", expires: now + 10_000 };
+    await vi.advanceTimersByTimeAsync(100);
+
+    now += 500;
+    authStorage.credential = { type: "oauth", expires: now - 1 };
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    now += 500;
+    authStorage.credential = { type: "oauth", expires: now - 2 };
+    await vi.advanceTimersByTimeAsync(100);
+
     expect(dispatch).toHaveBeenCalledTimes(2);
     monitor.stop();
     vi.useRealTimers();
