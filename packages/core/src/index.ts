@@ -1076,6 +1076,24 @@ export type {
 } from "./research-types.js";
 
 export { isExperimentalFeatureEnabled } from "./experimental-features.js";
+export {
+  WORKFLOW_COMPARABLE_AUDIT_MUTATIONS,
+  WORKFLOW_PARITY_OBSERVED_MUTATION,
+  WORKFLOW_PARITY_DRIFT_MUTATION,
+  compareWorkflowRunAudits,
+  compareWorkflowRunObservations,
+  extractWorkflowAuditObservations,
+} from "./workflow-parity.js";
+export type {
+  WorkflowAuditObservation,
+  WorkflowParityDiff,
+  WorkflowParityDiffCategory,
+  WorkflowParityDiffSeverity,
+  WorkflowParityDriftReport,
+  WorkflowReliabilityInvariantSignals,
+  WorkflowRunObservation,
+  WorkflowStage,
+} from "./workflow-parity.js";
 export { isResearchExperimentalEnabled, resolveResearchSettings } from "./research-settings.js";
 export type { ResolvedResearchSettings } from "./research-settings.js";
 export { isEvalsExperimentalEnabled, resolveEvalSettings } from "./eval-settings.js";

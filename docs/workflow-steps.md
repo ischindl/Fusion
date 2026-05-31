@@ -310,6 +310,24 @@ For pre-merge workflow hard failures, executor behavior is (gate-mode steps):
 
 Tasks are not parked in `in-review` for this remediable path unless additional terminal failures occur.
 
+## Workflow Interpreter Dual-Observe (parity instrumentation)
+
+Fusion now includes a **default-OFF** experimental parity seam for the workflow interpreter rollout.
+
+- **Flag:** `experimentalFeatures.workflowInterpreterDualObserve`
+- **Mode:** observe-only shadow run; legacy executor/reviewer/merger/scheduler path remains authoritative
+- **Behavior when OFF (default):** strict no-op (no shadow run, no parity audit records)
+- **Behavior when ON:** compare legacy and interpreter observations plus comparable run-audit slices
+
+Run-audit events emitted in `database` domain:
+
+- `workflow:parity-observed` — always emitted for an enabled parity check with `metadata.agree`
+- `workflow:parity-drift` — emitted when parity differs (or shadow execution fails), carrying `metadata.diffs`
+
+The parity contract is exported from `@fusion/core` (`compareWorkflowRunObservations`, `compareWorkflowRunAudits`) and produces deterministic drift reports shaped as `{ agree, diffs[] }`, where each diff includes field name, legacy/interpreter values, category, and severity.
+
+This is a dual-observe stage only; interpreter-authoritative cutover is deferred to a later phase.
+
 #### Self-healing recovery for parked review tasks
 
 If a task is found in `in-review` with failed pre-merge workflow results and no active executor, self-healing can auto-revive it (bounded by `maxPostReviewFixes`) by replaying the same remediation send-back flow.
