@@ -44,7 +44,7 @@ describe("custom-provider-registry", () => {
       baseUrl: "https://example.test/v1",
       api: "openai-completions",
       apiKey: "CUSTOM_KEY",
-      models: [expect.objectContaining({ id: "m1", name: "Model 1" })],
+      models: [expect.objectContaining({ id: "m1", name: "Model 1", compat: { supportsDeveloperRole: false } })],
     }));
     expect(registerProvider).toHaveBeenNthCalledWith(2, "anthropic-custom", expect.objectContaining({
       baseUrl: "https://anthropic.test",
@@ -165,6 +165,30 @@ describe("custom-provider-registry", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it("sets supportsDeveloperRole true only when opted in", () => {
+    const registerProvider = vi.fn();
+    const refresh = vi.fn();
+
+    registerCustomProviders(
+      { registerProvider, refresh },
+      [
+        { id: "optout", name: "Optout", apiType: "openai-compatible", baseUrl: "https://one.test", models: [{ id: "m", name: "M" }] },
+        { id: "optin", name: "Optin", apiType: "openai-compatible", baseUrl: "https://two.test", supportsDeveloperRole: true, models: [{ id: "m", name: "M" }] },
+        { id: "other", name: "Other", apiType: "anthropic-compatible", baseUrl: "https://three.test", models: [{ id: "m", name: "M" }] },
+      ],
+      vi.fn(),
+    );
+
+    expect(registerProvider).toHaveBeenNthCalledWith(1, "optout", expect.objectContaining({
+      models: [expect.objectContaining({ compat: { supportsDeveloperRole: false } })],
+    }));
+    expect(registerProvider).toHaveBeenNthCalledWith(2, "optin", expect.objectContaining({
+      models: [expect.objectContaining({ compat: { supportsDeveloperRole: true } })],
+    }));
+    const anthropicModels = registerProvider.mock.calls[2]?.[1]?.models as Array<Record<string, unknown>>;
+    expect(anthropicModels[0]).not.toHaveProperty("compat");
+  });
+
   it("reregisters changed providers", () => {
     const registerProvider = vi.fn();
     const refresh = vi.fn();
@@ -180,6 +204,24 @@ describe("custom-provider-registry", () => {
     expect(registerProvider).toHaveBeenCalledWith("provider", expect.objectContaining({
       baseUrl: "https://two.test",
       apiKey: "B",
+    }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("reregisters when only supportsDeveloperRole changes", () => {
+    const registerProvider = vi.fn();
+    const refresh = vi.fn();
+
+    reregisterCustomProviders(
+      { registerProvider, refresh },
+      [{ id: "role", name: "Provider", apiType: "openai-compatible", baseUrl: "https://one.test", models: [{ id: "m", name: "M" }] }],
+      [{ id: "role", name: "Provider", apiType: "openai-compatible", baseUrl: "https://one.test", supportsDeveloperRole: true, models: [{ id: "m", name: "M" }] }],
+      vi.fn(),
+    );
+
+    expect(registerProvider).toHaveBeenCalledTimes(1);
+    expect(registerProvider).toHaveBeenCalledWith("provider", expect.objectContaining({
+      models: [expect.objectContaining({ compat: { supportsDeveloperRole: true } })],
     }));
     expect(refresh).toHaveBeenCalledTimes(1);
   });

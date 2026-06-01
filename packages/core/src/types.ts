@@ -562,6 +562,11 @@ export interface CustomProvider {
   apiType: "openai-compatible" | "anthropic-compatible" | "google-generative-ai" | "openai-responses";
   baseUrl: string;
   apiKey?: string;
+  /**
+   * OpenAI-compatible opt-in for providers that explicitly support the `developer` role.
+   * Omitted/false forces legacy `system` role emission to avoid provider 400s.
+   */
+  supportsDeveloperRole?: boolean;
   models?: { id: string; name: string }[];
 }
 

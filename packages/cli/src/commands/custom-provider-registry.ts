@@ -13,6 +13,9 @@ interface ModelRegistryLike {
       cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
       contextWindow: number;
       maxTokens: number;
+      compat?: {
+        supportsDeveloperRole?: boolean;
+      };
     }>;
   }) => void;
   refresh: () => void;
@@ -29,9 +32,12 @@ export function resolveApiType(apiType: string): string {
 }
 
 function toProviderConfig(provider: CustomProvider) {
+  const api = resolveApiType(provider.apiType);
+  const supportsDeveloperRole = provider.supportsDeveloperRole === true;
+
   return {
     baseUrl: provider.baseUrl,
-    api: resolveApiType(provider.apiType),
+    api,
     apiKey: provider.apiKey,
     models: (provider.models ?? []).map((model) => ({
       id: model.id,
@@ -46,6 +52,7 @@ function toProviderConfig(provider: CustomProvider) {
       },
       contextWindow: 128000,
       maxTokens: 16384,
+      ...(api === "openai-completions" ? { compat: { supportsDeveloperRole } } : {}),
     })),
   };
 }
