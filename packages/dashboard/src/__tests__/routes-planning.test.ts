@@ -23,11 +23,17 @@ import type { TaskDetail } from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "../routes.js";
 import { __resetBatchImportRateLimiter, __setCreateFnAgentForRefine } from "../routes.js";
 import * as agentGenerationModule from "../agent-generation.js";
-import { __resetPlanningState, __setCreateFnAgent, planningStreamManager } from "../planning.js";
+import {
+  __resetPlanningState,
+  __setCreateFnAgent,
+  planningStreamManager,
+  rehydrateFromStore,
+  setAiSessionStore,
+} from "../planning.js";
 import * as planningModule from "../planning.js";
 import { __resetSubtaskBreakdownState, subtaskStreamManager } from "../subtask-breakdown.js";
 import * as subtaskBreakdownModule from "../subtask-breakdown.js";
-import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS } from "../ai-session-store.js";
+import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS, type AiSessionRow } from "../ai-session-store.js";
 import * as usageModule from "../usage.js";
 import * as claudeCliProbeModule from "../claude-cli-probe.js";
 import * as droidCliProbeModule from "../droid-cli-probe.js";
@@ -305,6 +311,85 @@ async function REQUEST(
   return { status: res.status, body: res.body };
 }
 
+class MockAiSessionStore extends EventEmitter {
+  rows = new Map<string, AiSessionRow>();
+
+  upsert(row: AiSessionRow): void {
+    this.rows.set(row.id, row);
+  }
+
+  updateThinking(id: string, thinkingOutput: string): void {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.rows.set(id, { ...row, thinkingOutput, updatedAt: new Date().toISOString() });
+  }
+
+  delete(id: string): void {
+    this.rows.delete(id);
+    this.emit("ai_session:deleted", id);
+  }
+
+  get(id: string): AiSessionRow | null {
+    return this.rows.get(id) ?? null;
+  }
+
+  listRecoverable(): AiSessionRow[] {
+    return [...this.rows.values()].filter(
+      (row) => row.status === "awaiting_input" || row.status === "generating" || row.status === "error",
+    );
+  }
+
+  on(event: "ai_session:deleted", listener: (sessionId: string) => void): this {
+    return super.on(event, listener);
+  }
+
+  off(event: "ai_session:deleted", listener: (sessionId: string) => void): this {
+    return super.off(event, listener);
+  }
+}
+
+function buildPlanningRow(
+  overrides: Partial<AiSessionRow> & Pick<AiSessionRow, "id" | "status">,
+): AiSessionRow {
+  const now = new Date().toISOString();
+  return {
+    id: overrides.id,
+    type: "planning",
+    status: overrides.status,
+    title: overrides.title ?? "Recovered planning session",
+    inputPayload:
+      overrides.inputPayload
+      ?? JSON.stringify({ ip: "127.0.0.1", initialPlan: "Recovered planning session" }),
+    conversationHistory:
+      overrides.conversationHistory
+      ?? JSON.stringify([
+        {
+          question: {
+            id: "q-existing",
+            type: "text",
+            question: "What should we build?",
+            description: "baseline",
+          },
+          response: { "q-existing": "A useful feature" },
+        },
+      ]),
+    currentQuestion:
+      overrides.currentQuestion
+      ?? JSON.stringify({
+        id: "q-next",
+        type: "text",
+        question: "Any constraints?",
+        description: "detail",
+      }),
+    result: overrides.result ?? null,
+    thinkingOutput: overrides.thinkingOutput ?? "thinking",
+    error: overrides.error ?? null,
+    projectId: overrides.projectId ?? null,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+  };
+}
+
 function collectOrderedRouteKeys(router: express.Router): string[] {
   const stack = (router as unknown as {
     stack?: Array<{ route?: { path?: string; methods?: Record<string, boolean> } }>;
@@ -397,6 +482,15 @@ describe("Planning Mode Routes", () => {
         },
       };
       __setCreateFnAgent(async () => mockAgent);
+    }
+
+    async function rehydratePlanningSessionRow(row: AiSessionRow): Promise<string> {
+      const mockStore = new MockAiSessionStore();
+      mockStore.upsert(row);
+      setAiSessionStore(mockStore as unknown as Parameters<typeof setAiSessionStore>[0]);
+      const recoveredCount = rehydrateFromStore(mockStore as unknown as Parameters<typeof rehydrateFromStore>[0]);
+      expect(recoveredCount).toBe(1);
+      return row.id;
     }
 
     beforeEach(() => {
@@ -1189,6 +1283,54 @@ describe("Planning Mode Routes", () => {
       });
     });
 
+    describe("POST /api/planning resume after restart (rehydrated session)", () => {
+      it("respond route resumes with scoped store after rehydrate", async () => {
+        const sessionId = await rehydratePlanningSessionRow(
+          buildPlanningRow({ id: "resume-respond", status: "awaiting_input" }),
+        );
+
+        const res = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/respond",
+          JSON.stringify({ sessionId, responses: { constraints: "none" } }),
+          { "Content-Type": "application/json" },
+        );
+
+        expect(res.status).toBe(200);
+        expect(JSON.stringify(res.body)).not.toContain("has no task store");
+        expect(JSON.stringify(res.body)).not.toContain("cannot be resumed without project context");
+      });
+
+      it("back route resumes with scoped store after rehydrate", async () => {
+        const sessionId = await rehydratePlanningSessionRow(
+          buildPlanningRow({ id: "resume-back", status: "awaiting_input" }),
+        );
+
+        const res = await REQUEST(buildApp(), "POST", `/api/planning/${sessionId}/back`);
+
+        expect(res.status).toBe(200);
+        expect(JSON.stringify(res.body)).not.toContain("has no task store");
+        expect(JSON.stringify(res.body)).not.toContain("cannot be resumed without project context");
+      });
+
+      it("retry route resumes with scoped store after rehydrate", async () => {
+        const sessionId = await rehydratePlanningSessionRow(
+          buildPlanningRow({
+            id: "resume-retry",
+            status: "error",
+            error: "temporary failure",
+            currentQuestion: null,
+          }),
+        );
+
+        const res = await REQUEST(buildApp(), "POST", `/api/planning/${sessionId}/retry`);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ success: true, sessionId });
+      });
+    });
+
     describe("POST /planning/:sessionId/back", () => {
       it("rewinds an active planning session", async () => {
         const rewindSpy = vi.spyOn(planningModule, "rewindSession").mockResolvedValue({
@@ -1205,7 +1347,7 @@ describe("Planning Mode Routes", () => {
 
         expect(res.status).toBe(200);
         expect(res.body.currentQuestion.id).toBe("q-scope");
-        expect(rewindSpy).toHaveBeenCalledWith("session-123", expect.any(String), undefined);
+        expect(rewindSpy).toHaveBeenCalledWith("session-123", expect.any(String), undefined, expect.any(Object));
       });
 
       it("returns 400 when there is no previous question", async () => {
@@ -1228,7 +1370,7 @@ describe("Planning Mode Routes", () => {
 
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ success: true, sessionId: "session-123" });
-        expect(retrySpy).toHaveBeenCalledWith("session-123", expect.any(String), undefined);
+        expect(retrySpy).toHaveBeenCalledWith("session-123", expect.any(String), undefined, expect.any(Object));
       });
 
       it("returns 404 when planning retry session is missing", async () => {
@@ -2211,10 +2353,9 @@ describe("Planning Mode Routes", () => {
         await REQUEST(buildApp(), "POST", "/api/planning/respond", JSON.stringify({ sessionId: planningSessionId, responses: { requirements: "Must have login" } }), { "Content-Type": "application/json" });
         await REQUEST(buildApp(), "POST", "/api/planning/respond", JSON.stringify({ sessionId: planningSessionId, responses: { confirm: true } }), { "Content-Type": "application/json" });
 
-        const { getSubtaskSession } = await import("../subtask-breakdown.js");
-        const session = getSubtaskSession(planningSessionId);
+        const session = planningModule.getSession(planningSessionId);
         if (!session) {
-          throw new Error("Expected planning subtask session to exist");
+          throw new Error("Expected planning session to exist");
         }
         session.autoMerge = true;
 
