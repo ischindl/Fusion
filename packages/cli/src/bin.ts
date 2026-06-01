@@ -138,7 +138,7 @@ async function loadCommandHandlers() {
   const { runMessageInbox, runMessageOutbox, runMessageSend, runMessageRead, runMessageDelete, runAgentMailbox } = await import("./commands/message.js");
   const { runChatInteractive } = await import("./commands/chat.js");
   const { runPluginList, runPluginInstall, runPluginUninstall, runPluginEnable, runPluginDisable, runPluginSetupStatus, runPluginSetup, runPluginAvailable, runPluginSettings, runPluginRescan } = await import("./commands/plugin.js");
-  const { runPluginCreate } = await import("./commands/plugin-scaffold.js");
+  const { runPluginCreate, runPluginNew } = await import("./commands/plugin-scaffold.js");
   const { runSkillsSearch, runSkillsInstall } = await import("./commands/skills.js");
   const { runResearchCreate, runResearchList, runResearchShow, runResearchExport, runResearchCancel, runResearchRetry } = await import("./commands/research.js");
   const { runExperimentFinalize } = await import("./commands/experiment-finalize.js");
@@ -235,6 +235,7 @@ async function loadCommandHandlers() {
     runPluginSettings,
     runPluginRescan,
     runPluginCreate,
+    runPluginNew,
     runSkillsSearch,
     runSkillsInstall,
     runResearchCreate,
@@ -390,6 +391,7 @@ PR:
   fn plugin setup <id> [--action install|uninstall]
                                       Install or uninstall plugin setup binaries/runtimes
   fn plugin create <name>           Scaffold a new plugin project
+  fn plugin new <name>              Scaffold a standalone publishable plugin project
   fn skills search <query>            Search skills.sh for agent skills
   fn skills search <query> --limit 5  Limit results
   fn skills install <owner/repo>      Install skills from a source
@@ -660,6 +662,7 @@ async function main() {
     runPluginSettings,
     runPluginRescan,
     runPluginCreate,
+    runPluginNew,
     runSkillsSearch,
     runSkillsInstall,
     runResearchCreate,
@@ -1768,12 +1771,21 @@ async function main() {
           case "create": {
             const pluginName = args[2];
             if (!pluginName) { console.error("Usage: fn plugin create <name>"); process.exit(1); }
-            await runPluginCreate(pluginName);
+            await runPluginCreate(pluginName, { output: getFlagValue(args.slice(3), "--output") });
+            break;
+          }
+          case "new": {
+            const pluginName = args[2];
+            if (!pluginName) { console.error("Usage: fn plugin new <name> [--output <dir>] [--scope <scope>]"); process.exit(1); }
+            await runPluginNew(pluginName, {
+              output: getFlagValue(args.slice(3), "--output"),
+              scope: getFlagValue(args.slice(3), "--scope"),
+            });
             break;
           }
           default:
             console.error(`Unknown subcommand: plugin ${sub || ""}`);
-            console.log("Try: fn plugin list | install | add (alias for install) | uninstall | enable | disable | available | settings | rescan | setup-status | setup | create");
+            console.log("Try: fn plugin list | install | add (alias for install) | uninstall | enable | disable | available | settings | rescan | setup-status | setup | create | new");
             process.exit(1);
         }
         break;

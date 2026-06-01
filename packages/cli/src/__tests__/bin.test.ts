@@ -102,6 +102,7 @@ const commandMocks = vi.hoisted(() => ({
   runPluginSettings: vi.fn(),
   runPluginRescan: vi.fn(),
   runPluginCreate: vi.fn(),
+  runPluginNew: vi.fn(),
 
   runResearchCreate: vi.fn(),
   runResearchList: vi.fn(),
@@ -238,6 +239,7 @@ vi.mock("../commands/plugin.js", () => ({
 
 vi.mock("../commands/plugin-scaffold.js", () => ({
   runPluginCreate: commandMocks.runPluginCreate,
+  runPluginNew: commandMocks.runPluginNew,
 }));
 
 vi.mock("../commands/research.js", () => ({
@@ -507,11 +509,19 @@ describe("bin command routing and fallbacks", () => {
     );
   });
 
+  it("routes plugin new with scope and output flags", async () => {
+    await runBin(["plugin", "new", "hello-plugin", "--scope", "acme", "--output", "./hello-plugin"]);
+    expect(commandMocks.runPluginNew).toHaveBeenCalledWith("hello-plugin", {
+      scope: "acme",
+      output: "./hello-plugin",
+    });
+  });
+
   it("shows plugin help guidance with install/add alias on unknown plugin subcommand", async () => {
     await expect(runBin(["plugin", "oops"])).rejects.toThrow("process.exit:1");
     expect(errorSpy).toHaveBeenCalledWith("Unknown subcommand: plugin oops");
     expect(logSpy).toHaveBeenCalledWith(
-      "Try: fn plugin list | install | add (alias for install) | uninstall | enable | disable | available | settings | rescan | setup-status | setup | create",
+      "Try: fn plugin list | install | add (alias for install) | uninstall | enable | disable | available | settings | rescan | setup-status | setup | create | new",
     );
   });
 

@@ -1,15 +1,17 @@
 /**
  * Plugin Scaffold Command
  *
- * Generates a new plugin project with boilerplate code.
+ * Generates plugin projects with boilerplate code.
  * Usage: fn plugin create <name>
  */
 
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Valid plugin name pattern: kebab-case
 const PLUGIN_NAME_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+const DEFAULT_RUNFUSION_VERSION = "0.39.0";
 
 /**
  * Convert a kebab-case string to Title Case
@@ -21,8 +23,81 @@ function toTitleCase(str: string): string {
     .join(" ");
 }
 
+function failInvalidName(name: string, command: "create" | "new"): never {
+  console.error(
+    `Invalid plugin name '${name}'. Must be kebab-case (lowercase letters, numbers, hyphens).`,
+  );
+  console.error(`Example: fn plugin ${command} my-awesome-plugin`);
+  process.exit(1);
+}
+
+function resolveTargetPath(name: string, output?: string): { targetDir: string; targetPath: string } {
+  const targetDir = output ?? name;
+  return {
+    targetDir,
+    targetPath: resolve(process.cwd(), targetDir),
+  };
+}
+
+function ensureTargetPathAvailable(targetDir: string, targetPath: string): void {
+  if (existsSync(targetPath)) {
+    console.error(`Error: Directory '${targetDir}' already exists.`);
+    console.error("Please choose a different name or remove the existing directory.");
+    process.exit(1);
+  }
+}
+
+function readOwnCliVersion(): string | undefined {
+  let currentDir: string;
+  try {
+    currentDir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return undefined;
+  }
+
+  for (let i = 0; i < 8; i += 1) {
+    const pkgPath = resolve(currentDir, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+          name?: string;
+          version?: string;
+        };
+        if (parsed.name === "@runfusion/fusion" && typeof parsed.version === "string") {
+          return parsed.version;
+        }
+      } catch {
+        // Ignore malformed package.json and continue walking.
+      }
+    }
+    const parentDir = resolve(currentDir, "..");
+    if (parentDir === currentDir) break;
+    currentDir = parentDir;
+  }
+
+  return undefined;
+}
+
+function resolveFusionCaretVersion(): string {
+  const version = readOwnCliVersion() ?? DEFAULT_RUNFUSION_VERSION;
+  return `^${version}`;
+}
+
+function normalizeScope(scope?: string): string | undefined {
+  if (!scope) return undefined;
+  return scope.startsWith("@") ? scope.slice(1) : scope;
+}
+
+function computeStandalonePackageName(name: string, scope?: string): string {
+  const scoped = normalizeScope(scope);
+  if (scoped) {
+    return `@${scoped}/fusion-plugin-${name}`;
+  }
+  return `fusion-plugin-${name}`;
+}
+
 /**
- * Generate package.json template
+ * Generate package.json template for workspace-bound example plugin.
  */
 function generatePackageJson(name: string): string {
   return JSON.stringify(
@@ -53,7 +128,7 @@ function generatePackageJson(name: string): string {
 }
 
 /**
- * Generate tsconfig.json template
+ * Generate tsconfig.json template for workspace-bound example plugin.
  */
 function generateTsconfig(): string {
   return JSON.stringify(
@@ -65,6 +140,69 @@ function generateTsconfig(): string {
         types: ["node", "vitest/globals"],
       },
       include: ["src/**/*"],
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+function generateStandalonePackageJson(name: string, scope?: string): string {
+  return JSON.stringify(
+    {
+      name: computeStandalonePackageName(name, scope),
+      version: "0.1.0",
+      type: "module",
+      description: "A standalone Fusion plugin",
+      keywords: ["fusion-plugin"],
+      exports: {
+        ".": {
+          types: "./dist/index.d.ts",
+          import: "./dist/index.js",
+        },
+      },
+      files: ["dist", "manifest.json"],
+      scripts: {
+        build: "tsc",
+        test: "vitest run",
+      },
+      devDependencies: {
+        "@runfusion/fusion": resolveFusionCaretVersion(),
+      },
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+function generateStandaloneTsconfig(): string {
+  return JSON.stringify(
+    {
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2022",
+        declaration: true,
+        outDir: "dist",
+        rootDir: "src",
+        strict: true,
+        types: ["node"],
+      },
+      include: ["src/**/*"],
+      exclude: ["src/**/*.test.ts", "dist"],
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+function generateManifest(name: string): string {
+  const titleCase = toTitleCase(name);
+  return JSON.stringify(
+    {
+      id: name,
+      name: titleCase,
+      version: "0.1.0",
+      description: `A standalone Fusion plugin named ${titleCase}.`,
     },
     null,
     2,
@@ -113,6 +251,26 @@ export default definePlugin({
 `;
 }
 
+function generateStandaloneIndexTs(name: string): string {
+  const titleCase = toTitleCase(name);
+  return `import { definePlugin } from "@runfusion/fusion/plugin-sdk";
+
+export default definePlugin({
+  manifest: {
+    id: "${name}",
+    name: "${titleCase}",
+    version: "0.1.0",
+    description: "A standalone Fusion plugin",
+  },
+  hooks: {
+    onLoad: async (ctx) => {
+      ctx.logger.info("${titleCase} plugin loaded");
+    },
+  },
+});
+`;
+}
+
 /**
  * Generate src/__tests__/index.test.ts template
  */
@@ -130,6 +288,28 @@ describe("${titleCase} plugin", () => {
 
   it("should have a valid state", () => {
     expect(plugin.state).toBe("installed");
+  });
+});
+`;
+}
+
+function generateStandaloneTestTs(name: string): string {
+  const titleCase = toTitleCase(name);
+  return `import { describe, expect, it } from "vitest";
+import { validatePluginManifest } from "@runfusion/fusion/plugin-sdk";
+import plugin from "../index.js";
+
+describe("${titleCase} plugin", () => {
+  it("exports the expected manifest fields", () => {
+    expect(plugin.manifest.id).toBe("${name}");
+    expect(plugin.manifest.name).toBe("${titleCase}");
+    expect(plugin.manifest.version).toBe("0.1.0");
+  });
+
+  it("has a manifest accepted by validatePluginManifest", () => {
+    const result = validatePluginManifest(plugin.manifest);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
   });
 });
 `;
@@ -165,6 +345,30 @@ MIT
 `;
 }
 
+function generateStandaloneReadme(name: string): string {
+  const titleCase = toTitleCase(name);
+  return `# ${titleCase}
+
+A standalone Fusion plugin scaffold generated by \`fn plugin new\`.
+
+## Development
+
+\`\`\`bash
+pnpm install
+pnpm test
+pnpm build
+\`\`\`
+
+## Publish
+
+\`\`\`bash
+npm publish
+\`\`\`
+
+> Note: local runtime dev-loop commands are delivered by sibling task FN-5844.
+`;
+}
+
 /**
  * Run the plugin scaffold command
  */
@@ -174,23 +378,14 @@ export async function runPluginCreate(
 ): Promise<void> {
   // Validate name
   if (!name || !PLUGIN_NAME_REGEX.test(name)) {
-    console.error(
-      `Invalid plugin name '${name}'. Must be kebab-case (lowercase letters, numbers, hyphens).`,
-    );
-    console.error("Example: fn plugin create my-awesome-plugin");
-    process.exit(1);
+    failInvalidName(name, "create");
   }
 
   // Determine target directory
-  const targetDir = options?.output ?? name;
-  const targetPath = join(process.cwd(), targetDir);
+  const { targetDir, targetPath } = resolveTargetPath(name, options?.output);
 
   // Check if directory already exists
-  if (existsSync(targetPath)) {
-    console.error(`Error: Directory '${targetDir}' already exists.`);
-    console.error("Please choose a different name or remove the existing directory.");
-    process.exit(1);
-  }
+  ensureTargetPathAvailable(targetDir, targetPath);
 
   // Create directory structure
   try {
@@ -223,5 +418,45 @@ export async function runPluginCreate(
   console.log("    pnpm install");
   console.log("    pnpm lint");
   console.log("    pnpm test");
+  console.log();
+}
+
+export async function runPluginNew(
+  name: string,
+  options?: { output?: string; scope?: string },
+): Promise<void> {
+  if (!name || !PLUGIN_NAME_REGEX.test(name)) {
+    failInvalidName(name, "new");
+  }
+
+  const { targetDir, targetPath } = resolveTargetPath(name, options?.output);
+  ensureTargetPathAvailable(targetDir, targetPath);
+
+  try {
+    mkdirSync(targetPath, { recursive: true });
+    mkdirSync(join(targetPath, "src", "__tests__"), { recursive: true });
+
+    writeFileSync(join(targetPath, "package.json"), generateStandalonePackageJson(name, options?.scope));
+    writeFileSync(join(targetPath, "tsconfig.json"), generateStandaloneTsconfig());
+    writeFileSync(join(targetPath, "vitest.config.ts"), generateVitestConfig());
+    writeFileSync(join(targetPath, "manifest.json"), generateManifest(name));
+    writeFileSync(join(targetPath, "src", "index.ts"), generateStandaloneIndexTs(name));
+    writeFileSync(join(targetPath, "src", "__tests__", "index.test.ts"), generateStandaloneTestTs(name));
+    writeFileSync(join(targetPath, "README.md"), generateStandaloneReadme(name));
+  } catch (err) {
+    console.error(
+      `Error creating plugin files: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(1);
+  }
+
+  console.log();
+  console.log(`  Created standalone plugin at ./${targetDir}/`);
+  console.log();
+  console.log("  Next steps:");
+  console.log(`    cd ${targetDir}`);
+  console.log("    pnpm install");
+  console.log("    pnpm test");
+  console.log("    pnpm build");
   console.log();
 }

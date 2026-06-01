@@ -971,9 +971,10 @@ fn plugin uninstall <id> --force
 fn plugin enable <id>
 fn plugin disable <id>
 fn plugin create <name>
+fn plugin new <name> [--output <dir>] [--scope <scope>]
 ```
 
-Subcommands: `list|ls`, `install`, `rescan`, `trust`, `untrust`, `verify`, `uninstall`, `enable`, `disable`, `create`.
+Subcommands: `list|ls`, `install`, `rescan`, `trust`, `untrust`, `verify`, `uninstall`, `enable`, `disable`, `create`, `new`.
 
 Scope semantics:
 - `fn plugin install` / `fn plugin uninstall` are **global** operations
