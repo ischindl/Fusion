@@ -19,9 +19,19 @@ import type {
   MissionFeature,
   MissionValidatorRun,
   AgentStore,
+  Settings,
+} from "@fusion/core";
+import {
+  TEST_MODE_RESOLVED,
+  isTestModeActive,
+  resolveTaskValidatorModel,
 } from "@fusion/core";
 import { createFnAgent, promptWithFallback, type AgentResult } from "./pi.js";
-import { createResolvedAgentSession, extractRuntimeHint } from "./agent-session-helpers.js";
+import {
+  createResolvedAgentSession,
+  extractRuntimeHint,
+  extractRuntimeModel,
+} from "./agent-session-helpers.js";
 import { createLogger } from "./logger.js";
 import { createFallbackModelObserver } from "./fallback-model-observer.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
@@ -348,9 +358,16 @@ export class MissionExecutionLoop extends EventEmitter {
     // Get task context for validation
     const task = feature.taskId ? await this.taskStore.getTask(feature.taskId) : null;
     const taskContext = task ? this.buildTaskContext(task) : "";
-    const validationRuntimeHint = task?.assignedAgentId && this.agentStore
-      ? extractRuntimeHint((await this.agentStore.getAgent(task.assignedAgentId).catch(() => null))?.runtimeConfig)
-      : undefined;
+    const assignedAgent = task?.assignedAgentId && this.agentStore
+      ? await this.agentStore.getAgent(task.assignedAgentId).catch(() => null)
+      : null;
+    const validationRuntimeHint = extractRuntimeHint(assignedAgent?.runtimeConfig);
+    const settings = await this.taskStore.getSettings().catch(() => undefined);
+    const validationSessionModel = this.resolveValidationSessionModel(
+      task,
+      settings,
+      assignedAgent?.runtimeConfig,
+    );
 
     let session: AgentResult | null = null;
 
@@ -370,8 +387,13 @@ export class MissionExecutionLoop extends EventEmitter {
         cwd: this.rootDir,
         systemPrompt: this.buildValidationSystemPrompt(feature, assertions, taskContext),
         tools: "readonly",
+        defaultProvider: validationSessionModel.provider,
+        defaultModelId: validationSessionModel.modelId,
+        fallbackProvider: settings?.fallbackProvider,
+        fallbackModelId: settings?.fallbackModelId,
         defaultThinkingLevel: "medium",
         runAuditor,
+        settings,
         onText: (_delta) => {
           // Could stream this to a log entry if needed
         },
@@ -410,7 +432,7 @@ export class MissionExecutionLoop extends EventEmitter {
 
       // Return an error result - the loop will handle it
       return {
-        status: "fail",
+        status: "error",
         assertions: assertions.map((a) => ({
           assertionId: a.id,
           passed: false,
@@ -429,6 +451,37 @@ export class MissionExecutionLoop extends EventEmitter {
         }
       }
     }
+  }
+
+  private resolveValidationSessionModel(
+    task: Awaited<ReturnType<TaskStore["getTask"]>> | null,
+    settings: Partial<Settings> | undefined,
+    assignedAgentRuntimeConfig?: Record<string, unknown>,
+  ): { provider: string | undefined; modelId: string | undefined } {
+    if (isTestModeActive(settings)) {
+      return {
+        provider: TEST_MODE_RESOLVED.provider,
+        modelId: TEST_MODE_RESOLVED.modelId,
+      };
+    }
+
+    const assignedRuntimeModel = extractRuntimeModel(assignedAgentRuntimeConfig);
+    if (assignedRuntimeModel.provider && assignedRuntimeModel.modelId) {
+      return assignedRuntimeModel;
+    }
+
+    const resolvedTaskModel = resolveTaskValidatorModel(
+      {
+        validatorModelProvider: task?.validatorModelProvider,
+        validatorModelId: task?.validatorModelId,
+      },
+      settings,
+    );
+
+    return {
+      provider: resolvedTaskModel.provider,
+      modelId: resolvedTaskModel.modelId,
+    };
   }
 
   /**

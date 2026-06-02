@@ -729,6 +729,8 @@ When heartbeat has both (1) and (2-5), the runtime model is used as primary and 
 5. Global `defaultProvider` + `defaultModelId`
 6. Automatic provider/model resolution
 
+Mission validation sessions use this same validator lane, with an assigned durable agent runtime model taking precedence when the linked task has one.
+
 ### Merger model
 
 1. Assigned durable agent runtime model (`runtimeConfig.model` or `runtimeConfig.modelProvider` + `runtimeConfig.modelId`) when both provider and model ID are set
@@ -1301,13 +1303,13 @@ All three lanes (planning / executor / reviewer) follow the same 5-tier preceden
 
 ## Mock provider (test mode)
 
-Set `defaultProvider: "mock"` at any tier in that hierarchy (or the per-task lane override) to force planning, executor, reviewer/validator, merger, and heartbeat sessions onto the deterministic zero-network mock runtime.
+Set `defaultProvider: "mock"` at any tier in that hierarchy (or the per-task lane override) to force planning, executor, reviewer/validator, mission validation, merger, and heartbeat sessions onto the deterministic zero-network mock runtime.
 Default scripts are scripted by session purpose: executor marks unfinished steps done, triage writes a minimal PROMPT.md and calls `fn_review_spec` when available, reviewer/validation emit `Verdict: APPROVE`, and merger/heartbeat no-op safely.
 Per-task and global script overrides live in `mockScriptRegistry` (`setMockScript`, `clearMockScript`, `resetMockScripts`) exported from `@fusion/engine`.
 The mock runtime never registers with pi's `ModelRegistry` and is guarded by tests that fail on any `fetch`, `http.request`, or `https.request` usage.
 Activation UX/settings affordances are handled separately in FN-5204.
 
-`testMode?: boolean` exists at both global and project scopes. Project `testMode: true` takes precedence and forces planning, executor, reviewer/validator, merger, and heartbeat to `mock/scripted` regardless of per-task or per-lane overrides. The dashboard surfaces this with the Settings Modal "Enable test mode" toggle and the shell banner: "Test mode — no real AI calls".
+`testMode?: boolean` exists at both global and project scopes. Project `testMode: true` takes precedence and forces planning, executor, reviewer/validator, mission validation, merger, and heartbeat to `mock/scripted` regardless of per-task or per-lane overrides. The dashboard surfaces this with the Settings Modal "Enable test mode" toggle and the shell banner: "Test mode — no real AI calls".
 
 ## Per-task token budget precedence
 

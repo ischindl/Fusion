@@ -405,6 +405,8 @@ On task completion, the scheduler calls `MissionExecutionLoop.processTaskOutcome
 4. Fire AI validator agent against contract assertions
 5. Record `MissionValidatorRun` with per-assertion results
 
+Mission validation resolves its model from the validator lane before session creation: assigned agent runtime model (when the linked task has an assigned durable agent) → per-task `validatorModelProvider`/`validatorModelId` → project `validatorProvider`/`validatorModelId` → global `validatorGlobalProvider`/`validatorGlobalModelId` → project `defaultProviderOverride`/`defaultModelIdOverride` → global `defaultProvider`/`defaultModelId`. In `testMode`, validation is forced to `mock/scripted` instead of falling through to provider auto-detection.
+
 Validation runs are internal mission-loop operations: Fusion does **not** create visible `🔍 Validate:` board tasks for single-feature validation.
 
 ```typescript
@@ -425,7 +427,7 @@ interface MissionValidatorRun {
 }
 ```
 
-**Validation timeout:** 10 minutes (`VALIDATION_TIMEOUT_MS = 10 * 60 * 1000`). If the validator times out, the run is marked `error` and the feature remains in `needs_fix` for retry.
+**Validation timeout:** 10 minutes (`VALIDATION_TIMEOUT_MS = 10 * 60 * 1000`). If session creation, auth/credit checks, prompting, or timeout fails, the run is marked `error` and emits a surfaced `validation_error` mission event instead of silently spawning a fix feature.
 
 ### Phase 5: Fix-Feature Retries
 

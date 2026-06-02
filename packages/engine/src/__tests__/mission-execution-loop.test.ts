@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { TEST_MODE_RESOLVED } from "@fusion/core";
 import type {
   Mission,
   Milestone,
@@ -44,6 +45,19 @@ vi.mock("../logger.js", () => ({
   })),
 }));
 
+vi.mock("../agent-session-helpers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agent-session-helpers.js")>();
+  return {
+    ...actual,
+    createResolvedAgentSession: vi.fn(async () => ({
+      session: mockSessionHolder.session as any,
+      sessionFile: undefined,
+      runtimeId: "test-runtime",
+      wasConfigured: true,
+    })),
+  };
+});
+
 // Helper to reset mock session state
 function resetMockSession() {
   mockSessionHolder.session.state.messages = [];
@@ -51,6 +65,7 @@ function resetMockSession() {
 }
 
 // Import AFTER vi.mock so the mock is applied
+import { createResolvedAgentSession } from "../agent-session-helpers.js";
 import { MissionExecutionLoop, loopLog } from "../mission-execution-loop.js";
 
 // ── Mock Factories ──────────────────────────────────────────────────────────
@@ -327,7 +342,19 @@ function createMockMissionStore() {
 }
 
 function createMockTaskStore() {
-  const tasks = new Map<string, { id: string; title?: string; description?: string; log?: Array<{ action?: string }>; column?: string; missionId?: string; sliceId?: string; status?: string }>();
+  const tasks = new Map<string, {
+    id: string;
+    title?: string;
+    description?: string;
+    log?: Array<{ action?: string }>;
+    column?: string;
+    missionId?: string;
+    sliceId?: string;
+    status?: string;
+    assignedAgentId?: string;
+    validatorModelProvider?: string;
+    validatorModelId?: string;
+  }>();
 
   const store = {
     getTask: vi.fn(async (id: string) => tasks.get(id)),
@@ -346,7 +373,19 @@ function createMockTaskStore() {
     on: vi.fn(),
     off: vi.fn(),
 
-    _setTask: (t: { id: string; title?: string; description?: string; log?: Array<{ action?: string }>; column?: string; missionId?: string; sliceId?: string; status?: string }) => tasks.set(t.id, t),
+    _setTask: (t: {
+      id: string;
+      title?: string;
+      description?: string;
+      log?: Array<{ action?: string }>;
+      column?: string;
+      missionId?: string;
+      sliceId?: string;
+      status?: string;
+      assignedAgentId?: string;
+      validatorModelProvider?: string;
+      validatorModelId?: string;
+    }) => tasks.set(t.id, t),
     _clear: () => tasks.clear(),
   };
 
@@ -391,11 +430,23 @@ describe("MissionExecutionLoop", () => {
   let loop: MissionExecutionLoop;
   let missionStore: ReturnType<typeof createMockMissionStore>;
   let taskStore: ReturnType<typeof createMockTaskStore>;
+  let agentStore: { getAgent: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.useFakeTimers();
     missionStore = createMockMissionStore();
     taskStore = createMockTaskStore();
+    agentStore = {
+      getAgent: vi.fn(),
+    };
+
+    vi.mocked(createResolvedAgentSession).mockReset();
+    vi.mocked(createResolvedAgentSession).mockResolvedValue({
+      session: mockSessionHolder.session as any,
+      sessionFile: undefined,
+      runtimeId: "test-runtime",
+      wasConfigured: true,
+    });
 
     const mission = createMockMission();
     missionStore._setMission(mission);
@@ -713,6 +764,154 @@ describe("MissionExecutionLoop", () => {
         "F-001",
         "task_completion",
       );
+    });
+
+    it("threads configured validator/default model settings into mission validation sessions", async () => {
+      const feature = createMockFeature({ loopState: "implementing", taskId: "FN-MODEL-SETTINGS", status: "in-progress" });
+      missionStore._setFeature(feature);
+      missionStore.getFeatureByTaskId = vi.fn().mockReturnValue(feature);
+      missionStore.listAssertionsForFeature = vi.fn().mockReturnValue(makeAssertions(1));
+      taskStore._setTask({
+        id: "FN-MODEL-SETTINGS",
+        title: "Validation model settings",
+        description: "Implementation",
+        log: [],
+        validatorModelProvider: "task-validator",
+        validatorModelId: "task-validator-model",
+      });
+      vi.mocked(taskStore.getSettings).mockResolvedValue({
+        missionStaleThresholdMs: 600_000,
+        missionMaxTaskRetries: 3,
+        validatorProvider: "project-validator",
+        validatorModelId: "project-validator-model",
+        defaultProviderOverride: "project-default-override",
+        defaultModelIdOverride: "project-default-override-model",
+        defaultProvider: "project-default",
+        defaultModelId: "project-default-model",
+        fallbackProvider: "fallback-provider",
+        fallbackModelId: "fallback-model",
+      });
+      mockSessionHolder.session.state.messages = [
+        { role: "assistant", content: JSON.stringify({ status: "pass", assertions: [{ assertionId: "CA-1", passed: true }], summary: "all good" }) },
+      ];
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      loop.start();
+
+      await loop.processTaskOutcome("FN-MODEL-SETTINGS");
+
+      expect(createResolvedAgentSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionPurpose: "validation",
+        defaultProvider: "task-validator",
+        defaultModelId: "task-validator-model",
+        fallbackProvider: "fallback-provider",
+        fallbackModelId: "fallback-model",
+        settings: expect.objectContaining({
+          validatorProvider: "project-validator",
+          validatorModelId: "project-validator-model",
+          defaultProvider: "project-default",
+          defaultModelId: "project-default-model",
+        }),
+      }));
+    });
+
+    it("uses assigned agent runtime model ahead of task/settings for mission validation", async () => {
+      const feature = createMockFeature({ loopState: "implementing", taskId: "FN-MODEL-AGENT", status: "in-progress" });
+      missionStore._setFeature(feature);
+      missionStore.getFeatureByTaskId = vi.fn().mockReturnValue(feature);
+      missionStore.listAssertionsForFeature = vi.fn().mockReturnValue(makeAssertions(1));
+      taskStore._setTask({
+        id: "FN-MODEL-AGENT",
+        title: "Validation model agent",
+        description: "Implementation",
+        log: [],
+        assignedAgentId: "agent-1",
+        validatorModelProvider: "task-validator",
+        validatorModelId: "task-validator-model",
+      });
+      agentStore.getAgent.mockResolvedValue({
+        id: "agent-1",
+        runtimeConfig: { model: "agent-provider/agent-model" },
+      });
+      vi.mocked(taskStore.getSettings).mockResolvedValue({
+        missionStaleThresholdMs: 600_000,
+        missionMaxTaskRetries: 3,
+        validatorProvider: "project-validator",
+        validatorModelId: "project-validator-model",
+      });
+      mockSessionHolder.session.state.messages = [
+        { role: "assistant", content: JSON.stringify({ status: "pass", assertions: [{ assertionId: "CA-1", passed: true }], summary: "all good" }) },
+      ];
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+        agentStore: agentStore as any,
+      });
+      loop.start();
+
+      await loop.processTaskOutcome("FN-MODEL-AGENT");
+
+      expect(createResolvedAgentSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionPurpose: "validation",
+        defaultProvider: "agent-provider",
+        defaultModelId: "agent-model",
+      }));
+    });
+
+    it("forces mock/scripted validator lane when test mode is active", async () => {
+      const feature = createMockFeature({ loopState: "implementing", taskId: "FN-MODEL-TESTMODE", status: "in-progress" });
+      missionStore._setFeature(feature);
+      missionStore.getFeatureByTaskId = vi.fn().mockReturnValue(feature);
+      missionStore.listAssertionsForFeature = vi.fn().mockReturnValue(makeAssertions(1));
+      taskStore._setTask({
+        id: "FN-MODEL-TESTMODE",
+        title: "Validation model test mode",
+        description: "Implementation",
+        log: [],
+        assignedAgentId: "agent-1",
+        validatorModelProvider: "task-validator",
+        validatorModelId: "task-validator-model",
+      });
+      agentStore.getAgent.mockResolvedValue({
+        id: "agent-1",
+        runtimeConfig: { model: "agent-provider/agent-model" },
+      });
+      vi.mocked(taskStore.getSettings).mockResolvedValue({
+        missionStaleThresholdMs: 600_000,
+        missionMaxTaskRetries: 3,
+        testMode: true,
+        validatorProvider: "project-validator",
+        validatorModelId: "project-validator-model",
+        fallbackProvider: "fallback-provider",
+        fallbackModelId: "fallback-model",
+      });
+      mockSessionHolder.session.state.messages = [
+        { role: "assistant", content: JSON.stringify({ status: "pass", assertions: [{ assertionId: "CA-1", passed: true }], summary: "all good" }) },
+      ];
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+        agentStore: agentStore as any,
+      });
+      loop.start();
+
+      await loop.processTaskOutcome("FN-MODEL-TESTMODE");
+
+      expect(createResolvedAgentSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionPurpose: "validation",
+        defaultProvider: TEST_MODE_RESOLVED.provider,
+        defaultModelId: TEST_MODE_RESOLVED.modelId,
+        fallbackProvider: "fallback-provider",
+        fallbackModelId: "fallback-model",
+      }));
     });
 
     it("runs linked assertions and marks completion only when validation passes", async () => {
@@ -1329,6 +1528,55 @@ describe("MissionExecutionLoop", () => {
   // ── handleValidationError ───────────────────────────────────────────────
 
   describe("handleValidationError", () => {
+    it("surfaces validation session creation failures as mission errors", async () => {
+      const assertions = makeAssertions(1);
+      const feature = createMockFeature({
+        loopState: "implementing",
+        taskId: "FN-SESSION-ERROR",
+        id: "F-001",
+      });
+      missionStore._setFeature(feature);
+      missionStore.getFeatureByTaskId = vi.fn().mockReturnValue(feature);
+      missionStore.listAssertionsForFeature = vi.fn().mockReturnValue(assertions);
+      taskStore._setTask({ id: "FN-SESSION-ERROR", title: "Test", description: "Implementation", log: [] });
+      vi.mocked(createResolvedAgentSession).mockRejectedValueOnce(new Error("401 insufficient credits"));
+
+      loop = new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+      const emitSpy = vi.spyOn(loop, "emit");
+      loop.start();
+
+      await loop.processTaskOutcome("FN-SESSION-ERROR");
+
+      expect(missionStore.completeValidatorRun).toHaveBeenCalledWith(
+        expect.any(String),
+        "error",
+        "Validation failed due to error: 401 insufficient credits",
+      );
+      expect(missionStore.createGeneratedFixFeature).not.toHaveBeenCalled();
+      expect(emitSpy).toHaveBeenCalledWith(
+        "validation:error",
+        expect.objectContaining({
+          featureId: "F-001",
+          error: "Validation failed due to error: 401 insufficient credits",
+        }),
+      );
+      expect(missionStore.logMissionEvent).toHaveBeenCalledWith(
+        expect.any(String),
+        "error",
+        expect.stringContaining("Validation error"),
+        expect.objectContaining({
+          code: "validation_error",
+          featureId: "F-001",
+          error: "Validation failed due to error: 401 insufficient credits",
+        }),
+      );
+      expectNoValidationBoardTaskMutation(taskStore);
+    });
+
     it("emits validation:error without mutating any board task", async () => {
       const assertions = makeAssertions(1);
       const feature = createMockFeature({
