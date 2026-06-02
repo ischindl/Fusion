@@ -58,20 +58,27 @@ the onboarding flow.
 ```bash
 fn onboard
 fn onboard --force
+fn --skip-onboarding dashboard
+FUSION_SKIP_ONBOARDING=1 fn dashboard
 ```
 
 | Option | Description |
 |---|---|
 | `--force` | Re-run onboarding even when `cliOnboardingCompletedAt` is already set. |
+| `--skip-onboarding` | Global escape hatch that bypasses onboarding auto-launch for this invocation. |
+| `FUSION_SKIP_ONBOARDING` | Environment-variable escape hatch (`1`, `true`, `yes`, or `on`) that bypasses onboarding auto-launch. |
 
-The command is safe to re-run and only updates the settings you confirm during
-prompts.
+On successful completion, Fusion records `cliOnboardingCompletedAt` in global
+settings.
 
-Backward compatibility guarantee: onboarding auto-launch never interrupts
-existing setups and never blocks headless usage. It is skipped when both the
-central DB and local project DB already exist, and it never prompts in non-TTY,
-`serve`, `daemon`, `--skip-onboarding`, `FUSION_SKIP_ONBOARDING`, piped, or
-agent-run invocations.
+Auto-launch behavior: before interactive commands, Fusion auto-launches onboarding
+only when the central DB at `getDefaultCentralDbPath()` is missing. Auto-launch
+is skipped for `serve`, `daemon`, non-TTY runs, `--skip-onboarding`, and
+`FUSION_SKIP_ONBOARDING`.
+
+Backward-compatibility guard: existing setups are never blocked — when central DB
+already exists (including the central-DB + registered-project case), onboarding
+does not auto-launch.
 
 ---
 

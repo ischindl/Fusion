@@ -256,7 +256,9 @@ fn — AI-orchestrated task board
 Usage:
   fn                                  Launch the dashboard (same as fn dashboard)
   fn init [opts]                      Initialize a new fn project (--name, --path, --git)
-  fn onboard [--force]                Run the interactive onboarding wizard
+  fn onboard [--force] [--skip-onboarding]
+                                      Run onboarding on demand; auto-launch runs before interactive commands when central DB is missing,
+                                      and auto-skips for serve/daemon, non-TTY, --skip-onboarding, and FUSION_SKIP_ONBOARDING
   fn dashboard                        Start the board web UI
   fn dashboard --paused               Start with automation paused
   fn dashboard --dev                  Start web UI only (no AI engine)
