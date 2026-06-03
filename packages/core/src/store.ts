@@ -15,6 +15,7 @@ import type {
   WorkflowNodeLayout,
 } from "./workflow-definition-types.js";
 import { compileWorkflowToSteps } from "./workflow-compiler.js";
+import { BUILTIN_WORKFLOWS, getBuiltinWorkflow, isBuiltinWorkflowId } from "./builtin-workflows.js";
 
 /** Tags WorkflowStep rows materialized by compiling a workflow so they can be
  *  filtered out of the user-facing step manager and cleaned up on re-selection. */
@@ -11029,7 +11030,8 @@ ${stepsSection}`;
       createdAt: string;
       updatedAt: string;
     }>;
-    this.workflowDefinitionsCache = rows.map((row) => this.toWorkflowDefinition(row));
+    // Built-in templates lead the list and cannot be edited/deleted.
+    this.workflowDefinitionsCache = [...BUILTIN_WORKFLOWS, ...rows.map((row) => this.toWorkflowDefinition(row))];
     return this.workflowDefinitionsCache;
   }
 
@@ -11037,6 +11039,8 @@ ${stepsSection}`;
   async getWorkflowDefinition(
     id: string,
   ): Promise<WorkflowDefinition | undefined> {
+    const builtin = getBuiltinWorkflow(id);
+    if (builtin) return builtin;
     const row = this.db.prepare("SELECT * FROM workflows WHERE id = ?").get(id) as
       | {
           id: string;
@@ -11056,6 +11060,7 @@ ${stepsSection}`;
     id: string,
     updates: WorkflowDefinitionUpdate,
   ): Promise<WorkflowDefinition> {
+    if (isBuiltinWorkflowId(id)) throw new Error("Built-in workflows cannot be edited");
     return this.withConfigLock(async () => {
       const existing = await this.getWorkflowDefinition(id);
       if (!existing) throw new Error(`Workflow '${id}' not found`);
@@ -11095,6 +11100,7 @@ ${stepsSection}`;
    *  materialized step rows, and the project default. Throws when the id does
    *  not exist. */
   async deleteWorkflowDefinition(id: string): Promise<void> {
+    if (isBuiltinWorkflowId(id)) throw new Error("Built-in workflows cannot be deleted");
     const deleted = this.db.prepare("DELETE FROM workflows WHERE id = ?").run(id) as { changes?: number };
     if ((deleted.changes || 0) === 0) {
       throw new Error(`Workflow '${id}' not found`);

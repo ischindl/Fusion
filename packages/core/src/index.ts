@@ -65,6 +65,12 @@ export {
   validateLinearity,
   WorkflowCompileError,
 } from "./workflow-compiler.js";
+export {
+  BUILTIN_WORKFLOWS,
+  BUILTIN_WORKFLOW_ID_PREFIX,
+  getBuiltinWorkflow,
+  isBuiltinWorkflowId,
+} from "./builtin-workflows.js";
 
 // ── Engine wiring (set by @fusion/engine at module load) ────────────
 export {
