@@ -469,7 +469,6 @@ describe("SettingsModal", () => {
     mockFetchProjects.mockResolvedValueOnce([{ id: "p-1", name: "Alpha" }]);
     mockFetchSettings.mockResolvedValueOnce({
       ...defaultSettings,
-      merger: { mode: "legacy" },
       mergeIntegrationWorktree: "cwd-main",
       merger: { mode: "deterministic" },
     });
