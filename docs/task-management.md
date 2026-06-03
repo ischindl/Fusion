@@ -688,6 +688,7 @@ Manual/non-auto-merge behavior:
   - `Finish & Close` (PR already merged)
 - Manual PR creation first checks for an existing PR on that branch and links it when found.
 - If no PR exists, Fusion pushes the task branch to `origin` before creating the PR.
+- In the dashboard Create-PR modal, if preflight detects merge conflicts with the selected base branch, you can choose **Resolve conflicts with AI**. Fusion resolves the task branch in-place, commits the result, pushes the updated branch to `origin`, and then lets you retry PR creation.
 - When buffered actionable PR feedback exists on a PR that is already merged/closed and the task leaves `in-review`, Fusion creates a dependency-linked follow-up task in `triage` so feedback is not stranded.
 
 ## GitHub Tracking Issues

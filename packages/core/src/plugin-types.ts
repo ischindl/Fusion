@@ -13,7 +13,7 @@
 
 import type { Database } from "./db.js";
 import type { TaskStore } from "./store.js";
-import type { Task, WorkflowStepMode, WorkflowStepToolMode } from "./types.js";
+import type { PlanningQuestion, Task, WorkflowStepMode, WorkflowStepToolMode } from "./types.js";
 
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const PROMPT_CONTRIBUTION_SURFACES = ["executor-system", "executor-task", "triage", "reviewer", "heartbeat"] as const;
@@ -121,6 +121,134 @@ export interface AiSessionResult {
  */
 export type CreateAiSessionFactory = (options: CreateAiSessionOptions) => Promise<AiSessionResult>;
 
+// ── Interactive AI Sessions ───────────────────────────────────────────
+//
+// A generic interactive (multi-turn, await-input) AI session capability.
+// Unlike the one-shot `createAiSession` above, an interactive session can
+// pause mid-agent-turn on a structured question and resume when the caller
+// supplies an answer. The host (engine) builds the prompt → parse → retry →
+// pause → resume loop; the caller drives it by pulling events.
+//
+// The protocol is deliberately generic: the caller supplies a `systemPrompt`
+// that instructs the agent to emit the JSON question/complete contract
+// (the same shape used by `PlanningResponse`). The seam hardcodes no
+// application-specific (e.g. compound-engineering) prompts or concepts.
+
+/**
+ * Options for creating an interactive AI session.
+ * Mirrors {@link CreateAiSessionOptions}; the caller-supplied `systemPrompt`
+ * is responsible for instructing the agent to emit the question/complete
+ * JSON protocol that the seam parses.
+ */
+export interface CreateInteractiveAiSessionOptions {
+  /** Working directory for the agent session */
+  cwd: string;
+  /** System prompt for the agent (must instruct it to emit the JSON protocol) */
+  systemPrompt: string;
+  /** Tool mode: "coding" for full tools, "readonly" for read-only */
+  tools?: "coding" | "readonly";
+  /** Default model provider (e.g., "anthropic") */
+  defaultProvider?: string;
+  /** Default model ID within the provider */
+  defaultModelId?: string;
+  /**
+   * Skill names the session should load (matched against discovered skills).
+   * Lets a plugin point a session at a specific bundled skill rather than
+   * relying on cwd-only discovery. Forwarded to the engine's skill selection.
+   */
+  requestedSkillNames?: string[];
+  /**
+   * Extra directories to scan for skills (each holding `<id>/SKILL.md`), in
+   * addition to the default cwd/agent-dir roots. A plugin that installs its
+   * skills to a plugin-local directory passes that directory here so its
+   * `requestedSkillNames` are actually discoverable in the live session.
+   */
+  additionalSkillPaths?: string[];
+  /**
+   * Live progress callback, invoked WHILE a turn runs (the pull-based
+   * `nextEvent()` only resolves once the turn settles). Receives streaming
+   * thinking/text deltas and tool start/end markers so a caller can surface
+   * the agent's work in real time. Optional; ignored by factories that cannot
+   * stream. Must not throw — implementations should swallow callback errors.
+   */
+  onProgress?: (event: InteractiveAiSessionProgressEvent) => void;
+}
+
+/**
+ * A live progress event emitted mid-turn via
+ * {@link CreateInteractiveAiSessionOptions.onProgress}.
+ *
+ * - `thinking` / `text`: an incremental output DELTA (not a snapshot) — the
+ *   consumer accumulates.
+ * - `tool`: a discrete tool execution start/end marker.
+ */
+export type InteractiveAiSessionProgressEvent =
+  | { type: "thinking"; delta: string }
+  | { type: "text"; delta: string }
+  | { type: "tool"; name: string; phase: "start" | "end"; isError?: boolean };
+
+/**
+ * A single event pulled from an interactive AI session.
+ *
+ * Discriminated union on `type`:
+ * - `thinking` / `text`: incremental agent output (data is a string).
+ * - `question`: the agent paused awaiting structured input; the session is
+ *   now in awaiting-input until {@link InteractiveAiSession.answer} is called.
+ *   `data` is a {@link PlanningQuestion} (reused for protocol parity).
+ * - `complete`: the agent finished; `data` is the final payload (shape is
+ *   defined by the caller's protocol — opaque to the seam).
+ * - `error`: an agent/session/parse error; `data` carries a human-readable
+ *   message and optional error detail. The caller is never left hanging.
+ */
+export type InteractiveAiSessionEvent =
+  | { type: "thinking"; data: string }
+  | { type: "text"; data: string }
+  | { type: "question"; data: PlanningQuestion }
+  | { type: "complete"; data: unknown }
+  | { type: "error"; data: { message: string; cause?: unknown } };
+
+/**
+ * An interactive, multi-turn AI session.
+ *
+ * Event delivery is **pull-based**: the caller awaits {@link nextEvent} to get
+ * the next event. `nextEvent()` resolves once the session has produced an
+ * event for the most recent `prompt`/`answer`. A `question` event leaves the
+ * session in awaiting-input; the caller must call {@link answer} (not
+ * {@link prompt}) to resume. After a `complete` or `error` event the session
+ * is terminal and `nextEvent()` will keep returning that terminal event.
+ *
+ * (Pull-based `nextEvent()` is chosen over an async iterator because it is the
+ * simpler shape to drive deterministically from a route/test: each turn is one
+ * `prompt`/`answer` followed by one awaited `nextEvent`.)
+ */
+export interface InteractiveAiSession {
+  /** Send a free-text turn to the agent (the opening turn, or follow-up text). */
+  prompt(text: string): Promise<void>;
+  /** Pull the next event produced by the most recent prompt/answer. */
+  nextEvent(): Promise<InteractiveAiSessionEvent>;
+  /** Answer the currently-awaiting question, resuming the agent. */
+  answer(questionId: string, response: unknown): Promise<void>;
+  /** Release the underlying agent/session handles. Safe to call repeatedly. */
+  dispose(): void;
+}
+
+/**
+ * Result returned from creating an interactive AI session.
+ */
+export interface CreateInteractiveAiSessionResult {
+  /** The interactive session handle. */
+  session: InteractiveAiSession;
+  /** Path to persisted session file, if any. */
+  sessionFile?: string;
+}
+
+/**
+ * Engine-injected factory for plugin interactive AI sessions.
+ */
+export type CreateInteractiveAiSessionFactory = (
+  options: CreateInteractiveAiSessionOptions,
+) => Promise<CreateInteractiveAiSessionResult>;
+
 /**
  * Context object passed to plugins at runtime.
  * Contains task store access, settings, logging, and event emission.
@@ -137,6 +265,12 @@ export interface PluginContext {
   emitEvent: (event: string, data: unknown) => void;
   /** Engine-injected AI session factory (undefined when engine is not loaded) */
   createAiSession?: CreateAiSessionFactory;
+  /**
+   * Engine-injected interactive (multi-turn, await-input) AI session factory.
+   * Undefined when the engine is not loaded or on non-route contexts (parity
+   * with `createAiSession`).
+   */
+  createInteractiveAiSession?: CreateInteractiveAiSessionFactory;
   /** Optional host capability to resolve a project-scoped TaskStore by projectId. */
   resolveProjectTaskStore?: (projectId: string) => Promise<TaskStore>;
 }

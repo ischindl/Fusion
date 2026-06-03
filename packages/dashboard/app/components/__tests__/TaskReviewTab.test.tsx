@@ -504,8 +504,13 @@ describe("TaskReviewTab", () => {
     const mobileMediaStart = css.indexOf("@media (max-width: 768px)");
     expect(mobileMediaStart).toBeGreaterThanOrEqual(0);
     const mobileCss = css.slice(mobileMediaStart);
+    const baseSummaryWrapRule = css.match(/\.task-review-tab__summary-wrap\s*\{[^}]*\}/)?.[0] ?? "";
 
+    expect(baseSummaryWrapRule).toMatch(/flex\s*:\s*1\s+1\s+20rem\s*;/);
+    expect(baseSummaryWrapRule).not.toMatch(/flex\s*:\s*0\s+0\s+auto\s*;/);
     expect(mobileCss).toMatch(/\.task-review-tab__header\s*\{[^}]*flex-direction\s*:\s*column\s*;[^}]*\}/);
+    expect(mobileCss).toMatch(/\.task-review-tab__summary-wrap\s*\{[^}]*flex\s*:\s*0\s+0\s+auto\s*;[^}]*\}/);
+    expect(mobileCss).not.toMatch(/\.task-review-tab__summary-wrap\s*\{[^}]*flex\s*:\s*1\s+1\s+20rem\s*;[^}]*\}/);
     expect(mobileCss).toMatch(/\.task-review-tab__actions\s*\{[^}]*justify-content\s*:\s*flex-start\s*;[^}]*\}/);
     expect(mobileCss).toMatch(/\.task-review-tab__actions\s+\.btn\s*\{[^}]*width\s*:\s*100%\s*;[^}]*\}/);
     expect(mobileCss).toMatch(/\.task-review-tab__body\s*\{[^}]*padding\s*:\s*var\(--space-sm\)\s*;[^}]*\}/);
@@ -513,6 +518,99 @@ describe("TaskReviewTab", () => {
 
     expect(css).toMatch(/\.task-review-tab__body\s*\{[^}]*overflow-x\s*:\s*auto\s*;[^}]*overflow-wrap\s*:\s*anywhere\s*;[^}]*\}/);
     expect(css).toMatch(/\.task-review-tab__item\s*\{[^}]*padding\s*:\s*var\(--card-padding\)\s*;[^}]*\}/);
+  });
+
+  it("preserves review header structure across sources and empty or populated states", async () => {
+    const cases = [
+      {
+        task: makeTask({ id: "FN-100" }),
+        response: {
+          reviewState: {
+            source: "reviewer-agent" as const,
+            summary: { summary: "reviewer-agent", verdict: "REVISE", reviewType: "code" },
+            items: [],
+            addressing: [],
+          },
+          automationStatus: null,
+          emptyMessage: "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.",
+        },
+        summaryText: "reviewer-agent · 0 review item(s)",
+        emptyText: "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.",
+      },
+      {
+        task: makeTask({ id: "FN-101" }),
+        response: {
+          reviewState: {
+            source: "reviewer-agent" as const,
+            summary: { summary: "Needs fixes", verdict: "REVISE", reviewType: "code" },
+            items: [{ id: "reviewer-item-1", body: "Fix failing test", author: { login: "reviewer-agent" }, createdAt: new Date().toISOString(), summary: "Fix failing test" }],
+            addressing: [],
+          },
+          automationStatus: null,
+          emptyMessage: null,
+        },
+        summaryText: "Needs fixes · 1 review item(s)",
+        itemText: "Fix failing test",
+      },
+      {
+        task: makeTask({ id: "FN-102" }),
+        response: {
+          reviewState: {
+            source: "pull-request" as const,
+            summary: { reviewDecision: "REVIEW_REQUIRED", reviewers: [], blockingReasons: [], checks: [] },
+            items: [],
+            addressing: [],
+          },
+          automationStatus: null,
+          emptyMessage: null,
+        },
+        summaryText: "REVIEW_REQUIRED · 0 review item(s)",
+        emptyText: "No review items yet.",
+      },
+      {
+        task: makeTask({ id: "FN-103" }),
+        response: {
+          reviewState: {
+            source: "pull-request" as const,
+            summary: { reviewDecision: "APPROVED", reviewers: [], blockingReasons: [], checks: [] },
+            items: [{ id: "pr-item-1", body: "Looks good", author: { login: "octocat" }, createdAt: new Date().toISOString(), summary: "Looks good" }],
+            addressing: [],
+          },
+          automationStatus: null,
+          emptyMessage: null,
+        },
+        summaryText: "APPROVED · 1 review item(s)",
+        itemText: "Looks good",
+      },
+    ];
+
+    apiMocks.fetchTaskReview
+      .mockResolvedValueOnce(cases[0].response)
+      .mockResolvedValueOnce(cases[1].response)
+      .mockResolvedValueOnce(cases[2].response)
+      .mockResolvedValueOnce(cases[3].response);
+
+    const { container, rerender } = render(<TaskReviewTab task={cases[0].task} addToast={vi.fn()} />);
+
+    for (const [index, testCase] of cases.entries()) {
+      if (index > 0) {
+        rerender(<TaskReviewTab task={testCase.task} addToast={vi.fn()} />);
+      }
+
+      expect(await screen.findByText(testCase.summaryText)).toBeInTheDocument();
+      expect(container.querySelector(".task-review-tab__header")).not.toBeNull();
+      expect(container.querySelector(".task-review-tab__summary-wrap")).not.toBeNull();
+      expect(container.querySelector(".task-review-tab__summary-group")).not.toBeNull();
+      expect(container.querySelector(".task-review-tab__actions")).not.toBeNull();
+
+      if (testCase.emptyText) {
+        expect(screen.getByText(testCase.emptyText)).toBeInTheDocument();
+      }
+
+      if (testCase.itemText) {
+        expect(screen.getByText(testCase.itemText)).toBeInTheDocument();
+      }
+    }
   });
 
   it("shows create PR action when in-review without prInfo and auth is available", async () => {

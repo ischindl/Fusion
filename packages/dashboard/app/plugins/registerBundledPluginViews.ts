@@ -37,6 +37,27 @@ async function loadRoadmapView(): Promise<{ default: PluginViewComponent }> {
   return { default: component as PluginViewComponent };
 }
 
+async function loadCompoundEngineeringView(): Promise<{ default: PluginViewComponent }> {
+  // @vite-ignore + moduleId variable so tsc does NOT statically resolve/compile
+  // the plugin's source here. The plugin must not depend on @fusion/dashboard
+  // (workspace-acyclicity invariant), so its type-only dashboard import only
+  // resolves in the plugin's own build; a literal import would make the
+  // dashboard typecheck the plugin file and fail to resolve that import.
+  const moduleId = "@fusion-plugin-examples/compound-engineering/dashboard-view";
+  const exportName = "CompoundEngineeringDashboardView";
+  try {
+    const mod = await import(/* @vite-ignore */ moduleId) as unknown as Record<string, ComponentType<{ context?: PluginDashboardViewContext }>>;
+    const component = mod[exportName];
+    if (!component) {
+      console.warn(`[plugin-views] Missing export ${exportName} from ${moduleId}`);
+      return { default: createMissingPluginView(moduleId, exportName) };
+    }
+    return { default: component as PluginViewComponent };
+  } catch {
+    return { default: createMissingPluginView(moduleId, exportName) };
+  }
+}
+
 async function loadCliPrintingPressWizardView(): Promise<{ default: PluginViewComponent }> {
   const moduleId = "@fusion-plugin-examples/cli-printing-press/dashboard-view";
   const exportName = "CliPrintingPressWizardView";
@@ -83,6 +104,12 @@ export function registerBundledPluginViews(): void {
     "fusion-plugin-roadmap",
     "roadmaps",
     lazy(loadRoadmapView),
+  );
+
+  registerPluginView(
+    "fusion-plugin-compound-engineering",
+    "compound-engineering",
+    lazy(loadCompoundEngineeringView),
   );
 
   registerPluginView(

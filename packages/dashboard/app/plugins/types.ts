@@ -16,6 +16,14 @@ export type DetailTaskTab = "definition" | "logs" | "changes" | "comments" | "mo
 
 export type PluginToastType = "success" | "error" | "warning" | "info";
 
+/** A custom event a plugin pushed via `ctx.emitEvent`, delivered over SSE. */
+export interface PluginCustomEvent {
+  /** The event name the plugin emitted (e.g. "myplugin:thing-happened"). */
+  event: string;
+  /** The event payload the plugin emitted. */
+  payload: unknown;
+}
+
 /** Runtime context passed to a plugin dashboard view component. */
 export interface PluginDashboardViewContext {
   projectId?: string;
@@ -24,6 +32,16 @@ export interface PluginDashboardViewContext {
   openTaskDetail: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => void;
   renderTaskCard?: (task: Task | TaskDetail) => ReactNode;
   addToast?: (message: string, type?: PluginToastType) => void;
+  /**
+   * Subscribe to this plugin's custom SSE events (the host forwards
+   * `plugin:custom` events a plugin pushed via `ctx.emitEvent`, scoped to the
+   * current project). Returns an unsubscribe function. Absent when the host
+   * doesn't provide a realtime stream; consumers should fall back to polling.
+   */
+  subscribePluginEvents?: (
+    pluginId: string,
+    onEvent: (event: PluginCustomEvent) => void,
+  ) => () => void;
 }
 
 /** Composite view ID format: `plugin:{pluginId}:{viewId}`. */

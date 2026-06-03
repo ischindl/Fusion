@@ -734,6 +734,7 @@ The dashboard server exposes a REST API at `/api`:
 - `POST /api/github/issues/import` - Import issue (`{ owner, repo, issueNumber }`)
 - `POST /api/github/webhooks` - GitHub App webhook endpoint for badge updates (see GitHub App Setup below)
 - `POST /api/tasks/:id/pr/create` - Create PR
+- `POST /api/tasks/:id/pr/resolve-conflicts` - Resolve Create-PR merge conflicts with AI and push the task branch
 - `GET /api/tasks/:id/pr/status` - Get PR status (5-min staleness, auto background refresh)
 - `POST /api/tasks/:id/pr/refresh` - Force refresh PR status
 - `GET /api/tasks/:id/issue/status` - Get cached issue status (5-min staleness, auto background refresh)

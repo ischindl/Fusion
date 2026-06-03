@@ -64,6 +64,8 @@ export {
   getFnAgent,
   setCreateAiSessionFactory,
   getCreateAiSessionFactory,
+  setCreateInteractiveAiSessionFactory,
+  getCreateInteractiveAiSessionFactory,
   type AgentMessage,
 } from "./ai-engine-loader.js";
 export {
@@ -231,7 +233,12 @@ export {
   normalizeTitleForTaskId,
 } from "./task-title-id-drift.js";
 export { getPrimaryPrInfo } from "./task-helpers.js";
-export { MANUAL_RETRY_RESET_COUNTER_KEYS, buildManualRetryResetPatch } from "./manual-retry-reset.js";
+export {
+  IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
+  MANUAL_RETRY_RESET_COUNTER_KEYS,
+  buildAutoPauseClearPatch,
+  buildManualRetryResetPatch,
+} from "./manual-retry-reset.js";
 export type {
   TaskIdIntegrityAnomaly,
   TaskIdIntegrityAnomalyKind,
@@ -321,6 +328,7 @@ export {
   getTaskHardMergeBlocker,
   getTaskCompletionBlocker,
   isTaskReadyForMerge,
+  allowsAutoMergeProcessing,
   isSharedBranchGroupMemberIntegration,
   resolveEffectiveAutoMerge,
   resolveEffectiveGroupAutoMerge,
@@ -332,6 +340,10 @@ export {
   isBranchGroupMemberLanded,
   isBranchGroupComplete,
 } from "./branch-group-completion.js";
+export {
+  findVitestProcessIds,
+  type FindVitestProcessIdsOptions,
+} from "./vitest-processes.js";
 export {
   countRecentIdenticalStallEntries,
   getInReviewStallReason,
@@ -531,6 +543,12 @@ export type {
   CreateAiSessionOptions,
   AiSessionResult,
   CreateAiSessionFactory,
+  CreateInteractiveAiSessionOptions,
+  InteractiveAiSessionProgressEvent,
+  InteractiveAiSessionEvent,
+  InteractiveAiSession,
+  CreateInteractiveAiSessionResult,
+  CreateInteractiveAiSessionFactory,
   PluginLogger,
   PluginSkillContribution,
   PluginWorkflowStepContribution,

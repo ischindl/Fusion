@@ -1940,6 +1940,129 @@ describe("MissionStore", () => {
     });
   });
 
+  describe("task goal provenance", () => {
+    async function createStoreWithTaskStore() {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      return { ts, ms: ts.getMissionStore(), goals: ts.getGoalStore() };
+    }
+
+    it("returns empty arrays for unknown and unlinked tasks", async () => {
+      const { ts, ms } = await createStoreWithTaskStore();
+      const task = await ts.createTask({ title: "Standalone task", description: "No mission link" });
+
+      expect(ms.listGoalIdsForTask("FN-DOES-NOT-EXIST")).toEqual([]);
+      expect(ms.listGoalsForTask("FN-DOES-NOT-EXIST")).toEqual([]);
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([]);
+    });
+
+    it("returns an empty array for mission-linked tasks when the mission has no goals", async () => {
+      const { ts, ms } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([]);
+    });
+
+    it("preserves stable ordering for multiple linked goals and matches hierarchy mapping", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goalA = goals.createGoal({ title: "Goal A" });
+      const goalB = goals.createGoal({ title: "Goal B" });
+
+      ms.linkGoal(mission.id, goalA.id);
+      ms.linkGoal(mission.id, goalB.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goalA.id, goalB.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual(ms.getMissionWithHierarchy(mission.id)?.linkedGoals ?? []);
+    });
+
+    it("keeps archived linked goals in task provenance", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goal = goals.createGoal({ title: "Archived goal" });
+      ms.linkGoal(mission.id, goal.id);
+      const archivedGoal = goals.archiveGoal(goal.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([archivedGoal]);
+    });
+
+    it("falls back through feature linkage when tasks.missionId is unset", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goal = goals.createGoal({ title: "Fallback goal" });
+      ms.linkGoal(mission.id, goal.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+      db.prepare("UPDATE tasks SET missionId = NULL WHERE id = ?").run(task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([goal]);
+    });
+
+    it("resolves provenance for triaged tasks without storing goal ids on the task row", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const goal = goals.createGoal({ title: "Goal title" });
+      const mission = ms.createMission({ title: "Mission" });
+      ms.linkGoal(mission.id, goal.id);
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature", description: "Desc" });
+
+      const triaged = await ms.triageFeature(feature.id);
+      const task = await ts.getTask(triaged.taskId!);
+
+      expect(ms.listGoalsForTask(triaged.taskId!)).toEqual([
+        expect.objectContaining({ id: goal.id, title: goal.title }),
+      ]);
+      expect(task?.missionId).toBe(mission.id);
+      expect(task).not.toHaveProperty("goalId");
+      expect(task).not.toHaveProperty("goalIds");
+    });
+
+    it("resolves provenance identically for manual feature linkage", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const goal = goals.createGoal({ title: "Manual goal" });
+      const mission = ms.createMission({ title: "Mission" });
+      ms.linkGoal(mission.id, goal.id);
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const task = await ts.createTask({ title: "Manual task", description: "Manual" });
+
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([
+        expect.objectContaining({ id: goal.id, title: goal.title }),
+      ]);
+    });
+  });
+
   // ── Transaction Tests ────────────────────────────────────────────────
 
   describe("Transaction Handling", () => {

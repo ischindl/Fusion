@@ -2423,6 +2423,18 @@ export interface PrPreflightResponse {
   changedFiles: PrPreflightChangedFile[];
 }
 
+export interface ResolvePrConflictsResult {
+  resolved: boolean;
+  pushed: boolean;
+  conflictedFiles: string[];
+  message: string;
+}
+
+export interface ResolvePrConflictsResponse {
+  result: ResolvePrConflictsResult;
+  preflight: PrPreflightResponse;
+}
+
 export interface PrOptionsUser {
   login: string;
   name?: string;
@@ -2461,6 +2473,14 @@ export function generatePrMetadata(id: string, projectId?: string): Promise<PrMe
 export function fetchPrPreflight(id: string, projectId?: string, base?: string): Promise<PrPreflightResponse> {
   const baseParam = base ? `?base=${encodeURIComponent(base)}` : "";
   return api<PrPreflightResponse>(withProjectId(`/tasks/${id}/pr/preflight${baseParam}`, projectId));
+}
+
+/** Ask Fusion to resolve Create-PR merge conflicts for a task branch */
+export function resolvePrConflicts(id: string, base?: string, projectId?: string): Promise<ResolvePrConflictsResponse> {
+  return api<ResolvePrConflictsResponse>(withProjectId(`/tasks/${id}/pr/resolve-conflicts`, projectId), {
+    method: "POST",
+    ...(base ? { body: JSON.stringify({ base }) } : {}),
+  });
 }
 
 /** Fetch PR creation options (branches/reviewers/assignees/labels) for a task */

@@ -22,6 +22,14 @@
 - Archived-task snapshot behavior (`taskToArchiveEntry` / `archiveTask`) is unchanged in spirit: archive payloads still embed a capped agent-log snapshot, now sourced from the JSONL file instead of `fusion.db`.
 - Retention is now independent from SQLite operational-log pruning. `settings.agentLogFileRetentionDays` controls age-based pruning of JSONL entries for soft-deleted and archived tasks only. Default: `0` (disabled).
 
+### Activity-log no-op `task:moved` cleanup (FN-5940)
+
+- `TaskStore` now defends the invariant that `activityLog` never records a `task:moved` row when `metadata.from === metadata.to`.
+- Defense is layered: the `task:moved` listener skips same-column transitions, and source emitters skip no-op `archived -> archived` / same-column polling re-emits before subscribers see them.
+- Existing junk rows are removed by a one-time init migration guarded by `__meta.noOpTaskMovedActivityCleanupVersion = "1"`.
+- The cleanup deletes only rows matching `type = 'task:moved'` where `json_extract(metadata, '$.from') = json_extract(metadata, '$.to')`; legitimate distinct-column moves are preserved.
+- The migration does **not** run `VACUUM` automatically. After the delete lands on a large disk-backed DB, run `fn db --vacuum` manually to reclaim the freed space from the SQLite file.
+
 ### Dashboard delete-event handling (FN-5135)
 
 - Dashboard clients treat any SSE payload with `deletedAt != null` (`task:created`, `task:updated`, `task:moved`, `task:merged`) as a delete-equivalent and remove/suppress that task locally.

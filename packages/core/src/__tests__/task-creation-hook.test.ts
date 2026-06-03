@@ -108,6 +108,31 @@ describe("task creation hook", () => {
     expect(created2.id).toMatch(/^FN-/);
   });
 
+  it("does not leak async task:updated listener rejections during create follow-up updates", async () => {
+    const store = harness.store();
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    store.on("task:updated", async (task) => {
+      if (task.id.startsWith("FN-")) {
+        throw new Error(`listener boom for ${task.id}`);
+      }
+    });
+
+    try {
+      const task = await store.createTask({ description: "planning create listener safety" });
+      await store.updateTask(task.id, { size: "M" });
+      await store.logEntry(task.id, "Created via Planning Mode", "Initial plan: test");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
   it("can clear hook with undefined", async () => {
     const store = harness.store();
     const hook = vi.fn();

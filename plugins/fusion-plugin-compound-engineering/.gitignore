@@ -1,0 +1,3 @@
+# Runtime, plugin-local install target for bundled ce-* skills (U2).
+# Populated by installBundledCeSkills() on plugin load; never committed.
+.fusion-ce-skills/

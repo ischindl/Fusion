@@ -993,6 +993,25 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
     };
   };
 
+  const logPlanningCreateWarning = (message: string, error: unknown, metadata?: Record<string, unknown>): void => {
+    planningLogger.warn(message, {
+      ...metadata,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  const runPlanningCreateSideEffect = async (
+    message: string,
+    work: () => Promise<unknown> | unknown,
+    metadata?: Record<string, unknown>,
+  ): Promise<void> => {
+    try {
+      await work();
+    } catch (error) {
+      logPlanningCreateWarning(message, error, metadata);
+    }
+  };
+
   /**
    * POST /api/planning/create-task
    * Create a task from a completed planning session.
@@ -1113,18 +1132,30 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         baseBranch: resolvedBaseBranch,
       });
 
-      // Update task with suggested size if provided
+      // Update task with suggested size if provided.
       if (summary.suggestedSize) {
-        await scopedStore.updateTask(task.id, { size: summary.suggestedSize });
+        await runPlanningCreateSideEffect(
+          "Planning create-task size update failed",
+          () => scopedStore.updateTask(task.id, { size: summary.suggestedSize }),
+          { taskId: task.id, sessionId },
+        );
       }
 
-      // Log the planning mode creation
-      await scopedStore.logEntry(task.id, "Created via Planning Mode", `Initial plan: ${(initialPlan ?? "").slice(0, 200)}`);
+      // Log the planning mode creation.
+      await runPlanningCreateSideEffect(
+        "Planning create-task log entry failed",
+        () => scopedStore.logEntry(task.id, "Created via Planning Mode", `Initial plan: ${(initialPlan ?? "").slice(0, 200)}`),
+        { taskId: task.id, sessionId },
+      );
 
       // Release any live in-memory planning runtime for this session, but
       // keep the persisted completed row so planning history can still list
       // and restore the summary after single-task creation.
-      releaseSession(sessionId);
+      await runPlanningCreateSideEffect(
+        "Planning create-task session release failed",
+        () => releaseSession(sessionId),
+        { taskId: task.id, sessionId },
+      );
 
       res.status(201).json(task);
     } catch (err: unknown) {
@@ -1334,7 +1365,11 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         createdTasks.push(task);
 
         if (item.suggestedSize === "S" || item.suggestedSize === "M" || item.suggestedSize === "L") {
-          await scopedStore.updateTask(task.id, { size: item.suggestedSize });
+          await runPlanningCreateSideEffect(
+            "Planning create-tasks size update failed",
+            () => scopedStore.updateTask(task.id, { size: item.suggestedSize }),
+            { taskId: task.id, planningSessionId },
+          );
         }
       }
 
@@ -1346,14 +1381,28 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           : [];
 
         if (resolvedDependencies.length > 0) {
-          const updated = await scopedStore.updateTask(created.id, { dependencies: resolvedDependencies });
-          createdTasks[index] = updated;
+          await runPlanningCreateSideEffect(
+            "Planning create-tasks dependency update failed",
+            async () => {
+              const updated = await scopedStore.updateTask(created.id, { dependencies: resolvedDependencies });
+              createdTasks[index] = updated;
+            },
+            { taskId: created.id, planningSessionId },
+          );
         }
 
-        await scopedStore.logEntry(created.id, "Created via Planning Mode (multi-task)", logDetails);
+        await runPlanningCreateSideEffect(
+          "Planning create-tasks log entry failed",
+          () => scopedStore.logEntry(created.id, "Created via Planning Mode (multi-task)", logDetails),
+          { taskId: created.id, planningSessionId },
+        );
       }
 
-      cleanupSession(planningSessionId);
+      await runPlanningCreateSideEffect(
+        "Planning create-tasks session cleanup failed",
+        () => cleanupSession(planningSessionId),
+        { planningSessionId },
+      );
 
       res.status(201).json({ tasks: createdTasks });
     } catch (err: unknown) {

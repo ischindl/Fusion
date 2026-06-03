@@ -311,7 +311,34 @@ function AppInner() {
     setBaseBranchFilter(value);
     setScopedItem(BASE_BRANCH_FILTER_STORAGE_KEY, value, currentProject?.id);
   }, [currentProject?.id]);
-  
+
+  // Host capability handed to plugin dashboard views: subscribe to a plugin's
+  // custom SSE events (forwarded by the server as `plugin:custom`, scoped to the
+  // current project) over the shared bus — so plugins push live updates without
+  // deep-importing the dashboard's sse-bus or opening their own EventSource.
+  const subscribePluginEvents = useCallback(
+    (pluginId: string, onEvent: (e: { event: string; payload: unknown }) => void) => {
+      const params = new URLSearchParams();
+      if (currentProject?.id) params.set("projectId", currentProject.id);
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      return subscribeSse(`/api/events${query}`, {
+        events: {
+          "plugin:custom": (event: MessageEvent) => {
+            try {
+              const d = JSON.parse(event.data) as { pluginId?: string; event?: string; payload?: unknown };
+              if (d.pluginId === pluginId && typeof d.event === "string") {
+                onEvent({ event: d.event, payload: d.payload });
+              }
+            } catch {
+              // Ignore malformed plugin:custom payloads.
+            }
+          },
+        },
+      });
+    },
+    [currentProject?.id],
+  );
+
   // Remote node data and events when in remote mode (pass searchQuery for server-side filtering)
   const remoteData = useRemoteNodeData(currentNodeId, { projectId: currentProject?.id, searchQuery: searchQuery || undefined });
   useRemoteNodeEvents(currentNodeId);
@@ -1385,6 +1412,7 @@ function AppInner() {
               projectId: currentProject?.id,
               tasks: isRemote && remoteData.tasks.length > 0 ? remoteData.tasks : tasks,
               workflowSteps,
+              subscribePluginEvents,
               openTaskDetail: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => openDetailTask(task, initialTab),
               renderTaskCard: (task: Task | TaskDetail) => (
                 <TaskCard

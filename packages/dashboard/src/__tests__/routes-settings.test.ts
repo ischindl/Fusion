@@ -810,6 +810,27 @@ describe("PUT /settings", () => {
     expect(store.updateSettings).not.toHaveBeenCalled();
   });
 
+  it("accepts allowed operationalLogRetentionDays values", async () => {
+    for (const value of [7, 0]) {
+      const res = await REQUEST(buildApp(), "PUT", "/api/settings", JSON.stringify({ operationalLogRetentionDays: value }), {
+        "Content-Type": "application/json",
+      });
+
+      expect(res.status).toBe(200);
+      expect(store.updateSettings).toHaveBeenCalledWith({ operationalLogRetentionDays: value });
+    }
+  });
+
+  it("rejects invalid operationalLogRetentionDays values", async () => {
+    const res = await REQUEST(buildApp(), "PUT", "/api/settings", JSON.stringify({ operationalLogRetentionDays: 45 }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("operationalLogRetentionDays");
+    expect(store.updateSettings).not.toHaveBeenCalledWith({ operationalLogRetentionDays: 45 });
+  });
+
   it("accepts partial remoteAccess patches and GET /settings returns merged sibling branches", async () => {
     const mergedRemoteAccess = {
       enabled: true,

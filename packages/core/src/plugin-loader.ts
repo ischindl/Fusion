@@ -40,7 +40,7 @@ import type {
 } from "./plugin-types.js";
 import { normalizePluginUiContributionDefinition, validatePluginManifest } from "./plugin-types.js";
 import { createLogger } from "./logger.js";
-import { getCreateAiSessionFactory } from "./ai-engine-loader.js";
+import { getCreateAiSessionFactory, getCreateInteractiveAiSessionFactory } from "./ai-engine-loader.js";
 import { scanPluginSecurity } from "./plugin-security-scan.js";
 
 // Minimum Fusion version for plugin compatibility checks (can be expanded later)
@@ -120,9 +120,10 @@ export class PluginLoader extends EventEmitter<{
 
   async createRouteContext(
     pluginId: string,
-    overrides?: Partial<Pick<PluginContext, "taskStore" | "settings" | "resolveProjectTaskStore">>,
+    overrides?: Partial<Pick<PluginContext, "taskStore" | "settings" | "resolveProjectTaskStore" | "emitEvent">>,
   ): Promise<PluginContext> {
     const createAiSession = await getCreateAiSessionFactory();
+    const createInteractiveAiSession = await getCreateInteractiveAiSessionFactory();
     if (process.env.DEBUG?.includes("plugins")) {
       this.log.log(
         createAiSession
@@ -137,11 +138,15 @@ export class PluginLoader extends EventEmitter<{
       settings: overrides?.settings ?? await this.getPluginSettings(pluginId),
       logger: this.createLogger(pluginId),
       createAiSession,
+      createInteractiveAiSession,
       resolveProjectTaskStore: overrides?.resolveProjectTaskStore,
-      emitEvent: (event: string, data: unknown) => {
-        this.emit("plugin:error", { pluginId, error: new Error(`Custom event: ${event}`) });
+      // The host (dashboard) may supply a real publisher that forwards custom
+      // plugin events to connected SSE clients. Absent an override, fall back to
+      // logging (the historical no-op behavior) so non-dashboard hosts and tests
+      // keep working.
+      emitEvent: overrides?.emitEvent ?? ((event: string, data: unknown) => {
         this.log.log(`[plugin:${pluginId}] Custom event: ${event}`, data);
-      },
+      }),
     };
   }
 

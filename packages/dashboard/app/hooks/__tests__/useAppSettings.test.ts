@@ -102,7 +102,24 @@ describe("useAppSettings", () => {
     expect(result.current.autoMerge).toBe(false);
   });
 
-  it("rolls back optimistic state when toggle update fails", async () => {
+  it("rolls back optimistic autoMerge state when toggle update fails", async () => {
+    mockUpdateSettings.mockRejectedValueOnce(new Error("network"));
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.autoMerge).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.toggleAutoMerge();
+    });
+
+    expect(result.current.autoMerge).toBe(false);
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ autoMerge: true }, "proj_123");
+  });
+
+  it("rolls back optimistic state when global pause update fails", async () => {
     mockUpdateSettings.mockRejectedValueOnce(new Error("network"));
 
     const { result } = renderHook(() => useAppSettings("proj_123"));
@@ -165,6 +182,40 @@ describe("useAppSettings", () => {
     await waitFor(() => {
       expect(result.current.testMode).toBe(false);
       expect(result.current.isTestMode).toBe(true);
+    });
+  });
+
+  it("coerces undefined autoMerge settings to false", async () => {
+    mockFetchSettings.mockResolvedValueOnce({
+      autoMerge: undefined,
+      globalPause: true,
+      enginePaused: false,
+      prAuthAvailable: true,
+      taskStuckTimeoutMs: 600000,
+      showQuickChatFAB: false,
+    } as never);
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.autoMerge).toBe(false);
+    });
+  });
+
+  it("coerces truthy non-boolean autoMerge settings to true", async () => {
+    mockFetchSettings.mockResolvedValueOnce({
+      autoMerge: "enabled",
+      globalPause: true,
+      enginePaused: false,
+      prAuthAvailable: true,
+      taskStuckTimeoutMs: 600000,
+      showQuickChatFAB: false,
+    } as never);
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.autoMerge).toBe(true);
     });
   });
 

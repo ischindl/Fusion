@@ -200,7 +200,39 @@ describe("planning routes github tracking background dispatch", () => {
 
     expect(response.status).toBe(201);
     await vi.waitFor(() => {
-      expect(planningWarn).toHaveBeenCalled();
+      expect(planningWarn).toHaveBeenCalledWith(expect.stringContaining("[github-tracking] Failed to create issue"));
+    });
+  });
+
+  it("POST /planning/create-task still returns 201 when createIssue throws synchronously", async () => {
+    createIssueSpy.mockImplementation(() => {
+      throw new Error("sync github crash");
+    });
+
+    sessions.set("plan-2-sync", {
+      summary: {
+        title: "Planned task 2",
+        description: "Planned task description 2",
+        suggestedSize: "M",
+        priority: "normal",
+        suggestedDependencies: [],
+        keyDeliverables: [],
+      },
+      initialPlan: "initial",
+      history: [],
+    });
+
+    const response = await performRequest(
+      app,
+      "POST",
+      "/planning/create-task",
+      JSON.stringify({ sessionId: "plan-2-sync" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => {
+      expect(planningWarn).toHaveBeenCalledWith(expect.stringContaining("[github-tracking] Failed to create issue"));
     });
   });
 
@@ -248,6 +280,80 @@ describe("planning routes github tracking background dispatch", () => {
 
     await vi.waitFor(() => {
       expect(createIssueSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("POST /planning/create-tasks still returns 201 when createIssue rejects asynchronously", async () => {
+    createIssueSpy.mockRejectedValue(new Error("github down"));
+
+    sessions.set("plan-3-reject", {
+      summary: {
+        title: "Plan",
+        description: "Plan",
+        suggestedSize: "M",
+        priority: "normal",
+        suggestedDependencies: [],
+        keyDeliverables: [],
+      },
+      initialPlan: "initial",
+      history: [],
+    });
+
+    const response = await performRequest(
+      app,
+      "POST",
+      "/planning/create-tasks",
+      JSON.stringify({
+        planningSessionId: "plan-3-reject",
+        subtasks: [
+          { id: "tmp-1", title: "Subtask 1", description: "D1" },
+          { id: "tmp-2", title: "Subtask 2", description: "D2" },
+        ],
+      }),
+      { "content-type": "application/json" },
+    );
+
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => {
+      expect(planningWarn).toHaveBeenCalledWith(expect.stringContaining("[github-tracking] Failed to create issue"));
+    });
+  });
+
+  it("POST /planning/create-tasks still returns 201 when createIssue throws synchronously", async () => {
+    createIssueSpy.mockImplementation(() => {
+      throw new Error("sync github crash");
+    });
+
+    sessions.set("plan-3-sync", {
+      summary: {
+        title: "Plan",
+        description: "Plan",
+        suggestedSize: "M",
+        priority: "normal",
+        suggestedDependencies: [],
+        keyDeliverables: [],
+      },
+      initialPlan: "initial",
+      history: [],
+    });
+
+    const response = await performRequest(
+      app,
+      "POST",
+      "/planning/create-tasks",
+      JSON.stringify({
+        planningSessionId: "plan-3-sync",
+        subtasks: [
+          { id: "tmp-1", title: "Subtask 1", description: "D1" },
+          { id: "tmp-2", title: "Subtask 2", description: "D2" },
+        ],
+      }),
+      { "content-type": "application/json" },
+    );
+
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => {
+      expect(planningWarn).toHaveBeenCalledWith(expect.stringContaining("[github-tracking] Failed to create issue"));
     });
   });
 });

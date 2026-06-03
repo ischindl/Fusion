@@ -6,6 +6,7 @@ import {
   createSSE,
   disconnectSSEClient,
   emitApprovalSseEvent,
+  emitPluginCustomSseEvent,
   getActiveSSEConnections,
   markSSEClientAlive,
 } from "../sse.js";
@@ -140,6 +141,45 @@ describe("approval SSE events", () => {
     expect(projectB.res.write).not.toHaveBeenCalledWith(
       `event: approval:requested\ndata: ${JSON.stringify({ id: "apr-a" })}\n\n`,
     );
+
+    projectA.req.emit("close");
+    projectB.req.emit("close");
+  });
+});
+
+describe("plugin custom SSE events", () => {
+  it("relays a plugin's custom event to connected clients as plugin:custom", () => {
+    const connection = openSseConnection("plugin-custom-relay");
+
+    emitPluginCustomSseEvent("fusion-plugin-compound-engineering", "ce:session-question", {
+      sessionId: "s1",
+      questionId: "q1",
+    });
+
+    expect(connection.res.write).toHaveBeenCalledWith(
+      `event: plugin:custom\ndata: ${JSON.stringify({
+        pluginId: "fusion-plugin-compound-engineering",
+        event: "ce:session-question",
+        payload: { sessionId: "s1", questionId: "q1" },
+      })}\n\n`,
+    );
+
+    connection.req.emit("close");
+  });
+
+  it("scopes project-tagged plugin events to the matching project connection", () => {
+    const projectA = openSseConnection("plugin-custom-project", "project-a");
+    const projectB = openSseConnection("plugin-custom-project", "project-b");
+
+    emitPluginCustomSseEvent("p", "evt", { sessionId: "s1" }, "project-a");
+
+    const expected = `event: plugin:custom\ndata: ${JSON.stringify({
+      pluginId: "p",
+      event: "evt",
+      payload: { sessionId: "s1" },
+    })}\n\n`;
+    expect(projectA.res.write).toHaveBeenCalledWith(expected);
+    expect(projectB.res.write).not.toHaveBeenCalledWith(expected);
 
     projectA.req.emit("close");
     projectB.req.emit("close");

@@ -27,3 +27,4 @@ packages:
   - "plugins/fusion-plugin-roadmap"
   - "plugins/fusion-plugin-even-realities-glasses"
   - "plugins/fusion-plugin-reports"
+  - "plugins/fusion-plugin-compound-engineering"

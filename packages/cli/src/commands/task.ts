@@ -1,4 +1,4 @@
-import { TaskStore, COLUMNS, COLUMN_LABELS, CentralCore, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, reconcileDeterministicDuplicate, runDeterministicDuplicateGuard, type Settings, type Column, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, reconcileDeterministicDuplicate, runDeterministicDuplicateGuard, type Settings, type Column, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { aiMergeTask } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -1039,6 +1039,9 @@ export async function runTaskRetry(id: string, projectName?: string) {
     throw new Error(`Task ${id} is not in a retryable state (status: ${task.status || 'none'})`);
   }
   
+  const autoPauseClearPatch = buildAutoPauseClearPatch(task);
+  const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
+
   // Clear failure state and stale branch refs so retry can choose a fresh base.
   await store.updateTask(id, {
     status: null,
@@ -1047,6 +1050,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     branch: null,
     baseBranch: null,
     baseCommitSha: null,
+    ...autoPauseClearPatch,
     ...buildManualRetryResetPatch({ resetMergeRetries: true }),
   });
   
@@ -1054,7 +1058,11 @@ export async function runTaskRetry(id: string, projectName?: string) {
   await store.moveTask(id, 'todo');
   
   // Log the retry action
-  await store.logEntry(id, "Retry requested from CLI", "Task reset to todo for retry");
+  await store.logEntry(
+    id,
+    clearedDeadlockAutoPause ? "Retry requested from CLI (cleared deadlock auto-pause)" : "Retry requested from CLI",
+    "Task reset to todo for retry",
+  );
   
   console.log();
   console.log(`  ✓ Retried ${id} → todo (failure state cleared)`);

@@ -964,6 +964,11 @@ export interface AgentOptions {
    *  (and `skillSelection` is not), auto-constructs a SkillSelectionContext
    *  from the cwd and these names. Ignored when `skillSelection` is set. */
   skills?: string[];
+  /** Extra directories to scan for skills (each holding `<id>/SKILL.md`), in
+   *  addition to the default cwd/agent-dir roots. Forwarded to the resource
+   *  loader so callers (e.g. plugins that install skills to a private dir) can
+   *  make `skills`/`skillSelection` names discoverable in the live session. */
+  additionalSkillPaths?: string[];
   /** Optional task-scoped env injected into this session's subprocess tools only. */
   taskEnv?: NodeJS.ProcessEnv;
   /** Last-chance abort hook fired immediately before `createAgentSession`.
@@ -1987,6 +1992,9 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
         ? [options.systemPromptLayers.dynamic]
         : [],
     ...(effectiveExtensionPaths.length > 0 ? { additionalExtensionPaths: [...effectiveExtensionPaths] } : {}),
+    ...(options.additionalSkillPaths && options.additionalSkillPaths.length > 0
+      ? { additionalSkillPaths: [...options.additionalSkillPaths] }
+      : {}),
     ...(skillsOverrideFn ? { skillsOverride: skillsOverrideFn } : {}),
   });
   await resourceLoader.reload();

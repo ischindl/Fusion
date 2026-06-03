@@ -46,6 +46,7 @@ import { GitHubSourceIssueCloseService } from "../github-source-issue-close.js";
 import { githubRateLimiter } from "../github-poll.js";
 import * as projectStoreResolver from "../project-store-resolver.js";
 import { generatePrMetadata } from "../pr-metadata-generator.js";
+import { resolvePrConflicts } from "../pr-conflict-resolver.js";
 import {
   classifyWebhookEvent,
   getGitHubAppConfig,
@@ -295,6 +296,17 @@ function parsePreflightCommits(output: string): Array<{ sha: string; subject: st
     .slice(0, 50);
 }
 
+interface PrPreflightResponse {
+  branchOnRemote: boolean;
+  commitsPresent: boolean;
+  conflictsWithBase: boolean;
+  ghAuthOk: boolean;
+  defaultBaseBranch: string;
+  head: string;
+  commits: Array<{ sha: string; subject: string; author: string }>;
+  changedFiles: Array<{ path: string; additions: number; deletions: number; status: "added" | "modified" | "deleted" | "renamed" }>;
+}
+
 function parsePreflightChangedFiles(numstatOutput: string, nameStatusOutput: string): Array<{
   path: string;
   additions: number;
@@ -337,6 +349,73 @@ function parsePreflightChangedFiles(numstatOutput: string, nameStatusOutput: str
   }
 
   return results;
+}
+
+async function computePrPreflight(task: Task, repoRoot: string, requestedBase?: string): Promise<PrPreflightResponse> {
+  const defaultBaseBranch = requestedBase?.trim()
+    ? ensureSafeGitRef(requestedBase, "base branch")
+    : await resolveDefaultPrBaseBranch(task, repoRoot);
+  const head = `fusion/${task.id.toLowerCase()}`;
+  const safeHead = ensureSafeGitRef(head, "head branch");
+  const response: PrPreflightResponse = {
+    branchOnRemote: false,
+    commitsPresent: false,
+    conflictsWithBase: false,
+    ghAuthOk: isGhAuthenticated(),
+    defaultBaseBranch,
+    head,
+    commits: [],
+    changedFiles: [],
+  };
+
+  const baseRef = await resolvePrBaseRef(repoRoot, defaultBaseBranch).catch(() => defaultBaseBranch);
+
+  const remoteBranchCheck = await prRouteCommandRunner.tryRun(
+    `git ls-remote --exit-code --heads origin ${shellQuote(safeHead)}`,
+    repoRoot,
+    PR_PREFLIGHT_TIMEOUT_MS,
+  );
+  if (remoteBranchCheck.ok) {
+    response.branchOnRemote = true;
+  } else if (remoteBranchCheck.code !== 2) {
+    response.branchOnRemote = false;
+  }
+
+  const commitCountOutput = await prRouteCommandRunner.run(
+    `git rev-list --count ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
+    repoRoot,
+    PR_PREFLIGHT_TIMEOUT_MS,
+  ).catch(() => "0");
+  response.commitsPresent = Number.parseInt(commitCountOutput, 10) > 0;
+
+  const mergeTreeOutput = await prRouteCommandRunner.run(
+    `git merge-tree --write-tree --name-only ${shellQuote(baseRef)} ${shellQuote(safeHead)}`,
+    repoRoot,
+    PR_PREFLIGHT_TIMEOUT_MS,
+  ).catch(() => "");
+  response.conflictsWithBase = mergeTreeOutput.trim().length > 0;
+
+  const [commitLogOutput, numstatOutput, nameStatusOutput] = await Promise.all([
+    prRouteCommandRunner.run(
+      `git log --no-merges ${shellQuote(baseRef)}..${shellQuote(safeHead)} --format=%H%x09%s%x09%an`,
+      repoRoot,
+      PR_PREFLIGHT_TIMEOUT_MS,
+    ).catch(() => ""),
+    prRouteCommandRunner.run(
+      `git diff --numstat ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
+      repoRoot,
+      PR_PREFLIGHT_TIMEOUT_MS,
+    ).catch(() => ""),
+    prRouteCommandRunner.run(
+      `git diff --name-status ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
+      repoRoot,
+      PR_PREFLIGHT_TIMEOUT_MS,
+    ).catch(() => ""),
+  ]);
+
+  response.commits = parsePreflightCommits(commitLogOutput);
+  response.changedFiles = parsePreflightChangedFiles(numstatOutput, nameStatusOutput);
+  return response;
 }
 
 function parseGhJsonLines<T>(output: string): T[] {
@@ -4612,6 +4691,77 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
   });
 
   /**
+   * POST /api/tasks/:id/pr/resolve-conflicts
+   * Resolve Create-PR merge conflicts on the task branch, push the branch,
+   * and return refreshed preflight state.
+   */
+  router.post("/tasks/:id/pr/resolve-conflicts", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const task = await scopedStore.getTask(req.params.id);
+      if (task.column !== "in-review") {
+        throw badRequest("Task must be in 'in-review' column to resolve PR conflicts");
+      }
+
+      if (req.body?.base !== undefined && typeof req.body.base !== "string") {
+        throw badRequest("base must be a string when provided");
+      }
+
+      const repoRoot = scopedStore.getRootDir();
+      const envRepo = process.env.GITHUB_REPOSITORY?.trim();
+      const repoInfo = envRepo
+        ? (() => {
+            const [owner = "", repo = ""] = envRepo.split("/");
+            return owner && repo ? { owner, repo } : null;
+          })()
+        : getCurrentRepo(repoRoot);
+      if (!repoInfo) {
+        throw badRequest("Could not determine GitHub repository. Set GITHUB_REPOSITORY env var or configure git remote.");
+      }
+
+      const requestedBase = typeof req.body?.base === "string" ? req.body.base.trim() : "";
+      const defaultBaseBranch = requestedBase || await resolveDefaultPrBaseBranch(task, repoRoot);
+      const baseBranch = ensureSafeGitRef(defaultBaseBranch, "base branch");
+      const head = ensureSafeGitRef(`fusion/${task.id.toLowerCase()}`, "head branch");
+      const baseRef = await resolvePrBaseRef(repoRoot, baseBranch).catch(() => baseBranch);
+
+      const result = await resolvePrConflicts({
+        taskId: task.id,
+        baseRef,
+        rootDir: repoRoot,
+        store: scopedStore,
+        settings: await scopedStore.getSettings(),
+      });
+
+      if (!result.resolved) {
+        throw conflict(result.message, {
+          code: "conflict-resolution-failed",
+          retryable: true,
+          unresolvedFiles: result.conflictedFiles,
+          head,
+          base: baseBranch,
+        });
+      }
+
+      await scopedStore.logEntry(task.id, "AI resolved PR conflicts", `${head} against ${baseRef} in ${repoInfo.owner}/${repoInfo.repo}`);
+      if (result.pushed) {
+        await scopedStore.logEntry(task.id, "Pushed branch after PR conflict resolution", head);
+      }
+
+      const preflight = await computePrPreflight(task, repoRoot, baseBranch);
+      res.json({ result, preflight });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw notFound(`Task ${req.params.id} not found`);
+      }
+      throw toPrApiError(err, "Failed to resolve PR conflicts");
+    }
+  });
+
+  /**
    * POST /api/tasks/:id/pr/generate-metadata
    * Generate AI PR title/body metadata for the Create PR dialog.
    * Returns: { title, body, templateUsed }
@@ -4648,80 +4798,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       const task = await scopedStore.getTask(req.params.id);
       const repoRoot = scopedStore.getRootDir();
       const requestedBase = typeof req.query.base === "string" ? req.query.base.trim() : "";
-      const defaultBaseBranch = requestedBase
-        ? ensureSafeGitRef(requestedBase, "base branch")
-        : await resolveDefaultPrBaseBranch(task, repoRoot);
-      const head = `fusion/${task.id.toLowerCase()}`;
-      const safeHead = ensureSafeGitRef(head, "head branch");
-      const response: {
-        branchOnRemote: boolean;
-        commitsPresent: boolean;
-        conflictsWithBase: boolean;
-        ghAuthOk: boolean;
-        defaultBaseBranch: string;
-        head: string;
-        commits: Array<{ sha: string; subject: string; author: string }>;
-        changedFiles: Array<{ path: string; additions: number; deletions: number; status: "added" | "modified" | "deleted" | "renamed" }>;
-      } = {
-        branchOnRemote: false,
-        commitsPresent: false,
-        conflictsWithBase: false,
-        ghAuthOk: isGhAuthenticated(),
-        defaultBaseBranch,
-        head,
-        commits: [],
-        changedFiles: [],
-      };
-
-      const baseRef = await resolvePrBaseRef(repoRoot, defaultBaseBranch).catch(() => defaultBaseBranch);
-
-      const remoteBranchCheck = await prRouteCommandRunner.tryRun(
-        `git ls-remote --exit-code --heads origin ${shellQuote(safeHead)}`,
-        repoRoot,
-        PR_PREFLIGHT_TIMEOUT_MS,
-      );
-      if (remoteBranchCheck.ok) {
-        response.branchOnRemote = true;
-      } else if (remoteBranchCheck.code !== 2) {
-        response.branchOnRemote = false;
-      }
-
-      const commitCountOutput = await prRouteCommandRunner.run(
-        `git rev-list --count ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
-        repoRoot,
-        PR_PREFLIGHT_TIMEOUT_MS,
-      ).catch(() => "0");
-      response.commitsPresent = Number.parseInt(commitCountOutput, 10) > 0;
-
-      const mergeTreeOutput = await prRouteCommandRunner.run(
-        `git merge-tree --write-tree --name-only ${shellQuote(baseRef)} ${shellQuote(safeHead)}`,
-        repoRoot,
-        PR_PREFLIGHT_TIMEOUT_MS,
-      ).catch(() => "");
-      response.conflictsWithBase = mergeTreeOutput.trim().length > 0;
-
-      const [commitLogOutput, numstatOutput, nameStatusOutput] = await Promise.all([
-        prRouteCommandRunner.run(
-          `git log --no-merges ${shellQuote(baseRef)}..${shellQuote(safeHead)} --format=%H%x09%s%x09%an`,
-          repoRoot,
-          PR_PREFLIGHT_TIMEOUT_MS,
-        ).catch(() => ""),
-        prRouteCommandRunner.run(
-          `git diff --numstat ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
-          repoRoot,
-          PR_PREFLIGHT_TIMEOUT_MS,
-        ).catch(() => ""),
-        prRouteCommandRunner.run(
-          `git diff --name-status ${shellQuote(baseRef)}..${shellQuote(safeHead)}`,
-          repoRoot,
-          PR_PREFLIGHT_TIMEOUT_MS,
-        ).catch(() => ""),
-      ]);
-
-      response.commits = parsePreflightCommits(commitLogOutput);
-      response.changedFiles = parsePreflightChangedFiles(numstatOutput, nameStatusOutput);
-
-      res.json(response);
+      res.json(await computePrPreflight(task, repoRoot, requestedBase));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

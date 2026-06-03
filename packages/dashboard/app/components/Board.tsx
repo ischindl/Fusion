@@ -236,25 +236,20 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
       }
     };
 
+    const visualViewport = window.visualViewport;
+    const handleViewportResize = () => {
+      scheduleStabilization();
+    };
+
     scheduleStabilization();
     window.addEventListener("pageshow", handlePageShow);
-
-    const visualViewport = window.visualViewport;
-    let handleViewportResize: (() => void) | null = null;
-    if (visualViewport) {
-      handleViewportResize = () => {
-        scheduleStabilization();
-        if (typeof visualViewport.removeEventListener === "function") {
-          visualViewport.removeEventListener("resize", handleViewportResize!);
-        }
-        handleViewportResize = null;
-      };
+    if (typeof visualViewport?.addEventListener === "function") {
       visualViewport.addEventListener("resize", handleViewportResize);
     }
 
     return () => {
       window.removeEventListener("pageshow", handlePageShow);
-      if (handleViewportResize && typeof visualViewport?.removeEventListener === "function") {
+      if (typeof visualViewport?.removeEventListener === "function") {
         visualViewport.removeEventListener("resize", handleViewportResize);
       }
       if (rafId !== null) {

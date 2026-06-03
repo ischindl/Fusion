@@ -1,6 +1,6 @@
 ---
 title: "feat: Compound Engineering plugin with end-to-end UI"
-status: active
+status: completed
 type: feat
 date: 2026-06-02
 origin: docs/brainstorms/2026-06-02-compound-engineering-plugin-requirements.md

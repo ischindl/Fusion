@@ -209,6 +209,9 @@ importers:
       '@fusion-plugin-examples/cli-printing-press':
         specifier: workspace:*
         version: link:../../plugins/fusion-plugin-cli-printing-press
+      '@fusion-plugin-examples/compound-engineering':
+        specifier: workspace:*
+        version: link:../../plugins/fusion-plugin-compound-engineering
       '@fusion-plugin-examples/cursor-runtime':
         specifier: workspace:*
         version: link:../../plugins/fusion-plugin-cursor-runtime
@@ -676,6 +679,46 @@ importers:
       '@types/express':
         specifier: ^5.0.5
         version: 5.0.6
+      '@types/node':
+        specifier: ^25.5.2
+        version: 25.5.2
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+
+  plugins/fusion-plugin-compound-engineering:
+    dependencies:
+      '@fusion/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@fusion/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+      lucide-react:
+        specifier: ^0.542.0
+        version: 0.542.0(react@19.2.4)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.4(react@19.2.4)
+    devDependencies:
+      '@testing-library/jest-dom':
+        specifier: ^6.6.3
+        version: 6.9.1
+      '@testing-library/react':
+        specifier: ^16.3.2
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@testing-library/user-event':
+        specifier: ^14.6.1
+        version: 14.6.1(@testing-library/dom@10.4.1)
       '@types/node':
         specifier: ^25.5.2
         version: 25.5.2

@@ -44,6 +44,7 @@ const CURSOR_PLUGIN_ID = "fusion-plugin-cursor-runtime";
 const ROADMAP_PLUGIN_ID = "fusion-plugin-roadmap";
 const REPORTS_PLUGIN_ID = "fusion-plugin-reports";
 const CLI_PRINTING_PRESS_PLUGIN_ID = "fusion-plugin-cli-printing-press";
+const COMPOUND_ENGINEERING_PLUGIN_ID = "fusion-plugin-compound-engineering";
 
 function makeManifest(overrides?: Partial<{ id: string; version: string; name: string }>) {
   return {
@@ -314,6 +315,10 @@ describe("ensureBundledDependencyGraphPluginInstalled", () => {
 
   it("includes reports plugin in bundled plugin ids", () => {
     expect(BUNDLED_PLUGIN_IDS).toContain(REPORTS_PLUGIN_ID);
+  });
+
+  it("includes compound engineering plugin in bundled plugin ids", () => {
+    expect(BUNDLED_PLUGIN_IDS).toContain(COMPOUND_ENGINEERING_PLUGIN_ID);
   });
   it("fresh install: registers and loads the plugin when not in DB", async () => {
     setupBundleExists();

@@ -22,6 +22,7 @@ export interface GoalInjectionDiagnostic {
   outcome: GoalInjectionOutcome;
   goalCount: number;
   goalIds: string[];
+  provenanceGoalIds: string[];
   truncated: boolean;
   reason?: GoalInjectionDisabledReason;
   errorClass?: string;
@@ -31,7 +32,8 @@ export interface GoalInjectionDiagnostic {
   timestamp: string;
 }
 
-export interface GoalInjectionDiagnosticInput extends Omit<GoalInjectionDiagnostic, "timestamp"> {
+export interface GoalInjectionDiagnosticInput extends Omit<GoalInjectionDiagnostic, "timestamp" | "provenanceGoalIds"> {
+  provenanceGoalIds?: string[];
   store?: TaskStore;
   runContext?: EngineRunContext | null;
 }
@@ -140,6 +142,17 @@ export async function resolveAndEmitGoalContext(input: ResolveAndEmitGoalContext
         : undefined,
   });
 
+  let provenanceGoalIds: string[] = [];
+  if (input.taskId && typeof input.store.getMissionStore === "function") {
+    try {
+      provenanceGoalIds = input.store.getMissionStore().listGoalIdsForTask(input.taskId);
+    } catch (error) {
+      diagnosticsLog.warn(
+        `failed to resolve goal provenance for task ${input.taskId} in ${input.lane}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   await emitGoalAnchoringAudit(input.audit, {
     lane: input.lane,
     taskId: input.taskId,
@@ -152,6 +165,7 @@ export async function resolveAndEmitGoalContext(input: ResolveAndEmitGoalContext
   await emitGoalInjectionDiagnostic({
     lane: input.lane,
     ...resolution.classification,
+    provenanceGoalIds,
     runId: input.runContext?.runId,
     agentId: input.runContext?.agentId,
     taskId: input.taskId,
@@ -164,9 +178,10 @@ export async function resolveAndEmitGoalContext(input: ResolveAndEmitGoalContext
 
 function formatAgentLogLine(input: GoalInjectionDiagnostic): string {
   const ids = JSON.stringify(input.goalIds);
+  const provenanceIds = JSON.stringify(input.provenanceGoalIds);
   const reason = input.reason ? ` reason=${input.reason}` : "";
   const errorClass = input.errorClass ? ` err=${input.errorClass}` : "";
-  return `[goal-injection] ${input.outcome} count=${input.goalCount} ids=${ids} truncated=${String(input.truncated)}${reason}${errorClass}`;
+  return `[goal-injection] ${input.outcome} count=${input.goalCount} ids=${ids} provenance=${provenanceIds} truncated=${String(input.truncated)}${reason}${errorClass}`;
 }
 
 /**
@@ -191,6 +206,7 @@ export async function emitGoalInjectionDiagnostic(
     outcome: input.outcome,
     goalCount: input.goalCount,
     goalIds: [...input.goalIds],
+    provenanceGoalIds: [...(input.provenanceGoalIds ?? [])],
     truncated: input.truncated,
     ...(input.reason ? { reason: input.reason } : {}),
     ...(input.errorClass ? { errorClass: input.errorClass } : {}),
@@ -232,6 +248,7 @@ export async function emitGoalInjectionDiagnostic(
         outcome: record.outcome,
         goalCount: record.goalCount,
         goalIds: record.goalIds,
+        provenanceGoalIds: record.provenanceGoalIds,
         truncated: record.truncated,
         ...(record.reason ? { reason: record.reason } : {}),
         ...(record.errorClass ? { errorClass: record.errorClass } : {}),

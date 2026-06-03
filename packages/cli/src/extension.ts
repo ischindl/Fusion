@@ -5,6 +5,7 @@ import {
   TaskStore,
   COLUMNS,
   COLUMN_LABELS,
+  buildAutoPauseClearPatch,
   buildManualRetryResetPatch,
   validateNodeOverrideChange,
   type Task,
@@ -990,6 +991,10 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
       
+      const autoPauseClearPatch = buildAutoPauseClearPatch(task);
+      const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
+      const retryLogSuffix = clearedDeadlockAutoPause ? ", cleared deadlock auto-pause" : "";
+
       // In-review retry: distinguish between execution failures and merge failures.
       if (task.column === 'in-review') {
         const hasIncompleteSteps = task.steps.some(
@@ -1004,9 +1009,10 @@ export default function kbExtension(pi: ExtensionAPI) {
           await store.updateTask(params.id, {
             status: null,
             error: null,
+            ...autoPauseClearPatch,
             ...buildManualRetryResetPatch(),
           });
-          await store.logEntry(params.id, "Retry requested via Fusion extension (execution failure in-review → todo, preserving progress)");
+          await store.logEntry(params.id, `Retry requested via Fusion extension (execution failure in-review → todo, preserving progress${retryLogSuffix})`);
           await store.moveTask(params.id, "todo", { preserveProgress: true });
           return {
             content: [{ type: "text", text: `Retried ${params.id} → todo (execution failure, preserving step progress)` }],
@@ -1017,9 +1023,10 @@ export default function kbExtension(pi: ExtensionAPI) {
         await store.updateTask(params.id, {
           status: null,
           error: null,
+          ...autoPauseClearPatch,
           ...buildManualRetryResetPatch({ resetMergeRetries: true }),
         });
-        await store.logEntry(params.id, "Retry requested via Fusion extension (in-review merge retry, mergeRetries reset)");
+        await store.logEntry(params.id, `Retry requested via Fusion extension (in-review merge retry, mergeRetries reset${retryLogSuffix})`);
         return {
           content: [{ type: "text", text: `Retried ${params.id} → in-review (merge retry state cleared)` }],
           details: { taskId: params.id, newColumn: 'in-review' },
@@ -1030,6 +1037,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       await store.updateTask(params.id, {
         status: null,
         error: null,
+        ...autoPauseClearPatch,
         ...buildManualRetryResetPatch({ resetMergeRetries: true }),
       });
       

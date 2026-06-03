@@ -119,12 +119,26 @@ export {
 } from "./merger-squash-audit.js";
 export { reviewStep, type ReviewType, type ReviewVerdict, type ReviewResult, type ReviewOptions } from "./reviewer.js";
 export { createFnAgent, promptWithFallback, describeModel, setHostExtensionPaths, getHostExtensionPaths, type AgentOptions, type AgentResult } from "./pi.js";
+export {
+  createInteractiveAiSessionWith,
+  parseAgentResponse as parseInteractiveAgentResponse,
+  type InteractiveAgentSession,
+  type InteractiveAgentResult,
+  type InteractiveAgentFactory,
+} from "./interactive-ai-session.js";
 
 // Register createFnAgent into core's loader so consumers in @fusion/core
 // (e.g. ai-summarize, memory-compaction) can resolve it without a circular
 // static import. Runs once at engine module load.
-import type { AiSessionResult, CreateAiSessionFactory, CreateAiSessionOptions } from "@fusion/core";
+import type {
+  AiSessionResult,
+  CreateAiSessionFactory,
+  CreateAiSessionOptions,
+  CreateInteractiveAiSessionFactory,
+  CreateInteractiveAiSessionOptions,
+} from "@fusion/core";
 import { createFnAgent as _createFnAgentForCore } from "./pi.js";
+import { createInteractiveAiSessionWith } from "./interactive-ai-session.js";
 
 const _createAiSessionAdapter: CreateAiSessionFactory = async (options: CreateAiSessionOptions): Promise<AiSessionResult> => {
   return _createFnAgentForCore({
@@ -136,6 +150,56 @@ const _createAiSessionAdapter: CreateAiSessionFactory = async (options: CreateAi
   });
 };
 
+// Interactive (multi-turn, await-input) adapter: builds the prompt→parse→
+// retry→pause→resume loop on top of the one-shot createFnAgent.
+const _createInteractiveAiSessionAdapter: CreateInteractiveAiSessionFactory = (
+  options: CreateInteractiveAiSessionOptions,
+) =>
+  createInteractiveAiSessionWith(
+    (opts) =>
+      _createFnAgentForCore({
+        cwd: opts.cwd,
+        systemPrompt: opts.systemPrompt,
+        tools: opts.tools,
+        defaultProvider: opts.defaultProvider,
+        defaultModelId: opts.defaultModelId,
+        // Forward skill selection so a plugin can load a specific bundled skill.
+        // `skills` (convenience) auto-builds a SkillSelectionContext; the extra
+        // discovery dirs make those skills actually visible to the loader.
+        ...(opts.requestedSkillNames?.length ? { skills: opts.requestedSkillNames } : {}),
+        ...(opts.additionalSkillPaths?.length ? { additionalSkillPaths: opts.additionalSkillPaths } : {}),
+        // Live mid-turn visibility: stream thinking/text deltas and tool
+        // start/end markers to the caller's onProgress while the pull-based
+        // nextEvent() is still pending. Callback errors must never break the
+        // agent turn.
+        ...(opts.onProgress
+          ? {
+              onThinking: (delta: string) => {
+                try {
+                  opts.onProgress!({ type: "thinking", delta });
+                } catch { /* consumer error must not break the turn */ }
+              },
+              onText: (delta: string) => {
+                try {
+                  opts.onProgress!({ type: "text", delta });
+                } catch { /* consumer error must not break the turn */ }
+              },
+              onToolStart: (name: string) => {
+                try {
+                  opts.onProgress!({ type: "tool", name, phase: "start" });
+                } catch { /* consumer error must not break the turn */ }
+              },
+              onToolEnd: (name: string, isError: boolean) => {
+                try {
+                  opts.onProgress!({ type: "tool", name, phase: "end", isError });
+                } catch { /* consumer error must not break the turn */ }
+              },
+            }
+          : {}),
+      }),
+    options,
+  );
+
 void import("@fusion/core")
   .then((core) => {
     if ("setCreateFnAgent" in core && typeof core.setCreateFnAgent === "function") {
@@ -143,6 +207,9 @@ void import("@fusion/core")
     }
     if ("setCreateAiSessionFactory" in core && typeof core.setCreateAiSessionFactory === "function") {
       core.setCreateAiSessionFactory(_createAiSessionAdapter);
+    }
+    if ("setCreateInteractiveAiSessionFactory" in core && typeof core.setCreateInteractiveAiSessionFactory === "function") {
+      core.setCreateInteractiveAiSessionFactory(_createInteractiveAiSessionAdapter);
     }
   })
   .catch(() => {
