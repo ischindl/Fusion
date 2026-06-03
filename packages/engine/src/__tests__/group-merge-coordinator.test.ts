@@ -9,6 +9,7 @@ import {
   evaluateBranchGroupCompletion,
   evaluateBranchGroupPromotion,
   promoteBranchGroup,
+  reconcileBranchGroupPr,
   resolveBranchGroupMergeRouting,
 } from "../group-merge-coordinator.js";
 import { ProjectEngine } from "../project-engine.js";
@@ -636,6 +637,310 @@ describe("ProjectEngine.promoteBranchGroup (U4 bridge method)", () => {
     expect(result.reason).toBe("incomplete");
     expect(result.promoted).toBe(false);
     expect(() => execSync("git show main:group.txt", { cwd: rootDir })).toThrow();
+  });
+});
+
+describe("promoteBranchGroup concurrency lock (Fix #10)", () => {
+  function makeGroup(overrides?: Partial<any>): any {
+    return {
+      id: "BG-LOCK-1",
+      sourceType: "planning",
+      sourceId: "planning:x",
+      branchName: "fusion/groups/planning-x",
+      autoMerge: true,
+      prState: "none",
+      status: "open",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  const landedMember = (id: string, branchName: string) => ({
+    id,
+    title: `${id} title`,
+    column: "done" as const,
+    mergeDetails: {
+      mergeConfirmed: true,
+      mergeTargetSource: "branch-group-integration",
+      mergeTargetBranch: branchName,
+    },
+  });
+
+  function makePrRepo(): string {
+    const rootDir = makeRepo();
+    execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
+    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
+    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    execSync("git checkout main", { cwd: rootDir });
+    return rootDir;
+  }
+
+  const prSettings = {
+    autoMerge: true,
+    globalPause: false,
+    enginePaused: false,
+    mergeStrategy: "pull-request" as const,
+    baseBranch: "main",
+  };
+
+  it("serializes two concurrent promotions: createGroupPr runs exactly once, one PR persisted", async () => {
+    const rootDir = makePrRepo();
+    let group = makeGroup();
+    let createCalls = 0;
+    const store = {
+      getBranchGroup: () => group,
+      getBranchGroupByBranchName: () => null,
+      listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
+      updateBranchGroup: (_id: string, patch: Record<string, unknown>) => {
+        group = { ...group, ...patch };
+        return group;
+      },
+    } as any;
+
+    // The injected creator yields (await a macrotask) so that, WITHOUT the lock,
+    // a second concurrent call would slip past the prState/status gate (which is
+    // read at the top, before the first call has persisted "open") and create a
+    // second PR. With the per-group lock the second call only begins after the
+    // first persisted its result and short-circuits as already-finalized.
+    const createGroupPr = async () => {
+      createCalls += 1;
+      const n = createCalls;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { prNumber: 40 + n, prUrl: `https://github.com/x/y/pull/${40 + n}`, prState: "open" as const };
+    };
+
+    const [a, b] = await Promise.all([
+      promoteBranchGroup({ rootDir, groupId: group.id, settings: prSettings, store, createGroupPr }),
+      promoteBranchGroup({ rootDir, groupId: group.id, settings: prSettings, store, createGroupPr }),
+    ]);
+
+    expect(createCalls).toBe(1);
+    expect(group.prNumber).toBe(41);
+    expect(group.prState).toBe("open");
+    expect(group.status).toBe("finalized");
+
+    // Exactly one call reports a fresh promotion; the other sees already-finalized.
+    const reasons = [a.reason, b.reason].sort();
+    expect(reasons).toEqual(["already-finalized", "promoted"]);
+    const promoted = [a, b].filter((r) => r.reason === "promoted");
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0].prNumber).toBe(41);
+  });
+});
+
+describe("promoteBranchGroup finalized-but-PR-less repair (Fix #4 part 2)", () => {
+  function makeGroup(overrides?: Partial<any>): any {
+    return {
+      id: "BG-REPAIR-1",
+      sourceType: "planning",
+      sourceId: "planning:x",
+      branchName: "fusion/groups/planning-x",
+      autoMerge: true,
+      prState: "none",
+      status: "open",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  const landedMember = (id: string, branchName: string) => ({
+    id,
+    title: `${id} title`,
+    column: "done" as const,
+    mergeDetails: {
+      mergeConfirmed: true,
+      mergeTargetSource: "branch-group-integration",
+      mergeTargetBranch: branchName,
+    },
+  });
+
+  function makePrRepo(): string {
+    const rootDir = makeRepo();
+    execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
+    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
+    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    execSync("git checkout main", { cwd: rootDir });
+    return rootDir;
+  }
+
+  const prSettings = {
+    autoMerge: true,
+    globalPause: false,
+    enginePaused: false,
+    mergeStrategy: "pull-request" as const,
+    baseBranch: "main",
+  };
+
+  it("re-promotion creates the PR for a finalized PR-less group WITHOUT re-running the integration merge", async () => {
+    const rootDir = makePrRepo();
+    // Simulate a crash AFTER the integration merge + finalize but BEFORE the PR
+    // was created: group is finalized, prState none, prNumber null.
+    let group = makeGroup({ status: "finalized", prState: "none", prNumber: null, prUrl: null });
+    let createCalls = 0;
+    let mergeCalls = 0;
+    const store = {
+      getBranchGroup: () => group,
+      getBranchGroupByBranchName: () => null,
+      listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
+      updateBranchGroup: (_id: string, patch: Record<string, unknown>) => {
+        group = { ...group, ...patch };
+        return group;
+      },
+    } as any;
+
+    // Detect whether the integration merge ran by recording the merge commit on
+    // main before re-promotion. The repair path must NOT advance main again.
+    const mainBefore = execSync("git rev-parse main", { cwd: rootDir, encoding: "utf8" }).trim();
+    void mergeCalls;
+
+    const result = await promoteBranchGroup({
+      rootDir,
+      groupId: group.id,
+      settings: prSettings,
+      store,
+      createGroupPr: async ({ members }) => {
+        createCalls += 1;
+        expect(members.map((m: any) => m.id)).toEqual(["FN-A"]);
+        return { prNumber: 77, prUrl: "https://github.com/x/y/pull/77", prState: "open" as const };
+      },
+    });
+
+    expect(result.reason).toBe("promoted");
+    expect(createCalls).toBe(1);
+    expect(group.prNumber).toBe(77);
+    expect(group.prState).toBe("open");
+    expect(group.status).toBe("finalized");
+
+    // The merge step was skipped: main is unchanged from before the repair.
+    const mainAfter = execSync("git rev-parse main", { cwd: rootDir, encoding: "utf8" }).trim();
+    expect(mainAfter).toBe(mainBefore);
+  });
+
+  it("a finalized group that already has a prNumber is still short-circuited (no repair, no PR re-create)", async () => {
+    const rootDir = makePrRepo();
+    let group = makeGroup({ status: "finalized", prState: "open", prNumber: 5, prUrl: "https://github.com/x/y/pull/5" });
+    let createCalls = 0;
+    const store = {
+      getBranchGroup: () => group,
+      getBranchGroupByBranchName: () => null,
+      listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
+      updateBranchGroup: () => {
+        throw new Error("should not update an already-PR'd finalized group");
+      },
+    } as any;
+
+    const result = await promoteBranchGroup({
+      rootDir,
+      groupId: group.id,
+      settings: prSettings,
+      store,
+      createGroupPr: async () => {
+        createCalls += 1;
+        return { prNumber: 1, prUrl: "x", prState: "open" as const };
+      },
+    });
+
+    expect(result.reason).toBe("already-finalized");
+    expect(createCalls).toBe(0);
+  });
+});
+
+describe("reconcileBranchGroupPr (Fix #3 engine primitive)", () => {
+  function makeGroup(overrides?: Partial<any>): any {
+    return {
+      id: "BG-RECON-1",
+      sourceType: "planning",
+      sourceId: "planning:x",
+      branchName: "fusion/groups/planning-x",
+      autoMerge: true,
+      prState: "open",
+      prNumber: 12,
+      prUrl: "https://github.com/x/y/pull/12",
+      status: "finalized",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it("persists merged state when syncGroupPr reports the PR merged", async () => {
+    let group = makeGroup();
+    const updates: Array<Record<string, unknown>> = [];
+    const store = {
+      listTasksByBranchGroup: async () => [{ id: "FN-A" }],
+      updateBranchGroup: (_id: string, patch: Record<string, unknown>) => {
+        updates.push(patch);
+        group = { ...group, ...patch };
+        return group;
+      },
+    } as any;
+
+    const result = await reconcileBranchGroupPr({
+      store,
+      group,
+      syncGroupPr: async () => ({
+        prNumber: 12,
+        prUrl: "https://github.com/x/y/pull/12",
+        prState: "merged",
+      }),
+    });
+
+    expect(result.reconciled).toBe(true);
+    expect(result.prState).toBe("merged");
+    expect(group.prState).toBe("merged");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ prState: "merged", prNumber: 12 });
+  });
+
+  it("is a no-op (no persist) when the PR is still open", async () => {
+    const group = makeGroup();
+    let updateCalls = 0;
+    const store = {
+      listTasksByBranchGroup: async () => [{ id: "FN-A" }],
+      updateBranchGroup: () => {
+        updateCalls += 1;
+        return group;
+      },
+    } as any;
+
+    const result = await reconcileBranchGroupPr({
+      store,
+      group,
+      syncGroupPr: async () => ({
+        prNumber: 12,
+        prUrl: "https://github.com/x/y/pull/12",
+        prState: "open",
+      }),
+    });
+
+    expect(result.reconciled).toBe(false);
+    expect(result.prState).toBe("open");
+    expect(updateCalls).toBe(0);
+  });
+
+  it("is a no-op when the group has no persisted prNumber", async () => {
+    const group = makeGroup({ prNumber: null, prState: "none" });
+    let syncCalls = 0;
+    const store = {
+      listTasksByBranchGroup: async () => [{ id: "FN-A" }],
+      updateBranchGroup: () => {
+        throw new Error("should not update");
+      },
+    } as any;
+
+    const result = await reconcileBranchGroupPr({
+      store,
+      group,
+      syncGroupPr: async () => {
+        syncCalls += 1;
+        return { prNumber: 0, prUrl: "", prState: "open" as const };
+      },
+    });
+
+    expect(result.reconciled).toBe(false);
+    expect(syncCalls).toBe(0);
   });
 });
 

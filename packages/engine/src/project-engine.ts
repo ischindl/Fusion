@@ -1921,9 +1921,33 @@ export class ProjectEngine {
                 },
               });
             } catch (promotionError) {
+              const message =
+                promotionError instanceof Error ? promotionError.message : String(promotionError);
               runtimeLog.warn(
-                `Branch-group promotion evaluation failed for ${taskId}: ${promotionError instanceof Error ? promotionError.message : String(promotionError)}`,
+                `Branch-group promotion evaluation failed for ${taskId}: ${message}`,
               );
+              // Fix #4 (1): a promotion failure here (e.g. createGroupPr throwing
+              // after the local integration merge) must NOT be swallowed silently —
+              // the group stays active/prState:none and is only recoverable via an
+              // explicit re-promote. Record an audit event so the failure is
+              // observable and operators/the dashboard can drive recovery.
+              try {
+                await store.recordRunAuditEvent({
+                  taskId,
+                  agentId: "merger",
+                  runId: `merge-${taskId}`,
+                  domain: "git",
+                  mutationType: "merge:branch-group-promotion-failed",
+                  target: taskForPromotion.branchContext!.groupId,
+                  metadata: {
+                    groupId: taskForPromotion.branchContext!.groupId,
+                    taskId,
+                    error: message,
+                  },
+                });
+              } catch {
+                // best-effort audit
+              }
             }
           };
 

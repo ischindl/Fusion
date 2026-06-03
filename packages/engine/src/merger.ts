@@ -82,7 +82,6 @@ import {
   type PostMergeAuditMode,
   type TaskSourceIssue,
   type Task,
-  type BranchGroup,
   type AutostashOrphanRecord,
   normalizeMergeAdvanceAutoSyncMode,
   isMergeRequestContractShadowEnabled,
@@ -7529,34 +7528,28 @@ export async function aiMergeTask(
     // non-fatal and retryable on the next landing / explicit refresh.
     if (options.syncGroupPr) {
       try {
-        const latestGroup = await Promise.resolve(
-          (store as any).getBranchGroup?.(groupRouting.branchGroup.id),
-        ) as BranchGroup | null | undefined;
+        const latestGroup = store.getBranchGroup(groupRouting.branchGroup.id);
         if (latestGroup && latestGroup.prNumber != null && latestGroup.prState === "open") {
-          const members = (await Promise.resolve(
-            (store as any).listTasksByBranchGroup?.(latestGroup.id),
-          )) as Task[] | undefined;
+          const members = await store.listTasksByBranchGroup(latestGroup.id);
           const reconciled = await options.syncGroupPr({
             group: latestGroup,
-            members: members ?? [],
+            members,
           });
           // Out-of-band reconciliation: if GitHub reports the PR is no longer
           // open (closed/merged), persist the corrected prState rather than
           // leaving a stale "open".
           if (reconciled.prState !== latestGroup.prState) {
-            await Promise.resolve(
-              (store as any).updateBranchGroup?.(latestGroup.id, {
-                prState: reconciled.prState,
-                prNumber: reconciled.prNumber,
-                prUrl: reconciled.prUrl,
-              }),
-            );
+            store.updateBranchGroup(latestGroup.id, {
+              prState: reconciled.prState,
+              prNumber: reconciled.prNumber,
+              prUrl: reconciled.prUrl,
+            });
           }
         }
       } catch (err) {
         // Non-fatal: never fail the merge/landing because PR sync failed.
         try {
-          await (store as any).recordRunAuditEvent?.({
+          store.recordRunAuditEvent({
             taskId,
             agentId: "merger",
             runId: `merge-${taskId}`,

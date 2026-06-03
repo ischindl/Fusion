@@ -174,10 +174,29 @@ async function ensureGroupBranchExists(rootDir: string, branchName: string, star
 }
 
 /**
+ * Per-`groupId` in-process promotion lock (Fix #10). `promoteBranchGroup` can be
+ * invoked concurrently — e.g. the dashboard route bridge and the auto-promotion
+ * hook firing on the final member landing — and its body runs a long await chain
+ * (git checkout/merge on the shared working tree + PR creation) with no atomicity.
+ * Interleaving two runs can double-create the managed PR and corrupt HEAD.
+ *
+ * We serialize per group by chaining each call onto a promise stored in this map;
+ * each call only begins after the previous one for the same group settles, and it
+ * RE-READS the group state inside the lock (the inner function's first action is
+ * `store.getBranchGroup`), so a second waiter observes the first's persisted
+ * `prState`/`status` and short-circuits instead of re-doing the work.
+ *
+ * In-process only: a cross-node lease (FN-4820) is explicitly deferred.
+ */
+const promotionLocks = new Map<string, Promise<unknown>>();
+
+/**
  * The only entrypoint allowed to perform shared-branch-group → default-branch promotion.
  * Promotion is intentionally idempotent and must never run inline in aiMergeTask.
+ *
+ * Serialized per `groupId` via {@link promotionLocks}; see that comment for why.
  */
-export async function promoteBranchGroup(input: {
+export interface PromoteBranchGroupInput {
   store: Pick<TaskStore, "getBranchGroup" | "getBranchGroupByBranchName" | "listTasksByBranchGroup" | "updateBranchGroup">;
   rootDir: string;
   groupId: string;
@@ -194,7 +213,32 @@ export async function promoteBranchGroup(input: {
     target: string;
     metadata?: Record<string, unknown>;
   }) => Promise<void> | void;
-}): Promise<BranchGroupPromotionResult> {
+}
+
+export async function promoteBranchGroup(input: PromoteBranchGroupInput): Promise<BranchGroupPromotionResult> {
+  // Chain onto any in-flight promotion for this group so two concurrent callers
+  // (route bridge + auto-promotion on final landing) never run the merge/PR-create
+  // sequence at the same time. The continuation re-reads group state inside the
+  // lock, so the second caller observes the first's persisted result.
+  const prior = promotionLocks.get(input.groupId) ?? Promise.resolve();
+  const run = prior
+    .catch(() => {
+      // A failed prior promotion must not poison the chain; the next caller still
+      // gets a fresh, serialized attempt (re-merge is a no-op; PR-create idempotent).
+    })
+    .then(() => promoteBranchGroupInner(input));
+  promotionLocks.set(input.groupId, run);
+  try {
+    return await run;
+  } finally {
+    // Only clear if no newer call has chained on top of us.
+    if (promotionLocks.get(input.groupId) === run) {
+      promotionLocks.delete(input.groupId);
+    }
+  }
+}
+
+async function promoteBranchGroupInner(input: PromoteBranchGroupInput): Promise<BranchGroupPromotionResult> {
   const group = input.store.getBranchGroup(input.groupId);
   if (!group) {
     return {
@@ -207,7 +251,21 @@ export async function promoteBranchGroup(input: {
     };
   }
 
-  if (group.status === "finalized" || group.prState === "merged") {
+  const isPrMode = input.settings.mergeStrategy === "pull-request";
+
+  // Fix #4 (2): a group that finalized but never gained its PR — e.g. a crash
+  // between the local integration merge and a successful createGroupPr — would be
+  // permanently stranded by the already-finalized short-circuit below. When in PR
+  // mode and the finalized group has no persisted PR number, fall through to the
+  // PR-creation step ONLY (the integration merge already happened, so we skip it)
+  // so a re-promotion can repair it.
+  const needsPrRepair =
+    isPrMode &&
+    group.status === "finalized" &&
+    group.prState !== "merged" &&
+    (group.prNumber === null || group.prNumber === undefined);
+
+  if (!needsPrRepair && (group.status === "finalized" || group.prState === "merged")) {
     return {
       groupId: group.id,
       promoted: false,
@@ -234,57 +292,63 @@ export async function promoteBranchGroup(input: {
   }
 
   const members = await input.store.listTasksByBranchGroup(group.id);
-  const completion = evaluateBranchGroupCompletion({ members, group });
-  if (!completion.complete) {
-    return {
-      groupId: group.id,
-      promoted: false,
-      alreadyFinalized: false,
-      reason: "incomplete",
-      status: group.status,
-      prState: group.prState,
-      prNumber: group.prNumber,
-      prUrl: group.prUrl,
-    };
-  }
 
-  const eligibility = evaluateBranchGroupPromotion({ group, settings: input.settings });
-  if (!eligibility.eligible) {
-    await input.recordAudit?.({
-      domain: "git",
-      mutationType: "merge:branch-group-promotion-gated",
-      target: group.id,
-      metadata: {
+  // On the PR-repair path the group is already finalized — completion and
+  // eligibility were satisfied at finalization, and the integration merge already
+  // landed. Re-gating/re-merging would be wrong, so we skip straight to PR-create.
+  if (!needsPrRepair) {
+    const completion = evaluateBranchGroupCompletion({ members, group });
+    if (!completion.complete) {
+      return {
         groupId: group.id,
-        branchName: group.branchName,
-        groupAutoMerge: eligibility.groupAutoMerge,
-        effectiveEligible: false,
-        reason: eligibility.reason,
-      },
-    });
-    return {
-      groupId: group.id,
-      promoted: false,
-      alreadyFinalized: false,
-      reason: "gated",
-      status: group.status,
-      prState: group.prState,
-      prNumber: group.prNumber,
-      prUrl: group.prUrl,
-    };
+        promoted: false,
+        alreadyFinalized: false,
+        reason: "incomplete",
+        status: group.status,
+        prState: group.prState,
+        prNumber: group.prNumber,
+        prUrl: group.prUrl,
+      };
+    }
+
+    const eligibility = evaluateBranchGroupPromotion({ group, settings: input.settings });
+    if (!eligibility.eligible) {
+      await input.recordAudit?.({
+        domain: "git",
+        mutationType: "merge:branch-group-promotion-gated",
+        target: group.id,
+        metadata: {
+          groupId: group.id,
+          branchName: group.branchName,
+          groupAutoMerge: eligibility.groupAutoMerge,
+          effectiveEligible: false,
+          reason: eligibility.reason,
+        },
+      });
+      return {
+        groupId: group.id,
+        promoted: false,
+        alreadyFinalized: false,
+        reason: "gated",
+        status: group.status,
+        prState: group.prState,
+        prNumber: group.prNumber,
+        prUrl: group.prUrl,
+      };
+    }
   }
 
   const integrationBranch = await resolveIntegrationBranch(input.rootDir, input.settings);
-  await ensureGroupBranchExists(input.rootDir, group.branchName, integrationBranch);
-  const currentBranch = (await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: input.rootDir })).stdout.trim();
-  try {
-    await execAsync(`git checkout ${JSON.stringify(integrationBranch)}`, { cwd: input.rootDir });
-    await execAsync(`git merge --no-ff --no-edit ${JSON.stringify(group.branchName)}`, { cwd: input.rootDir });
-  } finally {
-    await execAsync(`git checkout ${JSON.stringify(currentBranch)}`, { cwd: input.rootDir });
+  if (!needsPrRepair) {
+    await ensureGroupBranchExists(input.rootDir, group.branchName, integrationBranch);
+    const currentBranch = (await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: input.rootDir })).stdout.trim();
+    try {
+      await execAsync(`git checkout ${JSON.stringify(integrationBranch)}`, { cwd: input.rootDir });
+      await execAsync(`git merge --no-ff --no-edit ${JSON.stringify(group.branchName)}`, { cwd: input.rootDir });
+    } finally {
+      await execAsync(`git checkout ${JSON.stringify(currentBranch)}`, { cwd: input.rootDir });
+    }
   }
-
-  const isPrMode = input.settings.mergeStrategy === "pull-request";
 
   let prNumber: number | undefined = group.prNumber;
   let prUrl: string | undefined = group.prUrl;
@@ -342,7 +406,7 @@ export async function promoteBranchGroup(input: {
       groupId: group.id,
       branchName: group.branchName,
       integrationBranch,
-      memberIds: completion.landedMemberIds,
+      memberIds: evaluateBranchGroupCompletion({ members, group }).landedMemberIds,
       ...(updatedGroup.prNumber ? { prNumber: updatedGroup.prNumber } : {}),
       ...(updatedGroup.prUrl ? { prUrl: updatedGroup.prUrl } : {}),
     },
@@ -357,6 +421,68 @@ export async function promoteBranchGroup(input: {
     prState: updatedGroup.prState,
     prNumber: updatedGroup.prNumber,
     prUrl: updatedGroup.prUrl,
+  };
+}
+
+export interface ReconcileBranchGroupPrResult {
+  reconciled: boolean;
+  prState: BranchGroupPrState;
+  prNumber: number | null;
+  prUrl: string | null;
+}
+
+/**
+ * Fix #3 (engine side): out-of-band PR reconciliation primitive.
+ *
+ * Once a branch group finalizes, the member-landing sync stops firing, so nothing
+ * flips `prState` → "merged" after the managed GitHub PR is merged out-of-band.
+ * This helper, given a group carrying a persisted `prNumber` and `prState` "open",
+ * invokes the injected {@link SyncGroupPrFn} (which reconciles against GitHub via
+ * `getPrStatus`) and persists `prState`/`prUrl`/`prNumber` when GitHub reports a
+ * changed state. It mirrors the merger's U6 reconcile block.
+ *
+ * No-op (no write) when the group has no `prNumber`, is not "open", or GitHub still
+ * reports it open. The dashboard route that calls this on a schedule/refresh is
+ * wired in a separate batch; this is just the cleanly exported engine primitive.
+ */
+export async function reconcileBranchGroupPr(input: {
+  store: Pick<TaskStore, "listTasksByBranchGroup" | "updateBranchGroup">;
+  group: BranchGroup;
+  syncGroupPr: SyncGroupPrFn;
+}): Promise<ReconcileBranchGroupPrResult> {
+  const { group } = input;
+  if (group.prNumber == null || group.prState !== "open") {
+    return {
+      reconciled: false,
+      prState: group.prState,
+      prNumber: group.prNumber ?? null,
+      prUrl: group.prUrl ?? null,
+    };
+  }
+
+  const members = await input.store.listTasksByBranchGroup(group.id);
+  const reconciled = await input.syncGroupPr({ group, members });
+
+  if (reconciled.prState === group.prState) {
+    return {
+      reconciled: false,
+      prState: group.prState,
+      prNumber: group.prNumber ?? null,
+      prUrl: group.prUrl ?? null,
+    };
+  }
+
+  const updated = input.store.updateBranchGroup(group.id, {
+    prState: reconciled.prState,
+    prNumber: reconciled.prNumber,
+    prUrl: reconciled.prUrl,
+  });
+
+  return {
+    reconciled: true,
+    prState: updated.prState,
+    prNumber: updated.prNumber ?? null,
+    prUrl: updated.prUrl ?? null,
   };
 }
 
