@@ -92,6 +92,15 @@ const mockMissions = [
     status: "planning",
     interviewState: "not_started",
     milestones: [],
+    summary: {
+      totalMilestones: 1,
+      completedMilestones: 0,
+      totalFeatures: 2,
+      completedFeatures: 0,
+      linkedGoalCount: 0,
+      eventCount: 4,
+      progressPercent: 0,
+    },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   },
@@ -110,6 +119,7 @@ const mockMissions = [
       totalFeatures: 5,
       completedFeatures: 3,
       linkedGoalCount: 1,
+      eventCount: 2,
       progressPercent: 60,
     },
     createdAt: "2026-01-02T00:00:00.000Z",
@@ -302,20 +312,12 @@ const mockMilestoneValidationTelemetry = {
 
 const mockMissionEvents = [
   {
-    id: "E-001",
+    id: "E-004",
     missionId: "M-001",
-    eventType: "mission_started",
-    description: "Mission started",
-    metadata: null,
-    timestamp: "2026-01-03T10:00:00.000Z",
-  },
-  {
-    id: "E-002",
-    missionId: "M-001",
-    eventType: "warning",
-    description: "Task queue is delayed",
-    metadata: { queueDepth: 4 },
-    timestamp: "2026-01-03T10:10:00.000Z",
+    eventType: "autopilot_state_changed",
+    description: "Autopilot moved to watching",
+    metadata: { previous: "inactive", next: "watching" },
+    timestamp: "2026-01-03T10:30:00.000Z",
   },
   {
     id: "E-003",
@@ -326,12 +328,20 @@ const mockMissionEvents = [
     timestamp: "2026-01-03T10:20:00.000Z",
   },
   {
-    id: "E-004",
+    id: "E-002",
     missionId: "M-001",
-    eventType: "autopilot_state_changed",
-    description: "Autopilot moved to watching",
-    metadata: { previous: "inactive", next: "watching" },
-    timestamp: "2026-01-03T10:30:00.000Z",
+    eventType: "warning",
+    description: "Task queue is delayed",
+    metadata: { queueDepth: 4 },
+    timestamp: "2026-01-03T10:10:00.000Z",
+  },
+  {
+    id: "E-001",
+    missionId: "M-001",
+    eventType: "mission_started",
+    description: "Mission started",
+    metadata: null,
+    timestamp: "2026-01-03T10:00:00.000Z",
   },
 ];
 
@@ -342,7 +352,7 @@ const mockMissionEventsPaged = Array.from({ length: 65 }, (_, index) => ({
   description: `Mission event ${index + 1}`,
   metadata: { index: index + 1 },
   timestamp: new Date(Date.UTC(2026, 0, 3, 10, index)).toISOString(),
-}));
+})).reverse();
 
 /** Create a mock Response that matches the real api() function's expectations (text + content-type headers) */
 function mockApiResponse(data: unknown) {
@@ -1158,7 +1168,7 @@ describe("MissionManager", () => {
     expect(screen.queryByText(/"queueDepth": 4/)).toBeNull();
   });
 
-  it("loads more mission activity events", async () => {
+  it("loads more older mission activity events at the top", async () => {
     globalThis.fetch = createDetailFetchMock(mockMissionEventsPaged as unknown as typeof mockMissionEvents);
     render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
 
@@ -1173,6 +1183,8 @@ describe("MissionManager", () => {
 
     fireEvent.click(screen.getByTestId("mission-tab-activity"));
 
+    const eventsContainer = await screen.findByTestId("mission-activity-events");
+
     await waitFor(() => {
       expect(screen.getByText("Mission event 50")).toBeDefined();
       expect(
@@ -1181,6 +1193,10 @@ describe("MissionManager", () => {
         }),
       ).toBeDefined();
       expect(screen.getByTestId("mission-activity-load-more")).toBeDefined();
+
+      const eventDescriptions = Array.from(eventsContainer.querySelectorAll(".mission-event__description"));
+      expect(eventDescriptions[0]?.textContent).toBe("Mission event 16");
+      expect(eventDescriptions[eventDescriptions.length - 1]?.textContent).toBe("Mission event 65");
     });
 
     fireEvent.click(screen.getByTestId("mission-activity-load-more"));
@@ -1189,10 +1205,30 @@ describe("MissionManager", () => {
       const activityCount = document.querySelector(".mission-detail__activity-count");
       expect(activityCount?.textContent?.trim()).toBe("65 of 65");
       expect(screen.queryByTestId("mission-activity-load-more")).toBeNull();
+
+      const eventDescriptions = Array.from(eventsContainer.querySelectorAll(".mission-event__description"));
+      expect(eventDescriptions[0]?.textContent).toBe("Mission event 1");
+      expect(eventDescriptions[eventDescriptions.length - 1]?.textContent).toBe("Mission event 65");
     }, { timeout: 5000 });
   }, 15000);
 
-  it("auto-scrolls to latest mission activity on initial load", async () => {
+  it("shows the summary event count before activity events load", async () => {
+    globalThis.fetch = createDetailFetchMock(mockMissionEvents);
+    globalThis.EventSource = MockEventSource as unknown as typeof globalThis.EventSource;
+
+    render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Build Auth System")).toBeDefined();
+    });
+    fireEvent.click(screen.getByText("Build Auth System"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mission-tab-activity")).toHaveTextContent("Activity (4)");
+    });
+  });
+
+  it("auto-scrolls to the latest mission activity on initial load", async () => {
     globalThis.fetch = createDetailFetchMock(mockMissionEvents);
     globalThis.EventSource = MockEventSource as unknown as typeof globalThis.EventSource;
 
@@ -1217,13 +1253,28 @@ describe("MissionManager", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Mission started")).toBeDefined();
-      expect(scrollIntoViewSpy).toHaveBeenCalled();
+      expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "end", behavior: "auto" });
     });
+
+    const eventsContainer = await screen.findByTestId("mission-activity-events");
+    const eventDescriptions = Array.from(eventsContainer.querySelectorAll(".mission-event__description"));
+    expect(eventDescriptions.map((node) => node.textContent)).toEqual([
+      "Mission started",
+      "Task queue is delayed",
+      "Feature F-001 completed",
+      "Autopilot moved to watching",
+    ]);
   });
 
-  it("prepends real-time mission events and scrolls to top when near bottom", async () => {
+  it("appends real-time mission events at the bottom and scrolls to latest when near bottom", async () => {
     globalThis.fetch = createDetailFetchMock(mockMissionEvents);
     globalThis.EventSource = MockEventSource as unknown as typeof globalThis.EventSource;
+
+    const scrollIntoViewSpy = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoViewSpy,
+    });
 
     render(<MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} />);
 
@@ -1258,11 +1309,17 @@ describe("MissionManager", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Real-time warning event")).toBeDefined();
-      expect(eventsContainer.scrollTop).toBe(0);
+      expect(scrollIntoViewSpy).toHaveBeenLastCalledWith({ block: "end", behavior: "auto" });
     });
 
     const eventDescriptions = Array.from(eventsContainer.querySelectorAll(".mission-event__description"));
-    expect(eventDescriptions[0]?.textContent).toBe("Real-time warning event");
+    expect(eventDescriptions.map((node) => node.textContent)).toEqual([
+      "Mission started",
+      "Task queue is delayed",
+      "Feature F-001 completed",
+      "Autopilot moved to watching",
+      "Real-time warning event",
+    ]);
   });
 
   it("ignores real-time mission events for non-selected missions", async () => {

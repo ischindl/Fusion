@@ -918,6 +918,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const activityEventsEndRef = useRef<HTMLDivElement>(null);
 
+  const activityTabEventCount = useMemo(() => {
+    if (!selectedMission?.id) {
+      return eventsTotal;
+    }
+    return missions.find((mission) => mission.id === selectedMission.id)?.summary?.eventCount ?? eventsTotal;
+  }, [eventsTotal, missions, selectedMission?.id]);
+
+  const displayedMissionEvents = useMemo(() => [...missionEvents].reverse(), [missionEvents]);
+
   // Keep latest state available to long-lived SSE handlers without reconnect churn.
   missionsRef.current = missions;
   selectedMissionRef.current = selectedMission;
@@ -1538,10 +1547,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
         if (shouldAutoScroll) {
           requestAnimationFrame(() => {
-            const container = activityEventsContainerRef.current;
-            if (container) {
-              container.scrollTop = 0;
-            }
+            scrollActivityToLatest();
           });
         }
       } catch {
@@ -1584,6 +1590,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     projectId,
     refreshMissionSidebar,
     refreshValidationTelemetry,
+    scrollActivityToLatest,
   ]);
 
   // Mission handlers
@@ -2752,7 +2759,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   aria-selected={activeTab === "activity"}
                   data-testid="mission-tab-activity"
                 >
-                  Activity ({eventsTotal})
+                  Activity ({activityTabEventCount})
                 </button>
               </div>
 
@@ -3994,7 +4001,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       className="mission-events"
                       data-testid="mission-activity-events"
                     >
-                      {missionEvents.map((event) => {
+                      {displayedMissionEvents.map((event) => {
                         const hasMetadata = Boolean(event.metadata && Object.keys(event.metadata).length > 0);
                         const metadataExpanded = expandedEventMetadata.has(event.id);
 

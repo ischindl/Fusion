@@ -133,6 +133,8 @@ function createMockMissionStore(options?: {
             completedMilestones: 0,
             totalFeatures: 0,
             completedFeatures: 0,
+            linkedGoalCount: 0,
+            eventCount: 0,
             progressPercent: 0,
           },
         }))
@@ -141,10 +143,11 @@ function createMockMissionStore(options?: {
     getMissionSummary: vi.fn((_missionId: string) => ({
       totalMilestones: 0,
       completedMilestones: 0,
-      totalSlices: 0,
-      completedSlices: 0,
       totalFeatures: 0,
       completedFeatures: 0,
+      linkedGoalCount: 0,
+      eventCount: 0,
+      progressPercent: 0,
     })),
 
     getMissionEvents: vi.fn((missionId: string, options?: { limit?: number; offset?: number; eventType?: string }) => {

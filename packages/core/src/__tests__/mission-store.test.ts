@@ -246,6 +246,7 @@ describe("MissionStore", () => {
         totalFeatures: 0,
         completedFeatures: 0,
         linkedGoalCount: 0,
+        eventCount: 0,
         progressPercent: 0,
       });
     });
@@ -324,6 +325,18 @@ describe("MissionStore", () => {
       expect(store.getMissionSummary(mission.id).linkedGoalCount).toBe(2);
     });
 
+    it("getMissionSummary reports unfiltered event counts", () => {
+      const mission = store.createMission({ title: "Eventful mission" });
+
+      expect(store.getMissionSummary(mission.id).eventCount).toBe(0);
+
+      store.logMissionEvent(mission.id, "mission_started", "started");
+      store.logMissionEvent(mission.id, "warning", "warning");
+      store.logMissionEvent(mission.id, "error", "error");
+
+      expect(store.getMissionSummary(mission.id).eventCount).toBe(3);
+    });
+
     it("findNextPendingSlice skips completed slices in earlier milestones", () => {
       const mission = store.createMission({ title: "Next pending" });
       const m1 = store.addMilestone(mission.id, { title: "M1" });
@@ -398,6 +411,7 @@ describe("MissionStore", () => {
         totalFeatures: 0,
         completedFeatures: 0,
         linkedGoalCount: 0,
+        eventCount: 0,
         progressPercent: 0,
       });
 
@@ -409,6 +423,7 @@ describe("MissionStore", () => {
         totalFeatures: 0,
         completedFeatures: 0,
         linkedGoalCount: 0,
+        eventCount: 0,
         progressPercent: 0,
       });
 
@@ -420,6 +435,7 @@ describe("MissionStore", () => {
         totalFeatures: 2,
         completedFeatures: 1,
         linkedGoalCount: 0,
+        eventCount: 0,
         progressPercent: 50,
       });
     });
@@ -437,6 +453,8 @@ describe("MissionStore", () => {
       createGoalInDb(db, "G-004", "Reliability");
       store.linkGoal(mission.id, "G-003");
       store.linkGoal(mission.id, "G-004");
+      store.logMissionEvent(mission.id, "mission_started", "started");
+      store.logMissionEvent(mission.id, "warning", "warning");
 
       const singleSummary = store.getMissionSummary(mission.id);
       const batchedResult = store.listMissionsWithSummaries().find((m) => m.id === mission.id)!;
@@ -446,6 +464,7 @@ describe("MissionStore", () => {
       expect(batchedResult.summary.totalFeatures).toBe(singleSummary.totalFeatures);
       expect(batchedResult.summary.completedFeatures).toBe(singleSummary.completedFeatures);
       expect(batchedResult.summary.linkedGoalCount).toBe(singleSummary.linkedGoalCount);
+      expect(batchedResult.summary.eventCount).toBe(singleSummary.eventCount);
       expect(batchedResult.summary.progressPercent).toBe(singleSummary.progressPercent);
     });
 

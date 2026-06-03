@@ -6919,6 +6919,8 @@ export interface MissionSummary {
   completedMilestones: number;
   totalFeatures: number;
   completedFeatures: number;
+  linkedGoalCount: number;
+  eventCount: number;
   progressPercent: number;
 }
 

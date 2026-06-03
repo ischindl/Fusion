@@ -260,6 +260,7 @@ export interface MissionSummary {
   totalFeatures: number;
   completedFeatures: number;
   linkedGoalCount?: number;
+  eventCount?: number;
   progressPercent: number;
 }
 
