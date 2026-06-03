@@ -614,6 +614,16 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
           throw badRequest("doneAutoArchiveDays must be an integer between 0 and 3650");
         }
       }
+      const operationalLogRetentionDays = clientSettings.operationalLogRetentionDays;
+      if (operationalLogRetentionDays !== undefined && operationalLogRetentionDays !== null) {
+        if (
+          typeof operationalLogRetentionDays !== "number"
+          || !Number.isInteger(operationalLogRetentionDays)
+          || ![0, 7, 14, 30, 60, 90].includes(operationalLogRetentionDays)
+        ) {
+          throw badRequest("operationalLogRetentionDays must be one of: 0, 7, 14, 30, 60, 90");
+        }
+      }
       if (
         clientSettings.archiveAgentLogMode !== undefined &&
         !["none", "compact", "full"].includes(clientSettings.archiveAgentLogMode)

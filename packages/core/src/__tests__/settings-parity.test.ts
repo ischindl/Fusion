@@ -117,6 +117,13 @@ describe("settings key parity", () => {
     expect(PROJECT_SETTINGS_KEYS).toContain("mailAutoCleanupDays");
   });
 
+  it("defaults operationalLogRetentionDays to 30 and keeps it project-scoped", () => {
+    expect(DEFAULT_PROJECT_SETTINGS.operationalLogRetentionDays).toBe(30);
+    expect(isProjectSettingsKey("operationalLogRetentionDays")).toBe(true);
+    expect(isGlobalSettingsKey("operationalLogRetentionDays")).toBe(false);
+    expect(PROJECT_SETTINGS_KEYS).toContain("operationalLogRetentionDays");
+  });
+
   it("keeps heartbeatScopeDiscipline project-scoped with strict default", () => {
     expect(DEFAULT_PROJECT_SETTINGS.heartbeatScopeDiscipline).toBe("strict");
     expect(isProjectSettingsKey("heartbeatScopeDiscipline")).toBe(true);

@@ -997,6 +997,14 @@ describe("SettingsModal", () => {
         scope: "project",
         expectedKey: "chatAutoCleanupDays",
       },
+      {
+        section: "Project General",
+        label: "Operational log retention",
+        kind: "select",
+        value: 7,
+        scope: "project",
+        expectedKey: "operationalLogRetentionDays",
+      },
     ])("persists $expectedKey through the expected settings scope", async (input) => {
       await expectSettingPersists(input);
     });
