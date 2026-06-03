@@ -10,7 +10,7 @@ import type {
   ScheduledTask,
   AutomationRunResult,
 } from "@fusion/core";
-import { compareTasksByPriorityThenAgeAndId, getTaskHardMergeBlocker, isSharedBranchGroupMemberIntegration, normalizeMergerMode, sortTasksByPriorityThenAgeAndId } from "@fusion/core";
+import { allowsAutoMergeProcessing, compareTasksByPriorityThenAgeAndId, getTaskHardMergeBlocker, isSharedBranchGroupMemberIntegration, normalizeMergerMode, sortTasksByPriorityThenAgeAndId } from "@fusion/core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
@@ -1383,8 +1383,8 @@ export class ProjectEngine {
    * pushed wins. listTasks returns createdAt ASC — without this sort an
    * older low-priority task would start before a later urgent one.
    */
-  private allowInReviewMergeProcessing(task: Pick<Task, "branchContext">, settings: Pick<Settings, "autoMerge">): boolean {
-    return settings.autoMerge || isSharedBranchGroupMemberIntegration(task);
+  private allowInReviewMergeProcessing(task: Pick<Task, "branchContext" | "autoMerge">, settings: Pick<Settings, "autoMerge">): boolean {
+    return allowsAutoMergeProcessing(task, settings) || isSharedBranchGroupMemberIntegration(task);
   }
 
   private enqueueEligibleInReviewTasks(tasks: readonly Task[], settings: Pick<Settings, "autoMerge">): number {

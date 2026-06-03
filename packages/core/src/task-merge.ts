@@ -47,6 +47,23 @@ export function resolveEffectiveAutoMerge(
   return task.autoMerge ?? settings.autoMerge;
 }
 
+/**
+ * Gate for auto-merge *processing* (engine enqueue + self-healing sweeps).
+ * Additive relative to the global setting: when `settings.autoMerge` is on,
+ * every task flows through — tasks with an explicit `autoMerge: false` are
+ * parked as `manual-required` downstream by the merger, not silently skipped
+ * here. When the global setting is off, only tasks with an explicit per-task
+ * `autoMerge: true` override proceed. Distinct from
+ * `resolveEffectiveAutoMerge`, which resolves the effective boolean and would
+ * (incorrectly for processing gates) starve the manual-required parking path.
+ */
+export function allowsAutoMergeProcessing(
+  task: Pick<Task, "autoMerge">,
+  settings: Pick<Settings, "autoMerge">,
+): boolean {
+  return settings.autoMerge !== false || task.autoMerge === true;
+}
+
 // Resolves group → default-branch PROMOTION auto-merge. See resolveEffectiveAutoMerge for the per-task member→group-integration step; the two are distinct and must not be conflated.
 export function resolveEffectiveGroupAutoMerge(
   group: Pick<BranchGroup, "autoMerge">,

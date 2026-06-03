@@ -2670,3 +2670,97 @@ describe("ProjectEngine stale mergeActive rescue (FN-3900)", () => {
     await engine.stop();
   });
 });
+
+describe("allowInReviewMergeProcessing per-task autoMerge override", () => {
+  const gate = (task: Partial<Task>, settings: { autoMerge: boolean }) =>
+    (createEngine() as any).allowInReviewMergeProcessing(task, settings) as boolean;
+
+  it("lets an explicit per-task autoMerge:true through when the global setting is off", () => {
+    expect(gate({ autoMerge: true }, { autoMerge: false })).toBe(true);
+  });
+
+  it("blocks tasks without a per-task override when the global setting is off", () => {
+    expect(gate({}, { autoMerge: false })).toBe(false);
+    expect(gate({ autoMerge: false }, { autoMerge: false })).toBe(false);
+  });
+
+  it("keeps everything flowing when the global setting is on — explicit autoMerge:false is parked manual-required downstream", () => {
+    expect(gate({}, { autoMerge: true })).toBe(true);
+    expect(gate({ autoMerge: false }, { autoMerge: true })).toBe(true);
+  });
+
+  it("still exempts shared-branch-group member integration when the global setting is off", () => {
+    expect(gate(
+      { branchContext: { assignmentMode: "shared", groupId: "grp-1" } as Task["branchContext"] },
+      { autoMerge: false },
+    )).toBe(true);
+  });
+});
+
+// ## Surface Enumeration
+//
+// Known in-review merge entry surfaces in ProjectEngine, and how each enforces
+// the per-task `autoMerge` override invariant (a task with `autoMerge:true` must
+// still be enqueued for merge even when the global `autoMerge` setting is off):
+//
+//   1. Startup merge sweep            (project-engine.ts ~:2857) ─┐
+//   2. Periodic merge retry sweep     (project-engine.ts ~:2916) ─┼─ all call
+//   3. Resume-after-unpause sweep     (project-engine.ts ~:2977) ─┘ enqueueEligibleInReviewTasks(...)
+//   4. task:moved fast path           (project-engine.ts ~:1506) ─── inline allowInReviewMergeProcessing(...)
+//
+// Surfaces 1–3 funnel through `enqueueEligibleInReviewTasks`, whose filter is
+// `!t.paused && canMergeTask(t) && allowInReviewMergeProcessing(t, settings)`.
+// The behavior tests below exercise that shared funnel directly on a real engine
+// instance (with `internalEnqueueMerge` stubbed), so a regression in any of the
+// three sweep wrappers (wireAutoMerge / startupMergeSweep / scheduleMergeRetry /
+// resumeAfterUnpauseAndSweepInReview) that still routes through the funnel is
+// caught. Surface 4 (the task:moved fast path) shares the same
+// `allowInReviewMergeProcessing` gate, which is covered by the direct helper
+// tests above.
+
+describe("enqueueEligibleInReviewTasks honors per-task autoMerge override (shared sweep funnel)", () => {
+  const inReview = (id: string, overrides: Partial<Task> = {}): Task =>
+    ({
+      id,
+      column: "in-review",
+      paused: false,
+      mergeRetries: 0,
+      status: null,
+      ...overrides,
+    }) as unknown as Task;
+
+  const setup = () => {
+    const engine = createEngine() as any;
+    const enqueueSpy = vi
+      .spyOn(engine, "internalEnqueueMerge")
+      .mockImplementation(() => true);
+    const run = (tasks: Task[], settings: { autoMerge: boolean }): number =>
+      engine.enqueueEligibleInReviewTasks(tasks, settings) as number;
+    return { engine, enqueueSpy, run };
+  };
+
+  it("enqueues an in-review task with autoMerge:true even when the global setting is off", () => {
+    const { enqueueSpy, run } = setup();
+    const count = run([inReview("FN-override", { autoMerge: true })], { autoMerge: false });
+    expect(count).toBe(1);
+    expect(enqueueSpy).toHaveBeenCalledWith("FN-override");
+  });
+
+  it("does not enqueue a sibling task without an override in the same sweep when the global setting is off", () => {
+    const { enqueueSpy, run } = setup();
+    const count = run(
+      [inReview("FN-override", { autoMerge: true }), inReview("FN-plain")],
+      { autoMerge: false },
+    );
+    expect(count).toBe(1);
+    expect(enqueueSpy).toHaveBeenCalledWith("FN-override");
+    expect(enqueueSpy).not.toHaveBeenCalledWith("FN-plain");
+  });
+
+  it("still enqueues a task with autoMerge:false when the global setting is on (parked manual-required downstream)", () => {
+    const { enqueueSpy, run } = setup();
+    const count = run([inReview("FN-explicit-false", { autoMerge: false })], { autoMerge: true });
+    expect(count).toBe(1);
+    expect(enqueueSpy).toHaveBeenCalledWith("FN-explicit-false");
+  });
+});

@@ -8,6 +8,7 @@ import {
   getTaskHardMergeBlocker,
   getTaskMergeBlocker,
   isTaskReadyForMerge,
+  allowsAutoMergeProcessing,
   isSharedBranchGroupMemberIntegration,
   resolveEffectiveAutoMerge,
   resolveEffectiveGroupAutoMerge,
@@ -43,6 +44,23 @@ describe("resolveEffectiveAutoMerge", () => {
 
   it("falls back to global false when task value is undefined", () => {
     expect(resolveEffectiveAutoMerge({ autoMerge: undefined }, { autoMerge: false })).toBe(false);
+  });
+});
+
+describe("allowsAutoMergeProcessing", () => {
+  it("lets explicit per-task true through when the global setting is off (FN per-task override)", () => {
+    expect(allowsAutoMergeProcessing({ autoMerge: true }, { autoMerge: false })).toBe(true);
+  });
+
+  it("blocks tasks without an explicit override when the global setting is off", () => {
+    expect(allowsAutoMergeProcessing({ autoMerge: undefined }, { autoMerge: false })).toBe(false);
+    expect(allowsAutoMergeProcessing({ autoMerge: false }, { autoMerge: false })).toBe(false);
+  });
+
+  it("lets everything through when the global setting is on — explicit false still flows so the merger can park it manual-required", () => {
+    expect(allowsAutoMergeProcessing({ autoMerge: undefined }, { autoMerge: true })).toBe(true);
+    expect(allowsAutoMergeProcessing({ autoMerge: true }, { autoMerge: true })).toBe(true);
+    expect(allowsAutoMergeProcessing({ autoMerge: false }, { autoMerge: true })).toBe(true);
   });
 });
 

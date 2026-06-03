@@ -9,6 +9,7 @@ import { VALID_TRANSITIONS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
 import { resolveWorktrunkSettings, validateWorktrunkSettings } from "./worktrunk-settings.js";
 import { normalizeTaskPriority } from "./task-priority.js";
+import { allowsAutoMergeProcessing } from "./task-merge.js";
 import { canAgentTakeImplementationTaskForExplicitRouting } from "./agent-role-policy.js";
 import { GlobalSettingsStore } from "./global-settings.js";
 import { Database, SCHEMA_VERSION, toJson, toJsonNullable, fromJson } from "./db.js";
@@ -4597,7 +4598,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const task = this.rowToTask(row);
       task.inReviewStall = getInReviewStallReason(task, {
         now,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -4610,7 +4611,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.inReviewStalled = getInReviewStalledSignal(task, {
         now,
         thresholdMs: settings.inReviewStalledThresholdMs,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -4853,7 +4854,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const task = this.rowToTask(row);
       task.inReviewStall = getInReviewStallReason(task, {
         now,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -4866,7 +4867,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.inReviewStalled = getInReviewStalledSignal(task, {
         now,
         thresholdMs: settings.inReviewStalledThresholdMs,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -5016,7 +5017,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const task = this.rowToTask(row);
       task.inReviewStall = getInReviewStallReason(task, {
         now,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });
@@ -5029,7 +5030,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       task.inReviewStalled = getInReviewStalledSignal(task, {
         now,
         thresholdMs: settings.inReviewStalledThresholdMs,
-        autoMerge: settings.autoMerge,
+        autoMerge: allowsAutoMergeProcessing(task, settings),
         engineActiveSinceMs: settings.engineActiveSinceMs,
         engineActivationGraceMs: settings.engineActivationGraceMs,
       });

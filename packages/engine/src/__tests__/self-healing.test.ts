@@ -97,7 +97,7 @@ vi.mock("../merger.js", () => ({
   classifyOwnedLandedEvidence: vi.fn(),
 }));
 
-import { SelfHealingManager, isBranchAheadOfBase } from "../self-healing.js";
+import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES } from "../self-healing.js";
 import type { TaskStore, Settings, Task, AgentStore, Agent, NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
@@ -3365,7 +3365,8 @@ describe("SelfHealingManager", () => {
       const result = await managerWithRecovery.recoverMergeableReviewTasks();
 
       expect(result).toBe(0);
-      expect(store.listTasks).not.toHaveBeenCalled();
+      // The sweep may list tasks to discover per-task autoMerge overrides,
+      // but must not merge or enqueue anything without one.
       expect(store.mergeTask).not.toHaveBeenCalled();
       expect(enqueueMerge).not.toHaveBeenCalled();
 
@@ -3747,7 +3748,10 @@ describe("SelfHealingManager", () => {
       const result = await managerWithRecovery.finalizeNoOpReviewTasks();
 
       expect(result).toBe(0);
-      expect(store.listTasks).not.toHaveBeenCalled();
+      // The sweep may list tasks to discover per-task autoMerge overrides,
+      // but must not finalize anything without one.
+      expect(store.moveTask).not.toHaveBeenCalled();
+      expect(store.updateTask).not.toHaveBeenCalled();
 
       managerWithRecovery.stop();
     });
@@ -8208,6 +8212,153 @@ describe("autoMerge gating for mutating in-review sweeps (FN-5147)", () => {
       taskStuckTimeoutMs: 1_000,
       maxPostReviewFixes: 1,
     });
+
+    // Seed real, stale in-review sweep candidates with NO per-task autoMerge
+    // override. Each fixture matches a distinct covered sweep's candidate shape
+    // and would be mutated if the per-task gate (allowsAutoMergeProcessing) were
+    // ignored. Because the global setting is autoMerge:false and none of these
+    // carry autoMerge:true, every sweep must enumerate them and skip them solely
+    // due to the gate — which is the regression under test. The gate is the
+    // first/early filter in each sweep, so candidates are dropped before any
+    // store.getTask / git helper is reached.
+    const stale = new Date(Date.now() - 600_000).toISOString();
+    const seededInReviewCandidates = [
+      // recoverStaleIncompleteReviewTasks + recoverGhostReviewTasks:
+      // idle in-review with incomplete steps, stale.
+      {
+        id: "FN-GATE-INCOMPLETE",
+        column: "in-review",
+        paused: false,
+        steps: [{ status: "pending" }],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverInterruptedMergingTasks: stale `merging` status.
+      {
+        id: "FN-GATE-MERGING",
+        column: "in-review",
+        paused: false,
+        status: "merging",
+        steps: [],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverMergedReviewTasks + recoverGhostReviewTasks(skip merge-confirmed):
+      // mergeConfirmed:true stuck in in-review.
+      {
+        id: "FN-GATE-MERGED",
+        column: "in-review",
+        paused: false,
+        steps: [],
+        log: [],
+        mergeDetails: { mergeConfirmed: true },
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverStuckMergeDeadlocks + recoverAlreadyMergedReviewTasks +
+      // recoverOrphanOnlyScopeViolations: failed in-review, retries exhausted,
+      // worktree present.
+      {
+        id: "FN-GATE-FAILED",
+        column: "in-review",
+        paused: false,
+        status: "failed",
+        steps: [],
+        log: [],
+        mergeRetries: MAX_AUTO_MERGE_RETRIES,
+        worktree: "/tmp/test-project/.worktrees/FN-GATE-FAILED",
+        branch: "fn/FN-GATE-FAILED",
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverReviewTasksWithFailedPreMergeSteps: idle in-review whose merge is
+      // blocked specifically by a failed pre-merge workflow step, worktree set.
+      {
+        id: "FN-GATE-PREMERGE",
+        column: "in-review",
+        paused: false,
+        steps: [],
+        log: [],
+        worktree: "/tmp/test-project/.worktrees/FN-GATE-PREMERGE",
+        workflowStepResults: [{ phase: "pre-merge", status: "failed" }],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverMissingWorktreeReviewFailures: failed by missing-worktree session
+      // start, with step progress.
+      {
+        id: "FN-GATE-MISSINGWT",
+        column: "in-review",
+        paused: false,
+        status: "failed",
+        error: "Refusing to start coding agent in missing worktree: /tmp/gone",
+        steps: [{ status: "done" }],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverPartialProgressNoTaskDoneFailures: failed without fn_task_done,
+      // partial step progress, not work-complete, retries available.
+      {
+        id: "FN-GATE-NOTASKDONE",
+        column: "in-review",
+        paused: false,
+        status: "failed",
+        error: "Agent finished without calling fn_task_done",
+        steps: [{ status: "done" }, { status: "pending" }],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverForeignOnlyContaminatedInReviewTasks: in-review with branch +
+      // worktree, not merge-confirmed.
+      {
+        id: "FN-GATE-FOREIGN",
+        column: "in-review",
+        paused: false,
+        branch: "fn/FN-GATE-FOREIGN",
+        worktree: "/tmp/test-project/.worktrees/FN-GATE-FOREIGN",
+        steps: [],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // recoverCompletionHandoffLimbo: idle in-review with no status/mergeDetails/
+      // review, an aged "Task marked done by agent" log marker, no merge blocker.
+      {
+        id: "FN-GATE-HANDOFF",
+        column: "in-review",
+        paused: false,
+        steps: [],
+        log: [{ action: "Task marked done by agent", timestamp: stale }],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+      // reclaimSelfOwnedBranchConflicts: in-review branch-conflict-unrecoverable.
+      // (No worktree, so even absent the gate it is skipped before any git call;
+      // the gate is what the assertions verify.)
+      {
+        id: "FN-GATE-RECLAIM",
+        column: "in-review",
+        paused: true,
+        pausedReason: "branch-conflict-unrecoverable",
+        branch: "fn/FN-GATE-RECLAIM",
+        steps: [],
+        log: [],
+        updatedAt: stale,
+        columnMovedAt: stale,
+      },
+    ] as unknown as Task[];
+
+    // Resolve fixtures only for the in-review column the sweeps enumerate; other
+    // columns (todo / in-progress / triage) stay empty so the non-auto-merge-
+    // gated branches of reclaim/foreign-only sweeps don't reach git helpers.
+    (store.listTasks as ReturnType<typeof vi.fn>).mockImplementation(
+      async (opts?: { column?: string }) =>
+        opts?.column === "in-review" ? seededInReviewCandidates : [],
+    );
   });
 
   afterEach(() => {
@@ -8227,25 +8378,104 @@ describe("autoMerge gating for mutating in-review sweeps (FN-5147)", () => {
     "recoverMissingWorktreeReviewFailures",
     "recoverPartialProgressNoTaskDoneFailures",
     "reclaimSelfOwnedBranchConflicts",
-  ] as const)("skips entirely when autoMerge is disabled (respects PR-based review flow): %s", async (methodName) => {
+  ] as const)("performs no mutations when autoMerge is disabled and no per-task override exists: %s", async (methodName) => {
     if (methodName === "recoverReviewTasksWithFailedPreMergeSteps") {
       manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project", recoverFailedPreMergeStep: vi.fn() });
     }
     const result = await (manager as any)[methodName]();
     expect(result).toBe(0);
-    expect(store.listTasks).not.toHaveBeenCalled();
+    // Enumeration must have happened: the sweep listed real, stale in-review
+    // candidates seeded above. Mutations are skipped solely because of the
+    // per-task auto-merge gate (respects PR-based review flow) — so these
+    // assertions are non-vacuous.
+    expect(store.listTasks).toHaveBeenCalled();
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(store.updateTask).not.toHaveBeenCalled();
     expect(store.logEntry).not.toHaveBeenCalled();
   });
 
-  it("skips entirely when autoMerge is disabled (respects PR-based review flow): recoverCompletionHandoffLimbo", async () => {
+  it("performs no mutations when autoMerge is disabled and no per-task override exists: recoverCompletionHandoffLimbo", async () => {
     const result = await manager.recoverCompletionHandoffLimbo();
     expect(result).toBeUndefined();
-    expect(store.listTasks).not.toHaveBeenCalled();
+    // The seeded FN-GATE-HANDOFF candidate carries an aged "Task marked done by
+    // agent" marker and no merge blocker, so the sweep enumerates it and would
+    // requeue/fail it absent the per-task gate.
+    expect(store.listTasks).toHaveBeenCalled();
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(store.updateTask).not.toHaveBeenCalled();
     expect(store.logEntry).not.toHaveBeenCalled();
+  });
+
+  it("surfaces in-review stalls for tasks with an explicit autoMerge:true override when the global setting is off", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: false,
+        globalPause: false,
+        enginePaused: false,
+        taskStuckTimeoutMs: 60_000,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: "FN-OVERRIDE",
+          column: "in-review",
+          paused: false,
+          status: "merging",
+          autoMerge: true,
+          steps: [],
+          log: [],
+          updatedAt: new Date(Date.parse("2026-01-01T00:10:00.000Z") - 600_000).toISOString(),
+          columnMovedAt: new Date(Date.parse("2026-01-01T00:10:00.000Z") - 600_000).toISOString(),
+        },
+      ]);
+
+      const surfaced = await manager.surfaceInReviewStalls();
+
+      expect(surfaced).toBe(1);
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-OVERRIDE",
+        expect.stringContaining("In-review stall surfaced ["),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps skipping override-less siblings while processing the override task", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+      const staleFields = {
+        column: "in-review",
+        paused: false,
+        status: "merging",
+        steps: [],
+        log: [],
+        updatedAt: new Date(Date.parse("2026-01-01T00:10:00.000Z") - 600_000).toISOString(),
+        columnMovedAt: new Date(Date.parse("2026-01-01T00:10:00.000Z") - 600_000).toISOString(),
+      };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: false,
+        globalPause: false,
+        enginePaused: false,
+        taskStuckTimeoutMs: 60_000,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: "FN-OVERRIDE", autoMerge: true, ...staleFields },
+        { id: "FN-MANUAL", ...staleFields },
+      ]);
+
+      const surfaced = await manager.surfaceInReviewStalls();
+
+      expect(surfaced).toBe(1);
+      expect(store.logEntry).not.toHaveBeenCalledWith(
+        "FN-MANUAL",
+        expect.stringContaining("In-review stall surfaced ["),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
