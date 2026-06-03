@@ -2,7 +2,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 import type { BranchGroup, BranchGroupPrState, MergeTargetResolution, Settings, Task, TaskStore } from "@fusion/core";
-import { resolveEffectiveGroupAutoMerge, resolveTaskMergeTarget } from "@fusion/core";
+import { isBranchGroupMemberLanded, resolveEffectiveGroupAutoMerge, resolveTaskMergeTarget } from "@fusion/core";
 import { resolveIntegrationBranch } from "./integration-branch.js";
 
 const execAsync = promisify(exec);
@@ -41,16 +41,25 @@ export interface BranchGroupPromotionDecision {
     | "eligible";
 }
 
+/**
+ * Evaluates branch-group completion using the canonical `@fusion/core`
+ * `isBranchGroupMemberLanded` predicate so the engine gate can never diverge
+ * from the dashboard route gate. A member is landed iff it was merge-confirmed
+ * onto THIS group's branch via the branch-group-integration path; the group is
+ * complete iff it has at least one member and every member is landed.
+ *
+ * `group` (its `branchName`) is required: landing is branch-anchored, so a
+ * member done against a sibling/mismatched branch must NOT count as landed.
+ */
 export function evaluateBranchGroupCompletion(input: {
   members: Pick<Task, "id" | "column" | "branchContext" | "mergeDetails">[];
+  group: Pick<BranchGroup, "branchName">;
 }): BranchGroupCompletionStatus {
   const landedMemberIds: string[] = [];
   const pendingMemberIds: string[] = [];
 
   for (const member of input.members) {
-    const landed = member.column === "done"
-      || (member.column === "in-review" && member.mergeDetails?.mergeTargetSource === "branch-group-integration");
-    if (landed) {
+    if (isBranchGroupMemberLanded(member, input.group)) {
       landedMemberIds.push(member.id);
     } else {
       pendingMemberIds.push(member.id);
@@ -159,7 +168,7 @@ export async function promoteBranchGroup(input: {
   }
 
   const members = await input.store.listTasksByBranchGroup(group.id);
-  const completion = evaluateBranchGroupCompletion({ members });
+  const completion = evaluateBranchGroupCompletion({ members, group });
   if (!completion.complete) {
     return {
       groupId: group.id,

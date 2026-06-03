@@ -30,12 +30,22 @@ afterEach(async () => {
 });
 
 describe("evaluateBranchGroupCompletion", () => {
-  it("returns complete when all members are landed", () => {
+  const branchName = "fusion/groups/planning-x";
+  const group = { branchName } as const;
+  const landed = (id: string) => ({
+    id,
+    column: "done" as const,
+    mergeDetails: {
+      mergeConfirmed: true,
+      mergeTargetSource: "branch-group-integration",
+      mergeTargetBranch: branchName,
+    } as any,
+  });
+
+  it("returns complete when all members are landed onto the group branch", () => {
     const result = evaluateBranchGroupCompletion({
-      members: [
-        { id: "FN-A", column: "done" as const },
-        { id: "FN-B", column: "in-review" as const, mergeDetails: { mergeTargetSource: "branch-group-integration" } as any },
-      ] as any,
+      members: [landed("FN-A"), landed("FN-B")] as any,
+      group,
     });
 
     expect(result).toEqual({
@@ -49,9 +59,10 @@ describe("evaluateBranchGroupCompletion", () => {
   it("returns pending ids when one member is not landed", () => {
     const result = evaluateBranchGroupCompletion({
       members: [
-        { id: "FN-A", column: "done" as const },
-        { id: "FN-B", column: "todo" as const },
+        landed("FN-A"),
+        { id: "FN-B", column: "todo" as const } as any,
       ] as any,
+      group,
     });
 
     expect(result.complete).toBe(false);
@@ -60,7 +71,7 @@ describe("evaluateBranchGroupCompletion", () => {
   });
 
   it("treats empty groups as incomplete", () => {
-    const result = evaluateBranchGroupCompletion({ members: [] });
+    const result = evaluateBranchGroupCompletion({ members: [], group });
     expect(result).toEqual({
       complete: false,
       totalMembers: 0,
@@ -69,16 +80,46 @@ describe("evaluateBranchGroupCompletion", () => {
     });
   });
 
-  it("counts mixed done + landed in-review members as complete", () => {
+  it("does NOT count a member confirmed onto a mismatched branch", () => {
     const result = evaluateBranchGroupCompletion({
       members: [
-        { id: "FN-A", column: "done" as const },
-        { id: "FN-B", column: "in-review" as const, mergeDetails: { mergeTargetSource: "branch-group-integration" } as any },
+        landed("FN-A"),
+        {
+          id: "FN-B",
+          column: "done" as const,
+          mergeDetails: {
+            mergeConfirmed: true,
+            mergeTargetSource: "branch-group-integration",
+            mergeTargetBranch: "fusion/fn-sibling",
+          } as any,
+        } as any,
       ] as any,
+      group,
     });
 
-    expect(result.complete).toBe(true);
-    expect(result.pendingMemberIds).toEqual([]);
+    expect(result.complete).toBe(false);
+    expect(result.landedMemberIds).toEqual(["FN-A"]);
+    expect(result.pendingMemberIds).toEqual(["FN-B"]);
+  });
+
+  it("does NOT count a member whose merge is not confirmed", () => {
+    const result = evaluateBranchGroupCompletion({
+      members: [
+        {
+          id: "FN-A",
+          column: "in-review" as const,
+          mergeDetails: {
+            mergeConfirmed: false,
+            mergeTargetSource: "branch-group-integration",
+            mergeTargetBranch: branchName,
+          } as any,
+        } as any,
+      ] as any,
+      group,
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.pendingMemberIds).toEqual(["FN-A"]);
   });
 });
 
@@ -191,6 +232,16 @@ describe("promoteBranchGroup", () => {
     };
   }
 
+  const landedMember = (id: string, branchName: string) => ({
+    id,
+    column: "done" as const,
+    mergeDetails: {
+      mergeConfirmed: true,
+      mergeTargetSource: "branch-group-integration",
+      mergeTargetBranch: branchName,
+    },
+  });
+
   it("returns incomplete without merging when members are pending", async () => {
     const rootDir = makeRepo();
     const group = makeGroup();
@@ -222,7 +273,7 @@ describe("promoteBranchGroup", () => {
       recordAudit: async (event) => { audits.push(event as Record<string, unknown>); },
       store: {
         getBranchGroup: () => group,
-        listTasksByBranchGroup: async () => [{ id: "FN-A", column: "done" }],
+        listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
         updateBranchGroup: () => {
           throw new Error("should not update");
         },
@@ -251,7 +302,7 @@ describe("promoteBranchGroup", () => {
       recordAudit: async (event) => { audits.push(event as Record<string, unknown>); },
       store: {
         getBranchGroup: () => group,
-        listTasksByBranchGroup: async () => [{ id: "FN-A", column: "done" }],
+        listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
         updateBranchGroup: (_id: string, patch: Partial<typeof group>) => {
           group = { ...group, ...patch };
           return group;
@@ -272,7 +323,7 @@ describe("promoteBranchGroup", () => {
       recordAudit: async (event) => { audits.push(event as Record<string, unknown>); },
       store: {
         getBranchGroup: () => group,
-        listTasksByBranchGroup: async () => [{ id: "FN-A", column: "done" }],
+        listTasksByBranchGroup: async () => [landedMember("FN-A", group.branchName)],
         updateBranchGroup: (_id: string, patch: Partial<typeof group>) => {
           group = { ...group, ...patch };
           return group;

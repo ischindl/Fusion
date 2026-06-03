@@ -326,6 +326,10 @@ export {
   type MergeTargetResolverOptions,
 } from "./task-merge.js";
 export {
+  isBranchGroupMemberLanded,
+  isBranchGroupComplete,
+} from "./branch-group-completion.js";
+export {
   countRecentIdenticalStallEntries,
   getInReviewStallReason,
   IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX,

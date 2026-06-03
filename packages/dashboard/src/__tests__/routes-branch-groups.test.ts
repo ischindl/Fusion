@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import type { BranchGroup, Task, TaskStore } from "@fusion/core";
+import { evaluateBranchGroupCompletion } from "@fusion/engine";
 import { createApiRoutes } from "../routes.js";
 import { request as REQUEST } from "../test-request.js";
 
@@ -107,6 +108,31 @@ describe("branch group routes", () => {
     app = buildApp(createStore(group, tasks), promoteBranchGroup);
     res = await REQUEST(app, "POST", "/api/branch-groups/BG-1/promote", JSON.stringify({}), { "content-type": "application/json" });
     expect(res.status).toBe(400);
+  });
+
+  it("route serialization and coordinator agree on landed/complete for the same fixture", async () => {
+    // Same fixture exercised through BOTH paths must yield identical results.
+    const completeTasks = [buildTask("FN-1", group.id, true), buildTask("FN-2", group.id, true)];
+    const mixedTasks = [buildTask("FN-1", group.id, true), buildTask("FN-2", group.id, false)];
+
+    // Coordinator path.
+    const completeCoord = evaluateBranchGroupCompletion({ members: completeTasks, group });
+    const mixedCoord = evaluateBranchGroupCompletion({ members: mixedTasks, group });
+    expect(completeCoord.complete).toBe(true);
+    expect(mixedCoord.complete).toBe(false);
+
+    // Route serialization path.
+    const completeApp = buildApp(createStore(group, completeTasks));
+    const completeRes = await REQUEST(completeApp, "GET", "/api/branch-groups/BG-1");
+    expect(completeRes.body.group.completion.complete).toBe(true);
+
+    const mixedApp = buildApp(createStore(group, mixedTasks));
+    const mixedRes = await REQUEST(mixedApp, "GET", "/api/branch-groups/BG-1");
+    expect(mixedRes.body.group.completion.complete).toBe(false);
+
+    // No divergence between the two gates.
+    expect(completeRes.body.group.completion.complete).toBe(completeCoord.complete);
+    expect(mixedRes.body.group.completion.complete).toBe(mixedCoord.complete);
   });
 
   it("creates group on assign when groupId absent", async () => {

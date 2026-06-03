@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
-import type { BranchGroup, Task, TaskStore } from "@fusion/core";
+import type { BranchGroup, TaskStore } from "@fusion/core";
+import { isBranchGroupComplete, isBranchGroupMemberLanded } from "@fusion/core";
 import { badRequest, notFound } from "../api-error.js";
 
 export interface BranchGroupsRouterOptions {
@@ -11,19 +12,13 @@ function parseProjectId(req: Request): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function isMemberLanded(task: Task, group: BranchGroup): boolean {
-  return task.mergeDetails?.mergeConfirmed === true
-    && task.mergeDetails?.mergeTargetSource === "branch-group-integration"
-    && task.mergeDetails?.mergeTargetBranch === group.branchName;
-}
-
 async function serializeGroup(store: TaskStore, group: BranchGroup) {
   const members = await store.listTasksByBranchGroup(group.id);
   const memberRows = members.map((task) => ({
     taskId: task.id,
     title: task.title ?? task.description,
     column: task.column,
-    landed: isMemberLanded(task, group),
+    landed: isBranchGroupMemberLanded(task, group),
   }));
   const landedCount = memberRows.filter((member) => member.landed).length;
   return {
@@ -32,7 +27,7 @@ async function serializeGroup(store: TaskStore, group: BranchGroup) {
     completion: {
       landed: landedCount,
       total: memberRows.length,
-      complete: memberRows.length > 0 && landedCount === memberRows.length,
+      complete: isBranchGroupComplete(members, group),
     },
   };
 }
@@ -100,8 +95,7 @@ export function createBranchGroupsRouter(store: TaskStore, options?: BranchGroup
     if (!group) throw notFound("Branch group not found");
 
     const members = await store.listTasksByBranchGroup(group.id);
-    const landed = members.filter((member) => isMemberLanded(member, group)).length;
-    if (members.length === 0 || landed !== members.length) {
+    if (!isBranchGroupComplete(members, group)) {
       throw badRequest("Branch group completion gate not satisfied");
     }
 
