@@ -11,6 +11,8 @@ vi.mock("../../api", () => ({
   fetchTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
   selectTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null, enabledWorkflowSteps: [] }),
   fetchWorkflows: vi.fn().mockResolvedValue([]),
+  submitTaskWorkflowInput: vi.fn().mockResolvedValue({ ok: true }),
+  approveTaskWorkflowCli: vi.fn().mockResolvedValue({ approved: "ok" }),
 }));
 
 vi.mock("../../hooks/useAgentLogs", () => ({

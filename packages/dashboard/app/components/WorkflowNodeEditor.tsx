@@ -426,14 +426,41 @@ function InnerEditor({
                   )}
 
                   {currentExecutor === "cli" && (
-                    <label className="wf-field">
-                      <span>Script name</span>
-                      <input
-                        value={String(selectedNode.data.config?.scriptName ?? "")}
-                        onChange={(e) => updateSelectedData({ config: { scriptName: e.target.value } })}
-                      />
-                      <span className="wf-inspector-note">Named script from project settings. The node prompt is passed via FUSION_NODE_PROMPT.</span>
-                    </label>
+                    <>
+                      <label className="wf-field">
+                        <span>CLI mode</span>
+                        <select
+                          value={String(selectedNode.data.config?.cliMode ?? "command")}
+                          onChange={(e) => updateSelectedData({ config: { cliMode: e.target.value } })}
+                        >
+                          <option value="command">Command</option>
+                          <option value="script">Named script</option>
+                        </select>
+                      </label>
+                      {(selectedNode.data.config?.cliMode ?? "command") === "command" ? (
+                        <label className="wf-field">
+                          <span>Command</span>
+                          <textarea
+                            rows={3}
+                            placeholder="npm test -- --runInBand"
+                            value={String(selectedNode.data.config?.cliCommand ?? "")}
+                            onChange={(e) => updateSelectedData({ config: { cliCommand: e.target.value } })}
+                          />
+                          <p className="wf-inspector-note wf-inspector-note--info">
+                            Runs an arbitrary command in the task worktree. The first time this exact command runs, the task pauses for your approval. The node prompt is passed via FUSION_NODE_PROMPT.
+                          </p>
+                        </label>
+                      ) : (
+                        <label className="wf-field">
+                          <span>Script name</span>
+                          <input
+                            value={String(selectedNode.data.config?.scriptName ?? "")}
+                            onChange={(e) => updateSelectedData({ config: { scriptName: e.target.value } })}
+                          />
+                          <span className="wf-inspector-note">Named script from project settings. The node prompt is passed via FUSION_NODE_PROMPT.</span>
+                        </label>
+                      )}
+                    </>
                   )}
 
                   <label className="wf-field wf-field--checkbox">
