@@ -1413,6 +1413,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
     await this.migrateActiveArchivedTasksToArchiveDb();
     await this.migrateAgentLogEntriesToFilesOnce();
+    await this.cleanupNoOpTaskMovedActivityRowsOnce();
     if (this.db.getSchemaVersion() < SCHEMA_VERSION) {
       this.db.init();
     }
@@ -2607,6 +2608,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     // Task moved
     this.on("task:moved", (data) => {
       if (this.suppressActivityLogForPollingEmit) return;
+      if (data.from === data.to) return;
       this.recordActivityFromListener(
         {
           type: "task:moved",
@@ -5686,7 +5688,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     if (this.isWatching) this.taskCache.set(id, { ...task });
 
-    this.emit("task:moved", { task, from: fromColumn, to: toColumn, source: moveSource });
+    if (fromColumn !== toColumn) {
+      this.emit("task:moved", { task, from: fromColumn, to: toColumn, source: moveSource });
+    }
     return task;
   }
 
@@ -8634,9 +8638,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
             if (archivedSet.has(id)) {
               // Task moved to archive — emit task:moved (matching what
               // archiveTask emits in-process) so other subscribers can react.
-              // Activity-log listeners skip this emit; the originating
+              // Skip already-archived cache entries to avoid no-op emits.
+              // Activity-log listeners skip polling emits; the originating
               // TaskStore instance wrote the row in-process.
-              this.emit("task:moved", { task: cached, from: cached.column, to: "archived" as Column, source: "engine" });
+              if (cached.column !== "archived") {
+                this.emit("task:moved", { task: cached, from: cached.column, to: "archived" as Column, source: "engine" });
+              }
             } else {
               // Polling replicas only mirror the originating delete signal.
               // Do not record run-audit here; the writer already owns that row.
@@ -10288,6 +10295,44 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(migrationKey, migrationVersion);
     this.db.bumpLastModified();
+  }
+
+  private async cleanupNoOpTaskMovedActivityRowsOnce(): Promise<void> {
+    const migrationKey = "noOpTaskMovedActivityCleanupVersion";
+    const migrationVersion = "1";
+    const row = this.db.prepare("SELECT value FROM __meta WHERE key = ?").get(migrationKey) as
+      | { value: string }
+      | undefined;
+
+    if (row?.value === migrationVersion) {
+      return;
+    }
+
+    const hasTable =
+      this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'activityLog' LIMIT 1").get() !==
+      undefined;
+    const markDone = () => {
+      this.db.prepare(`
+        INSERT INTO __meta (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(migrationKey, migrationVersion);
+    };
+
+    if (!hasTable) {
+      markDone();
+      this.db.bumpLastModified();
+      return;
+    }
+
+    this.db.transactionImmediate(() => {
+      this.db.prepare(`
+        DELETE FROM activityLog
+        WHERE type = 'task:moved'
+          AND json_extract(metadata, '$.from') = json_extract(metadata, '$.to')
+      `).run();
+      markDone();
+      this.db.bumpLastModified();
+    });
   }
 
   // ── Archive Cleanup Methods ─────────────────────────────────────────
