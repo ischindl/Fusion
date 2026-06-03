@@ -2236,7 +2236,9 @@ describe("MissionStore", () => {
 
       expect(task?.branch).toMatch(/^release\/shared\//);
       expect(task?.branch).not.toBe("release/shared");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2258,7 +2260,9 @@ describe("MissionStore", () => {
 
       expect(task?.branch).toMatch(/^hotfix\/shared\//);
       expect(task?.branch).not.toBe("hotfix/shared");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2485,7 +2489,9 @@ describe("MissionStore", () => {
       expect(task?.branch).toMatch(/^feature\/manual\//);
       expect(task?.branch).not.toBe("feature/manual");
       expect(task?.baseBranch).toBe("release");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2512,15 +2518,23 @@ describe("MissionStore", () => {
       expect(firstTask?.branch).not.toBe("feature/shared");
       expect(secondTask?.branch).not.toBe("feature/shared");
       expect(firstTask?.branch).not.toBe(secondTask?.branch);
-      expect(firstTask?.branchContext?.groupId).toBe(`mission:${mission.id}`);
-      expect(secondTask?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      const branchGroup = ts.getBranchGroupBySource("mission", mission.id);
+      // U1: both members carry the real BranchGroup id so listTasksByBranchGroup(group.id) resolves them.
+      expect(branchGroup?.id).toMatch(/^BG-/);
+      expect(firstTask?.branchContext?.groupId).toBe(branchGroup?.id);
+      expect(secondTask?.branchContext?.groupId).toBe(branchGroup?.id);
       expect(firstTask?.branchContext?.assignmentMode).toBe("shared");
       expect(secondTask?.branchContext?.assignmentMode).toBe("shared");
       expect(firstTask?.branchContext?.source).toBe("mission");
       expect(secondTask?.branchContext?.source).toBe("mission");
 
-      const branchGroup = ts.getBranchGroupBySource("mission", mission.id);
       expect(branchGroup?.branchName).toBe("feature/shared");
+
+      // U1: members enumerate by the real group id.
+      const members = await ts.listTasksByBranchGroup(branchGroup!.id);
+      expect(members.map((task) => task.id).sort()).toEqual(
+        [firstTask!.id, secondTask!.id].sort(),
+      );
     });
 
     it("triageSlice does not inject baseBranch when mission has none", async () => {

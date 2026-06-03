@@ -210,12 +210,9 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
         resolveBranchSelection(branchSelection, branch, baseBranch);
       const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
-      const planningBranchContext = {
-        groupId: `planning:${sessionId}`,
-        source: "planning" as const,
-        assignmentMode: branchMode,
-        inheritedBaseBranch: resolvedBaseBranch,
-      };
+      // Stamp the real BranchGroup id (BG-…) so listTasksByBranchGroup(group.id)
+      // resolves members. The group is only created in shared mode below.
+      let planningGroupId = `planning:${sessionId}`;
 
       if (branchMode === "shared") {
         const settings = await scopedStore.getSettings();
@@ -225,11 +222,21 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
             : "main";
         const settingsAutoMerge = typeof settings.autoMerge === "boolean" ? settings.autoMerge : false;
         const branchGroupStore = scopedStore as { ensureBranchGroupForSource?: TaskStore["ensureBranchGroupForSource"] };
-        branchGroupStore.ensureBranchGroupForSource?.("planning", sessionId, {
+        const group = branchGroupStore.ensureBranchGroupForSource?.("planning", sessionId, {
           branchName: resolvedBranch ?? resolvedBaseBranch ?? settingsDefaultBranch,
           autoMerge: session.autoMerge ?? settingsAutoMerge,
         });
+        if (group) {
+          planningGroupId = group.id;
+        }
       }
+
+      const planningBranchContext = {
+        groupId: planningGroupId,
+        source: "planning" as const,
+        assignmentMode: branchMode,
+        inheritedBaseBranch: resolvedBaseBranch,
+      };
 
       const createdTasks = [] as Awaited<ReturnType<TaskStore["createTask"]>>[];
       const tempIdToTaskId = new Map<string, string>();
@@ -1267,12 +1274,9 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const { branch: resolvedBranch, baseBranch: resolvedBaseBranch } =
         resolveBranchSelection(branchSelection, branch, baseBranch);
       const { mode: branchMode } = resolveBranchAssignmentContext(branchAssignment);
-      const planningBranchContext = {
-        groupId: `planning:${planningSessionId}`,
-        source: "planning" as const,
-        assignmentMode: branchMode,
-        inheritedBaseBranch: resolvedBaseBranch,
-      };
+      // Stamp the real BranchGroup id (BG-…) so listTasksByBranchGroup(group.id)
+      // resolves members. The group is only created in shared mode below.
+      let planningGroupId = `planning:${planningSessionId}`;
 
       if (branchMode === "shared") {
         const settings = await scopedStore.getSettings();
@@ -1282,11 +1286,21 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
             : "main";
         const settingsAutoMerge = typeof settings.autoMerge === "boolean" ? settings.autoMerge : false;
         const branchGroupStore = scopedStore as { ensureBranchGroupForSource?: TaskStore["ensureBranchGroupForSource"] };
-        branchGroupStore.ensureBranchGroupForSource?.("planning", planningSessionId, {
+        const group = branchGroupStore.ensureBranchGroupForSource?.("planning", planningSessionId, {
           branchName: resolvedBranch ?? resolvedBaseBranch ?? settingsDefaultBranch,
           autoMerge: session.autoMerge ?? settingsAutoMerge,
         });
+        if (group) {
+          planningGroupId = group.id;
+        }
       }
+
+      const planningBranchContext = {
+        groupId: planningGroupId,
+        source: "planning" as const,
+        assignmentMode: branchMode,
+        inheritedBaseBranch: resolvedBaseBranch,
+      };
 
       const createdTasks = [] as Awaited<ReturnType<TaskStore["createTask"]>>[];
       const tempIdToTaskId = new Map<string, string>();

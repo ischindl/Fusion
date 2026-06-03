@@ -288,10 +288,13 @@ describe("shared branch-group entry-point invariants", () => {
     expect(firstPlanning.branch).not.toBe("feature/auth-shared");
     expect(secondPlanning.branch).not.toBe("feature/auth-shared");
     expect(firstPlanning.branch).not.toBe(secondPlanning.branch);
-    const planningGroup = (store.getBranchGroupBySource as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value as BranchGroup;
-    expect(firstPlanning.branchContext).toMatchObject({ groupId: `planning:${sessionId}`, source: "planning", assignmentMode: "shared" });
-    expect(secondPlanning.branchContext).toMatchObject({ groupId: `planning:${sessionId}`, source: "planning", assignmentMode: "shared" });
-    expect(planningGroup.branchName).toBe("feature/auth-shared");
+    // U1: the real BG- id is stamped into branchContext.groupId so listTasksByBranchGroup(group.id) resolves members.
+    const ensuredPlanningGroup = (store.ensureBranchGroupForSource as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value as BranchGroup;
+    expect(ensuredPlanningGroup.id).toBe(`BG-planning-${sessionId}`);
+    expect(ensuredPlanningGroup.branchName).toBe("feature/auth-shared");
+    expect(firstPlanning.branchContext).toMatchObject({ groupId: ensuredPlanningGroup.id, source: "planning", assignmentMode: "shared" });
+    expect(secondPlanning.branchContext).toMatchObject({ groupId: ensuredPlanningGroup.id, source: "planning", assignmentMode: "shared" });
+    expect(firstPlanning.branchContext?.groupId).not.toBe(`planning:${sessionId}`);
 
     const newTask = await REQUEST(app, "POST", "/api/tasks", {
       title: "Shared entry-point task",

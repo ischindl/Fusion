@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, SourceType, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, TaskCommitAssociationMatchSource, TaskCommitAssociationConfidence, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, MergeRequestRecord, MergeRequestState, CompletionHandoffMarker } from "./types.js";
+import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, SourceType, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, TaskCommitAssociationMatchSource, TaskCommitAssociationConfidence, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, CompletionHandoffMarker } from "./types.js";
 import { createActivityLogSnapshot, createRunAuditSnapshot, createTaskMetadataSnapshot, toTaskMetadataRecord, validateSnapshotEnvelope, type ActivityLogSnapshot, type RunAuditSnapshot, type TaskMetadataSnapshot } from "./shared-mesh-state.js";
 import { VALID_TRANSITIONS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
@@ -4431,7 +4431,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return this.getBranchGroup(id)!;
   }
 
-  async setTaskBranchGroup(taskId: string, branchGroupId: string | null): Promise<void> {
+  async setTaskBranchGroup(
+    taskId: string,
+    branchGroupId: string | null,
+    options?: { assignmentMode?: TaskBranchAssignmentMode },
+  ): Promise<void> {
     await this.withTaskLock(taskId, async () => {
       const dir = this.taskDir(taskId);
       const task = await this.readTaskJson(dir);
@@ -4442,10 +4446,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         if (!group) {
           throw new Error(`Branch group ${branchGroupId} not found`);
         }
+        // Carry the group's actual assignment intent. The BranchGroup row does not
+        // persist an assignment mode, so prefer an explicit caller-provided mode,
+        // then preserve any existing branchContext.assignmentMode, and only fall
+        // back to "shared" when nothing else is known.
         branchContext = {
           groupId: group.id,
           source: group.sourceType,
-          assignmentMode: "shared",
+          assignmentMode: options?.assignmentMode ?? task.branchContext?.assignmentMode ?? "shared",
         };
       }
 
@@ -4466,8 +4474,22 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async listTasksByBranchGroup(groupId: string): Promise<Task[]> {
     const tasks = await this.listTasks({ includeArchived: false, slim: true });
+    // LEGACY SHIM (removable): groups created before the membership-identity fix
+    // stamped branchContext.groupId with a synthetic string (`planning:<sourceId>` /
+    // `mission:<sourceId>`) instead of the real `BG-` id. Derive that synthetic form
+    // from the group's source so those old rows still enumerate. New rows match on the
+    // real id directly; this fallback can be deleted once no legacy groups remain.
+    const group = this.getBranchGroup(groupId);
+    const legacyGroupId =
+      group && (group.sourceType === "planning" || group.sourceType === "mission")
+        ? `${group.sourceType}:${group.sourceId}`
+        : undefined;
     return tasks
-      .filter((task) => task.branchContext?.groupId === groupId)
+      .filter(
+        (task) =>
+          task.branchContext?.groupId === groupId ||
+          (legacyGroupId !== undefined && task.branchContext?.groupId === legacyGroupId),
+      )
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 

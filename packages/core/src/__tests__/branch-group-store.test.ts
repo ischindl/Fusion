@@ -179,6 +179,64 @@ describe("TaskStore branch groups", () => {
     expect(landed.status).toBe("open");
   });
 
+  it("returns [] for an empty branch group rather than throwing", async () => {
+    const group = store.createBranchGroup({ sourceType: "planning", sourceId: "PS-empty", branchName: "fn/empty" });
+    await expect(store.listTasksByBranchGroup(group.id)).resolves.toEqual([]);
+    await expect(store.listTasksByBranchGroup("BG-does-not-exist")).resolves.toEqual([]);
+  });
+
+  it("enumerates legacy rows stamped with the synthetic groupId via the read-side fallback", async () => {
+    // Simulate a pre-fix planning group whose members were stamped with `planning:<sourceId>`.
+    const group = store.createBranchGroup({ sourceType: "planning", sourceId: "PS-legacy", branchName: "fn/legacy" });
+    const legacyTask = await store.createTask({
+      description: "legacy member",
+      branchContext: { groupId: "planning:PS-legacy", source: "planning", assignmentMode: "shared" },
+    });
+    const newTask = await store.createTask({
+      description: "new member",
+      branchContext: { groupId: group.id, source: "planning", assignmentMode: "shared" },
+    });
+
+    const members = await store.listTasksByBranchGroup(group.id);
+    expect(members.map((task) => task.id).sort()).toEqual([legacyTask.id, newTask.id].sort());
+  });
+
+  it("enumerates legacy mission rows via the synthetic fallback", async () => {
+    const group = store.createBranchGroup({ sourceType: "mission", sourceId: "M-legacy", branchName: "fn/mission-legacy" });
+    const legacyTask = await store.createTask({
+      description: "legacy mission member",
+      branchContext: { groupId: "mission:M-legacy", source: "mission", assignmentMode: "shared" },
+    });
+
+    const members = await store.listTasksByBranchGroup(group.id);
+    expect(members.map((task) => task.id)).toEqual([legacyTask.id]);
+  });
+
+  it("does not overwrite a per-task-derived assignmentMode to shared on setTaskBranchGroup", async () => {
+    const group = store.createBranchGroup({ sourceType: "planning", sourceId: "PS-perTask", branchName: "fn/per-task" });
+    const task = await store.createTask({
+      description: "per-task-derived member",
+      branchContext: { groupId: "old", source: "planning", assignmentMode: "per-task-derived" },
+    });
+
+    await store.setTaskBranchGroup(task.id, group.id);
+    const linked = await store.getTask(task.id);
+    expect(linked.branchContext).toEqual({
+      groupId: group.id,
+      source: "planning",
+      assignmentMode: "per-task-derived",
+    });
+  });
+
+  it("honors an explicit assignmentMode option on setTaskBranchGroup", async () => {
+    const group = store.createBranchGroup({ sourceType: "mission", sourceId: "M-explicit", branchName: "fn/explicit" });
+    const task = await store.createTask({ description: "explicit mode" });
+
+    await store.setTaskBranchGroup(task.id, group.id, { assignmentMode: "per-task-derived" });
+    const linked = await store.getTask(task.id);
+    expect(linked.branchContext?.assignmentMode).toBe("per-task-derived");
+  });
+
   it("preserves autoMerge + branchContext in slim list/search/modifiedSince and archived slim", async () => {
     const task = await store.createTask({ description: "slim check" });
     const group = store.createBranchGroup({ sourceType: "mission", sourceId: "M-2", branchName: "fn/mission" });
