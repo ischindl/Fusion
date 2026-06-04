@@ -40,9 +40,10 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
       schedule: async () => ({ outcome: "success" }),
     };
     const legacyEvents = await runLegacy(seams)();
+    type BaseSeam = "planning" | "execute" | "review" | "merge" | "schedule";
     const executor = new WorkflowGraphExecutor({ seams, handlers: { prompt: async (node, ctx) => {
       const seam = String(node.config?.seam);
-      const result = await seams[seam as keyof WorkflowLegacySeams]!(ctx.task, ctx.context);
+      const result = await seams[seam as BaseSeam](ctx.task, ctx.context);
       events.push(`${seam}:${result.outcome}`);
       return result;
     } } });

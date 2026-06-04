@@ -26,12 +26,60 @@ export interface WorkflowLegacySeams {
    * its `contextPatch` so a later RETHINK (U5) can reset the step.
    */
   stepExecute?: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
+  /**
+   * Step-inversion (KTD-4, U5): review the foreach-active step. Only invoked for
+   * `step-review` nodes inside a foreach template, where `context["foreach:active"]`
+   * carries the active instance. The seam calls `reviewStep` (reviewer.ts) under
+   * `semaphore.runNested` against the instance's step + the task's PROMPT content
+   * (the same way `fn_review_step` does), and — on an authoritative (non-advisory)
+   * APPROVE — marks the step `done` through the projection (`updateStep(source:"graph")`,
+   * KTD-7). It persists the verdict back into the active context so the foreach
+   * sub-walk can write it into the instance row (KTD-6). It returns the raw verdict;
+   * the {@link createStepReviewHandler} handler maps it to the outcome value the
+   * `outcome:approve|revise|rethink|unavailable` edges route on. Optional — a
+   * workflow without a step-review node needs no implementation.
+   *
+   * @param advisory when true (the node is inside a `split` branch — single-writer
+   *   rule, KTD-4) the seam must NOT write the projection and only logs an audit
+   *   note; the verdict is advisory and never routes the authoritative instance.
+   */
+  stepReview?: (
+    task: TaskDetail,
+    context: Record<string, unknown>,
+    config: StepReviewConfig,
+  ) => Promise<StepReviewSeamResult>;
+}
+
+/** Config a `step-review` node carries (KTD-4). */
+export interface StepReviewConfig {
+  type: "plan" | "code";
+  model?: string;
+  /** Single-writer rule (KTD-4): true when the node is inside a split branch, so
+   *  the review is advisory-only — no projection write, no authoritative verdict. */
+  advisory?: boolean;
+}
+
+/** Verdict surface the step-review seam returns (mirrors reviewer.ts ReviewResult). */
+export interface StepReviewSeamResult {
+  verdict: "APPROVE" | "REVISE" | "RETHINK" | "UNAVAILABLE";
+  review?: string;
+  summary?: string;
 }
 
 /** The reserved context key carrying the active foreach instance (KTD-3, U3).
  *  Template node handlers (step-execute now; step-review in U5) read it to learn
  *  which step they operate on and the per-instance baseline/checkpoint state. */
 export const FOREACH_ACTIVE_CONTEXT_KEY = "foreach:active";
+
+/**
+ * Reserved context marker set by the split sub-walk (`runSplitJoin`) for the
+ * duration of its branches' execution and cleared at the join (KTD-4, U5). A
+ * `step-review` node that reads this as `true` is running inside a split branch,
+ * so its verdict is **advisory-only** (single-writer rule): it never writes the
+ * projection nor authors the routing verdict. `step-execute` is validator-forbidden
+ * in splits, so only step-review needs to consult this.
+ */
+export const SPLIT_ACTIVE_CONTEXT_KEY = "split:active";
 
 /** Shape of the value stored under {@link FOREACH_ACTIVE_CONTEXT_KEY}. */
 export interface ForeachActiveContext {
@@ -40,6 +88,17 @@ export interface ForeachActiveContext {
   instanceId: string;
   baselineSha?: string;
   checkpointId?: string;
+  /** Latest authoritative step-review verdict for this instance (KTD-4/KTD-6, U5).
+   *  Written by the step-review handler (non-advisory only); the foreach sub-walk
+   *  persists it into the instance row. */
+  verdict?: "APPROVE" | "REVISE" | "RETHINK" | "UNAVAILABLE";
+  /**
+   * True when the foreach template contains a `step-review` node (U6/KTD-4), so a
+   * successful `step-execute` must NOT mark the step done — the review's APPROVE
+   * verdict is the single authority that does (`markDoneOnSuccess: false`). The
+   * foreach sub-walk sets this at instance entry; the step-execute seam reads it.
+   */
+  deferDoneToReview?: boolean;
 }
 
 /**
@@ -143,22 +202,88 @@ export function createGateHandler(runCustomNode?: WorkflowCustomNodeRunner): Wor
   };
 }
 
+/** Per-step-review-node cap on UNAVAILABLE retries before routing the
+ *  `outcome:unavailable` edge (KTD-4 — mirrors the in-session
+ *  `planSpecUnavailableCounts` limiter posture, executor.ts ~7297). */
+const STEP_REVIEW_UNAVAILABLE_RETRY_CAP = 2;
+
+/** Resolve a step-review node's config (KTD-4). Defaults `type` to `code` (the
+ *  enforcing review level — matches the legacy code-review authority). */
+function resolveStepReviewConfig(node: WorkflowIrNode, advisory: boolean): StepReviewConfig {
+  const raw = (node.config ?? {}) as { type?: unknown; model?: unknown };
+  const type = raw.type === "plan" ? "plan" : "code";
+  const model = typeof raw.model === "string" ? raw.model : undefined;
+  return { type, model, advisory };
+}
+
 /**
- * Placeholder handler for the `step-review` node kind (KTD-4). The real verdict
- * logic (delegating to `reviewStep`, mapping APPROVE/REVISE/RETHINK/UNAVAILABLE
- * to outcome edges, and triggering RETHINK reset on rework traversal) is U5, NOT
- * U3. Until U5 wires it, a step-review node reached during a foreach instance
- * fails cleanly with a documented not-implemented value rather than throwing an
- * unhandled-node-kind error — keeping a foreach with a step-review node from
- * crashing the walk while making the gap explicit and routable.
+ * Handler for the `step-review` node kind (KTD-4, U5). Resolves the active
+ * foreach instance from {@link FOREACH_ACTIVE_CONTEXT_KEY}, detects the
+ * single-writer/advisory posture from {@link SPLIT_ACTIVE_CONTEXT_KEY}, delegates
+ * the actual review to `seams.stepReview` (which calls `reviewStep` under the
+ * semaphore and — on an authoritative APPROVE — marks the step done through the
+ * projection), and maps the verdict to the outcome value the
+ * `outcome:approve|revise|rethink|unavailable` edges route on:
+ *
+ *   - APPROVE     → `value: "approve"`  (seam already marked the step done)
+ *   - REVISE      → `value: "revise"`   (rework edge, no reset — revise in place)
+ *   - RETHINK     → `value: "rethink"`  (rework edge whose traversal resets, U5 foreach)
+ *   - UNAVAILABLE → bounded retry (cap {@link STEP_REVIEW_UNAVAILABLE_RETRY_CAP});
+ *                   still unavailable → `value: "unavailable"`
+ *
+ * The verdict + reworkCount are persisted via the foreach sub-walk: the handler
+ * writes the latest verdict back onto the active context so the sub-walk's
+ * `saveInstanceState` carries it into the instance row (KTD-6).
  */
-export const stepReviewNotImplementedHandler: WorkflowNodeHandler = async (node) => ({
-  outcome: "failure",
-  value: "step-review-not-implemented",
-  contextPatch: {
-    [`node:${node.id}:error`]: "step-review handler is not implemented until U5",
-  },
-});
+export function createStepReviewHandler(seams: WorkflowLegacySeams): WorkflowNodeHandler {
+  return async (node, ctx) => {
+    const active = ctx.context[FOREACH_ACTIVE_CONTEXT_KEY] as ForeachActiveContext | undefined;
+    if (!active || typeof active.stepIndex !== "number") {
+      throw new WorkflowIrError(
+        `step-review node '${node.id}' reached without an active foreach instance context`,
+      );
+    }
+    if (!seams.stepReview) {
+      // Fail closed: a step-review node with no seam wired must NOT silently pass
+      // — that would let an unreviewed step route forward (mirrors step-execute).
+      return { outcome: "failure", value: "step-review-unwired" };
+    }
+
+    const advisory = ctx.context[SPLIT_ACTIVE_CONTEXT_KEY] === true;
+    const config = resolveStepReviewConfig(node, advisory);
+
+    // UNAVAILABLE bounded retry (KTD-4): re-invoke the reviewer up to the cap,
+    // mirroring the in-session planSpecUnavailableCounts limiter. A usable verdict
+    // short-circuits; exhaustion routes outcome:unavailable.
+    let result: StepReviewSeamResult = { verdict: "UNAVAILABLE" };
+    for (let attempt = 0; attempt <= STEP_REVIEW_UNAVAILABLE_RETRY_CAP; attempt++) {
+      result = await seams.stepReview(ctx.task, ctx.context, config);
+      if (result.verdict !== "UNAVAILABLE") break;
+    }
+
+    // Persist the verdict onto the active context so the foreach sub-walk writes
+    // it into the instance row (KTD-6). Advisory (split-branch) reviews record the
+    // verdict for audit but never become the authoritative instance verdict.
+    if (!advisory) {
+      active.verdict = result.verdict;
+    }
+    const patch: Record<string, unknown> = {
+      [FOREACH_ACTIVE_CONTEXT_KEY]: active,
+      [`node:${node.id}:verdict`]: result.verdict,
+    };
+
+    const value =
+      result.verdict === "APPROVE"
+        ? "approve"
+        : result.verdict === "REVISE"
+        ? "revise"
+        : result.verdict === "RETHINK"
+        ? "rethink"
+        : "unavailable";
+
+    return { outcome: "success", value, contextPatch: patch };
+  };
+}
 
 export function createDefaultNodeHandlers(
   seams: WorkflowLegacySeams,
@@ -169,7 +294,7 @@ export function createDefaultNodeHandlers(
     prompt: promptLike,
     script: promptLike,
     gate: createGateHandler(runCustomNode),
-    "step-review": stepReviewNotImplementedHandler,
+    "step-review": createStepReviewHandler(seams),
   };
 }
 

@@ -85,6 +85,16 @@ export interface RunTaskStepDeps {
 export interface RunTaskStepOptions {
   /** Session ref used for the default checkpoint capture. */
   sessionRef?: SessionRef;
+  /**
+   * Whether a successful step run marks the step `done` through the projection
+   * (KTD-7). Default `true` — the step is the terminal authority on its own
+   * completion (no review node present). The foreach sub-walk passes `false` when
+   * the template contains a `step-review` node (U6/KTD-4): in that case
+   * `step-execute` SUCCESS leaves the step `in-progress` and the step-review
+   * node's APPROVE verdict marks it `done` through the projection instead — so a
+   * single authority (the review) decides done-ness.
+   */
+  markDoneOnSuccess?: boolean;
 }
 
 /** Result of {@link runTaskStep}. */
@@ -147,13 +157,19 @@ export async function runTaskStep(
   }
 
   // 5. Projection: success → done; failure leaves the step non-done.
+  //    When a step-review node will decide done-ness (markDoneOnSuccess === false,
+  //    U6/KTD-4), leave the step `in-progress` so the review's APPROVE verdict is
+  //    the single authority that marks it done.
+  const markDoneOnSuccess = opts.markDoneOnSuccess ?? true;
   if (result.success) {
-    try {
-      await store.updateStep(task.id, stepIndex, "done");
-    } catch (err) {
-      executorLog.warn(
-        `${task.id}: runTaskStep failed to mark step ${stepIndex} done: ${errMsg(err)}`,
-      );
+    if (markDoneOnSuccess) {
+      try {
+        await store.updateStep(task.id, stepIndex, "done");
+      } catch (err) {
+        executorLog.warn(
+          `${task.id}: runTaskStep failed to mark step ${stepIndex} done: ${errMsg(err)}`,
+        );
+      }
     }
     return { outcome: "success", baselineSha, checkpointId };
   }

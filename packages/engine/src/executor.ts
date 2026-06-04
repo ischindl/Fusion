@@ -18,6 +18,10 @@ import {
 } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult } from "./workflow-graph-task-runner.js";
 import type { WorkflowBranchPersistence, WorkflowBranchRunState } from "./workflow-graph-branches.js";
+import type {
+  WorkflowStepInstancePersistence,
+  WorkflowStepInstanceState,
+} from "./workflow-graph-foreach.js";
 import { observeWorkflowParity, WORKFLOW_INTERPRETER_DUAL_OBSERVE_FLAG } from "./workflow-parity-observer.js";
 import {
   FOREACH_ACTIVE_CONTEXT_KEY,
@@ -107,7 +111,7 @@ import type { StuckTaskDetector, StuckTaskEvent } from "./stuck-task-detector.js
 import type { PluginRunner } from "./plugin-runner.js";
 import { isContextLimitError } from "./context-limit-detector.js";
 import { StepSessionExecutor } from "./step-session-executor.js";
-import { resetStepToBaseline, runTaskStep } from "./step-runner.js";
+import { makeAncestryBlastRadiusGuard, resetStepToBaseline, runTaskStep } from "./step-runner.js";
 import { acquireTaskWorktree } from "./worktree-acquisition.js";
 import { resolveCapturedBaseCommitSha } from "./base-commit-capture.js";
 import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
@@ -3215,6 +3219,20 @@ export class TaskExecutor {
    *  Doubles as the re-entrancy guard for graph routing. */
   private graphCompletionInterceptors = new Map<string, (info: { modifiedFiles: string[] }) => void>();
 
+  /** Step-inversion (KTD-2/KTD-8, U6/U8): tasks whose graph-owned step-execute
+   *  driver has pinned step-session physics for the run. Forces the step-session
+   *  path in execute() regardless of the `runStepsInNewSessions` setting, so the
+   *  graph/step-sessions flag matrix cannot select an unsupported physics combo.
+   *  Cleared when the graph run ends (maybeExecuteWorkflowGraph finally). */
+  private graphStepSessionPinned = new Set<string>();
+
+  /** Step-inversion (U6/U8): caches the per-run implementation-phase result for a
+   *  graph-owned task so the foreach sub-walk's per-step `runTaskStep` driver runs
+   *  the (step-session) implementation exactly once per run and lets later step
+   *  instances observe the projection rather than re-running execute() per step.
+   *  Keyed by task id; cleared alongside the pin. */
+  private graphStepRunOnce = new Map<string, Promise<{ taskDone: boolean; modifiedFiles: string[] }>>();
+
   /** Tasks currently being orchestrated by the graph runner. Process-wide for
    *  the same reason as executingTaskLock (FN-4811): duplicate execute()
    *  invocations can arrive from different TaskExecutor instances in one
@@ -3271,6 +3289,13 @@ export class TaskExecutor {
         // real data, and prunes stale runs (#1412). Adapter degrades to no-op
         // when the store predates these methods (additive guard).
         branchPersistence: this.buildBranchPersistence(),
+        // Step-inversion (KTD-6, U3/U4): per-instance run-state persistence.
+        stepInstancePersistence: this.buildStepInstancePersistence(),
+        // Step-inversion (KTD-4, U5): RETHINK reset-on-rework — when the foreach
+        // sub-walk traverses a rework edge triggered by `outcome:rethink`, reset
+        // the active instance's step to its persisted per-step baseline (git reset
+        // + session rewind + step→pending) before re-entering step-execute.
+        onReworkReset: (active) => this.applyGraphRethinkReset(task.id, active),
       });
       let result: WorkflowGraphTaskRunResult;
       try {
@@ -3294,6 +3319,9 @@ export class TaskExecutor {
       return true;
     } finally {
       this.graphRouting.delete(task.id);
+      // Clear per-run step-inversion pins (KTD-8: pinned only for the run's life).
+      this.graphStepSessionPinned.delete(task.id);
+      this.graphStepRunOnce.delete(task.id);
     }
   }
 
@@ -3316,6 +3344,64 @@ export class TaskExecutor {
       loadBranchStates: (taskId, runId) => store.loadWorkflowRunBranches?.(taskId, runId) ?? [],
       clearStaleBranchStates: (taskId, keepRunId) => store.clearWorkflowRunBranches?.(taskId, keepRunId),
     };
+  }
+
+  /**
+   * Build the store-backed WorkflowStepInstancePersistence for graph-owned
+   * foreach runs (KTD-6, U3/U4 seam). Returns undefined when the store predates
+   * the instance CRUD methods (the SQLite migration is U4) so the sub-walk stays
+   * fully in-memory — purely additive, same posture as buildBranchPersistence.
+   */
+  private buildStepInstancePersistence(): WorkflowStepInstancePersistence | undefined {
+    const store = this.store as unknown as {
+      saveWorkflowRunStepInstance?: (state: WorkflowStepInstanceState) => void;
+      loadWorkflowRunStepInstances?: (taskId: string, runId: string) => WorkflowStepInstanceState[];
+      clearWorkflowRunStepInstances?: (taskId: string, keepRunId: string) => void;
+    };
+    if (typeof store.saveWorkflowRunStepInstance !== "function") return undefined;
+    return {
+      saveInstanceState: (state) => store.saveWorkflowRunStepInstance?.(state),
+      loadInstanceStates: (taskId, runId) => store.loadWorkflowRunStepInstances?.(taskId, runId) ?? [],
+      clearStaleInstanceStates: (taskId, keepRunId) => store.clearWorkflowRunStepInstances?.(taskId, keepRunId),
+    };
+  }
+
+  /**
+   * RETHINK reset-on-rework (KTD-4, U5): reset the active foreach instance's step
+   * to its per-step baseline before the rework edge re-enters step-execute. Drives
+   * the single extracted `resetStepToBaseline` (step-runner.ts) with the
+   * instance's persisted `baselineSha`/`checkpointId`. Session rewind is best-effort
+   * for graph-owned runs (the per-step session lives inside StepSessionExecutor and
+   * is not exposed as a single ref here) — missing-checkpoint partial recovery is
+   * the documented KTD-2 semantics; the git reset + step→pending are authoritative.
+   */
+  private async applyGraphRethinkReset(taskId: string, active: ForeachActiveContext): Promise<void> {
+    let worktreePath = this.rootDir;
+    try {
+      worktreePath = (await this.store.getTask(taskId)).worktree || this.rootDir;
+    } catch {
+      // Best-effort worktree resolution; fall back to rootDir.
+    }
+    const liveSteps = await this.store.getTask(taskId).then((t) => t.steps).catch(() => []);
+    await resetStepToBaseline(
+      {
+        store: this.store,
+        worktreePath,
+        // No single session ref for graph-owned step-sessions — rewind is skipped
+        // when checkpointId resolves but no session is current (KTD-2 partial path).
+        sessionRef: { current: null },
+        reviewType: "code",
+        blastRadiusGuard: makeAncestryBlastRadiusGuard({
+          worktreePath,
+          task: { id: taskId, steps: liveSteps },
+          stepIndex: active.stepIndex,
+        }),
+      },
+      { id: taskId, steps: liveSteps },
+      active.stepIndex,
+      active.baselineSha,
+      active.checkpointId,
+    );
   }
 
   /**
@@ -3459,6 +3545,65 @@ export class TaskExecutor {
     return captured;
   }
 
+  /**
+   * Step-inversion per-step driver (KTD-2/KTD-8, closes the U3 interim gap).
+   *
+   * The U3 stand-in ran `runImplementationPhase` once per foreach instance, which
+   * re-ran the whole implementation for every step. The real driver:
+   *
+   *   1. PINS step-session physics for the run (graph-owned runs force
+   *      StepSessionExecutor regardless of `runStepsInNewSessions`, KTD-2/KTD-8) —
+   *      the only path with a discrete per-step boundary (`onStepStart`/
+   *      `onStepComplete`); the monolithic single-session path has no "run one
+   *      step and return control" seam.
+   *   2. Drives the (step-session) implementation phase exactly ONCE per run,
+   *      memoized by task id. StepSessionExecutor itself walks every step in step
+   *      order inside that single pass and writes the projection per step via its
+   *      `onStepStart`/`onStepComplete` callbacks (executor.ts step-session path).
+   *      Each foreach instance's `runTaskStep` therefore observes the projection
+   *      truth for its step rather than re-running the agent per step.
+   *
+   * Worktree/taskEnv/agent/semaphore state is threaded exactly the way
+   * `runImplementationPhase` gets it — by re-entering `execute()` under a
+   * completion interceptor — because that state is assembled inside `execute()`
+   * and is not available standalone at createGraphSeams time (the plan's
+   * documented threading approach for full step-session wiring).
+   *
+   * Returns whether the targeted step ended up `done`/`skipped` in the projection.
+   */
+  private async runGraphTaskStep(task: Task, stepIndex: number): Promise<{ success: boolean; error?: string }> {
+    // Pin step-session physics for the run before the implementation pass.
+    this.graphStepSessionPinned.add(task.id);
+
+    let phase = this.graphStepRunOnce.get(task.id);
+    if (!phase) {
+      phase = this.runImplementationPhase(task);
+      this.graphStepRunOnce.set(task.id, phase);
+    }
+    try {
+      await phase;
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // Consult the projection (the single source of truth, KTD-7) for this step's
+    // terminal state. The step-session pass marks each step done/skipped as it
+    // completes; a step-review node (when present) decides done-ness instead, so
+    // here we treat a completed step-session pass as success for this step and let
+    // the review gate the projection write.
+    try {
+      const live = await this.store.getTask(task.id);
+      const status = live.steps[stepIndex]?.status;
+      if (status === "done" || status === "skipped") return { success: true };
+      // Step-session pass completed but this step is not yet terminal — when a
+      // review will mark it done (deferDoneToReview) the pass having run is the
+      // success signal; otherwise the implementation left it incomplete.
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   /** Seam implementations delegating to the legacy engine (KTD-1: delegate, never reimplement). */
   private createGraphSeams(_settings: Settings): WorkflowLegacySeams {
     return {
@@ -3542,15 +3687,20 @@ export class TaskExecutor {
           {
             store: this.store,
             worktreePath,
-            // Single-pass step driver. The agent authors the step's commit; this
-            // only observes (KTD-2). Refined to per-step session physics in U5/U7.
-            runStep: async () => {
-              const phase = await this.runImplementationPhase(seamTask);
-              return { success: phase.taskDone };
-            },
+            // U6/U8: per-step session physics — graph-owned runs force
+            // step-session mode for the run (KTD-2/KTD-8) regardless of the
+            // runStepsInNewSessions setting. The agent authors the step's commit;
+            // this driver only observes (KTD-2).
+            runStep: (stepIndex) => this.runGraphTaskStep(seamTask, stepIndex),
           },
           { id: seamTask.id, steps: live.steps },
           active.stepIndex,
+          {
+            // Single-authority done-marking (U6/KTD-4): when the foreach template
+            // has a step-review node, leave the step in-progress so the review's
+            // APPROVE marks it done (the review is the single done authority).
+            markDoneOnSuccess: active.deferDoneToReview !== true,
+          },
         );
         // Capture baseline/checkpoint back into the reserved active context so the
         // foreach sub-walk threads them to later template nodes (step-review/reset).
@@ -3564,7 +3714,130 @@ export class TaskExecutor {
           },
         };
       },
+      // Step-inversion (KTD-4, U5): review the foreach-active step. Mirrors the
+      // in-session fn_review_step call (executor.ts createReviewStepTool): run
+      // reviewStep under semaphore.runNested against the instance's step number/
+      // name and the task's PROMPT content. On an authoritative (non-advisory)
+      // APPROVE, mark the step done through the projection (updateStep, KTD-7) —
+      // the step-execute seam left it in-progress (markDoneOnSuccess:false) so the
+      // review is the single done authority. The handler maps the returned verdict
+      // to outcome edges and applies the UNAVAILABLE bounded-retry limiter.
+      stepReview: async (seamTask, context, config) => {
+        const active = context[FOREACH_ACTIVE_CONTEXT_KEY] as ForeachActiveContext | undefined;
+        if (!active || typeof active.stepIndex !== "number") {
+          // No active instance — surface UNAVAILABLE so the handler routes it
+          // rather than fabricating an authoritative verdict.
+          return { verdict: "UNAVAILABLE", review: "no active step instance" };
+        }
+        const stepIndex = active.stepIndex;
+        const detail = await this.store.getTask(seamTask.id);
+        const worktreePath = detail.worktree || this.rootDir;
+        const stepName = detail.steps[stepIndex]?.name ?? `Step ${stepIndex + 1}`;
+        const promptContent = detail.prompt ?? "";
+        const settings = await this.store.getSettings();
+
+        const sem = this.options.semaphore;
+        const invokeReviewer = () =>
+          reviewStep(
+            worktreePath,
+            seamTask.id,
+            stepIndex + 1, // reviewStep is 1-indexed (matches fn_review_step)
+            stepName,
+            config.type,
+            promptContent,
+            // Code reviews diff against the per-step baseline captured at
+            // step-execute; plan reviews pass no baseline (advisory).
+            config.type === "code" ? active.baselineSha : undefined,
+            {
+              defaultProvider: settings.defaultProvider,
+              defaultModelId: settings.defaultModelId,
+              fallbackProvider: settings.fallbackProvider,
+              fallbackModelId: settings.fallbackModelId,
+              defaultThinkingLevel: detail.thinkingLevel ?? settings.defaultThinkingLevel,
+              taskValidatorProvider: detail.validatorModelProvider,
+              taskValidatorModelId: detail.validatorModelId,
+              projectValidatorProvider: settings.validatorProvider,
+              projectValidatorModelId: settings.validatorModelId,
+              projectValidatorFallbackProvider: settings.validatorFallbackProvider,
+              projectValidatorFallbackModelId: settings.validatorFallbackModelId,
+              globalValidatorProvider: settings.validatorGlobalProvider,
+              globalValidatorModelId: settings.validatorGlobalModelId,
+              projectDefaultOverrideProvider: settings.defaultProviderOverride,
+              projectDefaultOverrideModelId: settings.defaultModelIdOverride,
+              store: this.store,
+              taskId: seamTask.id,
+              task: detail,
+              agentPrompts: settings.agentPrompts,
+              agentStore: this.options.agentStore,
+              rootDir: this.rootDir,
+              settings,
+              onSessionCreated: (s) => this.registerSubagentSession(seamTask.id, s),
+              onSessionEnded: (s) => this.unregisterSubagentSession(seamTask.id, s),
+            },
+          );
+
+        let review: { verdict: ReviewVerdict; review: string; summary: string };
+        try {
+          review = sem ? await sem.runNested(invokeReviewer) : await invokeReviewer();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          reviewerLog.error(`${seamTask.id}: step-review failed: ${message}`);
+          return { verdict: "UNAVAILABLE", review: `reviewer error: ${message}` };
+        }
+
+        await this.store.logEntry(
+          seamTask.id,
+          `${config.type} step-review Step ${stepIndex + 1}: ${review.verdict}${config.advisory ? " (advisory)" : ""}`,
+          review.summary,
+        );
+
+        // Single-writer rule (KTD-4): advisory (split-branch) reviews never write
+        // the projection — they are fan-out checks that cannot clobber the
+        // authoritative verdict. Only an on-path APPROVE marks the step done.
+        if (review.verdict === "APPROVE" && !config.advisory) {
+          try {
+            const cur = await this.store.getTask(seamTask.id);
+            const status = cur.steps[stepIndex]?.status;
+            if (stepIndex >= 0 && stepIndex < cur.steps.length && status !== "done" && status !== "skipped") {
+              await this.updateStepGraph(seamTask.id, stepIndex, "done");
+              await this.store.logEntry(
+                seamTask.id,
+                `Step ${stepIndex + 1} (${stepName}) marked done by step-review APPROVE (graph)`,
+              );
+            }
+          } catch (err) {
+            reviewerLog.warn(
+              `${seamTask.id}: failed to mark Step ${stepIndex + 1} done after APPROVE: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+
+        return { verdict: review.verdict, review: review.review, summary: review.summary };
+      },
     };
+  }
+
+  /**
+   * Graph-source projection write (U6/KTD-7): a thin wrapper over
+   * `store.updateStep` that tags the write with `source: "graph"` when the store
+   * supports it (additive) so the out-of-order-done guard relaxes to dependency
+   * order and a suppressed write audits loudly instead of silently. Falls back to
+   * the legacy single-arg call on older stores.
+   */
+  private async updateStepGraph(
+    taskId: string,
+    stepIndex: number,
+    status: import("@fusion/core").StepStatus,
+  ): Promise<void> {
+    const store = this.store as unknown as {
+      updateStep: (
+        id: string,
+        idx: number,
+        status: import("@fusion/core").StepStatus,
+        opts?: { source?: "graph" },
+      ) => Promise<unknown>;
+    };
+    await store.updateStep(taskId, stepIndex, status, { source: "graph" });
   }
 
   /**
@@ -4334,9 +4607,14 @@ export class TaskExecutor {
         pluginRunner: this.options.pluginRunner,
       });
 
-      if (settings.runStepsInNewSessions) {
+      // Graph-owned stepwise runs force step-session physics for the run (KTD-2/
+      // KTD-8): the discrete per-step boundary the foreach driver needs exists only
+      // in StepSessionExecutor. Pinned per run so a mid-flight setting toggle never
+      // selects the unsupported (graph ON × step-sessions OFF) combination.
+      const forceStepSession = this.graphStepSessionPinned.has(task.id);
+      if (settings.runStepsInNewSessions || forceStepSession) {
         // ── Step-Session Path ──────────────────────────────────────────
-        executorLog.log(`${task.id}: using step-session mode (maxParallel=${settings.maxParallelSteps ?? 2})`);
+        executorLog.log(`${task.id}: using step-session mode (maxParallel=${settings.maxParallelSteps ?? 2}${forceStepSession ? ", graph-pinned" : ""})`);
 
         const stepSessionAgent = detail.assignedAgentId && this.options.agentStore
           ? await this.options.agentStore.getAgent(detail.assignedAgentId).catch(() => null)

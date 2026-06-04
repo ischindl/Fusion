@@ -104,6 +104,26 @@ export {
   registerBuiltinTraits,
 } from "./builtin-traits.js";
 export type { BuiltinTraitId } from "./builtin-traits.js";
+// Step-inversion U12 (KTD-12): step-parser registry + built-ins.
+export {
+  StepParserRegistry,
+  StepParserRegistrationError,
+  getStepParserRegistry,
+  registerStepParser,
+  getStepParser,
+  listStepParsers,
+  unregisterStepParser,
+  registerBuiltinStepParsers,
+  parseStepHeadings,
+  parseJsonSteps,
+  __resetStepParserRegistryForTests,
+} from "./step-parsers.js";
+export type {
+  StepParser,
+  StepParseResult,
+  ParsedStep,
+  StepParserRegistrationReason,
+} from "./step-parsers.js";
 export {
   registerDefaultWorkflowHooks,
   __resetDefaultWorkflowHooksForTests,

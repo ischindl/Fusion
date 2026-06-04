@@ -76,6 +76,8 @@ export interface WorkflowStepInstanceState {
   baselineSha?: string;
   checkpointId?: string;
   reworkCount: number;
+  /** Latest authoritative step-review verdict (KTD-4/KTD-6, U5). */
+  verdict?: "APPROVE" | "REVISE" | "RETHINK" | "UNAVAILABLE";
 }
 
 export interface WorkflowStepInstancePersistence {
@@ -128,6 +130,19 @@ export interface ForeachEnvironment {
   ) => Promise<WorkflowNodeResult>;
   shouldTraverseEdge: (edge: WorkflowIrEdge, source: WorkflowNodeResult) => boolean;
   persistence?: WorkflowStepInstancePersistence;
+  /**
+   * RETHINK reset-on-rework hook (KTD-4, U5). Invoked BEFORE re-entering the
+   * instance's step-execute node when the rework edge being traversed was
+   * triggered by an `outcome:rethink` (the verdict that resets to baseline). The
+   * production wiring (executor.ts) calls `resetStepToBaseline` with the
+   * instance's persisted `baselineSha`/`checkpointId`; tests inject a fake. Other
+   * rework outcomes (e.g. `revise`) do NOT call this — they revise in place
+   * (today's REVISE semantics). Optional with a no-op default.
+   */
+  onReworkReset?: (
+    active: ForeachActiveContext,
+    reason: string,
+  ) => void | Promise<void>;
   /** Honored between nodes (existing posture). */
   signal?: AbortSignal;
 }
@@ -221,6 +236,11 @@ export async function runForeach(
   }
   const entry = findTemplateEntry(template.nodes, template.edges, foreachNode.id);
 
+  // Single-authority done-marking (U6/KTD-4): when the template contains a
+  // step-review node, step-execute SUCCESS must leave the step in-progress and the
+  // review's APPROVE marks it done. Computed once and threaded into each instance.
+  const templateHasStepReview = template.nodes.some((n) => n.kind === "step-review");
+
   // Sequential + shared: a runnable-set loop with concurrency 1 (U10 extends this
   // to parallel/worktree). Instances run strictly in step order.
   for (let stepIndex = 0; stepIndex < pinnedStepCount; stepIndex++) {
@@ -238,6 +258,7 @@ export async function runForeach(
       maxReworkCycles,
       env,
       visitedNodeIds,
+      templateHasStepReview,
     );
 
     if (instanceResult.outcome === "failure") {
@@ -274,6 +295,7 @@ async function runInstance(
   maxReworkCycles: number,
   env: ForeachEnvironment,
   visitedNodeIds: string[],
+  templateHasStepReview: boolean,
 ): Promise<InstanceResult> {
   // Per-instance rework budget (KTD-5) — NOT shared across instances.
   let reworkBudget = maxReworkCycles;
@@ -281,11 +303,14 @@ async function runInstance(
 
   // Active-instance context (KTD-3). baselineSha/checkpointId start undefined and
   // are captured by step-execute (U3) into this same object so later template
-  // nodes (step-review/reset, U5) can read them.
+  // nodes (step-review/reset, U5) can read them. deferDoneToReview tells the
+  // step-execute seam to leave the step in-progress when a review will decide
+  // done-ness (U6/KTD-4).
   const active: ForeachActiveContext = {
     foreachNodeId: foreachNode.id,
     stepIndex,
     instanceId: `${foreachNode.id}#${stepIndex}`,
+    deferDoneToReview: templateHasStepReview,
   };
   env.context[FOREACH_ACTIVE_CONTEXT_KEY] = active;
 
@@ -300,6 +325,7 @@ async function runInstance(
     baselineSha: active.baselineSha,
     checkpointId: active.checkpointId,
     reworkCount,
+    verdict: active.verdict,
   });
 
   try {
@@ -319,6 +345,7 @@ async function runInstance(
           baselineSha: active.baselineSha,
           checkpointId: active.checkpointId,
           reworkCount,
+          verdict: active.verdict,
         });
         return { outcome: "failure", value: "aborted" };
       }
@@ -346,6 +373,7 @@ async function runInstance(
           baselineSha: active.baselineSha,
           checkpointId: active.checkpointId,
           reworkCount,
+          verdict: active.verdict,
         });
         return { outcome: "failure", value: lastResult.value };
       }
@@ -365,6 +393,7 @@ async function runInstance(
           baselineSha: active.baselineSha,
           checkpointId: active.checkpointId,
           reworkCount,
+          verdict: active.verdict,
         });
         return { outcome: "success" };
       }
@@ -383,11 +412,30 @@ async function runInstance(
             baselineSha: active.baselineSha,
             checkpointId: active.checkpointId,
             reworkCount,
+            verdict: active.verdict,
           });
           return { outcome: "failure", value: "rework-exhausted" };
         }
         reworkBudget -= 1;
         reworkCount += 1;
+
+        // RETHINK reset-on-rework (KTD-4, U5): when the rework edge was triggered
+        // by an `outcome:rethink` verdict, reset the step to its per-step baseline
+        // (git reset + session rewind + step→pending) BEFORE re-entering the
+        // step-execute node. REVISE-driven rework revises in place — no reset.
+        if (lastResult.value === "rethink" && env.onReworkReset) {
+          try {
+            await env.onReworkReset(active, "rethink");
+            // The reset may have rewound the session; re-sync captured state.
+            syncActiveFromContext(env.context, active);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            schedulerLog.warn(
+              `onReworkReset failed for task ${env.task.id} foreach ${foreachNode.id} step ${stepIndex}: ${message}`,
+            );
+          }
+        }
+
         await persistInstanceState(env.persistence, {
           taskId: env.task.id,
           runId: env.runId,
@@ -399,6 +447,7 @@ async function runInstance(
           baselineSha: active.baselineSha,
           checkpointId: active.checkpointId,
           reworkCount,
+          verdict: active.verdict,
         });
       }
 
@@ -422,6 +471,7 @@ function syncActiveFromContext(
   if (fromContext && fromContext !== active) {
     active.baselineSha = fromContext.baselineSha ?? active.baselineSha;
     active.checkpointId = fromContext.checkpointId ?? active.checkpointId;
+    active.verdict = fromContext.verdict ?? active.verdict;
     // Keep the canonical object reference stable for later nodes.
     context[FOREACH_ACTIVE_CONTEXT_KEY] = active;
   }

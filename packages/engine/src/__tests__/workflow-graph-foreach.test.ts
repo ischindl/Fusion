@@ -460,6 +460,79 @@ describe("WorkflowGraphExecutor foreach (U3)", () => {
     expect(saved.some((s) => s.status === "completed")).toBe(true);
     expect(saved.every((s) => s.pinnedStepCount === 1)).toBe(true);
   });
+
+  // ── U6: projection discipline ──────────────────────────────────────────────
+
+  it("projection-first ordering: step projection writes precede the completed instance row", async () => {
+    // The merge-blocker race (KTD-7) is closed by ordering: the step projection
+    // (updateStep) must be observable BEFORE the instance row flips to completed.
+    // We interleave both into one event log: the stepExecute seam stands in for
+    // the projection write; the persistence hook records the row status.
+    const events: string[] = [];
+    const seams = baseSeams({
+      stepExecute: async (_t, ctx) => {
+        const active = ctx[FOREACH_ACTIVE_CONTEXT_KEY] as ForeachActiveContext;
+        events.push(`projection:done#${active.stepIndex}`);
+        return { outcome: "success", value: "step-done" };
+      },
+    });
+    const executor = new WorkflowGraphExecutor({
+      seams,
+      stepInstancePersistence: {
+        saveInstanceState: (s) => {
+          events.push(`row:${s.status}#${s.stepIndex}`);
+        },
+      },
+    });
+    const result = await executor.run(taskWithSteps(1), settingsOn(), foreachIr(singleExecuteTemplate()));
+
+    expect(result.outcome).toBe("success");
+    const projectionIdx = events.indexOf("projection:done#0");
+    const completedIdx = events.indexOf("row:completed#0");
+    expect(projectionIdx).toBeGreaterThanOrEqual(0);
+    expect(completedIdx).toBeGreaterThanOrEqual(0);
+    // Projection (done) is observable before the instance row flips to completed.
+    expect(projectionIdx).toBeLessThan(completedIdx);
+  });
+
+  it("sets deferDoneToReview on the active instance when the template has a step-review node", async () => {
+    // U6/KTD-4: with a step-review node present, step-execute must NOT mark the
+    // step done (markDoneOnSuccess:false) — the active context flags this so the
+    // step-execute seam can pass the flag to runTaskStep.
+    let observedDefer: boolean | undefined;
+    let observedNoReviewDefer: boolean | undefined;
+    const seams = baseSeams({
+      stepExecute: async (_t, ctx) => {
+        const active = ctx[FOREACH_ACTIVE_CONTEXT_KEY] as ForeachActiveContext;
+        observedDefer = active.deferDoneToReview;
+        return { outcome: "success", value: "step-done" };
+      },
+      stepReview: async () => ({ verdict: "APPROVE" as const }),
+    });
+    const reviewTemplate = {
+      nodes: [
+        { id: "exec", kind: "prompt" as const, config: { seam: "step-execute" } },
+        { id: "review", kind: "step-review" as const, config: { type: "code" } },
+      ],
+      edges: [{ from: "exec", to: "review", condition: "success" }],
+    };
+    const executor = new WorkflowGraphExecutor({ seams });
+    await executor.run(taskWithSteps(1), settingsOn(), foreachIr(reviewTemplate));
+    expect(observedDefer).toBe(true);
+
+    // Without a step-review node, deferDoneToReview is false (step-execute is the
+    // done authority).
+    const seamsNoReview = baseSeams({
+      stepExecute: async (_t, ctx) => {
+        const active = ctx[FOREACH_ACTIVE_CONTEXT_KEY] as ForeachActiveContext;
+        observedNoReviewDefer = active.deferDoneToReview;
+        return { outcome: "success", value: "step-done" };
+      },
+    });
+    const executor2 = new WorkflowGraphExecutor({ seams: seamsNoReview });
+    await executor2.run(taskWithSteps(1), settingsOn(), foreachIr(singleExecuteTemplate()));
+    expect(observedNoReviewDefer).toBe(false);
+  });
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────

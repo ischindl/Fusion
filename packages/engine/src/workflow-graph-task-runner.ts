@@ -2,12 +2,17 @@ import type { Settings, TaskDetail, WorkflowDefinition } from "@fusion/core";
 import { isExperimentalFeatureEnabled } from "@fusion/core";
 
 import { WorkflowGraphExecutor, type WorkflowNodeOutcome } from "./workflow-graph-executor.js";
-import type { WorkflowCustomNodeRunner, WorkflowLegacySeams } from "./workflow-node-handlers.js";
+import type {
+  ForeachActiveContext,
+  WorkflowCustomNodeRunner,
+  WorkflowLegacySeams,
+} from "./workflow-node-handlers.js";
 import type {
   WorkflowBranchPersistence,
   WorkflowBranchProgress,
   WorkflowBranchSemaphore,
 } from "./workflow-graph-branches.js";
+import type { WorkflowStepInstancePersistence } from "./workflow-graph-foreach.js";
 // (Both types are also used as values in the side-effect tracking wrappers below.)
 
 /**
@@ -49,6 +54,13 @@ export interface WorkflowGraphTaskRunnerDeps {
   branchSemaphore?: WorkflowBranchSemaphore;
   /** Live per-branch progress for dashboard badges (U9/U13). */
   onBranchProgress?: (progress: WorkflowBranchProgress) => void;
+  /** Step-inversion (KTD-6, U3/U4): per-instance run-state persistence for
+   *  foreach instances. Additive; in-memory without it. */
+  stepInstancePersistence?: WorkflowStepInstancePersistence;
+  /** Step-inversion (KTD-4, U5): RETHINK reset-on-rework hook — invoked before
+   *  re-entering step-execute when a rework edge was triggered by an
+   *  `outcome:rethink`. Wired to `resetStepToBaseline` in production. */
+  onReworkReset?: (active: ForeachActiveContext, reason: string) => void | Promise<void>;
 }
 
 /**
@@ -128,6 +140,14 @@ export class WorkflowGraphTaskRunner {
       review: (t, c) => ((sideEffectsRan = true), invoked.push("review"), seams.review(t, c)),
       merge: (t, c) => ((sideEffectsRan = true), invoked.push("merge"), seams.merge(t, c)),
       schedule: (t, c) => ((sideEffectsRan = true), invoked.push("schedule"), seams.schedule(t, c)),
+      // Step-inversion seams (U3/U5) — forwarded only when wired so a workflow
+      // without foreach/step-review keeps the omitted-optional posture.
+      ...(seams.stepExecute
+        ? { stepExecute: (t, c) => ((sideEffectsRan = true), invoked.push("step-execute"), seams.stepExecute!(t, c)) }
+        : {}),
+      ...(seams.stepReview
+        ? { stepReview: (t, c, cfg) => ((sideEffectsRan = true), invoked.push("step-review"), seams.stepReview!(t, c, cfg)) }
+        : {}),
     };
     const wrappedRunCustomNode: WorkflowCustomNodeRunner = (node, t, c) => {
       sideEffectsRan = true;
@@ -142,6 +162,8 @@ export class WorkflowGraphTaskRunner {
         maxRetriesPerNode: this.deps.maxRetriesPerNode,
         branchPersistence: this.deps.branchPersistence,
         branchSemaphore: this.deps.branchSemaphore,
+        stepInstancePersistence: this.deps.stepInstancePersistence,
+        onReworkReset: this.deps.onReworkReset,
         runId: `${task.id}:${definition.id}`,
         onBranchProgress: (progress) => {
           this.branchProgress.set(progress.branchId, progress);

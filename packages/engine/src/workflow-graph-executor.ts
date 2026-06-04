@@ -4,6 +4,8 @@ import { BUILTIN_CODING_WORKFLOW_IR, WorkflowIrError, isExperimentalFeatureEnabl
 import {
   createDefaultNodeHandlers,
   createNoopLegacySeams,
+  SPLIT_ACTIVE_CONTEXT_KEY,
+  type ForeachActiveContext,
   type WorkflowCustomNodeRunner,
   type WorkflowLegacySeams,
 } from "./workflow-node-handlers.js";
@@ -68,6 +70,16 @@ export interface WorkflowGraphExecutorDeps {
    * wiring is purely additive.
    */
   stepInstancePersistence?: WorkflowStepInstancePersistence;
+  /**
+   * Step-inversion (KTD-4, U5): RETHINK reset-on-rework hook passed through to the
+   * foreach sub-walk. Invoked before re-entering step-execute when a rework edge
+   * was triggered by an `outcome:rethink` verdict. Optional with a no-op default
+   * (REVISE-driven rework never calls it).
+   */
+  onReworkReset?: (
+    active: ForeachActiveContext,
+    reason: string,
+  ) => void | Promise<void>;
   /**
    * Step-inversion (U3): top-level abort signal honored between foreach instance
    * nodes (existing posture, mirrors the branch path's per-branch signal). When a
@@ -185,7 +197,22 @@ export class WorkflowGraphExecutor {
           // synchronizes per its config. The card stays in the split's column for
           // the whole window (no handler-driven move happens in here). Execution
           // then continues sequentially from the join node.
-          const splitResult = await runSplitJoin(node, branchEnv());
+          //
+          // Single-writer rule (KTD-4, U5): mark the shared context "inside a
+          // split" for the branch window so a step-review node inside a branch is
+          // advisory-only (no projection write, no authoritative verdict). The
+          // marker is set before launching branches and cleared at the join;
+          // step-execute is validator-forbidden in splits, so only step-review
+          // consults it. Restore the prior value to support balanced nesting.
+          const priorSplitActive = context[SPLIT_ACTIVE_CONTEXT_KEY];
+          context[SPLIT_ACTIVE_CONTEXT_KEY] = true;
+          let splitResult: Awaited<ReturnType<typeof runSplitJoin>>;
+          try {
+            splitResult = await runSplitJoin(node, branchEnv());
+          } finally {
+            if (priorSplitActive === undefined) delete context[SPLIT_ACTIVE_CONTEXT_KEY];
+            else context[SPLIT_ACTIVE_CONTEXT_KEY] = priorSplitActive;
+          }
           visitedNodeIds.push(...splitResult.visitedNodeIds);
           context[`node:${node.id}:outcome`] = splitResult.outcome;
           context[`node:${splitResult.joinNodeId}:outcome`] = splitResult.outcome;
@@ -213,6 +240,7 @@ export class WorkflowGraphExecutor {
               this.executeNodeWithRetries(tNode, task, settings, context, sig),
             shouldTraverseEdge: (edge, src) => this.shouldTraverseEdge(edge, src),
             persistence: this.deps.stepInstancePersistence,
+            onReworkReset: this.deps.onReworkReset,
             signal: this.deps.signal,
           });
           visitedNodeIds.push(...foreachResult.visitedNodeIds);

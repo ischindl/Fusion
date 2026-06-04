@@ -56,6 +56,10 @@ import {
 // Side-effect import: registers the 14 built-in trait DEFINITIONS into the
 // shared trait registry on load (the flag-ON path resolves traits by id).
 import "./builtin-traits.js";
+// Step-inversion U12 (KTD-12): the legacy `parseStepsFromPrompt` path resolves
+// the `step-headings` parser through the registry (proving the registry path),
+// staying byte-identical with the direct extracted function.
+import { getStepParser } from "./step-parsers.js";
 import type {
   WorkflowDefinition,
   WorkflowDefinitionInput,
@@ -808,86 +812,11 @@ const KNOWN_FILE_SCOPE_ROOT_FILES = new Set([
   "agents.md",
 ]);
 
-/**
- * Parse `### Step N:` headings into the task step list (step-inversion U1).
- *
- * Backward compatibility is exact: an UNannotated heading parses byte-identically
- * to the legacy regex `^###\s+Step\s+\d+[^:]*:\s*(.+)$` (name = text after the
- * first colon, trimmed).
- *
- * The annotation `### Step N (depends: 1,2): Title` is parsed explicitly (the
- * legacy regex breaks on the colon inside `depends:`): depends values are
- * 1-indexed step numbers in the document and are stored as 0-indexed indices on
- * `dependsOn` (deduped, sorted, dropping values <= 0).
- *
- * Malformed `(depends: …)` annotations fall back deterministically: the heading
- * is treated as `### Step N:` with the name starting after the FIRST colon
- * following the closing paren (if present), else after the first colon — and no
- * `dependsOn` is recorded.
- */
-export function parseStepHeadings(content: string): import("./types.js").TaskStep[] {
-  const steps: import("./types.js").TaskStep[] = [];
-  // Legacy matcher — UNCHANGED from the original implementation, so unannotated
-  // headings (and every legacy edge case, including `[^:]*` spanning newlines)
-  // parse byte-identically. The full match (`m[0]`) is re-inspected only to layer
-  // the `(depends: …)` annotation on top.
-  const stepRegex = /^###\s+Step\s+\d+[^:]*:\s*(.+)$/gm;
-  // Well-formed annotation form: `### Step N (depends: …): name`.
-  const annotatedRegex = /^###\s+Step\s+\d+\s*\(depends:\s*([^)]*)\)\s*:\s*([^\n]+)$/;
-
-  let match: RegExpExecArray | null;
-  while ((match = stepRegex.exec(content)) !== null) {
-    const full = match[0];
-
-    // No annotation present → byte-identical legacy behavior.
-    if (!full.includes("(depends:")) {
-      steps.push({ name: match[1].trim(), status: "pending" });
-      continue;
-    }
-
-    // 1) Well-formed depends annotation.
-    const annotated = annotatedRegex.exec(full);
-    if (annotated) {
-      const parsed = parseDependsList(annotated[1]);
-      const name = annotated[2].trim();
-      if (parsed !== null) {
-        if (parsed.length > 0) steps.push({ name, status: "pending", dependsOn: parsed });
-        else steps.push({ name, status: "pending" });
-        continue;
-      }
-    }
-
-    // 2) Annotation present but unparseable (bad values or no closing paren):
-    //    deterministic fallback — name starts after the FIRST colon following the
-    //    closing paren if present, else after the first colon. Operate on the
-    //    first line of the match only (the heading line itself).
-    const line = full.split("\n")[0];
-    const parenIdx = line.indexOf(")");
-    const colonAfterParen = parenIdx >= 0 ? line.indexOf(":", parenIdx) : -1;
-    const colonIdx = colonAfterParen >= 0 ? colonAfterParen : line.indexOf(":");
-    if (colonIdx >= 0) {
-      const fallbackName = line.slice(colonIdx + 1).trim();
-      if (fallbackName) steps.push({ name: fallbackName, status: "pending" });
-    }
-  }
-  return steps;
-}
-
-/** Parse a `depends:` value list (1-indexed step numbers) into 0-indexed,
- *  deduped, sorted indices. Returns null if any token is not a positive integer. */
-function parseDependsList(raw: string): number[] | null {
-  const trimmed = raw.trim();
-  if (trimmed === "") return [];
-  const tokens = trimmed.split(",").map((t) => t.trim());
-  const out = new Set<number>();
-  for (const token of tokens) {
-    if (!/^\d+$/.test(token)) return null;
-    const n = Number(token);
-    if (!Number.isInteger(n) || n < 1) return null;
-    out.add(n - 1);
-  }
-  return [...out].sort((a, b) => a - b);
-}
+// `parseStepHeadings` (the `### Step N:` parser, step-inversion U1) was extracted
+// into `step-parsers.ts` as the `step-headings` built-in parser (U12, KTD-12).
+// It is re-exported here for back-compat with callers/tests that import it from
+// `store.ts`. `parseStepsFromPrompt` below delegates through the registry.
+export { parseStepHeadings } from "./step-parsers.js";
 
 export function isValidFileScopeEntry(token: string): boolean {
   const trimmed = token.trim();
@@ -7805,13 +7734,27 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     id: string,
     stepIndex: number,
     status: import("./types.js").StepStatus,
+    options?: { source?: "graph" },
   ): Promise<Task> {
+    // Step-inversion projection discipline (U6/KTD-7). A `source: "graph"` write
+    // is the workflow-graph executor projecting a foreach instance's lifecycle
+    // (in-progress / done / pending) onto Task.steps[] with EXPLICIT indices. Three
+    // behaviors diverge from the legacy (default) write:
+    //   (a) the out-of-order-done guard relaxes from strict index order to
+    //       DEPENDENCY order (a done write is legal when every dependsOn step —
+    //       default: the immediately-preceding step — is done/skipped, KTD-11);
+    //   (b) a guard that DOES suppress a graph write logs an audit warning loudly
+    //       (legacy stays silent — a graph suppression is a projection bug);
+    //   (c) the auto-reinit-from-PROMPT.md path is bypassed (the graph pinned the
+    //       step count at foreach expansion; re-parsing here would desync, KTD-3).
+    const graphSource = options?.source === "graph";
     return this.withTaskLock(id, async () => {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
-      // Auto-initialize steps from PROMPT.md if empty
-      if (task.steps.length === 0) {
+      // Auto-initialize steps from PROMPT.md if empty. Bypassed for graph-source
+      // writes (U6/KTD-3): the graph owns explicit indices pinned at expansion.
+      if (task.steps.length === 0 && !graphSource) {
         task.steps = await this.parseStepsFromPrompt(id);
       }
 
@@ -7848,22 +7791,63 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
 
       if (status === "done") {
-        for (let i = 0; i < stepIndex; i++) {
-          const priorStatus = task.steps[i].status;
-          if (priorStatus === "pending" || priorStatus === "in-progress") {
-            const ts = new Date().toISOString();
-            task.updatedAt = ts;
+        // The set of predecessor steps that must be done/skipped before this step
+        // may go done. Legacy: strict index order (every earlier step). Graph: the
+        // step's dependsOn list (default = the immediately-preceding step when the
+        // annotation is absent — preserving sequential behavior, KTD-11).
+        let blockingIndex = -1;
+        let blockingStatus: import("./types.js").StepStatus | undefined;
+        if (graphSource) {
+          const deps = task.steps[stepIndex]?.dependsOn;
+          const depIndices =
+            Array.isArray(deps) && deps.length > 0
+              ? deps
+              : stepIndex > 0
+              ? [stepIndex - 1]
+              : [];
+          for (const i of depIndices) {
+            const priorStatus = task.steps[i]?.status;
+            if (priorStatus === "pending" || priorStatus === "in-progress") {
+              blockingIndex = i;
+              blockingStatus = priorStatus;
+              break;
+            }
+          }
+        } else {
+          for (let i = 0; i < stepIndex; i++) {
+            const priorStatus = task.steps[i].status;
+            if (priorStatus === "pending" || priorStatus === "in-progress") {
+              blockingIndex = i;
+              blockingStatus = priorStatus;
+              break;
+            }
+          }
+        }
+        if (blockingIndex !== -1) {
+          const ts = new Date().toISOString();
+          task.updatedAt = ts;
+          const kind = graphSource ? "dependency-order" : "out-of-order";
+          task.log.push({
+            timestamp: ts,
+            action:
+              `Ignored ${kind} ${status} for step ${stepIndex} (${task.steps[stepIndex].name}) — ` +
+              `${graphSource ? "dependency" : "earlier"} step ${blockingIndex} (${task.steps[blockingIndex].name}) is still ${blockingStatus}`,
+          });
+          // Graph-source suppression is a projection bug — surface it loudly in
+          // the activity log (U6) rather than the legacy silent ignore.
+          if (graphSource) {
             task.log.push({
               timestamp: ts,
               action:
-                `Ignored out-of-order ${status} for step ${stepIndex} (${task.steps[stepIndex].name}) — ` +
-                `earlier step ${i} (${task.steps[i].name}) is still ${priorStatus}`,
+                `[integrity-warning] graph-source updateStep suppressed: step ${stepIndex} ` +
+                `(${task.steps[stepIndex].name}) → done blocked by unmet dependency ` +
+                `step ${blockingIndex} (${blockingStatus})`,
             });
-            await this.atomicWriteTaskJson(dir, task);
-            if (this.isWatching) this.taskCache.set(id, { ...task });
-            this.emit("task:updated", task);
-            return task;
           }
+          await this.atomicWriteTaskJson(dir, task);
+          if (this.isWatching) this.taskCache.set(id, { ...task });
+          this.emit("task:updated", task);
+          return task;
         }
       }
 
@@ -8795,7 +8779,19 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     if (!existsSync(promptPath)) return [];
 
     const content = await readFile(promptPath, "utf-8");
-    return parseStepHeadings(content);
+    // Step-inversion U12 (KTD-12): delegate to the registry's `step-headings`
+    // parser (resolved by id, not a direct import) so the registry path is
+    // proven and stays byte-identical to the extracted function. The parser
+    // yields `{ name, dependsOn? }`; re-apply the `pending` status here.
+    const parser = getStepParser("step-headings");
+    if (!parser) {
+      throw new Error("Step parser 'step-headings' is not registered");
+    }
+    return parser.parse(content).steps.map((s) =>
+      s.dependsOn
+        ? { name: s.name, status: "pending" as const, dependsOn: s.dependsOn }
+        : { name: s.name, status: "pending" as const },
+    );
   }
 
   /**
