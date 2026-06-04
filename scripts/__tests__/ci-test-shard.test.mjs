@@ -3,13 +3,48 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+// A throwaway project root that contains only a stale timing snapshot, used to
+// exercise the `--check-timings-staleness` exit-1 path without mutating the
+// committed snapshot. The script resolves the snapshot relative to cwd.
+const STALE_FIXTURE_ROOT = mkdtempSync(path.join(tmpdir(), "u6-stale-cli-"));
+mkdirSync(path.join(STALE_FIXTURE_ROOT, "scripts"), { recursive: true });
+writeFileSync(
+  path.join(STALE_FIXTURE_ROOT, "scripts/test-timings.json"),
+  JSON.stringify({
+    capturedAt: new Date(Date.now() - 90 * 86_400_000).toISOString(),
+    packages: { "@fusion/core": { files: { "packages/core/a.test.ts": 500 } } },
+  }),
+);
+process.on("exit", () => rmSync(STALE_FIXTURE_ROOT, { recursive: true, force: true }));
 
 import {
   computeSplitPlan,
   planShardAssignments,
   selectShardPackages,
   countPackageTestFiles,
+  loadPlanningTimings,
+  computePackageDurationWeight,
+  sumFileDurations,
+  enumerateDashboardLanes,
+  laneProjectNames,
+  buildShardCommands,
+  TIMINGS_STALENESS_DAYS,
 } from "../ci-test-shard.mjs";
+
+function silentLogger() {
+  return { log() {}, warn() {}, error() {} };
+}
+
+function writeSnapshot(dir, capturedAt, packages) {
+  const file = path.join(dir, "test-timings.json");
+  writeFileSync(file, JSON.stringify({ capturedAt, packages }));
+  return file;
+}
 
 test("computeSplitPlan: returns unsplit entries when package weights do not exceed split limit", () => {
   const packages = [
@@ -377,4 +412,208 @@ test("countPackageTestFiles: returns 0 when no __tests__ matches exist", (t) => 
   writeFileSync(path.join(tmpRoot, "pkg/src/index.ts"), "export {}\n");
 
   assert.equal(countPackageTestFiles("pkg", { projectRoot: tmpRoot }), 0);
+});
+
+// ---------------------------------------------------------------------------
+// U6 (R3, R4): duration-based weighting, staleness, dashboard lane distribution
+// ---------------------------------------------------------------------------
+
+test("U6: duration weights produce balanced shards on skewed inputs where file-count would skew", () => {
+  // 10 "engine" real-git files at 10s each (100s) vs 50 "core" unit files at
+  // 0.4s each (20s). File-count weighting would call core the heavier package.
+  const durationPackages = [
+    { name: "engine", weight: 100_000, splittable: true },
+    { name: "core", weight: 20_000, splittable: true },
+    { name: "cli", weight: 12_000, splittable: true },
+    { name: "tail", weight: 8_000, splittable: true },
+  ];
+  const shards = planShardAssignments(durationPackages, 2);
+  const totals = shards.map((entries) => entries.reduce((sum, e) => sum + e.weight, 0));
+  const spread = (Math.max(...totals) - Math.min(...totals)) / (totals.reduce((a, b) => a + b, 0) / 2);
+  assert.ok(spread <= 0.05, `duration spread ${(spread * 100).toFixed(1)}% should be <=5% (${totals.join("/")})`);
+
+  // Motivation fixture: the SAME workload weighted by file count is badly
+  // skewed because the heavy engine has few files.
+  const fileCountPackages = [
+    { name: "engine", testFileCount: 10 },
+    { name: "core", testFileCount: 50 },
+    { name: "cli", testFileCount: 30 },
+    { name: "tail", testFileCount: 20 },
+  ];
+  // Disable splitting to expose the raw file-count balance signal.
+  const fcShards = planShardAssignments(fileCountPackages, 2, { threshold: Number.POSITIVE_INFINITY });
+  const fcDurations = { engine: 100_000, core: 20_000, cli: 12_000, tail: 8_000 };
+  const fcTotals = fcShards.map((entries) => entries.reduce((sum, e) => sum + fcDurations[e.name], 0));
+  const fcSpread =
+    (Math.max(...fcTotals) - Math.min(...fcTotals)) / (fcTotals.reduce((a, b) => a + b, 0) / 2);
+  assert.ok(
+    fcSpread > 0.05,
+    `file-count weighting should mis-balance real durations (got ${(fcSpread * 100).toFixed(1)}%, ${fcTotals.join("/")})`,
+  );
+});
+
+test("U6: loadPlanningTimings sums per-package durations and derives a median per-file fallback", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "u6-timings-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const snapshotPath = writeSnapshot(dir, new Date().toISOString(), {
+    "@fusion/core": { files: { "packages/core/a.test.ts": 200, "packages/core/b.test.ts": 600 } },
+    "@fusion/engine": { files: { "packages/engine/x.test.ts": 1000 } },
+  });
+  const timings = loadPlanningTimings({ snapshotPath });
+  assert.equal(timings.present, true);
+  assert.equal(timings.stale, false);
+  assert.equal(timings.fileDurations.get("packages/core/a.test.ts"), 200);
+  // median of [200, 600, 1000] = 600
+  assert.equal(timings.medianPerFileMs, 600);
+});
+
+test("U6: sumFileDurations reports timed/untimed counts", () => {
+  const map = new Map([["a.test.ts", 300]]);
+  const result = sumFileDurations(["a.test.ts", "missing.test.ts"], map);
+  assert.equal(result.durationMs, 300);
+  assert.equal(result.timedCount, 1);
+  assert.equal(result.untimedCount, 1);
+});
+
+test("U6: untimed package falls back to median-scaled file-count weight with a warning", (t) => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "u6-fallback-"));
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+  // Build a fake package with 3 test files, none present in the snapshot.
+  mkdirSync(path.join(projectRoot, "packages/newpkg/src/__tests__"), { recursive: true });
+  for (const f of ["one", "two", "three"]) {
+    writeFileSync(path.join(projectRoot, `packages/newpkg/src/__tests__/${f}.test.ts`), "");
+  }
+  const snapshotPath = writeSnapshot(projectRoot, new Date().toISOString(), {
+    "@fusion/core": { files: { "packages/core/a.test.ts": 500, "packages/core/b.test.ts": 500 } },
+  });
+  const timings = loadPlanningTimings({ snapshotPath });
+  const weighted = computePackageDurationWeight(
+    { name: "@fusion/newpkg", dir: "packages/newpkg" },
+    timings,
+    { projectRoot },
+  );
+  assert.equal(weighted.fullyUntimed, true);
+  // 3 untimed files * median(500) = 1500
+  assert.equal(weighted.weight, 1500);
+});
+
+test("U6: staleness — snapshot older than the budget is flagged stale (warning, not failure)", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "u6-stale-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const old = new Date(Date.now() - (TIMINGS_STALENESS_DAYS + 10) * 86_400_000).toISOString();
+  const snapshotPath = writeSnapshot(dir, old, { p: { files: { "a.test.ts": 100 } } });
+  const timings = loadPlanningTimings({ snapshotPath });
+  assert.equal(timings.stale, true);
+  assert.ok(timings.ageDays > TIMINGS_STALENESS_DAYS);
+
+  const fresh = new Date(Date.now() - 1 * 86_400_000).toISOString();
+  const freshPath = writeSnapshot(dir, fresh, { p: { files: { "a.test.ts": 100 } } });
+  assert.equal(loadPlanningTimings({ snapshotPath: freshPath }).stale, false);
+});
+
+test("U6: --check-timings-staleness exits non-zero on a stale snapshot", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "scripts/ci-test-shard.mjs"), "--check-timings-staleness"],
+    { cwd: STALE_FIXTURE_ROOT, encoding: "utf8" },
+  );
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /stale/i);
+});
+
+test("U6: enumerateDashboardLanes expands the test chain to leaf vitest lanes (no hardcoding)", () => {
+  const scripts = {
+    test: "pnpm run test:app && pnpm run test:api",
+    "test:app": "pnpm run test:app:foundation && pnpm run test:app:components",
+    "test:app:foundation": "vitest run --project dashboard-app-quality-foundation-api",
+    "test:app:components": "vitest run --project dashboard-app-quality-components-a",
+    "test:api": "vitest run --project dashboard-api-quality",
+  };
+  const lanes = enumerateDashboardLanes(scripts, "test");
+  assert.deepEqual(lanes, [
+    "test:app:foundation",
+    "test:app:components",
+    "test:api",
+  ]);
+});
+
+test("U6: enumerateDashboardLanes reads lanes from a fixture package.json shape", () => {
+  const pkgJson = {
+    scripts: {
+      test: "pnpm run test:quality:app && pnpm run test:quality:api",
+      "test:quality:app": "pnpm run test:quality:app:a && pnpm run test:quality:app:b",
+      "test:quality:app:a": "vitest run --project x",
+      "test:quality:app:b": "vitest run --project y",
+      "test:quality:api": "vitest run --project z",
+      // unrelated script not reachable from `test` must not appear
+      "test:deep": "vitest run --project deep",
+    },
+  };
+  const lanes = enumerateDashboardLanes(pkgJson.scripts, "test");
+  assert.deepEqual(lanes, ["test:quality:app:a", "test:quality:app:b", "test:quality:api"]);
+});
+
+test("U6: laneProjectNames extracts --project targets including = and space forms", () => {
+  assert.deepEqual(laneProjectNames("vitest run --project foo --project=bar baz"), ["foo", "bar"]);
+});
+
+test("U6: every dashboard lane is assigned to exactly one shard (union == enumerated list)", () => {
+  const lanes = ["lane-a", "lane-b", "lane-c", "lane-d", "lane-e"];
+  const units = [
+    { name: "@fusion/engine", weight: 50_000, splittable: true },
+    { name: "@fusion/core", weight: 40_000, splittable: true },
+    ...lanes.map((lane, i) => ({
+      name: "@fusion/dashboard",
+      lane,
+      runKind: "dashboard-lane",
+      weight: 10_000 + i * 1000,
+      splittable: false,
+    })),
+  ];
+  const shards = planShardAssignments(units, 4);
+  const occur = new Map();
+  let dashboardShardSlices = 0;
+  for (const shard of shards) {
+    for (const entry of shard) {
+      if (entry.runKind === "dashboard-lane") occur.set(entry.lane, (occur.get(entry.lane) ?? 0) + 1);
+      if (entry.name === "@fusion/dashboard" && entry.shardCount) dashboardShardSlices += 1;
+    }
+  }
+  assert.equal(dashboardShardSlices, 0, "dashboard lane units must never be vitest --shard sliced");
+  assert.deepEqual([...occur.keys()].sort(), [...lanes].sort());
+  for (const lane of lanes) assert.equal(occur.get(lane), 1, `lane ${lane} should appear exactly once`);
+});
+
+test("U6: buildShardCommands emits per-lane `run <lane>`, plain `test`, and virtual `--shard`", () => {
+  const entries = [
+    { name: "@fusion/core", weight: 1 },
+    { name: "@fusion/engine", weight: 1, shardIndex: 1, shardCount: 2 },
+    { name: "@fusion/dashboard", weight: 1, runKind: "dashboard-lane", lane: "test:quality:api" },
+  ];
+  const commands = buildShardCommands(entries);
+  const plain = commands.find((c) => c.kind === "plain");
+  const virtual = commands.find((c) => c.kind === "virtual");
+  const lane = commands.find((c) => c.kind === "dashboard-lane");
+  assert.deepEqual(plain.args, ["--filter", "@fusion/core", "test"]);
+  assert.deepEqual(virtual.args, ["--filter", "@fusion/engine", "test", "--shard=1/2"]);
+  assert.deepEqual(lane.args, ["--filter", "@fusion/dashboard", "run", "test:quality:api"]);
+});
+
+test("U6: --dry-run prints planned commands and per-shard weight for all 4 shards", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "scripts/ci-test-shard.mjs"), "--dry-run", "--total", "4"],
+    { cwd: REPO_ROOT, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  for (let n = 1; n <= 4; n += 1) {
+    assert.match(result.stdout, new RegExp(`shard ${n}/4 — weight`));
+  }
+  // Each dashboard lane appears exactly once across the printed plan.
+  const laneMatches = result.stdout.match(/--filter @fusion\/dashboard run [\w:-]+/g) ?? [];
+  const laneNames = laneMatches.map((m) => m.split("run ")[1]);
+  assert.equal(new Set(laneNames).size, laneNames.length, "no dashboard lane should be printed twice");
+  assert.ok(laneNames.length >= 10, `expected the dashboard lane chain, saw ${laneNames.length}`);
+  // Dashboard must NOT be virtual-sliced.
+  assert.doesNotMatch(result.stdout, /--filter @fusion\/dashboard test --shard/);
 });

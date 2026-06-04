@@ -88,9 +88,24 @@ export function countPackageTestFiles(packageDir, { projectRoot = process.cwd() 
 
 const DEFAULT_BALANCE_TOLERANCE = 0.05;
 
+/**
+ * Resolve the schedulable weight of an input package descriptor. Duration-based
+ * weights (U6 / R3) are preferred via the explicit `weight` field; the legacy
+ * `testFileCount` field is the file-count fallback so existing callers and the
+ * untimed-package fallback path keep working unchanged.
+ *
+ * @param {{ weight?: number, testFileCount?: number }} pkg
+ * @returns {number}
+ */
+function inputWeightOf(pkg) {
+  if (typeof pkg.weight === "number" && Number.isFinite(pkg.weight)) return pkg.weight;
+  return pkg.testFileCount ?? 0;
+}
+
 function appendSplitEntries(result, pkg, total, perShardBudget) {
-  const sliceCount = Math.min(total, Math.max(2, Math.ceil(pkg.testFileCount / perShardBudget)));
-  const sliceWeight = Math.ceil(pkg.testFileCount / sliceCount);
+  const baseWeight = inputWeightOf(pkg);
+  const sliceCount = Math.min(total, Math.max(2, Math.ceil(baseWeight / perShardBudget)));
+  const sliceWeight = Math.ceil(baseWeight / sliceCount);
   for (let i = 1; i <= sliceCount; i += 1) {
     result.push({
       name: pkg.name,
@@ -180,21 +195,32 @@ function assignWeightedEntries(entries, total) {
 export function computeSplitPlan(packages, total, options = {}) {
   const threshold = options.threshold ?? 0.5;
   const balanceTolerance = options.balanceTolerance ?? DEFAULT_BALANCE_TOLERANCE;
-  const totalWeight = packages.reduce((sum, p) => sum + p.testFileCount, 0);
+  const totalWeight = packages.reduce((sum, p) => sum + inputWeightOf(p), 0);
   const perShardBudget = total > 0 ? totalWeight / total : 0;
   const splitLimit = perShardBudget * threshold;
   const maxAllowedProjected = perShardBudget * (1 + balanceTolerance);
 
   const result = [];
   for (const pkg of packages) {
+    const pkgWeight = inputWeightOf(pkg);
+    // Lane-distributed units (dashboard, U6) and any caller that opts out are
+    // never virtual-sliced via `vitest --shard`: their `test` script is a
+    // multi-invocation chain, so `--shard=X/Y` cannot be forwarded coherently.
     const shouldConsiderSplit =
+      pkg.splittable !== false &&
       total > 1 &&
-      pkg.testFileCount > 0 &&
+      pkgWeight > 0 &&
       perShardBudget > 0 &&
-      pkg.testFileCount > splitLimit;
+      pkgWeight > splitLimit;
 
     if (!shouldConsiderSplit) {
-      result.push({ name: pkg.name, weight: pkg.testFileCount });
+      result.push({
+        name: pkg.name,
+        weight: pkgWeight,
+        ...(pkg.splittable === false ? { splittable: false } : {}),
+        ...(pkg.runKind ? { runKind: pkg.runKind } : {}),
+        ...(pkg.lane ? { lane: pkg.lane } : {}),
+      });
       continue;
     }
 
@@ -211,7 +237,8 @@ export function computeSplitPlan(packages, total, options = {}) {
 
   const forceSplitThreshold = splitLimit * threshold;
   let rebalanceResult = result.map((entry) => {
-    if (entry.shardCount) return entry;
+    // Lane-distributed / opt-out units (dashboard) are never `--shard`-sliced.
+    if (entry.shardCount || entry.splittable === false) return entry;
     const projectedBestCaseMax = perShardBudget + entry.weight;
     const shouldForceSplit =
       entry.weight > 0 &&
@@ -228,7 +255,10 @@ export function computeSplitPlan(packages, total, options = {}) {
     }
 
     const nextCandidate = rebalanceResult
-      .filter((entry) => !entry.shardCount && entry.weight > perShardBudget * balanceTolerance)
+      .filter(
+        (entry) =>
+          !entry.shardCount && entry.splittable !== false && entry.weight > perShardBudget * balanceTolerance,
+      )
       .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))[0];
 
     if (!nextCandidate) {
@@ -326,7 +356,12 @@ export function planShardAssignments(packages, total, options = {}) {
       shardIndex: entry.shardIndex,
       shardCount: entry.shardCount,
       weight: entry.weight,
-    } : { name: entry.name, weight: entry.weight });
+    } : {
+      name: entry.name,
+      weight: entry.weight,
+      ...(entry.runKind ? { runKind: entry.runKind } : {}),
+      ...(entry.lane ? { lane: entry.lane } : {}),
+    });
     shardWeights[targetIndex] += entry.weight;
   }
 
@@ -354,7 +389,379 @@ export function listWorkspaceTestPackages({ projectRoot = process.cwd() } = {}) 
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Duration-based weighting and dashboard lane distribution (U6 / R3, R4)
+// ---------------------------------------------------------------------------
+
+/** Snapshot older than this is reported as stale (warning, not a failure). */
+export const TIMINGS_STALENESS_DAYS = 30;
+
+/** Dashboard package name; its `test` chain is distributed lane-by-lane. */
+export const DASHBOARD_PACKAGE_NAME = "@fusion/dashboard";
+
+/** Engine package name; kept on `vitest --shard` virtual slicing, by duration. */
+export const ENGINE_PACKAGE_NAME = "@fusion/engine";
+
+/**
+ * Load the committed timing snapshot into a flat per-file duration map plus a
+ * derived median per-file duration (used to scale the file-count fallback so
+ * untimed packages are weighed commensurably with timed ones).
+ *
+ * @param {{ projectRoot?: string, snapshotPath?: string }} [options]
+ * @returns {{
+ *   present: boolean,
+ *   capturedAt: string|null,
+ *   fileDurations: Map<string, number>,
+ *   pkgDurations: Map<string, number>,
+ *   medianPerFileMs: number,
+ *   ageDays: number|null,
+ *   stale: boolean,
+ * }}
+ */
+export function loadPlanningTimings(options = {}) {
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const snapshotPath = options.snapshotPath ?? path.join(projectRoot, TIMINGS_SNAPSHOT_RELATIVE);
+  const snapshot = readTimingsSnapshot(snapshotPath);
+
+  const fileDurations = new Map();
+  const pkgDurations = new Map();
+  const allDurations = [];
+  if (snapshot && snapshot.packages && typeof snapshot.packages === "object") {
+    for (const [pkgName, pkgEntry] of Object.entries(snapshot.packages)) {
+      const files = pkgEntry && typeof pkgEntry === "object" ? pkgEntry.files : null;
+      if (!files || typeof files !== "object") continue;
+      let pkgTotal = 0;
+      for (const [file, duration] of Object.entries(files)) {
+        const ms = Number(duration);
+        if (!Number.isFinite(ms) || ms <= 0) continue;
+        const normalized = file.split(path.sep).join("/");
+        fileDurations.set(normalized, ms);
+        allDurations.push(ms);
+        pkgTotal += ms;
+      }
+      pkgDurations.set(pkgName, pkgTotal);
+    }
+  }
+
+  let medianPerFileMs = 0;
+  if (allDurations.length > 0) {
+    const sorted = [...allDurations].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    medianPerFileMs =
+      sorted.length % 2 === 0 ? Math.round((sorted[mid - 1] + sorted[mid]) / 2) : sorted[mid];
+  }
+
+  let ageDays = null;
+  let stale = false;
+  if (snapshot && typeof snapshot.capturedAt === "string") {
+    const captured = new Date(snapshot.capturedAt).getTime();
+    if (Number.isFinite(captured)) {
+      ageDays = (Date.now() - captured) / (1000 * 60 * 60 * 24);
+      stale = ageDays > TIMINGS_STALENESS_DAYS;
+    }
+  }
+
+  return {
+    present: Boolean(snapshot),
+    capturedAt: snapshot?.capturedAt ?? null,
+    fileDurations,
+    pkgDurations,
+    medianPerFileMs,
+    ageDays,
+    stale,
+  };
+}
+
+/**
+ * Sum the snapshot durations for a set of repo-relative test files. Returns the
+ * matched duration total and the count of files with no timing data.
+ *
+ * @param {string[]} files  repo-relative paths
+ * @param {Map<string, number>} fileDurations
+ * @returns {{ durationMs: number, timedCount: number, untimedCount: number }}
+ */
+export function sumFileDurations(files, fileDurations) {
+  let durationMs = 0;
+  let timedCount = 0;
+  let untimedCount = 0;
+  for (const file of files) {
+    const normalized = file.split(path.sep).join("/");
+    const ms = fileDurations.get(normalized);
+    if (typeof ms === "number" && ms > 0) {
+      durationMs += ms;
+      timedCount += 1;
+    } else {
+      untimedCount += 1;
+    }
+  }
+  return { durationMs, timedCount, untimedCount };
+}
+
+/**
+ * Compute a duration weight for a package from its files. Files present in the
+ * snapshot contribute their measured duration; files absent fall back to the
+ * snapshot's median per-file duration (R3 commensurable scaling). When the
+ * whole package is untimed, the entire weight is the fallback and the package
+ * name is collected for a logged warning.
+ *
+ * @param {{ name: string, dir: string }} pkg
+ * @param {ReturnType<typeof loadPlanningTimings>} timings
+ * @param {{ projectRoot?: string }} [options]
+ * @returns {{ name: string, dir: string, weight: number, fullyUntimed: boolean, partiallyUntimed: boolean }}
+ */
+export function computePackageDurationWeight(pkg, timings, options = {}) {
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const files = globSync("**/__tests__/**/*.test.{ts,tsx,mjs}", {
+    cwd: path.join(projectRoot, pkg.dir),
+    nodir: true,
+    exclude: (p) => p.startsWith("dist/") || p.includes("/dist/"),
+  }).map((f) => `${pkg.dir}/${f}`);
+
+  const fallbackPerFile = timings.medianPerFileMs > 0 ? timings.medianPerFileMs : DURATION_BUCKET_MS;
+  const { durationMs, timedCount, untimedCount } = sumFileDurations(files, timings.fileDurations);
+  const weight = durationMs + untimedCount * fallbackPerFile;
+
+  return {
+    name: pkg.name,
+    dir: pkg.dir,
+    weight,
+    fullyUntimed: timedCount === 0 && files.length > 0,
+    partiallyUntimed: timedCount > 0 && untimedCount > 0,
+  };
+}
+
+/**
+ * Recursively expand a package's `test` script into the leaf vitest lanes it
+ * runs. A leaf lane is a script whose command does NOT delegate to another
+ * `pnpm run <name>`; the dashboard chain is `pnpm run a && pnpm run b ...`, so
+ * we follow each `pnpm run <name>` edge until reaching commands that invoke
+ * vitest. Lanes are enumerated from package.json — never hardcoded.
+ *
+ * @param {Record<string, string>} scripts  package.json `scripts` map
+ * @param {string} [entryScript]
+ * @returns {string[]} ordered, de-duplicated leaf lane script names
+ */
+export function enumerateDashboardLanes(scripts, entryScript = "test") {
+  const lanes = [];
+  const seen = new Set();
+  const referencedRuns = (command) => {
+    const names = [];
+    const re = /pnpm\s+run\s+([\w:-]+)/g;
+    let match;
+    while ((match = re.exec(command)) !== null) names.push(match[1]);
+    return names;
+  };
+
+  const visit = (scriptName) => {
+    if (seen.has(scriptName)) return;
+    seen.add(scriptName);
+    const command = scripts?.[scriptName];
+    if (typeof command !== "string") return;
+    const children = referencedRuns(command);
+    if (children.length === 0) {
+      // Leaf: a lane that actually invokes a test runner.
+      lanes.push(scriptName);
+      return;
+    }
+    for (const child of children) visit(child);
+  };
+
+  visit(entryScript);
+  return lanes;
+}
+
+/**
+ * Extract the vitest `--project <name>` targets referenced by a lane command.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function laneProjectNames(command) {
+  const names = [];
+  const re = /--project[=\s]+([\w-]+)/g;
+  let match;
+  while ((match = re.exec(command)) !== null) names.push(match[1]);
+  return names;
+}
+
+/**
+ * Resolve dashboard project name → repo-relative test files by importing the
+ * dashboard vitest config (via `tsx`, which resolves its extensionless TS
+ * imports) and globbing each project's `include`/`exclude`. This is the
+ * "derive from the vitest config project includes" path. On any failure
+ * (config not importable, tsx missing) it returns null so the caller falls back
+ * to even apportionment of the package duration across lanes.
+ *
+ * @param {string} dashboardDir  repo-relative dashboard dir
+ * @param {{ projectRoot?: string }} [options]
+ * @returns {Record<string, string[]>|null}  projectName → repo-relative files
+ */
+export function resolveDashboardProjectFiles(dashboardDir, options = {}) {
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const dashboardAbs = path.join(projectRoot, dashboardDir);
+  const script = `
+    import config from "./vitest.config.ts";
+    import { globSync } from "node:fs";
+    const projects = config?.test?.projects ?? [];
+    const out = {};
+    for (const p of projects) {
+      const name = p?.test?.name;
+      if (!name) continue;
+      const include = Array.isArray(p.test.include) ? p.test.include : [p.test.include].filter(Boolean);
+      const exclude = Array.isArray(p.test.exclude) ? p.test.exclude : [];
+      const files = new Set();
+      for (const g of include) for (const f of globSync(g, { cwd: process.cwd(), nodir: true })) files.add(f);
+      const excluded = new Set();
+      for (const g of exclude) for (const f of globSync(g, { cwd: process.cwd(), nodir: true })) excluded.add(f);
+      out[name] = [...files].filter((f) => !excluded.has(f));
+    }
+    process.stdout.write(JSON.stringify(out));
+  `;
+  const tsxBin = path.join(projectRoot, "node_modules/.bin/tsx");
+  const result = spawnSync(
+    tsxBin,
+    ["--eval", script],
+    { cwd: dashboardAbs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.status !== 0 || !result.stdout) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const [name, files] of Object.entries(parsed)) {
+    out[name] = (Array.isArray(files) ? files : []).map((f) => `${dashboardDir}/${f}`.split(path.sep).join("/"));
+  }
+  return out;
+}
+
+/**
+ * Build the dashboard lane schedulable units. Each enumerated leaf lane becomes
+ * one unit weighted by the durations of the files its `--project`s execute
+ * (a lane carrying `--shard=i/n` runs 1/n of those files). When the config
+ * cannot be imported, the package duration is apportioned evenly across lanes.
+ *
+ * @param {{ name: string, dir: string }} pkg
+ * @param {ReturnType<typeof loadPlanningTimings>} timings
+ * @param {{ projectRoot?: string }} [options]
+ * @returns {{ units: Array<{ name: string, lane: string, runKind: "dashboard-lane", weight: number, splittable: false }>, lanes: string[], method: string, untimed: string[] }}
+ */
+export function buildDashboardLaneUnits(pkg, timings, options = {}) {
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const pkgJson = JSON.parse(readFileSync(path.join(projectRoot, pkg.dir, "package.json"), "utf8"));
+  const scripts = pkgJson.scripts ?? {};
+  const lanes = enumerateDashboardLanes(scripts, "test");
+
+  const projectFiles = resolveDashboardProjectFiles(pkg.dir, { projectRoot });
+  const fallbackPerFile = timings.medianPerFileMs > 0 ? timings.medianPerFileMs : DURATION_BUCKET_MS;
+  const untimed = [];
+
+  if (projectFiles) {
+    const units = lanes.map((lane) => {
+      const command = scripts[lane] ?? "";
+      const projects = laneProjectNames(command);
+      const shardMatch = /--shard[=\s]+(\d+)\/(\d+)/.exec(command);
+      const shardFraction = shardMatch ? 1 / Number(shardMatch[2]) : 1;
+      const files = new Set();
+      for (const project of projects) for (const f of projectFiles[project] ?? []) files.add(f);
+      const { durationMs, timedCount, untimedCount } = sumFileDurations([...files], timings.fileDurations);
+      const weight = (durationMs + untimedCount * fallbackPerFile) * shardFraction;
+      if (timedCount === 0 && files.size > 0) untimed.push(lane);
+      return { name: pkg.name, lane, runKind: "dashboard-lane", weight: Math.max(weight, fallbackPerFile), splittable: false };
+    });
+    return { units, lanes, method: "vitest-config-includes", untimed };
+  }
+
+  // Fallback: even apportionment of the package's measured duration.
+  const pkgWeight = computePackageDurationWeight(pkg, timings, { projectRoot }).weight;
+  const perLane = lanes.length > 0 ? pkgWeight / lanes.length : 0;
+  const units = lanes.map((lane) => ({
+    name: pkg.name,
+    lane,
+    runKind: "dashboard-lane",
+    weight: Math.max(perLane, fallbackPerFile),
+    splittable: false,
+  }));
+  return { units, lanes, method: "even-apportionment", untimed: lanes };
+}
+
+/**
+ * Translate the raw workspace package list into duration-weighted schedulable
+ * units for the planner: the dashboard expands into per-lane units; every other
+ * package is a single duration-weighted unit (engine stays virtual-sliceable).
+ * Untimed packages fall back to median-scaled file-count weight with a warning.
+ *
+ * @param {{ projectRoot?: string, logger?: Console, timings?: ReturnType<typeof loadPlanningTimings> }} [options]
+ * @returns {{ units: Array<{ name: string, weight: number, runKind?: string, lane?: string, splittable?: boolean }>, dashboardLanes: string[], timings: ReturnType<typeof loadPlanningTimings> }}
+ */
+export function buildScheduleUnits(options = {}) {
+  const projectRoot = options.projectRoot ?? process.cwd();
+  const logger = options.logger ?? console;
+  const timings = options.timings ?? loadPlanningTimings({ projectRoot });
+  const packages = listWorkspaceTestPackages({ projectRoot });
+
+  if (!timings.present) {
+    logger.warn(
+      "[ci-test-shard] no timing snapshot found; falling back to file-count weighting for all packages.",
+    );
+  } else if (timings.stale) {
+    logger.warn(
+      `[ci-test-shard] WARNING: timing snapshot is ${Math.round(timings.ageDays)} days old ` +
+        `(> ${TIMINGS_STALENESS_DAYS}d staleness budget; capturedAt ${timings.capturedAt}). ` +
+        "Shard balance may have drifted. Refresh it from the default branch's CI timing artifacts " +
+        "via `node scripts/ci-test-shard.mjs --write-timings`.",
+    );
+  }
+
+  const units = [];
+  let dashboardLanes = [];
+  const untimedPackages = [];
+
+  for (const pkg of packages) {
+    if (pkg.name === DASHBOARD_PACKAGE_NAME) {
+      const { units: laneUnits, lanes, method, untimed } = buildDashboardLaneUnits(pkg, timings, { projectRoot });
+      units.push(...laneUnits);
+      dashboardLanes = lanes;
+      logger.log(
+        `[ci-test-shard] dashboard distributed across ${lanes.length} lanes (weights via ${method}).`,
+      );
+      if (untimed.length > 0) {
+        logger.warn(
+          `[ci-test-shard] dashboard lanes without timing data (median-scaled fallback): ${untimed.join(", ")}`,
+        );
+      }
+      continue;
+    }
+
+    const weighted = computePackageDurationWeight(pkg, timings, { projectRoot });
+    if (weighted.fullyUntimed) untimedPackages.push(pkg.name);
+    units.push({
+      name: pkg.name,
+      weight: weighted.weight,
+      // Engine remains virtual-sliceable; everything else stays whole unless
+      // the planner's force-split balance pass decides otherwise.
+      splittable: true,
+    });
+  }
+
+  if (untimedPackages.length > 0) {
+    logger.warn(
+      `[ci-test-shard] no timing data for: ${untimedPackages.join(", ")}; ` +
+        `using median-scaled (${timings.medianPerFileMs}ms/file) file-count weight.`,
+    );
+  }
+
+  return { units, dashboardLanes, timings };
+}
+
 function entryLabel(entry) {
+  if (entry.runKind === "dashboard-lane") {
+    return `${entry.name} run ${entry.lane}`;
+  }
   if (entry.shardCount) {
     return `${entry.name} [${entry.shardIndex}/${entry.shardCount}]`;
   }
@@ -642,11 +1049,119 @@ export function runColdStartProbe(packageName, options = {}) {
   };
 }
 
+/**
+ * Translate the resolved shard entries into the concrete pnpm command argument
+ * vectors that execute them. Plain duration-weighted packages run together in
+ * one `pnpm --filter ... test` invocation; virtual engine slices each get a
+ * `--shard=i/n` invocation; dashboard lane units each run their own
+ * `pnpm --filter @fusion/dashboard run <lane>`. `timingFlags()` (if provided)
+ * appends the JSON reporter flags so telemetry keeps flowing (U1/R4).
+ *
+ * @param {ShardEntry[]} shardEntries
+ * @param {{ timingFlags?: () => string[] }} [options]
+ * @returns {Array<{ kind: string, label: string, args: string[] }>}
+ */
+export function buildShardCommands(shardEntries, options = {}) {
+  const timingFlags = options.timingFlags ?? (() => []);
+  const commands = [];
+
+  const plain = shardEntries.filter((e) => !e.shardCount && e.runKind !== "dashboard-lane");
+  const virtual = shardEntries.filter((e) => e.shardCount);
+  const lanes = shardEntries.filter((e) => e.runKind === "dashboard-lane");
+
+  if (plain.length > 0) {
+    const filters = plain.flatMap((e) => ["--filter", e.name]);
+    commands.push({
+      kind: "plain",
+      label: plain.map((e) => e.name).join(", "),
+      args: [...filters, "test", ...timingFlags()],
+    });
+  }
+
+  for (const entry of virtual) {
+    commands.push({
+      kind: "virtual",
+      label: `${entry.name} [${entry.shardIndex}/${entry.shardCount}]`,
+      // NB: no `--` between `test` and `--shard`; cac would treat the value as a
+      // positional file filter and silently disable sharding.
+      args: ["--filter", entry.name, "test", `--shard=${entry.shardIndex}/${entry.shardCount}`, ...timingFlags()],
+    });
+  }
+
+  for (const entry of lanes) {
+    commands.push({
+      kind: "dashboard-lane",
+      label: `${entry.name} run ${entry.lane}`,
+      args: ["--filter", entry.name, "run", entry.lane, ...timingFlags()],
+    });
+  }
+
+  return commands;
+}
+
 export function main(argv = process.argv.slice(2), env = process.env) {
   if (argv.includes("--write-timings")) {
     const dirIdx = argv.indexOf("--inputs-dir");
     const inputDir = dirIdx >= 0 ? argv[dirIdx + 1] : undefined;
     writeTimings({ inputDir });
+    return;
+  }
+
+  if (argv.includes("--check-timings-staleness")) {
+    const timings = loadPlanningTimings();
+    if (!timings.present) {
+      console.error("[ci-test-shard] no timing snapshot present; refresh required.");
+      process.exitCode = 1;
+      return;
+    }
+    if (timings.stale) {
+      console.error(
+        `[ci-test-shard] timing snapshot is stale: ${Math.round(timings.ageDays)} days old ` +
+          `(> ${TIMINGS_STALENESS_DAYS}d). capturedAt ${timings.capturedAt}. ` +
+          "Refresh from the default branch via `node scripts/ci-test-shard.mjs --write-timings`.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(
+      `[ci-test-shard] timing snapshot fresh: ${Math.round(timings.ageDays ?? 0)} days old ` +
+        `(<= ${TIMINGS_STALENESS_DAYS}d). capturedAt ${timings.capturedAt}.`,
+    );
+    return;
+  }
+
+  if (argv.includes("--dry-run")) {
+    const total = parsePositiveInteger(
+      (() => {
+        const i = argv.indexOf("--total");
+        return i >= 0 ? argv[i + 1] : undefined;
+      })() ?? env.CI_SHARD_TOTAL,
+    );
+    const singleShard = parsePositiveInteger(
+      (() => {
+        const i = argv.indexOf("--shard");
+        return i >= 0 ? argv[i + 1] : undefined;
+      })() ?? env.CI_SHARD_INDEX,
+    );
+    if (!total) {
+      throw new Error("Usage: node scripts/ci-test-shard.mjs --dry-run --total <N> [--shard <1..N>]");
+    }
+    const { units } = buildScheduleUnits();
+    const assignments = planShardAssignments(units, total);
+    const weightOf = (entry) => entry.weight ?? 0;
+    const shardsToPrint = singleShard ? [singleShard] : Array.from({ length: total }, (_, i) => i + 1);
+    for (const shardNum of shardsToPrint) {
+      const entries = assignments[shardNum - 1] ?? [];
+      const totalMs = entries.reduce((sum, e) => sum + weightOf(e), 0);
+      console.log(
+        `\n[ci-test-shard] shard ${shardNum}/${total} — weight ${(totalMs / 1000).toFixed(1)}s, ${entries.length} unit(s):`,
+      );
+      const commands = buildShardCommands(entries);
+      for (const command of commands) {
+        console.log(`  pnpm ${command.args.join(" ")}`);
+      }
+      if (commands.length === 0) console.log("  (no assigned units)");
+    }
     return;
   }
 
@@ -666,10 +1181,11 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   }
 
   const { shard, total } = parseShardArgs(argv, env);
-  const shardEntries = selectShardPackages(listWorkspaceTestPackages(), shard, total);
+  const { units } = buildScheduleUnits();
+  const shardEntries = planShardAssignments(units, total)[shard - 1] || [];
 
   if (shardEntries.length === 0) {
-    console.log(`[ci-test-shard] shard ${shard}/${total} has no assigned packages; skipping.`);
+    console.log(`[ci-test-shard] shard ${shard}/${total} has no assigned units; skipping.`);
     return;
   }
 
@@ -688,9 +1204,6 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   // Per-shard timing telemetry (U1 / R4): each test invocation also emits a
   // vitest JSON reporter file under .timings/. These are uploaded as CI
   // artifacts and consumed by `--write-timings` to refresh the snapshot.
-  // Reporters are appended as CLI flags following the same no-`--` quirk as the
-  // virtual `--shard` forwarding; package `test` scripts already pass
-  // `--reporter=dot`, and vitest accepts multiple `--reporter` flags.
   const timingsDir = path.join(process.cwd(), ".timings");
   mkdirSync(timingsDir, { recursive: true });
   let invocationIndex = 0;
@@ -699,29 +1212,10 @@ export function main(argv = process.argv.slice(2), env = process.env) {
     return ["--reporter=json", `--outputFile.json=${outputFile}`];
   };
 
-  // Group entries: plain packages run together in one pnpm invocation;
-  // virtual (sharded) entries each get their own vitest --shard invocation.
-  const plain = shardEntries.filter((e) => !e.shardCount);
-  const virtual = shardEntries.filter((e) => e.shardCount);
-
-  if (plain.length > 0) {
-    const filters = plain.flatMap((e) => ["--filter", e.name]);
-    run("pnpm", [...filters, "test", ...timingFlags()], { env: shardEnv });
-  }
-
-  for (const entry of virtual) {
-    console.log(
-      `[ci-test-shard] shard ${shard}/${total}: running ${entry.name} --shard ${entry.shardIndex}/${entry.shardCount}`,
-    );
-    // NB: no `--` between `test` and `--shard`. pnpm 10 forwards extra args to
-    // the script regardless, and inserting `--` causes vitest's CLI parser
-    // (cac) to treat `--shard X/Y` as positional file filters → sharding is
-    // silently disabled and every shard runs the full suite.
-    run(
-      "pnpm",
-      ["--filter", entry.name, "test", `--shard=${entry.shardIndex}/${entry.shardCount}`, ...timingFlags()],
-      { env: shardEnv },
-    );
+  const commands = buildShardCommands(shardEntries, { timingFlags });
+  for (const command of commands) {
+    console.log(`[ci-test-shard] shard ${shard}/${total}: running ${command.label}`);
+    run("pnpm", command.args, { env: shardEnv });
   }
 }
 

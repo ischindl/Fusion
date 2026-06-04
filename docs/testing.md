@@ -97,6 +97,40 @@ in CI via the `Engine slow tier` job in `pr-checks.yml`, which uses
 or config drift that silently empties the tier breaks CI instead of passing vacuously).
 The CI job uses `fetch-depth: 0` because these tests run real git operations.
 
+## CI shard balancing (duration-weighted)
+
+`scripts/ci-test-shard.mjs` packs the 4 CI shards (`pnpm test:ci:shard --shard N --total 4`,
+called from `pr-checks.yml`) by **measured duration**, not test-file count, using the
+committed `scripts/test-timings.json` snapshot (U1/R4). A package's weight is the sum of
+its files' recorded durations; files (or whole packages) absent from the snapshot fall
+back to the snapshot's **median per-file duration** so untimed packages weigh
+commensurably. Untimed packages are named in a logged warning.
+
+- **Engine** keeps `vitest --shard X/Y` virtual slicing (its `test` is a single vitest
+  invocation: `--project=engine-default --project=engine-reliability`); slices are now
+  weighted by duration.
+- **Dashboard** is *not* `--shard`-sliced — its `test` script is a chain of many separate
+  vitest invocations, so a forwarded `--shard` cannot apply coherently. Instead each leaf
+  lane in the chain (enumerated programmatically from `packages/dashboard/package.json` by
+  expanding the `pnpm run <name>` graph under `test`) is a separately-weighted schedulable
+  unit; a shard runs `pnpm --filter @fusion/dashboard run <lane>` for its assigned lanes.
+  Every lane is assigned to exactly one shard. **Lane weight** is the sum of durations of
+  the files the lane's `--project`s execute, derived from the vitest config project
+  `include`/`exclude` globs (imported via `tsx`); if the config cannot be imported the
+  package duration is apportioned evenly across lanes (logged as `even-apportionment`).
+- **Inspect the plan without running it:** `node scripts/ci-test-shard.mjs --dry-run --total 4`
+  (optionally `--shard N`) prints the planned `pnpm` commands and per-shard weight totals.
+
+### Snapshot staleness policy
+
+The snapshot carries `capturedAt`. If it is older than **30 days**, the planner prints a
+prominent warning and proceeds (balance degrades gracefully toward the file-count status
+quo, never below it) — it does **not** fail the build. Refresh is **manual/scheduled from
+the default branch only**: each CI shard uploads per-shard JSON timing artifacts (U1), and
+`node scripts/ci-test-shard.mjs --write-timings` merges them into the snapshot. A future
+scheduled job can gate on freshness via `node scripts/ci-test-shard.mjs --check-timings-staleness`,
+which exits non-zero when the snapshot is missing or older than the 30-day budget.
+
 ## Targeted commands
 
 ```bash
