@@ -7,6 +7,25 @@ import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, 
 import { createActivityLogSnapshot, createRunAuditSnapshot, createTaskMetadataSnapshot, toTaskMetadataRecord, validateSnapshotEnvelope, type ActivityLogSnapshot, type RunAuditSnapshot, type TaskMetadataSnapshot } from "./shared-mesh-state.js";
 import { VALID_TRANSITIONS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
+import { parseWorkflowIr, serializeWorkflowIr } from "./workflow-ir.js";
+import type {
+  WorkflowDefinition,
+  WorkflowDefinitionInput,
+  WorkflowDefinitionUpdate,
+  WorkflowNodeLayout,
+} from "./workflow-definition-types.js";
+import { compileWorkflowToSteps } from "./workflow-compiler.js";
+import { BUILTIN_WORKFLOWS, getBuiltinWorkflow, isBuiltinWorkflowId } from "./builtin-workflows.js";
+import {
+  WORKFLOW_PARITY_OBSERVED_MUTATION,
+  WORKFLOW_PARITY_DRIFT_MUTATION,
+  type WorkflowParityDiff,
+  type WorkflowParitySummary,
+} from "./workflow-parity.js";
+
+/** Tags WorkflowStep rows materialized by compiling a workflow so they can be
+ *  filtered out of the user-facing step manager and cleaned up on re-selection. */
+const WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX = "workflow:";
 import { resolveWorktrunkSettings, validateWorktrunkSettings } from "./worktrunk-settings.js";
 import { validateLocale } from "./settings-validation.js";
 import { normalizeTaskPriority } from "./task-priority.js";
@@ -1144,6 +1163,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   private lastTaskIdIntegrityLogSignature: string | null = null;
   /** Cached workflow steps — invalidated on create/update/delete */
   private workflowStepsCache: import("./types.js").WorkflowStep[] | null = null;
+  private workflowDefinitionsCache: WorkflowDefinition[] | null = null;
   /** Plugin-contributed workflow step templates injected by engine runtime. */
   private _pluginWorkflowStepTemplates: Array<{ pluginId: string; template: WorkflowStepTemplate }> = [];
   /** Global settings store (`~/.fusion/settings.json`) */
@@ -1424,7 +1444,17 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     await this.migrateActiveArchivedTasksToArchiveDb();
     await this.migrateAgentLogEntriesToFilesOnce();
     await this.cleanupNoOpTaskMovedActivityRowsOnce();
-    if (this.db.getSchemaVersion() < SCHEMA_VERSION) {
+    // Re-run init when migrations are pending, or when the deferred
+    // agentLogEntries drop still needs to fire: migration 102 skips the
+    // destructive drop until migrateAgentLogEntriesToFilesOnce() above writes
+    // the __meta guard, but migrations 103+ bump the schema version past 102
+    // on the first pass, so the version check alone no longer triggers the
+    // second pass that performs the drop.
+    const legacyAgentLogTableRemains =
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agentLogEntries' LIMIT 1")
+        .get() !== undefined;
+    if (this.db.getSchemaVersion() < SCHEMA_VERSION || legacyAgentLogTableRemains) {
       this.db.init();
     }
     await this.importLegacyAgentLogsOnce();
@@ -2524,6 +2554,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     const allowResurrection = existing.allowResurrection === true;
     if (input.forceResurrect === true || allowResurrection) {
+      this.purgeTaskWorkflowSelectionRows(id);
       this.db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
       this.db.bumpLastModified();
       return;
@@ -3752,39 +3783,77 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ? await this.resolveEnabledWorkflowSteps(input.enabledWorkflowSteps)
       : undefined;
 
+    // When a project default workflow is configured, new tasks inherit it
+    // (compiled to steps) ahead of the legacy default-on step behavior.
+    let pendingWorkflowSelection: { workflowId: string; stepIds: string[] } | undefined;
     if (input.enabledWorkflowSteps === undefined) {
       try {
-        const allSteps = await this.listWorkflowSteps();
-        const defaultOnSteps = allSteps
-          .filter((ws) => ws.enabled && ws.defaultOn)
-          .map((ws) => ws.id);
-        if (defaultOnSteps.length > 0) {
-          resolvedWorkflowSteps = defaultOnSteps;
+        const inherited = await this.materializeDefaultWorkflowSteps();
+        if (inherited) {
+          resolvedWorkflowSteps = inherited.stepIds;
+          pendingWorkflowSelection = inherited;
         }
       } catch (err) {
-        storeLog.warn("Failed to auto-apply default workflow steps during task creation; auto-defaulting skipped", {
-          phase: "createTask:workflow-auto-default",
-          skippedAutoDefaulting: true,
+        storeLog.warn("Failed to apply default workflow during task creation; falling back to default-on steps", {
+          phase: "createTask:default-workflow",
           error: err instanceof Error ? err.message : String(err),
-          descriptionLength: input.description.length,
         });
+      }
+
+      if (resolvedWorkflowSteps === undefined) {
+        try {
+          const allSteps = await this.listWorkflowSteps();
+          const defaultOnSteps = allSteps
+            .filter((ws) => ws.enabled && ws.defaultOn)
+            .map((ws) => ws.id);
+          if (defaultOnSteps.length > 0) {
+            resolvedWorkflowSteps = defaultOnSteps;
+          }
+        } catch (err) {
+          storeLog.warn("Failed to auto-apply default workflow steps during task creation; auto-defaulting skipped", {
+            phase: "createTask:workflow-auto-default",
+            skippedAutoDefaulting: true,
+            error: err instanceof Error ? err.message : String(err),
+            descriptionLength: input.description.length,
+          });
+        }
       }
     } else if (input.enabledWorkflowSteps.length === 0) {
       resolvedWorkflowSteps = undefined;
     }
 
-    const task = await this.createTaskWithDistributedReservation(input, {
-      createTaskWithId: async (taskId) => {
-        await this.assertNoDependencyCycle(taskId, input.dependencies ?? [], "createTask");
-        return this._createTaskInternal(
-          input,
-          title,
-          resolvedWorkflowSteps,
-          taskId,
-          { invokeTaskCreatedHook: shouldInvokeTaskCreatedHook && !hasPendingSummarization },
-        );
-      },
-    });
+    let task: Task;
+    try {
+      task = await this.createTaskWithDistributedReservation(input, {
+        createTaskWithId: async (taskId) => {
+          await this.assertNoDependencyCycle(taskId, input.dependencies ?? [], "createTask");
+          return this._createTaskInternal(
+            input,
+            title,
+            resolvedWorkflowSteps,
+            taskId,
+            { invokeTaskCreatedHook: shouldInvokeTaskCreatedHook && !hasPendingSummarization },
+          );
+        },
+      });
+    } catch (err) {
+      // The task row was never created, so any default-workflow steps we
+      // materialized above would orphan with no task/selection pointing at them.
+      this.cleanupOrphanedMaterializedSteps(pendingWorkflowSelection?.stepIds);
+      throw err;
+    }
+
+    // Record the inherited workflow selection now that the task row exists.
+    if (pendingWorkflowSelection) {
+      try {
+        this.writeTaskWorkflowSelection(task.id, pendingWorkflowSelection.workflowId, pendingWorkflowSelection.stepIds);
+      } catch (err) {
+        storeLog.warn("Failed to record inherited workflow selection", {
+          taskId: task.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     if (hasPendingSummarization && shouldInvokeTaskCreatedHook) {
       const id = task.id;
@@ -3885,33 +3954,73 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       ? await this.resolveEnabledWorkflowSteps(input.enabledWorkflowSteps)
       : undefined;
 
+    let pendingWorkflowSelection: { workflowId: string; stepIds: string[] } | undefined;
     if (input.enabledWorkflowSteps === undefined && options.applyDefaultWorkflowSteps !== false) {
+      // Mirror createTask: a configured project default workflow takes
+      // precedence over legacy default-on steps on this creation path too.
       try {
-        const allSteps = await this.listWorkflowSteps();
-        const defaultOnSteps = allSteps
-          .filter((ws) => ws.enabled && ws.defaultOn)
-          .map((ws) => ws.id);
-        if (defaultOnSteps.length > 0) {
-          resolvedWorkflowSteps = defaultOnSteps;
+        const inherited = await this.materializeDefaultWorkflowSteps();
+        if (inherited) {
+          resolvedWorkflowSteps = inherited.stepIds;
+          pendingWorkflowSelection = inherited;
         }
       } catch (err) {
-        storeLog.warn("Failed to auto-apply default workflow steps during reserved task creation; auto-defaulting skipped", {
-          phase: "createTaskWithReservedId:workflow-auto-default",
-          skippedAutoDefaulting: true,
+        storeLog.warn("Failed to apply default workflow during reserved task creation; falling back to default-on steps", {
+          phase: "createTaskWithReservedId:default-workflow",
           error: err instanceof Error ? err.message : String(err),
-          descriptionLength: input.description.length,
         });
+      }
+
+      if (resolvedWorkflowSteps === undefined) {
+        try {
+          const allSteps = await this.listWorkflowSteps();
+          const defaultOnSteps = allSteps
+            .filter((ws) => ws.enabled && ws.defaultOn)
+            .map((ws) => ws.id);
+          if (defaultOnSteps.length > 0) {
+            resolvedWorkflowSteps = defaultOnSteps;
+          }
+        } catch (err) {
+          storeLog.warn("Failed to auto-apply default workflow steps during reserved task creation; auto-defaulting skipped", {
+            phase: "createTaskWithReservedId:workflow-auto-default",
+            skippedAutoDefaulting: true,
+            error: err instanceof Error ? err.message : String(err),
+            descriptionLength: input.description.length,
+          });
+        }
       }
     } else if (Array.isArray(input.enabledWorkflowSteps) && input.enabledWorkflowSteps.length === 0) {
       resolvedWorkflowSteps = undefined;
     }
 
-    return this._createTaskInternal(input, title, resolvedWorkflowSteps, id, {
-      createdAt: options.createdAt,
-      updatedAt: options.updatedAt,
-      promptOverride: options.prompt,
-      invokeTaskCreatedHook: options.invokeTaskCreatedHook,
-    });
+    let createdTask: Task;
+    try {
+      createdTask = await this._createTaskInternal(input, title, resolvedWorkflowSteps, id, {
+        createdAt: options.createdAt,
+        updatedAt: options.updatedAt,
+        promptOverride: options.prompt,
+        invokeTaskCreatedHook: options.invokeTaskCreatedHook,
+      });
+    } catch (err) {
+      // The task row was never created, so any default-workflow steps we
+      // materialized above would orphan with no task/selection pointing at them.
+      this.cleanupOrphanedMaterializedSteps(pendingWorkflowSelection?.stepIds);
+      throw err;
+    }
+
+    // Record the inherited workflow selection now that the task row exists.
+    if (pendingWorkflowSelection) {
+      try {
+        this.writeTaskWorkflowSelection(createdTask.id, pendingWorkflowSelection.workflowId, pendingWorkflowSelection.stepIds);
+      } catch (err) {
+        storeLog.warn("Failed to record inherited workflow selection", {
+          taskId: createdTask.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return createdTask;
   }
 
   async applyReplicatedTaskCreate(payload: MeshReplicatedTaskCreatePayload): Promise<MeshReplicatedTaskApplyResult> {
@@ -5954,7 +6063,24 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; status?: string | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; postReviewFixCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningModelId?: string | null; thinkingLevel?: string | null; error?: string | null; summary?: string | null; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; missionId?: string | null; sliceId?: string | null },
     runContext?: RunMutationContext,
   ): Promise<Task> {
-    return this.withTaskLock(id, async () => {
+    return this.withTaskLock(id, () => this.updateTaskUnlocked(id, updates, runContext));
+  }
+
+  /**
+   * The body of {@link updateTask} WITHOUT acquiring the per-task lock. Callers
+   * that already hold `withTaskLock(id)` — e.g. workflow-selection mutations
+   * that bundle a `task_workflow_selection`/`workflow_steps` write with the
+   * `enabledWorkflowSteps` update — invoke this directly so the whole sequence
+   * runs under a single lock acquisition. The per-task lock is non-reentrant,
+   * so calling the public `updateTask` from inside an outer `withTaskLock(id)`
+   * would deadlock; this variant exists to avoid that.
+   */
+  private async updateTaskUnlocked(
+    id: string,
+    updates: Parameters<TaskStore["updateTask"]>[1],
+    runContext?: RunMutationContext,
+  ): Promise<Task> {
+    {
       if (updates.dependencies !== undefined) {
         await this.assertNoDependencyCycle(
           id,
@@ -6617,7 +6743,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
       this.emitTaskLifecycleEventSafely("task:updated", [task]);
       return task;
-    });
+    }
   }
 
   /**
@@ -7217,6 +7343,55 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return rows.map((row) => this.rowToRunAuditEvent(row));
   }
 
+  /**
+   * Aggregate the dual-observe parity audit events (CU-U5) into the graduation
+   * signal: how often the interpreter's shadow observation agreed with the
+   * legacy authoritative run, and which fields drift when it doesn't.
+   */
+  getWorkflowParitySummary(options: { since?: string; limit?: number } = {}): WorkflowParitySummary {
+    const limit = options.limit ?? 1000;
+    const observed = this.getRunAuditEvents({
+      domain: "database",
+      mutationType: WORKFLOW_PARITY_OBSERVED_MUTATION as unknown as RunAuditEvent["mutationType"],
+      startTime: options.since,
+      limit,
+    });
+    const driftEvents = this.getRunAuditEvents({
+      domain: "database",
+      mutationType: WORKFLOW_PARITY_DRIFT_MUTATION as unknown as RunAuditEvent["mutationType"],
+      startTime: options.since,
+      limit,
+    });
+
+    let agreed = 0;
+    for (const event of observed) {
+      if (event.metadata?.agree === true) agreed += 1;
+    }
+
+    const driftFieldCounts: Record<string, number> = {};
+    const recentDrift: WorkflowParitySummary["recentDrift"] = [];
+    for (const event of driftEvents) {
+      const diffs = Array.isArray(event.metadata?.diffs)
+        ? (event.metadata.diffs as WorkflowParityDiff[])
+        : [];
+      for (const diff of diffs) {
+        driftFieldCounts[diff.field] = (driftFieldCounts[diff.field] ?? 0) + 1;
+      }
+      if (recentDrift.length < 20) {
+        recentDrift.push({ taskId: event.taskId ?? event.target, timestamp: event.timestamp, diffs });
+      }
+    }
+
+    return {
+      observed: observed.length,
+      agreed,
+      drift: driftEvents.length,
+      agreeRate: observed.length > 0 ? agreed / observed.length : 0,
+      driftFieldCounts,
+      recentDrift,
+    };
+  }
+
   enqueueMergeQueue(taskId: string, opts: MergeQueueEnqueueOptions = {}): MergeQueueEntry {
     let invalidColumn: Column | null = null;
     const entry = this.db.transactionImmediate(() => {
@@ -7798,6 +7973,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   private deleteTaskById(taskId: string): void {
     this.clearLinkedAgentTaskIds(taskId);
+    this.purgeTaskWorkflowSelectionRows(taskId);
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
     this.db.bumpLastModified();
   }
@@ -8425,6 +8601,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       this.db.transaction(() => {
         rewrittenLineageChildren = this.rewriteLineageChildrenForRemoval(id, lineageChildIds);
         this.clearLinkedAgentTaskIds(id, task.updatedAt);
+        this.purgeTaskWorkflowSelectionRows(id);
         this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
         this.db.bumpLastModified();
       });
@@ -10443,6 +10620,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const archivedAt = task.columnMovedAt ?? task.updatedAt ?? new Date().toISOString();
       const entry = await this.taskToArchiveEntry(task, archivedAt);
       this.archiveDb.upsert(entry);
+      this.purgeTaskWorkflowSelectionRows(task.id);
       this.db.prepare("DELETE FROM tasks WHERE id = ?").run(task.id);
       await rm(this.taskDir(task.id), { recursive: true, force: true });
       if (this.isWatching) {
@@ -10478,6 +10656,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       this.archiveDb.upsert(entry);
 
       // Remove task from tasks table
+      this.purgeTaskWorkflowSelectionRows(task.id);
       this.db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
       this.db.bumpLastModified();
 
@@ -10754,7 +10933,12 @@ ${stepsSection}`;
       createdAt: string;
       updatedAt: string;
     }>;
-    const storedSteps = rows.map((row) => this.applyLegacyWorkflowStepOverrides(this.toStoredWorkflowStep(row)));
+    const storedSteps = rows
+      .map((row) => this.applyLegacyWorkflowStepOverrides(this.toStoredWorkflowStep(row)))
+      // Steps materialized by compiling a workflow are an execution detail; keep
+      // them out of the user-facing step manager listing. The executor resolves
+      // them directly via getWorkflowStep, which is unaffected by this filter.
+      .filter((step) => !step.templateId?.startsWith(WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX));
     const pluginSteps = this._pluginWorkflowStepTemplates
       .map(({ template }) => this.resolvePluginWorkflowStep(template.id))
       .filter((step): step is import("./types.js").WorkflowStep => Boolean(step));
@@ -10977,6 +11161,454 @@ ${stepsSection}`;
     } catch {
       // Best-effort: task cleanup is non-critical
     }
+  }
+
+  // ── Workflow definitions (named WorkflowIr graphs) ─────────────────────
+
+  /** Allocate the next workflow-definition id (WF-001, WF-002, …) using a
+   *  monotonic counter persisted in __meta. Never reuses ids across deletes. */
+  private nextWorkflowDefinitionId(): string {
+    // Serialize the read+increment in one write transaction so two TaskStore
+    // instances cannot both observe the same counter and allocate the same
+    // WF-id (which would collide on the workflows primary key).
+    return this.db.transactionImmediate(() => {
+      const row = this.db.prepare("SELECT value FROM __meta WHERE key = 'nextWorkflowDefinitionId'").get() as
+        | { value: string }
+        | undefined;
+      const next = row ? parseInt(row.value, 10) || 1 : 1;
+      this.db
+        .prepare(
+          "INSERT INTO __meta (key, value) VALUES ('nextWorkflowDefinitionId', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .run(String(next + 1));
+      return `WF-${String(next).padStart(3, "0")}`;
+    });
+  }
+
+  private toWorkflowDefinition(row: {
+    id: string;
+    name: string;
+    description: string;
+    ir: string;
+    layout: string;
+    createdAt: string;
+    updatedAt: string;
+  }): WorkflowDefinition {
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      ir: parseWorkflowIr(row.ir),
+      layout: this.parseWorkflowLayout(row.layout),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private parseWorkflowLayout(
+    raw: string,
+  ): Record<string, WorkflowNodeLayout> {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, WorkflowNodeLayout>;
+      }
+    } catch {
+      // Corrupt layout JSON falls back to empty (auto-layout) rather than failing the read.
+    }
+    return {};
+  }
+
+  /** Create a named workflow definition. The IR is validated via parseWorkflowIr. */
+  async createWorkflowDefinition(
+    input: WorkflowDefinitionInput,
+  ): Promise<WorkflowDefinition> {
+    return this.withConfigLock(async () => {
+      const name = input.name?.trim();
+      if (!name) throw new Error("Workflow name is required");
+      // Validate the IR shape up front so we never persist a malformed graph.
+      const ir = parseWorkflowIr(input.ir);
+      const layout = input.layout ?? {};
+      const now = new Date().toISOString();
+      const id = this.nextWorkflowDefinitionId();
+      const definition: WorkflowDefinition = {
+        id,
+        name,
+        description: input.description ?? "",
+        ir,
+        layout,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      this.db
+        .prepare(
+          `INSERT INTO workflows (id, name, description, ir, layout, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          definition.id,
+          definition.name,
+          definition.description,
+          serializeWorkflowIr(definition.ir),
+          JSON.stringify(definition.layout),
+          definition.createdAt,
+          definition.updatedAt,
+        );
+
+      this.workflowDefinitionsCache = null;
+      this.db.bumpLastModified();
+      return definition;
+    });
+  }
+
+  /** List all workflow definitions, oldest first. Cached until a mutation. */
+  async listWorkflowDefinitions(): Promise<WorkflowDefinition[]> {
+    if (this.workflowDefinitionsCache) return this.workflowDefinitionsCache;
+    const rows = this.db.prepare("SELECT * FROM workflows ORDER BY createdAt ASC").all() as Array<{
+      id: string;
+      name: string;
+      description: string;
+      ir: string;
+      layout: string;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    // Built-in templates lead the list and cannot be edited/deleted.
+    this.workflowDefinitionsCache = [...BUILTIN_WORKFLOWS, ...rows.map((row) => this.toWorkflowDefinition(row))];
+    return this.workflowDefinitionsCache;
+  }
+
+  /** Get a single workflow definition by id, or undefined when absent. */
+  async getWorkflowDefinition(
+    id: string,
+  ): Promise<WorkflowDefinition | undefined> {
+    const builtin = getBuiltinWorkflow(id);
+    if (builtin) return builtin;
+    const row = this.db.prepare("SELECT * FROM workflows WHERE id = ?").get(id) as
+      | {
+          id: string;
+          name: string;
+          description: string;
+          ir: string;
+          layout: string;
+          createdAt: string;
+          updatedAt: string;
+        }
+      | undefined;
+    return row ? this.toWorkflowDefinition(row) : undefined;
+  }
+
+  /** Update a workflow definition. The IR (when supplied) is re-validated. */
+  async updateWorkflowDefinition(
+    id: string,
+    updates: WorkflowDefinitionUpdate,
+  ): Promise<WorkflowDefinition> {
+    if (isBuiltinWorkflowId(id)) throw new Error("Built-in workflows cannot be edited");
+    return this.withConfigLock(async () => {
+      const existing = await this.getWorkflowDefinition(id);
+      if (!existing) throw new Error(`Workflow '${id}' not found`);
+
+      const name = updates.name !== undefined ? updates.name.trim() : existing.name;
+      if (!name) throw new Error("Workflow name is required");
+      const ir = updates.ir !== undefined ? parseWorkflowIr(updates.ir) : existing.ir;
+      const next: WorkflowDefinition = {
+        ...existing,
+        name,
+        description: updates.description !== undefined ? updates.description : existing.description,
+        ir,
+        layout: updates.layout !== undefined ? updates.layout : existing.layout,
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.db
+        .prepare(
+          `UPDATE workflows SET name = ?, description = ?, ir = ?, layout = ?, updatedAt = ? WHERE id = ?`,
+        )
+        .run(
+          next.name,
+          next.description,
+          serializeWorkflowIr(next.ir),
+          JSON.stringify(next.layout),
+          next.updatedAt,
+          id,
+        );
+
+      this.workflowDefinitionsCache = null;
+      this.db.bumpLastModified();
+      return next;
+    });
+  }
+
+  /** Delete a workflow definition, cascading to per-task selections, their
+   *  materialized step rows, and the project default. Throws when the id does
+   *  not exist. */
+  async deleteWorkflowDefinition(id: string): Promise<void> {
+    if (isBuiltinWorkflowId(id)) throw new Error("Built-in workflows cannot be deleted");
+    const deleted = this.db.prepare("DELETE FROM workflows WHERE id = ?").run(id) as { changes?: number };
+    if ((deleted.changes || 0) === 0) {
+      throw new Error(`Workflow '${id}' not found`);
+    }
+    this.workflowDefinitionsCache = null;
+
+    // Cascade: clear the project default when it pointed at this workflow.
+    try {
+      if ((await this.getDefaultWorkflowId()) === id) {
+        await this.setDefaultWorkflowId(null);
+      }
+    } catch {
+      // Best-effort: a dangling default falls back gracefully at task creation.
+    }
+
+    // Cascade: drop selections referencing this workflow, their materialized
+    // step rows, and reset the affected tasks' enabled steps.
+    const selections = this.db
+      .prepare("SELECT taskId, stepIds FROM task_workflow_selection WHERE workflowId = ?")
+      .all(id) as Array<{ taskId: string; stepIds: string }>;
+    for (const row of selections) {
+      try {
+        const stepIds = JSON.parse(row.stepIds) as unknown;
+        if (Array.isArray(stepIds)) {
+          for (const stepId of stepIds) {
+            if (typeof stepId === "string") {
+              this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+            }
+          }
+        }
+      } catch {
+        // Corrupt stepIds list — still remove the selection row below.
+      }
+      this.db.prepare("DELETE FROM task_workflow_selection WHERE taskId = ?").run(row.taskId);
+      try {
+        await this.updateTask(row.taskId, { enabledWorkflowSteps: [] });
+      } catch {
+        // Task may be deleted/archived; dangling step ids resolve to undefined
+        // at execution time and are skipped.
+      }
+    }
+    if (selections.length > 0) this.workflowStepsCache = null;
+    this.db.bumpLastModified();
+  }
+
+  // ── Workflow selection (resolves a workflow to enabledWorkflowSteps) ────
+  //
+  // Selection never touches the engine's scheduler/executor/merger. It compiles
+  // a workflow into WorkflowStep rows and writes their ids into the task's
+  // existing `enabledWorkflowSteps`, which the executor already consumes.
+
+  /** The configured project-default workflow id, or undefined when unset. */
+  async getDefaultWorkflowId(): Promise<string | undefined> {
+    const settings = await this.getSettingsFast();
+    const id = (settings as { defaultWorkflowId?: string }).defaultWorkflowId;
+    return id && id.trim() ? id : undefined;
+  }
+
+  /** Set (or clear, with null) the project-default workflow. */
+  async setDefaultWorkflowId(workflowId: string | null): Promise<void> {
+    if (workflowId) {
+      const exists = await this.getWorkflowDefinition(workflowId);
+      if (!exists) throw new Error(`Workflow '${workflowId}' not found`);
+    }
+    // null is updateSettings' explicit-delete sentinel for project keys.
+    await this.updateSettings({ defaultWorkflowId: workflowId } as unknown as Partial<Settings>);
+  }
+
+  /** Whether a raw workflow CLI command has been approved (trust-on-first-use).
+   *  Comparison is on the exact trimmed command string. */
+  async isWorkflowCliCommandApproved(command: string): Promise<boolean> {
+    const trimmed = command.trim();
+    if (!trimmed) return false;
+    const settings = await this.getSettings();
+    const approved = (settings as { approvedWorkflowCliCommands?: string[] }).approvedWorkflowCliCommands;
+    return Array.isArray(approved) && approved.includes(trimmed);
+  }
+
+  /** Record approval for a raw workflow CLI command. Idempotent. */
+  async approveWorkflowCliCommand(command: string): Promise<void> {
+    const trimmed = command.trim();
+    if (!trimmed) throw new Error("CLI command is required");
+    const settings = await this.getSettings();
+    const approved = (settings as { approvedWorkflowCliCommands?: string[] }).approvedWorkflowCliCommands ?? [];
+    if (approved.includes(trimmed)) return;
+    await this.updateSettings({
+      approvedWorkflowCliCommands: [...approved, trimmed],
+    } as unknown as Partial<Settings>);
+  }
+
+  /** Read the workflow currently selected for a task, if any. */
+  getTaskWorkflowSelection(taskId: string): { workflowId: string; stepIds: string[] } | undefined {
+    const row = this.db
+      .prepare("SELECT workflowId, stepIds FROM task_workflow_selection WHERE taskId = ?")
+      .get(taskId) as { workflowId: string; stepIds: string } | undefined;
+    if (!row) return undefined;
+    let stepIds: string[] = [];
+    try {
+      const parsed = JSON.parse(row.stepIds) as unknown;
+      if (Array.isArray(parsed)) stepIds = parsed.filter((s): s is string => typeof s === "string");
+    } catch {
+      // Corrupt list falls back to empty.
+    }
+    return { workflowId: row.workflowId, stepIds };
+  }
+
+  private writeTaskWorkflowSelection(taskId: string, workflowId: string, stepIds: string[]): void {
+    this.db
+      .prepare(
+        `INSERT INTO task_workflow_selection (taskId, workflowId, stepIds, updatedAt)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(taskId) DO UPDATE SET
+           workflowId = excluded.workflowId,
+           stepIds = excluded.stepIds,
+           updatedAt = excluded.updatedAt`,
+      )
+      .run(taskId, workflowId, JSON.stringify(stepIds), new Date().toISOString());
+  }
+
+  /** Delete the WorkflowStep rows previously materialized for a task's selection
+   *  and remove the selection record. Best-effort; safe to call when unset. */
+  private removeMaterializedSelection(taskId: string): void {
+    const existing = this.getTaskWorkflowSelection(taskId);
+    if (existing) {
+      for (const stepId of existing.stepIds) {
+        this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+      }
+      this.workflowStepsCache = null;
+    }
+    this.db.prepare("DELETE FROM task_workflow_selection WHERE taskId = ?").run(taskId);
+  }
+
+  /** Purge a task's workflow selection and its materialized WorkflowStep rows
+   *  when the task row itself is being physically removed. `task_workflow_selection`
+   *  has no FK to `tasks(id)` (SQLite can't add one to an existing table without a
+   *  rebuild), so deletion must be mirrored here to avoid orphaned selection rows
+   *  and unreclaimable compiled steps. Best-effort and synchronous: unlike
+   *  clearTaskWorkflowSelection it does not touch enabledWorkflowSteps, since the
+   *  owning task row no longer exists. */
+  private purgeTaskWorkflowSelectionRows(taskId: string): void {
+    const row = this.db
+      .prepare("SELECT stepIds FROM task_workflow_selection WHERE taskId = ?")
+      .get(taskId) as { stepIds: string } | undefined;
+    if (!row) return;
+    try {
+      const parsed = JSON.parse(row.stepIds) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const stepId of parsed) {
+          if (typeof stepId === "string") {
+            this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+          }
+        }
+      }
+    } catch {
+      // Corrupt stepIds list — still remove the selection row below.
+    }
+    this.db.prepare("DELETE FROM task_workflow_selection WHERE taskId = ?").run(taskId);
+    this.workflowStepsCache = null;
+  }
+
+  /** Delete a set of freshly materialized WorkflowStep rows that were never
+   *  successfully attached to a task/selection (e.g. the owning task create
+   *  failed). Best-effort; tolerates already-removed ids. */
+  private cleanupOrphanedMaterializedSteps(stepIds: string[] | undefined): void {
+    if (!stepIds || stepIds.length === 0) return;
+    for (const stepId of stepIds) {
+      try {
+        this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+    this.workflowStepsCache = null;
+  }
+
+  /** Persist pre-compiled workflow steps as fresh WorkflowStep rows and return
+   *  their ids in execution order. Steps are tagged so they stay out of the
+   *  step manager. Compile via compileWorkflowToSteps before calling. */
+  private async materializeWorkflowSteps(
+    workflowId: string,
+    inputs: import("./types.js").WorkflowStepInput[],
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    for (const input of inputs) {
+      const step = await this.createWorkflowStep({
+        ...input,
+        templateId: `${WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX}${workflowId}`,
+        enabled: true,
+      });
+      ids.push(step.id);
+    }
+    return ids;
+  }
+
+  /** Resolve the project-default workflow into materialized step ids, or null
+   *  when no default is set / it is missing / it does not compile. */
+  private async materializeDefaultWorkflowSteps(): Promise<{ workflowId: string; stepIds: string[] } | undefined> {
+    const workflowId = await this.getDefaultWorkflowId();
+    if (!workflowId) return undefined;
+    const def = await this.getWorkflowDefinition(workflowId);
+    if (!def) return undefined;
+    // Compile (and validate) before creating any rows so a non-compilable
+    // default falls back cleanly with nothing written.
+    const inputs = compileWorkflowToSteps(def.ir);
+    const stepIds = await this.materializeWorkflowSteps(workflowId, inputs);
+    return { workflowId, stepIds };
+  }
+
+  /**
+   * Select a workflow for a task: compile it, materialize its steps, and write
+   * their ids into the task's enabledWorkflowSteps. Replaces any prior selection
+   * (no orphaned steps). Throws WorkflowCompileError for non-linear graphs
+   * before any state is written.
+   */
+  async selectTaskWorkflow(taskId: string, workflowId: string): Promise<string[]> {
+    // Hold the task lock across the whole sequence (materialize → owner write →
+    // prior-step cleanup) so it can't interleave with a concurrent select/clear
+    // or executor updateTask on the same task. updateTaskUnlocked is used inside
+    // because the per-task lock is non-reentrant.
+    return this.withTaskLock(taskId, async () => {
+      const def = await this.getWorkflowDefinition(workflowId);
+      if (!def) throw new Error(`Workflow '${workflowId}' not found`);
+      // Compile once up front: a non-linear graph aborts before any mutation.
+      const inputs = compileWorkflowToSteps(def.ir);
+
+      // Materialize the new steps and point the task at them BEFORE deleting the
+      // prior selection's rows, so a mid-flight failure never leaves the task
+      // referencing already-deleted step ids.
+      const priorSelection = this.getTaskWorkflowSelection(taskId);
+      const ids = await this.materializeWorkflowSteps(workflowId, inputs);
+      try {
+        await this.updateTaskUnlocked(taskId, { enabledWorkflowSteps: ids });
+        this.writeTaskWorkflowSelection(taskId, workflowId, ids);
+      } catch (err) {
+        // The owner write (updateTask / selection upsert) failed, so the steps we
+        // just materialized would orphan with no selection row pointing at them.
+        // Delete them before propagating; the prior selection is left untouched.
+        for (const stepId of ids) {
+          try {
+            this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+          } catch {
+            // Best-effort cleanup; surface the original error below.
+          }
+        }
+        this.workflowStepsCache = null;
+        throw err;
+      }
+
+      if (priorSelection) {
+        for (const stepId of priorSelection.stepIds) {
+          this.db.prepare("DELETE FROM workflow_steps WHERE id = ?").run(stepId);
+        }
+        this.workflowStepsCache = null;
+      }
+      return ids;
+    });
+  }
+
+  /** Clear a task's workflow selection and its enabled steps. */
+  async clearTaskWorkflowSelection(taskId: string): Promise<void> {
+    await this.withTaskLock(taskId, async () => {
+      this.removeMaterializedSelection(taskId);
+      await this.updateTaskUnlocked(taskId, { enabledWorkflowSteps: [] });
+    });
   }
 
   /**

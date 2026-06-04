@@ -848,8 +848,9 @@ function TaskCardComponent({
   const hasTaskAgeStaleness = shouldShowTaskAgeStalenessBadge(task);
   const taskAgeStalenessCopy = getTaskAgeStalenessCopy(task.ageStaleness);
   const isAwaitingApproval = task.column === "triage" && task.status === "awaiting-approval";
+  const isAwaitingInput = task.status === "awaiting-user-input";
   const isArchived = task.column === "archived";
-  const isAgentActive = !globalPaused && !queued && !isFailed && !isPaused && !isStuck && !isAwaitingApproval && (task.column === "in-progress" || ACTIVE_STATUSES.has(visualStatus as string));
+  const isAgentActive = !globalPaused && !queued && !isFailed && !isPaused && !isStuck && !isAwaitingApproval && !isAwaitingInput && (task.column === "in-progress" || ACTIVE_STATUSES.has(visualStatus as string));
   const isDraggable = !disableDrag && !queued && !isPaused && !isEditing && !isArchived; // Disable drag during edit/archived or host embedding
 
   // Check if this card can be edited inline
@@ -1559,7 +1560,7 @@ function TaskCardComponent({
     }
   }, [addToast, isRetrying, onRetryTask, task.id]);
 
-  const cardClass = `card${dragging ? " dragging" : ""}${queued ? " queued" : ""}${isAgentActive ? " agent-active" : ""}${isFailed ? " failed" : ""}${isPaused ? " paused" : ""}${isStuck ? " stuck" : ""}${isAwaitingApproval ? " awaiting-approval" : ""}${fileDragOver ? " file-drop-target" : ""}${isEditing ? " card-editing" : ""}${isSaving ? " card-saving" : ""}`;
+  const cardClass = `card${dragging ? " dragging" : ""}${queued ? " queued" : ""}${isAgentActive ? " agent-active" : ""}${isFailed ? " failed" : ""}${isPaused ? " paused" : ""}${isStuck ? " stuck" : ""}${isAwaitingApproval ? " awaiting-approval" : ""}${isAwaitingInput ? " awaiting-input" : ""}${fileDragOver ? " file-drop-target" : ""}${isEditing ? " card-editing" : ""}${isSaving ? " card-saving" : ""}`;
 
   const filesChangedButton = (() => {
     if (task.column === "in-progress") {
@@ -1709,9 +1710,9 @@ function TaskCardComponent({
         )}
         {!isPaused && visualStatus && visualStatus !== "queued" && (
           <span
-            className={`card-status-badge card-status-badge--${task.column}${isAwaitingApproval ? " awaiting-approval" : ""}${ACTIVE_STATUSES.has(visualStatus) ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
+            className={`card-status-badge card-status-badge--${task.column}${isAwaitingApproval ? " awaiting-approval" : ""}${isAwaitingInput ? " awaiting-input" : ""}${ACTIVE_STATUSES.has(visualStatus) ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
           >
-            {isStuck ? t("tasks.stuck", "Stuck") : isAwaitingApproval ? t("tasks.awaitingApproval", "Awaiting Approval") : visualStatus === "merging-fix" ? t("tasks.statusMergingFix", "Merging fixes…") : getTaskStatusLabel(visualStatus, t)}
+            {isStuck ? t("tasks.stuck", "Stuck") : isAwaitingApproval ? t("tasks.awaitingApproval", "Awaiting Approval") : isAwaitingInput ? t("tasks.needsInput", "Needs input") : visualStatus === "merging-fix" ? t("tasks.statusMergingFix", "Merging fixes…") : getTaskStatusLabel(visualStatus, t)}
           </span>
         )}
         {hasInReviewStall && stallCopy && (

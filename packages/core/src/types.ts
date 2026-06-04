@@ -2918,6 +2918,13 @@ export interface ProjectSettings {
   /** Tracks why globalPause was activated. "rate-limit" for automatic pauses,
    *  "manual" for user-initiated. Cleared on unpause. */
   globalPauseReason?: string;
+  /** Default custom workflow (WF-…) applied to newly created tasks when the
+   *  caller does not specify enabledWorkflowSteps. Overridable per task. */
+  defaultWorkflowId?: string;
+  /** Raw CLI commands a user has explicitly approved for workflow CLI nodes
+   *  (trust-on-first-use). A node's command must appear here before it runs;
+   *  named scripts (settings.scripts) never require approval. */
+  approvedWorkflowCliCommands?: string[];
   /** Engine pause (soft pause): when true, the scheduler and triage
    *  processor stop dispatching **new** work (scheduling, triage
    *  specification, and auto-merge), but currently running agent sessions

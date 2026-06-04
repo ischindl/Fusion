@@ -180,6 +180,9 @@ export default defineConfig({
           ) {
             return "vendor-i18n";
           }
+          if (id.includes("/node_modules/@xyflow/")) {
+            return "vendor-reactflow";
+          }
 
           return undefined;
         },

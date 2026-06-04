@@ -203,3 +203,115 @@ export function compareWorkflowRunAudits(
     diffs,
   };
 }
+
+// ── Observation builders (CU-U5) ─────────────────────────────────────────────
+// Construct a WorkflowRunObservation from real run data so the legacy and
+// interpreter sides can be compared without either side hand-rolling the shape.
+
+/** Conservative defaults: a run that didn't signal an invariant is assumed to
+ *  have respected the terminal/cancel contracts (the common, non-drift case). */
+export const DEFAULT_WORKFLOW_INVARIANTS: WorkflowReliabilityInvariantSignals = {
+  fileScopeGuardOutcome: null,
+  squashMergeContractOutcome: null,
+  autoMergeTerminalUntilMergedRespected: true,
+  moveTaskHardCancelRespected: true,
+};
+
+const COLUMN_TO_STAGE: Record<string, WorkflowStage | undefined> = {
+  triage: "triage",
+  todo: "triage",
+  "in-progress": "execute",
+  "in-review": "review",
+  done: "merge",
+};
+
+/**
+ * Map the ordered list of columns a run passed through to workflow stages,
+ * collapsing consecutive repeats. This is how the legacy side derives its
+ * stageTransitions — from the real task-move history rather than a guess.
+ */
+export function deriveStageTransitions(columnSequence: readonly string[]): WorkflowStage[] {
+  const stages: WorkflowStage[] = [];
+  for (const column of columnSequence) {
+    const stage = COLUMN_TO_STAGE[column];
+    if (stage && stages[stages.length - 1] !== stage) stages.push(stage);
+  }
+  return stages;
+}
+
+export interface WorkflowObservationTaskInput {
+  column: string;
+  status?: string | null;
+  review?: { verdict?: string } | null;
+  mergeDetails?: { outcome?: string } | null;
+}
+
+export interface WorkflowObservationBuildOptions {
+  /** Explicit stage sequence (wins over columnSequence). */
+  stageTransitions?: readonly WorkflowStage[];
+  /** Ordered columns the run passed through; mapped to stages when stageTransitions is absent. */
+  columnSequence?: readonly string[];
+  invariants?: Partial<WorkflowReliabilityInvariantSignals>;
+}
+
+/**
+ * Build a parity observation from a task's terminal persisted state (the legacy
+ * authoritative side). stageTransitions come from the caller's recorded column
+ * history when available, else fall back to the terminal column alone.
+ */
+export function buildWorkflowObservationFromTask(
+  task: WorkflowObservationTaskInput,
+  options?: WorkflowObservationBuildOptions,
+): WorkflowRunObservation {
+  const stageTransitions = options?.stageTransitions
+    ? [...options.stageTransitions]
+    : deriveStageTransitions(options?.columnSequence ?? [task.column]);
+  return {
+    stageTransitions,
+    terminalColumn: task.column ?? null,
+    terminalStatus: task.status ?? null,
+    reviewVerdict: task.review?.verdict ?? null,
+    mergeOutcome: task.mergeDetails?.outcome ?? (task.column === "done" ? "merged" : null),
+    invariants: { ...DEFAULT_WORKFLOW_INVARIANTS, ...options?.invariants },
+  };
+}
+
+/** Aggregate of dual-observe parity audit events — the graduation signal. */
+export interface WorkflowParitySummary {
+  /** Total `workflow:parity-observed` events in scope. */
+  observed: number;
+  /** Of those, how many reported agree=true. */
+  agreed: number;
+  /** Total `workflow:parity-drift` events in scope. */
+  drift: number;
+  /** agreed / observed in [0,1]; 0 when nothing observed yet. */
+  agreeRate: number;
+  /** Count of drift occurrences per observation field, most-divergent first. */
+  driftFieldCounts: Record<string, number>;
+  /** Most recent drift events (capped) for inspection. */
+  recentDrift: Array<{ taskId: string; timestamp: string; diffs: WorkflowParityDiff[] }>;
+}
+
+export interface WorkflowObservationParts {
+  stageTransitions: readonly WorkflowStage[];
+  terminalColumn?: string | null;
+  terminalStatus?: string | null;
+  reviewVerdict?: string | null;
+  mergeOutcome?: string | null;
+  invariants?: Partial<WorkflowReliabilityInvariantSignals>;
+}
+
+/**
+ * Build a parity observation from explicit parts (the interpreter/shadow side
+ * assembles these from its graph-walk result).
+ */
+export function buildWorkflowObservation(parts: WorkflowObservationParts): WorkflowRunObservation {
+  return {
+    stageTransitions: [...parts.stageTransitions],
+    terminalColumn: parts.terminalColumn ?? null,
+    terminalStatus: parts.terminalStatus ?? null,
+    reviewVerdict: parts.reviewVerdict ?? null,
+    mergeOutcome: parts.mergeOutcome ?? null,
+    invariants: { ...DEFAULT_WORKFLOW_INVARIANTS, ...parts.invariants },
+  };
+}

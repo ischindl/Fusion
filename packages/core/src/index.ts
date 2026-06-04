@@ -57,6 +57,23 @@ export type {
   WorkflowIrNodeKind,
 } from "./workflow-ir-types.js";
 export { BUILTIN_CODING_WORKFLOW_IR } from "./builtin-coding-workflow-ir.js";
+export type {
+  WorkflowDefinition,
+  WorkflowDefinitionInput,
+  WorkflowDefinitionUpdate,
+  WorkflowNodeLayout,
+} from "./workflow-definition-types.js";
+export {
+  compileWorkflowToSteps,
+  validateLinearity,
+  WorkflowCompileError,
+} from "./workflow-compiler.js";
+export {
+  BUILTIN_WORKFLOWS,
+  BUILTIN_WORKFLOW_ID_PREFIX,
+  getBuiltinWorkflow,
+  isBuiltinWorkflowId,
+} from "./builtin-workflows.js";
 
 // ── Engine wiring (set by @fusion/engine at module load) ────────────
 export {
@@ -1122,6 +1139,10 @@ export {
   compareWorkflowRunAudits,
   compareWorkflowRunObservations,
   extractWorkflowAuditObservations,
+  DEFAULT_WORKFLOW_INVARIANTS,
+  deriveStageTransitions,
+  buildWorkflowObservationFromTask,
+  buildWorkflowObservation,
 } from "./workflow-parity.js";
 export type {
   WorkflowAuditObservation,
@@ -1132,6 +1153,10 @@ export type {
   WorkflowReliabilityInvariantSignals,
   WorkflowRunObservation,
   WorkflowStage,
+  WorkflowObservationTaskInput,
+  WorkflowObservationBuildOptions,
+  WorkflowObservationParts,
+  WorkflowParitySummary,
 } from "./workflow-parity.js";
 export { isResearchExperimentalEnabled, resolveResearchSettings } from "./research-settings.js";
 export type { ResolvedResearchSettings } from "./research-settings.js";

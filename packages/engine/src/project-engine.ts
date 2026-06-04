@@ -251,6 +251,8 @@ export interface ProjectEngineOptions {
  * via ProjectManager) gets the full subsystem set, eliminating the class of
  * bugs where a subsystem is forgotten in one code path.
  */
+type MergeResolver = { resolve: (result: MergeResult) => void; reject: (err: Error) => void };
+
 export class ProjectEngine {
   private runtime: InProcessRuntime;
   private started = false;
@@ -295,11 +297,39 @@ export class ProjectEngine {
    * When `onMerge` is called, the task is enqueued like auto-merge but a
    * Promise is stored here so the caller can await the result.
    */
-  private manualMergeResolvers = new Map<
-    string,
-    { resolve: (result: MergeResult) => void; reject: (err: Error) => void }
-  >();
+  // Per-task LIST of waiters, not a single resolver: both the dashboard "merge
+  // now" path and the workflow interpreter's merge seam call onMerge, so a task
+  // can have more than one caller awaiting the same merge. A single-entry map
+  // would let a second caller overwrite the first, stranding its promise.
+  private manualMergeResolvers = new Map<string, Array<MergeResolver>>();
   private shuttingDown = false;
+
+  private addMergeResolver(taskId: string, r: MergeResolver): void {
+    const list = this.manualMergeResolvers.get(taskId);
+    if (list) list.push(r);
+    else this.manualMergeResolvers.set(taskId, [r]);
+  }
+
+  /** Remove and return all waiters for a task (empty array if none). */
+  private takeMergeResolvers(taskId: string): MergeResolver[] {
+    const list = this.manualMergeResolvers.get(taskId);
+    this.manualMergeResolvers.delete(taskId);
+    return list ?? [];
+  }
+
+  private hasMergeResolvers(taskId: string): boolean {
+    return (this.manualMergeResolvers.get(taskId)?.length ?? 0) > 0;
+  }
+
+  /** Resolve every waiter for a task with the same result, then clear them. */
+  private resolveMergeResolvers(taskId: string, result: MergeResult): void {
+    for (const r of this.takeMergeResolvers(taskId)) r.resolve(result);
+  }
+
+  /** Reject every waiter for a task with the same error, then clear them. */
+  private rejectMergeResolvers(taskId: string, err: Error): void {
+    for (const r of this.takeMergeResolvers(taskId)) r.reject(err);
+  }
 
   private static readonly MAX_AUTO_MERGE_RETRIES = 3;
   /** FN-5697/FN-5674: cap transient provider/network abort retries in auto-merge.
@@ -368,6 +398,10 @@ export class ProjectEngine {
     this.runtime.setMergeActiveClearer?.((taskId) => {
       this.mergeActive.delete(taskId);
     });
+    // Workflow-graph interpreter merge seam: routes through the auto-merge
+    // eligibility gate (requestInterpreterMerge), NOT the human "merge now"
+    // bypass, so a graph merge node can't override an autoMerge-off project.
+    this.runtime.setMergeRequester?.((taskId) => this.requestInterpreterMerge(taskId));
   }
 
   getActiveMergeTaskId(): string | null {
@@ -649,9 +683,11 @@ export class ProjectEngine {
       this.activeMergeSession = null;
     }
 
-    // Reject any pending manual merge promises
-    for (const [taskId, resolver] of this.manualMergeResolvers) {
-      resolver.reject(new Error(`Engine shutting down — merge for ${taskId} aborted`));
+    // Reject any pending manual merge promises (every waiter per task)
+    for (const [taskId, resolvers] of this.manualMergeResolvers) {
+      for (const resolver of resolvers) {
+        resolver.reject(new Error(`Engine shutting down — merge for ${taskId} aborted`));
+      }
     }
     this.manualMergeResolvers.clear();
 
@@ -991,18 +1027,65 @@ export class ProjectEngine {
     // existing merge to finish rather than starting a second one.
     if (this.mergeActive.has(taskId)) {
       return new Promise<MergeResult>((resolve, reject) => {
-        this.manualMergeResolvers.set(taskId, { resolve, reject });
+        this.addMergeResolver(taskId, { resolve, reject });
         // Don't re-enqueue — the task is already in the queue/active
       });
     }
 
     return new Promise<MergeResult>((resolve, reject) => {
-      this.manualMergeResolvers.set(taskId, { resolve, reject });
+      this.addMergeResolver(taskId, { resolve, reject });
       if (!this.internalEnqueueMerge(taskId)) {
-        this.manualMergeResolvers.delete(taskId);
-        reject(new Error(`Merge enqueue rejected for ${taskId}`));
+        // Drop just-added waiter(s) for this task and fail them.
+        this.rejectMergeResolvers(taskId, new Error(`Merge enqueue rejected for ${taskId}`));
       }
     });
+  }
+
+  /**
+   * Merge entry point for the workflow graph interpreter's `merge` seam. Unlike
+   * onMerge (the human "merge now" bypass), this honors the project's auto-merge
+   * eligibility: when autoMerge is off (or the task isn't merge-eligible), it
+   * does NOT force the merge. It resolves with `merged: false` so the seam treats
+   * it as "manual merge required" and parks the task in review — preserving the
+   * contract that autoMerge-off leaves in-review terminal until a human merges.
+   */
+  async requestInterpreterMerge(taskId: string): Promise<MergeResult> {
+    let task: Task | null = null;
+    let settings: Settings | undefined;
+    try {
+      const store = this.runtime.getTaskStore();
+      settings = await store.getSettings();
+      task = await store.getTask(taskId);
+    } catch {
+      // Fall through to the not-eligible response below.
+    }
+    const eligible = !!task && !!settings
+      && task.column === "in-review"
+      && !settings.globalPause && !settings.enginePaused
+      && this.allowInReviewMergeProcessing(task, settings)
+      && !(task.paused && !task.mergeDetails?.mergeConfirmed);
+    if (!eligible) {
+      // A null task means the lookup failed or the task was deleted; never hand
+      // back a MergeResult with `task` cast from null — callers dereference
+      // result.task. Throw so the merge seam (which converts seam throws into a
+      // clean "failure" outcome) parks the task for human review.
+      if (!task) {
+        throw new Error(`Interpreter merge for ${taskId} aborted: task not found (deleted or lookup failed)`);
+      }
+      runtimeLog.log(`Interpreter merge for ${taskId} not auto-eligible (autoMerge off / not ready) — manual merge required`);
+      return {
+        task,
+        branch: task.branch ?? "",
+        merged: false,
+        // noOp signals "parked cleanly in review, awaiting human merge" so the
+        // merge seam treats this as success rather than a graph failure.
+        noOp: true,
+        worktreeRemoved: false,
+        branchDeleted: false,
+      } as MergeResult;
+    }
+    // Eligible: route through the normal serialized merge path.
+    return this.onMerge(taskId);
   }
 
   private setRestoreDiagnostics(
@@ -1542,10 +1625,10 @@ export class ProjectEngine {
         // pickNextMergeTaskId awaits store.getTask; re-check shutdown so we
         // don't start a merge whose queue entry was cleared by stop().
         if (this.shuttingDown) break;
-        const manualResolver = this.manualMergeResolvers.get(taskId);
+        const hasManualResolver = this.hasMergeResolvers(taskId);
         try {
           // Manual merges (onMerge) skip auto-merge eligibility checks
-          if (!manualResolver) {
+          if (!hasManualResolver) {
             // Re-check autoMerge and pause before each merge
             const settings = await store.getSettings();
             if (settings.globalPause || settings.enginePaused) {
@@ -1872,20 +1955,16 @@ export class ProjectEngine {
             runtimeLog.log(
               `Merge deferred for ${taskId} — ${activeMergingTask} is already merging (cross-process guard, retry in ${retryMs / 1000}s)`,
             );
-            // Temporarily remove the manual resolver so the finally block
-            // doesn't prematurely resolve it. The re-enqueue will restore it.
-            if (manualResolver) {
-              this.manualMergeResolvers.delete(taskId);
-            }
+            // Temporarily stash the waiters so the finally block doesn't
+            // prematurely resolve them. The re-enqueue restores them.
+            const stashedResolvers = this.takeMergeResolvers(taskId);
             // Re-queue after the poll interval so we retry once the other merge finishes
             setTimeout(() => {
               if (this.shuttingDown) {
-                manualResolver?.reject(new Error("Engine shutting down"));
+                for (const r of stashedResolvers) r.reject(new Error("Engine shutting down"));
                 return;
               }
-              if (manualResolver) {
-                this.manualMergeResolvers.set(taskId, manualResolver);
-              }
+              for (const r of stashedResolvers) this.addMergeResolver(taskId, r);
               this.internalEnqueueMerge(taskId);
             }, retryMs);
             continue;
@@ -1957,7 +2036,7 @@ export class ProjectEngine {
 
           if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge) {
             this.activeMergeTaskId = taskId;
-            runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge processing PR flow for ${taskId}...`);
+            runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge processing PR flow for ${taskId}...`);
             const result = await this.options.processPullRequestMerge(
               store,
               cwd,
@@ -1965,7 +2044,7 @@ export class ProjectEngine {
               (this.runtime as any).worktreePool,
             );
             if (result === "merged") {
-              runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge PR merged: ${taskId}`);
+              runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge PR merged: ${taskId}`);
               const mergedTask = await store.getTask(taskId).catch(() => null);
               if (mergedTask) {
                 store.emit("task:merged", {
@@ -1981,14 +2060,13 @@ export class ProjectEngine {
               }
               await attemptBranchGroupPromotion(mergedTask);
             } else if (result === "waiting") {
-              runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge PR waiting: ${taskId}`);
+              runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge PR waiting: ${taskId}`);
             }
-            if (manualResolver) {
+            if (hasManualResolver) {
               // PR merge path doesn't produce a full MergeResult — fetch the task
               // and construct one so the dashboard endpoint can respond.
               const prTask = await store.getTask(taskId).catch(() => null);
-              this.manualMergeResolvers.delete(taskId);
-              manualResolver.resolve({
+              this.resolveMergeResolvers(taskId, {
                 task: prTask!,
                 branch: prTask?.branch ?? "",
                 merged: result === "merged",
@@ -1998,7 +2076,7 @@ export class ProjectEngine {
             }
           } else {
             // Direct merge via AI agent, gated by semaphore
-            runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge merging ${taskId}...`);
+            runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge merging ${taskId}...`);
 
             const semaphore = (this.runtime as any).globalSemaphore;
 
@@ -2012,7 +2090,7 @@ export class ProjectEngine {
               this.activeMergeTaskId = taskId;
               this.mergeAbortController = new AbortController();
               const mergerOptions = {
-                manual: !!manualResolver,
+                manual: hasManualResolver,
                 pool,
                 usageLimitPauser,
                 agentStore,
@@ -2044,11 +2122,10 @@ export class ProjectEngine {
             }
 
             this.activeMergeSession = null;
-            runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge merged: ${taskId}`);
+            runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge merged: ${taskId}`);
 
-            if (manualResolver) {
-              this.manualMergeResolvers.delete(taskId);
-              manualResolver.resolve(result);
+            if (hasManualResolver) {
+              this.resolveMergeResolvers(taskId, result);
             }
 
             // Reset retries on success
@@ -2065,25 +2142,24 @@ export class ProjectEngine {
           const mergeWasAborted = err instanceof Error && err.name === "MergeAbortedError";
 
           if (mergeWasAborted) {
-            runtimeLog.log(`${manualResolver ? "Manual" : "Auto"}-merge aborted for ${taskId}: ${errorMsg}`);
+            runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge aborted for ${taskId}: ${errorMsg}`);
             this.mergeAbortController = null;
-            if (manualResolver) {
-              this.manualMergeResolvers.delete(taskId);
-              manualResolver.reject(err instanceof Error ? err : new Error(errorMsg));
+            if (hasManualResolver) {
+              this.rejectMergeResolvers(taskId, err instanceof Error ? err : new Error(errorMsg));
             } else {
               await store.updateTask(taskId, { status: null }).catch(() => undefined);
             }
             continue;
           }
 
-          runtimeLog.error(`${manualResolver ? "Manual" : "Auto"}-merge failed for ${taskId}: ${errorMsg}`);
+          runtimeLog.error(`${hasManualResolver ? "Manual" : "Auto"}-merge failed for ${taskId}: ${errorMsg}`);
 
           // Surface every merge failure on the task log so the dashboard shows
           // *why* a merge didn't complete instead of silently looping.
           await store
             .logEntry(
               taskId,
-              `${manualResolver ? "Manual" : "Auto"}-merge failed: ${errorMsg}`,
+              `${hasManualResolver ? "Manual" : "Auto"}-merge failed: ${errorMsg}`,
               err instanceof Error ? err.name : undefined,
             )
             .catch((logErr: unknown) => {
@@ -2093,9 +2169,8 @@ export class ProjectEngine {
             });
 
           // If this was a manual merge, reject the promise and skip auto-retry logic
-          if (manualResolver) {
-            this.manualMergeResolvers.delete(taskId);
-            manualResolver.reject(err instanceof Error ? err : new Error(errorMsg));
+          if (hasManualResolver) {
+            this.rejectMergeResolvers(taskId, err instanceof Error ? err : new Error(errorMsg));
             continue;
           }
 
@@ -2626,12 +2701,10 @@ export class ProjectEngine {
           this.mergeAbortController = null;
           this.mergeActive.delete(taskId);
           // If a manual merge was requested while this task was already in-flight,
-          // the resolver was set but not consumed above. Resolve it now.
-          const lateResolver = this.manualMergeResolvers.get(taskId);
-          if (lateResolver) {
-            this.manualMergeResolvers.delete(taskId);
+          // the waiter(s) were set but not consumed above. Resolve them now.
+          if (this.hasMergeResolvers(taskId)) {
             const finalTask = await store.getTask(taskId).catch(() => null);
-            lateResolver.resolve({
+            this.resolveMergeResolvers(taskId, {
               task: finalTask!,
               branch: finalTask?.branch ?? "",
               merged: finalTask?.column === "done",

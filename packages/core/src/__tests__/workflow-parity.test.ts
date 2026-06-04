@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   compareWorkflowRunAudits,
   compareWorkflowRunObservations,
+  buildWorkflowObservationFromTask,
+  buildWorkflowObservation,
+  deriveStageTransitions,
+  DEFAULT_WORKFLOW_INVARIANTS,
   type RunAuditEvent,
   type WorkflowRunObservation,
 } from "../index.js";
@@ -138,6 +142,56 @@ describe("workflow parity", () => {
         expect.objectContaining({ field: "audit[0].target", category: "audit" }),
         expect.objectContaining({ field: "audit[0].phase", category: "audit" }),
       ]),
+    );
+  });
+});
+
+describe("observation builders (CU-U5)", () => {
+  it("deriveStageTransitions maps columns to stages and collapses repeats", () => {
+    expect(deriveStageTransitions(["todo", "in-progress", "in-progress", "in-review", "done"]))
+      .toEqual(["triage", "execute", "review", "merge"]);
+    expect(deriveStageTransitions([])).toEqual([]);
+  });
+
+  it("buildWorkflowObservationFromTask reads terminal lifecycle + derives stages from columnSequence", () => {
+    const obs = buildWorkflowObservationFromTask(
+      { column: "done", status: null, review: { verdict: "APPROVE" }, mergeDetails: { outcome: "merged" } },
+      { columnSequence: ["todo", "in-progress", "in-review", "done"] },
+    );
+    expect(obs.stageTransitions).toEqual(["triage", "execute", "review", "merge"]);
+    expect(obs.terminalColumn).toBe("done");
+    expect(obs.reviewVerdict).toBe("APPROVE");
+    expect(obs.mergeOutcome).toBe("merged");
+    expect(obs.invariants).toEqual(DEFAULT_WORKFLOW_INVARIANTS);
+  });
+
+  it("buildWorkflowObservationFromTask infers merged from terminal column when mergeDetails absent", () => {
+    const obs = buildWorkflowObservationFromTask({ column: "done" });
+    expect(obs.mergeOutcome).toBe("merged");
+    expect(obs.stageTransitions).toEqual(["merge"]); // terminal-only fallback
+  });
+
+  it("a task and an equivalent interpreter parts observation compare as agree", () => {
+    const legacy = buildWorkflowObservationFromTask(
+      { column: "done", review: { verdict: "APPROVE" }, mergeDetails: { outcome: "merged" } },
+      { columnSequence: ["in-progress", "in-review", "done"] },
+    );
+    const interpreter = buildWorkflowObservation({
+      stageTransitions: ["execute", "review", "merge"],
+      terminalColumn: "done",
+      reviewVerdict: "APPROVE",
+      mergeOutcome: "merged",
+    });
+    expect(compareWorkflowRunObservations(legacy, interpreter).agree).toBe(true);
+  });
+
+  it("a divergent stage sequence surfaces an error-severity lifecycle drift", () => {
+    const legacy = buildWorkflowObservationFromTask({ column: "done" }, { columnSequence: ["in-progress", "in-review", "done"] });
+    const interpreter = buildWorkflowObservation({ stageTransitions: ["execute", "merge"], terminalColumn: "done", mergeOutcome: "merged" });
+    const report = compareWorkflowRunObservations(legacy, interpreter);
+    expect(report.agree).toBe(false);
+    expect(report.diffs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "stageTransitions", category: "lifecycle", severity: "error" })]),
     );
   });
 });

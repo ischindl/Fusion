@@ -1,4 +1,100 @@
 /* ── Workflow Results ── */
+
+.workflow-input-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--ws-warning);
+  color: var(--ws-warning);
+  font-size: 0.85rem;
+  margin-bottom: var(--space-sm);
+}
+
+.workflow-input-banner--approval {
+  border-color: var(--ws-error);
+  color: var(--ws-error);
+}
+
+.workflow-input-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.workflow-input-textarea {
+  width: 100%;
+  min-height: calc(var(--space-lg) * 4);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.85rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.workflow-input-textarea:focus {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.workflow-input-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--todo);
+  border: 1px solid var(--todo);
+  border-radius: var(--radius-sm);
+  color: var(--bg);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.workflow-input-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.workflow-input-resuming {
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.workflow-input-approval-warning {
+  font-size: 0.8rem;
+  opacity: 0.9;
+}
+
+.workflow-input-approval-command {
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.workflow-input-keep-paused {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+.workflow-input-error {
+  font-size: 0.78rem;
+  color: var(--color-error);
+}
+
 .workflow-results-loading {
   display: flex;
   align-items: center;

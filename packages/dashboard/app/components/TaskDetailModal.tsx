@@ -2752,8 +2752,17 @@ export function TaskDetailContent({
                 enabledWorkflowSteps={workflowEnabledSteps}
                 canEdit={canEdit}
                 projectId={projectId}
-                isTaskInProgress={task.column === "in-progress" && task.status !== "paused"}
+                isTaskInProgress={
+                  task.column === "in-progress"
+                  && !task.paused
+                  && !task.userPaused
+                  && task.status !== "paused"
+                  && task.status !== "awaiting-user-input"
+                  && task.status !== "awaiting-cli-approval"
+                }
                 onWorkflowStepsChange={handleWorkflowStepsChange}
+                taskStatus={task.status}
+                taskPausedReason={task.pausedReason}
               />
             </div>
           ) : activeTab === "model" ? (

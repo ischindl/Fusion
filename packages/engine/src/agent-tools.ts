@@ -61,6 +61,19 @@ export const taskDocumentReadParams = Type.Object({
   ),
 });
 
+export const workflowListParams = Type.Object({});
+
+export const workflowSelectParams = Type.Object({
+  workflow_id: Type.String({
+    description:
+      "The workflow definition ID to select (e.g. 'WF-003', or a 'builtin:*' id). " +
+      "Use fn_workflow_list to discover available IDs.",
+  }),
+  task_id: Type.Optional(
+    Type.String({ description: "Task to assign the workflow to. Defaults to the current task." }),
+  ),
+});
+
 export const reflectOnPerformanceParams = Type.Object({
   focus_area: Type.Optional(
     Type.String({ description: "Optional focus area for reflection (e.g., 'code quality', 'speed', 'testing')" }),
@@ -927,6 +940,86 @@ export function createTaskDocumentReadTool(store: TaskStore, taskId: string): To
             text: `ERROR: Failed to read task documents: ${err.message}`,
           }],
           details: {},
+        };
+      }
+    },
+  };
+}
+
+/**
+ * Create a `fn_workflow_list` tool that lists the workflows available for a
+ * project (read-only built-ins plus user-authored definitions). Agent-native
+ * parity with the dashboard's workflow picker.
+ */
+export function createWorkflowListTool(store: TaskStore): ToolDefinition {
+  return {
+    name: "fn_workflow_list",
+    label: "List Workflows",
+    description:
+      "List the custom workflows available for this project — read-only built-ins " +
+      "(ids starting with 'builtin:') and user-authored definitions. Use before " +
+      "fn_workflow_select to discover valid workflow IDs.",
+    parameters: workflowListParams,
+    execute: async () => {
+      try {
+        const workflows = await store.listWorkflowDefinitions();
+        if (workflows.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "No workflows are defined for this project." }],
+            details: {},
+          };
+        }
+        const lines = workflows.map(
+          (w) => `- ${w.id}: ${w.name}${w.description ? ` — ${w.description}` : ""}`,
+        );
+        return {
+          content: [{ type: "text" as const, text: `Available workflows:\n${lines.join("\n")}` }],
+          details: { workflowIds: workflows.map((w) => w.id) },
+        };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `ERROR: Failed to list workflows: ${err?.message ?? err}` }],
+          details: {},
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
+/**
+ * Create a `fn_workflow_select` tool that assigns a workflow definition to a
+ * task (defaulting to the current task). Mirrors the dashboard's per-task
+ * workflow selection so an agent can set up a task the same way a user can.
+ */
+export function createWorkflowSelectTool(store: TaskStore, currentTaskId: string): ToolDefinition {
+  return {
+    name: "fn_workflow_select",
+    label: "Select Workflow",
+    description:
+      "Assign a custom workflow to a task by its workflow ID. Defaults to the " +
+      "current task when task_id is omitted. Note: selecting a workflow does not " +
+      "retroactively change a pipeline already running — it applies when the task " +
+      "next executes its steps. Use fn_workflow_list to find valid IDs.",
+    parameters: workflowSelectParams,
+    execute: async (_id: string, params: Static<typeof workflowSelectParams>) => {
+      const taskId = params.task_id?.trim() || currentTaskId;
+      try {
+        const enabled = await store.selectTaskWorkflow(taskId, params.workflow_id);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Selected workflow ${params.workflow_id} for ${taskId} (${enabled.length} step${enabled.length === 1 ? "" : "s"} enabled).`,
+          }],
+          details: { taskId, workflowId: params.workflow_id, enabledWorkflowSteps: enabled },
+        };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `ERROR: Failed to select workflow: ${err?.message ?? err}` }],
+          details: {},
+          isError: true,
         };
       }
     },

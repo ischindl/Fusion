@@ -4924,6 +4924,115 @@ export function fetchWorkflowResults(taskId: string, projectId?: string): Promis
   return api<WorkflowStepResult[]>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/workflow-results`, projectId));
 }
 
+// ── Workflow definitions (graph-authored custom workflows) ───────────────
+
+export type {
+  WorkflowDefinition,
+  WorkflowDefinitionInput,
+  WorkflowDefinitionUpdate,
+  WorkflowIr,
+} from "@fusion/core";
+
+/** List all workflow definitions for the project. */
+export function fetchWorkflows(projectId?: string): Promise<import("@fusion/core").WorkflowDefinition[]> {
+  const path = withProjectId("/workflows", projectId);
+  return dedupe(path, () => api<import("@fusion/core").WorkflowDefinition[]>(path));
+}
+
+/** Fetch a single workflow definition. */
+export function fetchWorkflow(id: string, projectId?: string): Promise<import("@fusion/core").WorkflowDefinition> {
+  return api<import("@fusion/core").WorkflowDefinition>(withProjectId(`/workflows/${encodeURIComponent(id)}`, projectId));
+}
+
+/** Create a workflow definition. */
+export function createWorkflow(
+  input: import("@fusion/core").WorkflowDefinitionInput,
+  projectId?: string,
+): Promise<import("@fusion/core").WorkflowDefinition> {
+  return api<import("@fusion/core").WorkflowDefinition>(withProjectId("/workflows", projectId), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Update a workflow definition (partial). */
+export function updateWorkflow(
+  id: string,
+  updates: import("@fusion/core").WorkflowDefinitionUpdate,
+  projectId?: string,
+): Promise<import("@fusion/core").WorkflowDefinition> {
+  return api<import("@fusion/core").WorkflowDefinition>(withProjectId(`/workflows/${encodeURIComponent(id)}`, projectId), {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+}
+
+/** Delete a workflow definition. */
+export function deleteWorkflow(id: string, projectId?: string): Promise<void> {
+  return api<void>(withProjectId(`/workflows/${encodeURIComponent(id)}`, projectId), { method: "DELETE" });
+}
+
+/** Preview the compiled steps for a workflow. Rejects (422) for non-linear graphs. */
+export function compileWorkflow(id: string, projectId?: string): Promise<{ steps: WorkflowStepInput[] }> {
+  return api<{ steps: WorkflowStepInput[] }>(withProjectId(`/workflows/${encodeURIComponent(id)}/compile`, projectId), {
+    method: "POST",
+  });
+}
+
+/** Read the workflow currently selected for a task. */
+export function fetchTaskWorkflow(taskId: string, projectId?: string): Promise<{ workflowId: string | null }> {
+  return api<{ workflowId: string | null }>(
+    withProjectId(`/tasks/${encodeURIComponent(taskId)}/workflow`, projectId),
+  );
+}
+
+/** Select (or clear, with null) a workflow for a task. Returns the resulting
+ *  enabled step ids so callers can reflect the change without a refetch. */
+export function selectTaskWorkflow(
+  taskId: string,
+  workflowId: string | null,
+  projectId?: string,
+): Promise<{ workflowId: string | null; enabledWorkflowSteps: string[] }> {
+  return api<{ workflowId: string | null; enabledWorkflowSteps: string[] }>(
+    withProjectId(`/tasks/${encodeURIComponent(taskId)}/workflow`, projectId),
+    {
+      method: "PUT",
+      body: JSON.stringify({ workflowId }),
+    },
+  );
+}
+
+/** Approve the raw CLI command a task is paused on, and resume it. */
+export function approveTaskWorkflowCli(taskId: string, projectId?: string): Promise<{ approved: string }> {
+  return api<{ approved: string }>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/workflow/approve-cli`, projectId), {
+    method: "POST",
+  });
+}
+
+/** Submit the user's answer to an await-input node and resume the task. */
+export function submitTaskWorkflowInput(taskId: string, text: string, projectId?: string): Promise<{ ok: true }> {
+  return api<{ ok: true }>(withProjectId(`/tasks/${encodeURIComponent(taskId)}/workflow/input`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+/** Read the project default workflow. */
+export function fetchProjectDefaultWorkflow(projectId?: string): Promise<{ workflowId: string | null }> {
+  return api<{ workflowId: string | null }>(withProjectId("/project/default-workflow", projectId));
+}
+
+/** Set (or clear, with null) the project default workflow. */
+export function setProjectDefaultWorkflow(
+  workflowId: string | null,
+  projectId?: string,
+): Promise<{ workflowId: string | null }> {
+  return api<{ workflowId: string | null }>(withProjectId("/project/default-workflow", projectId), {
+    method: "PUT",
+    body: JSON.stringify({ workflowId }),
+  });
+}
+
 // ── Workflow Step Templates ──────────────────────────────────────────────
 
 /** Re-export WorkflowStepTemplate type from core */

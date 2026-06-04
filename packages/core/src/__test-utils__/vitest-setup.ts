@@ -69,6 +69,35 @@ const BLOCKED_TEST_CLI_PATTERN =
 
 const originalCwd = process.cwd.bind(process);
 
+// Harden git for every test process against host/CI differences that silently
+// broke git-worktree tests in CI only (they pass on developer macOS machines):
+//
+//  1. Pin `git init` to the `main` branch. Git defaults the initial branch to
+//     `master` unless `init.defaultBranch` is set — true on Linux CI runners
+//     but usually `main` on dev machines. The gap broke worktree tests that
+//     assume `main` (e.g. the shared-branch-group reliability suite).
+//  2. Never block on an interactive prompt. A Linux CI git can hang forever
+//     waiting on a credential/editor/pager prompt where a dev's git config
+//     suppresses it — the suite then runs to the job timeout and is killed
+//     with no test failure. Disable terminal prompts, the editor, and pagers.
+//
+// GIT_CONFIG_* applies config to all child git invocations without mutating the
+// developer's global config; the prompt/editor/pager env vars are inherited by
+// every spawned git. Config entries are appended, not clobbered.
+(() => {
+  const base = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  const entries: Array<[string, string]> = [["init.defaultBranch", "main"]];
+  entries.forEach(([key, value], i) => {
+    process.env[`GIT_CONFIG_KEY_${base + i}`] = key;
+    process.env[`GIT_CONFIG_VALUE_${base + i}`] = value;
+  });
+  process.env.GIT_CONFIG_COUNT = String(base + entries.length);
+
+  process.env.GIT_TERMINAL_PROMPT ??= "0"; // never prompt for credentials
+  process.env.GIT_EDITOR ??= "true";       // merges/rebases never open an editor
+  process.env.GIT_PAGER ??= "cat";         // no pager waiting on a TTY
+})();
+
 function ensureValidCwd(): string {
   try {
     return originalCwd();

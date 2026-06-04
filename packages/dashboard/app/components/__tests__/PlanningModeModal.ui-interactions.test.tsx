@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// PlanningModeModal calls useToast(), which throws without a ToastProvider.
+// These tests render it bare, so mock the hook (mirrors PlanningModeModal.autosize.test.tsx).
+vi.mock("../../hooks/useToast", () => ({
+  useToast: () => ({
+    addToast: vi.fn(),
+    removeToast: vi.fn(),
+    toasts: [],
+  }),
+}));
+
 vi.mock("../../hooks/useNavigationHistory", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../hooks/useNavigationHistory")>();
   return {

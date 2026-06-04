@@ -25,6 +25,7 @@ vi.mock("lucide-react", () => ({
   Server: () => null,
   Maximize2: () => null,
   Minimize2: () => null,
+  Workflow: () => null,
 }));
 
 // Mock ModelSelectionModal (renders via portal, so mock for testability)
@@ -117,6 +118,10 @@ vi.mock("../../api", () => ({
   uploadAttachment: vi.fn(),
   updateGlobalSettings: vi.fn(),
   fetchAgents: vi.fn().mockResolvedValue([]),
+  selectTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null, enabledWorkflowSteps: [] }),
+  fetchWorkflows: vi.fn().mockResolvedValue([]),
+  fetchProjectDefaultWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
+  setProjectDefaultWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
   checkDuplicateTasks: vi.fn().mockResolvedValue([]),
   DuplicateCandidatesError: class DuplicateCandidatesError extends Error {
     matches: unknown[];

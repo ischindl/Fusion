@@ -542,3 +542,25 @@
     padding: 12px 14px;
   }
 }
+
+.wfm-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.wfm-graph-editor-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.wfm-graph-editor-link:hover {
+  background: var(--bg-tertiary);
+}

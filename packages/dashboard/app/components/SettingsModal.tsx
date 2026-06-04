@@ -16,6 +16,7 @@ import {
 import type { AgentPermissionPolicyRules, Settings, GlobalSettings, ThemeMode, ColorTheme, ModelPreset, NtfyNotificationEvent, AgentPromptsConfig, ThinkingLevel } from "@fusion/core";
 import { fetchSettings, fetchSettingsByScope, updateSettings, updateGlobalSettings, fetchAuthStatus, loginProvider, logoutProvider, cancelProviderLogin, saveApiKey, clearApiKey, fetchModels, testNotification, fetchBackups, createBackup, exportSettings, importSettings, fetchMemoryFile, fetchMemoryFiles, saveMemoryFile, compactMemory, fetchGlobalConcurrency, updateGlobalConcurrency, installQmd, testMemoryRetrieval, triggerMemoryDreams, fetchGitRemotes, fetchGitRemotesDetailed, fetchGitBranches, fetchProjects, fetchDashboardHealth, checkForUpdates, fetchRemoteSettings, updateRemoteSettings, fetchRemoteStatus, installCloudflared, startRemoteTunnel, stopRemoteTunnel, killExternalTunnel, regenerateRemotePersistentToken, generateShortLivedRemoteToken, fetchRemoteQr, fetchRemoteUrl, submitProviderManualCode } from "../api";
 import type { AuthProvider, ManualOAuthCodeInfo, ModelInfo, BackupListResponse, SettingsExportData, MemoryFileInfo, MemoryRetrievalTestResult, GitRemote, GitRemoteDetailed, ProjectInfo, RemoteSettings, RemoteStatus, UpdateCheckResponse, OAuthDeviceCodeInfo } from "../api";
+import { ProjectDefaultWorkflowField } from "./WorkflowSelector";
 import { useMemoryBackendStatus } from "../hooks/useMemoryBackendStatus";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import type { ToastType } from "../hooks/useToast";
@@ -346,6 +347,8 @@ const KNOWN_EXPERIMENTAL_FEATURES: Record<string, string> = {
   sandbox: "Sandbox (command isolation)",
   chatRooms: "Chat Rooms",
   agentOnboarding: "Planning-style Agent Onboarding",
+  workflowGraphExecutor: "Workflow Graph Engine (run custom workflows)",
+  workflowInterpreterDualObserve: "Workflow Graph Engine — dual-observe parity (diagnostic)",
 };
 
 const EXPERIMENTAL_FEATURE_LEGACY_ALIASES: Record<string, string> = {
@@ -2349,6 +2352,10 @@ export function SettingsModal({
               />
               {prefixError && <small className="field-error">{prefixError}</small>}
               {!prefixError && <small>Prefix for new task IDs (e.g. KB, PROJ)</small>}
+            </div>
+            <div className="form-group">
+              <ProjectDefaultWorkflowField projectId={projectId} addToast={addToast} />
+              <small>New tasks inherit this custom workflow's steps (overridable per task)</small>
             </div>
             <div className="form-group">
               <label htmlFor="requirePlanApproval" className="checkbox-label">

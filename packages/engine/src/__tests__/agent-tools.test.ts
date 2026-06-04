@@ -15,6 +15,8 @@ import {
   createReadMessagesTool,
   createPostRoomMessageTool,
   createResearchTools,
+  createWorkflowListTool,
+  createWorkflowSelectTool,
   qmdAgentMemoryCollectionName,
   readAgentMemoryWorkspaceLongTerm,
   sendMessageParams,
@@ -352,6 +354,59 @@ describe("createTaskLogTool", () => {
 
     const responseText = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(responseText).toBe("ERROR: Cannot log to archived task — this task is read-only");
+  });
+});
+
+describe("createWorkflowListTool", () => {
+  it("lists workflows with ids and surfaces them in details", async () => {
+    const store = {
+      listWorkflowDefinitions: vi.fn().mockResolvedValue([
+        { id: "builtin:coding", name: "Coding (built-in)", description: "The standard pipeline" },
+        { id: "WF-003", name: "QA", description: "" },
+      ]),
+    };
+    const tool = createWorkflowListTool(store as any);
+    const result = await tool.execute("call-1", {} as any, undefined, undefined, {} as any);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("builtin:coding: Coding (built-in) — The standard pipeline");
+    expect(text).toContain("WF-003: QA");
+    expect(result.details).toEqual({ workflowIds: ["builtin:coding", "WF-003"] });
+  });
+
+  it("reports when no workflows exist", async () => {
+    const store = { listWorkflowDefinitions: vi.fn().mockResolvedValue([]) };
+    const tool = createWorkflowListTool(store as any);
+    const result = await tool.execute("call-1", {} as any, undefined, undefined, {} as any);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toMatch(/no workflows/i);
+  });
+});
+
+describe("createWorkflowSelectTool", () => {
+  it("selects for the current task by default and reports enabled step count", async () => {
+    const store = { selectTaskWorkflow: vi.fn().mockResolvedValue(["workflow:WF-003:lint"]) };
+    const tool = createWorkflowSelectTool(store as any, "FN-200");
+    const result = await tool.execute("call-1", { workflow_id: "WF-003" } as any, undefined, undefined, {} as any);
+    expect(store.selectTaskWorkflow).toHaveBeenCalledWith("FN-200", "WF-003");
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("Selected workflow WF-003 for FN-200 (1 step enabled)");
+    expect(result.details).toMatchObject({ taskId: "FN-200", workflowId: "WF-003" });
+  });
+
+  it("honors an explicit task_id override", async () => {
+    const store = { selectTaskWorkflow: vi.fn().mockResolvedValue([]) };
+    const tool = createWorkflowSelectTool(store as any, "FN-200");
+    await tool.execute("call-1", { workflow_id: "builtin:coding", task_id: "FN-999" } as any, undefined, undefined, {} as any);
+    expect(store.selectTaskWorkflow).toHaveBeenCalledWith("FN-999", "builtin:coding");
+  });
+
+  it("returns an error result when selection fails", async () => {
+    const store = { selectTaskWorkflow: vi.fn().mockRejectedValue(new Error("Workflow not found: WF-404")) };
+    const tool = createWorkflowSelectTool(store as any, "FN-200");
+    const result = await tool.execute("call-1", { workflow_id: "WF-404" } as any, undefined, undefined, {} as any);
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toMatch(/Workflow not found: WF-404/);
   });
 });
 

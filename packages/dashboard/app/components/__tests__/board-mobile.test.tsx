@@ -26,6 +26,11 @@ vi.mock("../../api", () => ({
   } satisfies Partial<Settings>),
   updateGlobalSettings: vi.fn(),
   fetchAgents: vi.fn().mockResolvedValue([]),
+  // InlineCreateCard renders WorkflowSelector, which loads these on mount.
+  fetchWorkflows: vi.fn().mockResolvedValue([]),
+  fetchProjectDefaultWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
+  setProjectDefaultWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
+  selectTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null, enabledWorkflowSteps: [] }),
 }));
 
 vi.mock("../../hooks/useBadgeWebSocket", () => ({

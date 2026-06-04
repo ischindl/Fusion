@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Database } from "../db.js";
+import { Database, SCHEMA_VERSION } from "../db.js";
 import { createCentralDatabase } from "../central-db.js";
 
 function createTempDir(prefix: string): string {
@@ -42,7 +42,7 @@ describe("secrets schema migrations", () => {
       const version = db
         .prepare("SELECT value FROM __meta WHERE key = 'schemaVersion'")
         .get() as { value: string };
-      expect(version.value).toBe("102");
+      expect(version.value).toBe(String(SCHEMA_VERSION));
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -105,7 +105,7 @@ describe("secrets schema migrations", () => {
       const version = db
         .prepare("SELECT value FROM __meta WHERE key = 'schemaVersion'")
         .get() as { value: string };
-      expect(version.value).toBe("102");
+      expect(version.value).toBe(String(SCHEMA_VERSION));
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -155,7 +155,7 @@ describe("secrets schema migrations", () => {
         .prepare("SELECT value FROM __meta WHERE key = 'schemaVersion'")
         .get() as { value: string };
 
-      expect(projectVersion.value).toBe("102");
+      expect(projectVersion.value).toBe(String(SCHEMA_VERSION));
       expect(centralVersion.value).toBe("13");
     } finally {
       projectDb.close();

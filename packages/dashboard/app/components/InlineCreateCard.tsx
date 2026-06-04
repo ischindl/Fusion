@@ -6,7 +6,7 @@ import { Brain, Link, Lightbulb, ListTree, Zap, ChevronDown, ChevronUp, Bot, Max
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, type Task, type TaskPriority, type Settings } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
-import { checkDuplicateTasks, fetchModels, uploadAttachment, fetchSettings, updateGlobalSettings, fetchAgents, DuplicateCandidatesError } from "../api";
+import { checkDuplicateTasks, fetchModels, uploadAttachment, fetchSettings, updateGlobalSettings, fetchAgents, selectTaskWorkflow, DuplicateCandidatesError } from "../api";
 import type { CreateTaskInput, ModelInfo, Agent, NodeInfo, DuplicateMatch } from "../api";
 import { useNodes } from "../hooks/useNodes";
 import { ModelSelectionModal } from "./ModelSelectionModal";
@@ -14,6 +14,7 @@ import { NodeHealthDot } from "./NodeHealthDot";
 import { DuplicateWarningModal } from "./DuplicateWarningModal";
 import { applyPresetToSelection } from "../utils/modelPresets";
 import { getScopedItem, removeScopedItem, setScopedItem } from "../utils/projectStorage";
+import { WorkflowSelector } from "./WorkflowSelector";
 
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const STORAGE_KEY = "kb-inline-create-text";
@@ -116,6 +117,7 @@ export function InlineCreateCard({
   const [favoriteModels, setFavoriteModels] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   // isDescriptionExpanded controls fullscreen description editing mode
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
@@ -340,6 +342,19 @@ export function InlineCreateCard({
     try {
       const task = await onSubmit(input);
 
+      // Apply custom workflow if selected (non-blocking — task already exists)
+      if (selectedWorkflowId) {
+        try {
+          await selectTaskWorkflow(task.id, selectedWorkflowId, projectId);
+        } catch (err) {
+          if (addToast) {
+            addToast(getErrorMessage(err) || "Failed to apply workflow", "error");
+          } else {
+            console.warn("Failed to apply workflow:", getErrorMessage(err));
+          }
+        }
+      }
+
       // Upload pending images as attachments
       if (pendingImages.length > 0) {
         const failures: string[] = [];
@@ -378,6 +393,7 @@ export function InlineCreateCard({
       setShowAgentPicker(false);
       setIsModelModalOpen(false);
       setShowPresets(false);
+      setSelectedWorkflowId(null);
       addToast(`Created ${task.id}`, "success");
 
       // Collapse and clear localStorage after successful task creation
@@ -402,6 +418,7 @@ export function InlineCreateCard({
     onSubmit,
     addToast,
     projectId,
+    selectedWorkflowId,
   ]);
 
   const handleSubmit = useCallback(async () => {
@@ -632,6 +649,7 @@ export function InlineCreateCard({
     onPlanningMode?.(trimmed);
     // Clear the input after triggering planning mode
     setDescription("");
+    setSelectedWorkflowId(null);
     setDependencies([]);
     setExecutorProvider(undefined);
     setExecutorModelId(undefined);
@@ -657,6 +675,7 @@ export function InlineCreateCard({
     onSubtaskBreakdown?.(trimmed);
     // Clear the input after triggering subtask breakdown
     setDescription("");
+    setSelectedWorkflowId(null);
     setDependencies([]);
     setExecutorProvider(undefined);
     setExecutorModelId(undefined);
@@ -1009,6 +1028,15 @@ export function InlineCreateCard({
             >
               {browserVerification ? t("inline.browserVerifyChecked", "Browser Verify ✓") : t("inline.browserVerify", "Browser Verify")}
             </button>
+
+            <WorkflowSelector
+              value={selectedWorkflowId}
+              onChange={(id) => setSelectedWorkflowId(id)}
+              projectId={projectId}
+              addToast={addToast}
+              label="Workflow"
+              disabled={submitting}
+            />
 
             <label className="inline-create-priority-wrap" htmlFor="inline-create-priority-select">
               <span className="visually-hidden">{t("inline.priority", "Priority")}</span>

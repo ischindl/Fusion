@@ -5,7 +5,9 @@ import { Check, ChevronDown, ChevronUp, Maximize2, Pencil, X } from "lucide-reac
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentLogEntry, WorkflowStep, WorkflowStepResult } from "@fusion/core";
-import { fetchWorkflowSteps } from "../api";
+import { getErrorMessage } from "@fusion/core";
+import { fetchWorkflowSteps, fetchTaskWorkflow, selectTaskWorkflow, submitTaskWorkflowInput, approveTaskWorkflowCli } from "../api";
+import { WorkflowSelector } from "./WorkflowSelector";
 import { useAgentLogs } from "../hooks/useAgentLogs";
 import type { Components } from "react-markdown";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
@@ -42,6 +44,26 @@ interface WorkflowResultsTabProps {
   projectId?: string;
   isTaskInProgress?: boolean;
   onWorkflowStepsChange?: (steps: string[]) => void;
+  taskStatus?: string;
+  taskPausedReason?: string;
+}
+
+/** Extract the user-facing question from a workflow-input paused reason.
+ *  Strips the leading "workflow-input:<nodeId>: " prefix if present. */
+function parseWorkflowInputQuestion(pausedReason?: string): string {
+  if (!pausedReason) return "Reply in the comments and unpause the task to continue.";
+  const match = /^workflow-input:[^:]+:\s*(.*)$/s.exec(pausedReason);
+  if (match) return match[1].trim() || "Reply in the comments and unpause the task to continue.";
+  return pausedReason;
+}
+
+/** Extract the CLI command from a workflow-cli-approval paused reason.
+ *  Strips the leading "workflow-cli-approval:<nodeId>: " prefix if present. */
+function parseCliApprovalCommand(pausedReason?: string): string {
+  if (!pausedReason) return "";
+  const match = /^workflow-cli-approval:[^:]+:\s*(.*)$/s.exec(pausedReason);
+  if (match) return match[1].trim();
+  return pausedReason;
 }
 
 interface WorkflowStepOption {
@@ -203,13 +225,54 @@ export function WorkflowResultsTab({
   projectId,
   isTaskInProgress,
   onWorkflowStepsChange,
+  taskStatus,
+  taskPausedReason,
 }: WorkflowResultsTabProps) {
   const { t } = useTranslation("app");
   const [expandedOutputs, setExpandedOutputs] = useState<Record<string, boolean>>({});
   const [renderModes, setRenderModes] = useState<Record<string, "markdown" | "plain">>({});
+  const [inputText, setInputText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [expandedViewStepId, setExpandedViewStepId] = useState<string | null>(null);
   const [allWorkflowSteps, setAllWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [isEditing, setIsEditing] = useState(false);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  // Reset the paused-action UI whenever the blocked node/task changes, so a new
+  // awaiting-user-input / awaiting-cli-approval pause starts with fresh controls
+  // instead of a stale "Resuming…" banner.
+  useEffect(() => {
+    setInputText("");
+    setSubmitting(false);
+    setSubmitted(false);
+    setResumeError(null);
+  }, [taskId, taskStatus, taskPausedReason]);
+
+  // Load the task's current workflow selection (if any).
+  useEffect(() => {
+    let cancelled = false;
+    fetchTaskWorkflow(taskId, projectId)
+      .then((res) => {
+        if (!cancelled) setSelectedWorkflowId(res.workflowId);
+      })
+      .catch(() => {
+        /* selection is optional; ignore load failures */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, projectId]);
+
+  const handleWorkflowSelect = useCallback(
+    async (workflowId: string | null) => {
+      const res = await selectTaskWorkflow(taskId, workflowId, projectId);
+      setSelectedWorkflowId(res.workflowId);
+      onWorkflowStepsChange?.(res.enabledWorkflowSteps);
+    },
+    [taskId, projectId, onWorkflowStepsChange],
+  );
 
   // Check if any result has pending status
   const hasPendingStep = results.some((r) => r.status === "pending");
@@ -638,8 +701,108 @@ export function WorkflowResultsTab({
   const showConfiguredStepsState = !loading && !hasResults && hasConfiguredSteps;
   const showEditHeaderForResults = canEdit && hasResults;
 
+  const isAwaitingInput = taskStatus === "awaiting-user-input";
+  const isAwaitingCliApproval = taskStatus === "awaiting-cli-approval";
+
+  const handleSubmitInput = async () => {
+    if (!inputText.trim() || submitting) return;
+    setSubmitting(true);
+    setResumeError(null);
+    try {
+      await submitTaskWorkflowInput(taskId, inputText, projectId);
+      setInputText("");
+      setSubmitted(true);
+    } catch (err) {
+      setResumeError(getErrorMessage(err) || "Failed to resume task");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleApproveCli = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setResumeError(null);
+    try {
+      await approveTaskWorkflowCli(taskId, projectId);
+      setSubmitted(true);
+    } catch (err) {
+      setResumeError(getErrorMessage(err) || "Failed to approve command");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="workflow-results-tab" data-task-id={taskId}>
+      {isAwaitingInput && (
+        <div className="workflow-input-banner" role="alert">
+          <strong>Waiting for your input</strong>
+          <span>{parseWorkflowInputQuestion(taskPausedReason)}</span>
+          {submitted ? (
+            <span className="workflow-input-resuming">Resuming…</span>
+          ) : (
+            <div className="workflow-input-actions">
+              <textarea
+                className="workflow-input-textarea"
+                rows={3}
+                placeholder="Type your reply…"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                disabled={submitting}
+              />
+              <button
+                type="button"
+                className="workflow-input-submit"
+                onClick={handleSubmitInput}
+                disabled={submitting || !inputText.trim()}
+              >
+                {submitting ? "Submitting…" : "Submit & resume"}
+              </button>
+              {resumeError && (
+                <span className="workflow-input-error" role="alert">{resumeError}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {isAwaitingCliApproval && (
+        <div className="workflow-input-banner workflow-input-banner--approval" role="alert">
+          <strong>Approve CLI command?</strong>
+          <span className="workflow-input-approval-warning">
+            This command will run in the task worktree. Approving trusts this exact command for future runs.
+          </span>
+          <pre className="workflow-input-approval-command"><code>{parseCliApprovalCommand(taskPausedReason)}</code></pre>
+          {submitted ? (
+            <span className="workflow-input-resuming">Resuming…</span>
+          ) : (
+            <div className="workflow-input-actions">
+              <button
+                type="button"
+                className="workflow-input-submit"
+                onClick={handleApproveCli}
+                disabled={submitting}
+              >
+                {submitting ? "Approving…" : "Approve & run"}
+              </button>
+              <span className="workflow-input-keep-paused">To reject, keep the task paused and do not approve.</span>
+              {resumeError && (
+                <span className="workflow-input-error" role="alert">{resumeError}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {canEdit && onWorkflowStepsChange && (
+        <div className="workflow-selector-row">
+          <WorkflowSelector
+            value={selectedWorkflowId}
+            onChange={handleWorkflowSelect}
+            projectId={projectId}
+            label="Custom workflow"
+          />
+        </div>
+      )}
       {showConfiguredStepsState ? (
         <div className="workflow-configured-steps" data-testid="workflow-configured-steps">
           <div className="workflow-configured-header" data-testid="workflow-configured-header">

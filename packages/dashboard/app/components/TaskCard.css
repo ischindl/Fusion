@@ -287,6 +287,17 @@
   color: var(--triage);
 }
 
+.card-status-badge.awaiting-input {
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+.card.awaiting-input {
+  border-left: 3px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 6%, transparent);
+}
+
 .card.stuck {
   border-left: 3px solid var(--triage);
   background: color-mix(in srgb, var(--triage) 6%, transparent);

@@ -34,6 +34,13 @@ export default defineConfig({
     // Real-git integration tests need more than the default 5 s under concurrent
     // load (other packages run tests at the same time via pnpm recursive).
     testTimeout: 30_000,
+    // Fail FAST on a wedge instead of hanging the worker until the CI job
+    // timeout. A real-git test can leave a promise (e.g. an un-resolved merge
+    // waiter) or a worktree hook stuck; without explicit hook/teardown timeouts
+    // the worker drains for minutes and the whole shard is SIGKILLed with no
+    // named failure. These bound setup/teardown so the culprit test is reported.
+    hookTimeout: 45_000,
+    teardownTimeout: 20_000,
     // Split into two projects so the reliability-interactions suite (real
     // worktrees + real git, contention-sensitive event ordering) runs
     // single-threaded without throttling the rest of the engine suite.

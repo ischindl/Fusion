@@ -33,6 +33,7 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
   it("matches legacy execute-review-merge success path", async () => {
     const events: string[] = [];
     const seams: WorkflowLegacySeams = {
+      planning: async () => ({ outcome: "success" }),
       execute: async () => ({ outcome: "success" }),
       review: async () => ({ outcome: "success" }),
       merge: async () => ({ outcome: "success" }),
@@ -53,6 +54,7 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
 
   it("routes file-scope-like merge failure parity", async () => {
     const seams: WorkflowLegacySeams = {
+      planning: async () => ({ outcome: "success" }),
       execute: async () => ({ outcome: "success" }),
       review: async () => ({ outcome: "success" }),
       merge: async () => ({ outcome: "failure", value: "FileScopeViolationError" }),
@@ -67,6 +69,7 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
 
   it("preserves autoMerge:false terminal in-review semantics via review failure", async () => {
     const seams: WorkflowLegacySeams = {
+      planning: async () => ({ outcome: "success" }),
       execute: async () => ({ outcome: "success" }),
       review: async () => ({ outcome: "failure", value: "manual-merge-required" }),
       merge: async () => ({ outcome: "success" }),
@@ -80,6 +83,7 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
 
   it("matches self-healing parity by routing deterministic failure outcomes", async () => {
     const seams: WorkflowLegacySeams = {
+      planning: async () => ({ outcome: "success" }),
       execute: async () => ({ outcome: "failure", value: "recoverable" }),
       review: vi.fn(async () => ({ outcome: "success" as const })),
       merge: vi.fn(async () => ({ outcome: "success" as const })),
@@ -94,6 +98,7 @@ describe("WorkflowGraphExecutor interpreter-parity", () => {
 
   it("matches moveTask hard-cancel behavior by halting downstream seams", async () => {
     const seams: WorkflowLegacySeams = {
+      planning: async () => ({ outcome: "success" }),
       execute: async () => ({ outcome: "failure", value: "hard-cancel" }),
       review: vi.fn(async () => ({ outcome: "success" as const })),
       merge: vi.fn(async () => ({ outcome: "success" as const })),

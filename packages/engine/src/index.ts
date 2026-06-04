@@ -7,10 +7,14 @@ export {
   createTaskLogTool,
   createSendMessageTool,
   createReadMessagesTool,
+  createWorkflowListTool,
+  createWorkflowSelectTool,
   taskCreateParams,
   taskDocumentReadParams,
   taskDocumentWriteParams,
   taskLogParams,
+  workflowListParams,
+  workflowSelectParams,
   executeApprovedAgentProvisioning,
 } from "./agent-tools.js";
 export { AgentSemaphore, PRIORITY_MERGE, PRIORITY_EXECUTE, PRIORITY_SPECIFY } from "./concurrency.js";
@@ -24,9 +28,17 @@ export {
 export {
   createDefaultNodeHandlers,
   createNoopLegacySeams,
+  type WorkflowCustomNodeRunner,
   type WorkflowLegacySeams,
   type WorkflowSeamName,
 } from "./workflow-node-handlers.js";
+export {
+  WorkflowGraphTaskRunner,
+  type WorkflowGraphRunDisposition,
+  type WorkflowGraphRunnerStore,
+  type WorkflowGraphTaskRunResult,
+  type WorkflowGraphTaskRunnerDeps,
+} from "./workflow-graph-task-runner.js";
 export { collectTaskEvaluationEvidence } from "./evaluator-evidence.js";
 export { Scheduler, type SchedulerOptions } from "./scheduler.js";
 export { MeshLeaseManager, type MeshLeaseManagerOptions, type LeaseRecoveryContext } from "./mesh-lease-manager.js";

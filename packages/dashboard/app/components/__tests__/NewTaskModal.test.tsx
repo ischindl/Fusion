@@ -13,6 +13,12 @@ vi.mock("lucide-react", () => ({
   Bot: () => null,
   Maximize2: () => null,
   Minimize2: () => null,
+  Workflow: () => null,
+}));
+
+// Mock WorkflowSelector to avoid API calls in tests
+vi.mock("../WorkflowSelector", () => ({
+  WorkflowSelector: ({ label }: { label?: string }) => <div data-testid="workflow-selector">{label ?? "Workflow"}</div>,
 }));
 
 // Mock the api module
@@ -35,6 +41,7 @@ vi.mock("../../api", () => ({
   refineText: vi.fn(),
   getRefineErrorMessage: vi.fn((err) => err?.message || "Failed to refine text. Please try again."),
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
+  selectTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null, enabledWorkflowSteps: [] }),
 }));
 
 const mockConfirm = vi.fn();

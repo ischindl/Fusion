@@ -29,6 +29,7 @@ import { useNavigationHistoryContext } from "../hooks/useNavigationHistory";
 
 const SetupWizardModal = lazy(() => import("./SetupWizardModal").then((m) => ({ default: m.SetupWizardModal })));
 const SettingsModal = lazy(() => import("./SettingsModal").then((m) => ({ default: m.SettingsModal })));
+const WorkflowNodeEditor = lazy(() => import("./WorkflowNodeEditor").then((m) => ({ default: m.WorkflowNodeEditor })));
 
 function prefetchSettingsModal() {
   const idle: (cb: () => void, opts?: { timeout?: number }) => number =
@@ -378,8 +379,25 @@ export function AppModals({
           onClose={modalManager.closeWorkflowSteps}
           addToast={addToast}
           projectId={projectId}
+          onOpenGraphEditor={() => {
+            modalManager.closeWorkflowSteps();
+            modalManager.openWorkflowEditor();
+          }}
         />
       </ModalErrorBoundary>
+
+      {modalManager.workflowEditorOpen && (
+        <ModalErrorBoundary>
+          <Suspense fallback={null}>
+            <WorkflowNodeEditor
+              isOpen={modalManager.workflowEditorOpen}
+              onClose={modalManager.closeWorkflowEditor}
+              addToast={addToast}
+              projectId={projectId}
+            />
+          </Suspense>
+        </ModalErrorBoundary>
+      )}
 
       <AgentListModal
         isOpen={modalManager.agentsOpen}

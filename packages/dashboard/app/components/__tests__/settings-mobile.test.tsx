@@ -108,6 +108,10 @@ vi.mock("../../api", () => ({
   })),
   fetchDashboardHealth: vi.fn(() => Promise.resolve({ status: "ok", version: "1.2.3", uptime: 120 })),
   fetchGlobalSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
+  // SettingsModal renders ProjectDefaultWorkflowField → WorkflowSelector, which loads these on mount.
+  fetchWorkflows: vi.fn(() => Promise.resolve([])),
+  fetchProjectDefaultWorkflow: vi.fn(() => Promise.resolve({ workflowId: null })),
+  setProjectDefaultWorkflow: vi.fn(() => Promise.resolve({ workflowId: null })),
 }));
 
 vi.mock("../../hooks/useMemoryBackendStatus", () => ({

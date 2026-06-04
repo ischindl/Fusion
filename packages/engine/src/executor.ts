@@ -8,8 +8,18 @@ const execAsync = promisify(exec);
 import { delimiter, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings } from "@fusion/core";
-import { RetryStormError, TaskDeletedError, serializeRetryStormError } from "@fusion/core";
+import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode } from "@fusion/core";
+import { RetryStormError, TaskDeletedError, serializeRetryStormError, isExperimentalFeatureEnabled } from "@fusion/core";
+import {
+  buildWorkflowObservationFromTask,
+  buildWorkflowObservation,
+  type WorkflowStage,
+  type WorkflowRunObservation,
+} from "@fusion/core";
+import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult } from "./workflow-graph-task-runner.js";
+import { observeWorkflowParity, WORKFLOW_INTERPRETER_DUAL_OBSERVE_FLAG } from "./workflow-parity-observer.js";
+import type { WorkflowLegacySeams } from "./workflow-node-handlers.js";
+import type { WorkflowNodeResult } from "./workflow-graph-executor.js";
 import {
   ApprovalRequestStore,
   buildExecutionMemoryInstructions,
@@ -133,6 +143,8 @@ import {
   createTaskDocumentReadTool as sharedCreateTaskDocumentReadTool,
   createTaskDocumentWriteTool as sharedCreateTaskDocumentWriteTool,
   createTaskLogTool as sharedCreateTaskLogTool,
+  createWorkflowListTool as sharedCreateWorkflowListTool,
+  createWorkflowSelectTool as sharedCreateWorkflowSelectTool,
 } from "./agent-tools.js";
 import { getTaskCompletionBlockerForStore } from "./task-completion.js";
 import { createStreamingDeltaNormalizer } from "./streaming-delta.js";
@@ -1451,6 +1463,10 @@ export class TaskExecutor {
       });
     }
 
+    // Dual-observe parity (CU-U5): post-execute observation point. Flag-gated
+    // and fully isolated — never affects the authoritative handoff result.
+    await this.maybeObserveWorkflowParity(task.id, settings);
+
     return handedOff;
   }
 
@@ -1580,11 +1596,24 @@ export class TaskExecutor {
 
   /** Returns the set of task IDs currently being executed. */
   getExecutingTaskIds(): Set<string> {
-    return new Set([...this.executing, ...this.recoveringCompleted, ...this.resumingUnpaused]);
+    // Graph-routed tasks count as executing for their WHOLE interpreter run —
+    // between seams the inner execute() has released this.executing, but the
+    // graph still owns the lifecycle; self-healing/recovery must not touch it.
+    return new Set([
+      ...this.executing,
+      ...this.recoveringCompleted,
+      ...this.resumingUnpaused,
+      ...TaskExecutor.processWideGraphRouting,
+    ]);
   }
 
   isTaskActive(taskId: string): boolean {
-    return this.executing.has(taskId) || this.activeSessions.has(taskId) || this.recoveringCompleted.has(taskId);
+    return (
+      this.executing.has(taskId)
+      || this.activeSessions.has(taskId)
+      || this.recoveringCompleted.has(taskId)
+      || TaskExecutor.processWideGraphRouting.has(taskId)
+    );
   }
 
   isEphemeralDeletionPending(agentId: string): boolean {
@@ -1697,6 +1726,11 @@ export class TaskExecutor {
     this.options.stuckTaskDetector?.untrackTask(taskId);
     this.clearWorkflowRerunWatchdog(taskId);
     this.clearCompletedTaskWatchdog(taskId);
+    // Defensive graph-interpreter cleanup: a pause/abort mid-graph must not
+    // leave a stale completion interceptor or routing claim behind. The graph
+    // runner's own finally blocks also clear these; double-delete is harmless.
+    this.graphCompletionInterceptors.delete(taskId);
+    TaskExecutor.processWideGraphRouting.delete(taskId);
 
     // FN-5256: claim each surface synchronously BEFORE awaiting any async
     // abort. Without this, two concurrent disposal calls for the same task
@@ -2826,6 +2860,7 @@ export class TaskExecutor {
         || this.activeStepExecutors.has(task.id)
         || this.activeWorkflowStepSessions.has(task.id)
         || this.resumingUnpaused.has(task.id)
+        || TaskExecutor.processWideGraphRouting.has(task.id)
       ) {
         executorLog.log(`${task.id}: skipping recoverCompletedTask — task has active execution in flight`);
         return false;
@@ -3063,6 +3098,10 @@ export class TaskExecutor {
           executorLog.log(`${task.id} completed-task recovery already running - skipping duplicate startup recovery`);
           continue;
         }
+        if (TaskExecutor.processWideGraphRouting.has(task.id)) {
+          executorLog.log(`${task.id} owned by the workflow graph interpreter — skipping completed-task fast-path`);
+          continue;
+        }
         executorLog.log(`${task.id} is already complete — fast-pathing to in-review`);
         this.recoveringCompleted.add(task.id);
         scheduleResume(() => {
@@ -3150,7 +3189,618 @@ export class TaskExecutor {
    * a task that already has `task.worktree` set, the existing path is used
    * as-is. Branches remain task-scoped (`fusion/{task-id}`).
    */
+  // ── Workflow graph interpreter (cutover M-B/M-C) ─────────────────────────
+  //
+  // When `experimentalFeatures.workflowGraphExecutor` is enabled and a task has
+  // a selected custom workflow, the graph runner owns lifecycle SEQUENCING:
+  // custom prompt/script/gate nodes run via the WorkflowStep machinery, and the
+  // planning/execute/review/merge seam nodes delegate to the legacy engine
+  // implementations. Any interpreter-level error falls back to the legacy
+  // pipeline — a task is never stranded by interpreter bugs.
+
+  /** Completion interceptors for graph-driven tasks: when present for a task,
+   *  execute() stops at the implementation-complete boundary (no workflow
+   *  steps, no review handoff) and hands control back to the graph runner.
+   *  Doubles as the re-entrancy guard for graph routing. */
+  private graphCompletionInterceptors = new Map<string, (info: { modifiedFiles: string[] }) => void>();
+
+  /** Tasks currently being orchestrated by the graph runner. Process-wide for
+   *  the same reason as executingTaskLock (FN-4811): duplicate execute()
+   *  invocations can arrive from different TaskExecutor instances in one
+   *  process (engine restart race, hybrid runtimes), and the graph runner does
+   *  not hold the executing-task lock between seams. */
+  private get graphRouting(): Set<string> {
+    return TaskExecutor.processWideGraphRouting;
+  }
+
+  private static processWideGraphRouting = new Set<string>();
+
+  /** Wired by the runtime to ProjectEngine.onMerge — resolves with the merge outcome. */
+  private mergeRequester?: (taskId: string) => Promise<MergeResult>;
+
+  setMergeRequester(requestMerge: (taskId: string) => Promise<MergeResult>): void {
+    this.mergeRequester = requestMerge;
+  }
+
+  /**
+   * Route a task through the workflow graph interpreter when eligible.
+   * Returns true when the graph owned the task to a terminal disposition
+   * (completed or failed); false when the legacy pipeline should run.
+   */
+  private async maybeExecuteWorkflowGraph(task: Task): Promise<boolean> {
+    // Claim synchronously before any await so concurrent execute() calls for
+    // the same task cannot both enter graph routing (mirrors executingTaskLock).
+    this.graphRouting.add(task.id);
+    try {
+      let settings: Settings;
+      try {
+        settings = await this.store.getSettings();
+      } catch {
+        return false;
+      }
+      if (!isExperimentalFeatureEnabled(settings, "workflowGraphExecutor")) return false;
+      if (typeof this.store.getTaskWorkflowSelection !== "function") return false;
+
+      let selection: { workflowId: string; stepIds: string[] } | undefined;
+      try {
+        selection = this.store.getTaskWorkflowSelection(task.id);
+      } catch {
+        return false;
+      }
+      if (!selection) return false;
+
+      const runner = new WorkflowGraphTaskRunner({
+        store: this.store,
+        seams: this.createGraphSeams(settings),
+        runCustomNode: (node, nodeTask) => this.runGraphCustomNode(node, nodeTask, settings),
+        onEvent: (event) => executorLog.log(`[workflow-graph] ${event.type} ${event.taskId}: ${event.detail}`),
+      });
+      let result: WorkflowGraphTaskRunResult;
+      try {
+        const detail = await this.store.getTask(task.id);
+        result = await runner.run(detail, settings);
+      } catch (err) {
+        // A thrown interpreter error must not strand the task in-progress: fall
+        // back to the legacy pipeline so the normal executor lock + flow runs.
+        executorLog.error(
+          `[workflow-graph] ${task.id} interpreter threw — falling back to legacy pipeline: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+      if (result.disposition === "fell-back") {
+        executorLog.log(`[workflow-graph] ${task.id} fell back to legacy pipeline: ${result.reason}`);
+        return false;
+      }
+      if (result.disposition === "failed") {
+        await this.handleGraphFailure(task, result);
+      }
+      return true;
+    } finally {
+      this.graphRouting.delete(task.id);
+    }
+  }
+
+  /**
+   * Dual-observe parity (CU-U5): for a workflow-selected task, compare the
+   * selected graph's routing against the legacy authoritative run for the SAME
+   * task and record the result as workflow:parity-observed / -drift audit
+   * events. Observe-only — the shadow walks the graph with no-side-effect seams
+   * driven by the legacy task's actual outcomes, so it never mutates anything.
+   * Gated by workflowInterpreterDualObserve (off by default) and fully isolated
+   * (never throws into the caller). Hooked at the post-execute handoff point.
+   *
+   * Scope: this validates execute→review→merge ROUTING parity. Full
+   * execution-fidelity parity (a real isolated shadow run) is future work.
+   */
+  private async maybeObserveWorkflowParity(taskId: string, settings: Settings): Promise<void> {
+    if (!isExperimentalFeatureEnabled(settings, WORKFLOW_INTERPRETER_DUAL_OBSERVE_FLAG)) return;
+    if (typeof this.store.getTaskWorkflowSelection !== "function") return;
+    try {
+      const selection = this.store.getTaskWorkflowSelection(taskId);
+      if (!selection) return;
+      const def = await this.store.getWorkflowDefinition?.(selection.workflowId);
+      if (!def) return;
+      const live = await this.store.getTask(taskId);
+
+      const legacyObs = buildWorkflowObservationFromTask(
+        {
+          column: live.column,
+          status: live.status ?? null,
+          review: live.review as { verdict?: string } | null,
+          mergeDetails: live.mergeDetails as { outcome?: string } | null,
+        },
+        { columnSequence: this.inferLegacyColumnSequence(live.column) },
+      );
+      const legacyAudit = typeof this.store.getRunAuditEvents === "function"
+        ? this.store.getRunAuditEvents({ taskId })
+        : [];
+
+      await observeWorkflowParity({
+        settings,
+        store: this.store,
+        agentId: "workflow-shadow",
+        legacy: { taskId, observation: legacyObs, auditEvents: legacyAudit },
+        runShadow: async () => ({
+          observation: await this.buildShadowObservation(live, def, settings, legacyObs),
+          auditEvents: [],
+        }),
+      });
+    } catch (err) {
+      executorLog.warn(
+        `${taskId}: dual-observe parity skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Canonical column path a legacy run took to reach its terminal column
+   *  (excluding the pre-execute todo/triage prefix so it lines up with the
+   *  graph's execute→review→merge seam nodes). */
+  private inferLegacyColumnSequence(terminalColumn: string): string[] {
+    switch (terminalColumn) {
+      case "done": return ["in-progress", "in-review", "done"];
+      case "in-review": return ["in-progress", "in-review"];
+      case "in-progress": return ["in-progress"];
+      default: return [terminalColumn];
+    }
+  }
+
+  /** Build the interpreter-side observation by walking the selected graph with
+   *  no-side-effect seams whose outcomes mirror the legacy task's reality. */
+  private async buildShadowObservation(
+    live: TaskDetail,
+    def: { ir: { nodes: Array<{ id: string; kind: string; config?: Record<string, unknown> }> } },
+    settings: Settings,
+    legacyObs: WorkflowRunObservation,
+  ): Promise<WorkflowRunObservation> {
+    const reachedReview = live.column === "in-review" || live.column === "done";
+    const merged = live.column === "done";
+    const verdict = (live.review as { verdict?: string } | undefined)?.verdict;
+    const outcome = (ok: boolean): WorkflowNodeResult => ({ outcome: ok ? "success" : "failure" });
+    const seams: WorkflowLegacySeams = {
+      planning: async () => outcome(true),
+      execute: async () => outcome(reachedReview || merged),
+      review: async () => outcome(verdict !== "REVISE"),
+      merge: async () => outcome(merged),
+      schedule: async () => outcome(true),
+    };
+    const runner = new WorkflowGraphTaskRunner({
+      store: this.store,
+      seams,
+      runCustomNode: async () => outcome(true),
+    });
+    const result = await runner.run(live, settings);
+
+    const stageByNodeId = new Map<string, WorkflowStage>();
+    for (const node of def.ir.nodes) {
+      const seam = typeof node.config?.seam === "string" ? node.config.seam : undefined;
+      if (seam === "execute" || seam === "review" || seam === "merge") {
+        stageByNodeId.set(node.id, seam);
+      }
+    }
+    // Stop the shadow walk at the live terminal seam. The graph walker visits a
+    // node *before* invoking its seam, so even a failing merge seam (the case
+    // when the live task is parked in-review with autoMerge off) still records a
+    // "merge" stage. The legacy side never reports merge for an in-review task,
+    // so that phantom stage manufactures stageTransitions drift on healthy runs.
+    // Truncate the visited-stage sequence at the stage the live task actually
+    // reached: merged → merge, reachedReview → review, else → execute.
+    const terminalStage: WorkflowStage = merged ? "merge" : reachedReview ? "review" : "execute";
+    const stages: WorkflowStage[] = [];
+    for (const nodeId of result.visitedNodeIds) {
+      const stage = stageByNodeId.get(nodeId);
+      if (!stage || stages[stages.length - 1] === stage) continue;
+      stages.push(stage);
+      if (stage === terminalStage) break;
+    }
+
+    return buildWorkflowObservation({
+      stageTransitions: stages,
+      terminalColumn: result.disposition === "completed" ? (merged ? "done" : "in-review") : live.column,
+      terminalStatus: live.status ?? null,
+      reviewVerdict: legacyObs.reviewVerdict,
+      mergeOutcome: merged ? "merged" : null,
+    });
+  }
+
+  /**
+   * Run ONLY the implementation phase of execute() for a graph-driven task —
+   * full legacy setup plus the agent session up to fn_task_done. The registered
+   * interceptor makes execute() stop at the completion boundary instead of
+   * running workflow steps and the review handoff.
+   */
+  private async runImplementationPhase(task: Task): Promise<{ taskDone: boolean; modifiedFiles: string[] }> {
+    let captured: { taskDone: boolean; modifiedFiles: string[] } = { taskDone: false, modifiedFiles: [] };
+    this.graphCompletionInterceptors.set(task.id, (info) => {
+      captured = { taskDone: true, modifiedFiles: info.modifiedFiles };
+    });
+    try {
+      await this.execute(task);
+    } finally {
+      this.graphCompletionInterceptors.delete(task.id);
+    }
+    return captured;
+  }
+
+  /** Seam implementations delegating to the legacy engine (KTD-1: delegate, never reimplement). */
+  private createGraphSeams(_settings: Settings): WorkflowLegacySeams {
+    return {
+      // Built-in triage/spec generation runs upstream of the interpreter today,
+      // so planning is a no-op for already-specified tasks. Custom planning
+      // behavior is expressed as a custom prompt node before the execute seam.
+      planning: async () => ({ outcome: "success", value: "pre-specified" }),
+      execute: async (seamTask) => {
+        const result = await this.runImplementationPhase(seamTask);
+        if (result.taskDone) {
+          return { outcome: "success", value: "implemented" };
+        }
+        // Distinguish pause/abort from genuine implementation failure so the
+        // failure handler can leave paused tasks to the pause machinery.
+        let paused = this.pausedAborted.has(seamTask.id);
+        if (!paused) {
+          try {
+            paused = Boolean((await this.store.getTask(seamTask.id)).paused);
+          } catch {
+            // Best-effort pause probe; fall through to the failure value.
+          }
+        }
+        return {
+          outcome: "failure",
+          value: paused ? "implementation-paused" : "implementation-incomplete",
+        };
+      },
+      review: async (seamTask) => {
+        // The legacy "review" stage is the in-review handoff: per-step AI review
+        // already ran during implementation (fn_review_step), and the in-review
+        // column is the staging state the merge queue consumes.
+        const live = await this.store.getTask(seamTask.id);
+        await this.persistTokenUsage(seamTask.id);
+        await this.handoffTaskToReview(live, "workflow-graph-review");
+        return { outcome: "success", value: "in-review" };
+      },
+      merge: async (seamTask) => {
+        if (!this.mergeRequester) {
+          return { outcome: "failure", value: "merge-unavailable" };
+        }
+        // Bound the wait: a wedged merge queue must not strand the graph walk
+        // holding the routing claim. On timeout the run fails cleanly and the
+        // task is parked for human review; the queue can still finish later.
+        const GRAPH_MERGE_TIMEOUT_MS = 30 * 60 * 1000;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<"timeout">((resolve) => {
+          timeoutHandle = setTimeout(() => resolve("timeout"), GRAPH_MERGE_TIMEOUT_MS);
+          timeoutHandle.unref?.();
+        });
+        try {
+          const result = await Promise.race([this.mergeRequester(seamTask.id), timeout]);
+          if (result === "timeout") {
+            executorLog.warn(`${seamTask.id}: graph merge seam timed out after ${GRAPH_MERGE_TIMEOUT_MS}ms`);
+            return { outcome: "failure", value: "merge-timeout" };
+          }
+          if (result.merged || result.noOp) {
+            return { outcome: "success", value: result.noOp ? "merge-noop" : "merged" };
+          }
+          return { outcome: "failure", value: result.reason ?? result.error ?? "merge-failed" };
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
+      },
+      schedule: async () => ({ outcome: "success" }),
+    };
+  }
+
+  /**
+   * Pause the graph for user input: park the task paused with status
+   * "awaiting-user-input" and the node's question as pausedReason. On a later
+   * re-run (after the user unpauses), consume the newest steering comment as
+   * the answer. Pre-execute placement is fully supported; post-execute
+   * placement re-walks earlier read-only nodes until CU-U5 checkpoints land.
+   */
+  private async runAwaitInputNode(node: WorkflowIrNode, live: TaskDetail): Promise<WorkflowNodeResult> {
+    const question = typeof node.config?.prompt === "string" && node.config.prompt.trim()
+      ? node.config.prompt.trim()
+      : "This workflow is waiting for your input.";
+    const marker = `workflow-input:${node.id}`;
+
+    const steering = Array.isArray(live.steeringComments) ? live.steeringComments : [];
+    // Resume only when THIS node previously paused the task (its marker is on
+    // pausedReason). A pre-existing steering comment (e.g. one added at task
+    // creation) must never short-circuit the pause on the node's first run —
+    // otherwise the node consumes a stale comment and never asks the user.
+    const pausedReason = live.pausedReason ?? "";
+    const pausedByThisNode = pausedReason.startsWith(marker);
+    if (!live.paused && pausedByThisNode) {
+      // Correlate the reply to THIS pause: the marker embeds a watermark
+      // (`${marker}@${pauseEpochMs}: …`) recorded when the node paused. Only
+      // count steering comments created at/after that watermark as the answer,
+      // so an unpause-without-reply can't consume a comment that predates the
+      // pause. The watermark is epoch milliseconds (colon-free) so it never
+      // collides with the `:` that separates the marker from the question, nor
+      // with the dashboard's colon-delimited question parser.
+      const watermark = (() => {
+        const m = pausedReason.slice(marker.length).match(/^@(\d+)/);
+        const t = m ? Number(m[1]) : NaN;
+        return Number.isFinite(t) ? t : undefined;
+      })();
+      const replies = watermark === undefined
+        ? steering
+        : steering.filter((c) => {
+            const created = Date.parse((c as { createdAt?: string }).createdAt ?? "");
+            return Number.isFinite(created) ? created >= watermark : false;
+          });
+      if (replies.length > 0) {
+        // Input has arrived (user replied and unpaused): consume the latest
+        // post-pause comment and clear this node's marker so a future fresh
+        // visit re-asks instead of silently consuming a stale comment.
+        const latest = replies[replies.length - 1] as { text?: string; comment?: string };
+        const answer = (latest?.text ?? latest?.comment ?? "").toString();
+        await this.store.updateTask(live.id, { status: null, pausedReason: null }, this.getRunContextFor(live.id));
+        await this.store.logEntry(live.id, `Workflow input received for node '${node.id}'`, undefined, this.getRunContextFor(live.id));
+        return { outcome: "success", value: "input-received", contextPatch: { [`input:${node.id}`]: answer } };
+      }
+      // Unpaused but no post-pause reply yet — re-park below and keep waiting.
+    }
+
+    await this.store.logEntry(live.id, `Workflow paused for user input: ${question}`, undefined, this.getRunContextFor(live.id));
+    await this.store.updateTask(
+      live.id,
+      { status: "awaiting-user-input", paused: true, pausedReason: `${marker}@${Date.now()}: ${question}` },
+      this.getRunContextFor(live.id),
+    );
+    // Failure outcome ends the walk; handleGraphFailure leaves paused tasks
+    // untouched, so the task sits awaiting input until the user responds.
+    return { outcome: "failure", value: "awaiting-user-input" };
+  }
+
+  /** Pause the task for explicit user approval of a raw CLI command. The user
+   *  approves via the dashboard, which records the command and unpauses; on the
+   *  next run isWorkflowCliCommandApproved returns true and the node executes. */
+  private async pauseForCliApproval(node: WorkflowIrNode, live: TaskDetail, command: string): Promise<WorkflowNodeResult> {
+    const marker = `workflow-cli-approval:${node.id}`;
+    await this.store.logEntry(live.id, `Workflow paused for CLI command approval: ${command}`, undefined, this.getRunContextFor(live.id));
+    await this.store.updateTask(
+      live.id,
+      { status: "awaiting-cli-approval", paused: true, pausedReason: `${marker}: ${command}` },
+      this.getRunContextFor(live.id),
+    );
+    return { outcome: "failure", value: "awaiting-cli-approval" };
+  }
+
+  /** Run an arbitrary (approved) CLI command in the task worktree, supervised. */
+  private async runRawCliCommand(
+    task: TaskDetail,
+    label: string,
+    command: string,
+    worktreePath: string,
+    extraEnv?: NodeJS.ProcessEnv,
+  ): Promise<{ success: boolean; output?: string; error?: string }> {
+    executorLog.log(`${task.id}: workflow node '${label}' executing approved CLI command: ${command}`);
+    await this.store.logEntry(task.id, `Workflow node '${label}' executing CLI command: ${command}`, undefined, this.getRunContextFor(task.id));
+    const abort = new AbortController();
+    this.registerConfiguredCommandController(task.id, abort);
+    try {
+      const result = await runConfiguredCommand(
+        command,
+        worktreePath,
+        120_000,
+        extraEnv,
+        createRunAuditor(this.store, {
+          runId: this.getRunContextFor(task.id)?.runId ?? generateSyntheticRunId("exec-cli", task.id),
+          agentId: this.getRunContextFor(task.id)?.agentId ?? (task.assignedAgentId ?? "executor"),
+          taskId: task.id,
+          phase: "execute",
+        }),
+        abort.signal,
+      );
+      if (abort.signal.aborted) throw this.createConfiguredCommandAbortError(task.id, command);
+      if (result.spawnError || result.timedOut || result.exitCode !== 0) {
+        return { success: false, error: configuredCommandErrorMessage(result) };
+      }
+      return { success: true, output: `CLI command completed successfully` };
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.unregisterConfiguredCommandController(task.id, abort);
+    }
+  }
+
+  /** Run a custom (non-seam) graph node on the proven WorkflowStep machinery. */
+  private async runGraphCustomNode(
+    node: WorkflowIrNode,
+    nodeTask: TaskDetail,
+    settings: Settings,
+  ): Promise<WorkflowNodeResult> {
+    const cfg = node.config ?? {};
+    const live = await this.store.getTask(nodeTask.id);
+
+    // Await-input nodes never run a session — they pause for the user.
+    if (cfg.awaitInput === true) {
+      return this.runAwaitInputNode(node, live);
+    }
+
+    const executorKind = typeof cfg.executor === "string" ? cfg.executor : "model";
+    const scriptName = typeof cfg.scriptName === "string" && cfg.scriptName.trim() ? cfg.scriptName : undefined;
+    const rawCliCommand = executorKind === "cli" && typeof cfg.cliCommand === "string" && cfg.cliCommand.trim()
+      ? cfg.cliCommand.trim()
+      : undefined;
+
+    // Isolation guard: write-capable nodes must run inside a task worktree, not
+    // the shared repo root. Before the execute seam runs, live.worktree is unset
+    // — a coding/script/CLI node falling back to this.rootDir would mutate the
+    // main checkout and cross-contaminate other tasks. Reject such nodes until a
+    // worktree exists. Read-only nodes (default toolMode) are safe against root.
+    const writeCapable = cfg.toolMode === "coding" || node.kind === "script" || Boolean(scriptName) || Boolean(rawCliCommand);
+    if (writeCapable && !live.worktree) {
+      await this.store.logEntry(
+        live.id,
+        `Workflow node '${node.id}' is write-capable but no task worktree exists yet — place it after the execute seam`,
+        undefined,
+        this.getRunContextFor(live.id),
+      );
+      return { outcome: "failure", value: "no-worktree-for-write-node" };
+    }
+
+    const worktreePath = live.worktree || this.rootDir;
+    let prompt = typeof cfg.prompt === "string" ? cfg.prompt : "";
+    let modelProvider = typeof cfg.modelProvider === "string" && cfg.modelProvider.trim() ? cfg.modelProvider : undefined;
+    let modelId = typeof cfg.modelId === "string" && cfg.modelId.trim() ? cfg.modelId : undefined;
+
+    // Executor kinds for prompt nodes:
+    // - "model"  (default): run the prompt on the configured/override model.
+    // - "agent": run as a named agent — adopt its model and persona prompt.
+    // - "skill": invoke a named skill with the prompt as its input.
+    // - "cli":   run a named project script with the prompt passed via env
+    //            (FUSION_NODE_PROMPT). Named scripts only — raw commands are
+    //            never accepted from node config.
+    if (executorKind === "agent" && typeof cfg.agentId === "string" && cfg.agentId.trim()) {
+      try {
+        const agent = await this.options.agentStore?.getAgent(cfg.agentId);
+        if (agent) {
+          const rc = (agent.runtimeConfig ?? {}) as { executorProvider?: string; executorModelId?: string };
+          modelProvider = rc.executorProvider ?? modelProvider;
+          modelId = rc.executorModelId ?? modelId;
+          const persona = (agent as { customInstructions?: string }).customInstructions;
+          if (persona) prompt = `${persona}\n\n${prompt}`;
+        } else {
+          await this.store.logEntry(live.id, `Workflow node '${node.id}': agent '${cfg.agentId}' not found — using default model`, undefined, this.getRunContextFor(live.id));
+        }
+      } catch {
+        // Agent lookup is best-effort; fall back to the default model.
+      }
+    } else if (executorKind === "skill" && typeof cfg.skillName === "string" && cfg.skillName.trim()) {
+      prompt = `Invoke the "${cfg.skillName}" skill with the following input, following the skill's instructions exactly:\n\n${prompt}`;
+    } else if (executorKind === "cli") {
+      const rawCommand = rawCliCommand;
+      if (rawCommand) {
+        // Arbitrary command: gated by trust-on-first-use approval unless the
+        // node explicitly opts out. Two node flags bypass the pause:
+        //   - cliSkipApproval: CLI-specific "skip first-run approval".
+        //   - autoApprove:     the node's general "Auto-approve requests"
+        //     toggle. The only human-approval pause reachable from a custom
+        //     node is this CLI gate (review-style nodes run as ephemeral
+        //     readonly agents with no permission gate), so honoring it here is
+        //     what makes that toggle actually do something.
+        // The exact command string must otherwise have been approved by the user.
+        //
+        // SECURITY: both flags are intentional project-owner-only escape hatches.
+        // They are only reachable by someone who can author/edit a workflow
+        // definition for this project — the same trust boundary that already
+        // lets them add named scripts. They are NOT untrusted-input surfaces,
+        // and neither is enforced at the IR-validation layer.
+        const skipApproval = cfg.cliSkipApproval === true || cfg.autoApprove === true;
+        if (!skipApproval && !(await this.store.isWorkflowCliCommandApproved(rawCommand))) {
+          return this.pauseForCliApproval(node, live, rawCommand);
+        }
+        // We are proceeding to execute. If this task was previously paused by
+        // THIS node's CLI-approval gate, clear that status/pausedReason now —
+        // otherwise the task keeps the "awaiting-cli-approval" status through
+        // later graph nodes even though approval already happened (mirrors the
+        // status reset in runAwaitInputNode).
+        const approvalMarker = `workflow-cli-approval:${node.id}`;
+        if ((live.pausedReason ?? "").startsWith(approvalMarker)) {
+          await this.store.updateTask(live.id, { status: null, pausedReason: null }, this.getRunContextFor(live.id));
+        }
+        const env = prompt ? { ...process.env, FUSION_NODE_PROMPT: prompt } : undefined;
+        const out = await this.runRawCliCommand(
+          live,
+          typeof cfg.name === "string" && cfg.name.trim() ? cfg.name : node.id,
+          rawCommand,
+          worktreePath,
+          env,
+        );
+        const blocking = node.kind === "gate" || cfg.gateMode === "gate";
+        return { outcome: out.success || !blocking ? "success" : "failure", value: out.success ? "passed" : "failed" };
+      }
+      // No raw command: fall back to a named script (still required).
+      if (!scriptName) {
+        return { outcome: "failure", value: "cli-command-missing" };
+      }
+    }
+
+    const mode: "prompt" | "script" = executorKind === "cli" || node.kind === "script" || (node.kind === "gate" && scriptName) ? "script" : "prompt";
+    const now = new Date().toISOString();
+    const step: WorkflowStep = {
+      id: `graph:${node.id}`,
+      name: typeof cfg.name === "string" && cfg.name.trim() ? cfg.name : node.id,
+      description: typeof cfg.description === "string" ? cfg.description : "",
+      mode,
+      phase: "pre-merge",
+      gateMode: node.kind === "gate" || cfg.gateMode === "gate" ? "gate" : "advisory",
+      prompt,
+      toolMode: cfg.toolMode === "coding" ? "coding" : "readonly",
+      scriptName,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+      ...(modelProvider && modelId ? { modelProvider, modelId } : {}),
+    };
+
+    // CLI executor passes the node prompt to the named script via env.
+    const nodeEnv: NodeJS.ProcessEnv | undefined =
+      executorKind === "cli" && prompt ? { ...process.env, FUSION_NODE_PROMPT: prompt } : undefined;
+
+    const outcome = mode === "script"
+      ? await this.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv)
+      : await this.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv);
+
+    const blocking = step.gateMode === "gate";
+    // Script-mode outcomes carry no structured verdict; prompt-mode may.
+    const verdict = (outcome as { verdict?: string }).verdict;
+    return {
+      outcome: outcome.success || !blocking ? "success" : "failure",
+      value: verdict ?? (outcome.success ? "passed" : "failed"),
+    };
+  }
+
+  /** Terminal failure of a graph run: record the error and park the task in
+   *  review so a human can act — never leave it invisible in in-progress. */
+  private async handleGraphFailure(task: Task, result: WorkflowGraphTaskRunResult): Promise<void> {
+    const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1];
+    const message = `Workflow graph terminated with failure at node '${failedNode ?? "unknown"}'`;
+    executorLog.warn(`${task.id}: ${message}`);
+    this.clearCompletedTaskWatchdog(task.id);
+    this.options.stuckTaskDetector?.untrackTask(task.id);
+    try {
+      const live = await this.store.getTask(task.id);
+      // A paused/aborted implementation is not a graph failure — leave the
+      // pause machinery in charge instead of parking the task in review.
+      if (live.paused || this.pausedAborted.has(task.id)) {
+        executorLog.log(`${task.id}: graph run ended while task is paused — leaving pause state untouched`);
+        await this.store.logEntry(task.id, `${message} (task paused — not parked)`, undefined, this.getRunContextFor(task.id));
+        return;
+      }
+      await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
+      // status "failed" doubles as the self-healing exemption: review-task
+      // revival sweeps skip tasks carrying a non-null status, preventing the
+      // FN-5704-style loop of re-running the graph from scratch.
+      await this.store.updateTask(task.id, { error: message, status: "failed" }, this.getRunContextFor(task.id));
+      if (live.column === "in-progress") {
+        await this.persistTokenUsage(task.id);
+        await this.handoffTaskToReview(live, "workflow-graph-failed");
+      }
+    } catch (err) {
+      executorLog.error(
+        `${task.id}: failed to park graph-failed task: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async execute(task: Task): Promise<void> {
+    // Workflow graph interpreter routing (cutover M-C): graph-selected tasks
+    // are orchestrated by the interpreter. The execute seam re-enters this
+    // method with a completion interceptor registered (which claims the task
+    // lock normally), so routing is skipped for that inner invocation.
+    if (!this.graphCompletionInterceptors.has(task.id)) {
+      if (this.graphRouting.has(task.id)) {
+        // Duplicate dispatch while the graph runner owns this task — drop it,
+        // mirroring the executingTaskLock duplicate-invocation behavior.
+        executorLog.log(`execute() called for ${task.id} while graph routing is active — skipping duplicate`);
+        return;
+      }
+      const graphOwned = await this.maybeExecuteWorkflowGraph(task);
+      if (graphOwned) return;
+    }
+
     // FN-4811 follow-up (FN-4814/FN-4809/FN-4811 production failure): claim a
     // PROCESS-WIDE lock synchronously before any other work. Per-instance
     // `this.executing` was insufficient in production because two execute()
@@ -4138,6 +4788,8 @@ export class TaskExecutor {
         this.createSpawnAgentTool(task.id, worktreePath, settings, taskEnv),
         this.createTaskDocumentWriteTool(task.id),
         this.createTaskDocumentReadTool(task.id),
+        this.createWorkflowListTool(),
+        this.createWorkflowSelectTool(task.id),
         ...(isResearchToolSurfaceEnabled(settings)
           ? createResearchTools({
             store: this.store,
@@ -4554,6 +5206,17 @@ export class TaskExecutor {
             if (modifiedFiles.length > 0) {
               await this.store.updateTask(task.id, { modifiedFiles });
               executorLog.log(`${task.id}: captured ${modifiedFiles.length} modified files`);
+            }
+
+            // Graph-driven completion (interpreter cutover): the workflow graph
+            // owns workflow steps, review handoff, and merge from here — stop
+            // at the implementation-complete boundary and hand control back.
+            const graphCompletion = this.graphCompletionInterceptors.get(task.id);
+            if (graphCompletion) {
+              this.clearCompletedTaskWatchdog(task.id);
+              executorLog.log(`✓ ${task.id} implementation complete — graph interpreter owns the remaining lifecycle`);
+              graphCompletion({ modifiedFiles });
+              return;
             }
 
             this.scheduleCompletedTaskWatchdog(task.id, "task completion");
@@ -5876,6 +6539,14 @@ export class TaskExecutor {
 
   private createTaskDocumentReadTool(taskId: string): ToolDefinition {
     return sharedCreateTaskDocumentReadTool(this.store, taskId);
+  }
+
+  private createWorkflowListTool(): ToolDefinition {
+    return sharedCreateWorkflowListTool(this.store);
+  }
+
+  private createWorkflowSelectTool(taskId: string): ToolDefinition {
+    return sharedCreateWorkflowSelectTool(this.store, taskId);
   }
 
   private createTaskAddDepTool(taskId: string): ToolDefinition {

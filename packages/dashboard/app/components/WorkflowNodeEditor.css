@@ -1,0 +1,335 @@
+.wf-editor-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1200px, 95vw);
+  height: min(820px, 92vh);
+  min-width: 640px;
+  min-height: 480px;
+  resize: both;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.wf-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+.wf-editor-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.wf-editor-close {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.wf-editor-close:hover {
+  color: var(--text);
+}
+
+.wf-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.wf-editor-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 220px;
+  padding: var(--space-sm);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.wf-editor-new {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.wf-editor-new:hover {
+  background: var(--bg-tertiary);
+}
+
+.wf-editor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wf-editor-list-item {
+  width: 100%;
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.wf-editor-list-item:hover {
+  background: var(--bg-secondary);
+}
+
+.wf-editor-list-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+}
+
+.wf-editor-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.wf-editor-canvas-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.wf-editor-canvas-empty {
+  flex: 1;
+  justify-content: center;
+}
+
+.wf-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.wf-editor-palette {
+  display: flex;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.wf-palette-btn,
+.wf-editor-delete,
+.wf-editor-save {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.wf-palette-btn:hover,
+.wf-editor-delete:hover {
+  background: var(--bg-tertiary);
+}
+
+.wf-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.wf-editor-readonly-note {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Neutralize the fieldset wrapper so it only gates interactivity, not layout. */
+.wf-inspector-fields {
+  display: contents;
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.wf-editor-save {
+  background: var(--todo);
+  border-color: var(--todo);
+  color: var(--bg);
+}
+
+.wf-editor-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.wf-editor-delete {
+  color: var(--ws-error);
+}
+
+.wf-editor-banner {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--ws-warning);
+  color: var(--ws-warning);
+  font-size: 0.85rem;
+}
+
+.wf-editor-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.wf-editor-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 280px;
+  padding: var(--space-md);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.wf-editor-inspector h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.wf-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.wf-field input,
+.wf-field textarea,
+.wf-field select {
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+}
+
+.wf-field input:focus,
+.wf-field textarea:focus,
+.wf-field select:focus {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.wf-inspector-note {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+.wf-inspector-note--info {
+  color: var(--ws-warning);
+}
+
+.wf-field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+}
+
+.wf-field--checkbox input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
+  accent-color: var(--todo);
+  cursor: pointer;
+}
+
+/* Canvas nodes */
+.wf-node {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.wf-node-start {
+  border-color: var(--ws-success);
+}
+
+.wf-node-end {
+  border-color: var(--text-muted);
+}
+
+.wf-node-gate {
+  border-color: var(--ws-warning);
+}
+
+.wf-node-merge {
+  border-color: var(--ws-info);
+  border-style: dashed;
+}
+
+.wf-node-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.wf-node-badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  padding: 1px var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--ws-warning);
+  color: var(--bg);
+}
+
+.wf-spin {
+  animation: wf-spin 1s linear infinite;
+}
+
+@keyframes wf-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

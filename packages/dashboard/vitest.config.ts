@@ -172,6 +172,7 @@ const qualityAppComponentTests = [
   "TaskForm",
   "TaskIdIntegrityBanner",
   "TrackingRepoSelect",
+  "WorkflowNodeEditor",
   "WorkflowResultsTab",
   "WorktrunkInstallApprovalDetails",
 ] as const;
