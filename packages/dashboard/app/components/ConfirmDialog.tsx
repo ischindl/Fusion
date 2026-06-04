@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { ConfirmOptions } from "../hooks/useConfirm";
 import "./ConfirmDialog.css";
 
@@ -25,6 +26,7 @@ export function ConfirmDialog({
   checkboxChecked = false,
   onCheckboxChange,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation("app");
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -60,7 +62,7 @@ export function ConfirmDialog({
       >
         <div className="modal-header">
           <h3>{options.title}</h3>
-          <button className="modal-close" onClick={onCancel} aria-label="Close confirmation dialog">
+          <button className="modal-close" onClick={onCancel} aria-label={t("confirm.closeDialog", "Close confirmation dialog")}>
             &times;
           </button>
         </div>
@@ -81,7 +83,7 @@ export function ConfirmDialog({
 
         <div className="modal-actions confirm-dialog__actions">
           <button ref={cancelButtonRef} className="btn" onClick={onCancel}>
-            {options.cancelLabel ?? "Cancel"}
+            {options.cancelLabel ?? t("confirm.cancel", "Cancel")}
           </button>
           {options.tertiaryLabel && onTertiary ? (
             <button className={`btn ${options.tertiaryDanger ? "btn-danger" : ""}`.trim()} onClick={onTertiary}>
@@ -89,7 +91,7 @@ export function ConfirmDialog({
             </button>
           ) : null}
           <button className={`btn ${options.danger ? "btn-danger" : "btn-primary"}`} onClick={onConfirm}>
-            {options.confirmLabel ?? "Confirm"}
+            {options.confirmLabel ?? t("confirm.confirm", "Confirm")}
           </button>
         </div>
       </div>

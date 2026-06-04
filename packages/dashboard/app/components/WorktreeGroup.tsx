@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, TaskDetail } from "@fusion/core";
 import { ClipboardList, GitBranch } from "lucide-react";
 import { TaskCard } from "./TaskCard";
@@ -54,11 +55,15 @@ function WorktreeGroupComponent({
   prAuthAvailable,
   autoMergeEnabled,
 }: WorktreeGroupProps) {
+  const { t } = useTranslation("app");
+  const upNextLabel = t("worktree.upNext", "Up Next");
+  const unassignedLabel = t("worktree.unassigned", "Unassigned");
+
   return (
     <div className="worktree-group">
       <div className="worktree-group-header">
         <span className="worktree-icon">
-          {label === "Up Next" || label === "Unassigned" ? <ClipboardList size={14} /> : <GitBranch size={14} />}
+          {label === upNextLabel || label === unassignedLabel ? <ClipboardList size={14} /> : <GitBranch size={14} />}
         </span>
         <span className="worktree-label">{label}</span>
       </div>

@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, TaskCreateInput } from "@fusion/core";
 import type { ToastType } from "./useToast";
 
@@ -21,6 +22,7 @@ export interface UseTaskHandlersResult {
 }
 
 export function useTaskHandlers(options: UseTaskHandlersOptions): UseTaskHandlersResult {
+  const { t } = useTranslation("app");
   const {
     createTask,
     ingestCreatedTasks,
@@ -61,8 +63,8 @@ export function useTaskHandlers(options: UseTaskHandlersOptions): UseTaskHandler
   }, [addToast, ingestCreatedTasks, onSubtaskTasksCreated]);
 
   const handleGitHubImport = useCallback((task: Task) => {
-    addToast(`Imported ${task.id} from GitHub`, "success");
-  }, [addToast]);
+    addToast(t("taskHandlers.githubImported", "Imported {{id}} from GitHub", { id: task.id }), "success");
+  }, [addToast, t]);
 
   return {
     handleBoardQuickCreate,

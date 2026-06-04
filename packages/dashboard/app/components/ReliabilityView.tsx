@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import "./ReliabilityView.css";
 
 type ReliabilityResponse = {
@@ -39,6 +40,7 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 export function ReliabilityView() {
+  const { t } = useTranslation("app");
   const [data, setData] = useState<ReliabilityResponse | null>(null);
   const [showEmptyDays, setShowEmptyDays] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -105,24 +107,24 @@ export function ReliabilityView() {
     <section className="reliability-view">
       <div className="card reliability-card reliability-headline-card">
         <div className="reliability-section-header">
-          <h2>Reliability</h2>
-          <button className="btn btn-danger btn-sm" onClick={() => setShowResetConfirm(true)}>Reset stats</button>
+          <h2>{t("reliability.heading", "Reliability")}</h2>
+          <button className="btn btn-danger btn-sm" onClick={() => setShowResetConfirm(true)}>{t("reliability.resetStats", "Reset stats")}</button>
         </div>
         <div className="reliability-headline" style={{ color: headlineColorVar }}>
           {failureRate === null || failureRate === undefined
-            ? `Insufficient data — ${data?.headline.reason ?? "unknown"}`
+            ? t("reliability.insufficientData", "Insufficient data — {{reason}}", { reason: data?.headline.reason ?? "unknown" })
             : formatPercent(reliabilityRate ?? 0)}
         </div>
-        {reliabilityRate !== null ? <div className="reliability-muted">In-review success rate (last 7d)</div> : null}
-        {data?.resetAt ? <div className="reliability-muted">{`Counting since ${formatDateTime(data.resetAt)}`}</div> : null}
+        {reliabilityRate !== null ? <div className="reliability-muted">{t("reliability.successRateLabel", "In-review success rate (last 7d)")}</div> : null}
+        {data?.resetAt ? <div className="reliability-muted">{t("reliability.countingSince", "Counting since {{date}}", { date: formatDateTime(data.resetAt) })}</div> : null}
         <details className="reliability-details">
-          <summary>Details</summary>
+          <summary>{t("reliability.details", "Details")}</summary>
           <div className="reliability-details-content">
-            <div>{`${totalBounced} bounced / ${totalEntered} entered (last ${data?.windowDays ?? 7}d)`}</div>
-            {failureRate !== null && failureRate !== undefined ? <div>{`Failure rate: ${formatPercent(failureRate)}`}</div> : null}
-            <div>{`Window: ${windowStartLabel} → ${formatDateTime(data?.generatedAt)}`}</div>
-            {data?.resetAt ? <div>{`Reset baseline: ${formatDateTime(data.resetAt)}`}</div> : null}
-            {data?.headline.reason ? <div>{`Reason: ${data.headline.reason}`}</div> : null}
+            <div>{t("reliability.bouncedEntered", "{{bounced}} bounced / {{entered}} entered (last {{days}}d)", { bounced: totalBounced, entered: totalEntered, days: data?.windowDays ?? 7 })}</div>
+            {failureRate !== null && failureRate !== undefined ? <div>{t("reliability.failureRate", "Failure rate: {{rate}}", { rate: formatPercent(failureRate) })}</div> : null}
+            <div>{t("reliability.window", "Window: {{start}} → {{end}}", { start: windowStartLabel, end: formatDateTime(data?.generatedAt) })}</div>
+            {data?.resetAt ? <div>{t("reliability.resetBaseline", "Reset baseline: {{date}}", { date: formatDateTime(data.resetAt) })}</div> : null}
+            {data?.headline.reason ? <div>{t("reliability.reason", "Reason: {{reason}}", { reason: data.headline.reason })}</div> : null}
           </div>
         </details>
       </div>
@@ -130,13 +132,13 @@ export function ReliabilityView() {
       <div className="reliability-grid">
         <div className="card reliability-card">
           <div className="reliability-section-header">
-            <h3>In-review flow</h3>
+            <h3>{t("reliability.inReviewFlow", "In-review flow")}</h3>
             <button className="btn btn-sm" onClick={() => setShowEmptyDays((value) => !value)}>
-              {showEmptyDays ? "Hide empty days" : "Show empty days"}
+              {showEmptyDays ? t("reliability.hideEmptyDays", "Hide empty days") : t("reliability.showEmptyDays", "Show empty days")}
             </button>
           </div>
           <table className="reliability-table">
-            <thead><tr><th>Date</th><th>Entered</th><th>Bounced</th></tr></thead>
+            <thead><tr><th>{t("reliability.table.date", "Date")}</th><th>{t("reliability.table.entered", "Entered")}</th><th>{t("reliability.table.bounced", "Bounced")}</th></tr></thead>
             <tbody>
               {perDayRows.map((row) => (
                 <tr key={row.date}><td>{row.date}</td><td>{row.tasksEnteredInReview}</td><td>{row.tasksBouncedToInProgress}</td></tr>
@@ -146,25 +148,25 @@ export function ReliabilityView() {
         </div>
 
         <div className="card reliability-card">
-          <h3>Duration</h3>
-          <div className="reliability-stat-row"><span>P50</span><strong>{formatDuration(data?.duration.p50Ms ?? null)}</strong></div>
-          <div className="reliability-stat-row"><span>P95</span><strong>{formatDuration(data?.duration.p95Ms ?? null)}</strong></div>
-          <div className="reliability-muted">Samples: {data?.duration.sampleCount ?? 0}</div>
+          <h3>{t("reliability.duration.heading", "Duration")}</h3>
+          <div className="reliability-stat-row"><span>{t("reliability.duration.p50", "P50")}</span><strong>{formatDuration(data?.duration.p50Ms ?? null)}</strong></div>
+          <div className="reliability-stat-row"><span>{t("reliability.duration.p95", "P95")}</span><strong>{formatDuration(data?.duration.p95Ms ?? null)}</strong></div>
+          <div className="reliability-muted">{t("reliability.duration.samples", "Samples: {{count}}", { count: data?.duration.sampleCount ?? 0 })}</div>
           <details className="reliability-details">
-            <summary>More stats</summary>
+            <summary>{t("reliability.duration.moreStats", "More stats")}</summary>
             <div className="reliability-details-content">
-              <div>{`P50 raw: ${data?.duration.p50Ms ?? "—"} ms`}</div>
-              <div>{`P95 raw: ${data?.duration.p95Ms ?? "—"} ms`}</div>
-              <div>{`Sample count: ${data?.duration.sampleCount ?? 0}`}</div>
-              {data?.duration.reason ? <div>{`Reason: ${data.duration.reason}`}</div> : null}
+              <div>{t("reliability.duration.p50Raw", "P50 raw: {{value}} ms", { value: data?.duration.p50Ms ?? "—" })}</div>
+              <div>{t("reliability.duration.p95Raw", "P95 raw: {{value}} ms", { value: data?.duration.p95Ms ?? "—" })}</div>
+              <div>{t("reliability.duration.sampleCount", "Sample count: {{count}}", { count: data?.duration.sampleCount ?? 0 })}</div>
+              {data?.duration.reason ? <div>{t("reliability.duration.reason", "Reason: {{reason}}", { reason: data.duration.reason })}</div> : null}
             </div>
           </details>
         </div>
 
         <div className="card reliability-card">
-          <h3>Merge attempts</h3>
-          <div className="reliability-stat-row"><span>Mean</span><strong>{data?.mergeAttempts.mean?.toFixed(2) ?? "—"}</strong></div>
-          <div className="reliability-stat-row"><span>Max</span><strong>{data?.mergeAttempts.max ?? "—"}</strong></div>
+          <h3>{t("reliability.mergeAttempts.heading", "Merge attempts")}</h3>
+          <div className="reliability-stat-row"><span>{t("reliability.mergeAttempts.mean", "Mean")}</span><strong>{data?.mergeAttempts.mean?.toFixed(2) ?? "—"}</strong></div>
+          <div className="reliability-stat-row"><span>{t("reliability.mergeAttempts.max", "Max")}</span><strong>{data?.mergeAttempts.max ?? "—"}</strong></div>
           <ul className="reliability-histogram">
             {Object.entries(data?.mergeAttempts.histogram ?? {}).map(([bucket, count]) => (
               <li key={bucket}>
@@ -175,11 +177,11 @@ export function ReliabilityView() {
             ))}
           </ul>
           <details className="reliability-details">
-            <summary>More stats</summary>
+            <summary>{t("reliability.mergeAttempts.moreStats", "More stats")}</summary>
             <div className="reliability-details-content">
-              <div>{`Tasks counted: ${mergeAttemptTaskCount}`}</div>
-              <div>{`Histogram total: ${mergeAttemptTaskCount}`}</div>
-              {data?.mergeAttempts.reason ? <div>{`Reason: ${data.mergeAttempts.reason}`}</div> : null}
+              <div>{t("reliability.mergeAttempts.tasksCounted", "Tasks counted: {{count}}", { count: mergeAttemptTaskCount })}</div>
+              <div>{t("reliability.mergeAttempts.histogramTotal", "Histogram total: {{count}}", { count: mergeAttemptTaskCount })}</div>
+              {data?.mergeAttempts.reason ? <div>{t("reliability.mergeAttempts.reason", "Reason: {{reason}}", { reason: data.mergeAttempts.reason })}</div> : null}
             </div>
           </details>
         </div>
@@ -188,20 +190,20 @@ export function ReliabilityView() {
       {showResetConfirm ? (
         <div className="modal-overlay open" role="presentation">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="reliability-reset-title">
-            <div className="modal-header"><h2 id="reliability-reset-title">Reset reliability stats?</h2></div>
-            <p>This sets a new baseline for reliability statistics. Historical events older than the reset time are excluded from counts but are not deleted.</p>
+            <div className="modal-header"><h2 id="reliability-reset-title">{t("reliability.resetModal.title", "Reset reliability stats?")}</h2></div>
+            <p>{t("reliability.resetModal.description", "This sets a new baseline for reliability statistics. Historical events older than the reset time are excluded from counts but are not deleted.")}</p>
             {resetError ? <div className="form-error">{resetError}</div> : null}
             <div className="modal-actions">
-              <button className="btn" onClick={() => setShowResetConfirm(false)}>Cancel</button>
+              <button className="btn" onClick={() => setShowResetConfirm(false)}>{t("common.cancel", "Cancel")}</button>
               <button
                 className="btn btn-danger"
                 onClick={() => {
                   void resetStats().catch((error: unknown) => {
-                    setResetError(error instanceof Error ? error.message : "Failed to reset reliability stats");
+                    setResetError(error instanceof Error ? error.message : t("reliability.resetModal.failedError", "Failed to reset reliability stats"));
                   });
                 }}
               >
-                Confirm reset
+                {t("reliability.resetModal.confirm", "Confirm reset")}
               </button>
             </div>
           </div>

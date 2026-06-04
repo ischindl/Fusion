@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef, useId, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileEdit, Eye, ListOrdered, WrapText, ChevronDown, ChevronUp } from "lucide-react";
@@ -45,6 +46,7 @@ export function FileEditor({
   toolbarExpanded,
   toolbarActionsId: externalToolbarActionsId,
 }: FileEditorProps) {
+  const { t } = useTranslation("app");
   const [showPreview, setShowPreview] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const [internalExpanded, setInternalExpanded] = useState(false);
@@ -186,7 +188,7 @@ export function FileEditor({
       {hasToolbarActions && (expanded || !isControlled) ? (
         <div className={`file-editor-toolbar ${expanded ? "file-editor-toolbar--expanded" : ""}`}>
           {!isControlled && (
-            <button className="btn btn-sm btn-icon file-editor-toolbar-button" onClick={handleToolbarActionsToggle} aria-label="Toggle editor options" title="Toggle editor options" aria-expanded={expanded} aria-controls={toolbarActionsId}>
+            <button className="btn btn-sm btn-icon file-editor-toolbar-button" onClick={handleToolbarActionsToggle} aria-label={t("fileEditor.toggleOptions", "Toggle editor options")} title={t("fileEditor.toggleOptions", "Toggle editor options")} aria-expanded={expanded} aria-controls={toolbarActionsId}>
               {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
           )}
@@ -194,27 +196,27 @@ export function FileEditor({
             {isMarkdown ? (
               <>
                 {!readOnly && (
-                  <button className={`btn btn-sm file-editor-toolbar-button ${!effectiveShowPreview ? "btn-primary" : ""}`} onClick={handleEditClick} disabled={!effectiveShowPreview} aria-label="Edit mode">
+                  <button className={`btn btn-sm file-editor-toolbar-button ${!effectiveShowPreview ? "btn-primary" : ""}`} onClick={handleEditClick} disabled={!effectiveShowPreview} aria-label={t("fileEditor.editMode", "Edit mode")}>
                     <FileEdit size={14} />
-                    Edit
+                    {t("fileEditor.edit", "Edit")}
                   </button>
                 )}
-                <button className={`btn btn-sm file-editor-toolbar-button ${effectiveShowPreview ? "btn-primary" : ""}`} onClick={handlePreviewClick} disabled={effectiveShowPreview} aria-label="Preview mode">
+                <button className={`btn btn-sm file-editor-toolbar-button ${effectiveShowPreview ? "btn-primary" : ""}`} onClick={handlePreviewClick} disabled={effectiveShowPreview} aria-label={t("fileEditor.previewMode", "Preview mode")}>
                   <Eye size={14} />
-                  Preview
+                  {t("fileEditor.preview", "Preview")}
                 </button>
               </>
             ) : null}
             {shouldShowLineNumbersToggle && (
-              <button className={`btn btn-sm file-editor-toolbar-button ${showLineNumbers ? "btn-primary" : ""}`} onClick={onToggleLineNumbers} aria-label="Toggle line numbers" aria-pressed={showLineNumbers} title="Toggle line numbers">
+              <button className={`btn btn-sm file-editor-toolbar-button ${showLineNumbers ? "btn-primary" : ""}`} onClick={onToggleLineNumbers} aria-label={t("fileEditor.toggleLineNumbers", "Toggle line numbers")} aria-pressed={showLineNumbers} title={t("fileEditor.toggleLineNumbers", "Toggle line numbers")}>
                 <ListOrdered size={14} />
-                <span>Line #</span>
+                <span>{t("fileEditor.lineNumber", "Line #")}</span>
               </button>
             )}
             {!readOnly && (
-              <button className={`btn btn-sm file-editor-toolbar-button ${wordWrap ? "btn-primary" : ""}`} onClick={handleWordWrapToggle} aria-label="Toggle word wrap" title="Toggle word wrap">
+              <button className={`btn btn-sm file-editor-toolbar-button ${wordWrap ? "btn-primary" : ""}`} onClick={handleWordWrapToggle} aria-label={t("fileEditor.toggleWordWrap", "Toggle word wrap")} title={t("fileEditor.toggleWordWrap", "Toggle word wrap")}>
                 <WrapText size={14} />
-                <span>Wrap</span>
+                <span>{t("fileEditor.wrap", "Wrap")}</span>
               </button>
             )}
           </div>
@@ -226,7 +228,7 @@ export function FileEditor({
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       ) : (
-        <div className="file-editor-codemirror" ref={editorHostRef} aria-label={filePath ? `Editor for ${filePath}` : "File editor"} />
+        <div className="file-editor-codemirror" ref={editorHostRef} aria-label={filePath ? t("fileEditor.editorFor", `Editor for ${filePath}`) : t("fileEditor.fileEditor", "File editor")} />
       )}
     </div>
   );

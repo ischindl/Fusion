@@ -14,6 +14,7 @@
 
 import "./PiExtensionsManager.css";
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Package,
   Puzzle,
@@ -65,6 +66,7 @@ function getPackageLabel(source: string): string {
 }
 
 export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManagerProps) {
+  const { t } = useTranslation("app");
   const [settings, setSettings] = useState<PiSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -83,11 +85,11 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
       const data = await fetchPiSettings();
       setSettings(data);
     } catch (err) {
-      addToast(`Failed to load Pi settings: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.loadSettingsFailed", "Failed to load Pi settings: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setLoading(false);
     }
-  }, [addToast]);
+  }, [addToast, t]);
 
   const loadExtensions = useCallback(async () => {
     try {
@@ -95,11 +97,11 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
       const data = await fetchPiExtensions(projectId);
       setExtensions(data.extensions);
     } catch (err) {
-      addToast(`Failed to load extensions: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.loadExtensionsFailed", "Failed to load extensions: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setExtensionsLoading(false);
     }
-  }, [addToast, projectId]);
+  }, [addToast, projectId, t]);
 
   const handleToggleExtension = useCallback(async (ext: PiExtensionEntry) => {
     try {
@@ -109,13 +111,13 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
         : extensions.filter((e) => e.enabled && e.id !== ext.id).map((e) => e.id);
       await updatePiExtensions(disabledIds, projectId);
       await loadExtensions();
-      addToast(ext.enabled ? "Extension disabled" : "Extension enabled", "success");
+      addToast(ext.enabled ? t("piManager.extensionDisabled", "Extension disabled") : t("piManager.extensionEnabled", "Extension enabled"), "success");
     } catch (err) {
-      addToast(`Failed to update extension: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.updateFailed", "Failed to update extension: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setUpdatingExtensions(false);
     }
-  }, [extensions, projectId, loadExtensions, addToast]);
+  }, [extensions, projectId, loadExtensions, addToast, t]);
 
   useEffect(() => {
     void loadSettings();
@@ -139,18 +141,18 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
 
   const handleInstall = async () => {
     if (!newSource.trim()) {
-      addToast("Please enter a package source", "error");
+      addToast(t("piManager.enterSource", "Please enter a package source"), "error");
       return;
     }
 
     try {
       setInstalling(true);
       await installPiPackage(newSource.trim());
-      addToast("Package installed successfully", "success");
+      addToast(t("piManager.installSuccess", "Package installed successfully"), "success");
       setNewSource("");
       await loadSettings();
     } catch (err) {
-      addToast(`Failed to install package: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.installFailed", "Failed to install package: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setInstalling(false);
     }
@@ -161,9 +163,9 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
       setReinstallingFusion(true);
       await reinstallFusionPiPackage(projectId);
       await Promise.all([loadSettings(), loadExtensions()]);
-      addToast("Fusion skill reinstalled successfully", "success");
+      addToast(t("piManager.reinstallSuccess", "Fusion skill reinstalled successfully"), "success");
     } catch (err) {
-      addToast(`Failed to reinstall Fusion skill: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.reinstallFailed", "Failed to reinstall Fusion skill: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setReinstallingFusion(false);
     }
@@ -179,10 +181,10 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
 
     try {
       await updatePiSettings({ packages: updatedPackages });
-      addToast("Package removed", "success");
+      addToast(t("piManager.packageRemoved", "Package removed"), "success");
       await loadSettings();
     } catch (err) {
-      addToast(`Failed to remove package: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.removeFailed", "Failed to remove package: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     }
   };
 
@@ -193,10 +195,11 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
 
     try {
       await updatePiSettings({ [type]: updated });
-      addToast(`${type.slice(0, -1)} removed`, "success");
+      const resourceType = t(`piManager.resourceType.${type.slice(0, -1)}`, type.slice(0, -1));
+      addToast(t("piManager.resourceRemoved", "{{resource}} removed", { resource: resourceType }), "success");
       await loadSettings();
     } catch (err) {
-      addToast(`Failed to update settings: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast(t("piManager.updateSettingsFailed", "Failed to update settings: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     }
   };
 
@@ -221,8 +224,8 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
               <button
                 className="btn-icon touch-target pi-ext-resource-remove"
                 onClick={() => handleRemoveResource(type, path)}
-                title={`Remove ${path}`}
-                aria-label={`Remove ${path}`}
+                title={t("piManager.removeResource", "Remove {{path}}", { path })}
+                aria-label={t("piManager.removeResource", "Remove {{path}}", { path })}
               >
                 <X />
               </button>
@@ -236,20 +239,20 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
   return (
     <div className="pi-ext-manager">
       <div className="pi-ext-manager-header">
-        <h4 className="pi-ext-manager-title">Pi Extensions</h4>
+        <h4 className="pi-ext-manager-title">{t("piManager.title", "Pi Extensions")}</h4>
         <div className="pi-ext-manager-actions">
-          <button className="btn-icon" onClick={loadSettings} title="Refresh" disabled={loading}>
+          <button className="btn-icon" onClick={loadSettings} title={t("piManager.refreshButton", "Refresh")} disabled={loading}>
             <RefreshCw size={16} className={loading ? "spin" : ""} />
           </button>
         </div>
       </div>
 
       {loading ? (
-        <div className="loading-state">Loading Pi settings…</div>
+        <div className="loading-state">{t("piManager.loading", "Loading Pi settings…")}</div>
       ) : !settings ? (
         <div className="empty-state">
           <Package size={32} className="text-muted" />
-          <p>Failed to load Pi settings.</p>
+          <p>{t("piManager.loadingFailed", "Failed to load Pi settings.")}</p>
         </div>
       ) : (
         <>
@@ -259,7 +262,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
               <input
                 type="text"
                 className="input"
-                placeholder="npm:pi-extension-name or git:https://github.com/..."
+                placeholder={t("piManager.packagePlaceholder", "npm:pi-extension-name or git:https://github.com/...")}
                 value={newSource}
                 onChange={(e) => setNewSource(e.target.value)}
                 onKeyDown={(e) => {
@@ -276,7 +279,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                 disabled={installing || !newSource.trim()}
               >
                 <Plus size={14} />
-                {installing ? "Installing…" : "Add"}
+                {installing ? t("piManager.installing", "Installing…") : t("piManager.addButton", "Add")}
               </button>
             </div>
             <div className="pi-ext-add-form-row">
@@ -285,7 +288,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                 onClick={handleReinstallFusion}
                 disabled={reinstallingFusion}
               >
-                {reinstallingFusion ? "Reinstalling Fusion…" : "Reinstall Fusion skill"}
+                {reinstallingFusion ? t("piManager.reinstalling", "Reinstalling Fusion…") : t("piManager.reinstallButton", "Reinstall Fusion skill")}
               </button>
             </div>
           </div>
@@ -334,8 +337,8 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                         <button
                           className="btn-icon touch-target pi-ext-remove-btn"
                           onClick={() => handleRemovePackage(source)}
-                          title="Remove package"
-                          aria-label={`Remove package ${label}`}
+                          title={t("piManager.removePackage", "Remove package")}
+                          aria-label={t("piManager.removePackageLabel", "Remove package {{label}}", { label })}
                         >
                           <Trash2 size={14} />
                         </button>
@@ -346,7 +349,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                         {(pkg as { extensions?: string[] }).extensions?.length ? (
                           <div className="pi-ext-filter-section">
                             <Puzzle size={12} />
-                            <span className="pi-ext-filter-label">Extensions:</span>
+                            <span className="pi-ext-filter-label">{t("piManager.filterExtensions", "Extensions:")} </span>
                             {(pkg as { extensions: string[] }).extensions!.map((ext, i) => (
                               <span key={i} className="pi-ext-filter-tag">
                                 {ext}
@@ -357,7 +360,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                         {(pkg as { skills?: string[] }).skills?.length ? (
                           <div className="pi-ext-filter-section">
                             <BookOpen size={12} />
-                            <span className="pi-ext-filter-label">Skills:</span>
+                            <span className="pi-ext-filter-label">{t("piManager.filterSkills", "Skills:")} </span>
                             {(pkg as { skills: string[] }).skills!.map((skill, i) => (
                               <span key={i} className="pi-ext-filter-tag">
                                 {skill}
@@ -368,7 +371,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                         {(pkg as { prompts?: string[] }).prompts?.length ? (
                           <div className="pi-ext-filter-section">
                             <FileText size={12} />
-                            <span className="pi-ext-filter-label">Prompts:</span>
+                            <span className="pi-ext-filter-label">{t("piManager.filterPrompts", "Prompts:")} </span>
                             {(pkg as { prompts: string[] }).prompts!.map((prompt, i) => (
                               <span key={i} className="pi-ext-filter-tag">
                                 {prompt}
@@ -379,7 +382,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                         {(pkg as { themes?: string[] }).themes?.length ? (
                           <div className="pi-ext-filter-section">
                             <Palette size={12} />
-                            <span className="pi-ext-filter-label">Themes:</span>
+                            <span className="pi-ext-filter-label">{t("piManager.filterThemes", "Themes:")} </span>
                             {(pkg as { themes: string[] }).themes!.map((theme, i) => (
                               <span key={i} className="pi-ext-filter-tag">
                                 {theme}
@@ -396,17 +399,17 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
           ) : (
             <div className="empty-state">
               <Package size={32} className="text-muted" />
-              <p>No packages configured.</p>
-              <p className="text-muted">Add a package source above to get started.</p>
+              <p>{t("piManager.noPackages", "No packages configured.")}</p>
+              <p className="text-muted">{t("piManager.noPackagesHelp", "Add a package source above to get started.")}</p>
             </div>
           )}
 
           {/* Top-level resource sections */}
           <div className="pi-ext-top-level">
-            {renderResourceSection("Extensions", Puzzle, "extensions")}
-            {renderResourceSection("Skills", BookOpen, "skills")}
-            {renderResourceSection("Prompts", FileText, "prompts")}
-            {renderResourceSection("Themes", Palette, "themes")}
+            {renderResourceSection(t("piManager.sectionExtensions", "Extensions"), Puzzle, "extensions")}
+            {renderResourceSection(t("piManager.sectionSkills", "Skills"), BookOpen, "skills")}
+            {renderResourceSection(t("piManager.sectionPrompts", "Prompts"), FileText, "prompts")}
+            {renderResourceSection(t("piManager.sectionThemes", "Themes"), Palette, "themes")}
           </div>
         </>
       )}
@@ -414,26 +417,26 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
       {/* Discovered Extensions Section */}
       <div className="pi-ext-discovered-section">
         <div className="pi-ext-discovered-header">
-          <h4>Discovered Extensions</h4>
+          <h4>{t("piManager.discoveredTitle", "Discovered Extensions")}</h4>
           <button
             className="btn-icon"
             onClick={loadExtensions}
             disabled={extensionsLoading}
-            title="Refresh extensions"
+            title={t("piManager.refreshExtensions", "Refresh extensions")}
           >
             <RefreshCw className={extensionsLoading ? "spin" : ""} />
           </button>
         </div>
         <p className="pi-ext-description">
-          Installed extensions resolved from packages and configured paths.
+          {t("piManager.discoveredDescription", "Installed extensions resolved from packages and configured paths.")}
         </p>
 
         {extensionsLoading ? (
-          <div className="loading-state">Loading extensions…</div>
+          <div className="loading-state">{t("piManager.loadingExtensions", "Loading extensions…")}</div>
         ) : extensions.length === 0 ? (
           <div className="empty-state">
             <Package size={32} className="text-muted" />
-            <p>No extensions discovered.</p>
+            <p>{t("piManager.noExtensions", "No extensions discovered.")}</p>
           </div>
         ) : (
           <div className="pi-ext-list">
@@ -455,7 +458,7 @@ export function PiExtensionsManager({ addToast, projectId }: PiExtensionsManager
                       checked={ext.enabled}
                       onChange={() => void handleToggleExtension(ext)}
                       disabled={updatingExtensions}
-                      aria-label={`Toggle ${ext.name}`}
+                      aria-label={t("piManager.toggleExtension", "Toggle {{name}}", { name: ext.name })}
                     />
                     <span className="toggle-slider" />
                   </label>

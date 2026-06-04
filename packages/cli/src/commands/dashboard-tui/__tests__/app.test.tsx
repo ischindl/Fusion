@@ -1,7 +1,9 @@
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render } from "ink-testing-library";
+import { I18nextProvider } from "react-i18next";
 import { DashboardApp } from "../app.js";
+import { initCliI18n } from "../../../i18n/index.js";
 import { DashboardTUI } from "../controller.js";
 import { createInitialState } from "../state.js";
 import type { ProjectItem, TaskItem, AgentItem, AgentDetailItem, ModelItem, SettingsValues, TaskDetailData } from "../state.js";
@@ -10,8 +12,17 @@ function newController(): DashboardTUI {
   return new DashboardTUI();
 }
 
+// Initialize the real CLI i18n instance so t() interpolation runs in tests —
+// without a provider, react-i18next's fallback returns defaults with literal
+// {{placeholders}}. Mirrors the production wrap in controller.render().
+const testI18n = initCliI18n("en");
+
 function renderDashboardAppNode(controller: DashboardTUI) {
-  return React.createElement(DashboardApp, { controller });
+  return React.createElement(
+    I18nextProvider,
+    { i18n: testI18n },
+    React.createElement(DashboardApp, { controller }),
+  );
 }
 
 function makeSystemInfo() {

@@ -6,6 +6,7 @@
 
 import "./InsightsView.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Sparkles,
   RefreshCw,
@@ -59,6 +60,7 @@ const CATEGORY_ICONS: Record<InsightCategory, React.ComponentType<{ size?: numbe
 };
 
 export function InsightsView({ projectId, addToast, onClose, onCreateTask, models: modelsProp }: InsightsViewProps) {
+  const { t } = useTranslation("app");
   const {
     sections,
     loading,
@@ -214,7 +216,7 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
 
   const handleRun = useCallback(async () => {
     try {
-      setStatusMessage("Generating insights...");
+      setStatusMessage(t("insights.generatingInsights", "Generating insights..."));
       setStatusType("info");
 
       let modelProvider: string | undefined;
@@ -232,93 +234,93 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
       }
 
       await runInsights(modelProvider, modelId);
-      setStatusMessage("Insight generation started");
+      setStatusMessage(t("insights.generationStarted", "Insight generation started"));
       setStatusType("success");
-      addToast("Insight generation started", "success");
+      addToast(t("insights.generationStarted", "Insight generation started"), "success");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to start generation";
+      const message = err instanceof Error ? err.message : t("insights.failedToStart", "Failed to start generation");
       if (message === "Insight generation is already running") {
-        setStatusMessage("Insight generation is already running. Showing the active run.");
+        setStatusMessage(t("insights.alreadyRunning", "Insight generation is already running. Showing the active run."));
         setStatusType("info");
-        addToast("Insight generation is already running", "info");
+        addToast(t("insights.alreadyRunningShort", "Insight generation is already running"), "info");
         return;
       }
       setStatusMessage(message);
       setStatusType("error");
       addToast(message, "error");
     }
-  }, [runInsights, addToast, selectedModel]);
+  }, [runInsights, addToast, selectedModel, t]);
 
   const handleDismiss = useCallback(
     async (id: string, title: string) => {
       try {
-        setStatusMessage(`Dismissing "${title}"...`);
+        setStatusMessage(t("insights.dismissing", "Dismissing \"{{title}}\"...", { title }));
         setStatusType("info");
         await dismiss(id);
-        setStatusMessage(`Dismissed "${title}"`);
+        setStatusMessage(t("insights.dismissed", "Dismissed \"{{title}}\"", { title }));
         setStatusType("success");
-        addToast(`Insight dismissed: ${title}`, "success");
+        addToast(t("insights.dismissedMsg", "Insight dismissed: {{title}}", { title }), "success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to dismiss insight";
+        const message = err instanceof Error ? err.message : t("insights.failedToDismiss", "Failed to dismiss insight");
         setStatusMessage(message);
         setStatusType("error");
         addToast(message, "error");
       }
     },
-    [dismiss, addToast],
+    [dismiss, addToast, t],
   );
 
   const handleArchive = useCallback(
     async (id: string, title: string) => {
       try {
-        setStatusMessage(`Archiving "${title}"...`);
+        setStatusMessage(t("insights.archiving", "Archiving \"{{title}}\"...", { title }));
         setStatusType("info");
         await archive(id);
-        setStatusMessage(`Archived "${title}"`);
+        setStatusMessage(t("insights.archived", "Archived \"{{title}}\"", { title }));
         setStatusType("success");
-        addToast(`Insight archived: ${title}`, "success");
+        addToast(t("insights.archivedMsg", "Insight archived: {{title}}", { title }), "success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to archive insight";
+        const message = err instanceof Error ? err.message : t("insights.failedToArchive", "Failed to archive insight");
         setStatusMessage(message);
         setStatusType("error");
         addToast(message, "error");
       }
     },
-    [archive, addToast],
+    [archive, addToast, t],
   );
 
   const handleUnarchive = useCallback(
     async (id: string, title: string) => {
       try {
-        setStatusMessage(`Unarchiving "${title}"...`);
+        setStatusMessage(t("insights.unarchiving", "Unarchiving \"{{title}}\"...", { title }));
         setStatusType("info");
         await unarchive(id);
-        setStatusMessage(`Unarchived "${title}"`);
+        setStatusMessage(t("insights.unarchived", "Unarchived \"{{title}}\"", { title }));
         setStatusType("success");
-        addToast(`Insight unarchived: ${title}`, "success");
+        addToast(t("insights.unarchivedMsg", "Insight unarchived: {{title}}", { title }), "success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to unarchive insight";
+        const message = err instanceof Error ? err.message : t("insights.failedToUnarchive", "Failed to unarchive insight");
         setStatusMessage(message);
         setStatusType("error");
         addToast(message, "error");
       }
     },
-    [unarchive, addToast],
+    [unarchive, addToast, t],
   );
 
   const handleCreateTask = useCallback(
     async (id: string, title: string) => {
       try {
-        setStatusMessage(`Creating task from "${title}"...`);
+        setStatusMessage(t("insights.creatingTask", "Creating task from \"{{title}}\"...", { title }));
         setStatusType("info");
 
         if (!onCreateTask) {
-          throw new Error("Task creation is unavailable in this view");
+          throw new Error(t("insights.taskCreationUnavailable", "Task creation is unavailable in this view"));
         }
 
         const taskData = await createTaskFromInsight(id);
         if (!taskData) {
-          throw new Error("Failed to prepare task payload from insight");
+          throw new Error(t("insights.failedToPreparePayload", "Failed to prepare task payload from insight"));
         }
 
         await onCreateTask({
@@ -327,17 +329,17 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
           description: taskData.description,
         });
 
-        setStatusMessage(`Task created from "${title}"`);
+        setStatusMessage(t("insights.taskCreated", "Task created from \"{{title}}\"", { title }));
         setStatusType("success");
-        addToast(`Task created: ${taskData.title}`, "success");
+        addToast(t("insights.taskCreatedMsg", "Task created: {{title}}", { title: taskData.title }), "success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to create task";
+        const message = err instanceof Error ? err.message : t("insights.failedToCreateTask", "Failed to create task");
         setStatusMessage(message);
         setStatusType("error");
         addToast(message, "error");
       }
     },
-    [createTaskFromInsight, onCreateTask, addToast],
+    [createTaskFromInsight, onCreateTask, addToast, t],
   );
 
   const renderCategoryItem = (section: InsightSection) => {
@@ -407,8 +409,8 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
                           className="insight-item-action-btn"
                           onClick={() => void handleUnarchive(insight.id, insight.title)}
                           disabled={isUnarchiveInFlight || isAnyActionInFlight}
-                          title="Unarchive this insight"
-                          aria-label="Unarchive this insight"
+                          title={t("insights.unarchiveTitle", "Unarchive this insight")}
+                          aria-label={t("insights.unarchiveLabel", "Unarchive this insight")}
                           data-testid={`unarchive-${insight.id}`}
                         >
                           {isUnarchiveInFlight ? <RefreshCw size={20} className="spin" /> : <ArchiveRestore size={20} />}
@@ -419,8 +421,8 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
                             className="insight-item-action-btn"
                             onClick={() => void handleCreateTask(insight.id, insight.title)}
                             disabled={isCreateInFlight || isAnyActionInFlight}
-                            title="Create task from this insight"
-                            aria-label="Create task from this insight"
+                            title={t("insights.createTaskTitle", "Create task from this insight")}
+                            aria-label={t("insights.createTaskLabel", "Create task from this insight")}
                             data-testid={`create-task-${insight.id}`}
                           >
                             {isCreateInFlight ? <RefreshCw size={20} className="spin" /> : <Plus size={20} />}
@@ -429,8 +431,8 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
                             className="insight-item-action-btn"
                             onClick={() => void handleArchive(insight.id, insight.title)}
                             disabled={isArchiveInFlight || isAnyActionInFlight}
-                            title="Archive this insight"
-                            aria-label="Archive this insight"
+                            title={t("insights.archiveTitle", "Archive this insight")}
+                            aria-label={t("insights.archiveLabel", "Archive this insight")}
                             data-testid={`archive-${insight.id}`}
                           >
                             {isArchiveInFlight ? <RefreshCw size={20} className="spin" /> : <Archive size={20} />}
@@ -441,8 +443,8 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
                         className="insight-item-action-btn"
                         onClick={() => void handleDismiss(insight.id, insight.title)}
                         disabled={isDismissInFlight || isAnyActionInFlight}
-                        title="Dismiss this insight"
-                        aria-label="Dismiss this insight"
+                        title={t("insights.dismissTitle", "Dismiss this insight")}
+                        aria-label={t("insights.dismissLabel", "Dismiss this insight")}
                         data-testid={`dismiss-${insight.id}`}
                       >
                         {isDismissInFlight ? (
@@ -482,9 +484,9 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
         <div className="insights-view-title">
           <h2>
             <Sparkles size={20} />
-            Insights
+            {t("insights.title", "Insights")}
           </h2>
-          <span className="insights-view-count">{totalCount} total</span>
+          <span className="insights-view-count">{totalCount} {t("common.total", "total")}</span>
         </div>
 
         <div className="insights-view-actions">
@@ -493,20 +495,20 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
               className={`btn btn-sm insights-backlog-health-toggle${backlogHealthOnly ? " btn-icon--active" : ""}`}
               onClick={() => setBacklogHealthOnly((prev) => !prev)}
               aria-pressed={backlogHealthOnly}
-              aria-label={backlogHealthOnly ? "Show all insights" : "Show only backlog health insights"}
+              aria-label={backlogHealthOnly ? t("insights.showAllInsights", "Show all insights") : t("insights.showBacklogHealth", "Show only backlog health insights")}
               data-testid="toggle-backlog-health"
               title={BACKLOG_HEALTH_TITLE_PREFIXES.join(", ")}
             >
               <Activity size={14} />
-              {backlogHealthOnly ? "All Insights" : "Backlog Health"} <span>({backlogHealthCount})</span>
+              {backlogHealthOnly ? t("insights.allInsights", "All Insights") : t("insights.backlogHealth", "Backlog Health")} <span>({backlogHealthCount})</span>
             </button>
           )}
           {onClose && (
             <button
               className="btn btn-sm insights-view-close"
               onClick={onClose}
-              aria-label="Close insights view"
-              title="Close"
+              aria-label={t("actions.closeInsightsView", "Close insights view")}
+              title={t("actions.close", "Close")}
             >
               <X size={16} />
             </button>
@@ -515,30 +517,30 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
             <button
               className="btn btn-sm insights-show-archived-toggle"
               onClick={toggleShowArchived}
-              aria-label={showArchived ? "Hide archived insights" : "Show archived insights"}
+              aria-label={showArchived ? t("insights.hideArchived", "Hide archived insights") : t("insights.showArchived", "Show archived insights")}
               data-testid="toggle-archived-insights"
             >
               <Archive size={14} />
-              {showArchived ? "Hide Archived" : `Show Archived (${archivedCount})`}
+              {showArchived ? t("insights.hideArchivedLabel", "Hide Archived") : t("insights.showArchivedLabel", "Show Archived ({{count}})", { count: archivedCount })}
             </button>
           )}
           <button
             className="btn btn-sm"
             onClick={() => void refresh()}
             disabled={loading}
-            aria-label="Refresh insights"
+            aria-label={t("actions.refreshInsights", "Refresh insights")}
             data-testid="refresh-insights"
           >
             <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh
+            {t("actions.refresh", "Refresh")}
           </button>
           <button
             className="btn btn-sm insights-model-toggle"
             onClick={() => setShowModelConfig((prev) => !prev)}
-            aria-label="Configure insight generation model"
+            aria-label={t("insights.configureModel", "Configure insight generation model")}
             aria-expanded={showModelConfig}
             data-testid="toggle-model-config"
-            title={selectedModel ? `Model: ${selectedModel}` : "Configure model"}
+            title={selectedModel ? t("insights.modelConfigured", "Model: {{model}}", { model: selectedModel }) : t("insights.configureModelTitle", "Configure model")}
           >
             <Settings size={14} />
             {selectedModel && <span className="insights-model-indicator" />}
@@ -547,18 +549,18 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
             className="btn btn-primary btn-sm"
             onClick={() => void handleRun()}
             disabled={isRunInFlight}
-            aria-label="Generate new insights"
+            aria-label={t("insights.generateInsights", "Generate new insights")}
             data-testid="run-insights"
           >
             {isRunInFlight ? (
               <>
                 <RefreshCw size={14} className="spin" />
-                Generating...
+                {t("insights.generating", "Generating...")}
               </>
             ) : (
               <>
                 <Sparkles size={14} />
-                Generate Insights
+                {t("insights.generateInsightsBtn", "Generate Insights")}
               </>
             )}
           </button>
@@ -568,14 +570,14 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
       {showModelConfig && (
         <div className="insights-model-config" data-testid="model-config">
           <label htmlFor="insight-model-select" className="insights-model-label">
-            Model
+            {t("insights.model", "Model")}
           </label>
           <CustomModelDropdown
             models={models}
             value={selectedModel}
             onChange={handleModelChange}
-            placeholder="Use planning default"
-            label="Insight generation model"
+            placeholder={t("insights.usePlanningDefault", "Use planning default")}
+            label={t("insights.generationModel", "Insight generation model")}
             disabled={isRunInFlight}
             id="insight-model-select"
             favoriteProviders={effectiveFavoriteProviders}
@@ -614,9 +616,9 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
       {latestRun && (
         <div className="insights-run-info" data-testid="latest-run">
           <span className="insights-run-status">
-            Latest run: {latestRun.status}
+            {t("insights.latestRun", "Latest run:")} {latestRun.status}
             {latestRun.status === "completed" && (
-              <> — {latestRun.insightsCreated} created, {latestRun.insightsUpdated} updated</>
+              <> — {t("insights.runCompleted", "{{created}} created, {{updated}} updated", { created: latestRun.insightsCreated, updated: latestRun.insightsUpdated })}</>
             )}
             {latestRun.status === "failed" && latestRun.error && (
               <> — {latestRun.error}</>
@@ -628,24 +630,24 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
       {loading ? (
         <div className="insights-loading" data-testid="insights-loading">
           <RefreshCw size={24} className="spin" />
-          <p>Loading insights...</p>
+          <p>{t("insights.loading", "Loading insights...")}</p>
         </div>
       ) : error ? (
         <div className="insights-error" data-testid="insights-error">
           <AlertCircle size={24} />
           <p>{error}</p>
           <button className="btn btn-sm" onClick={() => void refresh()}>
-            Retry
+            {t("actions.retry", "Retry")}
           </button>
         </div>
       ) : totalCount === 0 ? (
         <div className="insights-empty" data-testid="insights-empty">
           <Sparkles size={48} />
-          <h3>No insights yet</h3>
-          <p>Generate insights to get AI-powered recommendations for your project.</p>
+          <h3>{t("insights.noInsightsYet", "No insights yet")}</h3>
+          <p>{t("insights.generateDescription", "Generate insights to get AI-powered recommendations for your project.")}</p>
           <button className="btn btn-primary" onClick={() => void handleRun()}>
             <Sparkles size={14} />
-            Generate First Insights
+            {t("insights.generateFirst", "Generate First Insights")}
           </button>
         </div>
       ) : (

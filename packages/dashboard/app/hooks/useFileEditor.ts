@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import type { FileContentResponse, SaveFileResponse } from "../api";
 import { fetchFileContent, saveFileContent } from "../api";
@@ -30,6 +31,7 @@ export function useFileEditor(
   enabled: boolean,
   projectId?: string
 ): UseFileEditorReturn {
+  const { t } = useTranslation("app");
   const [content, setContentState] = useState<string>("");
   const [originalContent, setOriginalContent] = useState<string>("");
   const [mtime, setMtime] = useState<string | null>(null);
@@ -68,7 +70,7 @@ export function useFileEditor(
         }
       } catch (err) {
         if (!cancelled) {
-          setError(getErrorMessage(err) || "Failed to load file");
+          setError(getErrorMessage(err) || t("editor.failedLoadFile", "Failed to load file"));
           setContentState("");
           setOriginalContent("");
           setMtime(null);
@@ -102,7 +104,7 @@ export function useFileEditor(
       setOriginalContent(content);
       setMtime(response.mtime);
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to save file");
+      setError(getErrorMessage(err) || t("editor.failedSaveFile", "Failed to save file"));
       throw err;
     } finally {
       setSaving(false);

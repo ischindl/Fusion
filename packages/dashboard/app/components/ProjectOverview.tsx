@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { Plus, LayoutGrid, Filter, ArrowUpDown, Activity, CheckCircle, AlertCircle, Folder, Inbox, Server } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import "./ProjectOverview.css";
 import type { ProjectInfo, ProjectHealth, NodeInfo, ProjectInfoWithSource, ProjectNodeAvailability } from "../api";
 import type { ProjectStatus } from "@fusion/core";
@@ -52,6 +53,7 @@ export function ProjectOverview({
   onRemoveProject,
   nodes = [],
 }: ProjectOverviewProps) {
+  const { t } = useTranslation("app");
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [activeNodeFilter, setActiveNodeFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("activity");
@@ -247,17 +249,16 @@ export function ProjectOverview({
           <div className="project-empty-state__icon">
             <Inbox size={48} />
           </div>
-          <h2 className="project-empty-state__title">No Projects Found</h2>
+          <h2 className="project-empty-state__title">{t("projects.noProjectsFound", "No Projects Found")}</h2>
           <p className="project-empty-state__description">
-            Get started by adding your first project. Projects allow you to organize
-            and track tasks across multiple repositories.
+            {t("projects.emptyStateDescription", "Get started by adding your first project. Projects allow you to organize and track tasks across multiple repositories.")}
           </p>
           <button
             className="btn btn-primary project-empty-state__cta"
             onClick={onAddProject}
           >
             <Plus size={16} />
-            Add Your First Project
+            {t("projects.addFirstProject", "Add Your First Project")}
           </button>
         </div>
       </div>
@@ -270,7 +271,7 @@ export function ProjectOverview({
       <div className="project-overview__header">
         <h2 className="project-overview__title">
           <LayoutGrid size={20} />
-          Projects
+          {t("projects.title", "Projects")}
         </h2>
         <div className="project-overview__stats">
           <div className="project-stat">
@@ -279,7 +280,7 @@ export function ProjectOverview({
             </div>
             <div className="project-stat__content">
               <span className="project-stat__value">{stats.totalProjects}</span>
-              <span className="project-stat__label">Total</span>
+              <span className="project-stat__label">{t("projects.totalLabel", "Total")}</span>
             </div>
           </div>
           <div className="project-stat project-stat--active">
@@ -288,7 +289,7 @@ export function ProjectOverview({
             </div>
             <div className="project-stat__content">
               <span className="project-stat__value">{stats.totalActiveTasks}</span>
-              <span className="project-stat__label">Active Tasks</span>
+              <span className="project-stat__label">{t("projects.activeTasksLabel", "Active Tasks")}</span>
             </div>
           </div>
           <div className="project-stat project-stat--completed">
@@ -297,7 +298,7 @@ export function ProjectOverview({
             </div>
             <div className="project-stat__content">
               <span className="project-stat__value">{stats.totalCompletedTasks}</span>
-              <span className="project-stat__label">Completed</span>
+              <span className="project-stat__label">{t("projects.completedLabel", "Completed")}</span>
             </div>
           </div>
           {stats.erroredProjects > 0 && (
@@ -307,7 +308,7 @@ export function ProjectOverview({
               </div>
               <div className="project-stat__content">
                 <span className="project-stat__value">{stats.erroredProjects}</span>
-                <span className="project-stat__label">Errored</span>
+                <span className="project-stat__label">{t("projects.erroredLabel", "Errored")}</span>
               </div>
             </div>
           )}
@@ -318,7 +319,7 @@ export function ProjectOverview({
               </div>
               <div className="project-stat__content">
                 <span className="project-stat__value">{stats.totalNodes}</span>
-                <span className="project-stat__label">Nodes</span>
+                <span className="project-stat__label">{t("projects.nodesLabel", "Nodes")}</span>
               </div>
             </div>
           )}
@@ -328,7 +329,7 @@ export function ProjectOverview({
           onClick={onAddProject}
         >
           <Plus size={16} />
-          Add Project
+          {t("projects.addProject", "Add Project")}
         </button>
       </div>
 
@@ -339,28 +340,28 @@ export function ProjectOverview({
             className={`project-filter-tab ${activeFilter === "all" ? "active" : ""}`}
             onClick={() => setActiveFilter("all")}
           >
-            All
+            {t("projects.filterAll", "All")}
             <span className="project-filter-count">{filterCounts.all}</span>
           </button>
           <button
             className={`project-filter-tab ${activeFilter === "active" ? "active" : ""}`}
             onClick={() => setActiveFilter("active")}
           >
-            Active
+            {t("projects.filterActive", "Active")}
             <span className="project-filter-count">{filterCounts.active}</span>
           </button>
           <button
             className={`project-filter-tab ${activeFilter === "paused" ? "active" : ""}`}
             onClick={() => setActiveFilter("paused")}
           >
-            Paused
+            {t("projects.filterPaused", "Paused")}
             <span className="project-filter-count">{filterCounts.paused}</span>
           </button>
           <button
             className={`project-filter-tab ${activeFilter === "errored" ? "active" : ""} ${filterCounts.errored > 0 ? "has-errors" : ""}`}
             onClick={() => setActiveFilter("errored")}
           >
-            Errored
+            {t("projects.filterErrored", "Errored")}
             <span className="project-filter-count">{filterCounts.errored}</span>
           </button>
         </div>
@@ -375,9 +376,9 @@ export function ProjectOverview({
                 setActiveNodeFilter(e.target.value || null);
               }}
               className="project-node-filter-select"
-              aria-label="Filter by node"
+              aria-label={t("projects.filterByNode", "Filter by node")}
             >
-              <option value="">All Nodes</option>
+              <option value="">{t("projects.allNodes", "All Nodes")}</option>
               {nodeFilterOptions.map(({ nodeId, name, count }) => (
                 <option key={nodeId ?? "local"} value={nodeId ?? ""}>
                   {name} ({count})
@@ -398,14 +399,14 @@ export function ProjectOverview({
               setSortDirection(newDir);
             }}
             className="project-sort-select"
-            aria-label="Sort projects"
+            aria-label={t("projects.sortProjects", "Sort projects")}
           >
-            <option value="activity-desc">Last Activity (Newest)</option>
-            <option value="activity-asc">Last Activity (Oldest)</option>
-            <option value="name-asc">Name (A-Z)</option>
-            <option value="name-desc">Name (Z-A)</option>
-            <option value="status-asc">Status (Error → Active)</option>
-            <option value="status-desc">Status (Active → Error)</option>
+            <option value="activity-desc">{t("projects.sortActivityNewest", "Last Activity (Newest)")}</option>
+            <option value="activity-asc">{t("projects.sortActivityOldest", "Last Activity (Oldest)")}</option>
+            <option value="name-asc">{t("projects.sortNameAsc", "Name (A-Z)")}</option>
+            <option value="name-desc">{t("projects.sortNameDesc", "Name (Z-A)")}</option>
+            <option value="status-asc">{t("projects.sortStatusAsc", "Status (Error → Active)")}</option>
+            <option value="status-desc">{t("projects.sortStatusDesc", "Status (Active → Error)")}</option>
           </select>
           <ArrowUpDown size={14} />
         </div>
@@ -440,12 +441,12 @@ export function ProjectOverview({
       {sortedProjects.length === 0 && (
         <div className="project-overview__no-results">
           <Filter size={32} />
-          <p>No projects match the current filter</p>
+          <p>{t("projects.noMatch", "No projects match the current filter")}</p>
           <button
             className="btn btn-secondary"
             onClick={() => setActiveFilter("all")}
           >
-            Show All Projects
+            {t("projects.showAll", "Show All Projects")}
           </button>
         </div>
       )}

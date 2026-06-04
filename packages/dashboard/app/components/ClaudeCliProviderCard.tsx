@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import {
   fetchClaudeCliStatus,
@@ -45,6 +46,7 @@ export function ClaudeCliProviderCard({
   onToggled,
   compact = false,
 }: ClaudeCliProviderCardProps) {
+  const { t } = useTranslation("app");
   const [status, setStatus] = useState<ClaudeCliStatus | null>(null);
   const [busy, setBusy] = useState<"enabling" | "disabling" | "testing" | null>(
     null,
@@ -125,8 +127,7 @@ export function ClaudeCliProviderCard({
 
   const description = (
     <span className="onboarding-provider-card__description">
-      Route AI calls through your locally-installed <code>claude</code> CLI.
-      Uses your existing Claude subscription / quota instead of an API key.
+      {t("setup.claudeCli.description", "Route AI calls through your locally-installed claude CLI. Uses your existing Claude subscription / quota instead of an API key.")}
     </span>
   );
 
@@ -141,10 +142,10 @@ export function ClaudeCliProviderCard({
         {busy === "testing" ? (
           <>
             <Loader2 size={12} className="animate-spin" />
-            Testing…
+            {t("setup.claudeCli.testing", "Testing…")}
           </>
         ) : (
-          "Test"
+          t("setup.claudeCli.test", "Test")
         )}
       </button>
       {currentlyEnabled ? (
@@ -154,7 +155,7 @@ export function ClaudeCliProviderCard({
           onClick={() => void handleToggle(false)}
           disabled={busy !== null}
         >
-          {busy === "disabling" ? "Disabling…" : "Disable"}
+          {busy === "disabling" ? t("setup.claudeCli.disabling", "Disabling…") : t("setup.claudeCli.disable", "Disable")}
         </button>
       ) : (
         <button
@@ -164,11 +165,11 @@ export function ClaudeCliProviderCard({
           disabled={busy !== null || !binaryAvailable}
           title={
             !binaryAvailable
-              ? "`claude` binary not detected on PATH — install Claude CLI first."
+              ? t("setup.claudeCli.binaryNotFound", "`claude` binary not detected on PATH — install Claude CLI first.")
               : undefined
           }
         >
-          {busy === "enabling" ? "Enabling…" : "Enable"}
+          {busy === "enabling" ? t("setup.claudeCli.enabling", "Enabling…") : t("setup.claudeCli.enable", "Enable")}
         </button>
       )}
     </>
@@ -185,13 +186,13 @@ export function ClaudeCliProviderCard({
         <div className="auth-provider-header">
           <div className="auth-provider-info">
             <ProviderIcon provider="claude-cli" size="sm" />
-            <strong>Anthropic — via Claude CLI</strong>
+            <strong>{t("setup.claudeCli.name", "Anthropic — via Claude CLI")}</strong>
             <ClaudeCliBadge status={status} authenticated={authenticated} />
           </div>
           <div className="auth-provider-cli-actions">{actions}</div>
         </div>
         <details className="auth-provider-cli-details">
-          <summary>Details</summary>
+          <summary>{t("setup.claudeCli.details", "Details")}</summary>
           <div className="auth-provider-cli-details-body">
             {description}
             <ClaudeCliStatusLine status={status} authenticated={authenticated} />
@@ -212,7 +213,7 @@ export function ClaudeCliProviderCard({
       </div>
       <div className="onboarding-provider-card__body">
         <strong className="onboarding-provider-card__name">
-          Anthropic — via Claude CLI
+          {t("setup.claudeCli.name", "Anthropic — via Claude CLI")}
         </strong>
         {description}
         <ClaudeCliStatusLine status={status} authenticated={authenticated} />
@@ -230,15 +231,16 @@ function ClaudeCliBadge({
   status: ClaudeCliStatus | null;
   authenticated: boolean;
 }) {
+  const { t } = useTranslation("app");
   const enabled = status?.enabled ?? authenticated;
   const available = status?.binary.available ?? false;
   if (enabled) {
-    return <span className="auth-status-badge authenticated">✓ Active</span>;
+    return <span className="auth-status-badge authenticated">{t("setup.claudeCli.active", "✓ Active")}</span>;
   }
   if (!available && status) {
-    return <span className="auth-status-badge not-authenticated">✗ Not installed</span>;
+    return <span className="auth-status-badge not-authenticated">{t("setup.claudeCli.notInstalled", "✗ Not installed")}</span>;
   }
-  return <span className="auth-status-badge not-authenticated">✗ Not connected</span>;
+  return <span className="auth-status-badge not-authenticated">{t("setup.claudeCli.notConnected", "✗ Not connected")}</span>;
 }
 
 /**
@@ -253,10 +255,11 @@ function ClaudeCliStatusLine({
   status: ClaudeCliStatus | null;
   authenticated: boolean;
 }) {
+  const { t } = useTranslation("app");
   if (!status) {
     return (
       <small className="settings-muted">
-        <Loader2 size={10} className="animate-spin" /> Probing local CLI…
+        <Loader2 size={10} className="animate-spin" /> {t("setup.claudeCli.probing", "Probing local CLI…")}
       </small>
     );
   }
@@ -264,37 +267,35 @@ function ClaudeCliStatusLine({
   if (!binary.available) {
     return (
       <small className="onboarding-provider-card__status onboarding-provider-card__status--error">
-        ✗ {binary.reason ?? "`claude` not found on PATH"}
+        ✗ {binary.reason ?? t("setup.claudeCli.binaryNotFoundPath", "`claude` not found on PATH")}
       </small>
     );
   }
   if (!enabled) {
     return (
       <small className="settings-muted">
-        <code>claude</code> {binary.version ? `(${binary.version})` : ""} detected
-        {binary.binaryPath ? ` at ${binary.binaryPath}` : ""}. Click Enable to
-        route AI calls through it.
+        <code>claude</code> {binary.version ? `(${binary.version})` : ""} {t("setup.claudeCli.detectedPrompt", "detected{{path}}. Click Enable to route AI calls through it.", { path: binary.binaryPath ? ` at ${binary.binaryPath}` : "" })}
       </small>
     );
   }
   if (extension && extension.status !== "ok") {
     return (
       <small className="onboarding-provider-card__status onboarding-provider-card__status--warning">
-        ⚠ Extension load failed: {extension.reason ?? extension.status}
+        ⚠ {t("setup.claudeCli.extensionFailed", "Extension load failed: {{reason}}", { reason: extension.reason ?? extension.status })}
       </small>
     );
   }
   if (ready || authenticated) {
     return (
       <small className="onboarding-provider-card__status onboarding-provider-card__status--connected">
-        ✓ Connected{binary.version ? ` — ${binary.version}` : ""}
+        {t("setup.claudeCli.connected", "✓ Connected{{version}}", { version: binary.version ? ` — ${binary.version}` : "" })}
       </small>
     );
   }
   // Enabled but `ready` is false and we have no specific reason — usually a
   // transient state after flipping the toggle before the first probe
   // completes.
-  return <small className="settings-muted">Enabled. Validating…</small>;
+  return <small className="settings-muted">{t("setup.claudeCli.validating", "Enabled. Validating…")}</small>;
 }
 
 function ClaudeCliActionToast({
@@ -305,6 +306,7 @@ function ClaudeCliActionToast({
     | { kind: "disabled"; restartRequired: boolean }
     | { kind: "error"; message: string };
 }) {
+  const { t } = useTranslation("app");
   if (action.kind === "error") {
     return (
       <p className="onboarding-helper-text onboarding-helper-text--error">
@@ -312,13 +314,13 @@ function ClaudeCliActionToast({
       </p>
     );
   }
-  const verb = action.kind === "enabled" ? "Enabled" : "Disabled";
+  const verb = action.kind === "enabled" ? t("setup.claudeCli.enabledVerb", "Enabled") : t("setup.claudeCli.disabledVerb", "Disabled");
   return (
     <p className="onboarding-helper-text">
       {verb}.{" "}
       {action.kind === "enabled"
-        ? "Claude-CLI-routed models are now visible in the model picker."
-        : "Claude-CLI-routed models are hidden from the model picker."}
+        ? t("setup.claudeCli.enabledMessage", "Claude-CLI-routed models are now visible in the model picker.")
+        : t("setup.claudeCli.disabledMessage", "Claude-CLI-routed models are hidden from the model picker.")}
     </p>
   );
 }

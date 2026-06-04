@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Folder, FolderOpen, ChevronRight, ChevronUp, Loader2, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { browseDirectory, type BrowseDirectoryResult } from "../api";
 import { getPathBreadcrumbs } from "../utils/pathDisplay";
@@ -27,6 +28,7 @@ interface BrowserState {
 }
 
 export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, nodeId, localNodeId }: DirectoryPickerProps) {
+  const { t } = useTranslation("app");
   const [browser, setBrowser] = useState<BrowserState>({
     isOpen: false,
     loading: false,
@@ -111,21 +113,21 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onInputKeyDown}
-          placeholder={placeholder || "/path/to/your/project"}
+          placeholder={placeholder || t("dirPicker.defaultPlaceholder", "/path/to/your/project")}
         />
         <button
           type="button"
           className="btn btn-secondary btn-sm directory-picker-browse-btn"
           onClick={handleToggleBrowser}
-          aria-label={browser.isOpen ? "Close directory browser" : "Browse directories"}
+          aria-label={browser.isOpen ? t("dirPicker.closeBrowser", "Close directory browser") : t("dirPicker.openBrowser", "Browse directories")}
         >
           {browser.isOpen ? <FolderOpen size={16} /> : <Folder size={16} />}
-          <span>Browse</span>
+          <span>{t("dirPicker.browse", "Browse")}</span>
         </button>
       </div>
 
       {browser.isOpen && (
-        <div className="directory-picker-browser" role="tree" aria-label="Directory browser">
+        <div className="directory-picker-browser" role="tree" aria-label={t("dirPicker.ariaLabel", "Directory browser")}>
           {/* Breadcrumbs */}
           <div className="directory-picker-breadcrumbs">
             {breadcrumbs.map((breadcrumb, index) => {
@@ -152,22 +154,22 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
                 type="button"
                 className="btn btn-sm btn-secondary directory-picker-up-btn"
                 onClick={() => handleNavigate(browser.parentPath!)}
-                aria-label="Go to parent directory"
-                title="Parent directory"
+                aria-label={t("dirPicker.parentDir", "Go to parent directory")}
+                title={t("dirPicker.parentDirTitle", "Parent directory")}
               >
                 <ChevronUp size={14} />
-                <span>Up</span>
+                <span>{t("dirPicker.up", "Up")}</span>
               </button>
             )}
             <button
               type="button"
               className="btn btn-sm btn-secondary directory-picker-hidden-toggle"
               onClick={handleToggleHidden}
-              aria-label={browser.showHidden ? "Hide hidden directories" : "Show hidden directories"}
-              title={browser.showHidden ? "Hide hidden" : "Show hidden"}
+              aria-label={browser.showHidden ? t("dirPicker.hideHiddenAria", "Hide hidden directories") : t("dirPicker.showHiddenAria", "Show hidden directories")}
+              title={browser.showHidden ? t("dirPicker.hideHiddenTitle", "Hide hidden") : t("dirPicker.showHiddenTitle", "Show hidden")}
             >
               {browser.showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-              <span>{browser.showHidden ? "Hide hidden" : "Show hidden"}</span>
+              <span>{browser.showHidden ? t("dirPicker.hideHidden", "Hide hidden") : t("dirPicker.showHidden", "Show hidden")}</span>
             </button>
           </div>
 
@@ -175,7 +177,7 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
           {browser.loading ? (
             <div className="directory-picker-loading">
               <Loader2 size={20} className="animate-spin" />
-              <span>Loading…</span>
+              <span>{t("dirPicker.loading", "Loading…")}</span>
             </div>
           ) : browser.error ? (
             <div className="directory-picker-error">
@@ -185,7 +187,7 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
           ) : (
             <div className="directory-picker-entries">
               {browser.entries.length === 0 ? (
-                <div className="directory-picker-empty">No subdirectories</div>
+                <div className="directory-picker-empty">{t("dirPicker.noSubdirs", "No subdirectories")}</div>
               ) : (
                 browser.entries.map((entry) => (
                   <button
@@ -217,7 +219,7 @@ export function DirectoryPicker({ value, onChange, placeholder, onInputKeyDown, 
               className="btn btn-primary directory-picker-select-btn"
               onClick={handleSelect}
             >
-              Select
+              {t("dirPicker.select", "Select")}
             </button>
           </div>
         </div>

@@ -1,0 +1,23 @@
+{
+  "actions": {
+    "cancel": "Cancelar",
+    "close": "Cerrar",
+    "save": "Guardar"
+  },
+  "archive": "Archivar",
+  "cancel": "Cancelar",
+  "close": "Cerrar",
+  "columns": {
+    "archived": "Archivado",
+    "done": "Hecho",
+    "in-progress": "En progreso",
+    "in-review": "En revisión",
+    "todo": "Por hacer",
+    "triage": "Planificación"
+  },
+  "delete": "Eliminar",
+  "refresh": "Actualizar",
+  "retry": "Reintentar",
+  "skip": "Omitir",
+  "tryAgain": "Reintentar"
+}

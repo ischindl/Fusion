@@ -4,6 +4,7 @@ import "./AgentListModal.css";
 // import the styles eagerly here to avoid the modal rendering unstyled.
 import "./AgentsView.css";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Play, Pause, Square, Trash2, RefreshCw, Bot, LayoutGrid, List, Filter } from "lucide-react";
 import type { Agent, AgentCapability, AgentState } from "../api";
 import { fetchAgents, createAgent, updateAgent, updateAgentState, deleteAgent } from "../api";
@@ -33,6 +34,7 @@ const AGENT_ROLES: { value: AgentCapability; label: string; icon: string }[] = [
 ];
 
 export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentListModalProps) {
+  const { t } = useTranslation("app");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -110,7 +112,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
       if (gen !== loadAgentsGenRef.current) return;
       setAgents(data);
     } catch (err) {
-      addToast(`Failed to load agents: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.loadError", "Failed to load agents: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       if (gen === loadAgentsGenRef.current) setIsLoading(false);
     }
@@ -140,12 +142,12 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
     if (!newAgentName.trim()) return;
     try {
       await createAgent({ name: newAgentName.trim(), role: newAgentRole }, projectId);
-      addToast(`Agent "${newAgentName}" created`, "success");
+      addToast(t("agents.createSuccess", "Agent \"{{name}}\" created", { name: newAgentName }), "success");
       setNewAgentName("");
       setIsCreating(false);
       void loadAgents(true);
     } catch (err) {
-      addToast(`Failed to create agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.createError", "Failed to create agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -161,7 +163,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
 
     try {
       await updateAgentState(agentId, newState, projectId);
-      addToast(`Agent state updated to ${newState}`, "success");
+      addToast(t("agents.stateUpdateSuccess", "Agent state updated to {{state}}", { state: newState }), "success");
       await loadAgents(true);
       setOptimisticStateOverrides((prev) => {
         const next = new Map(prev);
@@ -174,7 +176,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
         next.delete(agentId);
         return next;
       });
-      addToast(`Failed to update state: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.stateUpdateError", "Failed to update state: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setTransitioningAgentIds((prev) => {
         const next = new Set(prev);
@@ -186,17 +188,17 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
 
   const handleDelete = async (agentId: string, agentName: string) => {
     const shouldDelete = await confirm({
-      title: "Delete Agent",
-      message: `Delete agent "${agentName}"? This cannot be undone.`,
+      title: t("agents.deleteTitle", "Delete Agent"),
+      message: t("agents.deleteMessage", "Delete agent \"{{name}}\"? This cannot be undone.", { name: agentName }),
       danger: true,
     });
     if (!shouldDelete) return;
     try {
       await deleteAgent(agentId, projectId);
-      addToast(`Agent "${agentName}" deleted`, "success");
+      addToast(t("agents.deleteSuccess", "Agent \"{{name}}\" deleted", { name: agentName }), "success");
       void loadAgents(true);
     } catch (err) {
-      addToast(`Failed to delete agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.deleteError", "Failed to delete agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -212,11 +214,11 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
 
     try {
       await updateAgent(agentId, { role: newRole }, projectId);
-      addToast(`Agent role updated to ${AGENT_ROLES.find(r => r.value === newRole)?.label ?? newRole}`, "success");
+      addToast(t("agents.roleUpdateSuccess", "Agent role updated to {{role}}", { role: getRoleLabel(newRole) }), "success");
       setEditingRoleForAgent(null);
       void loadAgents(true);
     } catch (err) {
-      addToast(`Failed to update role: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.roleUpdateError", "Failed to update role: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -226,7 +228,20 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
     }
   };
 
-  const getRoleLabel = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.label ?? role;
+  const ROLE_LABEL_KEYS: Record<string, { key: string; defaultValue: string }> = {
+    triage: { key: "agents.roleTriage", defaultValue: "Triage" },
+    executor: { key: "agents.roleExecutor", defaultValue: "Executor" },
+    reviewer: { key: "agents.roleReviewer", defaultValue: "Reviewer" },
+    merger: { key: "agents.roleMerger", defaultValue: "Merger" },
+    scheduler: { key: "agents.roleScheduler", defaultValue: "Scheduler" },
+    engineer: { key: "agents.roleEngineer", defaultValue: "Engineer" },
+    custom: { key: "agents.roleCustom", defaultValue: "Custom" },
+  };
+  const getRoleLabel = (role: AgentCapability) => {
+    const entry = ROLE_LABEL_KEYS[role];
+    if (entry) return t(entry.key, entry.defaultValue);
+    return role;
+  };
 
   // Use centralized health status utility for consistent labels across all views
   // This fixes the previous hardcoded 60s timeout that was inconsistent with other views
@@ -243,7 +258,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
 
   const getHealthSummary = (agent: Agent, health: AgentHealthStatus): { title: string | undefined; label: string | null } => {
     if (agent.state === "error") {
-      return { title: undefined, label: "Error" };
+      return { title: undefined, label: t("agents.healthError", "Error") };
     }
 
     return {
@@ -260,15 +275,15 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
         <div className="modal-header">
           <h2 className="modal-title">
             <Bot size={20} />
-            Agents
+            {t("agents.modalTitle", "Agents")}
           </h2>
           <div className="modal-actions">
             <div className="view-toggle">
               <button
                 className={`view-toggle-btn${view === "board" ? " active" : ""}`}
                 onClick={() => setView("board")}
-                title="Board view"
-                aria-label="Board view"
+                title={t("agents.boardView", "Board view")}
+                aria-label={t("agents.boardView", "Board view")}
                 aria-pressed={view === "board"}
               >
                 <LayoutGrid size={16} />
@@ -276,8 +291,8 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
               <button
                 className={`view-toggle-btn${view === "list" ? " active" : ""}`}
                 onClick={() => setView("list")}
-                title="List view"
-                aria-label="List view"
+                title={t("agents.listView", "List view")}
+                aria-label={t("agents.listView", "List view")}
                 aria-pressed={view === "list"}
               >
                 <List size={16} />
@@ -286,12 +301,12 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
             <button
               className="btn-icon"
               onClick={() => void loadAgents()}
-              title="Refresh"
+              title={t("agents.refresh", "Refresh")}
               disabled={isLoading}
             >
               <RefreshCw size={16} className={isLoading ? "spin" : ""} />
             </button>
-            <button className="modal-close" onClick={onClose} aria-label="Close">
+            <button className="modal-close" onClick={onClose} aria-label={t("agents.close", "Close")}>
               &times;
             </button>
           </div>
@@ -306,14 +321,14 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                 className="agent-state-filter-select"
                 value={filterState}
                 onChange={(e) => setFilterState(e.target.value as AgentState | "all")}
-                aria-label="Filter agents by state"
+                aria-label={t("agents.filterByState", "Filter agents by state")}
               >
-                <option value="all">All States</option>
-                <option value="idle">Idle</option>
-                <option value="active">Active</option>
-                <option value="running">Running</option>
-                <option value="paused">Paused</option>
-                <option value="error">Error</option>
+                <option value="all">{t("agents.filterAll", "All States")}</option>
+                <option value="idle">{t("agents.stateIdle", "Idle")}</option>
+                <option value="active">{t("agents.stateActive", "Active")}</option>
+                <option value="running">{t("agents.stateRunning", "Running")}</option>
+                <option value="paused">{t("agents.statePaused", "Paused")}</option>
+                <option value="error">{t("agents.stateError", "Error")}</option>
               </select>
             </div>
 
@@ -322,7 +337,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
               onClick={() => setIsCreating(!isCreating)}
             >
               <Plus size={16} />
-              {isCreating ? "Cancel" : "New Agent"}
+              {isCreating ? t("agents.cancel", "Cancel") : t("agents.newAgent", "New Agent")}
             </button>
           </div>
 
@@ -331,7 +346,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
             <div className="agent-create-form">
               <input
                 type="text"
-                placeholder="Agent name..."
+                placeholder={t("agents.namePlaceholder", "Agent name...")}
                 value={newAgentName}
                 onChange={(e) => setNewAgentName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCreate()}
@@ -345,12 +360,12 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
               >
                 {AGENT_ROLES.map(role => (
                   <option key={role.value} value={role.value}>
-                    {role.icon} {role.label}
+                    {role.icon} {getRoleLabel(role.value)}
                   </option>
                 ))}
               </select>
               <button className="btn btn-task-create btn-sm" onClick={() => void handleCreate()}>
-                Create
+                {t("agents.create", "Create")}
               </button>
             </div>
           )}
@@ -360,8 +375,8 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
             {displayAgents.length === 0 ? (
               <div className="agent-empty">
                 <Bot size={48} opacity={0.3} />
-                <p>No agents found</p>
-                <p className="text-secondary">Create an agent to get started</p>
+                <p>{t("agents.emptyTitle", "No agents found")}</p>
+                <p className="text-secondary">{t("agents.emptySubtitle", "Create an agent to get started")}</p>
               </div>
             ) : view === "board" ? (
               // Board view: compact grid layout
@@ -394,14 +409,14 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Activate"
+                            title={t("agents.activate", "Activate")}
                           >
                             <Play size={14} />
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleDelete(agent.id, agent.name)}
-                            title="Delete"
+                            title={t("agents.delete", "Delete")}
                           >
                             <Trash2 size={14} />
                           </button>
@@ -413,7 +428,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
                             <Pause size={14} />
                           </button>
@@ -421,7 +436,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
                             <Square size={14} />
                           </button>
@@ -433,14 +448,14 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Resume"
+                            title={t("agents.resume", "Resume")}
                           >
                             <Play size={14} />
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleDelete(agent.id, agent.name)}
-                            title="Delete"
+                            title={t("agents.delete", "Delete")}
                           >
                             <Trash2 size={14} />
                           </button>
@@ -452,7 +467,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
                             <Pause size={14} />
                           </button>
@@ -460,7 +475,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
                             <Square size={14} />
                           </button>
@@ -472,7 +487,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Retry"
+                            title={t("agents.retry", "Retry")}
                           >
                             <Play size={14} />
                           </button>
@@ -480,7 +495,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
                             <Square size={14} />
                           </button>
@@ -512,7 +527,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                           >
                             {AGENT_ROLES.map(role => (
                               <option key={role.value} value={role.value}>
-                                {role.icon} {role.label}
+                                {role.icon} {getRoleLabel(role.value)}
                               </option>
                             ))}
                           </select>
@@ -520,7 +535,7 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                           <span
                             className="agent-icon agent-icon--clickable"
                             onClick={() => setEditingRoleForAgent(agent.id)}
-                            title="Click to change role"
+                            title={t("agents.changeRole", "Click to change role")}
                             role="button"
                             tabIndex={0}
                             onKeyDown={(e) => {
@@ -568,13 +583,13 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                       ) : null}
                       {agent.taskId && (
                         <div className="agent-task">
-                          <span className="text-secondary">Working on:</span>
+                          <span className="text-secondary">{t("agents.workingOn", "Working on:")}</span>
                           <span className="badge">{agent.taskId}</span>
                         </div>
                       )}
                       {agent.lastHeartbeatAt && (
                         <div className="agent-heartbeat">
-                          <span className="text-secondary">Last heartbeat:</span>
+                          <span className="text-secondary">{t("agents.lastHeartbeat", "Last heartbeat:")}</span>
                           <span>{new Date(agent.lastHeartbeatAt).toLocaleString()}</span>
                         </div>
                       )}
@@ -587,16 +602,16 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Activate"
+                            title={t("agents.activate", "Activate")}
                           >
-                            <Play size={14} /> Start
+                            <Play size={14} /> {t("agents.start", "Start")}
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleDelete(agent.id, agent.name)}
-                            title="Delete"
+                            title={t("agents.delete", "Delete")}
                           >
-                            <Trash2 size={14} /> Delete
+                            <Trash2 size={14} /> {t("agents.delete", "Delete")}
                           </button>
                         </>
                       )}
@@ -606,17 +621,17 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
-                            <Pause size={14} /> Pause
+                            <Pause size={14} /> {t("agents.pause", "Pause")}
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
-                            <Square size={14} /> Stop
+                            <Square size={14} /> {t("agents.stop", "Stop")}
                           </button>
                         </>
                       )}
@@ -626,16 +641,16 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Resume"
+                            title={t("agents.resume", "Resume")}
                           >
-                            <Play size={14} /> Resume
+                            <Play size={14} /> {t("agents.resume", "Resume")}
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleDelete(agent.id, agent.name)}
-                            title="Delete"
+                            title={t("agents.delete", "Delete")}
                           >
-                            <Trash2 size={14} /> Delete
+                            <Trash2 size={14} /> {t("agents.delete", "Delete")}
                           </button>
                         </>
                       )}
@@ -645,17 +660,17 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
-                            <Pause size={14} /> Pause
+                            <Pause size={14} /> {t("agents.pause", "Pause")}
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
-                            <Square size={14} /> Stop
+                            <Square size={14} /> {t("agents.stop", "Stop")}
                           </button>
                         </>
                       )}
@@ -665,17 +680,17 @@ export function AgentListModal({ isOpen, onClose, addToast, projectId }: AgentLi
                             className="btn btn--sm"
                             onClick={() => void handleStateChange(agent.id, "active")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Retry"
+                            title={t("agents.retry", "Retry")}
                           >
-                            <Play size={14} /> Retry
+                            <Play size={14} /> {t("agents.retry", "Retry")}
                           </button>
                           <button
                             className="btn btn--sm btn--danger"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Stop"
+                            title={t("agents.stop", "Stop")}
                           >
-                            <Square size={14} /> Stop
+                            <Square size={14} /> {t("agents.stop", "Stop")}
                           </button>
                         </>
                       )}

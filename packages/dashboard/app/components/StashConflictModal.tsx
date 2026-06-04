@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Copy } from "lucide-react";
 import { ApiRequestError, api } from "../api";
 import { useFileBrowser } from "../context/FileBrowserContext";
@@ -75,6 +76,7 @@ export default function StashConflictModal({
   autostashOutcome,
   taskId,
 }: StashConflictModalProps) {
+  const { t } = useTranslation("app");
   const fileBrowser = useFileBrowser();
   const modalRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -227,14 +229,14 @@ export default function StashConflictModal({
     <div className="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="stash-conflict-modal-title">
       <div className="modal stash-conflict-modal" ref={modalRef} tabIndex={-1}>
         <div className="modal-header">
-          <h3 id="stash-conflict-modal-title">Resolve auto-stash conflicts</h3>
+          <h3 id="stash-conflict-modal-title">{t("git.stashConflict.title", "Resolve auto-stash conflicts")}</h3>
         </div>
         <p className="stash-conflict-modal__summary">
-          Pulled <strong>{integrationBranch}</strong>, but restoring local edits from stash produced conflicts.
+          {t("git.stashConflict.summary", "Pulled {{branch}}, but restoring local edits from stash produced conflicts.", { branch: integrationBranch })}
         </p>
         {autostashOutcome === "failed" ? (
           <p className="stash-conflict-modal__warning">
-            Automatic restore failed. Your changes are preserved in the stash above; use <code>git stash apply &lt;ref&gt;</code> to recover manually, or use Retry below.
+            {t("git.stashConflict.failedWarning", "Automatic restore failed. Your changes are preserved in the stash above; use git stash apply <ref> to recover manually, or use Retry below.")}
           </p>
         ) : null}
         <div className="stash-conflict-modal__stash-row">
@@ -243,8 +245,8 @@ export default function StashConflictModal({
             <Copy aria-hidden="true" />
           </button>
         </div>
-        {copyState === "copied" ? <p className="stash-conflict-modal__hint" role="status">Stash SHA copied.</p> : null}
-        {copyState === "failed" ? <p className="stash-conflict-modal__error" role="alert">Could not copy stash SHA.</p> : null}
+        {copyState === "copied" ? <p className="stash-conflict-modal__hint" role="status">{t("git.stashConflict.copied", "Stash SHA copied.")}</p> : null}
+        {copyState === "failed" ? <p className="stash-conflict-modal__error" role="alert">{t("git.stashConflict.copyFailed", "Could not copy stash SHA.")}</p> : null}
         {remainingConflicts.length > 0 ? (
           <div className="stash-conflict-modal__list" role="list">
             {remainingConflicts.map((file) => (
@@ -252,10 +254,10 @@ export default function StashConflictModal({
                 <code className="stash-conflict-row__path">{file}</code>
                 <div className="stash-conflict-row__actions">
                   <button type="button" className="btn btn-sm" disabled={submitting} onClick={() => void resolveFile(file, "ours")}>
-                    Keep mine
+                    {t("git.stashConflict.keepMine", "Keep mine")}
                   </button>
                   <button type="button" className="btn btn-sm" disabled={submitting} onClick={() => void resolveFile(file, "theirs")}>
-                    Keep incoming
+                    {t("git.stashConflict.keepIncoming", "Keep incoming")}
                   </button>
                   <button
                     type="button"
@@ -263,7 +265,7 @@ export default function StashConflictModal({
                     disabled={submitting}
                     onClick={() => fileBrowser?.openFile(file, { workspace: worktreePath })}
                   >
-                    Open in editor
+                    {t("git.stashConflict.openInEditor", "Open in editor")}
                   </button>
                 </div>
               </div>
@@ -274,15 +276,15 @@ export default function StashConflictModal({
         <div className="modal-actions">
           <div className="modal-actions-left">
             <button type="button" className="btn" disabled={submitting} onClick={() => void restoreStash()}>
-              Retry restore
+              {t("git.stashConflict.retryRestore", "Retry restore")}
             </button>
           </div>
           <div className="modal-actions-right">
             <button type="button" className="btn" disabled={submitting} onClick={() => onClose(false)}>
-              Close
+              {t("actions.close", "Close")}
             </button>
             <button type="button" className="btn btn-warning" disabled={submitting || remainingConflicts.length > 0} onClick={() => void dropStash()}>
-              Drop stash
+              {t("git.stashConflict.dropStash", "Drop stash")}
             </button>
           </div>
         </div>

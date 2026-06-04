@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { TodoItem, TodoList, TodoListWithItems } from "@fusion/core";
 import {
   fetchTodoLists,
@@ -49,6 +50,7 @@ function buildTempId(prefix: string): string {
 }
 
 export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsResult {
+  const { t } = useTranslation("app");
   const { projectId, addToast } = options;
 
   const cacheKey = `${SWR_CACHE_KEYS.TODO_LISTS_PREFIX}${projectId ?? "global"}`;
@@ -111,7 +113,7 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
         setLists([]);
         setItems([]);
         setSelectedListId(null);
-        setError(err instanceof Error ? err.message : "Failed to load todo lists");
+        setError(err instanceof Error ? err.message : t("todo.failedLoadLists", "Failed to load todo lists"));
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -163,10 +165,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setLists(previousLists);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to create list");
-      addToast?.("Failed to create todo list", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedCreateList", "Failed to create list"));
+      addToast?.(t("todo.failedCreateListToast", "Failed to create todo list"), "error");
     }
-  }, [addToast, listData, lists, projectId]);
+  }, [addToast, listData, lists, projectId, t]);
 
   const renameListAction = useCallback(async (id: string, title: string) => {
     const previousLists = lists;
@@ -183,10 +185,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setLists(previousLists);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to rename list");
-      addToast?.("Failed to rename todo list", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedRenameList", "Failed to rename list"));
+      addToast?.(t("todo.failedRenameListToast", "Failed to rename todo list"), "error");
     }
-  }, [addToast, listData, lists, projectId]);
+  }, [addToast, listData, lists, projectId, t]);
 
   const deleteListAction = useCallback(async (id: string) => {
     const previousLists = lists;
@@ -208,10 +210,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
       setLists(previousLists);
       setListData(previousListData);
       setSelectedListId(previousSelectedListId);
-      setError(err instanceof Error ? err.message : "Failed to delete list");
-      addToast?.("Failed to delete todo list", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedDeleteList", "Failed to delete list"));
+      addToast?.(t("todo.failedDeleteListToast", "Failed to delete todo list"), "error");
     }
-  }, [addToast, listData, lists, projectId]);
+  }, [addToast, listData, lists, projectId, t]);
 
   const createItemAction = useCallback(async (text: string) => {
     const listId = selectedListIdRef.current;
@@ -258,10 +260,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setItems(previousItems);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to create item");
-      addToast?.("Failed to create todo item", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedCreateItem", "Failed to create item"));
+      addToast?.(t("todo.failedCreateItemToast", "Failed to create todo item"), "error");
     }
-  }, [addToast, items, listData, projectId]);
+  }, [addToast, items, listData, projectId, t]);
 
   const updateItemAction = useCallback(async (id: string, patch: { text?: string; completed?: boolean }) => {
     const target = items.find((item) => item.id === id);
@@ -303,10 +305,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setItems(previousItems);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to update item");
-      addToast?.("Failed to update todo item", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedUpdateItem", "Failed to update item"));
+      addToast?.(t("todo.failedUpdateItemToast", "Failed to update todo item"), "error");
     }
-  }, [addToast, items, listData, projectId]);
+  }, [addToast, items, listData, projectId, t]);
 
   const toggleItemAction = useCallback(async (id: string) => {
     const target = items.find((item) => item.id === id);
@@ -335,10 +337,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setItems(previousItems);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to delete item");
-      addToast?.("Failed to delete todo item", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedDeleteItem", "Failed to delete item"));
+      addToast?.(t("todo.failedDeleteItemToast", "Failed to delete todo item"), "error");
     }
-  }, [addToast, items, listData, projectId]);
+  }, [addToast, items, listData, projectId, t]);
 
   const reorderItemsAction = useCallback(async (itemIds: string[]) => {
     const listId = selectedListIdRef.current;
@@ -378,10 +380,10 @@ export function useTodoLists(options: UseTodoListsOptions = {}): UseTodoListsRes
     } catch (err) {
       setItems(previousItems);
       setListData(previousListData);
-      setError(err instanceof Error ? err.message : "Failed to reorder items");
-      addToast?.("Failed to reorder todo items", "error");
+      setError(err instanceof Error ? err.message : t("todo.failedReorderItems", "Failed to reorder items"));
+      addToast?.(t("todo.failedReorderItemsToast", "Failed to reorder todo items"), "error");
     }
-  }, [addToast, items, listData, projectId]);
+  }, [addToast, items, listData, projectId, t]);
 
   return {
     lists,

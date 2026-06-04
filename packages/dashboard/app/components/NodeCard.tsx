@@ -1,4 +1,5 @@
 import { memo, useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Activity, Box, Play, RotateCw, Server, Settings, Shield, Square, Trash2 } from "lucide-react";
 import type { ManagedDockerNodeInfo, NodeInfo, ProjectInfo } from "../api";
 import { getProjectCountForNode } from "../utils/nodeProjectAssignment";
@@ -20,18 +21,20 @@ export interface NodeCardProps {
   managedDockerNode?: ManagedDockerNodeInfo;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; className: string }> = {
-  online: { label: "Online", color: "var(--color-success)", className: "node-card__status--online" },
-  offline: { label: "Offline", color: "var(--color-error)", className: "node-card__status--offline" },
-  connecting: { label: "Connecting", color: "var(--color-warning)", className: "node-card__status--connecting" },
-  error: { label: "Error", color: "var(--color-error)", className: "node-card__status--error" },
-  creating: { label: "Creating", color: "var(--color-warning)", className: "node-card__status--creating" },
-  recreating: { label: "Recreating", color: "var(--color-warning)", className: "node-card__status--recreating" },
-  deleting: { label: "Deleting", color: "var(--color-error)", className: "node-card__status--deleting" },
-  running: { label: "Running", color: "var(--color-success)", className: "node-card__status--online" },
-  stopped: { label: "Stopped", color: "var(--color-error)", className: "node-card__status--offline" },
-  exited: { label: "Exited", color: "var(--color-error)", className: "node-card__status--offline" },
-};
+function getStatusConfig(t: ReturnType<typeof useTranslation>["t"]): Record<string, { label: string; color: string; className: string }> {
+  return {
+    online: { label: t("nodes.status.online", "Online"), color: "var(--color-success)", className: "node-card__status--online" },
+    offline: { label: t("nodes.status.offline", "Offline"), color: "var(--color-error)", className: "node-card__status--offline" },
+    connecting: { label: t("nodes.status.connecting", "Connecting"), color: "var(--color-warning)", className: "node-card__status--connecting" },
+    error: { label: t("nodes.status.error", "Error"), color: "var(--color-error)", className: "node-card__status--error" },
+    creating: { label: t("nodes.status.creating", "Creating"), color: "var(--color-warning)", className: "node-card__status--creating" },
+    recreating: { label: t("nodes.status.recreating", "Recreating"), color: "var(--color-warning)", className: "node-card__status--recreating" },
+    deleting: { label: t("nodes.status.deleting", "Deleting"), color: "var(--color-error)", className: "node-card__status--deleting" },
+    running: { label: t("nodes.status.running", "Running"), color: "var(--color-success)", className: "node-card__status--online" },
+    stopped: { label: t("nodes.status.stopped", "Stopped"), color: "var(--color-error)", className: "node-card__status--offline" },
+    exited: { label: t("nodes.status.exited", "Exited"), color: "var(--color-error)", className: "node-card__status--offline" },
+  };
+}
 
 const AUTH_SYNC_COLORS: Record<string, string> = {
   match: "var(--color-success)",
@@ -42,19 +45,20 @@ const AUTH_SYNC_COLORS: Record<string, string> = {
 function buildAuthTooltip(
   state: "match" | "differs" | "not-synced",
   providers?: Record<string, "match" | "differs">,
+  t?: ReturnType<typeof useTranslation>["t"],
 ): string {
-  if (state === "match") return "Auth credentials match";
-  if (state === "not-synced") return "Auth not synced";
+  if (state === "match") return t ? t("nodes.auth.match", "Auth credentials match") : "Auth credentials match";
+  if (state === "not-synced") return t ? t("nodes.auth.notSynced", "Auth not synced") : "Auth not synced";
   // state === "differs"
   if (providers && Object.keys(providers).length > 0) {
     const differing = Object.entries(providers)
       .filter(([, status]) => status === "differs")
       .map(([name]) => name);
     if (differing.length > 0) {
-      return `Auth credentials differ: ${differing.join(", ")}`;
+      return t ? t("nodes.auth.differProviders", "Auth credentials differ: {{providers}}", { providers: differing.join(", ") }) : `Auth credentials differ: ${differing.join(", ")}`;
     }
   }
-  return "Auth credentials differ";
+  return t ? t("nodes.auth.differ", "Auth credentials differ") : "Auth credentials differ";
 }
 
 function truncateUrl(url: string, maxLength: number = 42): string {
@@ -132,12 +136,14 @@ function NodeCardInner({
   authSyncProviders,
   managedDockerNode,
 }: NodeCardProps) {
+  const { t } = useTranslation("app");
   const [removeArmed, setRemoveArmed] = useState(false);
-  const statusConfig = STATUS_CONFIG[node.status] ?? STATUS_CONFIG.offline;
-  const dockerStatusConfig = managedDockerNode ? (STATUS_CONFIG[managedDockerNode.status] ?? STATUS_CONFIG.error) : null;
+  const statusConfigMap = getStatusConfig(t);
+  const statusConfig = statusConfigMap[node.status] ?? statusConfigMap.offline;
+  const dockerStatusConfig = managedDockerNode ? (statusConfigMap[managedDockerNode.status] ?? statusConfigMap.error) : null;
   const dockerHost = managedDockerNode?.hostConfig.type === "remote"
-    ? `Remote: ${managedDockerNode.hostConfig.host ?? "unknown"}`
-    : "Local Docker";
+    ? t("nodes.dockerHost.remote", "Remote: {{host}}", { host: managedDockerNode.hostConfig.host ?? "unknown" })
+    : t("nodes.dockerHost.local", "Local Docker");
 
   const assignedProjectCount = useMemo(() => {
     return getProjectCountForNode(projects, node);
@@ -192,11 +198,11 @@ function NodeCardInner({
           <div>
             <h3 className="node-card__name" title={node.name}>{node.name}</h3>
             <div className="node-card__meta-row">
-              <span className="node-card__type-badge">{node.type === "local" ? "Local" : "Remote"}</span>
+              <span className="node-card__type-badge">{node.type === "local" ? t("nodes.type.local", "Local") : t("nodes.type.remote", "Remote")}</span>
               {managedDockerNode && (
-                <span className="node-card__docker-badge" title="Managed Docker node">
+                <span className="node-card__docker-badge" title={t("nodes.dockerBadge", "Managed Docker node")}>
                   <Box size={12} aria-hidden />
-                  Docker
+                  {t("nodes.dockerLabel", "Docker")}
                 </span>
               )}
               <span
@@ -220,8 +226,10 @@ function NodeCardInner({
               {node.type === "remote" && authSyncState && (
                 <span
                   className={`node-card__auth-indicator node-card__auth-indicator--${authSyncState}`}
-                  title={buildAuthTooltip(authSyncState, authSyncProviders)}
-                  aria-label={`Auth sync: ${authSyncState === "match" ? "credentials match" : authSyncState === "differs" ? "credentials differ" : "not synced"}`}
+                  title={buildAuthTooltip(authSyncState, authSyncProviders, t)}
+                  aria-label={t("nodes.authSync.label", "Auth sync: {{status}}", {
+                    status: authSyncState === "match" ? t("nodes.authSync.match", "credentials match") : authSyncState === "differs" ? t("nodes.authSync.differ", "credentials differ") : t("nodes.authSync.notSynced", "not synced")
+                  })}
                   style={{ color: AUTH_SYNC_COLORS[authSyncState] }}
                 >
                   <Shield size={14} />
@@ -249,11 +257,11 @@ function NodeCardInner({
 
         <div className="node-card__metrics">
           <div className="node-card__metric">
-            <span className="node-card__metric-label">Projects</span>
+            <span className="node-card__metric-label">{t("nodes.metrics.projects", "Projects")}</span>
             <span className="node-card__metric-value">{assignedProjectCount}</span>
           </div>
           <div className="node-card__metric">
-            <span className="node-card__metric-label">Concurrency</span>
+            <span className="node-card__metric-label">{t("nodes.metrics.concurrency", "Concurrency")}</span>
             <span className="node-card__metric-value">{node.maxConcurrent}</span>
           </div>
         </div>
@@ -283,11 +291,11 @@ function NodeCardInner({
           type="button"
           onClick={handleHealthCheck}
           disabled={isLoading}
-          aria-label="Run node health check"
-          title="Health Check"
+          aria-label={t("nodes.actions.health.ariaLabel", "Run node health check")}
+          title={t("nodes.actions.health.title", "Health Check")}
         >
           <Activity size={14} />
-          <span>Health</span>
+          <span>{t("nodes.actions.health.label", "Health")}</span>
         </button>
 
         <button
@@ -295,11 +303,11 @@ function NodeCardInner({
           type="button"
           onClick={handleEdit}
           disabled={isLoading}
-          aria-label="Edit node"
-          title="Edit"
+          aria-label={t("nodes.actions.edit.ariaLabel", "Edit node")}
+          title={t("nodes.actions.edit.title", "Edit")}
         >
           <Settings size={14} />
-          <span>Edit</span>
+          <span>{t("nodes.actions.edit.label", "Edit")}</span>
         </button>
 
         {managedDockerNode && (
@@ -308,33 +316,33 @@ function NodeCardInner({
               className="btn btn-sm node-card__action"
               type="button"
               disabled
-              aria-label="Start node container"
-              title="Available after FN-3113"
+              aria-label={t("nodes.actions.start.ariaLabel", "Start node container")}
+              title={t("nodes.actions.start.title", "Available after FN-3113")}
             >
               <Play size={14} />
-              <span>Start</span>
+              <span>{t("nodes.actions.start.label", "Start")}</span>
             </button>
 
             <button
               className="btn btn-sm node-card__action"
               type="button"
               disabled
-              aria-label="Stop node container"
-              title="Available after FN-3113"
+              aria-label={t("nodes.actions.stop.ariaLabel", "Stop node container")}
+              title={t("nodes.actions.stop.title", "Available after FN-3113")}
             >
               <Square size={14} />
-              <span>Stop</span>
+              <span>{t("nodes.actions.stop.label", "Stop")}</span>
             </button>
 
             <button
               className="btn btn-sm node-card__action"
               type="button"
               disabled
-              aria-label="Restart node container"
-              title="Available after FN-3113"
+              aria-label={t("nodes.actions.restart.ariaLabel", "Restart node container")}
+              title={t("nodes.actions.restart.title", "Available after FN-3113")}
             >
               <RotateCw size={14} />
-              <span>Restart</span>
+              <span>{t("nodes.actions.restart.label", "Restart")}</span>
             </button>
           </>
         )}
@@ -344,11 +352,11 @@ function NodeCardInner({
           type="button"
           onClick={handleRemove}
           disabled={isLoading}
-          aria-label={removeArmed ? "Confirm remove node" : "Remove node"}
-          title={removeArmed ? "Confirm remove" : "Remove"}
+          aria-label={removeArmed ? t("nodes.actions.remove.ariaLabelConfirm", "Confirm remove node") : t("nodes.actions.remove.ariaLabel", "Remove node")}
+          title={removeArmed ? t("nodes.actions.remove.titleConfirm", "Confirm remove") : t("nodes.actions.remove.title", "Remove")}
         >
           <Trash2 size={14} />
-          <span>{removeArmed ? "Confirm" : "Remove"}</span>
+          <span>{removeArmed ? t("nodes.actions.remove.labelConfirm", "Confirm") : t("nodes.actions.remove.label", "Remove")}</span>
         </button>
       </footer>
     </article>

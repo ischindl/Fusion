@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Settings, Pause, Play, Square, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Monitor, Server, Workflow, Bot, Target, ChevronRight, FileCode, Loader2, Grid3X3, Mail, MessageSquare, ChevronDown, Check, Zap, Sparkles, FileText, Brain, CheckSquare, Lock } from "lucide-react";
 import "./Header.css";
 // Header renders an inline ProjectSelector dropdown using project-selector-* classes.
@@ -44,6 +45,7 @@ function ProjectSelector({
   onViewAll: () => void;
   onSelectProject?: (project: ProjectInfo) => void;
 }) {
+  const { t } = useTranslation("app");
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -86,14 +88,14 @@ function ProjectSelector({
           <button
             className={`project-selector-trigger${isOpen ? " project-selector-trigger--open" : ""}`}
             onClick={() => setIsOpen((prev) => !prev)}
-            title={currentProject?.name ? `Switch project (current: ${currentProject.name})` : "Switch project"}
-            aria-label="Switch project"
+            title={currentProject?.name ? t("header.switchProjectCurrent", "Switch project (current: {{name}})", { name: currentProject.name }) : t("header.switchProject", "Switch project")}
+            aria-label={t("header.switchProject", "Switch project")}
             aria-expanded={isOpen}
             aria-haspopup="listbox"
             data-testid="project-selector-trigger"
           >
             <span className="project-selector-trigger-label">
-              {currentProject?.name ?? "Projects"}
+              {currentProject?.name ?? t("header.projects", "Projects")}
             </span>
             <ChevronDown size={12} className={`project-selector-chevron${isOpen ? " project-selector-chevron--open" : ""}`} />
           </button>
@@ -101,7 +103,7 @@ function ProjectSelector({
             <div
               className="project-selector-dropdown"
               role="listbox"
-              aria-label="Select project"
+              aria-label={t("header.selectProject", "Select project")}
               data-testid="project-selector-dropdown"
             >
               {projects.map((project) => {
@@ -138,7 +140,7 @@ function ProjectSelector({
                 }}
                 data-testid="manage-projects-action"
               >
-                Manage Projects
+                {t("header.manageProjects", "Manage Projects")}
               </button>
             </div>
           )}
@@ -304,6 +306,7 @@ export function Header({
   pluginDashboardViews = [],
   shellConnectionControl,
 }: HeaderProps) {
+  const { t } = useTranslation("app");
   const mode: ViewportMode = useViewportMode();
   const isMobile = mode === "mobile";
   const isTablet = mode === "tablet";
@@ -883,8 +886,8 @@ export function Header({
             <button
               className={`mobile-project-switch-trigger${isMobileProjectSwitchOpen ? " mobile-project-switch-trigger--open" : ""}`}
               onClick={() => setIsMobileProjectSwitchOpen((prev) => !prev)}
-              title="Switch project"
-              aria-label="Switch project"
+              title={t("header.switchProject", "Switch project")}
+              aria-label={t("header.switchProject", "Switch project")}
               aria-expanded={isMobileProjectSwitchOpen}
               aria-haspopup="listbox"
               data-testid="mobile-project-switch-trigger"
@@ -895,7 +898,7 @@ export function Header({
               <div
                 className="mobile-project-switch-dropdown"
                 role="listbox"
-                aria-label="Select project"
+                aria-label={t("header.selectProject", "Select project")}
                 data-testid="mobile-project-switch-dropdown"
               >
                 {projects.map((project) => {
@@ -939,7 +942,7 @@ export function Header({
                       data-testid="mobile-project-switch-view-all"
                     >
                       <Grid3X3 size={14} />
-                      <span>View Projects</span>
+                      <span>{t("header.viewProjects", "View Projects")}</span>
                     </button>
                   </>
                 )}
@@ -976,8 +979,8 @@ export function Header({
                 <button
                   className={`btn-icon node-selector-trigger${isNodeSelectorOpen ? " node-selector-trigger--open" : ""}`}
                   onClick={() => setIsNodeSelectorOpen((prev) => !prev)}
-                  title="Switch node"
-                  aria-label="Switch node"
+                  title={t("header.switchNode", "Switch node")}
+                  aria-label={t("header.switchNode", "Switch node")}
                   aria-expanded={isNodeSelectorOpen}
                   aria-haspopup="listbox"
                   data-testid="node-selector-trigger"
@@ -990,7 +993,7 @@ export function Header({
 
                 {/* Node selector dropdown menu */}
                 {isNodeSelectorOpen && (
-                  <div className="node-selector-dropdown" role="listbox" aria-label="Select node">
+                  <div className="node-selector-dropdown" role="listbox" aria-label={t("header.selectNode", "Select node")}>
                     {/* Local option */}
                     <button
                       className={`node-selector-option${!isRemote ? " node-selector-option--active" : ""}`}
@@ -1003,7 +1006,7 @@ export function Header({
                       data-testid="node-option-local"
                     >
                       <NodeHealthDot status="online" compact />
-                      <span className="node-selector-option-label">Local</span>
+                      <span className="node-selector-option-label">{t("header.localNode", "Local")}</span>
                     </button>
 
                     {/* Remote nodes */}
@@ -1040,8 +1043,8 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "board" ? " active" : ""}`}
               onClick={() => onChangeView("board")}
-              title="Board view"
-              aria-label="Board view"
+              title={t("header.boardView", "Board view")}
+              aria-label={t("header.boardView", "Board view")}
               aria-pressed={view === "board"}
               data-testid="mobile-view-toggle-board"
             >
@@ -1050,8 +1053,8 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "list" ? " active" : ""}`}
               onClick={() => onChangeView("list")}
-              title="List view"
-              aria-label="List view"
+              title={t("header.listView", "List view")}
+              aria-label={t("header.listView", "List view")}
               aria-pressed={view === "list"}
               data-testid="mobile-view-toggle-list"
             >
@@ -1065,8 +1068,8 @@ export function Header({
           <button
             className="btn-icon mobile-search-trigger"
             onClick={handleMobileSearchToggle}
-            title="Open search"
-            aria-label="Open search"
+            title={t("header.openSearch", "Open search")}
+            aria-label={t("header.openSearch", "Open search")}
             aria-expanded={false}
             data-testid="mobile-header-search-btn"
           >
@@ -1079,8 +1082,8 @@ export function Header({
           <button
             className="btn-icon"
             onClick={handleNonMobileSearchToggle}
-            title="Open search"
-            aria-label="Open search"
+            title={t("header.openSearch", "Open search")}
+            aria-label={t("header.openSearch", "Open search")}
             data-testid="desktop-header-search-btn"
           >
             <Search size={16} />
@@ -1092,7 +1095,7 @@ export function Header({
           <button
             className="btn-icon"
             onClick={(event) => onOpenUsage(event.currentTarget.getBoundingClientRect())}
-            title="View usage"
+            title={t("header.viewUsage", "View usage")}
             data-testid="mobile-header-usage-btn"
           >
             <Activity size={16} />
@@ -1105,8 +1108,8 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "board" ? " active" : ""}`}
               onClick={() => onChangeView("board")}
-              title="Board view"
-              aria-label="Board view"
+              title={t("header.boardView", "Board view")}
+              aria-label={t("header.boardView", "Board view")}
               aria-pressed={view === "board"}
             >
               <LayoutGrid size={16} />
@@ -1114,8 +1117,8 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "list" ? " active" : ""}`}
               onClick={() => onChangeView("list")}
-              title="List view"
-              aria-label="List view"
+              title={t("header.listView", "List view")}
+              aria-label={t("header.listView", "List view")}
               aria-pressed={view === "list"}
             >
               <List size={16} />
@@ -1124,8 +1127,8 @@ export function Header({
               <button
                 className={`view-toggle-btn${view === "agents" ? " active" : ""}`}
                 onClick={() => onChangeView("agents")}
-                title="Agents view"
-                aria-label="Agents view"
+                title={t("header.agentsView", "Agents view")}
+                aria-label={t("header.agentsView", "Agents view")}
                 aria-pressed={view === "agents"}
               >
                 <Bot size={16} />
@@ -1134,8 +1137,8 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "missions" ? " active" : ""}`}
               onClick={() => onChangeView("missions")}
-              title="Missions view"
-              aria-label="Missions view"
+              title={t("header.missionsView", "Missions view")}
+              aria-label={t("header.missionsView", "Missions view")}
               aria-pressed={view === "missions"}
             >
               <Target size={16} />
@@ -1143,21 +1146,21 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "chat" ? " active" : ""}`}
               onClick={() => onChangeView("chat")}
-              title="Chat view"
-              aria-label="Chat view"
+              title={t("header.chatView", "Chat view")}
+              aria-label={t("header.chatView", "Chat view")}
               aria-pressed={view === "chat"}
               data-testid="header-chat-view-btn"
             >
               <MessageSquare size={16} />
               {chatHasUnreadResponse && view !== "chat" && (
-                <span className="status-dot status-dot--pending header-chat-unread-dot" aria-label="Unread chat response" />
+                <span className="status-dot status-dot--pending header-chat-unread-dot" aria-label={t("header.unreadChatResponse", "Unread chat response")} />
               )}
             </button>
             <button
               className={`view-toggle-btn${view === "documents" ? " active" : ""}`}
               onClick={() => onChangeView("documents")}
-              title="Documents view"
-              aria-label="Documents view"
+              title={t("header.documentsView", "Documents view")}
+              aria-label={t("header.documentsView", "Documents view")}
               aria-pressed={view === "documents"}
             >
               <FileText size={16} />
@@ -1165,17 +1168,17 @@ export function Header({
             <button
               className={`view-toggle-btn${view === "mailbox" ? " active" : ""}`}
               onClick={() => onChangeView("mailbox")}
-              title="Mailbox view"
-              aria-label="Mailbox view"
+              title={t("header.mailboxView", "Mailbox view")}
+              aria-label={t("header.mailboxView", "Mailbox view")}
               aria-pressed={view === "mailbox"}
             >
               <Mail size={16} />
               {view !== "mailbox" && mailboxPendingApprovalCount > 0 ? (
-                <span className="status-dot status-dot--pending header-chat-unread-dot" aria-label="Pending approvals" />
+                <span className="status-dot status-dot--pending header-chat-unread-dot" aria-label={t("header.pendingApprovals", "Pending approvals")} />
               ) : view !== "mailbox" && mailboxUnreadCount > 0 ? (
                 <span
                   className="status-dot status-dot--online header-chat-unread-dot"
-                  aria-label={`${mailboxUnreadCount} unread messages`}
+                  aria-label={t("header.unreadMessages", "{{count}} unread messages", { count: mailboxUnreadCount })}
                 />
               ) : null}
             </button>
@@ -1205,8 +1208,8 @@ export function Header({
                   ref={viewOverflowTriggerRef}
                   className={`view-toggle-btn${["research", "skills", "insights", "memory", "secrets", "reliability", "dev-server", "devserver", "graph", "stash-recovery"].includes(view) || (experimentalFeatures?.evalsView && view === "evals") || (experimentalFeatures?.goalsView && view === "goalsView") || (todosEnabled && todosOpen) || isPluginViewId(view) ? " active" : ""}`}
                   onClick={() => setIsViewOverflowOpen((prev) => !prev)}
-                  title="More views"
-                  aria-label="More views"
+                  title={t("header.moreViews", "More views")}
+                  aria-label={t("header.moreViews", "More views")}
                   aria-haspopup="menu"
                   aria-expanded={isViewOverflowOpen}
                   data-testid="view-toggle-overflow-trigger"
@@ -1218,7 +1221,7 @@ export function Header({
                     ref={viewOverflowRef}
                     className="view-toggle-overflow-menu"
                     role="menu"
-                    aria-label="More views"
+                    aria-label={t("header.moreViews", "More views")}
                   >
                     {experimentalFeatures?.evalsView && (
                       <button
@@ -1231,7 +1234,7 @@ export function Header({
                         data-testid="view-overflow-evals"
                       >
                         <Target size={14} />
-                        <span>Evals</span>
+                        <span>{t("header.evalsView", "Evals")}</span>
                       </button>
                     )}
                     {experimentalFeatures?.goalsView && (
@@ -1245,7 +1248,7 @@ export function Header({
                         data-testid="view-overflow-goals"
                       >
                         <Target size={14} />
-                        <span>Goals</span>
+                        <span>{t("header.goalsView", "Goals")}</span>
                       </button>
                     )}
                     <button
@@ -1258,7 +1261,7 @@ export function Header({
                       data-testid="view-overflow-stash-recovery"
                     >
                       <History size={14} />
-                      <span>Stash Recovery</span>
+                      <span>{t("header.stashRecoveryView", "Stash Recovery")}</span>
                       {stashOrphanCount > 0 ? <span className="btn-badge">{stashOrphanCount}</span> : null}
                     </button>
 
@@ -1273,7 +1276,7 @@ export function Header({
                         data-testid="view-overflow-research"
                       >
                         <Search size={14} />
-                        <span>Research</span>
+                        <span>{t("header.researchView", "Research")}</span>
                       </button>
                     )}
                     {experimentalFeatures?.insights && (
@@ -1287,7 +1290,7 @@ export function Header({
                         data-testid="view-overflow-insights"
                       >
                         <Sparkles size={14} />
-                        <span>Insights</span>
+                        <span>{t("header.insightsView", "Insights")}</span>
                       </button>
                     )}
 
@@ -1302,7 +1305,7 @@ export function Header({
                         data-testid="view-overflow-skills"
                       >
                         <Zap size={14} />
-                        <span>Skills</span>
+                        <span>{t("header.skillsView", "Skills")}</span>
                       </button>
                     )}
                     {experimentalFeatures?.memoryView && (
@@ -1316,7 +1319,7 @@ export function Header({
                         data-testid="view-toggle-memory"
                       >
                         <Brain size={14} />
-                        <span>Memory</span>
+                        <span>{t("header.memoryView", "Memory")}</span>
                       </button>
                     )}
                     <button
@@ -1329,7 +1332,7 @@ export function Header({
                       data-testid="view-overflow-secrets"
                     >
                       <Lock size={14} />
-                      <span>Secrets</span>
+                      <span>{t("header.secretsView", "Secrets")}</span>
                     </button>
                     <button
                       className={`view-toggle-overflow-item${view === "reliability" ? " active" : ""}`}
@@ -1341,7 +1344,7 @@ export function Header({
                       data-testid="view-overflow-reliability"
                     >
                       <Activity size={14} />
-                      <span>Reliability</span>
+                      <span>{t("header.reliabilityView", "Reliability")}</span>
                     </button>
                     {experimentalFeatures?.devServerView && (
                       <button
@@ -1354,7 +1357,7 @@ export function Header({
                         data-testid="view-toggle-devserver"
                       >
                         <Monitor size={14} />
-                        <span>Dev Server</span>
+                        <span>{t("header.devServerView", "Dev Server")}</span>
                         <span className="visually-hidden" data-testid="view-toggle-dev-server" />
                       </button>
                     )}
@@ -1369,7 +1372,7 @@ export function Header({
                         data-testid="view-overflow-todos"
                       >
                         <CheckSquare size={14} />
-                        <span>Todos</span>
+                        <span>{t("header.todosView", "Todos")}</span>
                       </button>
                     )}
                     {pluginDashboardViews
@@ -1406,7 +1409,7 @@ export function Header({
           <button
             className="btn-icon"
             onClick={(event) => onOpenUsage(event.currentTarget.getBoundingClientRect())}
-            title="View usage"
+            title={t("header.viewUsage", "View usage")}
             data-testid="desktop-header-usage-btn"
           >
             <Activity size={16} />
@@ -1415,21 +1418,21 @@ export function Header({
 
         {/* System Stats button - desktop only */}
         {!isCompact && onOpenSystemStats && (
-          <button className="btn-icon" onClick={onOpenSystemStats} title="System Stats" data-testid="desktop-header-system-stats-btn">
+          <button className="btn-icon" onClick={onOpenSystemStats} title={t("header.systemStats", "System Stats")} data-testid="desktop-header-system-stats-btn">
             <Monitor size={16} />
           </button>
         )}
 
         {/* Activity Log button - desktop only (moved to overflow on mobile/tablet) */}
         {!isCompact && onOpenActivityLog && (
-          <button className="btn-icon" onClick={onOpenActivityLog} title="View Activity Log">
+          <button className="btn-icon" onClick={onOpenActivityLog} title={t("header.viewActivityLog", "View Activity Log")}>
             <History size={16} />
           </button>
         )}
 
         {/* Desktop actions */}
         {!isCompact && !isDesktopShell && (
-          <button className="btn-icon" onClick={onOpenGitHubImport} title="Import from GitHub">
+          <button className="btn-icon" onClick={onOpenGitHubImport} title={t("header.importFromGitHub", "Import from GitHub")}>
             <GitHubLogo size={16} />
           </button>
         )}
@@ -1438,7 +1441,7 @@ export function Header({
           <button
             className={`btn-icon${activePlanningSessionCount > 0 ? " btn-icon--has-indicator" : ""}`}
             onClick={activePlanningSessionCount > 0 && onResumePlanning ? onResumePlanning : onOpenPlanning}
-            title={activePlanningSessionCount > 0 ? "Resume planning session" : "Create a task with AI planning"}
+            title={activePlanningSessionCount > 0 ? t("header.resumePlanningSession", "Resume planning session") : t("header.createTaskWithPlanning", "Create a task with AI planning")}
             data-testid="planning-btn"
             style={{ position: "relative" }}
           >
@@ -1447,7 +1450,7 @@ export function Header({
               <span
                 className="header-badge header-badge--pulse"
                 data-testid="planning-badge"
-                aria-label={`${activePlanningSessionCount} active planning session${activePlanningSessionCount !== 1 ? "s" : ""}`}
+                aria-label={t("header.activePlanningSessions", { count: activePlanningSessionCount, defaultValue_one: "{{count}} active planning session", defaultValue_other: "{{count}} active planning sessions" })}
               >
                 {activePlanningSessionCount}
               </span>
@@ -1461,7 +1464,7 @@ export function Header({
             <button
               className="btn-icon btn-icon--terminal terminal-split-btn__main"
               onClick={onToggleTerminal}
-              title="Open Terminal"
+              title={t("header.openTerminal", "Open Terminal")}
               data-testid="terminal-toggle-btn"
             >
               <Terminal size={16} />
@@ -1473,10 +1476,10 @@ export function Header({
                   ref={scriptsChevronButtonRef}
                   className={`btn-icon terminal-split-btn__chevron${isScriptsOpen ? " btn-icon--active" : ""}`}
                   onClick={() => setIsScriptsOpen((prev) => !prev)}
-                  title="Scripts"
+                  title={t("header.scripts", "Scripts")}
                   aria-haspopup="listbox"
                   aria-expanded={isScriptsOpen}
-                  aria-label="Quick scripts"
+                  aria-label={t("header.quickScripts", "Quick scripts")}
                   data-testid="scripts-btn"
                 >
                   <ChevronDown size={12} className={`quick-scripts-dropdown__trigger-chevron${isScriptsOpen ? " rotate" : ""}`} />
@@ -1487,7 +1490,7 @@ export function Header({
                     tabIndex={-1}
                     className="quick-scripts-dropdown__menu"
                     role="listbox"
-                    aria-label="Scripts"
+                    aria-label={t("header.scripts", "Scripts")}
                     onKeyDown={handleScriptsDropdownKeyDown}
                     data-testid="quick-scripts-dropdown"
                     style={
@@ -1505,19 +1508,19 @@ export function Header({
                     {scriptsLoading ? (
                       <div className="quick-scripts-dropdown__loading" data-testid="quick-scripts-loading">
                         <Loader2 size={16} className="animate-spin" />
-                        <span>Loading scripts...</span>
+                        <span>{t("header.loadingScripts", "Loading scripts...")}</span>
                       </div>
                     ) : scriptEntries.length === 0 ? (
                       <div className="quick-scripts-dropdown__empty" data-testid="quick-scripts-empty">
                         <div className="quick-scripts-dropdown__empty-icon">
                           <Terminal size={16} />
                         </div>
-                        <p>No scripts configured</p>
+                        <p>{t("header.noScriptsConfigured", "No scripts configured")}</p>
                         <button
                           className="quick-scripts-dropdown__empty-action btn"
                           onClick={handleManageScripts}
                         >
-                          Add your first script
+                          {t("header.addFirstScript", "Add your first script")}
                         </button>
                       </div>
                     ) : (
@@ -1554,7 +1557,7 @@ export function Header({
                             data-testid="quick-scripts-manage"
                           >
                             <Settings size={14} />
-                            <span>Manage Scripts...</span>
+                            <span>{t("header.manageScripts", "Manage Scripts...")}</span>
                           </button>
                         </div>
                       </>
@@ -1571,7 +1574,7 @@ export function Header({
           <button
             className={`btn-icon${filesOpen ? " btn-icon--active" : ""}`}
             onClick={() => onOpenFiles()}
-            title="Browse files"
+            title={t("header.browseFiles", "Browse files")}
             data-testid="files-toggle-btn"
           >
             <Folder size={16} />
@@ -1583,7 +1586,7 @@ export function Header({
           <button
             className="btn-icon"
             onClick={onOpenGitManager}
-            title="Git Manager"
+            title={t("header.gitManager", "Git Manager")}
             data-testid="git-manager-btn"
           >
             <GitBranch size={16} />
@@ -1595,7 +1598,7 @@ export function Header({
           <button
             className="btn-icon"
             onClick={onOpenWorkflowSteps}
-            title="Workflow Steps"
+            title={t("header.workflowSteps", "Workflow Steps")}
             data-testid="workflow-steps-btn"
           >
             <Workflow size={16} />
@@ -1609,8 +1612,8 @@ export function Header({
               ref={desktopOverflowTriggerRef}
               className="btn-icon"
               onClick={() => setIsDesktopOverflowOpen((prev) => !prev)}
-              title="More actions"
-              aria-label="More actions"
+              title={t("header.moreActions", "More actions")}
+              aria-label={t("header.moreActions", "More actions")}
               aria-expanded={isDesktopOverflowOpen}
               aria-haspopup="menu"
               data-testid="desktop-overflow-trigger"
@@ -1622,7 +1625,7 @@ export function Header({
                 ref={desktopOverflowRef}
                 className="desktop-overflow-menu"
                 role="menu"
-                aria-label="More actions"
+                aria-label={t("header.moreActions", "More actions")}
               >
                 {onOpenNodes && showNodesButton !== false && (
                   <button
@@ -1635,7 +1638,7 @@ export function Header({
                     data-testid="desktop-overflow-nodes-btn"
                   >
                     <Server size={14} />
-                    <span>Nodes</span>
+                    <span>{t("header.nodes", "Nodes")}</span>
                   </button>
                 )}
                 <button
@@ -1648,7 +1651,7 @@ export function Header({
                   data-testid="desktop-overflow-schedules-btn"
                 >
                   <Clock size={14} />
-                  <span>Automation</span>
+                  <span>{t("header.automation", "Automation")}</span>
                 </button>
               </div>
             )}
@@ -1660,7 +1663,7 @@ export function Header({
           <button
             className={`btn-icon engine-control-split-btn__main${globalPaused ? " btn-icon--stopped" : ""}`}
             onClick={onToggleGlobalPause}
-            title={globalPaused ? "Start AI engine" : "Stop AI engine"}
+            title={globalPaused ? t("header.startAiEngine", "Start AI engine") : t("header.stopAiEngine", "Stop AI engine")}
             data-testid="engine-control-main-btn"
           >
             {globalPaused ? <Play size={16} /> : <Square size={16} />}
@@ -1669,7 +1672,7 @@ export function Header({
           <button
             className={`btn-icon engine-control-split-btn__chevron${isEngineMenuOpen ? " btn-icon--active" : ""}`}
             onClick={() => setIsEngineMenuOpen((prev) => !prev)}
-            title="Engine options"
+            title={t("header.engineOptions", "Engine options")}
             aria-haspopup="menu"
             aria-expanded={isEngineMenuOpen}
             data-testid="engine-control-chevron-btn"
@@ -1685,12 +1688,12 @@ export function Header({
                   setIsEngineMenuOpen(false);
                 }}
                 role="menuitem"
-                title={enginePaused ? "Resume scheduling" : "Pause triage"}
+                title={enginePaused ? t("header.resumeScheduling", "Resume scheduling") : t("header.pauseTriage", "Pause triage")}
                 disabled={!!globalPaused}
                 data-testid="engine-control-pause-triage-btn"
               >
                 {enginePaused ? <Play size={14} /> : <Pause size={14} />}
-                <span>{enginePaused ? "Resume scheduling" : "Pause triage"}</span>
+                <span>{enginePaused ? t("header.resumeScheduling", "Resume scheduling") : t("header.pauseTriage", "Pause triage")}</span>
               </button>
             </div>
           )}
@@ -1698,7 +1701,7 @@ export function Header({
 
         {/* Settings - always inline on desktop, placed after engine controls */}
         {!isCompact && (
-          <button className="btn-icon" onClick={onOpenSettings} title="Settings">
+          <button className="btn-icon" onClick={onOpenSettings} title={t("header.settings", "Settings")}>
             <Settings size={16} />
           </button>
         )}
@@ -1712,8 +1715,8 @@ export function Header({
             ref={overflowButtonRef}
             className="btn-icon compact-overflow-trigger"
             onClick={handleOverflowToggle}
-            title="More header actions"
-            aria-label="More header actions"
+            title={t("header.moreHeaderActions", "More header actions")}
+            aria-label={t("header.moreHeaderActions", "More header actions")}
             aria-expanded={isOverflowMenuOpen}
             aria-haspopup="menu"
           >
@@ -1727,7 +1730,7 @@ export function Header({
             ref={overflowMenuRef}
             className="mobile-overflow-menu"
             role="menu"
-            aria-label="Additional header actions"
+            aria-label={t("header.additionalHeaderActions", "Additional header actions")}
           >
             {/* Projects - in overflow on mobile */}
             {isMobile && projects.length >= 1 && onViewAllProjects && (
@@ -1738,7 +1741,7 @@ export function Header({
                 data-testid="overflow-project-selector-btn"
               >
                 <Grid3X3 size={16} />
-                <span>Projects</span>
+                <span>{t("header.projects", "Projects")}</span>
               </button>
             )}
             {/* Files - in overflow on mobile */}
@@ -1750,7 +1753,7 @@ export function Header({
                 data-testid="overflow-files-btn"
               >
                 <Folder size={16} />
-                <span>Browse Files</span>
+                <span>{t("header.browseFiles", "Browse Files")}</span>
               </button>
             )}
             <button
@@ -1767,7 +1770,7 @@ export function Header({
                   </span>
                 )}
               </span>
-              <span>{activePlanningSessionCount > 0 ? `Resume planning session (${activePlanningSessionCount})` : "Create a task with AI planning"}</span>
+              <span>{activePlanningSessionCount > 0 ? t("header.resumePlanningSessionCount", "Resume planning session ({{count}})", { count: activePlanningSessionCount }) : t("header.createTaskWithPlanning", "Create a task with AI planning")}</span>
             </button>
             {/* Git Manager - in overflow on mobile */}
             {onOpenGitManager && (
@@ -1778,7 +1781,7 @@ export function Header({
                 data-testid="overflow-git-btn"
               >
                 <GitBranch size={16} />
-                <span>Git Manager</span>
+                <span>{t("header.gitManager", "Git Manager")}</span>
               </button>
             )}
             {/* Nodes - in overflow on mobile */}
@@ -1790,7 +1793,7 @@ export function Header({
                 data-testid="overflow-nodes-btn"
               >
                 <Server size={16} />
-                <span>Nodes</span>
+                <span>{t("header.nodes", "Nodes")}</span>
               </button>
             )}
             {!isDesktopShell && (
@@ -1800,7 +1803,7 @@ export function Header({
                 role="menuitem"
               >
                 <GitHubLogo size={16} />
-                <span>Import from GitHub</span>
+                <span>{t("header.importFromGitHub", "Import from GitHub")}</span>
               </button>
             )}
             <div
@@ -1815,7 +1818,7 @@ export function Header({
                   data-testid="overflow-terminal-primary-btn"
                 >
                   <Terminal size={16} />
-                  <span>Terminal</span>
+                  <span>{t("header.terminal", "Terminal")}</span>
                 </button>
                 <button
                   className="mobile-overflow-split-toggle"
@@ -1823,7 +1826,7 @@ export function Header({
                   role="menuitem"
                   aria-expanded={isTerminalSubmenuOpen}
                   aria-haspopup="menu"
-                  aria-label="Show scripts"
+                  aria-label={t("header.showScripts", "Show scripts")}
                   data-testid="overflow-terminal-submenu-toggle"
                 >
                   <ChevronRight
@@ -1833,11 +1836,11 @@ export function Header({
                 </button>
               </div>
               {isTerminalSubmenuOpen && (
-                <div className="mobile-overflow-submenu" role="menu" aria-label="Scripts submenu">
+                <div className="mobile-overflow-submenu" role="menu" aria-label={t("header.scriptsSubmenu", "Scripts submenu")}>
                   {overflowScriptsLoading ? (
                     <div className="mobile-overflow-submenu-loading" data-testid="overflow-scripts-loading">
                       <Loader2 size={14} className="animate-spin" />
-                      <span>Loading scripts…</span>
+                      <span>{t("header.loadingScripts", "Loading scripts...")}</span>
                     </div>
                   ) : overflowScriptEntries.length > 0 ? (
                     <>
@@ -1865,7 +1868,7 @@ export function Header({
                           data-testid="overflow-scripts-manage"
                         >
                           <FileCode size={14} />
-                          <span>Manage Scripts…</span>
+                          <span>{t("header.manageScripts", "Manage Scripts...")}</span>
                         </button>
                       )}
                     </>
@@ -1878,7 +1881,7 @@ export function Header({
                         data-testid="overflow-scripts-manage"
                       >
                         <FileCode size={14} />
-                        <span>No scripts — add one…</span>
+                        <span>{t("header.noScriptsAddOne", "No scripts — add one…")}</span>
                       </button>
                     )
                   )}
@@ -1892,7 +1895,7 @@ export function Header({
               data-testid="overflow-schedules-btn"
             >
               <Clock size={16} />
-              <span>Automation</span>
+              <span>{t("header.automation", "Automation")}</span>
             </button>
             {/* Activity Log - in overflow on mobile */}
             {onOpenActivityLog && (
@@ -1903,7 +1906,7 @@ export function Header({
                 data-testid="overflow-activity-log-btn"
               >
                 <History size={16} />
-                <span>View Activity Log</span>
+                <span>{t("header.viewActivityLog", "View Activity Log")}</span>
               </button>
             )}
             {/* Mailbox - in overflow on mobile */}
@@ -1915,7 +1918,7 @@ export function Header({
                 data-testid="overflow-mailbox-btn"
               >
                 <Mail size={16} />
-                <span>Mailbox{mailboxUnreadCount > 0 ? ` (${mailboxUnreadCount})` : ""}</span>
+                <span>{mailboxUnreadCount > 0 ? t("header.mailboxWithCount", "Mailbox ({{count}})", { count: mailboxUnreadCount }) : t("header.mailbox", "Mailbox")}</span>
                 {mailboxPendingApprovalCount > 0 && (
                   <span className="header-badge" data-testid="overflow-mailbox-approval-badge">{mailboxPendingApprovalCount}</span>
                 )}
@@ -1932,7 +1935,7 @@ export function Header({
                 data-testid="overflow-usage-btn"
               >
                 <Activity size={16} />
-                <span>View Usage</span>
+                <span>{t("header.viewUsage", "View Usage")}</span>
               </button>
             )}
             {/* Workflow Steps - in overflow on mobile */}
@@ -1944,7 +1947,7 @@ export function Header({
                 data-testid="overflow-workflow-steps-btn"
               >
                 <Workflow size={16} />
-                <span>Workflow Steps</span>
+                <span>{t("header.workflowSteps", "Workflow Steps")}</span>
               </button>
             )}
             {/* Settings - always last in overflow menu */}
@@ -1954,7 +1957,7 @@ export function Header({
               role="menuitem"
             >
               <Settings size={16} />
-              <span>Settings</span>
+              <span>{t("header.settings", "Settings")}</span>
             </button>
           </div>
         )}
@@ -1969,7 +1972,7 @@ export function Header({
           <input
             autoFocus
             type="text"
-            placeholder="Search tasks..."
+            placeholder={t("header.searchTasks", "Search tasks...")}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             className="header-search-input"
@@ -1977,7 +1980,7 @@ export function Header({
           <button
             className="header-search-clear"
             onClick={handleNonMobileSearchClose}
-            aria-label="Close search"
+            aria-label={t("header.closeSearch", "Close search")}
           >
             <X size={14} />
           </button>
@@ -1985,15 +1988,15 @@ export function Header({
         {showBoardBranchFilters && (
           <div className="header-branch-filters" data-testid="header-branch-filters-desktop">
             <label className="header-branch-filter-label">
-              <span>Working branch</span>
+              <span>{t("header.workingBranch", "Working branch")}</span>
               <select
                 className="header-branch-filter-select"
                 value={branchFilter}
                 onChange={(event) => onBranchFilterChange?.(event.target.value)}
                 data-testid="working-branch-filter"
               >
-                <option value="">All working branches</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>No working branch</option>
+                <option value="">{t("header.allWorkingBranches", "All working branches")}</option>
+                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noWorkingBranch", "No working branch")}</option>
                 {branchOptions.map((option) => (
                   <option key={option} value={option}>
                     {option}
@@ -2002,15 +2005,15 @@ export function Header({
               </select>
             </label>
             <label className="header-branch-filter-label">
-              <span>Base branch</span>
+              <span>{t("header.baseBranch", "Base branch")}</span>
               <select
                 className="header-branch-filter-select"
                 value={baseBranchFilter}
                 onChange={(event) => onBaseBranchFilterChange?.(event.target.value)}
                 data-testid="target-branch-filter"
               >
-                <option value="">All base branches</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>No base branch</option>
+                <option value="">{t("header.allBaseBranches", "All base branches")}</option>
+                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noBaseBranch", "No base branch")}</option>
                 {baseBranchOptions.map((option) => (
                   <option key={option} value={option}>
                     {option}
@@ -2035,7 +2038,7 @@ export function Header({
             ref={mobileSearchInputRef}
             autoFocus
             type="text"
-            placeholder="Search tasks..."
+            placeholder={t("header.searchTasks", "Search tasks...")}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             className="header-search-input"
@@ -2043,7 +2046,7 @@ export function Header({
           <button
             className="header-search-clear"
             onClick={handleMobileSearchClose}
-            aria-label="Close search"
+            aria-label={t("header.closeSearch", "Close search")}
           >
             <X size={14} />
           </button>
@@ -2051,15 +2054,15 @@ export function Header({
         {showBoardBranchFilters && (
           <div className="header-branch-filters" data-testid="header-branch-filters-mobile">
             <label className="header-branch-filter-label">
-              <span>Working branch</span>
+              <span>{t("header.workingBranch", "Working branch")}</span>
               <select
                 className="header-branch-filter-select"
                 value={branchFilter}
                 onChange={(event) => onBranchFilterChange?.(event.target.value)}
                 data-testid="working-branch-filter-mobile"
               >
-                <option value="">All working branches</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>No working branch</option>
+                <option value="">{t("header.allWorkingBranches", "All working branches")}</option>
+                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noWorkingBranch", "No working branch")}</option>
                 {branchOptions.map((option) => (
                   <option key={option} value={option}>
                     {option}
@@ -2068,15 +2071,15 @@ export function Header({
               </select>
             </label>
             <label className="header-branch-filter-label">
-              <span>Base branch</span>
+              <span>{t("header.baseBranch", "Base branch")}</span>
               <select
                 className="header-branch-filter-select"
                 value={baseBranchFilter}
                 onChange={(event) => onBaseBranchFilterChange?.(event.target.value)}
                 data-testid="target-branch-filter-mobile"
               >
-                <option value="">All base branches</option>
-                <option value={NO_BRANCH_FILTER_VALUE}>No base branch</option>
+                <option value="">{t("header.allBaseBranches", "All base branches")}</option>
+                <option value={NO_BRANCH_FILTER_VALUE}>{t("header.noBaseBranch", "No base branch")}</option>
                 {baseBranchOptions.map((option) => (
                   <option key={option} value={option}>
                     {option}

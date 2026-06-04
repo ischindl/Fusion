@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import type { NodeCreateInput, NodeInfo } from "../api";
 
 export interface ConnectNodeInput {
@@ -28,24 +30,24 @@ const DEFAULT_PORT = 3001;
 const MAX_CONCURRENT_MIN = 1;
 const MAX_CONCURRENT_MAX = 10;
 
-function validateInput(input: { name: string; host: string; port: string; maxConcurrent: number }): FormErrors {
+function validateInput(input: { name: string; host: string; port: string; maxConcurrent: number }, t: TFunction<"app">): FormErrors {
   const errors: FormErrors = {};
 
   if (!input.name.trim()) {
-    errors.name = "Node name is required";
+    errors.name = t("nodes.validation.nameRequired", "Node name is required");
   }
 
   if (!input.host.trim()) {
-    errors.host = "Host / IP address is required";
+    errors.host = t("nodes.validation.hostRequired", "Host / IP address is required");
   }
 
   const portNum = Number(input.port);
   if (input.port && (isNaN(portNum) || portNum < 1 || portNum > 65535)) {
-    errors.port = "Port must be between 1 and 65535";
+    errors.port = t("nodes.validation.portRange", "Port must be between 1 and 65535");
   }
 
   if (!Number.isFinite(input.maxConcurrent) || input.maxConcurrent < MAX_CONCURRENT_MIN || input.maxConcurrent > MAX_CONCURRENT_MAX) {
-    errors.maxConcurrent = `Concurrency must be between ${MAX_CONCURRENT_MIN} and ${MAX_CONCURRENT_MAX}`;
+    errors.maxConcurrent = t("nodes.validation.concurrencyRange", `Concurrency must be between {{min}} and {{max}}`, { min: MAX_CONCURRENT_MIN, max: MAX_CONCURRENT_MAX });
   }
 
   return errors;
@@ -58,6 +60,7 @@ function buildUrl(host: string, port: string): string {
 }
 
 export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmit }: ConnectNodeModalProps) {
+  const { t } = useTranslation("app");
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(String(DEFAULT_PORT));
@@ -106,7 +109,7 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
   const handleSubmit = useCallback(async () => {
     if (isSubmitting) return;
 
-    const validationErrors = validateInput({ name, host, port, maxConcurrent });
+    const validationErrors = validateInput({ name, host, port, maxConcurrent }, t);
     setErrors(validationErrors);
 
     if (Object.keys(validationErrors).length > 0) {
@@ -142,23 +145,23 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
         });
 
         if (!response.ok) {
-          const error = await response.json().catch(() => ({ error: "Failed to connect" }));
+          const error = await response.json().catch(() => ({ error: t("nodes.errors.connectFailed", "Failed to connect") }));
           throw new Error(error.error || `HTTP ${response.status}`);
         }
 
         node = await response.json() as NodeInfo;
       }
 
-      addToast(`Connected to "${node.name}"`, "success");
+      addToast(t("nodes.success.connected", `Connected to "{{name}}"`, { name: node.name }), "success");
       onConnected(node);
       onClose();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to connect to node";
+      const message = error instanceof Error ? error.message : t("nodes.errors.connectToNode", "Failed to connect to node");
       addToast(message, "error");
     } finally {
       setIsSubmitting(false);
     }
-  }, [addToast, apiKey, constructedUrl, host, isSubmitting, maxConcurrent, name, onClose, onConnected, onSubmit, port]);
+  }, [addToast, apiKey, constructedUrl, host, isSubmitting, maxConcurrent, name, onClose, onConnected, onSubmit, port, t]);
 
   if (!open) return null;
 
@@ -169,25 +172,25 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Connect to Node"
+        aria-label={t("nodes.modal.title", "Connect to Node")}
       >
         <div className="modal-header">
-          <h3>Connect to Node</h3>
-          <button className="modal-close" onClick={onClose} disabled={isSubmitting} aria-label="Close connect node modal">
+          <h3>{t("nodes.modal.title", "Connect to Node")}</h3>
+          <button className="modal-close" onClick={onClose} disabled={isSubmitting} aria-label={t("nodes.modal.closeButton", "Close connect node modal")}>
             &times;
           </button>
         </div>
 
         <div className="modal-body connect-node-form">
           <div className="form-group connect-node-field">
-            <label htmlFor="connect-node-name">Node Name</label>
+            <label htmlFor="connect-node-name">{t("nodes.fields.name", "Node Name")}</label>
             <input
               id="connect-node-name"
               className="input connect-node-field__input"
               type="text"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Build Server"
+              placeholder={t("nodes.placeholders.name", "Build Server")}
               disabled={isSubmitting}
               aria-invalid={Boolean(errors.name)}
             />
@@ -195,14 +198,14 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
           </div>
 
           <div className="form-group connect-node-field">
-            <label htmlFor="connect-node-host">Host / IP Address</label>
+            <label htmlFor="connect-node-host">{t("nodes.fields.host", "Host / IP Address")}</label>
             <input
               id="connect-node-host"
               className="input connect-node-field__input"
               type="text"
               value={host}
               onChange={(event) => setHost(event.target.value)}
-              placeholder="192.0.2.10 or my-server.local"
+              placeholder={t("nodes.placeholders.host", "192.0.2.10 or my-server.local")}
               disabled={isSubmitting}
               aria-invalid={Boolean(errors.host)}
             />
@@ -210,7 +213,7 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
           </div>
 
           <div className="form-group connect-node-field">
-            <label htmlFor="connect-node-port">Port</label>
+            <label htmlFor="connect-node-port">{t("nodes.fields.port", "Port")}</label>
             <input
               id="connect-node-port"
               className="input connect-node-field__input"
@@ -227,26 +230,26 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
 
           {constructedUrl && (
             <div className="connect-node-url-preview">
-              <span className="connect-node-url-preview-label">URL:</span>
+              <span className="connect-node-url-preview-label">{t("nodes.fields.url", "URL")}:</span>
               <code>{constructedUrl}</code>
             </div>
           )}
 
           <div className="form-group connect-node-field">
-            <label htmlFor="connect-node-auth-key">Auth Key</label>
+            <label htmlFor="connect-node-auth-key">{t("nodes.fields.authKey", "Auth Key")}</label>
             <input
               id="connect-node-auth-key"
               className="input connect-node-field__input"
               type="password"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder="Optional"
+              placeholder={t("nodes.placeholders.optional", "Optional")}
               disabled={isSubmitting}
             />
           </div>
 
           <div className="form-group connect-node-field">
-            <label htmlFor="connect-node-max-concurrent">Max Concurrent</label>
+            <label htmlFor="connect-node-max-concurrent">{t("nodes.fields.maxConcurrent", "Max Concurrent")}</label>
             <input
               id="connect-node-max-concurrent"
               className="input connect-node-field__input"
@@ -264,10 +267,10 @@ export function ConnectNodeModal({ open, onClose, onConnected, addToast, onSubmi
 
         <div className="modal-actions connect-node-actions">
           <button className="btn btn-sm" onClick={onClose} disabled={isSubmitting}>
-            Cancel
+            {t("actions.cancel", "Cancel")}
           </button>
           <button className="btn btn-primary btn-sm" onClick={handleSubmit} disabled={isSubmitting || !host.trim()}>
-            {isSubmitting ? "Connecting..." : "Connect"}
+            {isSubmitting ? t("nodes.actions.connecting", "Connecting...") : t("nodes.actions.connect", "Connect")}
           </button>
         </div>
       </div>

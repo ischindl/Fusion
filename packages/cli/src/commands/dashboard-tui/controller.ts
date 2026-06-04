@@ -172,6 +172,9 @@ export class DashboardTUI {
   // will reapply the auto policy.
   mouseEnabled: boolean = false;
 
+  // Optional `--lang` override; highest-precedence locale source for the TUI.
+  lang?: string;
+
   constructor() {
     this.logBuffer = new LogRingBuffer();
   }
@@ -675,6 +678,20 @@ export class DashboardTUI {
     const { render } = await import("ink");
     const { createElement } = await import("react");
     const { DashboardApp } = await import("./app.js");
+    const { I18nextProvider } = await import("react-i18next");
+    const { initCliI18n, resolveCliLocale } = await import("../../i18n/index.js");
+    const { GlobalSettingsStore } = await import("@fusion/core");
+
+    // Resolve locale: --lang flag → persisted GlobalSettings → env → en.
+    let settingLanguage: string | undefined;
+    try {
+      settingLanguage = (await new GlobalSettingsStore().getSettings())?.language;
+    } catch {
+      // Settings unreadable — fall back to env/default.
+    }
+    const i18n = initCliI18n(
+      resolveCliLocale({ flag: this.lang, setting: settingLanguage, env: process.env }),
+    );
 
     // Enter the terminal's alternate-screen buffer before mounting Ink so
     // the TUI gets a dedicated fullscreen surface that doesn't share
@@ -689,7 +706,7 @@ export class DashboardTUI {
     }
 
     this.inkInstance = render(
-      createElement(DashboardApp, { controller: this }),
+      createElement(I18nextProvider, { i18n }, createElement(DashboardApp, { controller: this })),
     );
 
     // Mouse mode must be enabled AFTER Ink mounts (which calls

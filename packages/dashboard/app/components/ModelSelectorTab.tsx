@@ -1,5 +1,6 @@
 import "./ModelSelectorTab.css";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { updateTask } from "../api";
 import type { Settings, Task, TaskDetail } from "@fusion/core";
 import {
@@ -94,22 +95,32 @@ function selectionsEqual(a: ModelSelection, b: ModelSelection): boolean {
   return a.provider === b.provider && a.modelId === b.modelId;
 }
 
-function getSuccessToastMessage(target: "executor" | "validator" | "planning", selection: ModelSelection): string {
-  const labels: Record<string, string> = {
-    executor: "Executor",
-    validator: "Reviewer",
-    planning: "Planning",
+function getSuccessToastMessage(
+  target: "executor" | "validator" | "planning",
+  selection: ModelSelection,
+  t: (key: string, defaultValue: string, options?: Record<string, unknown>) => string,
+): string {
+  const labelKeys: Record<string, { key: string; defaultValue: string }> = {
+    executor: { key: "models.targetLabels.executor", defaultValue: "Executor" },
+    validator: { key: "models.targetLabels.validator", defaultValue: "Reviewer" },
+    planning: { key: "models.targetLabels.planning", defaultValue: "Planning" },
   };
-  const label = labels[target] || target;
+  const labelEntry = labelKeys[target] ?? { key: `models.targetLabels.${target}`, defaultValue: target };
+  const label = t(labelEntry.key, labelEntry.defaultValue);
 
   if (!selection.provider || !selection.modelId) {
-    return `${label} model set to default`;
+    return t("models.messages.modelSetToDefault", "{{label}} model set to default", { label });
   }
 
-  return `${label} model set to ${selection.provider}/${selection.modelId}`;
+  return t("models.messages.modelSetTo", "{{label}} model set to {{provider}}/{{modelId}}", {
+    label,
+    provider: selection.provider,
+    modelId: selection.modelId,
+  });
 }
 
 export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: ModelSelectorTabProps) {
+  const { t } = useTranslation("app");
   const {
     availableModels,
     favoriteProviders,
@@ -135,17 +146,17 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
     try {
       await toggleFavoriteProvider(provider);
     } catch {
-      addToast("Failed to update favorites", "error");
+      addToast(t("models.errors.failedUpdateFavorites", "Failed to update favorites"), "error");
     }
-  }, [toggleFavoriteProvider, addToast]);
+  }, [toggleFavoriteProvider, addToast, t]);
 
   const handleToggleModelFavorite = useCallback(async (modelId: string) => {
     try {
       await toggleFavoriteModel(modelId);
     } catch {
-      addToast("Failed to update model favorites", "error");
+      addToast(t("models.errors.failedUpdateModelFavorites", "Failed to update model favorites"), "error");
     }
-  }, [toggleFavoriteModel, addToast]);
+  }, [toggleFavoriteModel, addToast, t]);
 
   useEffect(() => {
     activeTaskIdRef.current = task.id;
@@ -233,7 +244,7 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
         };
 
         addToast(
-          getSuccessToastMessage(target, targetSelections[target]),
+          getSuccessToastMessage(target, targetSelections[target], t),
           "success",
         );
       } catch (err) {
@@ -249,14 +260,14 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
           setSelectedPlanning(previousSavedPlanning);
         }
 
-        addToast(getErrorMessage(err) || "Failed to save model settings", "error");
+        addToast(getErrorMessage(err) || t("models.errors.failedSaveSettings", "Failed to save model settings"), "error");
       } finally {
         if (activeTaskIdRef.current === requestTaskId) {
           setSavingTarget(null);
         }
       }
     },
-    [task.id, savedExecutor, savedValidator, savedPlanning, addToast, onTaskUpdated],
+    [task.id, savedExecutor, savedValidator, savedPlanning, addToast, onTaskUpdated, t],
   );
 
   const handleExecutorChange = useCallback(
@@ -328,12 +339,12 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
         const effectiveDefault = settings?.defaultThinkingLevel ?? "off";
         if (nextThinking === null) {
           addToast(
-            `Thinking level set to default (${effectiveDefault})`,
+            t("models.messages.thinkingLevelSetDefault", "Thinking level set to default ({{level}})", { level: effectiveDefault }),
             "success",
           );
         } else {
           addToast(
-            `Thinking level set to ${nextThinking}`,
+            t("models.messages.thinkingLevelSet", "Thinking level set to {{level}}", { level: nextThinking }),
             "success",
           );
         }
@@ -343,14 +354,14 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
         }
 
         setSelectedThinking(previousThinking);
-        addToast(getErrorMessage(err) || "Failed to save thinking level", "error");
+        addToast(getErrorMessage(err) || t("models.errors.failedSaveThinking", "Failed to save thinking level"), "error");
       } finally {
         if (activeTaskIdRef.current === requestTaskId) {
           setSavingTarget(null);
         }
       }
     },
-    [task.id, savedThinking, settings, addToast, onTaskUpdated],
+    [task.id, savedThinking, settings, addToast, onTaskUpdated, t],
   );
 
   const executorUsingDefault = !savedExecutor.provider && !savedExecutor.modelId;
@@ -359,25 +370,25 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
 
   return (
     <div className="model-selector-tab">
-      <h4>Model Configuration</h4>
+      <h4>{t("models.titles.configuration", "Model Configuration")}</h4>
       <p className="model-selector-intro">
-        Override the AI models used for this task. When not specified, project or global defaults are used.
+        {t("models.descriptions.override", "Override the AI models used for this task. When not specified, project or global defaults are used.")}
       </p>
 
       {modelsLoading ? (
-        <div className="model-selector-loading">Loading available models…</div>
+        <div className="model-selector-loading">{t("models.states.loading", "Loading available models…")}</div>
       ) : availableModels.length === 0 ? (
         <div className="model-selector-empty">
-          No models available. Configure authentication in Settings to enable model selection.
+          {t("models.emptyStates.noModels", "No models available. Configure authentication in Settings to enable model selection.")}
         </div>
       ) : (
         <>
           <div className="form-group">
-            <label htmlFor="executorModel">Executor Model</label>
+            <label htmlFor="executorModel">{t("models.labels.executorModel", "Executor Model")}</label>
             <div className="model-selector-current">
               {executorUsingDefault ? (
                 <span className="model-badge model-badge-default">
-                  Using default{effectiveExecutor.provider && effectiveExecutor.modelId ? ` (${effectiveExecutor.provider}/${effectiveExecutor.modelId})` : ""}
+                  {t("models.states.usingDefault", "Using default")}{effectiveExecutor.provider && effectiveExecutor.modelId ? ` (${effectiveExecutor.provider}/${effectiveExecutor.modelId})` : ""}
                 </span>
               ) : (
                 <span className="model-badge model-badge-custom">
@@ -388,26 +399,26 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
             </div>
             <CustomModelDropdown
               id="executorModel"
-              label="Executor Model"
+              label={t("models.labels.executorModel", "Executor Model")}
               value={executorValue}
               onChange={handleExecutorChange}
               models={availableModels}
               disabled={isSaving}
-              placeholder="Select executor model…"
+              placeholder={t("models.placeholders.selectExecutor", "Select executor model…")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={handleToggleFavorite}
               favoriteModels={favoriteModels}
               onToggleModelFavorite={handleToggleModelFavorite}
             />
-            <small>The AI model used to implement this task.</small>
+            <small>{t("models.descriptions.executor", "The AI model used to implement this task.")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor="validatorModel">Reviewer Model</label>
+            <label htmlFor="validatorModel">{t("models.labels.reviewerModel", "Reviewer Model")}</label>
             <div className="model-selector-current">
               {validatorUsingDefault ? (
                 <span className="model-badge model-badge-default">
-                  Using default{effectiveValidator.provider && effectiveValidator.modelId ? ` (${effectiveValidator.provider}/${effectiveValidator.modelId})` : ""}
+                  {t("models.states.usingDefault", "Using default")}{effectiveValidator.provider && effectiveValidator.modelId ? ` (${effectiveValidator.provider}/${effectiveValidator.modelId})` : ""}
                 </span>
               ) : (
                 <span className="model-badge model-badge-custom">
@@ -418,26 +429,26 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
             </div>
             <CustomModelDropdown
               id="validatorModel"
-              label="Reviewer Model"
+              label={t("models.labels.reviewerModel", "Reviewer Model")}
               value={validatorValue}
               onChange={handleValidatorChange}
               models={availableModels}
               disabled={isSaving}
-              placeholder="Select reviewer model…"
+              placeholder={t("models.placeholders.selectReviewer", "Select reviewer model…")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={handleToggleFavorite}
               favoriteModels={favoriteModels}
               onToggleModelFavorite={handleToggleModelFavorite}
             />
-            <small>The AI model used to review code and plans for this task.</small>
+            <small>{t("models.descriptions.reviewer", "The AI model used to review code and plans for this task.")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor="planningModel">Planning Model</label>
+            <label htmlFor="planningModel">{t("models.labels.planningModel", "Planning Model")}</label>
             <div className="model-selector-current">
               {planningUsingDefault ? (
                 <span className="model-badge model-badge-default">
-                  Using default{effectivePlanning.provider && effectivePlanning.modelId ? ` (${effectivePlanning.provider}/${effectivePlanning.modelId})` : ""}
+                  {t("models.states.usingDefault", "Using default")}{effectivePlanning.provider && effectivePlanning.modelId ? ` (${effectivePlanning.provider}/${effectivePlanning.modelId})` : ""}
                 </span>
               ) : (
                 <span className="model-badge model-badge-custom">
@@ -448,26 +459,26 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
             </div>
             <CustomModelDropdown
               id="planningModel"
-              label="Planning Model"
+              label={t("models.labels.planningModel", "Planning Model")}
               value={planningValue}
               onChange={handlePlanningChange}
               models={availableModels}
               disabled={isSaving}
-              placeholder="Select planning model…"
+              placeholder={t("models.placeholders.selectPlanning", "Select planning model…")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={handleToggleFavorite}
               favoriteModels={favoriteModels}
               onToggleModelFavorite={handleToggleModelFavorite}
             />
-            <small>The AI model used for task specification (triage phase).</small>
+            <small>{t("models.descriptions.planning", "The AI model used for task specification (triage phase).")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor="thinkingLevel">Thinking Level</label>
+            <label htmlFor="thinkingLevel">{t("models.labels.thinkingLevel", "Thinking Level")}</label>
             <div className="model-selector-current">
               {savedThinking === null ? (
                 <span className="model-badge model-badge-default">
-                  Using default ({settings?.defaultThinkingLevel ?? "off"})
+                  {t("models.states.usingDefault", "Using default")} ({settings?.defaultThinkingLevel ?? "off"})
                 </span>
               ) : (
                 <span className="model-badge model-badge-custom">
@@ -482,20 +493,20 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
               disabled={isSaving}
               className="thinking-level-select"
             >
-              <option value="">Default ({settings?.defaultThinkingLevel ?? "off"})</option>
-              <option value="off">Off</option>
-              <option value="minimal">Minimal</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
+              <option value="">{t("models.options.default", "Default")} ({settings?.defaultThinkingLevel ?? "off"})</option>
+              <option value="off">{t("models.options.off", "Off")}</option>
+              <option value="minimal">{t("models.options.minimal", "Minimal")}</option>
+              <option value="low">{t("models.options.low", "Low")}</option>
+              <option value="medium">{t("models.options.medium", "Medium")}</option>
+              <option value="high">{t("models.options.high", "High")}</option>
             </select>
-            <small>Controls the reasoning effort for the AI agent. Higher levels use more tokens.</small>
+            <small>{t("models.descriptions.thinkingLevel", "Controls the reasoning effort for the AI agent. Higher levels use more tokens.")}</small>
           </div>
 
           <div className="model-selector-status">
             {executorUsingDefault && validatorUsingDefault && planningUsingDefault && savedThinking === null
-              ? "Using project or global default models."
-              : "Model settings are up to date."}
+              ? t("models.messages.usingDefaults", "Using project or global default models.")
+              : t("models.messages.upToDate", "Model settings are up to date.")}
           </div>
         </>
       )}

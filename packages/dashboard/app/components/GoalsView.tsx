@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Goal } from "@fusion/core";
 import { Plus, Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -14,7 +15,6 @@ export interface GoalsViewProps {
 const MAX_ACTIVE_GOALS = 5;
 const WARNING_THRESHOLD = 3;
 
-const CAP_ERROR_MESSAGE = "Cannot activate more than 5 goals. Resolve an active goal before activating another.";
 const GOAL_DESCRIPTION_TOGGLE_LENGTH = 280;
 
 function isCapError(payload: unknown): boolean {
@@ -22,6 +22,7 @@ function isCapError(payload: unknown): boolean {
 }
 
 export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
+  const { t } = useTranslation("app");
   const [goals, setGoals] = useState<Goal[]>(() => initialGoals ?? []);
   const [highlightedGoalId, setHighlightedGoalId] = useState<string | null>(null);
   const anchorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,7 +67,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
         if (!active) {
           return;
         }
-        setErrorMessage("Unable to load goals right now. Please try again.");
+        setErrorMessage(t("goals.loadError", "Unable to load goals right now. Please try again."));
       } finally {
         if (active) {
           setLoading(false);
@@ -147,7 +148,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
   async function draftAddGoalDescription() {
     const title = addTitle.trim();
     if (!title) {
-      setAddError("Title is required.");
+      setAddError(t("goals.titleRequired", "Title is required."));
       return;
     }
 
@@ -166,7 +167,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
   async function submitAddGoal() {
     const title = addTitle.trim();
     if (!title) {
-      setAddError("Title is required.");
+      setAddError(t("goals.titleRequired", "Title is required."));
       return;
     }
 
@@ -200,13 +201,13 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
       }
 
       if (response.status === 409 && isCapError(payload)) {
-        setErrorMessage(CAP_ERROR_MESSAGE);
+        setErrorMessage(t("goals.capError", "Cannot activate more than 5 goals. Resolve an active goal before activating another."));
         return;
       }
 
-      setAddError("Unable to create goal right now. Please try again.");
+      setAddError(t("goals.createError", "Unable to create goal right now. Please try again."));
     } catch {
-      setAddError("Unable to create goal right now. Please try again.");
+      setAddError(t("goals.createError", "Unable to create goal right now. Please try again."));
     } finally {
       setIsCreating(false);
     }
@@ -219,7 +220,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
 
     const title = editTitle.trim();
     if (!title) {
-      setEditError("Title is required.");
+      setEditError(t("goals.titleRequired", "Title is required."));
       return;
     }
 
@@ -242,7 +243,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
       setGoals((current) => current.map((goal) => (goal.id === updatedGoal.id ? updatedGoal : goal)));
       cancelEdit();
     } catch {
-      setEditError("Unable to save goal right now. Please try again.");
+      setEditError(t("goals.saveError", "Unable to save goal right now. Please try again."));
     } finally {
       setIsSavingEdit(false);
     }
@@ -287,13 +288,13 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
       }
 
       if (response.status === 409 && isCapError(payload)) {
-        setErrorMessage(CAP_ERROR_MESSAGE);
+        setErrorMessage(t("goals.capError", "Cannot activate more than 5 goals. Resolve an active goal before activating another."));
         return;
       }
 
-      setErrorMessage("Unable to update goal status right now. Please try again.");
+      setErrorMessage(t("goals.updateError", "Unable to update goal status right now. Please try again."));
     } catch {
-      setErrorMessage("Unable to update goal status right now. Please try again.");
+      setErrorMessage(t("goals.updateError", "Unable to update goal status right now. Please try again."));
     }
   }
 
@@ -301,21 +302,21 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
     <section className="goals-view" data-testid="goals-view">
       <header className="goals-header">
         <div>
-          <h2 className="goals-title">Goals</h2>
+          <h2 className="goals-title">{t("goals.title", "Goals")}</h2>
           <p className="goals-count" data-testid="goals-active-count">
-            {activeCount} active goals
+            {t("goals.activeCount", "{{count}} active goals", { count: activeCount })}
           </p>
         </div>
         <button type="button" className="btn btn-primary goals-add-button" onClick={openAddForm} data-testid="goals-add-button">
           <Plus aria-hidden="true" />
-          Add Goal
+          {t("goals.addGoal", "Add Goal")}
         </button>
       </header>
 
       {isAddFormOpen ? (
         <div className="card goals-form" data-testid="goals-form">
           <label className="goals-form-label" htmlFor="goals-form-title">
-            Title
+            {t("goals.labelTitle", "Title")}
           </label>
           <input
             id="goals-form-title"
@@ -328,7 +329,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
           />
           <div className="goals-form-label-row">
             <label className="goals-form-label" htmlFor="goals-form-description">
-              Description
+              {t("goals.labelDescription", "Description")}
             </label>
             <button
               type="button"
@@ -338,7 +339,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
               data-testid="goals-form-draft-ai"
             >
               <Sparkles aria-hidden="true" />
-              {isDraftingDescription ? "Drafting…" : "Draft with AI"}
+              {isDraftingDescription ? t("goals.drafting", "Drafting…") : t("goals.draftWithAi", "Draft with AI")}
             </button>
           </div>
           <textarea
@@ -356,10 +357,10 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
           ) : null}
           <div className="goals-form-actions">
             <button type="button" className="btn btn-primary" onClick={() => void submitAddGoal()} disabled={isCreating || isDraftingDescription} data-testid="goals-form-submit">
-              Save
+              {t("actions.save", "Save")}
             </button>
             <button type="button" className="btn" onClick={closeAddForm} disabled={isCreating || isDraftingDescription} data-testid="goals-form-cancel">
-              Cancel
+              {t("actions.cancel", "Cancel")}
             </button>
           </div>
         </div>
@@ -367,7 +368,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
 
       {showWarning ? (
         <p className="goals-warning" role="status">
-          Approaching the 5-active goal cap. Keep active goals focused.
+          {t("goals.capWarning", "Approaching the 5-active goal cap. Keep active goals focused.")}
         </p>
       ) : null}
 
@@ -379,13 +380,13 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
 
       {loading ? (
         <p className="goals-loading" role="status" data-testid="goals-loading">
-          Loading goals…
+          {t("goals.loading", "Loading goals…")}
         </p>
       ) : null}
 
       {!loading && goals.length === 0 ? (
         <div className="goals-empty card" data-testid="goals-empty-state">
-          No goals yet. Add one to begin tracking strategic outcomes.
+          {t("goals.emptyState", "No goals yet. Add one to begin tracking strategic outcomes.")}
         </div>
       ) : null}
 
@@ -401,7 +402,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
               {editGoalId === goal.id ? (
                 <div className="goals-card-main goals-card-edit">
                   <label className="goals-form-label" htmlFor={`goal-edit-title-${goal.id}`}>
-                    Title
+                    {t("goals.labelTitle", "Title")}
                   </label>
                   <input
                     id={`goal-edit-title-${goal.id}`}
@@ -413,7 +414,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
                     data-testid={`goal-edit-title-${goal.id}`}
                   />
                   <label className="goals-form-label" htmlFor={`goal-edit-description-${goal.id}`}>
-                    Description
+                    {t("goals.labelDescription", "Description")}
                   </label>
                   <textarea
                     id={`goal-edit-description-${goal.id}`}
@@ -436,10 +437,10 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
                       disabled={isSavingEdit}
                       data-testid={`goal-edit-save-${goal.id}`}
                     >
-                      Save
+                      {t("actions.save", "Save")}
                     </button>
                     <button type="button" className="btn" onClick={cancelEdit} disabled={isSavingEdit} data-testid={`goal-edit-cancel-${goal.id}`}>
-                      Cancel
+                      {t("actions.cancel", "Cancel")}
                     </button>
                   </div>
                 </div>
@@ -465,18 +466,18 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
                                 data-testid={`goal-description-toggle-${goal.id}`}
                                 onClick={() => toggleGoalDescription(goal.id)}
                               >
-                                {isExpanded ? "Show less" : "Show more"}
+                                {isExpanded ? t("actions.showLess", "Show less") : t("actions.showMore", "Show more")}
                               </button>
                             ) : null}
                           </>
                         );
                       })()
                     ) : null}
-                    <p className="goals-card-status">Status: {goal.status}</p>
+                    <p className="goals-card-status">{t("goals.status", "Status")}: {goal.status}</p>
                   </div>
                   <div className="goals-card-actions">
                     <button type="button" className="btn" onClick={() => openEdit(goal)} data-testid={`goal-edit-${goal.id}`}>
-                      Edit
+                      {t("actions.edit", "Edit")}
                     </button>
                     {goal.status === "active" ? (
                       <button
@@ -485,7 +486,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
                         onClick={() => void updateGoalArchiveStatus(goal)}
                         data-testid={`goal-archive-${goal.id}`}
                       >
-                        Archive
+                        {t("goals.archive", "Archive")}
                       </button>
                     ) : (
                       <button
@@ -494,7 +495,7 @@ export function GoalsView({ initialGoals, anchorGoalId }: GoalsViewProps) {
                         onClick={() => void updateGoalArchiveStatus(goal)}
                         data-testid={`goal-unarchive-${goal.id}`}
                       >
-                        Unarchive
+                        {t("goals.unarchive", "Unarchive")}
                       </button>
                     )}
                   </div>

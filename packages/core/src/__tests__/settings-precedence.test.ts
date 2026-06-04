@@ -38,4 +38,18 @@ describe("settings precedence", () => {
     });
     expect(scoped.project.worktrunk).toEqual({ enabled: false });
   });
+
+  it("validates language at the global write boundary and clears it via null", async () => {
+    // Valid locale persists.
+    await harness.store().updateGlobalSettings({ language: "fr" });
+    expect((await harness.store().getSettings()).language).toBe("fr");
+
+    // Invalid value is dropped at the boundary — prior choice survives.
+    await harness.store().updateGlobalSettings({ language: "klingon" } as never);
+    expect((await harness.store().getSettings()).language).toBe("fr");
+
+    // Explicit null clears the persisted key (reset to runtime auto-detect).
+    await harness.store().updateGlobalSettings({ language: null } as never);
+    expect((await harness.store().getSettings()).language).toBeUndefined();
+  });
 });

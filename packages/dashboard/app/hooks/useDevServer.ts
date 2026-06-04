@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   detectDevServerCommands,
   fetchDevServer,
@@ -162,6 +163,7 @@ export function __resetUseDevServerForTests(): void {
 }
 
 export function useDevServer(projectId?: string): UseDevServerReturn {
+  const { t } = useTranslation("app");
   const [session, setSession] = useState<DevServerSession | null>(null);
   const [sessions, setSessions] = useState<DevServerSession[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -403,7 +405,7 @@ export function useDevServer(projectId?: string): UseDevServerReturn {
         if (contextVersionRef.current !== versionAtStart) {
           return;
         }
-        setError((current) => current ?? "Lost log stream connection.");
+        setError((current) => current ?? t("devserver.lostConnection", "Lost log stream connection."));
       },
     });
 

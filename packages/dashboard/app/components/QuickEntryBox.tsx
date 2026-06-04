@@ -1,5 +1,6 @@
 import "./QuickEntryBox.css";
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import type { ToastType } from "../hooks/useToast";
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, getErrorMessage } from "@fusion/core";
@@ -11,7 +12,6 @@ import { Link, Paperclip, Brain, Lightbulb, ListTree, Sparkles, Save, ChevronDow
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { getScopedItem, removeScopedItem, setScopedItem } from "../utils/projectStorage";
 import { useNodes } from "../hooks/useNodes";
-import type { NodeInfo } from "../api";
 import { NodeHealthDot } from "./NodeHealthDot";
 import { ProviderIcon } from "./ProviderIcon";
 
@@ -68,13 +68,6 @@ interface QuickEntryBoxProps {
   onOpenTask?: (id: string) => void;
 }
 
-function getNodeStatusLabel(status: NodeInfo["status"]): string {
-  if (status === "online") return "Online";
-  if (status === "connecting") return "Connecting";
-  if (status === "error") return "Error";
-  return "Offline";
-}
-
 function getModelSelectionValue(provider?: string, modelId?: string): string {
   return provider && modelId ? `${provider}/${modelId}` : "";
 }
@@ -96,6 +89,7 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
 }
 
 export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, projectId, autoExpand = true, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
+  const { t } = useTranslation("app");
   const [description, setDescription] = useState(() => {
     if (typeof window !== "undefined") {
       return getScopedItem(STORAGE_KEY, projectId) || "";
@@ -208,7 +202,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       })
       .catch((err) => {
         if (!cancelled) {
-          setModelsError(getErrorMessage(err) || "Failed to load models");
+          setModelsError(getErrorMessage(err) || t("tasks.loadModelsFailed", "Failed to load models"));
         }
       })
       .finally(() => {
@@ -250,14 +244,14 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const hasPlanningOverride = Boolean(planningProvider && planningModelId);
   const selectedModelCount = Number(hasExecutorOverride) + Number(hasValidatorOverride) + Number(hasPlanningOverride);
   const modelMenuLabel = selectedPresetId
-    ? settings?.modelPresets?.find((p) => p.id === selectedPresetId)?.name ?? "Models"
+    ? settings?.modelPresets?.find((p) => p.id === selectedPresetId)?.name ?? t("tasks.models", "Models")
     : selectedModelCount > 0
-      ? `${selectedModelCount} model${selectedModelCount === 1 ? "" : "s"}`
-      : "Models";
+      ? t("tasks.modelsCount", { count: selectedModelCount, defaultValue_one: "{{count}} model", defaultValue_other: "{{count}} models" })
+      : t("tasks.models", "Models");
 
   const getModelBadgeLabel = useCallback(
     (provider?: string, modelId?: string) => {
-      if (!provider || !modelId) return "Using default";
+      if (!provider || !modelId) return t("tasks.usingDefault", "Using default");
       const matched = loadedModels.find((model) => model.provider === provider && model.id === modelId);
       return matched ? `${matched.provider}/${matched.id}` : `${provider}/${modelId}`;
     },
@@ -543,13 +537,13 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
         }
 
         if (failures.length > 0) {
-          addToast(`Failed to upload: ${failures.join(", ")}`, "error");
+          addToast(t("tasks.uploadFailed", "Failed to upload: {{files}}", { files: failures.join(", ") }), "error");
         }
       }
       resetForm();
     } catch (err) {
       setDescription(originalDescription);
-      addToast(getErrorMessage(err) || "Failed to create task", "error");
+      addToast(getErrorMessage(err) || t("tasks.createFailed", "Failed to create task"), "error");
     } finally {
       submitInFlightRef.current = false;
       setIsSubmitting(false);
@@ -604,7 +598,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
         return;
       }
     } catch (_error) {
-      addToast("Duplicate check failed; creating task anyway.", "error");
+      addToast(t("tasks.duplicateCheckFailed", "Duplicate check failed; creating task anyway."), "error");
     }
 
     releaseLockOnExit = false;
@@ -1316,7 +1310,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const handlePlanClick = useCallback(() => {
     const trimmed = description.trim();
     if (!trimmed) {
-      addToast("Enter a description first", "error");
+      addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
     onPlanningMode?.(trimmed);
@@ -1327,7 +1321,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const handleSubtaskClick = useCallback(() => {
     const trimmed = description.trim();
     if (!trimmed) {
-      addToast("Enter a description first", "error");
+      addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
     onSubtaskBreakdown?.(trimmed);
@@ -1349,7 +1343,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     try {
       const refined = await refineText(trimmed, type, projectId);
       setDescription(refined);
-      addToast("Description refined with AI", "success");
+      addToast(t("tasks.descriptionRefined", "Description refined with AI"), "success");
       // Auto-resize textarea after content update
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -1387,7 +1381,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
         setFavoriteModels(response.favoriteModels);
       }
     } catch (err) {
-      setModelsError(getErrorMessage(err) || "Failed to load models");
+      setModelsError(getErrorMessage(err) || t("tasks.loadModelsFailed", "Failed to load models"));
     } finally {
       setModelsLoading(false);
     }
@@ -1409,7 +1403,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       updateAgentPickerPosition();
     } catch (err) {
       const msg = getErrorMessage(err);
-      addToast(msg ? `Failed to load agents: ${msg}` : "Failed to load agents", "error");
+      addToast(msg ? t("tasks.loadAgentsFailed", "Failed to load agents: {{msg}}", { msg }) : t("tasks.loadAgentsFailedGeneric", "Failed to load agents"), "error");
       setShowAgentPicker(false);
     } finally {
       setAgentsLoading(false);
@@ -1424,11 +1418,11 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const effectiveGithubTracking = githubTrackingProjectEnabled
     ? (githubTrackingOverride ?? true)
     : false;
-  const githubToggleDisabledLabel = "GitHub tracking is disabled for this project — enable it in Settings to use per-task tracking";
+  const githubToggleDisabledLabel = t("tasks.githubTrackingDisabled", "GitHub tracking is disabled for this project — enable it in Settings to use per-task tracking");
   const githubToggleLabel = githubTrackingProjectEnabled
     ? (effectiveGithubTracking
-      ? `GitHub tracking ON for next task (project default: ${projectGithubTrackingDefault ? "on" : "off"})`
-      : "GitHub tracking OFF for next task")
+      ? t("tasks.githubTrackingOn", "GitHub tracking ON for next task (project default: {{default}})", { default: projectGithubTrackingDefault ? t("tasks.githubTrackingDefaultOn", "on") : t("tasks.githubTrackingDefaultOff", "off") })
+      : t("tasks.githubTrackingOff", "GitHub tracking OFF for next task"))
     : githubToggleDisabledLabel;
 
   // Show expanded controls based on disclosure state (user preference), not textarea focus
@@ -1451,7 +1445,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
             <textarea
               ref={textareaRef}
               className={`quick-entry-input ${isExpanded ? "quick-entry-input--expanded" : ""}`}
-              placeholder={isSubmitting ? "Creating..." : "Add a task..."}
+              placeholder={isSubmitting ? t("tasks.creating", "Creating...") : t("tasks.addTaskPlaceholder", "Add a task...")}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -1472,7 +1466,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
             aria-expanded={isDisclosureExpanded}
             aria-controls="quick-entry-controls"
             data-testid="quick-entry-toggle"
-            title={isDisclosureExpanded ? "Collapse" : "Expand"}
+            title={isDisclosureExpanded ? t("tasks.collapse", "Collapse") : t("tasks.expand", "Expand")}
           >
             {isDisclosureExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -1494,10 +1488,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               onMouseDown={(e) => e.preventDefault()}
               disabled={!description.trim()}
               data-testid="plan-button"
-              title="Open planning mode with current description"
+              title={t("tasks.planButtonTitle", "Open planning mode with current description")}
             >
               <Lightbulb size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Plan
+              {t("tasks.plan", "Plan")}
             </button>
             <button
               type="button"
@@ -1506,10 +1500,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               onMouseDown={(e) => e.preventDefault()}
               disabled={!description.trim()}
               data-testid="subtask-button"
-              title="Break down into AI-generated subtasks"
+              title={t("tasks.subtaskButtonTitle", "Break down into AI-generated subtasks")}
             >
               <ListTree size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Subtask
+              {t("tasks.subtask", "Subtask")}
             </button>
             <div className="refine-trigger-wrap" ref={refineMenuRef}>
               <button
@@ -1529,10 +1523,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 }}
                 disabled={!description.trim() || isRefining}
                 data-testid="refine-button"
-                title="Refine description with AI"
+                title={t("tasks.refineButtonTitle", "Refine description with AI")}
               >
                 <Sparkles size={12} style={{ verticalAlign: "middle" }} />
-                {isRefining ? "Refining..." : "Refine"}
+                {isRefining ? t("tasks.refining", "Refining...") : t("tasks.refine", "Refine")}
               </button>
               {isRefineMenuOpen && portalRoot && refineMenuPosition && createPortal(
                 <div
@@ -1550,32 +1544,32 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                     onClick={() => handleRefine("clarify")}
                     data-testid="refine-clarify"
                   >
-                    <div className="refine-menu-item-title">Clarify</div>
-                    <div className="refine-menu-item-desc">Make the description clearer and more specific</div>
+                    <div className="refine-menu-item-title">{t("tasks.refineClarify", "Clarify")}</div>
+                    <div className="refine-menu-item-desc">{t("tasks.refineClarifyDesc", "Make the description clearer and more specific")}</div>
                   </div>
                   <div
                     className="refine-menu-item"
                     onClick={() => handleRefine("add-details")}
                     data-testid="refine-add-details"
                   >
-                    <div className="refine-menu-item-title">Add details</div>
-                    <div className="refine-menu-item-desc">Add implementation details and context</div>
+                    <div className="refine-menu-item-title">{t("tasks.refineAddDetails", "Add details")}</div>
+                    <div className="refine-menu-item-desc">{t("tasks.refineAddDetailsDesc", "Add implementation details and context")}</div>
                   </div>
                   <div
                     className="refine-menu-item"
                     onClick={() => handleRefine("expand")}
                     data-testid="refine-expand"
                   >
-                    <div className="refine-menu-item-title">Expand</div>
-                    <div className="refine-menu-item-desc">Expand into a more comprehensive description</div>
+                    <div className="refine-menu-item-title">{t("tasks.refineExpand", "Expand")}</div>
+                    <div className="refine-menu-item-desc">{t("tasks.refineExpandDesc", "Expand into a more comprehensive description")}</div>
                   </div>
                   <div
                     className="refine-menu-item"
                     onClick={() => handleRefine("simplify")}
                     data-testid="refine-simplify"
                   >
-                    <div className="refine-menu-item-title">Simplify</div>
-                    <div className="refine-menu-item-desc">Simplify and make more concise</div>
+                    <div className="refine-menu-item-title">{t("tasks.refineSimplify", "Simplify")}</div>
+                    <div className="refine-menu-item-desc">{t("tasks.refineSimplifyDesc", "Simplify and make more concise")}</div>
                   </div>
                 </div>,
                 portalRoot,
@@ -1611,7 +1605,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 }}
               >
                 <Link size={12} style={{ verticalAlign: "middle" }} />
-                {dependencies.length > 0 ? `${dependencies.length} deps` : "Deps"}
+                {dependencies.length > 0 ? t("tasks.depsCount", "{{count}} deps", { count: dependencies.length }) : t("tasks.deps", "Deps")}
               </button>
             </div>
             {/* Dependency dropdown rendered via portal for proper viewport positioning */}
@@ -1647,14 +1641,14 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 >
                   <input
                     className="dep-dropdown-search"
-                    placeholder="Search tasks…"
+                    placeholder={t("tasks.searchTasksPlaceholder", "Search tasks…")}
                     autoFocus
                     value={depSearch}
                     onChange={(e) => setDepSearch(e.target.value)}
                     onClick={(e) => e.stopPropagation()}
                   />
                   {filtered.length === 0 ? (
-                    <div className="dep-dropdown-empty">No existing tasks</div>
+                    <div className="dep-dropdown-empty">{t("tasks.noExistingTasks", "No existing tasks")}</div>
                   ) : (
                     filtered.map((t) => (
                       <div
@@ -1680,7 +1674,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               onClick={() => fileInputRef.current?.click()}
             >
               <Paperclip size={12} style={{ verticalAlign: "middle" }} />
-              {pendingImages.length > 0 ? `Attach (${pendingImages.length})` : "Attach"}
+              {pendingImages.length > 0 ? t("tasks.attachCount", "Attach ({{count}})", { count: pendingImages.length }) : t("tasks.attach", "Attach")}
             </button>
 
             <button
@@ -1731,7 +1725,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 }}
               >
                 <Server size={12} style={{ verticalAlign: "middle" }} />
-                {` ${selectedNode?.name ?? "Node"}`}
+                {` ${selectedNode?.name ?? t("tasks.node", "Node")}`}
                 {selectedNode && (
                   <span className="quick-entry-node-status">
                     <NodeHealthDot status={selectedNode.status} showLabel />
@@ -1754,7 +1748,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   overflowY: nodePickerPosition.maxHeight ? "auto" : undefined,
                 }}
               >
-                <div className="dep-dropdown-search-header">Select execution node</div>
+                <div className="dep-dropdown-search-header">{t("tasks.selectExecutionNode", "Select execution node")}</div>
                 <div
                   className={`dep-dropdown-item node-picker-item${nodeId == null ? " selected" : ""}`}
                   onMouseDown={(e) => e.preventDefault()}
@@ -1764,7 +1758,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                     setNodePickerPosition(null);
                   }}
                 >
-                  <span className="node-picker-item-name">Project default / local</span>
+                  <span className="node-picker-item-name">{t("tasks.projectDefaultLocal", "Project default / local")}</span>
                 </div>
                 {nodes.map((node) => (
                   <div
@@ -1781,7 +1775,12 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                       <NodeHealthDot status={node.status} />
                     </span>
                     <span className="node-picker-item-name">{node.name}</span>
-                    <span className="node-picker-item-status">{getNodeStatusLabel(node.status)}</span>
+                    <span className="node-picker-item-status">{
+                      node.status === "online" ? t("nodes.statusOnline", "Online") :
+                      node.status === "connecting" ? t("nodes.statusConnecting", "Connecting") :
+                      node.status === "error" ? t("nodes.statusError", "Error") :
+                      t("nodes.statusOffline", "Offline")
+                    }</span>
                   </div>
                 ))}
               </div>,
@@ -1807,7 +1806,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 data-testid="quick-entry-agent-button"
               >
                 <Bot size={12} style={{ verticalAlign: "middle" }} />
-                {selectedAgentLabel ? ` ${selectedAgentLabel}` : " Agent"}
+                {selectedAgentLabel ? ` ${selectedAgentLabel}` : ` ${t("tasks.agent", "Agent")}`}
               </button>
             </div>
             {showAgentPicker && portalRoot && agentPickerPosition && createPortal(
@@ -1824,8 +1823,8 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   overflowY: agentPickerPosition.maxHeight ? "auto" : undefined,
                 }}
               >
-                <div className="dep-dropdown-search-header">Select agent</div>
-                {agentsLoading && <div className="dep-dropdown-empty">Loading agents...</div>}
+                <div className="dep-dropdown-search-header">{t("tasks.selectAgent", "Select agent")}</div>
+                {agentsLoading && <div className="dep-dropdown-empty">{t("tasks.loadingAgents", "Loading agents...")}</div>}
                 {!agentsLoading && agents.map((a) => (
                   <div
                     key={a.id}
@@ -1843,7 +1842,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   </div>
                 ))}
                 {!agentsLoading && agents.length === 0 && (
-                  <div className="dep-dropdown-empty">No agents available</div>
+                  <div className="dep-dropdown-empty">{t("tasks.noAgentsAvailable", "No agents available")}</div>
                 )}
                 {selectedAgentId && (
                   <div
@@ -1855,7 +1854,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                       setAgentPickerPosition(null);
                     }}
                   >
-                    <span className="dep-dropdown-title">Clear selection</span>
+                    <span className="dep-dropdown-title">{t("tasks.clearSelection", "Clear selection")}</span>
                   </div>
                 )}
               </div>,
@@ -1906,7 +1905,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   overflowY: priorityPickerPosition.maxHeight ? "auto" : undefined,
                 }}
               >
-                <div className="dep-dropdown-search-header">Select priority</div>
+                <div className="dep-dropdown-search-header">{t("tasks.selectPriority", "Select priority")}</div>
                 {TASK_PRIORITIES.map((taskPriority) => {
                   const label = `${taskPriority[0].toUpperCase()}${taskPriority.slice(1)}`;
                   return (
@@ -1936,9 +1935,9 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               onMouseDown={(e) => e.preventDefault()}
               aria-pressed={isFastMode}
               data-testid="quick-entry-fast-toggle"
-              title="Toggle fast execution mode"
+              title={t("tasks.toggleFastMode", "Toggle fast execution mode")}
             >
-              Fast
+              {t("tasks.fast", "Fast")}
             </button>
 
             <button
@@ -1968,10 +1967,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               onMouseDown={(e) => e.preventDefault()}
               disabled={!description.trim() || isSubmitting}
               data-testid="quick-entry-save"
-              title="Create task"
+              title={t("tasks.createTaskTitle", "Create task")}
             >
               <Save size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Save
+              {t("tasks.save", "Save")}
             </button>
           </div>
         )}
@@ -1986,7 +1985,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   className="inline-create-preview-remove"
                   onClick={() => removeImage(index)}
                   disabled={isSubmitting}
-                  title="Remove image"
+                  title={t("tasks.removeImage", "Remove image")}
                   data-testid={`quick-entry-preview-remove-${index}`}
                 >
                   ×
@@ -2021,12 +2020,12 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   >
                     <span className="model-menu-item-label">
                       <Lightbulb size={12} style={{ verticalAlign: "middle", marginRight: 6 }} />
-                      Plan
+                      {t("tasks.modelPlan", "Plan")}
                     </span>
                     <span className="model-menu-item-value">
                       {hasPlanningOverride
                         ? getModelBadgeLabel(planningProvider, planningModelId)
-                        : "Using default"}
+                        : t("tasks.usingDefault", "Using default")}
                     </span>
                     <ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
                   </button>
@@ -2038,12 +2037,12 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   >
                     <span className="model-menu-item-label">
                       <Sparkles size={12} style={{ verticalAlign: "middle", marginRight: 6 }} />
-                      Executor
+                      {t("tasks.modelExecutor", "Executor")}
                     </span>
                     <span className="model-menu-item-value">
                       {hasExecutorOverride
                         ? getModelBadgeLabel(executorProvider, executorModelId)
-                        : "Using default"}
+                        : t("tasks.usingDefault", "Using default")}
                     </span>
                     <ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
                   </button>
@@ -2055,12 +2054,12 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   >
                     <span className="model-menu-item-label">
                       <Brain size={12} style={{ verticalAlign: "middle", marginRight: 6 }} />
-                      Reviewer
+                      {t("tasks.modelReviewer", "Reviewer")}
                     </span>
                     <span className="model-menu-item-value">
                       {hasValidatorOverride
                         ? getModelBadgeLabel(validatorProvider, validatorModelId)
-                        : "Using default"}
+                        : t("tasks.usingDefault", "Using default")}
                     </span>
                     <ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
                   </button>
@@ -2075,12 +2074,12 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                     data-testid="model-submenu-back"
                   >
                     <ChevronDown size={12} style={{ transform: "rotate(90deg)", marginRight: 4 }} />
-                    Back
+                    {t("common.back", "Back")}
                   </button>
                   <div className="model-submenu-header">
-                    {activeModelSubmenu === "plan" && "Plan Model"}
-                    {activeModelSubmenu === "executor" && "Executor Model"}
-                    {activeModelSubmenu === "validator" && "Reviewer Model"}
+                    {activeModelSubmenu === "plan" && t("tasks.planModel", "Plan Model")}
+                    {activeModelSubmenu === "executor" && t("tasks.executorModel", "Executor Model")}
+                    {activeModelSubmenu === "validator" && t("tasks.reviewerModel", "Reviewer Model")}
                   </div>
                   <CustomModelDropdown
                     models={loadedModels}
@@ -2098,7 +2097,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                           ? handleExecutorChange
                           : handleValidatorChange
                     }
-                    placeholder="Using default"
+                    placeholder={t("tasks.usingDefault", "Using default")}
                     disabled={modelsLoading}
                     id={`model-${activeModelSubmenu}-select`}
                     label={`${activeModelSubmenu} model`}
@@ -2111,7 +2110,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                     <div className="model-submenu-error">
                       <span>{modelsError}</span>
                       <button type="button" className="btn btn-sm" onClick={loadModels}>
-                        Retry
+                        {t("common.retry", "Retry")}
                       </button>
                     </div>
                   )}
@@ -2134,7 +2133,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
           data-testid="quick-entry-file-input"
         />
         <div className="quick-entry-hint">
-          Enter to create · Esc to cancel
+          {t("tasks.quickEntryHint", "Enter to create · Esc to cancel")}
         </div>
       </div>
       {duplicateMatches && (

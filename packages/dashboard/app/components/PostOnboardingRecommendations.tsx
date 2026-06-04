@@ -1,5 +1,6 @@
 import "./PostOnboardingRecommendations.css";
 import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import { useTranslation } from "react-i18next";
 import { GitPullRequest, Key, Lightbulb, X, Zap } from "lucide-react";
 import { fetchAuthStatus, fetchGlobalSettings } from "../api";
 import { PluginSlot } from "./PluginSlot";
@@ -27,6 +28,7 @@ export function PostOnboardingRecommendations({
   onOpenSettings,
   onOpenModelOnboarding,
 }: PostOnboardingRecommendationsProps) {
+  const { t } = useTranslation("app");
   const onboardingCompleted = isOnboardingCompleted();
   const postOnboardingDismissed = isPostOnboardingDismissed();
 
@@ -117,9 +119,9 @@ export function PostOnboardingRecommendations({
     if (incompleteState.needsAiProvider) {
       items.push({
         id: "ai-provider",
-        title: "Connect AI Provider",
-        description: "Connect an AI provider to enable AI agents for task planning and code generation",
-        actionLabel: "Set Up AI",
+        title: t("setup.connectAiProvider", "Connect AI Provider"),
+        description: t("setup.connectAiProviderDesc", "Connect an AI provider to enable AI agents for task planning and code generation"),
+        actionLabel: t("setup.setUpAi", "Set Up AI"),
         onAction: handleOpenModelOnboarding,
         icon: Zap,
       });
@@ -128,9 +130,9 @@ export function PostOnboardingRecommendations({
     if (incompleteState.needsDefaultModel) {
       items.push({
         id: "default-model",
-        title: "Select Default Model",
-        description: "Choose a default AI model for task execution",
-        actionLabel: "Choose Model",
+        title: t("setup.selectDefaultModel", "Select Default Model"),
+        description: t("setup.selectDefaultModelDesc", "Choose a default AI model for task execution"),
+        actionLabel: t("setup.chooseModel", "Choose Model"),
         onAction: handleOpenGlobalModels,
         icon: Key,
       });
@@ -139,9 +141,9 @@ export function PostOnboardingRecommendations({
     if (incompleteState.needsGitHub) {
       items.push({
         id: "github",
-        title: "Connect GitHub",
-        description: "Connect GitHub to import issues and track pull requests",
-        actionLabel: "Connect GitHub",
+        title: t("setup.connectGitHub", "Connect GitHub"),
+        description: t("setup.connectGitHubDesc", "Connect GitHub to import issues and track pull requests"),
+        actionLabel: t("setup.connectGitHubButton", "Connect GitHub"),
         onAction: handleOpenAuthentication,
         icon: GitPullRequest,
       });
@@ -165,16 +167,16 @@ export function PostOnboardingRecommendations({
     <section
       className="post-onboarding-recommendations"
       role="region"
-      aria-label="Setup recommendations"
+      aria-label={t("setup.ariaSetupRecommendations", "Setup recommendations")}
     >
       <div className="post-onboarding-recommendations__main">
         <div className="post-onboarding-recommendations__icon" aria-hidden="true">
           <Lightbulb size={18} aria-hidden={true} />
         </div>
         <div className="post-onboarding-recommendations__content">
-          <h2 className="post-onboarding-recommendations__title">Recommended Next Steps</h2>
+          <h2 className="post-onboarding-recommendations__title">{t("setup.recommendedNextSteps", "Recommended Next Steps")}</h2>
           <p className="post-onboarding-recommendations__description">
-            Complete these setup items to get the most out of Fusion.
+            {t("setup.completeSetup", "Complete these setup items to get the most out of Fusion.")}
           </p>
           <ul className="post-onboarding-recommendations__list">
             {recommendations.map((item) => {
@@ -210,7 +212,7 @@ export function PostOnboardingRecommendations({
         type="button"
         className="post-onboarding-recommendations__dismiss"
         onClick={handleDismiss}
-        aria-label="Dismiss recommendations"
+        aria-label={t("setup.ariaDismissRecommendations", "Dismiss recommendations")}
       >
         <X size={16} aria-hidden={true} />
       </button>

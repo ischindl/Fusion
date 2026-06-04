@@ -1,5 +1,6 @@
 import "./AgentReflectionsTab.css";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   BarChart3,
   ChevronDown,
@@ -48,36 +49,36 @@ function formatPercent(rate: number): string {
 }
 
 /** Format an ISO timestamp to a relative time string */
-function relativeTime(iso: string): string {
+function relativeTime(iso: string, t: (key: string, defaultValue: string, opts?: Record<string, unknown>) => string): string {
   const now = Date.now();
   const then = new Date(iso).getTime();
   const diffMs = now - then;
 
   if (diffMs < 0) {
     const absDiff = Math.abs(diffMs);
-    if (absDiff < 60_000) return "in a moment";
-    if (absDiff < 3_600_000) return `in ${Math.floor(absDiff / 60_000)}m`;
-    if (absDiff < 86_400_000) return `in ${Math.floor(absDiff / 3_600_000)}h`;
-    return `in ${Math.floor(absDiff / 86_400_000)}d`;
+    if (absDiff < 60_000) return t("agents.time.inAMoment", "in a moment");
+    if (absDiff < 3_600_000) return t("agents.time.inMinutes", "in {{count}}m", { count: Math.floor(absDiff / 60_000) });
+    if (absDiff < 86_400_000) return t("agents.time.inHours", "in {{count}}h", { count: Math.floor(absDiff / 3_600_000) });
+    return t("agents.time.inDays", "in {{count}}d", { count: Math.floor(absDiff / 86_400_000) });
   }
 
-  if (diffMs < 60_000) return "just now";
-  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return `${Math.floor(diffMs / 86_400_000)}d ago`;
+  if (diffMs < 60_000) return t("agents.time.justNow", "just now");
+  if (diffMs < 3_600_000) return t("agents.time.minutesAgo", "{{count}}m ago", { count: Math.floor(diffMs / 60_000) });
+  if (diffMs < 86_400_000) return t("agents.time.hoursAgo", "{{count}}h ago", { count: Math.floor(diffMs / 3_600_000) });
+  return t("agents.time.daysAgo", "{{count}}d ago", { count: Math.floor(diffMs / 86_400_000) });
 }
 
 /** Get display label for a trigger type */
-function getTriggerLabel(trigger: string): string {
+function getTriggerLabel(trigger: string, t: (key: string, defaultValue: string) => string): string {
   switch (trigger) {
     case "periodic":
-      return "Periodic";
+      return t("agents.reflections.triggerPeriodic", "Periodic");
     case "post-task":
-      return "Post-Task";
+      return t("agents.reflections.triggerPostTask", "Post-Task");
     case "manual":
-      return "Manual";
+      return t("agents.reflections.triggerManual", "Manual");
     case "user-requested":
-      return "User Requested";
+      return t("agents.reflections.triggerUserRequested", "User Requested");
     default:
       return trigger;
   }
@@ -90,16 +91,16 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
-function getTrendLabel(trend: string): string {
+function getTrendLabel(trend: string, t: (key: string, defaultValue: string) => string): string {
   switch (trend) {
     case "improving":
-      return "↑ Improving";
+      return t("agents.ratings.trendImproving", "↑ Improving");
     case "declining":
-      return "↓ Declining";
+      return t("agents.ratings.trendDeclining", "↓ Declining");
     case "stable":
-      return "→ Stable";
+      return t("agents.ratings.trendStable", "→ Stable");
     default:
-      return "Insufficient data";
+      return t("agents.ratings.trendInsufficient", "Insufficient data");
   }
 }
 
@@ -132,6 +133,7 @@ function renderStars(score: number, maxScore: number = 5) {
 }
 
 export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentReflectionsTabProps) {
+  const { t } = useTranslation("app");
   const [reflections, setReflections] = useState<AgentReflection[]>([]);
   const [performance, setPerformance] = useState<AgentPerformanceSummary | null>(null);
   const [ratingSummary, setRatingSummary] = useState<AgentRatingSummary | null>(null);
@@ -154,7 +156,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       setReflections(reflectionsData);
       setPerformance(performanceData);
     } catch (err) {
-      addToast(`Failed to load reflections: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.reflections.loadError", "Failed to load reflections: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsLoadingReflections(false);
     }
@@ -169,7 +171,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       setRatingSummary(summaryData);
       setRatings(ratingsData);
     } catch (err) {
-      addToast(`Failed to load ratings: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.ratings.loadError", "Failed to load ratings: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsLoadingRatings(false);
     }
@@ -185,11 +187,11 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
     try {
       const reflection = await triggerAgentReflection(agentId, projectId);
       if (!reflection) {
-        addToast("Not enough history to generate a reflection yet", "error");
+        addToast(t("agents.reflections.insufficientHistory", "Not enough history to generate a reflection yet"), "error");
         return;
       }
 
-      addToast("Reflection generated successfully", "success");
+      addToast(t("agents.reflections.generateSuccess", "Reflection generated successfully"), "success");
       setIsLoadingReflections(true);
       await loadReflectionData();
     } catch (err: unknown) {
@@ -197,11 +199,11 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       const normalizedMessage = message.toLowerCase();
 
       if (normalizedMessage.includes("agent not found") || normalizedMessage.includes("not found")) {
-        addToast("This agent is no longer available. It may have been deleted.", "error");
+        addToast(t("agents.reflections.agentNotFound", "This agent is no longer available. It may have been deleted."), "error");
       } else if (normalizedMessage.includes("insufficient history")) {
-        addToast("Not enough history to generate a reflection yet", "error");
+        addToast(t("agents.reflections.insufficientHistory", "Not enough history to generate a reflection yet"), "error");
       } else {
-        addToast(`Failed to generate reflection: ${message}`, "error");
+        addToast(t("agents.reflections.generateError", "Failed to generate reflection: {{error}}", { error: message }), "error");
       }
     } finally {
       setIsReflecting(false);
@@ -224,10 +226,10 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       setNewScore(0);
       setNewCategory("");
       setNewComment("");
-      addToast("Rating added", "success");
+      addToast(t("agents.ratings.addSuccess", "Rating added"), "success");
       await loadRatingsData();
     } catch (err) {
-      addToast(`Failed to add rating: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.ratings.addError", "Failed to add rating: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSubmittingRating(false);
     }
@@ -236,10 +238,10 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
   const handleDeleteRating = async (ratingId: string) => {
     try {
       await deleteAgentRating(agentId, ratingId, projectId);
-      addToast("Rating deleted", "success");
+      addToast(t("agents.ratings.deleteSuccess", "Rating deleted"), "success");
       await loadRatingsData();
     } catch (err) {
-      addToast(`Failed to delete rating: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.ratings.deleteError", "Failed to delete rating: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -252,7 +254,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       <div className="reflections-tab">
         <div className="reflections-loading-indicator">
           <Loader2 size={16} className="animate-spin" />
-          <span className="text-muted">Loading evaluation...</span>
+          <span className="text-muted">{t("agents.reflections.loadingEvaluation", "Loading evaluation...")}</span>
         </div>
       </div>
     );
@@ -269,23 +271,23 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       <div className="reflections-header">
         <h3>
           <BarChart3 size={16} />
-          Performance, Reflections & Ratings
+          {t("agents.reflections.sectionTitle", "Performance, Reflections & Ratings")}
         </h3>
         <button
           className="btn btn-secondary"
           onClick={handleReflectNow}
           disabled={isReflecting}
-          title="Generate a manual reflection"
+          title={t("agents.reflections.reflectNowTitle", "Generate a manual reflection")}
         >
           {isReflecting ? (
             <>
               <Loader2 size={14} className="animate-spin" />
-              Reflecting...
+              {t("agents.reflections.reflecting", "Reflecting...")}
             </>
           ) : (
             <>
               <RefreshCw size={14} />
-              Reflect Now
+              {t("agents.reflections.reflectNow", "Reflect Now")}
             </>
           )}
         </button>
@@ -298,7 +300,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
               <TrendingUp size={16} style={{ color: "var(--color-success)" }} />
               {performance.totalTasksCompleted}
             </div>
-            <div className="stat-label">Tasks Completed</div>
+            <div className="stat-label">{t("agents.performance.tasksCompleted", "Tasks Completed")}</div>
           </div>
 
           <div className="reflections-stat-card">
@@ -306,7 +308,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
               <TrendingDown size={16} style={{ color: "var(--color-error)" }} />
               {performance.totalTasksFailed}
             </div>
-            <div className="stat-label">Tasks Failed</div>
+            <div className="stat-label">{t("agents.performance.tasksFailed", "Tasks Failed")}</div>
           </div>
 
           <div className="reflections-stat-card">
@@ -314,7 +316,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
               <Zap size={16} style={{ color: "var(--in-progress)" }} />
               {formatDuration(performance.avgDurationMs)}
             </div>
-            <div className="stat-label">Avg Duration</div>
+            <div className="stat-label">{t("agents.performance.avgDuration", "Avg Duration")}</div>
           </div>
 
           <div className="reflections-stat-card">
@@ -332,7 +334,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
               />
               {formatPercent(performance.successRate)}
             </div>
-            <div className="stat-label">Success Rate</div>
+            <div className="stat-label">{t("agents.performance.successRate", "Success Rate")}</div>
           </div>
 
           <div className="reflections-stat-card">
@@ -340,7 +342,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
               <Lightbulb size={16} style={{ color: "var(--color-info)" }} />
               {performance.recentReflectionCount}
             </div>
-            <div className="stat-label">Reflections</div>
+            <div className="stat-label">{t("agents.performance.reflections", "Reflections")}</div>
           </div>
         </div>
       )}
@@ -348,17 +350,17 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       {hasNoPerformanceData && (
         <div className="reflections-no-data">
           <BarChart3 size={24} opacity={0.3} />
-          <p>No performance data yet</p>
+          <p>{t("agents.performance.noData", "No performance data yet")}</p>
         </div>
       )}
 
       <div className="reflections-ratings-section">
-        <h4>User Ratings</h4>
+        <h4>{t("agents.ratings.title", "User Ratings")}</h4>
 
         {isLoadingRatings ? (
           <div className="reflections-loading-indicator">
             <Loader2 size={16} className="animate-spin" />
-            <span className="text-muted">Loading ratings...</span>
+            <span className="text-muted">{t("agents.ratings.loading", "Loading ratings...")}</span>
           </div>
         ) : (
           <>
@@ -369,9 +371,9 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                   {renderStars(Math.round(ratingSummary.averageScore))}
                 </div>
                 <div className="rating-stats">
-                  <span className="rating-count">{ratingSummary.totalRatings} ratings</span>
+                  <span className="rating-count">{t("agents.ratings.count", "{{count}} ratings", { count: ratingSummary.totalRatings })}</span>
                   <span className={`rating-trend-badge ${getTrendClass(ratingSummary.trend)}`}>
-                    {getTrendLabel(ratingSummary.trend)}
+                    {getTrendLabel(ratingSummary.trend, t)}
                   </span>
                 </div>
               </div>
@@ -379,7 +381,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
 
             {ratingSummary && Object.keys(ratingSummary.categoryAverages).length > 0 && (
               <div className="category-breakdown">
-                <h4>Category Averages</h4>
+                <h4>{t("agents.ratings.categoryAverages", "Category Averages")}</h4>
                 {Object.entries(ratingSummary.categoryAverages as Record<string, number>).map(([category, avg]) => (
                   <div key={category} className="category-item">
                     <span className="category-name">{category}</span>
@@ -390,7 +392,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
             )}
 
             <form className="add-rating-form" onSubmit={handleSubmitRating}>
-              <h4>Add Rating</h4>
+              <h4>{t("agents.ratings.addRating", "Add Rating")}</h4>
               <div className="star-selector">
                 {[1, 2, 3, 4, 5].map((score) => (
                   <button
@@ -398,7 +400,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                     type="button"
                     className="star-btn touch-target"
                     onClick={() => setNewScore(score)}
-                    title={`${score} star${score > 1 ? "s" : ""}`}
+                    title={t("agents.ratings.starCount", "{{count}} star", { count: score, defaultValue_one: "{{count}} star", defaultValue_other: "{{count}} stars" })}
                   >
                     <Star
                       size={24}
@@ -413,17 +415,17 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                 onChange={(e) => setNewCategory(e.target.value)}
                 className="select add-rating-category-select"
               >
-                <option value="">Select category...</option>
-                <option value="quality">Quality</option>
-                <option value="speed">Speed</option>
-                <option value="communication">Communication</option>
-                <option value="reliability">Reliability</option>
-                <option value="other">Other</option>
+                <option value="">{t("agents.ratings.categorySelect", "Select category...")}</option>
+                <option value="quality">{t("agents.ratings.categoryQuality", "Quality")}</option>
+                <option value="speed">{t("agents.ratings.categorySpeed", "Speed")}</option>
+                <option value="communication">{t("agents.ratings.categoryCommunication", "Communication")}</option>
+                <option value="reliability">{t("agents.ratings.categoryReliability", "Reliability")}</option>
+                <option value="other">{t("agents.ratings.categoryOther", "Other")}</option>
               </select>
               <textarea
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
-                placeholder="Optional comment..."
+                placeholder={t("agents.ratings.commentPlaceholder", "Optional comment...")}
                 className="input add-rating-comment-input"
                 rows={3}
               />
@@ -432,14 +434,14 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                 className="btn btn-task-create"
                 disabled={newScore === 0 || isSubmittingRating}
               >
-                {isSubmittingRating ? "Submitting..." : "Submit Rating"}
+                {isSubmittingRating ? t("agents.ratings.submitting", "Submitting...") : t("agents.ratings.submitRating", "Submit Rating")}
               </button>
             </form>
 
             <div className="rating-history">
-              <h4>Rating History</h4>
+              <h4>{t("agents.ratings.historyTitle", "Rating History")}</h4>
               {ratings.length === 0 ? (
-                <p className="no-ratings">No ratings yet</p>
+                <p className="no-ratings">{t("agents.ratings.noRatings", "No ratings yet")}</p>
               ) : (
                 ratings.map((rating) => (
                   <div key={rating.id} className="rating-history-item">
@@ -448,12 +450,12 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                       {rating.category && (
                         <span className="rating-category-badge">{rating.category}</span>
                       )}
-                      <span className="rating-time">{relativeTime(rating.createdAt)}</span>
+                      <span className="rating-time">{relativeTime(rating.createdAt, t)}</span>
                       <button
                         type="button"
                         className="rating-delete-btn touch-target"
                         onClick={() => void handleDeleteRating(rating.id)}
-                        title="Delete rating"
+                        title={t("agents.ratings.deleteRating", "Delete rating")}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -470,18 +472,18 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
       </div>
 
       <div className="reflections-list">
-        <h4>Reflection History</h4>
+        <h4>{t("agents.reflections.historyTitle", "Reflection History")}</h4>
 
         {isLoadingReflections ? (
           <div className="reflections-loading-indicator">
             <Loader2 size={16} className="animate-spin" />
-            <span className="text-muted">Loading reflections...</span>
+            <span className="text-muted">{t("agents.reflections.loading", "Loading reflections...")}</span>
           </div>
         ) : reflections.length === 0 ? (
           <div className="reflection-empty">
             <Lightbulb size={32} opacity={0.3} />
-            <p>No reflections yet</p>
-            <p className="text-secondary">Trigger a reflection to get started</p>
+            <p>{t("agents.reflections.noReflections", "No reflections yet")}</p>
+            <p className="text-secondary">{t("agents.reflections.getStarted", "Trigger a reflection to get started")}</p>
           </div>
         ) : (
           <div className="reflection-cards">
@@ -498,9 +500,9 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                 >
                   <div className="reflection-card-header">
                     <span className={`reflection-trigger-badge reflection-trigger-${reflection.trigger}`}>
-                      {getTriggerLabel(reflection.trigger)}
+                      {getTriggerLabel(reflection.trigger, t)}
                     </span>
-                    <span className="reflection-timestamp">{relativeTime(reflection.timestamp)}</span>
+                    <span className="reflection-timestamp">{relativeTime(reflection.timestamp, t)}</span>
                     <span className="reflection-chevron">
                       {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </span>
@@ -513,7 +515,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                       {reflection.insights.length > 0 && (
                         <div className="reflection-insights">
                           <h5>
-                            <Lightbulb size={14} /> Insights
+                            <Lightbulb size={14} /> {t("agents.reflections.insights", "Insights")}
                           </h5>
                           <ul>
                             {reflection.insights.map((insight, i) => (
@@ -526,7 +528,7 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
                       {reflection.suggestedImprovements.length > 0 && (
                         <div className="reflection-suggestions">
                           <h5>
-                            <TrendingUp size={14} /> Suggested Improvements
+                            <TrendingUp size={14} /> {t("agents.reflections.suggestedImprovements", "Suggested Improvements")}
                           </h5>
                           <ul>
                             {reflection.suggestedImprovements.map((suggestion, i) => (
@@ -538,29 +540,29 @@ export function AgentReflectionsTab({ agentId, projectId, addToast }: AgentRefle
 
                       {reflection.metrics && (
                         <div className="reflection-metrics">
-                          <h5>Metrics</h5>
+                          <h5>{t("agents.reflections.metrics", "Metrics")}</h5>
                           <div className="metrics-grid">
                             {reflection.metrics.tasksCompleted !== undefined && (
                               <div className="metric">
-                                <span className="metric-label">Tasks:</span>
+                                <span className="metric-label">{t("agents.reflections.metricTasks", "Tasks:")}</span>
                                 <span className="metric-value">{reflection.metrics.tasksCompleted}</span>
                               </div>
                             )}
                             {reflection.metrics.tasksFailed !== undefined && (
                               <div className="metric">
-                                <span className="metric-label">Failed:</span>
+                                <span className="metric-label">{t("agents.reflections.metricFailed", "Failed:")}</span>
                                 <span className="metric-value">{reflection.metrics.tasksFailed}</span>
                               </div>
                             )}
                             {reflection.metrics.avgDurationMs !== undefined && (
                               <div className="metric">
-                                <span className="metric-label">Avg Duration:</span>
+                                <span className="metric-label">{t("agents.reflections.metricAvgDuration", "Avg Duration:")}</span>
                                 <span className="metric-value">{formatDuration(reflection.metrics.avgDurationMs)}</span>
                               </div>
                             )}
                             {reflection.metrics.errorCount !== undefined && (
                               <div className="metric">
-                                <span className="metric-label">Errors:</span>
+                                <span className="metric-label">{t("agents.reflections.metricErrors", "Errors:")}</span>
                                 <span className="metric-value">{reflection.metrics.errorCount}</span>
                               </div>
                             )}

@@ -1,4 +1,5 @@
 import { File, Hash } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { FileSearchItem, TaskSearchItem } from "../hooks/useFileMention";
 import { getDisplayDirname } from "../utils/pathDisplay";
 import "./FileMentionPopup.css";
@@ -38,6 +39,8 @@ export function FileMentionPopup({
   onSelectFile,
   loading,
 }: FileMentionPopupProps): ReactNode | null {
+  const { t } = useTranslation("app");
+
   if (!visible) {
     return null;
   }
@@ -62,7 +65,7 @@ export function FileMentionPopup({
 
       {!loading && !hasTasks && !hasFiles && (
         <div className="file-mention-popup-empty" data-testid="file-mention-empty">
-          No tasks or files found
+          {t("fileMention.empty", "No tasks or files found")}
         </div>
       )}
 
@@ -70,8 +73,8 @@ export function FileMentionPopup({
         <div className="file-mention-popup-groups">
           {hasTasks && (
             <div className="file-mention-popup-group">
-              <div className="file-mention-popup-group-header">Tasks</div>
-              <ul className="file-mention-popup-list" role="listbox" aria-label="Task matches">
+              <div className="file-mention-popup-group-header">{t("fileMention.taskHeader", "Tasks")}</div>
+              <ul className="file-mention-popup-list" role="listbox" aria-label={t("fileMention.taskMatches", "Task matches")}>
                 {tasks.map((task, index) => {
                   const rowIndex = getTaskRowIndex(index);
                   return (
@@ -106,8 +109,8 @@ export function FileMentionPopup({
 
           {hasFiles && (
             <div className="file-mention-popup-group">
-              <div className="file-mention-popup-group-header">Files</div>
-              <ul className="file-mention-popup-list" role="listbox" aria-label="File matches">
+              <div className="file-mention-popup-group-header">{t("fileMention.fileHeader", "Files")}</div>
+              <ul className="file-mention-popup-list" role="listbox" aria-label={t("fileMention.fileMatches", "File matches")}>
                 {files.map((file, index) => {
                   const rowIndex = getFileRowIndex(tasks.length, index);
                   const dirPath = getDisplayDirname(file.path);

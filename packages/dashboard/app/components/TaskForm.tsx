@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, type GlobalSettings, type Task, type TaskPriority, type Settings, type WorkflowStep } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
 import { fetchModels, fetchSettings, fetchWorkflowSteps, refineText, getRefineErrorMessage, updateGlobalSettings, fetchGlobalSettings, fetchGitBranches, type RefinementType, type ModelInfo, type NodeInfo } from "../api";
@@ -8,11 +9,11 @@ import { NodeHealthDot } from "./NodeHealthDot";
 import { Sparkles, ChevronUp, ChevronDown, X, Maximize2, Minimize2 } from "lucide-react";
 import { REPO_OVERRIDE_RE, resolveEffectiveGithubRepoDefault } from "./githubTracking";
 
-function getNodeStatusLabel(status: NodeInfo["status"]): string {
-  if (status === "online") return "Online";
-  if (status === "connecting") return "Connecting";
-  if (status === "error") return "Error";
-  return "Offline";
+function getNodeStatusLabel(status: NodeInfo["status"], t: (key: string, defaultValue: string) => string): string {
+  if (status === "online") return t("taskForm.nodeStatusOnline", "Online");
+  if (status === "connecting") return t("taskForm.nodeStatusConnecting", "Connecting");
+  if (status === "error") return t("taskForm.nodeStatusError", "Error");
+  return t("taskForm.nodeStatusOffline", "Offline");
 }
 
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -38,14 +39,14 @@ function sortBranchNames(branches: string[]): string[] {
 }
 
 /** Renders a phase badge using shared .phase-badge classes for consistency */
-function phaseBadge(phase: "pre-merge" | "post-merge", id: string, prefix: string): ReactNode {
+function phaseBadge(phase: "pre-merge" | "post-merge", id: string, prefix: string, t: (key: string, defaultValue: string) => string): ReactNode {
   const phaseClass = phase === "post-merge" ? "phase-badge--post-merge" : "phase-badge--pre-merge";
   return (
     <span
       className={`phase-badge ${phaseClass}`}
       data-testid={`${prefix}-${id}`}
     >
-      {phase === "post-merge" ? "Post-merge" : "Pre-merge"}
+      {phase === "post-merge" ? t("taskForm.phasePostMerge", "Post-merge") : t("taskForm.phasePreMerge", "Pre-merge")}
     </span>
   );
 }
@@ -207,6 +208,7 @@ export function TaskForm({
   githubRepoOverride,
   onGithubRepoOverrideChange,
 }: TaskFormProps) {
+  const { t } = useTranslation("app");
   const hasInitialMoreOptions =
     (hideDependencies ? false : dependencies.length > 0) ||
     pendingImages.length > 0 ||
@@ -590,7 +592,7 @@ export function TaskForm({
       const refined = await refineText(trimmed, type, projectId);
       onDescriptionChange(refined);
       setIsRefineMenuOpen(false);
-      addToast("Description refined with AI", "success");
+      addToast(t("taskForm.descriptionRefinedToast", "Description refined with AI"), "success");
       if (descTextareaRef.current) {
         descTextareaRef.current.style.height = "auto";
         descTextareaRef.current.style.height = descTextareaRef.current.scrollHeight + "px";
@@ -689,14 +691,14 @@ export function TaskForm({
         {/* Title field (edit mode only) */}
       {mode === "edit" && onTitleChange && (
         <div className="form-group">
-          <label htmlFor="task-form-title">Title</label>
+          <label htmlFor="task-form-title">{t("taskForm.titleLabel", "Title")}</label>
           <input
             ref={titleInputRef}
             autoFocus
             id="task-form-title"
             type="text"
             className="modal-edit-input"
-            placeholder="Task title"
+            placeholder={t("taskForm.titlePlaceholder", "Task title")}
             value={title || ""}
             onChange={(e) => onTitleChange(e.target.value)}
             disabled={disabled}
@@ -707,12 +709,12 @@ export function TaskForm({
       {/* Description field */}
       <div className="form-group">
         <label htmlFor="task-form-description" className="description-label-row">
-          <span>Description</span>
+          <span>{t("taskForm.descriptionLabel", "Description")}</span>
           <span
             className={`description-auto-save-status${autoSaveStatus === "idle" ? "" : " is-visible"}`}
             aria-live="polite"
           >
-            {autoSaveStatus === "saving" ? "Saving..." : autoSaveStatus === "saved" ? "Saved" : ""}
+            {autoSaveStatus === "saving" ? t("taskForm.autoSaveSaving", "Saving...") : autoSaveStatus === "saved" ? t("taskForm.autoSaveSaved", "Saved") : ""}
           </span>
         </label>
         <div
@@ -722,13 +724,13 @@ export function TaskForm({
         >
           {isDescriptionExpanded && (
             <div className="description-fullscreen-header">
-              <span>Editing Description</span>
+              <span>{t("taskForm.editingDescription", "Editing Description")}</span>
               <button
                 type="button"
                 className="btn btn-sm description-expand-btn"
                 onClick={handleToggleDescriptionExpand}
-                aria-label="Collapse description"
-                title="Collapse description"
+                aria-label={t("taskForm.collapseDescription", "Collapse description")}
+                title={t("taskForm.collapseDescription", "Collapse description")}
               >
                 <Minimize2 size={14} />
               </button>
@@ -740,7 +742,7 @@ export function TaskForm({
             id="task-form-description"
             value={description}
             onChange={handleDescriptionInput}
-            placeholder="What needs to be done?"
+            placeholder={t("taskForm.descriptionPlaceholder", "What needs to be done?")}
             rows={mode === "edit" ? 8 : 5}
             disabled={disabled || isRefining}
           />
@@ -754,8 +756,8 @@ export function TaskForm({
                     type="button"
                     className={`btn btn-sm description-expand-btn${showRefineButton ? " description-expand-btn--offset" : " description-expand-btn--flush"}`}
                     onClick={handleToggleDescriptionExpand}
-                    aria-label="Expand description"
-                    title="Expand description"
+                    aria-label={t("taskForm.expandDescription", "Expand description")}
+                    title={t("taskForm.expandDescription", "Expand description")}
                   >
                     <Maximize2 size={14} />
                   </button>
@@ -767,10 +769,10 @@ export function TaskForm({
               onClick={() => setIsRefineMenuOpen((prev) => !prev)}
               disabled={isRefining}
               data-testid="refine-button"
-              title="Refine description with AI"
+              title={t("taskForm.refineTitle", "Refine description with AI")}
             >
               <Sparkles size={12} style={{ verticalAlign: "middle" }} />
-              {isRefining ? "Refining..." : "Refine"}
+              {isRefining ? t("taskForm.refineInProgress", "Refining...") : t("taskForm.refineButton", "Refine")}
             </button>
                 )}
               </>
@@ -782,20 +784,20 @@ export function TaskForm({
               onMouseDown={(e) => e.preventDefault()}
             >
               <div className="refine-menu-item" onClick={() => handleRefine("clarify")} data-testid="refine-clarify">
-                <div className="refine-menu-item-title">Clarify</div>
-                <div className="refine-menu-item-desc">Make the description clearer and more specific</div>
+                <div className="refine-menu-item-title">{t("taskForm.refineClarifyTitle", "Clarify")}</div>
+                <div className="refine-menu-item-desc">{t("taskForm.refineClarifyDesc", "Make the description clearer and more specific")}</div>
               </div>
               <div className="refine-menu-item" onClick={() => handleRefine("add-details")} data-testid="refine-add-details">
-                <div className="refine-menu-item-title">Add details</div>
-                <div className="refine-menu-item-desc">Add implementation details and context</div>
+                <div className="refine-menu-item-title">{t("taskForm.refineAddDetailsTitle", "Add details")}</div>
+                <div className="refine-menu-item-desc">{t("taskForm.refineAddDetailsDesc", "Add implementation details and context")}</div>
               </div>
               <div className="refine-menu-item" onClick={() => handleRefine("expand")} data-testid="refine-expand">
-                <div className="refine-menu-item-title">Expand</div>
-                <div className="refine-menu-item-desc">Expand into a more comprehensive description</div>
+                <div className="refine-menu-item-title">{t("taskForm.refineExpandTitle", "Expand")}</div>
+                <div className="refine-menu-item-desc">{t("taskForm.refineExpandDesc", "Expand into a more comprehensive description")}</div>
               </div>
               <div className="refine-menu-item" onClick={() => handleRefine("simplify")} data-testid="refine-simplify">
-                <div className="refine-menu-item-title">Simplify</div>
-                <div className="refine-menu-item-desc">Simplify and make more concise</div>
+                <div className="refine-menu-item-title">{t("taskForm.refineSimplifyTitle", "Simplify")}</div>
+                <div className="refine-menu-item-desc">{t("taskForm.refineSimplifyDesc", "Simplify and make more concise")}</div>
               </div>
             </div>
           )}
@@ -812,7 +814,7 @@ export function TaskForm({
               onClick={() => {
                 const trimmed = description.trim();
                 if (!trimmed) {
-                  addToast("Enter a description first", "error");
+                  addToast(t("taskForm.enterDescriptionFirst", "Enter a description first"), "error");
                   return;
                 }
                 onClose?.();
@@ -821,7 +823,7 @@ export function TaskForm({
               disabled={disabled || !description.trim()}
               data-testid="task-form-plan-button"
             >
-              Plan
+              {t("taskForm.planButton", "Plan")}
             </button>
           )}
           {onSubtaskBreakdown && (
@@ -831,7 +833,7 @@ export function TaskForm({
               onClick={() => {
                 const trimmed = description.trim();
                 if (!trimmed) {
-                  addToast("Enter a description first", "error");
+                  addToast(t("taskForm.enterDescriptionFirst", "Enter a description first"), "error");
                   return;
                 }
                 onClose?.();
@@ -840,7 +842,7 @@ export function TaskForm({
               disabled={disabled || !description.trim()}
               data-testid="task-form-subtask-button"
             >
-              Subtask
+              {t("taskForm.subtaskButton", "Subtask")}
             </button>
           )}
         </div>
@@ -858,7 +860,7 @@ export function TaskForm({
         disabled={disabled}
         data-testid="task-form-more-options-toggle"
       >
-        <span>More options</span>
+        <span>{t("taskForm.moreOptions", "More options")}</span>
         {showMoreOptions ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
       </button>
 
@@ -871,7 +873,7 @@ export function TaskForm({
       >
       {/* Attachments */}
       <div className="form-group">
-        <label>Attachments</label>
+        <label>{t("taskForm.attachmentsLabel", "Attachments")}</label>
         {pendingImages.length > 0 && (
           <div className="inline-create-previews">
             {pendingImages.map((img, i) => (
@@ -882,7 +884,7 @@ export function TaskForm({
                   className="inline-create-preview-remove"
                   onClick={() => removeImage(i)}
                   disabled={disabled}
-                  title="Remove image"
+                  title={t("taskForm.removeImage", "Remove image")}
                 >
                   ×
                 </button>
@@ -912,14 +914,14 @@ export function TaskForm({
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
         >
-          Attach Screenshot
+          {t("taskForm.attachScreenshot", "Attach Screenshot")}
         </button>
-        <small>You can also paste images or drag & drop</small>
+        <small>{t("taskForm.attachHint", "You can also paste images or drag & drop")}</small>
       </div>
 
       {onNodeIdChange && (
         <div className="form-group">
-          <label htmlFor="task-node-select">Execution Node Override</label>
+          <label htmlFor="task-node-select">{t("taskForm.nodeOverrideLabel", "Execution Node Override")}</label>
           <select
             id="task-node-select"
             className="select"
@@ -927,10 +929,10 @@ export function TaskForm({
             onChange={(e) => onNodeIdChange(e.target.value || undefined)}
             disabled={disabled || nodeOverrideDisabled}
           >
-            <option value="">Use project default / local</option>
+            <option value="">{t("taskForm.nodeDefaultOption", "Use project default / local")}</option>
             {(nodeOptions ?? []).map((node) => (
               <option key={node.id} value={node.id}>
-                {node.name} ({getNodeStatusLabel(node.status)})
+                {node.name} ({getNodeStatusLabel(node.status, t)})
               </option>
             ))}
           </select>
@@ -944,7 +946,7 @@ export function TaskForm({
             );
           })()}
           <small>
-            {nodeOverrideDisabledReason ?? "Task override takes priority over project default node routing."}
+            {nodeOverrideDisabledReason ?? t("taskForm.nodeOverrideHint", "Task override takes priority over project default node routing.")}
           </small>
         </div>
       )}
@@ -953,7 +955,7 @@ export function TaskForm({
         <>
       {/* Dependencies */}
       <div className="form-group">
-        <label>Dependencies</label>
+        <label>{t("taskForm.dependenciesLabel", "Dependencies")}</label>
         <div className="dep-trigger-wrap" ref={depDropdownRef}>
           <button
             type="button"
@@ -961,20 +963,20 @@ export function TaskForm({
             onClick={() => setShowDepDropdown((v) => !v)}
             disabled={disabled}
           >
-            {dependencies.length > 0 ? `${dependencies.length} selected` : "Add dependencies"}
+            {dependencies.length > 0 ? t("taskForm.dependenciesSelected", "{{count}} selected", { count: dependencies.length }) : t("taskForm.addDependencies", "Add dependencies")}
           </button>
           {showDepDropdown && (
             <div className="dep-dropdown">
               <input
                 className="dep-dropdown-search"
-                placeholder="Search tasks…"
+                placeholder={t("taskForm.searchTasksPlaceholder", "Search tasks…")}
                 autoFocus
                 value={depSearch}
                 onChange={(e) => setDepSearch(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
               />
               {filteredDeps.length === 0 ? (
-                <div className="dep-dropdown-empty">No available tasks</div>
+                <div className="dep-dropdown-empty">{t("taskForm.noAvailableTasks", "No available tasks")}</div>
               ) : (
                 filteredDeps.map((t) => (
                   <div
@@ -1014,10 +1016,10 @@ export function TaskForm({
 
       {(onBranchChange || onBaseBranchChange || onBranchModeChange) && (
         <div className="form-group">
-          <label>Branch Settings</label>
+          <label>{t("taskForm.branchSettingsLabel", "Branch Settings")}</label>
           {onBranchModeChange ? (
             <>
-              <label htmlFor="task-branch-mode" className="model-select-label">Branch strategy</label>
+              <label htmlFor="task-branch-mode" className="model-select-label">{t("taskForm.branchStrategyLabel", "Branch strategy")}</label>
               <select
                 id="task-branch-mode"
                 className="input"
@@ -1025,32 +1027,32 @@ export function TaskForm({
                 onChange={(event) => onBranchModeChange(event.target.value as BranchSelectionMode)}
                 disabled={disabled}
               >
-                <option value="project-default">Use project/default branch</option>
-                <option value="auto-new">Create auto-named branch per task</option>
-                <option value="existing">Use existing branch</option>
-                <option value="custom-new">Create custom new branch</option>
-                <option value="shared-group">Merge into a shared feature branch</option>
+                <option value="project-default">{t("taskForm.branchModeProjectDefault", "Use project/default branch")}</option>
+                <option value="auto-new">{t("taskForm.branchModeAutoNew", "Create auto-named branch per task")}</option>
+                <option value="existing">{t("taskForm.branchModeExisting", "Use existing branch")}</option>
+                <option value="custom-new">{t("taskForm.branchModeCustomNew", "Create custom new branch")}</option>
+                <option value="shared-group">{t("taskForm.branchModeSharedGroup", "Merge into a shared feature branch")}</option>
               </select>
             </>
           ) : null}
           {onBranchChange && (!onBranchModeChange || branchMode === "existing" || branchMode === "custom-new" || branchMode === "shared-group") && (
             <>
               <label htmlFor="task-working-branch" className="model-select-label">
-                {branchMode === "shared-group" ? "Shared feature branch" : (onBranchModeChange ? "Branch name" : "Working branch")}
+                {branchMode === "shared-group" ? t("taskForm.sharedFeatureBranchLabel", "Shared feature branch") : (onBranchModeChange ? t("taskForm.branchNameLabel", "Branch name") : t("taskForm.workingBranchLabel", "Working branch"))}
               </label>
               <input
                 id="task-working-branch"
                 className="input"
                 value={branch || ""}
                 onChange={(e) => onBranchChange(e.target.value)}
-                placeholder={branchMode === "shared-group" ? "e.g. clionboarding" : "e.g. feature/my-task"}
+                placeholder={branchMode === "shared-group" ? t("taskForm.sharedBranchPlaceholder", "e.g. clionboarding") : t("taskForm.branchPlaceholder", "e.g. feature/my-task")}
                 disabled={disabled}
               />
             </>
           )}
           {onBaseBranchChange && (
             <>
-              <label htmlFor="task-base-branch" className="model-select-label">Merge target / base branch</label>
+              <label htmlFor="task-base-branch" className="model-select-label">{t("taskForm.baseBranchLabel", "Merge target / base branch")}</label>
               {(() => {
                 const currentValue = baseBranch || "";
                 const valueIsKnown = currentValue.length > 0 && baseBranchOptions.includes(currentValue);
@@ -1063,7 +1065,7 @@ export function TaskForm({
                         className="input"
                         value={currentValue}
                         onChange={(e) => onBaseBranchChange(e.target.value)}
-                        placeholder="e.g. main"
+                        placeholder={t("taskForm.baseBranchPlaceholder", "e.g. main")}
                         disabled={disabled}
                         data-testid="task-base-branch-custom-input"
                       />
@@ -1077,7 +1079,7 @@ export function TaskForm({
                         disabled={disabled}
                         data-testid="task-base-branch-use-dropdown"
                       >
-                        Use dropdown
+                        {t("taskForm.useDropdown", "Use dropdown")}
                       </button>
                     </div>
                   );
@@ -1099,11 +1101,11 @@ export function TaskForm({
                     disabled={disabled}
                     data-testid="task-base-branch-select"
                   >
-                    <option value={DEFAULT_BRANCH_OPTION}>(default / project branch)</option>
+                    <option value={DEFAULT_BRANCH_OPTION}>{t("taskForm.baseBranchDefault", "(default / project branch)")}</option>
                     {baseBranchOptions.map((name) => (
                       <option key={name} value={name}>{name}</option>
                     ))}
-                    <option value={CUSTOM_BRANCH_OPTION}>Custom…</option>
+                    <option value={CUSTOM_BRANCH_OPTION}>{t("taskForm.baseBranchCustom", "Custom…")}</option>
                   </select>
                 );
               })()}
@@ -1114,10 +1116,10 @@ export function TaskForm({
 
       {/* Model Selection */}
       <div className="form-group">
-        <label>Model Configuration</label>
+        <label>{t("taskForm.modelConfigLabel", "Model Configuration")}</label>
         {onPriorityChange && (
           <div className="model-select-row">
-            <label htmlFor="task-priority" className="model-select-label">Priority</label>
+            <label htmlFor="task-priority" className="model-select-label">{t("taskForm.priorityLabel", "Priority")}</label>
             <select
               id="task-priority"
               data-testid="task-priority-select"
@@ -1127,7 +1129,7 @@ export function TaskForm({
             >
               {TASK_PRIORITIES.map((taskPriority) => (
                 <option key={taskPriority} value={taskPriority}>
-                  {taskPriority[0].toUpperCase() + taskPriority.slice(1)}
+                  {t(`taskForm.priority_${taskPriority}`, taskPriority[0].toUpperCase() + taskPriority.slice(1))}
                 </option>
               ))}
             </select>
@@ -1135,7 +1137,7 @@ export function TaskForm({
         )}
         {onExecutionModeChange && executionMode !== undefined && (
           <div className="model-select-row">
-            <label htmlFor="task-execution-mode" className="model-select-label">Execution mode</label>
+            <label htmlFor="task-execution-mode" className="model-select-label">{t("taskForm.executionModeLabel", "Execution mode")}</label>
             <select
               id="task-execution-mode"
               data-testid="task-form-execution-mode-select"
@@ -1143,19 +1145,19 @@ export function TaskForm({
               onChange={(e) => onExecutionModeChange(e.target.value as TaskExecutionModeSelection)}
               disabled={disabled}
             >
-              <option value="standard">Standard</option>
-              <option value="fast">Fast</option>
+              <option value="standard">{t("taskForm.executionModeStandard", "Standard")}</option>
+              <option value="fast">{t("taskForm.executionModeFast", "Fast")}</option>
             </select>
           </div>
         )}
         {modelsLoading ? (
-          <div className="model-selector-loading">Loading models…</div>
+          <div className="model-selector-loading">{t("taskForm.loadingModels", "Loading models…")}</div>
         ) : availableModels.length === 0 ? (
-          <small>No models available. Configure authentication in Settings.</small>
+          <small>{t("taskForm.noModelsAvailable", "No models available. Configure authentication in Settings.")}</small>
         ) : (
           <>
             <div className="model-select-row">
-              <label htmlFor="model-preset" className="model-select-label">Preset</label>
+              <label htmlFor="model-preset" className="model-select-label">{t("taskForm.presetLabel", "Preset")}</label>
               <select
                 id="model-preset"
                 value={presetMode === "preset" ? selectedPresetId : presetMode}
@@ -1182,16 +1184,16 @@ export function TaskForm({
                 }}
                 disabled={disabled}
               >
-                <option value="default">Use default</option>
+                <option value="default">{t("taskForm.presetUseDefault", "Use default")}</option>
                 {availablePresets.length > 0 ? <option disabled>──────────</option> : null}
                 {availablePresets.map((preset) => (
                   <option key={preset.id} value={preset.id}>{preset.name}</option>
                 ))}
-                <option value="custom">Custom</option>
+                <option value="custom">{t("taskForm.presetCustom", "Custom")}</option>
               </select>
             </div>
             {presetMode === "preset" && selectedPreset ? (
-              <small>Using preset: {selectedPreset.name}</small>
+              <small>{t("taskForm.usingPreset", "Using preset: {{name}}", { name: selectedPreset.name })}</small>
             ) : null}
             {presetMode === "preset" ? (
               <button
@@ -1200,14 +1202,14 @@ export function TaskForm({
                 onClick={() => onPresetModeChange("custom")}
                 disabled={disabled}
               >
-                Override
+                {t("taskForm.overridePreset", "Override")}
               </button>
             ) : null}
             <div className="model-select-row">
-              <label htmlFor="executor-model" className="model-select-label">Executor</label>
+              <label htmlFor="executor-model" className="model-select-label">{t("taskForm.executorLabel", "Executor")}</label>
               <CustomModelDropdown
                 id="executor-model"
-                label="Executor Model"
+                label={t("taskForm.executorModelLabel", "Executor Model")}
                 value={executorModel}
                 onChange={(value) => {
                   onPresetModeChange("custom");
@@ -1223,10 +1225,10 @@ export function TaskForm({
               />
             </div>
             <div className="model-select-row">
-              <label htmlFor="validator-model" className="model-select-label">Reviewer</label>
+              <label htmlFor="validator-model" className="model-select-label">{t("taskForm.reviewerLabel", "Reviewer")}</label>
               <CustomModelDropdown
                 id="validator-model"
-                label="Reviewer Model"
+                label={t("taskForm.reviewerModelLabel", "Reviewer Model")}
                 value={validatorModel}
                 onChange={(value) => {
                   onPresetModeChange("custom");
@@ -1243,10 +1245,10 @@ export function TaskForm({
             </div>
             {onPlanningModelChange && (
               <div className="model-select-row">
-                <label htmlFor="planning-model" className="model-select-label">Planning</label>
+                <label htmlFor="planning-model" className="model-select-label">{t("taskForm.planningLabel", "Planning")}</label>
                 <CustomModelDropdown
                   id="planning-model"
-                  label="Planning Model"
+                  label={t("taskForm.planningModelLabel", "Planning Model")}
                   value={planningModel || ""}
                   onChange={(value) => {
                     onPresetModeChange("custom");
@@ -1264,42 +1266,42 @@ export function TaskForm({
             )}
             {onThinkingLevelChange && (
               <div className="model-select-row">
-                <label htmlFor="thinking-level" className="model-select-label">Thinking</label>
+                <label htmlFor="thinking-level" className="model-select-label">{t("taskForm.thinkingLabel", "Thinking")}</label>
                 <select
                   id="thinking-level"
                   value={thinkingLevel || ""}
                   onChange={(e) => onThinkingLevelChange(e.target.value)}
                   disabled={disabled || presetMode === "preset"}
                 >
-                  <option value="">Default ({settings?.defaultThinkingLevel ?? "off"})</option>
-                  <option value="off">Off</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  <option value="">{t("taskForm.thinkingDefault", "Default ({{level}})", { level: settings?.defaultThinkingLevel ?? "off" })}</option>
+                  <option value="off">{t("taskForm.thinkingOff", "Off")}</option>
+                  <option value="minimal">{t("taskForm.thinkingMinimal", "Minimal")}</option>
+                  <option value="low">{t("taskForm.thinkingLow", "Low")}</option>
+                  <option value="medium">{t("taskForm.thinkingMedium", "Medium")}</option>
+                  <option value="high">{t("taskForm.thinkingHigh", "High")}</option>
                 </select>
               </div>
             )}
             {onReviewLevelChange && (
               <div className="model-select-row">
-                <label htmlFor="review-level" className="model-select-label">Review</label>
+                <label htmlFor="review-level" className="model-select-label">{t("taskForm.reviewLabel", "Review")}</label>
                 <select
                   id="review-level"
                   value={reviewLevel ?? ""}
                   onChange={(e) => onReviewLevelChange(e.target.value === "" ? undefined : parseInt(e.target.value, 10))}
                   disabled={disabled}
                 >
-                  <option value="">Default (Auto — triage decides)</option>
-                  <option value="0">0 — None</option>
-                  <option value="1">1 — Plan Only</option>
-                  <option value="2">2 — Plan and Code</option>
-                  <option value="3">3 — Full</option>
+                  <option value="">{t("taskForm.reviewDefault", "Default (Auto — triage decides)")}</option>
+                  <option value="0">{t("taskForm.reviewLevel0", "0 — None")}</option>
+                  <option value="1">{t("taskForm.reviewLevel1", "1 — Plan Only")}</option>
+                  <option value="2">{t("taskForm.reviewLevel2", "2 — Plan and Code")}</option>
+                  <option value="3">{t("taskForm.reviewLevel3", "3 — Full")}</option>
                 </select>
               </div>
             )}
             {onAutoMergeChange && (
               <div className="model-select-row">
-                <label htmlFor="task-automerge-select" className="model-select-label">Auto-merge</label>
+                <label htmlFor="task-automerge-select" className="model-select-label">{t("taskForm.autoMergeLabel", "Auto-merge")}</label>
                 <select
                   id="task-automerge-select"
                   data-testid="task-automerge-select"
@@ -1311,11 +1313,11 @@ export function TaskForm({
                   }}
                   disabled={disabled}
                 >
-                  <option value="">Default (Follow project setting)</option>
-                  <option value="on">Enabled</option>
-                  <option value="off">Disabled</option>
+                  <option value="">{t("taskForm.autoMergeDefault", "Default (Follow project setting)")}</option>
+                  <option value="on">{t("taskForm.autoMergeEnabled", "Enabled")}</option>
+                  <option value="off">{t("taskForm.autoMergeDisabled", "Disabled")}</option>
                 </select>
-                <small>Default follows the project auto-merge setting.</small>
+                <small>{t("taskForm.autoMergeHint", "Default follows the project auto-merge setting.")}</small>
               </div>
             )}
           </>
@@ -1326,10 +1328,10 @@ export function TaskForm({
 
       {/* Workflow Steps */}
       <div className="form-group" data-testid="workflow-steps-section">
-        <label>Workflow Steps</label>
+        <label>{t("taskForm.workflowStepsLabel", "Workflow Steps")}</label>
         <div className="workflow-steps-section">
           <small className="workflow-steps-description">
-            Select steps to run after task implementation completes
+            {t("taskForm.workflowStepsDescription", "Select steps to run after task implementation completes")}
           </small>
           <div className="workflow-steps-list">
             {workflowSteps.length > 0 && workflowSteps.map((step) => (
@@ -1353,7 +1355,7 @@ export function TaskForm({
                 <div>
                   <span className="workflow-step-name">
                     {step.name}
-                    {phaseBadge(step.phase || "pre-merge", step.id, "workflow-step-phase")}
+                    {phaseBadge(step.phase || "pre-merge", step.id, "workflow-step-phase", t)}
                   </span>
                   <div className="workflow-step-description">
                     {step.description}
@@ -1367,7 +1369,7 @@ export function TaskForm({
         {/* Selected steps — execution order with reorder controls */}
         {selectedWorkflowSteps.length > 1 && (
           <div className="workflow-step-order" data-testid="workflow-step-order">
-            <small className="workflow-step-order-label">Execution order:</small>
+            <small className="workflow-step-order-label">{t("taskForm.executionOrderLabel", "Execution order:")}</small>
             {selectedWorkflowSteps.map((stepId, index) => {
               const stepInfo = workflowStepLookup.get(stepId);
               return (
@@ -1381,7 +1383,7 @@ export function TaskForm({
                       onClick={() => moveWorkflowStepUp(index)}
                       disabled={disabled || index === 0}
                       data-testid={`workflow-step-move-up-${stepId}`}
-                      title="Move up"
+                      title={t("taskForm.moveUp", "Move up")}
                     >
                       <ChevronUp />
                     </button>
@@ -1391,7 +1393,7 @@ export function TaskForm({
                       onClick={() => moveWorkflowStepDown(index)}
                       disabled={disabled || index === selectedWorkflowSteps.length - 1}
                       data-testid={`workflow-step-move-down-${stepId}`}
-                      title="Move down"
+                      title={t("taskForm.moveDown", "Move down")}
                     >
                       <ChevronDown />
                     </button>
@@ -1401,7 +1403,7 @@ export function TaskForm({
                       onClick={() => removeWorkflowStep(stepId)}
                       disabled={disabled}
                       data-testid={`workflow-step-remove-${stepId}`}
-                      title="Remove"
+                      title={t("taskForm.removeStep", "Remove")}
                     >
                       <X />
                     </button>
@@ -1415,7 +1417,7 @@ export function TaskForm({
 
       {(onGithubTrackingEnabledChange || onGithubRepoOverrideChange) && (
         <div className="form-group" data-testid="task-form-github-tracking">
-          <label>GitHub Tracking</label>
+          <label>{t("taskForm.githubTrackingLabel", "GitHub Tracking")}</label>
           {onGithubTrackingEnabledChange && (
             <label className="checkbox-label" htmlFor="task-github-tracking-enabled">
               <input
@@ -1428,12 +1430,12 @@ export function TaskForm({
                 }}
                 disabled={disabled}
               />
-              Enable GitHub issue tracking for this task
+              {t("taskForm.githubTrackingEnable", "Enable GitHub issue tracking for this task")}
             </label>
           )}
           {onGithubRepoOverrideChange && (
             <>
-              <label htmlFor="task-github-repo-override" className="model-select-label">Repository (owner/repo)</label>
+              <label htmlFor="task-github-repo-override" className="model-select-label">{t("taskForm.githubRepoLabel", "Repository (owner/repo)")}</label>
               <input
                 id="task-github-repo-override"
                 className="input"
@@ -1443,7 +1445,7 @@ export function TaskForm({
                 disabled={disabled}
               />
               {githubRepoOverrideInvalid ? (
-                <div className="form-error">Repository must be in owner/repo format.</div>
+                <div className="form-error">{t("taskForm.githubRepoFormatError", "Repository must be in owner/repo format.")}</div>
               ) : null}
             </>
           )}

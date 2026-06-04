@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Plus,
   Trash2,
@@ -40,6 +41,7 @@ export function TodoView({
   onTaskCreated,
   mobileKeyboardActive = false,
 }: TodoViewProps) {
+  const { t } = useTranslation("app");
   const {
     lists,
     items,
@@ -115,13 +117,13 @@ export function TodoView({
       setAgents(loadedAgents);
       setShowAgentPicker(true);
     } catch (err) {
-      addToast(`Failed to load agents: ${getErrorMessage(err)}`, "error");
+      addToast(t("todo.failedToLoadAgents", "Failed to load agents: {{error}}", { error: getErrorMessage(err) }), "error");
       setShowAgentPicker(false);
       setActiveItemForAgent(null);
     } finally {
       setAgentsLoading(false);
     }
-  }, [projectId, addToast]);
+  }, [projectId, addToast, t]);
 
   useEffect(() => {
     setEditingListId(null);
@@ -237,8 +239,8 @@ export function TodoView({
 
   async function handleDeleteList(id: string): Promise<void> {
     const shouldDelete = await confirm({
-      title: "Delete List",
-      message: "Delete this list and all its items?",
+      title: t("todo.deleteListTitle", "Delete List"),
+      message: t("todo.deleteListConfirm", "Delete this list and all its items?"),
       danger: true,
     });
     if (!shouldDelete) {
@@ -276,11 +278,11 @@ export function TodoView({
       };
       const task: Task = await createTask(input, projectId);
       onTaskCreated?.(task);
-      addToast(`Created ${task.id} from todo`, "success");
+      addToast(t("todo.taskCreatedFromTodo", "Created {{id}} from todo", { id: task.id }), "success");
     } catch (err) {
-      addToast(`Failed to create task: ${getErrorMessage(err)}`, "error");
+      addToast(t("todo.failedToCreateTask", "Failed to create task: {{error}}", { error: getErrorMessage(err) }), "error");
     }
-  }, [projectId, addToast, onTaskCreated]);
+  }, [projectId, addToast, onTaskCreated, t]);
 
   const handleCreateTaskAndAssign = useCallback(async (item: TodoItem, agentId: string) => {
     try {
@@ -294,20 +296,20 @@ export function TodoView({
       onTaskCreated?.(task);
       const assignedAgent = agents.find((agent) => agent.id === agentId);
       const agentLabel = assignedAgent?.name ?? agentId;
-      addToast(`Created ${task.id} and assigned to ${agentLabel}`, "success");
+      addToast(t("todo.taskCreatedAndAssigned", "Created {{id}} and assigned to {{agent}}", { id: task.id, agent: agentLabel }), "success");
       setShowAgentPicker(false);
       setActiveItemForAgent(null);
     } catch (err) {
-      addToast(`Failed to create and assign task: ${getErrorMessage(err)}`, "error");
+      addToast(t("todo.failedToCreateAndAssign", "Failed to create and assign task: {{error}}", { error: getErrorMessage(err) }), "error");
     }
-  }, [projectId, addToast, agents, onTaskCreated]);
+  }, [projectId, addToast, agents, onTaskCreated, t]);
 
   if (loading) {
     return (
       <div className="todo-view">
         <div className="todo-loading">
           <Loader2 className="todo-loading-icon" aria-hidden="true" />
-          <p>Loading todos...</p>
+          <p>{t("todo.loading", "Loading todos...")}</p>
         </div>
       </div>
     );
@@ -319,9 +321,9 @@ export function TodoView({
       data-testid="todo-view-root"
     >
       <div className="todo-view-layout">
-        <aside className="todo-view-sidebar" aria-label="Todo lists sidebar">
+        <aside className="todo-view-sidebar" aria-label={t("todo.listsLabel", "Todo lists sidebar")}>
           <div className="todo-sidebar-header">
-            <h3 className="todo-sidebar-title">Lists</h3>
+            <h3 className="todo-sidebar-title">{t("todo.lists", "Lists")}</h3>
             <button
               type="button"
               className="btn btn-sm btn-icon todo-add-list-btn"
@@ -330,7 +332,7 @@ export function TodoView({
                 setIsAddingList(true);
                 setEditingListId(null);
               }}
-              aria-label="Add list"
+              aria-label={t("todo.addList", "Add list")}
               data-testid="add-list-button"
             >
               <Plus />
@@ -341,7 +343,7 @@ export function TodoView({
             <div className="todo-list-item">
               <input
                 className="input todo-inline-edit-input"
-                placeholder="New list title"
+                placeholder={t("todo.newListTitle", "New list title")}
                 value={newListTitle}
                 onChange={(event) => setNewListTitle(event.target.value)}
                 onKeyDown={(event) => {
@@ -362,7 +364,7 @@ export function TodoView({
                 onClick={() => {
                   void handleAddList();
                 }}
-                aria-label="Save list"
+                aria-label={t("todo.saveList", "Save list")}
               >
                 <Check />
               </button>
@@ -373,7 +375,7 @@ export function TodoView({
                   setNewListTitle("");
                   setIsAddingList(false);
                 }}
-                aria-label="Cancel list"
+                aria-label={t("todo.cancelList", "Cancel list")}
               >
                 <X />
               </button>
@@ -383,7 +385,7 @@ export function TodoView({
           {lists.length === 0 && !isAddingList ? (
             <div className="todo-empty-state">
               <ListChecks aria-hidden="true" />
-              <p>No todo lists yet. Create one to get started.</p>
+              <p>{t("todo.noListsEmpty", "No todo lists yet. Create one to get started.")}</p>
               <button
                 type="button"
                 className="btn btn-sm"
@@ -392,11 +394,11 @@ export function TodoView({
                   setIsAddingList(true);
                 }}
               >
-                Create List
+                {t("todo.createList", "Create List")}
               </button>
             </div>
           ) : (
-            <div className="todo-list-items" role="list" aria-label="Todo lists">
+            <div className="todo-list-items" role="list" aria-label={t("todo.todoListsLabel", "Todo lists")}>
               {lists.map((list) => {
                 const isActive = list.id === selectedListId;
                 const isEditing = list.id === editingListId;
@@ -430,7 +432,7 @@ export function TodoView({
                           onClick={() => {
                             void handleSaveRenameList();
                           }}
-                          aria-label="Save list rename"
+                          aria-label={t("todo.saveListRename", "Save list rename")}
                         >
                           <Check />
                         </button>
@@ -438,7 +440,7 @@ export function TodoView({
                           type="button"
                           className="btn btn-sm btn-icon todo-icon-btn"
                           onClick={handleCancelRenameList}
-                          aria-label="Cancel list rename"
+                          aria-label={t("todo.cancelListRename", "Cancel list rename")}
                         >
                           <X />
                         </button>
@@ -449,7 +451,7 @@ export function TodoView({
                           type="button"
                           className="todo-list-select-btn"
                           onClick={() => handleSelectList(list.id)}
-                          aria-label={`Select list ${list.title}`}
+                          aria-label={t("todo.selectList", "Select list {{title}}", { title: list.title })}
                           aria-current={isActive ? "true" : undefined}
                           data-testid={`todo-list-${list.id}`}
                         >
@@ -462,7 +464,7 @@ export function TodoView({
                             onClick={() => {
                               handleStartRenameList(list);
                             }}
-                            aria-label={`Rename ${list.title}`}
+                            aria-label={t("todo.renameList", "Rename {{title}}", { title: list.title })}
                             data-testid={`rename-list-button-${list.id}`}
                           >
                             <Pencil />
@@ -473,7 +475,7 @@ export function TodoView({
                             onClick={() => {
                               void handleDeleteList(list.id);
                             }}
-                            aria-label={`Delete ${list.title}`}
+                            aria-label={t("todo.deleteList", "Delete {{title}}", { title: list.title })}
                             data-testid={`delete-list-button-${list.id}`}
                           >
                             <Trash2 />
@@ -488,12 +490,12 @@ export function TodoView({
           )}
         </aside>
 
-        <section className="todo-view-main" aria-label="Todo items">
+        <section className="todo-view-main" aria-label={t("todo.itemsLabel", "Todo items")}>
           {error && (
             <div className="todo-error-banner" role="alert">
               <span className="todo-error-message">{error}</span>
               <button type="button" className="btn btn-sm" onClick={() => window.location.reload()}>
-                Retry
+                {t("actions.retry", "Retry")}
               </button>
             </div>
           )}
@@ -501,7 +503,7 @@ export function TodoView({
           {!selectedList ? (
             <div className="todo-empty-state">
               <ListChecks aria-hidden="true" />
-              <p>Select a list from the sidebar</p>
+              <p>{t("todo.selectListEmpty", "Select a list from the sidebar")}</p>
             </div>
           ) : (
             <>
@@ -512,7 +514,7 @@ export function TodoView({
               <div className="todo-add-item-row">
                 <input
                   className="input"
-                  placeholder="Add a todo item"
+                  placeholder={t("todo.addItemPlaceholder", "Add a todo item")}
                   value={newItemText}
                   onChange={(event) => setNewItemText(event.target.value)}
                   onKeyDown={(event) => {
@@ -532,13 +534,13 @@ export function TodoView({
                     void handleAddItem();
                   }}
                 >
-                  Add
+                  {t("actions.add", "Add")}
                 </button>
               </div>
 
               {sortedItems.length === 0 ? (
                 <div className="todo-empty-state">
-                  <p>No items in this list. Add one above.</p>
+                  <p>{t("todo.noItemsEmpty", "No items in this list. Add one above.")}</p>
                 </div>
               ) : (
                 <div className="todo-items-list">
@@ -595,7 +597,7 @@ export function TodoView({
                                 onClick={() => {
                                   void handleSaveEditItem();
                                 }}
-                                aria-label="Save item edit"
+                                aria-label={t("todo.saveItemEdit", "Save item edit")}
                               >
                                 <Check />
                               </button>
@@ -603,7 +605,7 @@ export function TodoView({
                                 type="button"
                                 className="btn btn-sm btn-icon todo-icon-btn"
                                 onClick={handleCancelEditItem}
-                                aria-label="Cancel item edit"
+                                aria-label={t("todo.cancelItemEdit", "Cancel item edit")}
                               >
                                 <X />
                               </button>
@@ -618,7 +620,7 @@ export function TodoView({
                                     void handleMoveItem(item.id, "up");
                                   }}
                                   disabled={index === 0}
-                                  aria-label={`Move ${item.text} up`}
+                                  aria-label={t("todo.moveItemUp", "Move {{text}} up", { text: item.text })}
                                   data-testid={`move-up-${item.id}`}
                                 >
                                   <ChevronUp />
@@ -630,7 +632,7 @@ export function TodoView({
                                     void handleMoveItem(item.id, "down");
                                   }}
                                   disabled={index === sortedItems.length - 1}
-                                  aria-label={`Move ${item.text} down`}
+                                  aria-label={t("todo.moveItemDown", "Move {{text}} down", { text: item.text })}
                                   data-testid={`move-down-${item.id}`}
                                 >
                                   <ChevronDown />
@@ -642,7 +644,7 @@ export function TodoView({
                                 onClick={() => {
                                   onPlanningMode?.(item.text);
                                 }}
-                                aria-label={`Start planning from ${item.text}`}
+                                aria-label={t("todo.startPlanning", "Start planning from {{text}}", { text: item.text })}
                                 data-testid={`planning-from-${item.id}`}
                               >
                                 <Lightbulb />
@@ -653,7 +655,7 @@ export function TodoView({
                                 onClick={() => {
                                   void handleCreateTaskFromItem(item);
                                 }}
-                                aria-label={`Create task from ${item.text}`}
+                                aria-label={t("todo.createTaskFrom", "Create task from {{text}}", { text: item.text })}
                                 data-testid={`create-task-from-${item.id}`}
                               >
                                 <PlusCircle />
@@ -669,7 +671,7 @@ export function TodoView({
                                     setActiveItemForAgent(item.id);
                                     void loadAgents();
                                   }}
-                                  aria-label={`Assign ${item.text} to agent`}
+                                  aria-label={t("todo.assignAgent", "Assign {{text}} to agent", { text: item.text })}
                                   data-testid={`assign-agent-for-${item.id}`}
                                 >
                                   <Bot />
@@ -682,7 +684,7 @@ export function TodoView({
                                     }}
                                   >
                                     {agentsLoading ? (
-                                      <div className="todo-agent-picker-loading">Loading agents...</div>
+                                      <div className="todo-agent-picker-loading">{t("todo.loadingAgents", "Loading agents...")}</div>
                                     ) : agents.length > 0 ? (
                                       agents
                                         .map((agent) => (
@@ -700,7 +702,7 @@ export function TodoView({
                                           </button>
                                         ))
                                     ) : (
-                                      <div className="todo-agent-picker-empty">No agents available</div>
+                                      <div className="todo-agent-picker-empty">{t("todo.noAgentsAvailable", "No agents available")}</div>
                                     )}
                                   </div>
                                 )}
@@ -709,7 +711,7 @@ export function TodoView({
                                 type="button"
                                 className="btn btn-sm btn-icon todo-icon-btn"
                                 onClick={() => handleStartEditItem(item)}
-                                aria-label={`Edit ${item.text}`}
+                                aria-label={t("todo.editItem", "Edit {{text}}", { text: item.text })}
                                 data-testid={`edit-item-${item.id}`}
                               >
                                 <Pencil />
@@ -720,7 +722,7 @@ export function TodoView({
                                 onClick={() => {
                                   void handleDeleteItem(item.id);
                                 }}
-                                aria-label={`Delete ${item.text}`}
+                                aria-label={t("todo.deleteItem", "Delete {{text}}", { text: item.text })}
                                 data-testid={`delete-item-${item.id}`}
                               >
                                 <Trash2 />

@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { AgentMetricsBar } from "./AgentMetricsBar";
 import { ActiveAgentsPanel } from "./ActiveAgentsPanel";
 import type { Agent, AgentStats } from "../api";
@@ -23,6 +24,10 @@ export function AgentsOverviewBar({
   onSelectAgent,
   onOpenTaskLogs,
 }: AgentsOverviewBarProps) {
+  const { t } = useTranslation("app");
+  const activeCount = activeAgents.filter((a) => a.state === "active").length;
+  const runningCount = activeAgents.filter((a) => a.state === "running").length;
+
   return (
     <section className="agents-overview-bar" aria-label="Agents overview">
       <button
@@ -33,10 +38,10 @@ export function AgentsOverviewBar({
       >
         <span className="agents-overview-bar__title-wrap">
           {isOpen ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-          <span className="agents-overview-bar__title">Overview</span>
+          <span className="agents-overview-bar__title">{t("agents.overview", "Overview")}</span>
         </span>
         <span className="agents-overview-bar__meta text-secondary">
-          {activeAgents.filter((a) => a.state === "active").length} active · {activeAgents.filter((a) => a.state === "running").length} running
+          {t("agents.statusCount", "{{activeCount}} active · {{runningCount}} running", { activeCount, runningCount })}
         </span>
       </button>
       {isOpen ? (

@@ -1,6 +1,7 @@
 import "./AgentErrorDetailsModal.css";
 import { useMemo, useState } from "react";
 import { AlertCircle, Check, Copy, ExternalLink } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const DEFAULT_ISSUE_URL = "https://github.com/Runfusion/Fusion/issues/new";
 
@@ -50,6 +51,7 @@ export function buildAgentErrorIssueUrl(errorText: string, context: AgentErrorIs
 
 export function AgentErrorDetailsModal({ open, onClose, errorText, issueContext }: AgentErrorDetailsModalProps) {
   const [copied, setCopied] = useState(false);
+  const { t } = useTranslation("app");
   const issueUrl = useMemo(() => buildAgentErrorIssueUrl(errorText, issueContext), [errorText, issueContext]);
 
   if (!open) {
@@ -57,14 +59,14 @@ export function AgentErrorDetailsModal({ open, onClose, errorText, issueContext 
   }
 
   return (
-    <div className="modal-overlay open" onClick={(event) => event.target === event.currentTarget && onClose()} role="dialog" aria-modal="true" aria-label="Agent error details">
+    <div className="modal-overlay open" onClick={(event) => event.target === event.currentTarget && onClose()} role="dialog" aria-modal="true" aria-label={t("agentError.dialogLabel", "Agent error details")}>
       <div className="modal agent-error-modal">
         <div className="modal-header">
           <h2 className="modal-title">
             <AlertCircle size={16} />
-            Agent Error Details
+            {t("agentError.title", "Agent Error Details")}
           </h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
+          <button className="modal-close" onClick={onClose} aria-label={t("common.close", "Close")}>&times;</button>
         </div>
         <div className="agent-error-modal__content">
           <pre className="agent-error-modal__error">{errorText}</pre>
@@ -79,10 +81,10 @@ export function AgentErrorDetailsModal({ open, onClose, errorText, issueContext 
                 setTimeout(() => setCopied(false), 1500);
               });
             }}
-            aria-label={copied ? "Copied error to clipboard" : "Copy error to clipboard"}
+            aria-label={copied ? t("agentError.copiedLabel", "Copied error to clipboard") : t("agentError.copyLabel", "Copy error to clipboard")}
           >
             {copied ? <Check size={14} /> : <Copy size={14} />}
-            {copied ? "Copied" : "Copy"}
+            {copied ? t("agentError.copied", "Copied") : t("agentError.copy", "Copy")}
           </button>
           <a
             className="btn btn-sm btn-warning"
@@ -95,7 +97,7 @@ export function AgentErrorDetailsModal({ open, onClose, errorText, issueContext 
             }}
           >
             <ExternalLink size={14} />
-            Report on GitHub
+            {t("agentError.reportOnGithub", "Report on GitHub")}
           </a>
         </div>
       </div>
@@ -111,10 +113,11 @@ interface AgentErrorIndicatorProps {
 
 export function AgentErrorIndicator({ errorText, issueContext, summaryPrefix = "Error" }: AgentErrorIndicatorProps) {
   const [open, setOpen] = useState(false);
+  const { t } = useTranslation("app");
 
   return (
     <>
-      <button type="button" className="agent-error-indicator" onClick={() => setOpen(true)} aria-label="Open error details">
+      <button type="button" className="agent-error-indicator" onClick={() => setOpen(true)} aria-label={t("agentError.openDetails", "Open error details")}>
         <AlertCircle size={14} />
         <span className="agent-error-indicator__label">{summaryPrefix}</span>
       </button>

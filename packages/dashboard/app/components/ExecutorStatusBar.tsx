@@ -1,5 +1,7 @@
 import "./ExecutorStatusBar.css";
 import { useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   STALE_HIGH_FANOUT_BLOCKER_AGE_THRESHOLD_MS,
@@ -43,8 +45,8 @@ interface ExecutorStatusBarProps {
 /**
  * Format a relative time string (e.g., "2m ago", "1h ago")
  */
-function formatRelativeTime(timestamp: string | undefined): string {
-  if (!timestamp) return "no activity";
+function formatRelativeTime(timestamp: string | undefined, t: TFunction<"app">): string {
+  if (!timestamp) return t("executor.noActivity", "no activity");
 
   const now = Date.now();
   const then = new Date(timestamp).getTime();
@@ -55,25 +57,25 @@ function formatRelativeTime(timestamp: string | undefined): string {
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
 
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  if (seconds > 10) return `${seconds}s ago`;
-  return "just now";
+  if (days > 0) return t("executor.daysAgo", "{{count}}d ago", { count: days });
+  if (hours > 0) return t("executor.hoursAgo", "{{count}}h ago", { count: hours });
+  if (minutes > 0) return t("executor.minutesAgo", "{{count}}m ago", { count: minutes });
+  if (seconds > 10) return t("executor.secondsAgo", "{{count}}s ago", { count: seconds });
+  return t("executor.justNow", "just now");
 }
 
 /**
  * Get display configuration for an executor state
  */
-function getStateDisplay(state: ExecutorState): { label: string; color: string; icon: typeof Play } {
+function getStateDisplay(state: ExecutorState, t: TFunction<"app">): { label: string; color: string; icon: typeof Play } {
   switch (state) {
     case "running":
-      return { label: "Running", color: "var(--color-success)", icon: Play };
+      return { label: t("executor.stateRunning", "Running"), color: "var(--color-success)", icon: Play };
     case "paused":
-      return { label: "Paused", color: "var(--triage)", icon: Pause };
+      return { label: t("executor.statePaused", "Paused"), color: "var(--triage)", icon: Pause };
     case "idle":
     default:
-      return { label: "Idle", color: "var(--text-muted)", icon: Zap };
+      return { label: t("executor.stateIdle", "Idle"), color: "var(--text-muted)", icon: Zap };
   }
 }
 
@@ -88,13 +90,13 @@ function getStateDisplay(state: ExecutorState): { label: string; color: string; 
  * - Last activity timestamp
  */
 export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleHighFanoutBlockerAgeThresholdMs, backgroundSessions, backgroundGenerating, backgroundNeedsInput, onOpenBackgroundSession, onDismissBackgroundSession, lastFetchTimeMs, currentProjectPath, onOpenProjectDirectory, keyboardOpen, hideWhenKeyboardOpen }: ExecutorStatusBarProps) {
-  if (hideWhenKeyboardOpen) return null;
+  const { t } = useTranslation("app");
   const { stats, loading, error } = useExecutorStats(tasks, projectId, taskStuckTimeoutMs, lastFetchTimeMs);
   const [isProjectPathVisible, setIsProjectPathVisible] = useState(false);
 
-  const stateDisplay = useMemo(() => getStateDisplay(stats.executorState), [stats.executorState]);
+  const stateDisplay = useMemo(() => getStateDisplay(stats.executorState, t), [stats.executorState, t]);
 
-  const relativeTime = useMemo(() => formatRelativeTime(stats.lastActivityAt), [stats.lastActivityAt]);
+  const relativeTime = useMemo(() => formatRelativeTime(stats.lastActivityAt, t), [stats.lastActivityAt, t]);
 
   const highestOverlapBlocker = useMemo(() => {
     const fanoutMap = computeBlockerFanoutMap(tasks, {
@@ -117,9 +119,13 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
 
   const StateIcon = stateDisplay.icon;
 
+  // Keyboard-open guard runs after all hooks: toggling it must not change the
+  // hook count between renders (Rules of Hooks).
+  if (hideWhenKeyboardOpen) return null;
+
   if (error) {
     return (
-      <div className="executor-status-bar executor-status-bar--error" role="status" aria-label="Executor status">
+      <div className="executor-status-bar executor-status-bar--error" role="status" aria-label={t("executor.status", "Executor status")}>
         <span className="executor-status-bar__error">
           <AlertTriangle size={14} />
           {error}
@@ -130,8 +136,8 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
 
   if (loading && stats.runningTaskCount === 0) {
     return (
-      <div className="executor-status-bar executor-status-bar--loading" role="status" aria-label="Executor status">
-        <span className="executor-status-bar__loading-text">Loading...</span>
+      <div className="executor-status-bar executor-status-bar--loading" role="status" aria-label={t("executor.status", "Executor status")}>
+        <span className="executor-status-bar__loading-text">{t("executor.loading", "Loading...")}</span>
       </div>
     );
   }
@@ -140,7 +146,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
     <div
       className={`executor-status-bar ${stats.executorState === "running" ? "executor-status-bar--running" : ""}${keyboardOpen ? " executor-status-bar--keyboard-open" : ""}`}
       role="status"
-      aria-label="Executor status"
+      aria-label={t("executor.status", "Executor status")}
     >
       {/* Background AI tasks indicator */}
       {backgroundSessions && backgroundSessions.length > 0 && onOpenBackgroundSession && onDismissBackgroundSession && (
@@ -159,7 +165,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
       {/* Queued tasks */}
       <div className="executor-status-bar__segment">
         <span className="executor-status-bar__indicator executor-status-bar__indicator--queued" aria-hidden="true" />
-        <span className="executor-status-bar__label">Queued</span>
+        <span className="executor-status-bar__label">{t("executor.queued", "Queued")}</span>
         <span className="executor-status-bar__count">{stats.queuedTaskCount}</span>
       </div>
 
@@ -172,7 +178,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
           className={`executor-status-bar__indicator executor-status-bar__indicator--running ${stats.runningTaskCount > 0 ? "executor-status-bar__indicator--active" : ""}`}
           aria-hidden="true"
         />
-        <span className="executor-status-bar__label">Running</span>
+        <span className="executor-status-bar__label">{t("executor.running", "Running")}</span>
         <span className="executor-status-bar__count">{stats.runningTaskCount}</span>
         <span className="executor-status-bar__separator" aria-hidden="true">/</span>
         <span className="executor-status-bar__max">{stats.maxConcurrent}</span>
@@ -186,7 +192,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
         <>
           <div className="executor-status-bar__segment executor-status-bar__segment--stuck">
             <span className="executor-status-bar__indicator executor-status-bar__indicator--stuck executor-status-bar__indicator--active" aria-hidden="true" />
-            <span className="executor-status-bar__label">Stuck</span>
+            <span className="executor-status-bar__label">{t("executor.stuck", "Stuck")}</span>
             <span className="executor-status-bar__count executor-status-bar__count--error">{stats.stuckTaskCount}</span>
           </div>
           <span className="executor-status-bar__divider" aria-hidden="true" />
@@ -199,7 +205,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
           className={`executor-status-bar__indicator executor-status-bar__indicator--blocked ${stats.blockedTaskCount > 0 ? "executor-status-bar__indicator--active" : ""}`}
           aria-hidden="true"
         />
-        <span className="executor-status-bar__label">Blocked</span>
+        <span className="executor-status-bar__label">{t("executor.blocked", "Blocked")}</span>
         <span className={`executor-status-bar__count ${stats.blockedTaskCount > 0 ? "executor-status-bar__count--warning" : ""}`}>
           {stats.blockedTaskCount}
         </span>
@@ -211,7 +217,7 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
       {/* In review count */}
       <div className="executor-status-bar__segment">
         <span className="executor-status-bar__indicator executor-status-bar__indicator--review" aria-hidden="true" />
-        <span className="executor-status-bar__label">In Review</span>
+        <span className="executor-status-bar__label">{t("executor.inReview", "In Review")}</span>
         <span className="executor-status-bar__count">{stats.inReviewCount}</span>
       </div>
 
@@ -220,12 +226,17 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
           <span className="executor-status-bar__divider" aria-hidden="true" />
           <div className="executor-status-bar__segment executor-status-bar__segment--fanout">
             <span className="executor-status-bar__indicator executor-status-bar__indicator--fanout executor-status-bar__indicator--active" aria-hidden="true" />
-            <span className="executor-status-bar__label">Overlap queue</span>
+            <span className="executor-status-bar__label">{t("executor.overlapQueue", "Overlap queue")}</span>
             <span
               className="executor-status-bar__fanout-summary"
-              title={`${highestOverlapBlocker.entry.escalation ? "Escalated" : "Temporary"} overlap bottleneck ${highestOverlapBlocker.blockerId}: ${highestOverlapBlocker.entry.overlapBlockedTodoCount} todo blocked via blockedBy (threshold ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD})`}
+              title={t("executor.overlapBottleneck", "{{status}} overlap bottleneck {{blockerId}}: {{count}} todo blocked via blockedBy (threshold {{threshold}})", {
+                status: highestOverlapBlocker.entry.escalation ? t("executor.escalated", "Escalated") : t("executor.temporary", "Temporary"),
+                blockerId: highestOverlapBlocker.blockerId,
+                count: highestOverlapBlocker.entry.overlapBlockedTodoCount,
+                threshold: HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
+              })}
             >
-              {highestOverlapBlocker.blockerId} · {highestOverlapBlocker.entry.overlapBlockedTodoCount} todo{highestOverlapBlocker.entry.escalation ? " (escalated)" : ""}
+              {highestOverlapBlocker.blockerId} · {highestOverlapBlocker.entry.overlapBlockedTodoCount} todo{highestOverlapBlocker.entry.escalation ? t("executor.escalatedSuffix", " (escalated)") : ""}
             </span>
           </div>
         </>
@@ -238,10 +249,10 @@ export function ExecutorStatusBar({ tasks, projectId, taskStuckTimeoutMs, staleH
             <button
               className={`executor-status-bar__folder-toggle${isProjectPathVisible ? " executor-status-bar__folder-toggle--active" : ""}`}
               onClick={() => setIsProjectPathVisible((prev) => !prev)}
-              aria-label={isProjectPathVisible ? "Hide project directory" : "Show project directory"}
+              aria-label={isProjectPathVisible ? t("executor.hideProjectDir", "Hide project directory") : t("executor.showProjectDir", "Show project directory")}
               aria-expanded={isProjectPathVisible}
               data-testid="executor-project-path-toggle"
-              title={isProjectPathVisible ? "Hide project directory" : "Show project directory"}
+              title={isProjectPathVisible ? t("executor.hideProjectDir", "Hide project directory") : t("executor.showProjectDir", "Show project directory")}
             >
               <Folder size={12} aria-hidden="true" />
             </button>

@@ -1,6 +1,7 @@
 import "./AgentDetailView.css";
 import "./MailboxModal.css";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bot, Heart, Activity, Pause, Play, Square, Trash2, RefreshCw, 
   Settings, FileText, ActivitySquare, X, Copy, 
@@ -43,25 +44,32 @@ function cn(...classes: (string | boolean | undefined | null)[]): string {
 /**
  * Format an ISO timestamp to a relative time string.
  */
-export function relativeTime(iso: string): string {
+export function relativeTime(iso: string, t?: (key: string, defaultValue: string, options?: Record<string, unknown>) => string): string {
   const now = Date.now();
   const then = new Date(iso).getTime();
   const diffMs = now - then;
+  // Fallback interpolates {{n}} manually when no t() is provided
+  const tr = t ?? ((_key: string, def: string, opts?: Record<string, unknown>) => {
+    if (!opts) return def;
+    return def.replace(/\{\{(\w+)\}\}/g, (_, k) => String(opts[k] ?? ""));
+  });
 
   // Future
   if (diffMs < 0) {
     const absDiff = Math.abs(diffMs);
-    if (absDiff < 60_000) return "in a moment";
-    if (absDiff < 3_600_000) return `in ${Math.floor(absDiff / 60_000)}m`;
-    if (absDiff < 86_400_000) return `in ${Math.floor(absDiff / 3_600_000)}h`;
-    return `in ${Math.floor(absDiff / 86_400_000)}d`;
+    if (absDiff < 60_000) return tr("time.inAMoment", "in a moment");
+    if (absDiff < 3_600_000) { const n = Math.floor(absDiff / 60_000); return tr("time.inMinutes", "in {{n}}m", { n }); }
+    if (absDiff < 86_400_000) { const n = Math.floor(absDiff / 3_600_000); return tr("time.inHours", "in {{n}}h", { n }); }
+    const n = Math.floor(absDiff / 86_400_000);
+    return tr("time.inDays", "in {{n}}d", { n });
   }
 
   // Past
-  if (diffMs < 60_000) return "just now";
-  if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-  if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return `${Math.floor(diffMs / 86_400_000)}d ago`;
+  if (diffMs < 60_000) return tr("time.justNow", "just now");
+  if (diffMs < 3_600_000) { const n = Math.floor(diffMs / 60_000); return tr("time.minutesAgo", "{{n}}m ago", { n }); }
+  if (diffMs < 86_400_000) { const n = Math.floor(diffMs / 3_600_000); return tr("time.hoursAgo", "{{n}}h ago", { n }); }
+  const n = Math.floor(diffMs / 86_400_000);
+  return tr("time.daysAgo", "{{n}}d ago", { n });
 }
 
 interface AgentDetailViewProps {
@@ -109,18 +117,6 @@ const RUN_STATUS_ICONS: Record<string, { icon: typeof CheckCircle; color: string
   terminated: { icon: Square, color: "var(--text-muted)" },
 };
 
-const MEMORY_LAYER_NAMES: Record<MemoryFileInfo["layer"], string> = {
-  "long-term": "Long-term",
-  daily: "Daily",
-  dreams: "Dreams",
-};
-
-const MEMORY_LAYER_DESCRIPTIONS: Record<MemoryFileInfo["layer"], string> = {
-  "long-term": "Curated durable decisions, conventions, constraints, and pitfalls for this specific agent.",
-  daily: "Raw daily observations and open loops recorded by this agent.",
-  dreams: "Synthesized patterns and emerging themes distilled from this agent's daily memory.",
-};
-
 const DEFAULT_HEARTBEAT_INTERVAL_LABEL = formatHeartbeatInterval(DEFAULT_HEARTBEAT_INTERVAL_MS);
 const CONFIG_AUTOSAVE_DEBOUNCE_MS = 700;
 
@@ -135,6 +131,7 @@ function pickDefaultAgentMemoryPath(files: MemoryFileInfo[], currentPath: string
 }
 
 export function AgentDetailView({ agentId, projectId, onClose, addToast, onChildClick, inline = false, showInlineBackButton = false, initialTab, initialRunId, preferActiveRun = false, onMutationSuccess }: AgentDetailViewProps) {
+  const { t } = useTranslation("app");
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const { confirm } = useConfirm();
   const [logs, setLogs] = useState<AgentLogEntry[]>([]);
@@ -511,11 +508,11 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
     try {
       await updateAgentState(agentId, newState, projectId);
-      addToast(`Agent state updated to ${newState}`, "success");
+      addToast(t("agents.stateUpdated", "Agent state updated to {{newState}}", { newState }), "success");
       await handleSavedMutation();
     } catch (err) {
       setAgent((prev) => (prev ? { ...prev, state: previousState } : prev));
-      addToast(`Failed to update state: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.stateUpdateFailed", "Failed to update state: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsTransitioning(false);
     }
@@ -537,13 +534,13 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
       const skippedCount = nonEphemeralAgents.length - eligibleAgents.length;
       if (eligibleAgents.length === 0) {
-        addToast(`No agents eligible to ${targetState === "paused" ? "pause" : "resume"}`, "error");
+        addToast(t("agents.bulkNoEligible", "No agents eligible to {{action}}", { action: targetState === "paused" ? t("agents.pause", "pause") : t("agents.resume", "resume") }), "error");
         return;
       }
 
       const confirmed = await confirm({
-        title: targetState === "paused" ? "Pause All Agents" : "Resume All Agents",
-        message: `${targetState === "paused" ? "Pause" : "Resume"} ${eligibleAgents.length} agent${eligibleAgents.length === 1 ? "" : "s"} in this project?`,
+        title: targetState === "paused" ? t("agents.pauseAllTitle", "Pause All Agents") : t("agents.resumeAllTitle", "Resume All Agents"),
+        message: t("agents.bulkConfirmMessage", "{{action}} {{count}} agent(s) in this project?", { action: targetState === "paused" ? t("agents.pauseAction", "Pause") : t("agents.resumeAction", "Resume"), count: eligibleAgents.length }),
         danger: targetState === "paused",
       });
       if (!confirmed) return;
@@ -558,21 +555,23 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
       const successCount = results.length - failedResults.length;
       const failureCount = failedResults.length;
-      const baseSummary = `${targetState === "paused" ? "Paused" : "Resumed"} ${successCount} agent${successCount === 1 ? "" : "s"}; skipped ${skippedCount}`;
+      const actionWord = targetState === "paused" ? t("agents.pausedPast", "Paused") : t("agents.resumedPast", "Resumed");
+      const agentWord = successCount === 1 ? t("agents.agentSingular", "agent") : t("agents.agentPlural", "agents");
+      const baseSummary = t(successCount === 1 ? "agents.bulkResult_one" : "agents.bulkResult_other", "{{action}} {{successCount}} {{agentWord}}; skipped {{skippedCount}}", { action: actionWord, successCount, agentWord, skippedCount });
 
       if (failureCount > 0) {
         const failureSummary = failedResults
           .slice(0, 3)
           .map(({ agent, result }) => `${agent.name || agent.id}: ${getErrorMessage(result.reason)}`)
           .join("; ");
-        addToast(`${baseSummary}; failed ${failureCount}${failureSummary ? ` (${failureSummary})` : ""}`, "error");
+        addToast(t("agents.bulkResultWithFailures", "{{summary}}; failed {{failureCount}}{{detail}}", { summary: baseSummary, failureCount, detail: failureSummary ? ` (${failureSummary})` : "" }), "error");
       } else {
         addToast(baseSummary, "success");
       }
 
       await handleSavedMutation();
     } catch (err) {
-      addToast(`Failed to ${targetState === "paused" ? "pause" : "resume"} agents: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.bulkActionFailed", "Failed to {{action}} agents: {{error}}", { action: targetState === "paused" ? t("agents.pause", "pause") : t("agents.resume", "resume"), error: getErrorMessage(err) }), "error");
     } finally {
       setIsBulkActionRunning(false);
     }
@@ -583,10 +582,10 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
     setIsStartingRun(true);
     try {
       await startAgentRun(agentId, projectId, { source: "on_demand", triggerDetail: "Triggered from dashboard" });
-      addToast(`Heartbeat run started for ${agent?.name ?? agentId}`, "success");
+      addToast(t("agents.heartbeatStarted", "Heartbeat run started for {{name}}", { name: agent?.name ?? agentId }), "success");
       setRunNowRefreshToken((prev) => prev + 1);
     } catch (err) {
-      addToast(`Failed to start heartbeat run: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatStartFailed", "Failed to start heartbeat run: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsStartingRun(false);
     }
@@ -595,18 +594,18 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
   const handleDelete = async () => {
     if (!agent) return;
     const shouldDelete = await confirm({
-      title: "Delete Agent",
-      message: `Delete agent "${agent.name}"? This cannot be undone.`,
+      title: t("agents.deleteTitle", "Delete Agent"),
+      message: t("agents.deleteConfirm", "Delete agent \"{{name}}\"? This cannot be undone.", { name: agent.name }),
       danger: true,
     });
     if (!shouldDelete) return;
     try {
       await deleteAgent(agentId, projectId);
-      addToast(`Agent "${agent.name}" deleted`, "success");
+      addToast(t("agents.deleted", "Agent \"{{name}}\" deleted", { name: agent.name }), "success");
       await notifyMutationSuccess(true);
       onClose();
     } catch (err) {
-      addToast(`Failed to delete agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.deleteFailed", "Failed to delete agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -627,7 +626,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
   const copyAgentId = () => {
     if (agent) {
       navigator.clipboard.writeText(agent.id);
-      addToast("Agent ID copied to clipboard", "success");
+      addToast(t("agents.idCopied", "Agent ID copied to clipboard"), "success");
     }
   };
 
@@ -637,7 +636,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
         <div className="agent-detail-inline-loading" role="region" aria-label="Agent detail loading">
           <div className="agent-detail-loading">
             <Loader2 className="animate-spin" size={24} />
-            <span>Loading agent...</span>
+            <span>{t("agents.loading", "Loading agent...")}</span>
           </div>
         </div>
       );
@@ -657,7 +656,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
         <div className="agent-detail-modal" ref={agentDetailModalRef}>
           <div className="agent-detail-loading">
             <Loader2 className="animate-spin" size={24} />
-            <span>Loading agent...</span>
+            <span>{t("agents.loading", "Loading agent...")}</span>
           </div>
         </div>
       </div>
@@ -692,10 +691,10 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                 type="button"
                 className="btn agent-detail-inline-back"
                 onClick={onClose}
-                aria-label="Back to agents"
+                aria-label={t("agents.backToAgents", "Back to agents")}
               >
                 <ChevronLeft size={16} />
-                Agents
+                {t("agents.agentsLabel", "Agents")}
               </button>
             ) : null}
             <div className="agent-detail-icon">
@@ -726,65 +725,65 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                 <>
                   <button className="btn btn-task-create btn--compact" onClick={() => void handleStateChange("active")} disabled={isTransitioning}>
                     <Play size={14} />
-                    Start
+                    {t("agents.start", "Start")}
                   </button>
                   <button
                     className="btn btn-task-create btn--compact"
                     onClick={() => void handleRunHeartbeat()}
-                    aria-label={`Run now for ${agent.name}`}
+                    aria-label={t("agents.runNowFor", "Run now for {{name}}", { name: agent.name })}
                     disabled={isStartingRun || isTransitioning}
                   >
                     <Activity size={14} />
-                    Run Now
+                    {t("agents.runNow", "Run Now")}
                   </button>
                   <button className="btn btn--danger btn--compact" onClick={handleDelete}>
                     <Trash2 size={14} />
-                    Delete
+                    {t("agents.delete", "Delete")}
                   </button>
                 </>
               )}
               {agent.state === "active" && (
                 <>
-                  <button className="btn btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Pause">
+                  <button className="btn btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label={t("agents.pause", "Pause")}>
                     <Pause size={14} />
-                    <span className="agent-detail-control-label">Pause</span>
+                    <span className="agent-detail-control-label">{t("agents.pause", "Pause")}</span>
                   </button>
-                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label={t("agents.stop", "Stop")}>
                     <Square size={14} />
-                    <span className="agent-detail-control-label">Stop</span>
+                    <span className="agent-detail-control-label">{t("agents.stop", "Stop")}</span>
                   </button>
                   <button
                     className="btn btn-task-create btn--compact agent-detail-mobile-icon-control"
                     onClick={() => void handleRunHeartbeat()}
-                    aria-label={`Run now for ${agent.name}`}
+                    aria-label={t("agents.runNowFor", "Run now for {{name}}", { name: agent.name })}
                     disabled={isStartingRun || isTransitioning}
                   >
                     <Activity size={14} />
-                    <span className="agent-detail-control-label">Run Now</span>
+                    <span className="agent-detail-control-label">{t("agents.runNow", "Run Now")}</span>
                   </button>
                 </>
               )}
               {agent.state === "paused" && (
                 <>
-                  <button className="btn btn-task-create btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("active")} disabled={isTransitioning} aria-label="Resume">
+                  <button className="btn btn-task-create btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("active")} disabled={isTransitioning} aria-label={t("agents.resume", "Resume")}>
                     <Play size={14} />
-                    <span className="agent-detail-control-label">Resume</span>
+                    <span className="agent-detail-control-label">{t("agents.resume", "Resume")}</span>
                   </button>
                   <button className="btn btn--danger btn--compact" onClick={handleDelete}>
                     <Trash2 size={14} />
-                    Delete
+                    {t("agents.delete", "Delete")}
                   </button>
                 </>
               )}
               {agent.state === "running" && (
                 <>
-                  <button className="btn btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Pause">
+                  <button className="btn btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label={t("agents.pause", "Pause")}>
                     <Pause size={14} />
-                    <span className="agent-detail-control-label">Pause</span>
+                    <span className="agent-detail-control-label">{t("agents.pause", "Pause")}</span>
                   </button>
-                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label={t("agents.stop", "Stop")}>
                     <Square size={14} />
-                    <span className="agent-detail-control-label">Stop</span>
+                    <span className="agent-detail-control-label">{t("agents.stop", "Stop")}</span>
                   </button>
                 </>
               )}
@@ -792,11 +791,11 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                 <>
                   <button className="btn btn-task-create btn--compact" onClick={() => void handleStateChange("active")} disabled={isTransitioning}>
                     <Play size={14} />
-                    Retry
+                    {t("agents.retry", "Retry")}
                   </button>
-                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label="Stop">
+                  <button className="btn btn--danger btn--compact agent-detail-mobile-icon-control" onClick={() => void handleStateChange("paused")} disabled={isTransitioning} aria-label={t("agents.stop", "Stop")}>
                     <Square size={14} />
-                    <span className="agent-detail-control-label">Stop</span>
+                    <span className="agent-detail-control-label">{t("agents.stop", "Stop")}</span>
                   </button>
                 </>
               )}
@@ -811,8 +810,8 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                   onClick={() => setIsBulkMenuOpen((open) => !open)}
                   aria-haspopup="menu"
                   aria-expanded={isBulkMenuOpen}
-                  aria-label="Bulk agent actions"
-                  title="Bulk agent actions"
+                  aria-label={t("agents.bulkActions", "Bulk agent actions")}
+                  title={t("agents.bulkActions", "Bulk agent actions")}
                   disabled={isTransitioning || isBulkActionRunning}
                 >
                   <MoreVertical size={16} />
@@ -826,13 +825,13 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                       onClick={() => void handleBulkStateChange("paused")}
                       disabled={isPauseAllDisabled || isBulkActionRunning}
                     >
-                      Pause All Agents
+                      {t("agents.pauseAll", "Pause All Agents")}
                       <span className="agent-detail-bulk-menu-item-hint">
                         {isBulkEligibilityLoading
-                          ? "Loading eligible agents..."
+                          ? t("agents.loadingEligible", "Loading eligible agents...")
                           : isPauseAllDisabled
-                            ? "No active agents eligible"
-                            : `Pause ${bulkPauseEligibleCount} active/running agent${bulkPauseEligibleCount === 1 ? "" : "s"}`}
+                            ? t("agents.noActiveEligible", "No active agents eligible")
+                            : t(bulkPauseEligibleCount === 1 ? "agents.pauseCountHint_one" : "agents.pauseCountHint_other", bulkPauseEligibleCount === 1 ? "Pause {{count}} active/running agent" : "Pause {{count}} active/running agents", { count: bulkPauseEligibleCount })}
                       </span>
                     </button>
                     <button
@@ -842,23 +841,23 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
                       onClick={() => void handleBulkStateChange("active")}
                       disabled={isResumeAllDisabled || isBulkActionRunning}
                     >
-                      Resume All Agents
+                      {t("agents.resumeAll", "Resume All Agents")}
                       <span className="agent-detail-bulk-menu-item-hint">
                         {isBulkEligibilityLoading
-                          ? "Loading eligible agents..."
+                          ? t("agents.loadingEligible", "Loading eligible agents...")
                           : isResumeAllDisabled
-                            ? "No paused agents eligible"
-                            : `Resume ${bulkResumeEligibleCount} paused agent${bulkResumeEligibleCount === 1 ? "" : "s"}`}
+                            ? t("agents.noPausedEligible", "No paused agents eligible")
+                            : t(bulkResumeEligibleCount === 1 ? "agents.resumeCountHint_one" : "agents.resumeCountHint_other", bulkResumeEligibleCount === 1 ? "Resume {{count}} paused agent" : "Resume {{count}} paused agents", { count: bulkResumeEligibleCount })}
                       </span>
                     </button>
                   </div>
                 )}
               </div>
-              <button className="btn-icon" onClick={() => void loadAgent()} title="Refresh" aria-label="Refresh">
+              <button className="btn-icon" onClick={() => void loadAgent()} title={t("common.refresh", "Refresh")} aria-label={t("common.refresh", "Refresh")}>
                 <RefreshCw size={16} />
               </button>
               {!inline && (
-                <button className="btn-icon" onClick={onClose} aria-label="Close" title="Close">
+                <button className="btn-icon" onClick={onClose} aria-label={t("common.close", "Close")} title={t("common.close", "Close")}>
                   <X size={20} />
                 </button>
               )}
@@ -868,16 +867,31 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
         {/* Tabs */}
         <div className="agent-detail-tabs">
-          {TABS.map(tab => (
-            <button
-              key={tab.id}
-              className={cn("agent-detail-tab", activeTab === tab.id && "active")}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <tab.icon size={16} />
-              {tab.label}
-            </button>
-          ))}
+          {TABS.map(tab => {
+            const tabLabels: Record<TabId, string> = {
+              dashboard: t("agents.tabDashboard", "Dashboard"),
+              logs: t("agents.tabLogs", "Logs"),
+              mail: t("agents.tabMail", "Mail"),
+              runs: t("agents.tabRuns", "Runs"),
+              tasks: t("agents.tabTasks", "Tasks"),
+              employees: t("agents.tabEmployees", "Employees"),
+              soul: t("agents.tabSoul", "Soul"),
+              instructions: t("agents.tabInstructions", "Instructions"),
+              memory: t("agents.tabMemory", "Agent Memory"),
+              reflections: t("agents.tabReflections", "Evaluation"),
+              config: t("agents.tabConfig", "Settings"),
+            };
+            return (
+              <button
+                key={tab.id}
+                className={cn("agent-detail-tab", activeTab === tab.id && "active")}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <tab.icon size={16} />
+                {tabLabels[tab.id]}
+              </button>
+            );
+          })}
         </div>
 
         {/* Tab Content */}
@@ -896,7 +910,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
               logs={logs}
               isStreaming={isStreaming}
               hasTask={!!agent.taskId || logs.length > 0 || latestRun !== null}
-              fallbackLabel={!agent.taskId && latestRun ? `Latest run · ${latestRun.id.slice(0, 8)}` : null}
+              fallbackLabel={!agent.taskId && latestRun ? t("agents.latestRunLabel", "Latest run · {{id}}", { id: latestRun.id.slice(0, 8) }) : null}
             />
           )}
 
@@ -996,7 +1010,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
         {/* Footer with agent ID */}
         {!inline && (
           <div className="agent-detail-footer">
-            <button className="btn-icon" onClick={copyAgentId} title="Copy Agent ID">
+            <button className="btn-icon" onClick={copyAgentId} title={t("agents.copyId", "Copy Agent ID")}>
               <Copy />
             </button>
             <span className="agent-detail-id" onClick={copyAgentId}>
@@ -1005,7 +1019,7 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
             {agent.taskId && (
               <>
                 <span className="divider">|</span>
-                <span className="text-muted">Working on:</span>
+                <span className="text-muted">{t("agents.workingOn", "Working on:")}</span>
                 <a href={`/tasks/${agent.taskId}`} className="link">
                   {agent.taskId}
                   <ExternalLink size={12} />
@@ -1021,17 +1035,18 @@ export function AgentDetailView({ agentId, projectId, onClose, addToast, onChild
 
 // ── Dashboard Tab ───────────────────────────────────────────────────────────
 
-function DashboardTab({ 
-  agent, 
+function DashboardTab({
+  agent,
   health,
   onChildClick,
   projectId,
-}: { 
-  agent: AgentDetail; 
+}: {
+  agent: AgentDetail;
   health: AgentHealthStatus;
   onChildClick?: (childId: string) => void;
   projectId?: string;
 }) {
+  const { t } = useTranslation("app");
   const stateStyle = STATE_COLORS[agent.state];
   const [chainOfCommand, setChainOfCommand] = useState<Agent[]>([]);
   const [isLoadingChainOfCommand, setIsLoadingChainOfCommand] = useState(true);
@@ -1168,34 +1183,34 @@ function DashboardTab({
       {budgetStatus?.isOverBudget && (
         <div className="budget-warning-banner" role="alert">
           <span>⚠️</span>
-          <span><strong>Budget Exhausted:</strong> This agent has exceeded its token budget and may operate with limited functionality.</span>
+          <span><strong>{t("agents.budgetExhaustedTitle", "Budget Exhausted:")}</strong> {t("agents.budgetExhaustedBody", "This agent has exceeded its token budget and may operate with limited functionality.")}</span>
         </div>
       )}
 
       <section className="dashboard-summary-card dashboard-summary-hero">
         <div className="dashboard-summary-hero__heading">
           <Bot />
-          <h3>Overview</h3>
+          <h3>{t("agents.overview", "Overview")}</h3>
           <strong>{agent.name}</strong>
           <span className="inline-badge" style={{ background: stateStyle.bg, color: stateStyle.text }}>{agent.state}</span>
         </div>
         <div className="dashboard-summary-hero__meta">
           <span className="dashboard-summary-hero__health" title={health.reason ?? health.label}>{health.icon} {health.label}</span>
           {(agent.pendingApprovalCount ?? 0) > 0 ? (
-            <span className="badge agent-detail-approval-badge" title="Pending approvals">
+            <span className="badge agent-detail-approval-badge" title={t("agents.pendingApprovals", "Pending approvals")}>
               <span className="status-dot status-dot--pending" />
-              {agent.pendingApprovalCount} pending approvals
+              {t("agents.pendingApprovalsCount", "{{count}} pending approvals", { count: agent.pendingApprovalCount })}
             </span>
           ) : null}
-          <span>Role: {agent.role}</span>
+          <span>{t("agents.roleLabel", "Role: {{role}}", { role: agent.role })}</span>
           <span>
-            <span className="dashboard-summary-label">{runtimeHint ? "Runtime" : "Model"}</span>
-            <span> {modelDisplay ?? "Auto"}</span>
+            <span className="dashboard-summary-label">{runtimeHint ? t("agents.runtime", "Runtime") : t("agents.model", "Model")}</span>
+            <span> {modelDisplay ?? t("agents.auto", "Auto")}</span>
           </span>
           {agentSkills.length > 0 ? (
             <span className="dashboard-summary-skills">
-              <span className="dashboard-summary-label">Skills</span>
-              <span className="dashboard-summary-skill-badges" role="list" aria-label="Assigned skills">
+              <span className="dashboard-summary-label">{t("agents.skills", "Skills")}</span>
+              <span className="dashboard-summary-skill-badges" role="list" aria-label={t("agents.assignedSkills", "Assigned skills")}>
                 {agentSkills.map((skillId) => {
                   const isSelected = selectedSkillId === skillId;
                   return (
@@ -1206,7 +1221,7 @@ function DashboardTab({
                       title={skillId}
                       onClick={() => handleSkillBadgeClick(skillId)}
                       aria-expanded={isSelected}
-                      aria-label={`View details for ${formatAgentSkillBadgeLabel(skillId)}`}
+                      aria-label={t("agents.viewSkillDetails", "View details for {{skill}}", { skill: formatAgentSkillBadgeLabel(skillId) })}
                     >
                       {formatAgentSkillBadgeLabel(skillId)}
                     </button>
@@ -1215,7 +1230,7 @@ function DashboardTab({
               </span>
             </span>
           ) : (
-            <span>Skills: —</span>
+            <span>{t("agents.skillsNone", "Skills: —")}</span>
           )}
         </div>
         {selectedSkillId ? (
@@ -1228,70 +1243,70 @@ function DashboardTab({
                 onClick={() => handleSkillBadgeClick(selectedSkillId)}
               >
                 <X size={14} />
-                Close
+                {t("common.close", "Close")}
               </button>
             </div>
             {isLoadingSkillContent ? (
               <div className="dashboard-summary-skill-detail-loading" role="status" aria-live="polite">
                 <Loader2 size={14} className="animate-spin" />
-                Loading skill content...
+                {t("agents.loadingSkillContent", "Loading skill content...")}
               </div>
             ) : skillContentError ? (
               <div className="dashboard-summary-skill-detail-error" role="alert">
                 <AlertCircle size={14} />
                 <span>{skillContentError}</span>
                 <button type="button" className="btn btn-sm" onClick={() => void loadSkillContent(selectedSkillId)}>
-                  Retry
+                  {t("common.retry", "Retry")}
                 </button>
               </div>
             ) : selectedSkillContent ? (
-              <pre className="dashboard-summary-skill-detail-content">{selectedSkillContent.skillMd || "(No SKILL.md found)"}</pre>
+              <pre className="dashboard-summary-skill-detail-content">{selectedSkillContent.skillMd || t("agents.noSkillMd", "(No SKILL.md found)")}</pre>
             ) : (
-              <div className="dashboard-summary-skill-detail-empty">No skill content available</div>
+              <div className="dashboard-summary-skill-detail-empty">{t("agents.noSkillContent", "No skill content available")}</div>
             )}
           </div>
         ) : null}
       </section>
 
       <section className="dashboard-summary-card">
-        <h3>Heartbeat &amp; Health</h3>
+        <h3>{t("agents.heartbeatAndHealth", "Heartbeat & Health")}</h3>
         <div className="dashboard-summary-grid">
           <div>
-            <p className="dashboard-summary-label">Last heartbeat</p>
-            <p>{agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never"}</p>
+            <p className="dashboard-summary-label">{t("agents.lastHeartbeat", "Last heartbeat")}</p>
+            <p>{agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt, t) : t("agents.never", "Never")}</p>
           </div>
           <div>
-            <p className="dashboard-summary-label">Next expected</p>
-            <p>{nextHeartbeatAt ? relativeTime(nextHeartbeatAt) : "Not scheduled"}</p>
+            <p className="dashboard-summary-label">{t("agents.nextExpected", "Next expected")}</p>
+            <p>{nextHeartbeatAt ? relativeTime(nextHeartbeatAt, t) : t("agents.notScheduled", "Not scheduled")}</p>
           </div>
           <div>
-            <p className="dashboard-summary-label">Interval</p>
+            <p className="dashboard-summary-label">{t("agents.interval", "Interval")}</p>
             <p>{formatHeartbeatInterval(heartbeatIntervalMs)}</p>
           </div>
           <div>
-            <p className="dashboard-summary-label">Status</p>
+            <p className="dashboard-summary-label">{t("agents.status", "Status")}</p>
             <p className="dashboard-summary-health-row"><span className={cn("status-dot", agent.state === "running" && "status-dot--running")} />{health.label}{health.reason && <span className="text-secondary dashboard-summary-health-reason" title={health.reason}>({health.reason})</span>}</p>
           </div>
         </div>
       </section>
 
       <section className="dashboard-summary-card">
-        <h3>Current Work</h3>
+        <h3>{t("agents.currentWork", "Current Work")}</h3>
         {agent.taskId ? (
           <div className="current-task">
             <a href={`/tasks/${agent.taskId}`} className="task-badge">{agent.taskId}</a>
-            <a href={`/tasks/${agent.taskId}`} className="btn btn-sm">View Task <ExternalLink size={14} /></a>
+            <a href={`/tasks/${agent.taskId}`} className="btn btn-sm">{t("agents.viewTask", "View Task")} <ExternalLink size={14} /></a>
           </div>
         ) : (
-          <p className="text-muted">No active assignment</p>
+          <p className="text-muted">{t("agents.noActiveAssignment", "No active assignment")}</p>
         )}
       </section>
 
       <section className="dashboard-summary-card">
-        <h3>Recent Runs</h3>
-        <p className="dashboard-summary-label">{stats.successfulRuns}/{stats.totalRuns} successful ({stats.successRate}%)</p>
+        <h3>{t("agents.recentRuns", "Recent Runs")}</h3>
+        <p className="dashboard-summary-label">{t("agents.runsSuccessRate", "{{successful}}/{{total}} successful ({{rate}}%)", { successful: stats.successfulRuns, total: stats.totalRuns, rate: stats.successRate })}</p>
         {recentRuns.length === 0 ? (
-          <p className="text-muted">No runs yet</p>
+          <p className="text-muted">{t("agents.noRunsYet", "No runs yet")}</p>
         ) : (
           <div className="runs-list">
             {recentRuns.map((run) => {
@@ -1300,7 +1315,7 @@ function DashboardTab({
               return (
                 <div key={run.id} className="run-item">
                   <StatusIcon size={14} style={{ color: statusSpec.color }} />
-                  <span>{relativeTime(run.startedAt)}</span>
+                  <span>{relativeTime(run.startedAt, t)}</span>
                   <span className="text-muted">{Math.max(0, Math.round((new Date(run.endedAt || run.startedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))}s</span>
                 </div>
               );
@@ -1310,28 +1325,28 @@ function DashboardTab({
       </section>
 
       <section className="dashboard-summary-card">
-        <h3>Throughput</h3>
+        <h3>{t("agents.throughput", "Throughput")}</h3>
         <div className="stats-grid">
-          <div className="stat-card"><div className="stat-value">{stats.totalRuns}</div><div className="stat-label">Total Runs</div></div>
-          <div className="stat-card"><div className="stat-value">{stats.todayRuns}</div><div className="stat-label">Runs Today</div></div>
-          <div className="stat-card"><div className="stat-value">{stats.successRate}%</div><div className="stat-label">Success Rate</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.totalRuns}</div><div className="stat-label">{t("agents.totalRuns", "Total Runs")}</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.todayRuns}</div><div className="stat-label">{t("agents.runsToday", "Runs Today")}</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.successRate}%</div><div className="stat-label">{t("agents.successRate", "Success Rate")}</div></div>
         </div>
       </section>
 
       <section className="dashboard-summary-card">
-        <h3>Chain of Command</h3>
+        <h3>{t("agents.chainOfCommand", "Chain of Command")}</h3>
         {isLoadingChainOfCommand ? (
-          <div className="chain-of-command-loading" role="status" aria-live="polite"><Loader2 size={14} className="animate-spin" /><span>Loading reporting chain...</span></div>
+          <div className="chain-of-command-loading" role="status" aria-live="polite"><Loader2 size={14} className="animate-spin" /><span>{t("agents.loadingReportingChain", "Loading reporting chain...")}</span></div>
         ) : chainOfCommand.length <= 1 ? (
-          <p className="text-muted">No reporting chain</p>
+          <p className="text-muted">{t("agents.noReportingChain", "No reporting chain")}</p>
         ) : (
-          <div className="chain-of-command-path" aria-label="Chain of command">
+          <div className="chain-of-command-path" aria-label={t("agents.chainOfCommand", "Chain of command")}>
             {chainOfCommand.map((chainAgent, index) => {
               const isCurrent = index === chainOfCommand.length - 1;
               const isAncestor = !isCurrent;
               return (
                 <div key={chainAgent.id} className="chain-of-command-item">
-                  <button type="button" className={`chain-of-command-node${isCurrent ? " chain-of-command-node--current" : ""}`} onClick={() => isAncestor && onChildClick?.(chainAgent.id)} disabled={!isAncestor || !onChildClick} title={isCurrent ? "Current agent" : `View ${chainAgent.name}`}>
+                  <button type="button" className={`chain-of-command-node${isCurrent ? " chain-of-command-node--current" : ""}`} onClick={() => isAncestor && onChildClick?.(chainAgent.id)} disabled={!isAncestor || !onChildClick} title={isCurrent ? t("agents.currentAgent", "Current agent") : t("agents.viewAgent", "View {{name}}", { name: chainAgent.name })}>
                     {chainAgent.name}
                   </button>
                   {!isCurrent && <span className="chain-of-command-separator" aria-hidden="true">→</span>}
@@ -1358,14 +1373,16 @@ function LogsTab({
   hasTask: boolean;
   fallbackLabel?: string | null;
 }) {
+  const { t } = useTranslation("app");
+
   if (!hasTask) {
     return (
       <div className="logs-tab">
         <div className="logs-empty">
           <FileText size={48} opacity={0.3} />
-          <p>No activity yet</p>
+          <p>{t("agents.noActivityYet", "No activity yet")}</p>
           <p className="text-muted">
-            Agent logs will appear here from the current task or most recent run
+            {t("agents.logsWillAppear", "Agent logs will appear here from the current task or most recent run")}
           </p>
         </div>
       </div>
@@ -1375,23 +1392,23 @@ function LogsTab({
   return (
     <div className="logs-tab">
       <div className="logs-header">
-        <span className="logs-count">{logs.length} entries</span>
+        <span className="logs-count">{t("agents.logEntries", "{{count}} entries", { count: logs.length })}</span>
         {fallbackLabel && (
           <span className="text-muted logs-fallback-label">{fallbackLabel}</span>
         )}
         {isStreaming && (
           <span className="streaming-indicator">
             <span className="streaming-dot" />
-            Live
+            {t("agents.live", "Live")}
           </span>
         )}
       </div>
       {logs.length === 0 ? (
         <div className="logs-empty">
           <FileText size={48} opacity={0.3} />
-          <p>No log entries yet</p>
+          <p>{t("agents.noLogEntriesYet", "No log entries yet")}</p>
           <p className="text-muted">
-            {isStreaming ? "Waiting for activity..." : "Logs will appear here when the agent is active"}
+            {isStreaming ? t("agents.waitingForActivity", "Waiting for activity...") : t("agents.logsWillAppearActive", "Logs will appear here when the agent is active")}
           </p>
         </div>
       ) : (
@@ -1401,18 +1418,22 @@ function LogsTab({
   );
 }
 
-function formatMailboxTimestamp(ts: string): string {
+function formatMailboxTimestamp(ts: string, t?: (key: string, defaultValue: string, options?: Record<string, unknown>) => string): string {
   const date = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
+  const tr = t ?? ((_key: string, def: string, opts?: Record<string, unknown>) => {
+    if (!opts) return def;
+    return def.replace(/\{\{(\w+)\}\}/g, (_, k) => String(opts[k] ?? ""));
+  });
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return tr("time.justNow", "just now");
+  if (diffMins < 60) return tr("time.minutesAgo", "{{n}}m ago", { n: diffMins });
+  if (diffHours < 24) return tr("time.hoursAgo", "{{n}}h ago", { n: diffHours });
+  if (diffDays < 7) return tr("time.daysAgo", "{{n}}d ago", { n: diffDays });
 
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
@@ -1421,14 +1442,19 @@ function mailboxParticipantLabel(
   id: string,
   type: ParticipantType,
   agentNamesById?: ReadonlyMap<string, string>,
+  t?: (key: string, defaultValue: string, options?: Record<string, unknown>) => string,
 ): string {
-  if (type === "user") return id === "dashboard" ? "You" : `User: ${id}`;
+  const tr = t ?? ((_key: string, def: string, opts?: Record<string, unknown>) => {
+    if (!opts) return def;
+    return def.replace(/\{\{(\w+)\}\}/g, (_, k) => String(opts[k] ?? ""));
+  });
+  if (type === "user") return id === "dashboard" ? tr("mailbox.you", "You") : tr("mailbox.userLabel", "User: {{id}}", { id });
   if (type === "agent") {
     const name = agentNamesById?.get(id)?.trim();
-    if (!name || name === id) return `Agent: ${id}`;
-    return `Agent: ${name}`;
+    if (!name || name === id) return tr("mailbox.agentById", "Agent: {{id}}", { id });
+    return tr("mailbox.agentByName", "Agent: {{name}}", { name });
   }
-  return "System";
+  return tr("mailbox.system", "System");
 }
 
 function MailTab({
@@ -1448,6 +1474,7 @@ function MailTab({
   addToast?: (message: string, type?: "success" | "error") => void;
   onRefresh: () => void;
 }) {
+  const { t } = useTranslation("app");
   const [activeSubtab, setActiveSubtab] = useState<"inbox" | "outbox">("inbox");
   const [knownAgents, setKnownAgents] = useState<Agent[]>([]);
 
@@ -1533,25 +1560,25 @@ function MailTab({
       <div className="mailbox-item-content">
         <div className="mailbox-item-header">
           {activeSubtab === "inbox" ? (
-            <span className="mailbox-item-from">{mailboxParticipantLabel(message.fromId, message.fromType, agentNamesById)}</span>
+            <span className="mailbox-item-from">{mailboxParticipantLabel(message.fromId, message.fromType, agentNamesById, t)}</span>
           ) : (
-            <span className="mailbox-item-to">To: {mailboxParticipantLabel(message.toId, message.toType, agentNamesById)}</span>
+            <span className="mailbox-item-to">{t("agents.mailTo", "To: {{recipient}}", { recipient: mailboxParticipantLabel(message.toId, message.toType, agentNamesById, t) })}</span>
           )}
-          <span className="mailbox-item-time">{formatMailboxTimestamp(message.createdAt)}</span>
+          <span className="mailbox-item-time">{formatMailboxTimestamp(message.createdAt, t)}</span>
         </div>
         <div className="mailbox-item-preview">{message.content.slice(0, 80)}{message.content.length > 80 ? "…" : ""}</div>
       </div>
-      {activeSubtab === "inbox" && !message.read ? <div className="mailbox-item-unread-dot" aria-label="Unread message" /> : null}
+      {activeSubtab === "inbox" && !message.read ? <div className="mailbox-item-unread-dot" aria-label={t("agents.unreadMessage", "Unread message")} /> : null}
     </button>
   );
 
   return (
     <div className="agent-mail-tab">
       <div className="agent-mail-tab-header">
-        <h3>{agent.name} Mail</h3>
+        <h3>{t("agents.agentMail", "{{name}} Mail", { name: agent.name })}</h3>
         <button className="btn btn-sm" onClick={handleRefresh} disabled={isLoading}>
           <RefreshCw size={14} />
-          Refresh
+          {t("common.refresh", "Refresh")}
         </button>
       </div>
 
@@ -1561,7 +1588,7 @@ function MailTab({
           onClick={() => setActiveSubtab("inbox")}
         >
           <InboxIcon size={12} />
-          <span>Inbox</span>
+          <span>{t("agents.inbox", "Inbox")}</span>
           {(mailbox?.unreadCount ?? 0) > 0 ? <span className="mailbox-tab-badge">{mailbox?.unreadCount}</span> : null}
         </button>
         <button
@@ -1569,21 +1596,21 @@ function MailTab({
           onClick={() => setActiveSubtab("outbox")}
         >
           <Send size={12} />
-          <span>Outbox</span>
+          <span>{t("agents.outbox", "Outbox")}</span>
         </button>
       </div>
 
       {isLoading && !mailbox ? (
         <div className="agent-detail-loading agent-detail-loading--inline" role="status" aria-live="polite">
           <Loader2 className="animate-spin" size={16} />
-          <span>Loading mailbox...</span>
+          <span>{t("agents.loadingMailbox", "Loading mailbox...")}</span>
         </div>
       ) : null}
 
       {!isLoading && error ? (
         <div className="agent-mail-tab-error" role="alert">
           <AlertCircle size={16} />
-          <span>Failed to load mailbox: {error}</span>
+          <span>{t("agents.mailboxLoadFailed", "Failed to load mailbox: {{error}}", { error })}</span>
         </div>
       ) : null}
 
@@ -1597,27 +1624,27 @@ function MailTab({
               onClick={() => setSelectedMessageId(null)}
             >
               <ChevronLeft size={14} />
-              Back to {activeSubtab === "inbox" ? "Inbox" : "Outbox"}
+              {activeSubtab === "inbox" ? t("agents.backToInbox", "Back to Inbox") : t("agents.backToOutbox", "Back to Outbox")}
             </button>
             <div className="agent-mail-tab-detail-meta">
               <div className="agent-mail-tab-detail-row">
-                <span className="agent-mail-tab-detail-label">From</span>
-                <span>{mailboxParticipantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById)}</span>
+                <span className="agent-mail-tab-detail-label">{t("agents.mailFrom", "From")}</span>
+                <span>{mailboxParticipantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById, t)}</span>
               </div>
               <div className="agent-mail-tab-detail-row">
-                <span className="agent-mail-tab-detail-label">To</span>
-                <span>{mailboxParticipantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById)}</span>
+                <span className="agent-mail-tab-detail-label">{t("agents.mailToLabel", "To")}</span>
+                <span>{mailboxParticipantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById, t)}</span>
               </div>
               <div className="agent-mail-tab-detail-row">
-                <span className="agent-mail-tab-detail-label">Type</span>
+                <span className="agent-mail-tab-detail-label">{t("agents.mailType", "Type")}</span>
                 <span>{selectedMessage.type}</span>
               </div>
               <div className="agent-mail-tab-detail-row">
-                <span className="agent-mail-tab-detail-label">Sent</span>
+                <span className="agent-mail-tab-detail-label">{t("agents.mailSent", "Sent")}</span>
                 <span>{new Date(selectedMessage.createdAt).toLocaleString()}</span>
               </div>
               {selectedMessage.metadata?.replyTo?.messageId ? (
-                <div className="agent-mail-tab-reply-context">↪ Replying to message {selectedMessage.metadata.replyTo.messageId}</div>
+                <div className="agent-mail-tab-reply-context">{t("agents.replyingTo", "↪ Replying to message {{id}}", { id: selectedMessage.metadata.replyTo.messageId })}</div>
               ) : null}
             </div>
             <div className="agent-mail-tab-detail-body">{selectedMessage.content}</div>
@@ -1627,7 +1654,7 @@ function MailTab({
             {messages.length === 0 ? (
               <div className="mailbox-empty" data-testid="agent-detail-mail-empty">
                 {activeSubtab === "inbox" ? <InboxIcon size={32} /> : <Send size={32} />}
-                <p>{activeSubtab === "inbox" ? "No received messages for this agent" : "No sent messages for this agent"}</p>
+                <p>{activeSubtab === "inbox" ? t("agents.noInboxMessages", "No received messages for this agent") : t("agents.noOutboxMessages", "No sent messages for this agent")}</p>
               </div>
             ) : (
               messages.map(renderMessage)
@@ -1656,7 +1683,7 @@ interface AgentTokenUsageSummary {
   allTime: AgentTokenUsageWindowSummary;
 }
 
-function RunsTab({ 
+function RunsTab({
   addToast,
   agentId,
   projectId,
@@ -1666,7 +1693,7 @@ function RunsTab({
   preferActiveRun,
   runNowRefreshToken,
   isEphemeral,
-}: { 
+}: {
   addToast: (msg: string, type?: "success" | "error") => void;
   agentId: string;
   projectId?: string;
@@ -1677,6 +1704,7 @@ function RunsTab({
   runNowRefreshToken: number;
   isEphemeral: boolean;
 }) {
+  const { t } = useTranslation("app");
   const [runs, setRuns] = useState<AgentHeartbeatRun[]>([]);
   const { confirm } = useConfirm();
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
@@ -1810,7 +1838,7 @@ function RunsTab({
       setRunLogs(logs);
       setDetailRun(detail);
     } catch (err) {
-      addToast(`Failed to load run details: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.runDetailsFailed", "Failed to load run details: {{error}}", { error: getErrorMessage(err) }), "error");
       setRunLogs([]);
       setDetailRun(null);
     } finally {
@@ -1840,8 +1868,8 @@ function RunsTab({
 
   const handleStopRun = async () => {
     const shouldStop = await confirm({
-      title: "Stop Active Run",
-      message: "Stop the active run? The agent's work will be interrupted.",
+      title: t("agents.stopRunTitle", "Stop Active Run"),
+      message: t("agents.stopRunConfirm", "Stop the active run? The agent's work will be interrupted."),
       danger: true,
     });
     if (!shouldStop) {
@@ -1850,11 +1878,11 @@ function RunsTab({
 
     try {
       await stopAgentRun(agentId, projectId);
-      addToast("Run stopped", "success");
+      addToast(t("agents.runStopped", "Run stopped"), "success");
       setIsLoadingRuns(true);
       void loadRuns();
     } catch (err) {
-      addToast(`Failed to stop run: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.stopRunFailed", "Failed to stop run: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -1863,7 +1891,7 @@ function RunsTab({
       <div className="runs-tab">
         <div className="runs-loading-row">
           <Loader2 size={16} className="animate-spin" />
-          <span className="text-muted">Loading runs...</span>
+          <span className="text-muted">{t("agents.loadingRuns", "Loading runs...")}</span>
         </div>
       </div>
     );
@@ -1874,8 +1902,8 @@ function RunsTab({
       <div className="runs-tab">
         <div className="runs-empty">
           <Activity size={48} opacity={0.3} />
-          <p>No runs yet</p>
-          <p className="text-muted">Heartbeat runs will appear here</p>
+          <p>{t("agents.noRunsYet", "No runs yet")}</p>
+          <p className="text-muted">{t("agents.heartbeatRunsWillAppear", "Heartbeat runs will appear here")}</p>
         </div>
       </div>
     );
@@ -1892,10 +1920,10 @@ function RunsTab({
     if (!usage) return null;
     return (
       <div className="run-usage">
-        <span>Input: {usage.inputTokens.toLocaleString()}</span>
-        <span>Output: {usage.outputTokens.toLocaleString()}</span>
-        {usage.cachedTokens > 0 && <span>Cache read: {usage.cachedTokens.toLocaleString()}</span>}
-        {(usage.cacheWriteTokens ?? 0) > 0 && <span>Cache write: {(usage.cacheWriteTokens ?? 0).toLocaleString()}</span>}
+        <span>{t("agents.inputTokens", "Input: {{value}}", { value: usage.inputTokens.toLocaleString() })}</span>
+        <span>{t("agents.outputTokens", "Output: {{value}}", { value: usage.outputTokens.toLocaleString() })}</span>
+        {usage.cachedTokens > 0 && <span>{t("agents.cacheReadTokens", "Cache read: {{value}}", { value: usage.cachedTokens.toLocaleString() })}</span>}
+        {(usage.cacheWriteTokens ?? 0) > 0 && <span>{t("agents.cacheWriteTokens", "Cache write: {{value}}", { value: (usage.cacheWriteTokens ?? 0).toLocaleString() })}</span>}
       </div>
     );
   };
@@ -1903,9 +1931,9 @@ function RunsTab({
   const renderRunCard = (run: AgentHeartbeatRun, index: number, isActive: boolean) => {
     const statusInfo = RUN_STATUS_ICONS[run.status] || RUN_STATUS_ICONS.completed;
     const StatusIcon = statusInfo.icon;
-    const duration = run.endedAt 
+    const duration = run.endedAt
       ? formatDuration(new Date(run.startedAt), new Date(run.endedAt))
-      : "In progress";
+      : t("agents.inProgress", "In progress");
     const isSelected = selectedRunId === run.id;
 
     return (
@@ -1916,7 +1944,7 @@ function RunsTab({
           role="button"
           tabIndex={0}
           aria-expanded={isSelected}
-          aria-label={`${isActive ? "Active" : ""} run ${run.id.slice(0, 8)}, ${run.status}`}
+          aria-label={t("agents.runAriaLabel", "{{active}}run {{id}}, {{status}}", { active: isActive ? t("agents.activePrefix", "Active ") : "", id: run.id.slice(0, 8), status: run.status })}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -1930,7 +1958,7 @@ function RunsTab({
               {isActive ? (
                 <span className="run-live-indicator">
                   <span className="live-dot" />
-                  Live Run
+                  {t("agents.liveRun", "Live Run")}
                 </span>
               ) : (
                 <span className="run-id">#{index + 1} {run.id.slice(0, 8)}</span>
@@ -1950,9 +1978,9 @@ function RunsTab({
                     e.stopPropagation();
                     void handleStopRun();
                   }}
-                  aria-label="Stop active run"
+                  aria-label={t("agents.stopActiveRun", "Stop active run")}
                 >
-                  <Square size={12} /> Stop
+                  <Square size={12} /> {t("agents.stop", "Stop")}
                 </button>
               )}
               <span className={cn("run-status", run.status)}>
@@ -1961,13 +1989,13 @@ function RunsTab({
               </span>
               {run.heartbeatProcedureSource === "custom" && (
                 <span className="badge run-badge--compact">
-                  Heartbeat: custom
+                  {t("agents.heartbeatCustom", "Heartbeat: custom")}
                 </span>
               )}
             </div>
           </div>
           <div className="run-details">
-            <span>Started {relativeTime(run.startedAt)}</span>
+            <span>{t("agents.runStarted", "Started {{time}}", { time: relativeTime(run.startedAt, t) })}</span>
             <span>•</span>
             <span>{duration}</span>
             {run.triggerDetail && (
@@ -1984,18 +2012,18 @@ function RunsTab({
             {isLoadingDetail ? (
               <div className="run-details-loading-state">
                 <Loader2 size={14} className="animate-spin" />
-                <span className="text-muted">Loading details...</span>
+                <span className="text-muted">{t("agents.loadingDetails", "Loading details...")}</span>
               </div>
             ) : detailRun && (
               <div className="run-output-sections">
                 {/* System Prompt */}
                 <div className="run-output-section">
                   <details>
-                    <summary className="run-output-label run-output-summary">System Prompt</summary>
+                    <summary className="run-output-label run-output-summary">{t("agents.systemPrompt", "System Prompt")}</summary>
                     {detailRun.systemPrompt ? (
                       <pre className="run-output-panel">{detailRun.systemPrompt}</pre>
                     ) : (
-                      <div className="text-muted run-output-empty">System prompt not captured for this run</div>
+                      <div className="text-muted run-output-empty">{t("agents.systemPromptNotCaptured", "System prompt not captured for this run")}</div>
                     )}
                   </details>
                 </div>
@@ -2003,11 +2031,11 @@ function RunsTab({
                 {/* Execution Prompt */}
                 <div className="run-output-section">
                   <details>
-                    <summary className="run-output-label run-output-summary">Execution Prompt</summary>
+                    <summary className="run-output-label run-output-summary">{t("agents.executionPrompt", "Execution Prompt")}</summary>
                     {detailRun.executionPrompt ? (
                       <pre className="run-output-panel">{detailRun.executionPrompt}</pre>
                     ) : (
-                      <div className="text-muted run-output-empty">Execution prompt not captured for this run</div>
+                      <div className="text-muted run-output-empty">{t("agents.executionPromptNotCaptured", "Execution prompt not captured for this run")}</div>
                     )}
                   </details>
                 </div>
@@ -2015,7 +2043,7 @@ function RunsTab({
                 {/* Token Usage */}
                 {detailRun.usageJson && (
                   <div className="run-output-section">
-                    <div className="run-output-label">Token Usage</div>
+                    <div className="run-output-label">{t("agents.tokenUsage", "Token Usage")}</div>
                     {renderUsage(detailRun.usageJson)}
                   </div>
                 )}
@@ -2023,7 +2051,7 @@ function RunsTab({
                 {/* Output */}
                 {detailRun.stdoutExcerpt && (
                   <div className="run-output-section">
-                    <div className="run-output-label">Output</div>
+                    <div className="run-output-label">{t("agents.output", "Output")}</div>
                     <pre className="run-output-panel">
                       {detailRun.stdoutExcerpt.length > 2000
                         ? `${detailRun.stdoutExcerpt.slice(0, 2000)}\n\n... (truncated, ${detailRun.stdoutExcerpt.length} chars total)`
@@ -2035,7 +2063,7 @@ function RunsTab({
                 {/* Errors */}
                 {detailRun.stderrExcerpt && (
                   <div className="run-output-section">
-                    <div className="run-output-label run-output-label--error">Errors</div>
+                    <div className="run-output-label run-output-label--error">{t("agents.errors", "Errors")}</div>
                     <AgentErrorIndicator
                       errorText={detailRun.stderrExcerpt}
                       summaryPrefix="Run error"
@@ -2055,7 +2083,7 @@ function RunsTab({
                 {/* Result */}
                 {detailRun.resultJson && (
                   <div className="run-output-section">
-                    <div className="run-output-label">Result</div>
+                    <div className="run-output-label">{t("agents.result", "Result")}</div>
                     <pre className="run-output-panel">{JSON.stringify(detailRun.resultJson, null, 2)}</pre>
                   </div>
                 )}
@@ -2063,7 +2091,7 @@ function RunsTab({
                 {/* Context */}
                 {detailRun.contextSnapshot && Object.keys(detailRun.contextSnapshot).length > 0 && (
                   <div className="run-output-section">
-                    <div className="run-output-label">Context</div>
+                    <div className="run-output-label">{t("agents.context", "Context")}</div>
                     <div className="run-context-grid">
                       {Object.entries(detailRun.contextSnapshot).map(([key, value]) => (
                         <span key={key} className="run-context-item">
@@ -2077,21 +2105,21 @@ function RunsTab({
 
                 {/* No output state */}
                 {!detailRun.stdoutExcerpt && !detailRun.stderrExcerpt && !detailRun.resultJson && (
-                  <div className="text-muted run-output-empty">No output captured</div>
+                  <div className="text-muted run-output-empty">{t("agents.noOutputCaptured", "No output captured")}</div>
                 )}
               </div>
             )}
 
             {/* Run Logs */}
             <div className="run-agent-logs-section">
-              <div className="run-output-label">Agent Logs</div>
+              <div className="run-output-label">{t("agents.agentLogs", "Agent Logs")}</div>
               {isLoadingLogs ? (
                 <div className="run-details-loading-state">
                   <Loader2 size={14} className="animate-spin" />
-                  <span className="text-muted">Loading logs...</span>
+                  <span className="text-muted">{t("agents.loadingLogs", "Loading logs...")}</span>
                 </div>
               ) : runLogs.length === 0 ? (
-                <div className="text-muted run-output-empty">No logs available for this run</div>
+                <div className="text-muted run-output-empty">{t("agents.noLogsForRun", "No logs available for this run")}</div>
               ) : (
                 <AgentLogViewer entries={runLogs} loading={false} />
               )}
@@ -2124,9 +2152,9 @@ function RunsTab({
     <div className="runs-tab">
       {promptSizes.length > 0 && latestPrompt && (
         <div className="run-output-section">
-          <div className="run-output-label">Prompt Size</div>
+          <div className="run-output-label">{t("agents.promptSize", "Prompt Size")}</div>
           <div className="prompt-size-summary">
-            <svg className="prompt-size-sparkline" viewBox="0 0 100 100" role="img" aria-label="Execution prompt size over last 7 runs">
+            <svg className="prompt-size-sparkline" viewBox="0 0 100 100" role="img" aria-label={t("agents.promptSizeChart", "Execution prompt size over last 7 runs")}>
               <polyline className="prompt-size-sparkline-grid" points="0,100 100,100" />
               <polyline className="prompt-size-sparkline-line" points={promptPolyline} />
             </svg>
@@ -2138,27 +2166,27 @@ function RunsTab({
       )}
       {tokenUsageSummary && (
         <div className="run-output-section">
-          <div className="run-output-label">Cache hit ratio</div>
+          <div className="run-output-label">{t("agents.cacheHitRatio", "Cache hit ratio")}</div>
           <div className="run-context-grid">
-            {renderCacheWindow("Last 24h", tokenUsageSummary.last24h)}
-            {renderCacheWindow("Last 7d", tokenUsageSummary.last7d)}
-            {renderCacheWindow("All time", tokenUsageSummary.allTime)}
+            {renderCacheWindow(t("agents.last24h", "Last 24h"), tokenUsageSummary.last24h)}
+            {renderCacheWindow(t("agents.last7d", "Last 7d"), tokenUsageSummary.last7d)}
+            {renderCacheWindow(t("agents.allTime", "All time"), tokenUsageSummary.allTime)}
           </div>
         </div>
       )}
       <div className="runs-toolbar runs-toolbar--between">
         <span className="runs-toolbar-meta">
-          {runs.length} run{runs.length !== 1 ? "s" : ""}
-          {hasActiveRun && <span className="run-live-indicator run-live-indicator--with-margin"><span className="live-dot" />Live</span>}
+          {t("agents.runsCount", { count: runs.length, defaultValue_one: "{{count}} run", defaultValue_other: "{{count}} runs" })}
+          {hasActiveRun && <span className="run-live-indicator run-live-indicator--with-margin"><span className="live-dot" />{t("agents.live", "Live")}</span>}
         </span>
         <div className="run-header-group">
           {hasActiveRun && (
             <button
               className="btn btn--sm btn--danger"
               onClick={() => void handleStopRun()}
-              aria-label={`Stop active run for ${agentName ?? agentId}`}
+              aria-label={t("agents.stopActiveRunFor", "Stop active run for {{name}}", { name: agentName ?? agentId })}
             >
-              <Square size={14} /> Stop Run
+              <Square size={14} /> {t("agents.stopRun", "Stop Run")}
             </button>
           )}
         </div>
@@ -2177,15 +2205,6 @@ function formatDuration(start: Date, end: Date): string {
   return `${Math.floor(diff / 3600)}h ${Math.floor((diff % 3600) / 60)}m`;
 }
 
-const TASK_COLUMN_LABELS: Record<Task["column"], string> = {
-  triage: "Triage",
-  todo: "Todo",
-  "in-progress": "In Progress",
-  "in-review": "In Review",
-  done: "Done",
-  archived: "Archived",
-};
-
 function truncateTaskLabel(task: Task): string {
   const source = task.title?.trim() || task.description?.trim() || task.id;
   return source.length > 80 ? `${source.slice(0, 77)}...` : source;
@@ -2200,6 +2219,7 @@ function TasksTab({
   projectId?: string;
   addToast: (msg: string, type?: "success" | "error") => void;
 }) {
+  const { t } = useTranslation("app");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -2216,7 +2236,7 @@ function TasksTab({
       .catch((err) => {
         if (!cancelled) {
           setTasks([]);
-          addToast(`Failed to load assigned tasks: ${getErrorMessage(err)}`, "error");
+          addToast(t("agents.loadTasksFailed", "Failed to load assigned tasks: {{error}}", { error: getErrorMessage(err) }), "error");
         }
       })
       .finally(() => {
@@ -2234,7 +2254,7 @@ function TasksTab({
     return (
       <div className="agent-tasks-empty">
         <Loader2 size={16} className="animate-spin" />
-        <p>Loading assigned tasks...</p>
+        <p>{t("agents.loadingTasks", "Loading assigned tasks...")}</p>
       </div>
     );
   }
@@ -2243,7 +2263,7 @@ function TasksTab({
     return (
       <div className="agent-tasks-empty">
         <ListChecks size={18} />
-        <p>No tasks assigned to this agent</p>
+        <p>{t("agents.noTasksAssigned", "No tasks assigned to this agent")}</p>
       </div>
     );
   }
@@ -2254,13 +2274,22 @@ function TasksTab({
         <a key={task.id} className="agent-task-item" href={`/tasks/${task.id}`}>
           <div className="agent-task-row">
             <span className="agent-task-id">{task.id}</span>
-            <span className={`agent-task-column column-${task.column}`}>{TASK_COLUMN_LABELS[task.column]}</span>
+            <span className={`agent-task-column column-${task.column}`}>{
+              ({
+                triage: t("board.triage", "Triage"),
+                todo: t("board.todo", "Todo"),
+                "in-progress": t("board.inProgress", "In Progress"),
+                "in-review": t("board.inReview", "In Review"),
+                done: t("board.done", "Done"),
+                archived: t("board.archived", "Archived"),
+              } as Record<string, string>)[task.column] ?? task.column
+            }</span>
           </div>
           <div className="agent-task-title" title={task.title || task.description || task.id}>
             {truncateTaskLabel(task)}
           </div>
           <div className="agent-task-status">
-            {task.status ?? "idle"} · Updated {relativeTime(task.updatedAt)}
+            {task.status ?? "idle"} · {t("agents.taskUpdated", "Updated {{time}}", { time: relativeTime(task.updatedAt, t) })}
           </div>
         </a>
       ))}
@@ -2368,6 +2397,7 @@ function SoulTab({
   addToast: (message: string, type?: "success" | "error") => void;
   onSaved: () => Promise<void>;
 }) {
+  const { t } = useTranslation("app");
   const [soul, setSoul] = useState(agent.soul ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
@@ -2392,14 +2422,14 @@ function SoulTab({
 
   const handleSave = async () => {
     if (soul.length > 10000) {
-      addToast("Soul must be at most 10,000 characters", "error");
+      addToast(t("agents.soulTooLong", "Soul must be at most 10,000 characters"), "error");
       return;
     }
 
     setIsSaving(true);
     try {
       await updateAgentSoul(agent.id, soul, projectId);
-      addToast("Soul saved", "success");
+      addToast(t("agents.soulSaved", "Soul saved"), "success");
       setJustSaved(true);
       if (justSavedTimeoutRef.current) {
         clearTimeout(justSavedTimeoutRef.current);
@@ -2407,7 +2437,7 @@ function SoulTab({
       justSavedTimeoutRef.current = setTimeout(() => setJustSaved(false), 3000);
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save soul: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.soulSaveFailed", "Failed to save soul: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSaving(false);
     }
@@ -2416,33 +2446,33 @@ function SoulTab({
   return (
     <div className="config-tab">
       <div className="config-section">
-        <h3>Soul</h3>
+        <h3>{t("agents.soulTitle", "Soul")}</h3>
         <p className="config-description">
-          Define this agent&apos;s personality and identity.
+          {t("agents.soulDescription", "Define this agent's personality and identity.")}
         </p>
 
         <div className="config-fields">
           <div className="config-field">
-            <label htmlFor="agent-soul">Agent Soul</label>
+            <label htmlFor="agent-soul">{t("agents.agentSoulLabel", "Agent Soul")}</label>
             <div className="agent-content-toolbar">
               <div className="agent-content-mode-toggle">
                 <button
                   className={`btn btn-sm ${!showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(false)}
                   disabled={!showPreview}
-                  aria-label="Edit mode"
+                  aria-label={t("common.editMode", "Edit mode")}
                 >
                   <FileEdit size={14} />
-                  Edit
+                  {t("common.edit", "Edit")}
                 </button>
                 <button
                   className={`btn btn-sm ${showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(true)}
                   disabled={showPreview}
-                  aria-label="Preview mode"
+                  aria-label={t("common.previewMode", "Preview mode")}
                 >
                   <Eye size={14} />
-                  Preview
+                  {t("common.preview", "Preview")}
                 </button>
               </div>
             </div>
@@ -2455,7 +2485,7 @@ function SoulTab({
                 </div>
               ) : (
                 <div className="agent-content-preview agent-content-placeholder">
-                  No soul defined yet. Switch to Edit mode to define the agent&apos;s personality.
+                  {t("agents.soulEmptyPreview", "No soul defined yet. Switch to Edit mode to define the agent's personality.")}
                 </div>
               )
             ) : (
@@ -2463,7 +2493,7 @@ function SoulTab({
                 id="agent-soul"
                 className="input config-textarea-mono"
                 rows={12}
-                placeholder="Describe this agent's personality, tone, and behavioral traits..."
+                placeholder={t("agents.soulPlaceholder", "Describe this agent's personality, tone, and behavioral traits...")}
                 value={soul}
                 onChange={(e) => {
                   setSoul(e.target.value);
@@ -2472,7 +2502,7 @@ function SoulTab({
               />
             )}
             {!showPreview && (
-              <span className="config-hint">Defines the agent&apos;s character and identity. Max 10,000 characters.</span>
+              <span className="config-hint">{t("agents.soulHint", "Defines the agent's character and identity. Max 10,000 characters.")}</span>
             )}
           </div>
         </div>
@@ -2487,19 +2517,19 @@ function SoulTab({
               {isSaving ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Saving…
+                  {t("common.saving", "Saving…")}
                 </>
               ) : (
                 <>
                   <CheckCircle size={16} />
-                  Save Soul
+                  {t("agents.saveSoul", "Save Soul")}
                 </>
               )}
             </button>
             {!hasChanges && justSaved && (
               <span className="config-saved-indicator">
                 <CheckCircle size={14} />
-                Soul saved
+                {t("agents.soulSaved", "Soul saved")}
               </span>
             )}
           </div>
@@ -2520,6 +2550,7 @@ function MemoryTab({
   addToast: (message: string, type?: "success" | "error") => void;
   onSaved: () => Promise<void>;
 }) {
+  const { t } = useTranslation("app");
   const [memory, setMemory] = useState(agent.memory ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
@@ -2547,8 +2578,12 @@ function MemoryTab({
   );
 
   const selectedLayerDescription = selectedMemoryFile
-    ? MEMORY_LAYER_DESCRIPTIONS[selectedMemoryFile.layer]
-    : "Select a memory file to view or edit.";
+    ? ({
+        "long-term": t("agents.memoryLayerLongTermDesc", "Curated durable decisions, conventions, constraints, and pitfalls for this specific agent."),
+        daily: t("agents.memoryLayerDailyDesc", "Raw daily observations and open loops recorded by this agent."),
+        dreams: t("agents.memoryLayerDreamsDesc", "Synthesized patterns and emerging themes distilled from this agent's daily memory."),
+      } as Record<string, string>)[selectedMemoryFile.layer] ?? selectedMemoryFile.layer
+    : t("agents.selectMemoryFile", "Select a memory file to view or edit.");
 
   const loadSelectedMemoryFile = useCallback(async (path: string) => {
     setSelectedFileLoading(true);
@@ -2559,7 +2594,7 @@ function MemoryTab({
       setSelectedFileDirty(false);
       setSelectedFileJustSaved(false);
     } catch (err) {
-      addToast(`Failed to load agent memory file: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.memoryFileLoadFailed", "Failed to load agent memory file: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setSelectedFileLoading(false);
     }
@@ -2581,7 +2616,7 @@ function MemoryTab({
       const nextPath = pickDefaultAgentMemoryPath(files, preferredPath);
       await loadSelectedMemoryFile(nextPath);
     } catch (err) {
-      addToast(`Failed to load memory files: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.memoryFilesLoadFailed", "Failed to load memory files: {{error}}", { error: getErrorMessage(err) }), "error");
       setMemoryFiles([]);
       setSelectedFilePath("");
       setSelectedFileContent("");
@@ -2614,14 +2649,14 @@ function MemoryTab({
 
   const handleSaveInlineMemory = async () => {
     if (memory.length > 50000) {
-      addToast("Memory must be at most 50,000 characters", "error");
+      addToast(t("agents.memoryTooLong", "Memory must be at most 50,000 characters"), "error");
       return;
     }
 
     setIsSaving(true);
     try {
       await updateAgentMemory(agent.id, memory, projectId);
-      addToast("Memory saved", "success");
+      addToast(t("agents.memorySaved", "Memory saved"), "success");
       setJustSaved(true);
       if (justSavedTimeoutRef.current) {
         clearTimeout(justSavedTimeoutRef.current);
@@ -2629,7 +2664,7 @@ function MemoryTab({
       justSavedTimeoutRef.current = setTimeout(() => setJustSaved(false), 3000);
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save memory: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.memorySaveFailed", "Failed to save memory: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSaving(false);
     }
@@ -2640,7 +2675,7 @@ function MemoryTab({
       return;
     }
     if (selectedFileDirty) {
-      setFileSwitchHint("Save the current file before switching to another file.");
+      setFileSwitchHint(t("agents.saveBeforeSwitch", "Save the current file before switching to another file."));
       return;
     }
 
@@ -2664,10 +2699,10 @@ function MemoryTab({
       selectedFileJustSavedTimeoutRef.current = setTimeout(() => setSelectedFileJustSaved(false), 3000);
       setFileSwitchHint("");
       await loadMemoryFiles(selectedFilePath);
-      addToast("Agent memory file saved", "success");
+      addToast(t("agents.memoryFileSaved", "Agent memory file saved"), "success");
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save agent memory file: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.memoryFileSaveFailed", "Failed to save agent memory file: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setSavingSelectedFile(false);
     }
@@ -2676,21 +2711,21 @@ function MemoryTab({
   return (
     <div className="config-tab">
       <div className="config-section">
-        <h3>Agent Memory</h3>
+        <h3>{t("agents.memoryTitle", "Agent Memory")}</h3>
         <p className="config-description">
-          Store context that belongs to this agent only. Workspace memory, daily notes, dreams, and qmd search live in project settings under Project Memory.
+          {t("agents.memoryDescription", "Store context that belongs to this agent only. Workspace memory, daily notes, dreams, and qmd search live in project settings under Project Memory.")}
         </p>
         {isReadOnly && (
           <p className="config-hint config-hint--block-spacing">
-            Read-only while this agent is running.
+            {t("agents.memoryReadOnly", "Read-only while this agent is running.")}
           </p>
         )}
 
         <div className="config-fields">
           <div className="config-field">
-            <label htmlFor="agent-memory">Inline Memory</label>
+            <label htmlFor="agent-memory">{t("agents.inlineMemoryLabel", "Inline Memory")}</label>
             <span className="config-hint config-hint--block">
-              Short-form memory stored directly on the agent record and injected into prompts.
+              {t("agents.inlineMemoryHint", "Short-form memory stored directly on the agent record and injected into prompts.")}
             </span>
             <div className="agent-content-toolbar">
               <div className="agent-content-mode-toggle">
@@ -2699,20 +2734,20 @@ function MemoryTab({
                     className={`btn btn-sm ${!showPreview ? "btn-primary" : ""}`}
                     onClick={() => setShowPreview(false)}
                     disabled={!showPreview}
-                    aria-label="Edit mode"
+                    aria-label={t("common.editMode", "Edit mode")}
                   >
                     <FileEdit size={14} />
-                    Edit
+                    {t("common.edit", "Edit")}
                   </button>
                 )}
                 <button
                   className={`btn btn-sm ${showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(true)}
                   disabled={showPreview}
-                  aria-label="Preview mode"
+                  aria-label={t("common.previewMode", "Preview mode")}
                 >
                   <Eye size={14} />
-                  Preview
+                  {t("common.preview", "Preview")}
                 </button>
               </div>
             </div>
@@ -2725,16 +2760,16 @@ function MemoryTab({
                 </div>
               ) : (
                 <div className="agent-content-preview agent-content-placeholder">
-                  No agent memory defined yet. Switch to Edit mode to add memory content.
+                  {t("agents.memoryEmptyPreview", "No agent memory defined yet. Switch to Edit mode to add memory content.")}
                 </div>
               )
             ) : (
               <textarea
                 id="agent-memory"
-                aria-label="Agent Memory"
+                aria-label={t("agents.memoryTitle", "Agent Memory")}
                 className="input config-textarea-mono"
                 rows={10}
-                placeholder="Durable preferences, operating habits, and context this agent should carry across tasks..."
+                placeholder={t("agents.memoryPlaceholder", "Durable preferences, operating habits, and context this agent should carry across tasks...")}
                 value={memory}
                 readOnly={isReadOnly}
                 onChange={(e) => {
@@ -2744,14 +2779,14 @@ function MemoryTab({
               />
             )}
             {!showPreview && (
-              <span className="config-hint">This is the inline memory field on the agent JSON record. Max 50,000 characters.</span>
+              <span className="config-hint">{t("agents.inlineMemoryFieldHint", "This is the inline memory field on the agent JSON record. Max 50,000 characters.")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="agent-memory-file-select">Memory Files</label>
+            <label htmlFor="agent-memory-file-select">{t("agents.memoryFilesLabel", "Memory Files")}</label>
             <span className="config-hint config-hint--block">
-              Full OpenClaw memory files at <code>agent/{agent.name || agent.id}/memory/</code> (MEMORY.md, DREAMS.md, and daily notes).
+              {t("agents.memoryFilesHint", "Full OpenClaw memory files at")} <code>agent/{agent.name || agent.id}/memory/</code> {t("agents.memoryFilesHintSuffix", "(MEMORY.md, DREAMS.md, and daily notes).")}
             </span>
 
             <select
@@ -2764,28 +2799,31 @@ function MemoryTab({
               }}
             >
               {memoryFiles.length === 0 ? (
-                <option value="">No memory files found</option>
+                <option value="">{t("agents.noMemoryFiles", "No memory files found")}</option>
               ) : (
-                memoryFiles.map((file) => (
-                  <option key={file.path} value={file.path}>
-                    {MEMORY_LAYER_NAMES[file.layer]} • {file.label}
-                  </option>
-                ))
+                memoryFiles.map((file) => {
+                  const layerName = ({ "long-term": t("agents.memoryLayerLongTerm", "Long-term"), daily: t("agents.memoryLayerDaily", "Daily"), dreams: t("agents.memoryLayerDreams", "Dreams") } as Record<string, string>)[file.layer] ?? file.layer;
+                  return (
+                    <option key={file.path} value={file.path}>
+                      {layerName} • {file.label}
+                    </option>
+                  );
+                })
               )}
             </select>
 
             {memoryFilesLoading && (
               <span className="config-hint config-hint--inline-loader">
                 <Loader2 size={14} className="animate-spin" />
-                Loading memory files…
+                {t("agents.loadingMemoryFiles", "Loading memory files…")}
               </span>
             )}
 
             {selectedMemoryFile && (
               <div className="config-hint config-hint--top-spacing">
-                <strong>{MEMORY_LAYER_NAMES[selectedMemoryFile.layer]}</strong> · {selectedLayerDescription}
+                <strong>{({ "long-term": t("agents.memoryLayerLongTerm", "Long-term"), daily: t("agents.memoryLayerDaily", "Daily"), dreams: t("agents.memoryLayerDreams", "Dreams") } as Record<string, string>)[selectedMemoryFile.layer] ?? selectedMemoryFile.layer}</strong> · {selectedLayerDescription}
                 <br />
-                {selectedMemoryFile.size.toLocaleString()} bytes · Updated {relativeTime(selectedMemoryFile.updatedAt)}
+                {t("agents.memoryFileMeta", "{{size}} bytes · Updated {{time}}", { size: selectedMemoryFile.size.toLocaleString(), time: relativeTime(selectedMemoryFile.updatedAt, t) })}
               </div>
             )}
 
@@ -2796,20 +2834,20 @@ function MemoryTab({
                     className={`btn btn-sm ${!showFilePreview ? "btn-primary" : ""}`}
                     onClick={() => setShowFilePreview(false)}
                     disabled={!showFilePreview}
-                    aria-label="Memory file edit mode"
+                    aria-label={t("agents.memoryFileEditMode", "Memory file edit mode")}
                   >
                     <FileEdit size={14} />
-                    Edit
+                    {t("common.edit", "Edit")}
                   </button>
                 )}
                 <button
                   className={`btn btn-sm ${showFilePreview ? "btn-primary" : ""}`}
                   onClick={() => setShowFilePreview(true)}
                   disabled={showFilePreview}
-                  aria-label="Memory file preview mode"
+                  aria-label={t("agents.memoryFilePreviewMode", "Memory file preview mode")}
                 >
                   <Eye size={14} />
-                  Preview
+                  {t("common.preview", "Preview")}
                 </button>
               </div>
             </div>
@@ -2823,14 +2861,14 @@ function MemoryTab({
                 </div>
               ) : (
                 <div className="agent-content-preview agent-content-placeholder">
-                  No memory file content yet. Switch to Edit mode to add content.
+                  {t("agents.memoryFileEmptyPreview", "No memory file content yet. Switch to Edit mode to add content.")}
                 </div>
               )
             ) : (
               <textarea
                 className="input config-textarea-mono"
                 rows={14}
-                placeholder="Select a memory file to view and edit its content..."
+                placeholder={t("agents.memoryFilePlaceholder", "Select a memory file to view and edit its content...")}
                 value={selectedFileContent}
                 readOnly={isReadOnly || !selectedFilePath || selectedFileLoading}
                 onChange={(e) => {
@@ -2845,7 +2883,7 @@ function MemoryTab({
             {selectedFileLoading && (
               <span className="config-hint config-hint--inline-loader">
                 <Loader2 size={14} className="animate-spin" />
-                Loading file content…
+                {t("agents.loadingFileContent", "Loading file content…")}
               </span>
             )}
 
@@ -2867,12 +2905,12 @@ function MemoryTab({
               {isSaving ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Saving…
+                  {t("common.saving", "Saving…")}
                 </>
               ) : (
                 <>
                   <CheckCircle size={16} />
-                  Save Memory
+                  {t("agents.saveMemory", "Save Memory")}
                 </>
               )}
             </button>
@@ -2886,12 +2924,12 @@ function MemoryTab({
               {savingSelectedFile ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Saving file…
+                  {t("agents.savingFile", "Saving file…")}
                 </>
               ) : (
                 <>
                   <CheckCircle size={16} />
-                  Save Memory File
+                  {t("agents.saveMemoryFile", "Save Memory File")}
                 </>
               )}
             </button>
@@ -2899,13 +2937,13 @@ function MemoryTab({
           {!hasInlineChanges && justSaved && (
             <span className="config-saved-indicator">
               <CheckCircle size={14} />
-              Memory saved
+              {t("agents.memorySaved", "Memory saved")}
             </span>
           )}
           {!selectedFileDirty && selectedFileJustSaved && (
             <span className="config-saved-indicator">
               <CheckCircle size={14} />
-              Memory file saved
+              {t("agents.memoryFileSaved", "Memory file saved")}
             </span>
           )}
         </div>
@@ -2925,6 +2963,7 @@ function InstructionsTab({
   addToast: (message: string, type?: "success" | "error") => void;
   onSaved: () => Promise<void>;
 }) {
+  const { t } = useTranslation("app");
   // Inline instructions state
   const [instructionsText, setInstructionsText] = useState(agent.instructionsText ?? "");
   const [instructionsPath, setInstructionsPath] = useState(agent.instructionsPath ?? "");
@@ -3013,7 +3052,7 @@ function InstructionsTab({
         },
         projectId,
       );
-      addToast("Instructions saved", "success");
+      addToast(t("agents.instructionsSaved", "Instructions saved"), "success");
       setJustSaved(true);
       if (justSavedTimeoutRef.current) {
         clearTimeout(justSavedTimeoutRef.current);
@@ -3021,7 +3060,7 @@ function InstructionsTab({
       justSavedTimeoutRef.current = setTimeout(() => setJustSaved(false), 3000);
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save instructions: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.instructionsSaveFailed", "Failed to save instructions: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSaving(false);
     }
@@ -3030,14 +3069,14 @@ function InstructionsTab({
   const handleSaveFile = async () => {
     const path = instructionsPath.trim();
     if (!path) {
-      addToast("No instructions file path set", "error");
+      addToast(t("agents.noInstructionsPath", "No instructions file path set"), "error");
       return;
     }
 
     setIsSavingFile(true);
     try {
       await saveWorkspaceFileContent("project", path, fileContent);
-      addToast("Instructions file saved", "success");
+      addToast(t("agents.instructionsFileSaved", "Instructions file saved"), "success");
       setFileContentDirty(false);
       setJustSavedFile(true);
       if (justSavedFileTimeoutRef.current) {
@@ -3046,7 +3085,7 @@ function InstructionsTab({
       justSavedFileTimeoutRef.current = setTimeout(() => setJustSavedFile(false), 3000);
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save instructions file: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.instructionsFileSaveFailed", "Failed to save instructions file: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSavingFile(false);
     }
@@ -3057,9 +3096,9 @@ function InstructionsTab({
   return (
     <div className="config-tab">
       <div className="config-section">
-        <h3>Custom Instructions</h3>
+        <h3>{t("agents.instructionsTitle", "Custom Instructions")}</h3>
         <p className="config-description">
-          Append custom instructions to this agent&apos;s system prompt at execution time. Use this to customize behavior, coding style, or project conventions without modifying built-in prompts.
+          {t("agents.instructionsDescription", "Append custom instructions to this agent's system prompt at execution time. Use this to customize behavior, coding style, or project conventions without modifying built-in prompts.")}
         </p>
 
         <div className="config-fields">
@@ -3071,21 +3110,21 @@ function InstructionsTab({
                   className={`btn btn-sm ${!showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(false)}
                   disabled={!showPreview}
-                  aria-label="Edit mode"
+                  aria-label={t("common.editMode", "Edit mode")}
                   data-testid="instructions-edit-toggle"
                 >
                   <FileEdit size={14} />
-                  Edit
+                  {t("common.edit", "Edit")}
                 </button>
                 <button
                   className={`btn btn-sm ${showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(true)}
                   disabled={showPreview}
-                  aria-label="Preview mode"
+                  aria-label={t("common.previewMode", "Preview mode")}
                   data-testid="instructions-preview-toggle"
                 >
                   <Eye size={14} />
-                  Preview
+                  {t("common.preview", "Preview")}
                 </button>
               </div>
             </div>
@@ -3098,7 +3137,7 @@ function InstructionsTab({
                 </div>
               ) : (
                 <div className="agent-content-preview agent-content-placeholder">
-                  No inline instructions defined yet. Switch to Edit mode to add instructions.
+                  {t("agents.instructionsEmptyPreview", "No inline instructions defined yet. Switch to Edit mode to add instructions.")}
                 </div>
               )
             ) : (
@@ -3106,7 +3145,7 @@ function InstructionsTab({
                 id="instructions-text"
                 className="input"
                 rows={10}
-                placeholder="Enter custom instructions to append to this agent's system prompt..."
+                placeholder={t("agents.instructionsPlaceholder", "Enter custom instructions to append to this agent's system prompt...")}
                 value={instructionsText}
                 onChange={(e) => {
                   setInstructionsText(e.target.value);
@@ -3115,24 +3154,24 @@ function InstructionsTab({
               />
             )}
             {!showPreview && (
-              <span className="config-hint">Markdown formatting supported. Max 50,000 characters.</span>
+              <span className="config-hint">{t("agents.instructionsHint", "Markdown formatting supported. Max 50,000 characters.")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="instructions-path">Instructions File Path</label>
+            <label htmlFor="instructions-path">{t("agents.instructionsPathLabel", "Instructions File Path")}</label>
             <input
               id="instructions-path"
               type="text"
               className="input"
-              placeholder="e.g., .fusion/agents/my-agent-instructions.md"
+              placeholder={t("agents.instructionsPathPlaceholder", "e.g., .fusion/agents/my-agent-instructions.md")}
               value={instructionsPath}
               onChange={(e) => {
                 setInstructionsPath(e.target.value);
                 setJustSaved(false);
               }}
             />
-            <span className="config-hint">Path to a .md file (relative to project root). Contents are read and appended at execution time.</span>
+            <span className="config-hint">{t("agents.instructionsPathHint", "Path to a .md file (relative to project root). Contents are read and appended at execution time.")}</span>
           </div>
         </div>
 
@@ -3146,19 +3185,19 @@ function InstructionsTab({
               {isSaving ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Saving…
+                  {t("common.saving", "Saving…")}
                 </>
               ) : (
                 <>
                   <CheckCircle size={16} />
-                  Save Instructions
+                  {t("agents.saveInstructions", "Save Instructions")}
                 </>
               )}
             </button>
             {!hasInstructionsChanges && justSaved && (
               <span className="config-saved-indicator">
                 <CheckCircle size={14} />
-                Instructions saved
+                {t("agents.instructionsSaved", "Instructions saved")}
               </span>
             )}
           </div>
@@ -3167,24 +3206,24 @@ function InstructionsTab({
 
       {hasFilePath && (
         <div className="config-section">
-          <h3>Instructions File Editor</h3>
+          <h3>{t("agents.instructionsFileEditorTitle", "Instructions File Editor")}</h3>
           <p className="config-description">
-            Edit the instructions file directly. Changes are saved separately from the path configuration.
+            {t("agents.instructionsFileEditorDesc", "Edit the instructions file directly. Changes are saved separately from the path configuration.")}
           </p>
 
           <div className="config-fields">
             <div className="config-field">
               <div className="config-inline-header">
-                <label htmlFor="instructions-file-content">File Content</label>
+                <label htmlFor="instructions-file-content">{t("agents.fileContentLabel", "File Content")}</label>
                 {isLoadingFile && (
                   <span className="config-hint config-hint--inline-tight">
                     <Loader2 size={12} className="animate-spin" />
-                    Loading...
+                    {t("common.loading", "Loading...")}
                   </span>
                 )}
                 {fileContentDirty && !isLoadingFile && (
                   <span className="config-hint config-hint--warning">
-                    Unsaved changes
+                    {t("common.unsavedChanges", "Unsaved changes")}
                   </span>
                 )}
               </div>
@@ -3192,7 +3231,7 @@ function InstructionsTab({
                 id="instructions-file-content"
                 className="input config-textarea-mono"
                 rows={20}
-                placeholder="File content will appear here when loaded..."
+                placeholder={t("agents.fileContentPlaceholder", "File content will appear here when loaded...")}
                 value={fileContent}
                 readOnly={isLoadingFile}
                 onChange={(e) => {
@@ -3201,7 +3240,7 @@ function InstructionsTab({
                   setJustSavedFile(false);
                 }}
               />
-              <span className="config-hint">Edit the markdown file content directly. Save separately using the button below.</span>
+              <span className="config-hint">{t("agents.fileContentHint", "Edit the markdown file content directly. Save separately using the button below.")}</span>
             </div>
           </div>
 
@@ -3214,19 +3253,19 @@ function InstructionsTab({
               {isSavingFile ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Saving…
+                  {t("common.saving", "Saving…")}
                 </>
               ) : (
                 <>
                   <CheckCircle size={16} />
-                  Save File
+                  {t("agents.saveFile", "Save File")}
                 </>
               )}
             </button>
             {!fileContentDirty && justSavedFile && (
               <span className="config-saved-indicator">
                 <CheckCircle size={14} />
-                File saved
+                {t("agents.fileSaved", "File saved")}
               </span>
             )}
           </div>
@@ -3325,6 +3364,7 @@ function HeartbeatProcedureSection({
   addToast: (message: string, type?: "success" | "error") => void;
   onSaved: () => Promise<void>;
 }) {
+  const { t } = useTranslation("app");
   const [isUpgrading, setIsUpgrading] = useState(false);
   const [showFileViewer, setShowFileViewer] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -3363,7 +3403,7 @@ function HeartbeatProcedureSection({
     } catch (err) {
       const message = getErrorMessage(err);
       setFileLoadError(message);
-      addToast(`Failed to load heartbeat procedure file: ${message}`, "error");
+      addToast(t("agents.heartbeatFileLoadFailed", "Failed to load heartbeat procedure file: {{error}}", { error: message }), "error");
     } finally {
       setIsLoadingFile(false);
     }
@@ -3401,14 +3441,14 @@ function HeartbeatProcedureSection({
       await saveWorkspaceFileContent("project", currentPath, fileContent, projectId);
       setFileContentDirty(false);
       setJustSavedFile(true);
-      addToast("Heartbeat procedure file saved", "success");
+      addToast(t("agents.heartbeatFileSaved", "Heartbeat procedure file saved"), "success");
       if (justSavedFileTimeoutRef.current) {
         clearTimeout(justSavedFileTimeoutRef.current);
       }
       justSavedFileTimeoutRef.current = setTimeout(() => setJustSavedFile(false), 3000);
       await onSaved();
     } catch (err) {
-      addToast(`Failed to save heartbeat procedure file: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatFileSaveFailed", "Failed to save heartbeat procedure file: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsSavingFile(false);
     }
@@ -3420,13 +3460,13 @@ function HeartbeatProcedureSection({
       const result = await upgradeAgentHeartbeatProcedure(agent.id, projectId);
       addToast(
         result.procedureFileSeeded
-          ? `Heartbeat procedure file ready at ${result.heartbeatProcedurePath}`
-          : `Heartbeat procedure path set to ${result.heartbeatProcedurePath}`,
+          ? t("agents.heartbeatProcedureFileReady", "Heartbeat procedure file ready at {{path}}", { path: result.heartbeatProcedurePath })
+          : t("agents.heartbeatProcedurePathSet", "Heartbeat procedure path set to {{path}}", { path: result.heartbeatProcedurePath }),
         "success",
       );
       await onSaved();
     } catch (err) {
-      addToast(`Failed to upgrade heartbeat procedure: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatUpgradeFailed", "Failed to upgrade heartbeat procedure: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsUpgrading(false);
     }
@@ -3434,17 +3474,14 @@ function HeartbeatProcedureSection({
 
   return (
     <div className="config-section">
-      <h3>Heartbeat Procedure</h3>
+      <h3>{t("agents.heartbeatProcedureTitle", "Heartbeat Procedure")}</h3>
       <p className="config-description">
-        The per-tick procedure this agent runs every wake. Defaults to a per-agent
-        markdown file (for example <code>.fusion/agents/ceo-agent2736/HEARTBEAT.md</code>)
-        that you can edit. Legacy id-only default paths remain valid. Resets on every tick —
-        no need to restart the agent after editing.
+        {t("agents.heartbeatProcedureDesc", "The per-tick procedure this agent runs every wake. Defaults to a per-agent markdown file (for example")} <code>.fusion/agents/ceo-agent2736/HEARTBEAT.md</code>{t("agents.heartbeatProcedureDescSuffix", ") that you can edit. Legacy id-only default paths remain valid. Resets on every tick — no need to restart the agent after editing.")}
       </p>
       <div className="config-fields">
         <div className="config-field">
           <span className="config-hint">
-            Current path: <code>{currentPath || "(none — using built-in default)"}</code>
+            {t("agents.currentPath", "Current path:")} <code>{currentPath || t("agents.noneUsingBuiltIn", "(none — using built-in default)")}</code>
           </span>
           {hasFilePath && (
             <div className="heartbeat-procedure-actions">
@@ -3456,12 +3493,12 @@ function HeartbeatProcedureSection({
                 {isLoadingFile ? (
                   <>
                     <Loader2 size={16} className="animate-spin" />
-                    Loading file…
+                    {t("agents.loadingFile", "Loading file…")}
                   </>
                 ) : (
                   <>
                     <FileText size={16} />
-                    View Heartbeat Markdown
+                    {t("agents.viewHeartbeatMarkdown", "View Heartbeat Markdown")}
                   </>
                 )}
               </button>
@@ -3473,28 +3510,26 @@ function HeartbeatProcedureSection({
             className="btn"
             disabled={isUpgrading || onDefault}
             onClick={() => void handleUpgrade()}
-            aria-label="Upgrade agent to default heartbeat procedure file"
+            aria-label={t("agents.upgradeToDefaultAriaLabel", "Upgrade agent to default heartbeat procedure file")}
           >
             {isUpgrading ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                Upgrading…
+                {t("agents.upgrading", "Upgrading…")}
               </>
             ) : onDefault ? (
               <>
                 <CheckCircle size={16} />
-                Already on default
+                {t("agents.alreadyOnDefault", "Already on default")}
               </>
             ) : (
-              "Upgrade to Default Heartbeat Procedure"
+              t("agents.upgradeToDefault", "Upgrade to Default Heartbeat Procedure")
             )}
           </button>
           <span className="config-hint">
-            Sets <code>heartbeatProcedurePath</code> to{" "}
+            {t("agents.upgradeHint", "Sets")} <code>heartbeatProcedurePath</code> {t("agents.upgradeHintTo", "to")}{" "}
             <code>{canonicalDefaultPath}</code>
-            {" "}and seeds the file from the built-in template if it doesn't exist.
-            Each agent gets its own per-agent file, so edits stay scoped to this agent.
-            Operator edits to the file are preserved.
+            {" "}{t("agents.upgradeHintSuffix", "and seeds the file from the built-in template if it doesn't exist. Each agent gets its own per-agent file, so edits stay scoped to this agent. Operator edits to the file are preserved.")}
           </span>
         </div>
       </div>
@@ -3502,37 +3537,37 @@ function HeartbeatProcedureSection({
       {showFileViewer && hasFilePath && currentPath && (
         <div className="config-fields heartbeat-procedure-viewer">
           <div className="config-field">
-            <label htmlFor="heartbeat-procedure-file-content">Heartbeat Procedure File</label>
+            <label htmlFor="heartbeat-procedure-file-content">{t("agents.heartbeatProcedureFileLabel", "Heartbeat Procedure File")}</label>
             <div className="agent-content-toolbar">
               <div className="agent-content-mode-toggle">
                 <button
                   className={`btn btn-sm ${!showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(false)}
                   disabled={!showPreview}
-                  aria-label="Heartbeat file edit mode"
+                  aria-label={t("agents.heartbeatFileEditMode", "Heartbeat file edit mode")}
                 >
                   <FileEdit size={14} />
-                  Edit
+                  {t("common.edit", "Edit")}
                 </button>
                 <button
                   className={`btn btn-sm ${showPreview ? "btn-primary" : ""}`}
                   onClick={() => setShowPreview(true)}
                   disabled={showPreview}
-                  aria-label="Heartbeat file preview mode"
+                  aria-label={t("agents.heartbeatFilePreviewMode", "Heartbeat file preview mode")}
                 >
                   <Eye size={14} />
-                  Preview
+                  {t("common.preview", "Preview")}
                 </button>
               </div>
               {isLoadingFile && (
                 <span className="config-hint heartbeat-procedure-status">
                   <Loader2 size={12} className="animate-spin" />
-                  Loading...
+                  {t("common.loading", "Loading...")}
                 </span>
               )}
               {fileContentDirty && !isLoadingFile && (
                 <span className="config-hint heartbeat-procedure-status heartbeat-procedure-status--warning">
-                  Unsaved changes
+                  {t("common.unsavedChanges", "Unsaved changes")}
                 </span>
               )}
             </div>
@@ -3543,7 +3578,7 @@ function HeartbeatProcedureSection({
                 </div>
               ) : (
                 <div className="agent-content-preview agent-content-placeholder">
-                  No heartbeat procedure markdown content yet.
+                  {t("agents.heartbeatFileEmptyPreview", "No heartbeat procedure markdown content yet.")}
                 </div>
               )
             ) : (
@@ -3553,7 +3588,7 @@ function HeartbeatProcedureSection({
                 rows={16}
                 value={fileContent}
                 readOnly={isLoadingFile}
-                placeholder="Heartbeat procedure markdown file content will appear here..."
+                placeholder={t("agents.heartbeatFilePlaceholder", "Heartbeat procedure markdown file content will appear here...")}
                 onChange={(e) => {
                   setFileContent(e.target.value);
                   setFileContentDirty(true);
@@ -3562,10 +3597,10 @@ function HeartbeatProcedureSection({
               />
             )}
             {fileLoadError && (
-              <span className="config-error">Failed to load file: {fileLoadError}</span>
+              <span className="config-error">{t("agents.fileLoadError", "Failed to load file: {{error}}", { error: fileLoadError })}</span>
             )}
             <span className="config-hint">
-              This editor writes directly to <code>{currentPath}</code>.
+              {t("agents.heartbeatFileEditorHint", "This editor writes directly to")} <code>{currentPath}</code>.
             </span>
           </div>
           {!showPreview && (
@@ -3578,19 +3613,19 @@ function HeartbeatProcedureSection({
                 {isSavingFile ? (
                   <>
                     <Loader2 size={16} className="animate-spin" />
-                    Saving…
+                    {t("common.saving", "Saving…")}
                   </>
                 ) : (
                   <>
                     <CheckCircle size={16} />
-                    Save Heartbeat File
+                    {t("agents.saveHeartbeatFile", "Save Heartbeat File")}
                   </>
                 )}
               </button>
               {!fileContentDirty && justSavedFile && (
                 <span className="config-saved-indicator">
                   <CheckCircle size={14} />
-                  File saved
+                  {t("agents.fileSaved", "File saved")}
                 </span>
               )}
             </div>
@@ -3618,6 +3653,7 @@ function ConfigTab({
   onDelete?: () => Promise<void> | void;
   onAgentDraftApplied?: (updates: Partial<AgentDetail>) => void;
 }) {
+  const { t } = useTranslation("app");
   // Identity field state
   const [nameValue, setNameValue] = useState(agent.name);
   const [roleValue, setRoleValue] = useState(agent.role);
@@ -3798,7 +3834,7 @@ function ConfigTab({
     onAgentDraftApplied?.(draftUpdates);
 
     setIsAiInterviewOpen(false);
-    addToast("Interview draft applied. Review and save when ready.", "success");
+    addToast(t("agents.interviewDraftApplied", "Interview draft applied. Review and save when ready."), "success");
   }, [addToast, onAgentDraftApplied]);
 
   useEffect(() => {
@@ -3816,9 +3852,9 @@ function ConfigTab({
     try {
       await updateAgent(agent.id, { permissionPolicy: next }, projectId);
       await onSaved();
-      addToast("Permission policy updated", "success");
+      addToast(t("agents.permissionPolicyUpdated", "Permission policy updated"), "success");
     } catch (err) {
-      addToast(`Failed to update permission policy: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.permissionPolicyFailed", "Failed to update permission policy: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -3884,12 +3920,12 @@ function ConfigTab({
     setIsResettingBudget(true);
     try {
       await resetAgentBudget(agent.id, projectId);
-      addToast("Budget usage reset successfully", "success");
+      addToast(t("agents.budgetResetSuccess", "Budget usage reset successfully"), "success");
       // Refresh budget status
       const status = await fetchAgentBudgetStatus(agent.id, projectId);
       setBudgetStatus(status);
     } catch (err) {
-      addToast(`Failed to reset budget: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.budgetResetFailed", "Failed to reset budget: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setIsResettingBudget(false);
     }
@@ -4293,10 +4329,10 @@ function ConfigTab({
     if (!payload) {
       setErrors(validationErrors);
       if (showValidationToast) {
-        addToast("Please fix validation errors before saving", "error");
+        addToast(t("agents.fixValidationErrors", "Please fix validation errors before saving"), "error");
       }
       if (source === "auto") {
-        setAutoSaveError("Fix validation errors to save changes");
+        setAutoSaveError(t("agents.fixValidationToSave", "Fix validation errors to save changes"));
       }
       return false;
     }
@@ -4317,7 +4353,7 @@ function ConfigTab({
       }
       lastSavedSignatureRef.current = signature;
       if (source === "manual") {
-        addToast("Settings saved", "success");
+        addToast(t("agents.settingsSaved", "Settings saved"), "success");
       }
       setAutoSaveError(null);
       setJustSaved(true);
@@ -4331,7 +4367,7 @@ function ConfigTab({
       if (revision === saveRevisionRef.current) {
         const message = getErrorMessage(err);
         setAutoSaveError(message);
-        addToast(`Failed to save settings: ${message}`, "error");
+        addToast(t("agents.settingsSaveFailed", "Failed to save settings: {{error}}", { error: message }), "error");
       }
       return false;
     } finally {
@@ -4380,7 +4416,7 @@ function ConfigTab({
     try {
       await uploadAgentAvatar(agent.id, file, projectId);
       await onSaved();
-      addToast("Avatar uploaded", "success");
+      addToast(t("agents.avatarUploaded", "Avatar uploaded"), "success");
     } catch (error: unknown) {
       addToast(getErrorMessage(error), "error");
     } finally {
@@ -4396,7 +4432,7 @@ function ConfigTab({
     try {
       await deleteAgentAvatar(agent.id, projectId);
       await onSaved();
-      addToast("Avatar removed", "success");
+      addToast(t("agents.avatarRemoved", "Avatar removed"), "success");
     } catch (error: unknown) {
       addToast(getErrorMessage(error), "error");
     } finally {
@@ -4405,29 +4441,29 @@ function ConfigTab({
   }, [addToast, agent.id, onSaved, projectId]);
 
   const saveStatusLabel = isSaving
-    ? "Saving changes…"
+    ? t("agents.savingChanges", "Saving changes…")
     : autoSaveError
-      ? `Save failed: ${autoSaveError}`
+      ? t("agents.saveFailed", "Save failed: {{error}}", { error: autoSaveError })
       : !hasChanges && justSaved
-        ? "All changes saved"
+        ? t("agents.allChangesSaved", "All changes saved")
         : null;
 
   return (
     <div className="config-tab">
       <div className="config-section">
-        <h3>Agent Configuration</h3>
+        <h3>{t("agents.configTitle", "Agent Configuration")}</h3>
         <p className="config-description">
-          Configure agent settings and behavior.
+          {t("agents.configDescription", "Configure agent settings and behavior.")}
         </p>
         <div className="config-actions-row">
           <button type="button" className="btn btn-sm" onClick={() => setIsAiInterviewOpen(true)}>
-            AI Interview
+            {t("agents.aiInterview", "AI Interview")}
           </button>
         </div>
 
         <div className="config-fields">
           <div className="config-field">
-            <label htmlFor="agent-name">Name</label>
+            <label htmlFor="agent-name">{t("agents.nameLabel", "Name")}</label>
             <input 
               id="agent-name"
               type="text" 
@@ -4439,7 +4475,7 @@ function ConfigTab({
           </div>
           
           <div className="config-field">
-            <label htmlFor="agent-role">Role</label>
+            <label htmlFor="agent-role">{t("agents.roleLabel2", "Role")}</label>
             <select
               id="agent-role"
               className="select"
@@ -4449,22 +4485,22 @@ function ConfigTab({
                 void scheduleAutoSave();
               }}
             >
-              <option value="triage">Triage</option>
-              <option value="executor">Executor</option>
-              <option value="reviewer">Reviewer</option>
-              <option value="merger">Merger</option>
-              <option value="scheduler">Scheduler</option>
-              <option value="custom">Custom</option>
+              <option value="triage">{t("agents.roleTriage", "Triage")}</option>
+              <option value="executor">{t("agents.roleExecutor", "Executor")}</option>
+              <option value="reviewer">{t("agents.roleReviewer", "Reviewer")}</option>
+              <option value="merger">{t("agents.roleMerger", "Merger")}</option>
+              <option value="scheduler">{t("agents.roleScheduler", "Scheduler")}</option>
+              <option value="custom">{t("agents.roleCustom", "Custom")}</option>
             </select>
           </div>
 
           <div className="config-field">
-            <label htmlFor="agent-title">Title</label>
+            <label htmlFor="agent-title">{t("agents.titleLabel", "Title")}</label>
             <input
               id="agent-title"
               type="text"
               className="input"
-              placeholder="e.g. Senior Code Reviewer"
+              placeholder={t("agents.titlePlaceholder", "e.g. Senior Code Reviewer")}
               value={titleValue}
               onChange={(e) => setTitleValue(e.target.value)}
               onBlur={() => { void scheduleAutoSave(); }}
@@ -4472,7 +4508,7 @@ function ConfigTab({
           </div>
 
           <div className="config-field">
-            <label>Avatar</label>
+            <label>{t("agents.avatarLabel", "Avatar")}</label>
             <div className="agent-avatar-editor">
               <AgentAvatar agent={agent} size={64} className="agent-avatar-editor-preview" />
               <div className="agent-avatar-editor-actions">
@@ -4496,11 +4532,11 @@ function ConfigTab({
                   disabled={isAvatarPending}
                   onClick={() => avatarInputRef.current?.click()}
                 >
-                  Upload Avatar
+                  {t("agents.uploadAvatar", "Upload Avatar")}
                 </button>
                 {agent.imageUrl ? (
                   <button type="button" className="btn btn-sm" onClick={() => void handleAvatarDelete()} disabled={isAvatarPending}>
-                    Remove Avatar
+                    {t("agents.removeAvatar", "Remove Avatar")}
                   </button>
                 ) : null}
               </div>
@@ -4508,12 +4544,12 @@ function ConfigTab({
           </div>
 
           <div className="config-field">
-            <label htmlFor="agent-icon">Icon</label>
+            <label htmlFor="agent-icon">{t("agents.iconLabel", "Icon")}</label>
             <input
               id="agent-icon"
               type="text"
               className="input"
-              placeholder="e.g. 🤖"
+              placeholder={t("agents.iconPlaceholder", "e.g. 🤖")}
               value={iconValue}
               onChange={(e) => setIconValue(e.target.value)}
               onBlur={() => { void scheduleAutoSave(); }}
@@ -4521,7 +4557,7 @@ function ConfigTab({
           </div>
 
           <div className="config-field">
-            <label htmlFor="agent-reports-to">Reports To</label>
+            <label htmlFor="agent-reports-to">{t("agents.reportsToLabel", "Reports To")}</label>
             <select
               id="agent-reports-to"
               className="select"
@@ -4532,9 +4568,9 @@ function ConfigTab({
               }}
               disabled={isLoadingManagers}
             >
-              <option value="">No manager</option>
+              <option value="">{t("agents.noManager", "No manager")}</option>
               {hasMissingManagerSelection && (
-                <option value={managerSelection}>Unknown manager ({managerSelection})</option>
+                <option value={managerSelection}>{t("agents.unknownManager", "Unknown manager ({{id}})", { id: managerSelection })}</option>
               )}
               {availableManagers.map((manager) => (
                 <option key={manager.id} value={manager.id}>
@@ -4547,9 +4583,9 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Skills</h3>
+        <h3>{t("agents.skillsTitle", "Skills")}</h3>
         <p className="config-description">
-          Assign skills to this agent for specialized behavior.
+          {t("agents.skillsDescription", "Assign skills to this agent for specialized behavior.")}
         </p>
 
         <div className="config-fields">
@@ -4569,15 +4605,15 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Model</h3>
+        <h3>{t("agents.modelTitle", "Model")}</h3>
         <p className="config-description">
-          Choose either a built-in model or a plugin runtime for this agent. These options are mutually exclusive.
+          {t("agents.modelDescription", "Choose either a built-in model or a plugin runtime for this agent. These options are mutually exclusive.")}
         </p>
 
         <div className="config-fields">
           <div className="config-field">
-            <label>Runtime Source</label>
-            <div className="config-runtime-tabs" role="tablist" aria-label="Runtime source">
+            <label>{t("agents.runtimeSource", "Runtime Source")}</label>
+            <div className="config-runtime-tabs" role="tablist" aria-label={t("agents.runtimeSource", "Runtime source")}>
               <button
                 type="button"
                 className={`config-runtime-tab${runtimeMode === "model" ? " active" : ""}`}
@@ -4590,7 +4626,7 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               >
-                Built-in Model
+                {t("agents.builtInModel", "Built-in Model")}
               </button>
               <button
                 type="button"
@@ -4603,7 +4639,7 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               >
-                Plugin Runtime
+                {t("agents.pluginRuntime", "Plugin Runtime")}
               </button>
             </div>
           </div>
@@ -4617,8 +4653,8 @@ function ConfigTab({
                   setModelValue(value);
                   void scheduleAutoSave();
                 }}
-                placeholder="Use global default"
-                label="Agent Model"
+                placeholder={t("agents.useGlobalDefault", "Use global default")}
+                label={t("agents.agentModelLabel", "Agent Model")}
                 disabled={modelsLoading}
                 favoriteProviders={favoriteProviders}
                 onToggleFavorite={toggleFavoriteProvider}
@@ -4628,9 +4664,9 @@ function ConfigTab({
             </div>
           ) : (
             <div className="config-field">
-              <label htmlFor="agent-runtime-hint">Runtime</label>
+              <label htmlFor="agent-runtime-hint">{t("agents.runtimeLabel", "Runtime")}</label>
               {runtimesLoading ? (
-                <span className="config-hint">Loading runtimes…</span>
+                <span className="config-hint">{t("agents.loadingRuntimes", "Loading runtimes…")}</span>
               ) : (
                 <select
                   id="agent-runtime-hint"
@@ -4642,7 +4678,7 @@ function ConfigTab({
                   }}
                 >
                   <option value="">
-                    {availableRuntimes.length > 0 ? "Select a plugin runtime…" : "No plugin runtimes available"}
+                    {availableRuntimes.length > 0 ? t("agents.selectRuntime", "Select a plugin runtime…") : t("agents.noRuntimes", "No plugin runtimes available")}
                   </option>
                   {availableRuntimes.map((runtime) => (
                     <option key={`${runtime.pluginId}:${runtime.runtimeId}`} value={runtime.runtimeId}>
@@ -4657,13 +4693,13 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Permissions</h3>
+        <h3>{t("agents.permissionsTitle", "Permissions")}</h3>
         <p className="config-description">
-          Per-agent settings override project defaults. Each category controls a separate approval gate.
+          {t("agents.permissionsDescription", "Per-agent settings override project defaults. Each category controls a separate approval gate.")}
         </p>
         {permissionPolicyValue === undefined ? (
           <div className="agent-permission-inherit-banner">
-            <span>Inheriting project default — no per-agent override set</span>
+            <span>{t("agents.inheritingProjectDefault", "Inheriting project default — no per-agent override set")}</span>
             <button
               type="button"
               className="btn btn-sm"
@@ -4678,7 +4714,7 @@ function ConfigTab({
                 },
               })}
             >
-              Customize for this agent
+              {t("agents.customizeForAgent", "Customize for this agent")}
             </button>
           </div>
         ) : null}
@@ -4692,17 +4728,17 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Heartbeat Settings</h3>
+        <h3>{t("agents.heartbeatSettingsTitle", "Heartbeat Settings")}</h3>
         <p className="config-description">
-          Configure how this agent's heartbeat is monitored. Leave a field empty to use system defaults.
+          {t("agents.heartbeatSettingsDesc", "Configure how this agent's heartbeat is monitored. Leave a field empty to use system defaults.")}
         </p>
 
         <div className="config-fields">
           <div className="config-field agent-heartbeat-auto-claim-card">
             <div className="agent-heartbeat-preset-row">
               <div>
-                <label className="agent-heartbeat-preset-label">Coordination-only agent</label>
-                <span className="config-hint">Disables auto-claim and removes the candidate section from heartbeat prompts. Recommended for routing/CEO-style agents.</span>
+                <label className="agent-heartbeat-preset-label">{t("agents.coordinationOnlyAgent", "Coordination-only agent")}</label>
+                <span className="config-hint">{t("agents.coordinationOnlyHint", "Disables auto-claim and removes the candidate section from heartbeat prompts. Recommended for routing/CEO-style agents.")}</span>
               </div>
               <button
                 type="button"
@@ -4713,7 +4749,7 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               >
-                Apply preset
+                {t("agents.applyPreset", "Apply preset")}
               </button>
             </div>
             <label className="checkbox-label" htmlFor="hb-autoClaimRelevantTasks">
@@ -4726,9 +4762,9 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               />
-              Auto-Claim Relevant Tasks
+              {t("agents.autoClaimRelevantTasks", "Auto-Claim Relevant Tasks")}
             </label>
-            <span className="config-hint">When enabled (default), no-task heartbeats scan open unowned work and auto-claim tasks aligned with this agent&apos;s role and soul.</span>
+            <span className="config-hint">{t("agents.autoClaimHint", "When enabled (default), no-task heartbeats scan open unowned work and auto-claim tasks aligned with this agent's role and soul.")}</span>
           </div>
 
           <div className="config-field">
@@ -4742,9 +4778,9 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               />
-              Heartbeat Enabled
+              {t("agents.heartbeatEnabled", "Heartbeat Enabled")}
             </label>
-            <span className="config-hint">When enabled, this agent receives scheduled heartbeat runs based on its interval.</span>
+            <span className="config-hint">{t("agents.heartbeatEnabledHint", "When enabled, this agent receives scheduled heartbeat runs based on its interval.")}</span>
           </div>
 
           <div className="config-field">
@@ -4758,9 +4794,9 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               />
-              Run Missed Heartbeat On Startup
+              {t("agents.runMissedHeartbeat", "Run Missed Heartbeat On Startup")}
             </label>
-            <span className="config-hint">When enabled, if the server was down across this agent&apos;s scheduled heartbeat tick, fire a single catch-up heartbeat at startup. Default: off.</span>
+            <span className="config-hint">{t("agents.runMissedHeartbeatHint", "When enabled, if the server was down across this agent's scheduled heartbeat tick, fire a single catch-up heartbeat at startup. Default: off.")}</span>
           </div>
 
           <div className="config-field">
@@ -4774,9 +4810,9 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               />
-              Allow Parallel Execution
+              {t("agents.allowParallelExecution", "Allow Parallel Execution")}
             </label>
-            <span className="config-hint">When disabled, the heartbeat and task execution paths serialize for this agent (heartbeat will not start while the agent&apos;s task is executing, and vice versa). Permanent agents only.</span>
+            <span className="config-hint">{t("agents.allowParallelExecutionHint", "When disabled, the heartbeat and task execution paths serialize for this agent (heartbeat will not start while the agent's task is executing, and vice versa). Permanent agents only.")}</span>
           </div>
 
           <div className="config-field">
@@ -4790,13 +4826,13 @@ function ConfigTab({
                   void scheduleAutoSave();
                 }}
               />
-              Skip heartbeat when idle
+              {t("agents.skipHeartbeatWhenIdle", "Skip heartbeat when idle")}
             </label>
-            <span className="config-hint">When enabled, scheduled (timer) heartbeats are skipped while this agent has no assigned task. The agent still wakes immediately when a task is assigned or you trigger a run manually. Default: off.</span>
+            <span className="config-hint">{t("agents.skipHeartbeatWhenIdleHint", "When enabled, scheduled (timer) heartbeats are skipped while this agent has no assigned task. The agent still wakes immediately when a task is assigned or you trigger a run manually. Default: off.")}</span>
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-heartbeatScopeDiscipline">Heartbeat Scope Discipline</label>
+            <label htmlFor="hb-heartbeatScopeDiscipline">{t("agents.heartbeatScopeDiscipline", "Heartbeat Scope Discipline")}</label>
             <select
               id="hb-heartbeatScopeDiscipline"
               className="select"
@@ -4807,16 +4843,16 @@ function ConfigTab({
                 void scheduleAutoSave();
               }}
             >
-              <option value="">Inherit project default</option>
-              <option value="strict">Strict</option>
-              <option value="lite">Lite</option>
-              <option value="off">Off</option>
+              <option value="">{t("agents.inheritProjectDefault", "Inherit project default")}</option>
+              <option value="strict">{t("agents.strict", "Strict")}</option>
+              <option value="lite">{t("agents.lite", "Lite")}</option>
+              <option value="off">{t("agents.off", "Off")}</option>
             </select>
-            <span className="config-hint">Strict — coordination-focused; higher per-tick tokens. Lite — pre-2026-05-11 behavior. Off — minimal procedure.</span>
+            <span className="config-hint">{t("agents.scopeDisciplineHint", "Strict — coordination-focused; higher per-tick tokens. Lite — pre-2026-05-11 behavior. Off — minimal procedure.")}</span>
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-heartbeatPromptTemplate">Heartbeat Prompt Template</label>
+            <label htmlFor="hb-heartbeatPromptTemplate">{t("agents.heartbeatPromptTemplate", "Heartbeat Prompt Template")}</label>
             <select
               id="hb-heartbeatPromptTemplate"
               className="select"
@@ -4827,14 +4863,14 @@ function ConfigTab({
                 void scheduleAutoSave();
               }}
             >
-              <option value="">Inherit project default</option>
-              <option value="default">Default</option>
-              <option value="compact">Compact</option>
+              <option value="">{t("agents.inheritProjectDefault", "Inherit project default")}</option>
+              <option value="default">{t("agents.templateDefault", "Default")}</option>
+              <option value="compact">{t("agents.templateCompact", "Compact")}</option>
             </select>
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-heartbeatIntervalMs">Heartbeat Interval (s)</label>
+            <label htmlFor="hb-heartbeatIntervalMs">{t("agents.heartbeatIntervalLabel", "Heartbeat Interval (s)")}</label>
             <input
               id="hb-heartbeatIntervalMs"
               type="text"
@@ -4848,13 +4884,13 @@ function ConfigTab({
               <span className="config-error">{errors.heartbeatIntervalMs}</span>
             ) : (
               <span className="config-hint">
-                How often heartbeats are checked. Leave empty for system default ({DEFAULT_HEARTBEAT_INTERVAL_MS / 1000}s / {DEFAULT_HEARTBEAT_INTERVAL_LABEL}).
+                {t("agents.heartbeatIntervalHint", "How often heartbeats are checked. Leave empty for system default ({{seconds}}s / {{label}}).", { seconds: DEFAULT_HEARTBEAT_INTERVAL_MS / 1000, label: DEFAULT_HEARTBEAT_INTERVAL_LABEL })}
               </span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-heartbeatTimeoutMs">Heartbeat Timeout (s)</label>
+            <label htmlFor="hb-heartbeatTimeoutMs">{t("agents.heartbeatTimeoutLabel", "Heartbeat Timeout (s)")}</label>
             <input
               id="hb-heartbeatTimeoutMs"
               type="text"
@@ -4867,12 +4903,12 @@ function ConfigTab({
             {errors.heartbeatTimeoutMs ? (
               <span className="config-error">{errors.heartbeatTimeoutMs}</span>
             ) : (
-              <span className="config-hint">Time without heartbeat before agent is considered unresponsive. Leave empty for system default (60s)</span>
+              <span className="config-hint">{t("agents.heartbeatTimeoutHint", "Time without heartbeat before agent is considered unresponsive. Leave empty for system default (60s)")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-maxConcurrentRuns">Max Concurrent Runs</label>
+            <label htmlFor="hb-maxConcurrentRuns">{t("agents.maxConcurrentRunsLabel", "Max Concurrent Runs")}</label>
             <input
               id="hb-maxConcurrentRuns"
               type="text"
@@ -4885,58 +4921,58 @@ function ConfigTab({
             {errors.maxConcurrentRuns ? (
               <span className="config-error">{errors.maxConcurrentRuns}</span>
             ) : (
-              <span className="config-hint">Maximum simultaneous heartbeat runs for this agent. Leave empty for system default (1).</span>
+              <span className="config-hint">{t("agents.maxConcurrentRunsHint", "Maximum simultaneous heartbeat runs for this agent. Leave empty for system default (1).")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="hb-messageResponseMode">Message Response Mode</label>
+            <label htmlFor="hb-messageResponseMode">{t("agents.messageResponseModeLabel", "Message Response Mode")}</label>
             <select
               id="hb-messageResponseMode"
               className={cn("select", !!errors.messageResponseMode && "input--error")}
               value={heartbeatValues.messageResponseMode ?? ""}
               onChange={(e) => handleHeartbeatFieldChange("messageResponseMode", e.target.value)}
             >
-              <option value="">System Default (On Heartbeat)</option>
-              <option value="on-heartbeat">On Heartbeat</option>
-              <option value="immediate">Immediate</option>
+              <option value="">{t("agents.systemDefaultOnHeartbeat", "System Default (On Heartbeat)")}</option>
+              <option value="on-heartbeat">{t("agents.onHeartbeat", "On Heartbeat")}</option>
+              <option value="immediate">{t("agents.immediate", "Immediate")}</option>
             </select>
             {errors.messageResponseMode ? (
               <span className="config-error">{errors.messageResponseMode}</span>
             ) : (
-              <span className="config-hint">How this agent responds to incoming messages. &apos;Immediate&apos; wakes the agent as soon as a message arrives. &apos;On Heartbeat&apos; defers processing to the next scheduled heartbeat.</span>
+              <span className="config-hint">{t("agents.messageResponseModeHint", "How this agent responds to incoming messages. 'Immediate' wakes the agent as soon as a message arrives. 'On Heartbeat' defers processing to the next scheduled heartbeat.")}</span>
             )}
           </div>
         </div>
       </div>
 
       <div className="config-section">
-        <h3>Budget Settings</h3>
+        <h3>{t("agents.budgetSettingsTitle", "Budget Settings")}</h3>
         <p className="config-description">
-          Configure token budget limits for this agent. Leave all fields empty to disable budget tracking.
+          {t("agents.budgetSettingsDesc", "Configure token budget limits for this agent. Leave all fields empty to disable budget tracking.")}
         </p>
 
         <div className="config-fields">
           <div className="config-field">
-            <label htmlFor="budget-tokenBudget">Token Budget</label>
+            <label htmlFor="budget-tokenBudget">{t("agents.tokenBudgetLabel", "Token Budget")}</label>
             <input
               id="budget-tokenBudget"
               type="text"
               inputMode="numeric"
               className={cn("input", !!errors.tokenBudget && "input--error")}
-              placeholder="No limit"
+              placeholder={t("agents.noLimit", "No limit")}
               value={budgetValues.tokenBudget ?? ""}
               onChange={(e) => handleBudgetFieldChange("tokenBudget", e.target.value)}
             />
             {errors.tokenBudget ? (
               <span className="config-error">{errors.tokenBudget}</span>
             ) : (
-              <span className="config-hint">Total token cap (input + output) for this agent. Leave empty for no limit.</span>
+              <span className="config-hint">{t("agents.tokenBudgetHint", "Total token cap (input + output) for this agent. Leave empty for no limit.")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="budget-usageThreshold">Usage Threshold (%)</label>
+            <label htmlFor="budget-usageThreshold">{t("agents.usageThresholdLabel", "Usage Threshold (%)")}</label>
             <input
               id="budget-usageThreshold"
               type="text"
@@ -4949,38 +4985,38 @@ function ConfigTab({
             {errors.usageThreshold ? (
               <span className="config-error">{errors.usageThreshold}</span>
             ) : (
-              <span className="config-hint">Warning threshold as a percentage. Agent warns when usage reaches this level. Default: 80%.</span>
+              <span className="config-hint">{t("agents.usageThresholdHint", "Warning threshold as a percentage. Agent warns when usage reaches this level. Default: 80%.")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="budget-budgetPeriod">Budget Period</label>
+            <label htmlFor="budget-budgetPeriod">{t("agents.budgetPeriodLabel", "Budget Period")}</label>
             <select
               id="budget-budgetPeriod"
               className={cn("select", !!errors.budgetPeriod && "input--error")}
               value={budgetValues.budgetPeriod ?? ""}
               onChange={(e) => handleBudgetFieldChange("budgetPeriod", e.target.value)}
             >
-              <option value="">No reset (lifetime)</option>
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
+              <option value="">{t("agents.noReset", "No reset (lifetime)")}</option>
+              <option value="daily">{t("agents.daily", "Daily")}</option>
+              <option value="weekly">{t("agents.weekly", "Weekly")}</option>
+              <option value="monthly">{t("agents.monthly", "Monthly")}</option>
             </select>
             {errors.budgetPeriod ? (
               <span className="config-error">{errors.budgetPeriod}</span>
             ) : (
-              <span className="config-hint">How often the budget counter resets. Leave empty for lifetime budget.</span>
+              <span className="config-hint">{t("agents.budgetPeriodHint", "How often the budget counter resets. Leave empty for lifetime budget.")}</span>
             )}
           </div>
 
           <div className="config-field">
-            <label htmlFor="budget-resetDay">Reset Day</label>
+            <label htmlFor="budget-resetDay">{t("agents.resetDayLabel", "Reset Day")}</label>
             <input
               id="budget-resetDay"
               type="text"
               inputMode="numeric"
               className={cn("input", !!errors.resetDay && "input--error")}
-              placeholder="Auto"
+              placeholder={t("agents.auto", "Auto")}
               value={budgetValues.resetDay ?? ""}
               onChange={(e) => handleBudgetFieldChange("resetDay", e.target.value)}
             />
@@ -4989,10 +5025,10 @@ function ConfigTab({
             ) : (
               <span className="config-hint">
                 {budgetValues.budgetPeriod === "weekly"
-                  ? "Day of week (0=Sunday to 6=Saturday) for reset."
+                  ? t("agents.resetDayWeekly", "Day of week (0=Sunday to 6=Saturday) for reset.")
                   : budgetValues.budgetPeriod === "monthly"
-                    ? "Day of month (1-31) for reset."
-                    : "Day for reset (weekly: 0-6, monthly: 1-31). Leave empty for automatic."}
+                    ? t("agents.resetDayMonthly", "Day of month (1-31) for reset.")
+                    : t("agents.resetDayHint", "Day for reset (weekly: 0-6, monthly: 1-31). Leave empty for automatic.")}
               </span>
             )}
           </div>
@@ -5000,7 +5036,7 @@ function ConfigTab({
           {/* Budget Usage Progress Bar */}
           {budgetStatus?.budgetLimit != null && (
             <div className="config-field">
-              <label>Current Usage</label>
+              <label>{t("agents.currentUsage", "Current Usage")}</label>
               <div className="budget-progress-container">
                 <div className="budget-progress-bar">
                   <div
@@ -5016,7 +5052,7 @@ function ConfigTab({
                   />
                 </div>
                 <span className="budget-progress-label">
-                  {(budgetStatus.currentUsage ?? 0).toLocaleString()} / {(budgetStatus.budgetLimit ?? 0).toLocaleString()} tokens ({Math.round(budgetStatus.usagePercent ?? 0)}% used)
+                  {t("agents.budgetUsageDisplay", "{{used}} / {{limit}} tokens ({{percent}}% used)", { used: (budgetStatus.currentUsage ?? 0).toLocaleString(), limit: (budgetStatus.budgetLimit ?? 0).toLocaleString(), percent: Math.round(budgetStatus.usagePercent ?? 0) })}
                 </span>
               </div>
             </div>
@@ -5033,12 +5069,12 @@ function ConfigTab({
                 {isResettingBudget ? (
                   <>
                     <Loader2 size={14} className="animate-spin" />
-                    Resetting…
+                    {t("agents.resetting", "Resetting…")}
                   </>
                 ) : (
                   <>
                     <RefreshCw size={14} />
-                    Reset Budget Usage
+                    {t("agents.resetBudgetUsage", "Reset Budget Usage")}
                   </>
                 )}
               </button>
@@ -5048,35 +5084,35 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Instruction Bundle</h3>
+        <h3>{t("agents.bundleTitle", "Instruction Bundle")}</h3>
         <p className="config-description">
-          Configure the agent's instruction bundle. Leave empty to use inline instructions only.
+          {t("agents.bundleDescription", "Configure the agent's instruction bundle. Leave empty to use inline instructions only.")}
         </p>
 
         <div className="config-fields">
           <div className="config-field">
-            <label htmlFor="bundle-mode">Bundle Mode</label>
+            <label htmlFor="bundle-mode">{t("agents.bundleModeLabel", "Bundle Mode")}</label>
             <select
               id="bundle-mode"
               className="select"
               value={bundleMode}
               onChange={(e) => setBundleMode(e.target.value)}
             >
-              <option value="">None (use inline instructions)</option>
-              <option value="managed">Managed (system-managed directory)</option>
-              <option value="external">External (user-specified path)</option>
+              <option value="">{t("agents.bundleNone", "None (use inline instructions)")}</option>
+              <option value="managed">{t("agents.bundleManaged", "Managed (system-managed directory)")}</option>
+              <option value="external">{t("agents.bundleExternal", "External (user-specified path)")}</option>
             </select>
             <span className="config-hint">
-              {bundleMode === "managed" && "Files will be stored in a system-managed directory within .fusion/agents/"}
-              {bundleMode === "external" && "Specify an external directory path for the instruction files"}
-              {!bundleMode && "Select a mode to enable instruction bundling"}
+              {bundleMode === "managed" && t("agents.bundleManagedHint", "Files will be stored in a system-managed directory within .fusion/agents/")}
+              {bundleMode === "external" && t("agents.bundleExternalHint", "Specify an external directory path for the instruction files")}
+              {!bundleMode && t("agents.bundleSelectMode", "Select a mode to enable instruction bundling")}
             </span>
           </div>
 
           {bundleMode && (
             <>
               <div className="config-field">
-                <label htmlFor="bundle-entry-file">Entry File</label>
+                <label htmlFor="bundle-entry-file">{t("agents.bundleEntryFileLabel", "Entry File")}</label>
                 <input
                   id="bundle-entry-file"
                   type="text"
@@ -5085,26 +5121,26 @@ function ConfigTab({
                   value={bundleEntryFile}
                   onChange={(e) => setBundleEntryFile(e.target.value)}
                 />
-                <span className="config-hint">Primary instructions file name (default: AGENTS.md)</span>
+                <span className="config-hint">{t("agents.bundleEntryFileHint", "Primary instructions file name (default: AGENTS.md)")}</span>
               </div>
 
               {bundleMode === "external" && (
                 <div className="config-field">
-                  <label htmlFor="bundle-external-path">External Path</label>
+                  <label htmlFor="bundle-external-path">{t("agents.bundleExternalPathLabel", "External Path")}</label>
                   <input
                     id="bundle-external-path"
                     type="text"
                     className="input"
-                    placeholder="e.g. .fusion/agents/my-agent"
+                    placeholder={t("agents.bundleExternalPathPlaceholder", "e.g. .fusion/agents/my-agent")}
                     value={bundleExternalPath}
                     onChange={(e) => setBundleExternalPath(e.target.value)}
                   />
-                  <span className="config-hint">Absolute or relative path to the external directory</span>
+                  <span className="config-hint">{t("agents.bundleExternalPathHint", "Absolute or relative path to the external directory")}</span>
                 </div>
               )}
 
               <div className="config-field">
-                <label htmlFor="bundle-files">Files (comma-separated)</label>
+                <label htmlFor="bundle-files">{t("agents.bundleFilesLabel", "Files (comma-separated)")}</label>
                 <input
                   id="bundle-files"
                   type="text"
@@ -5115,7 +5151,7 @@ function ConfigTab({
                     e.target.value.split(",").map(f => f.trim()).filter(Boolean)
                   )}
                 />
-                <span className="config-hint">List of file names in the bundle directory</span>
+                <span className="config-hint">{t("agents.bundleFilesHint", "List of file names in the bundle directory")}</span>
               </div>
             </>
           )}
@@ -5123,9 +5159,9 @@ function ConfigTab({
       </div>
 
       <div className="config-section">
-        <h3>Advanced Settings</h3>
+        <h3>{t("agents.advancedSettingsTitle", "Advanced Settings")}</h3>
         <p className="config-description">
-          Advanced configuration options for this agent. Leave a field empty to use system defaults.
+          {t("agents.advancedSettingsDesc", "Advanced configuration options for this agent. Leave a field empty to use system defaults.")}
         </p>
 
         <div className="config-fields">
@@ -5141,7 +5177,7 @@ function ConfigTab({
                     value={formValues[field.key] ?? ""}
                     onChange={(e) => handleFieldChange(field.key, e.target.value)}
                   >
-                    <option value="">System Default</option>
+                    <option value="">{t("agents.systemDefault", "System Default")}</option>
                     {field.options?.map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
@@ -5179,12 +5215,12 @@ function ConfigTab({
             {isSaving ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                Saving…
+                {t("common.saving", "Saving…")}
               </>
             ) : (
               <>
                 <CheckCircle size={16} />
-                Save Settings
+                {t("agents.saveSettings", "Save Settings")}
               </>
             )}
           </button>
@@ -5205,9 +5241,9 @@ function ConfigTab({
       />
 
       <div className="config-section config-section--danger">
-        <h3>Danger Zone</h3>
+        <h3>{t("agents.dangerZone", "Danger Zone")}</h3>
         <p className="config-description">
-          Permanently delete this agent from the project.
+          {t("agents.dangerZoneDesc", "Permanently delete this agent from the project.")}
         </p>
         <div className="config-fields">
           <div className="config-field">
@@ -5217,12 +5253,12 @@ function ConfigTab({
               onClick={() => void onDelete?.()}
             >
               <Trash2 size={16} />
-              Delete Agent
+              {t("agents.deleteAgent", "Delete Agent")}
             </button>
             <span className="config-danger-note">
               {isDeletableState
-                ? "Deletion is permanent and cannot be undone."
-                : `Agent deletion is only available when state is idle or paused (current state: ${agent.state}).`}
+                ? t("agents.deletionPermanent", "Deletion is permanent and cannot be undone.")
+                : t("agents.deletionNotAvailable", "Agent deletion is only available when state is idle or paused (current state: {{state}}).", { state: agent.state })}
             </span>
           </div>
         </div>
@@ -5252,6 +5288,7 @@ function EmployeesTab({
   projectId?: string;
   onChildClick?: (childId: string) => void;
 }) {
+  const { t } = useTranslation("app");
   const [children, setChildren] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -5266,11 +5303,11 @@ function EmployeesTab({
     return (
       <div className="detail-section">
         <div className="detail-section-header">
-          <h3>Employees</h3>
+          <h3>{t("agents.employeesTitle", "Employees")}</h3>
         </div>
         <div className="detail-section-body detail-section-body--loading">
           <Loader2 size={16} className="spin" />
-          <span className="text-muted">Loading employees...</span>
+          <span className="text-muted">{t("agents.loadingEmployees", "Loading employees...")}</span>
         </div>
       </div>
     );
@@ -5279,15 +5316,15 @@ function EmployeesTab({
   return (
     <div className="detail-section">
       <div className="detail-section-header">
-        <h3>Employees</h3>
+        <h3>{t("agents.employeesTitle", "Employees")}</h3>
         <span className="text-muted">({children.length})</span>
       </div>
       <div className="detail-section-body">
         {children.length === 0 ? (
           <div className="agent-empty agent-empty--padded">
             <GitBranch size={32} opacity={0.3} />
-            <p>No employees</p>
-            <p className="text-muted">This agent has no employees</p>
+            <p>{t("agents.noEmployees", "No employees")}</p>
+            <p className="text-muted">{t("agents.noEmployeesDesc", "This agent has no employees")}</p>
           </div>
         ) : (
           <div className="agent-tree__children">

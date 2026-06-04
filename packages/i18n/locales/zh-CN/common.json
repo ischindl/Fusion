@@ -1,0 +1,23 @@
+{
+  "actions": {
+    "cancel": "取消",
+    "close": "关闭",
+    "save": "保存"
+  },
+  "archive": "归档",
+  "cancel": "取消",
+  "close": "关闭",
+  "columns": {
+    "archived": "已归档",
+    "done": "已完成",
+    "in-progress": "进行中",
+    "in-review": "审核中",
+    "todo": "待办",
+    "triage": "规划"
+  },
+  "delete": "删除",
+  "refresh": "刷新",
+  "retry": "重试",
+  "skip": "跳过",
+  "tryAgain": "重试"
+}

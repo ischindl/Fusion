@@ -1,4 +1,6 @@
 import "./ConversationHistory.css";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { PlanningQuestion } from "@fusion/core";
 import { useState } from "react";
 import type { ConversationHistoryEntry } from "../api";
@@ -26,7 +28,7 @@ function getResponseValue(entry: ConversationHistoryEntry): unknown {
   return response;
 }
 
-function formatResponse(question: PlanningQuestion, responseValue: unknown): string {
+function formatResponse(question: PlanningQuestion, responseValue: unknown, t: TFunction<"app">): string {
   switch (question.type) {
     case "text": {
       if (typeof responseValue === "string") return responseValue;
@@ -54,8 +56,8 @@ function formatResponse(question: PlanningQuestion, responseValue: unknown): str
       return responseValue == null ? "" : String(responseValue);
     }
     case "confirm": {
-      if (responseValue === true) return "Yes";
-      if (responseValue === false) return "No";
+      if (responseValue === true) return t("conversation.confirm.yes", "Yes");
+      if (responseValue === false) return t("conversation.confirm.no", "No");
       return responseValue == null ? "" : String(responseValue);
     }
     default:
@@ -83,6 +85,7 @@ function normalizeEntries(entries: ConversationHistoryEntry[]): NumberedEntry[] 
 }
 
 export function ConversationHistory({ entries, defaultShowThinking = false }: ConversationHistoryProps) {
+  const { t } = useTranslation("app");
   const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   const normalizedEntries = normalizeEntries(entries);
 
@@ -100,7 +103,7 @@ export function ConversationHistory({ entries, defaultShowThinking = false }: Co
         const responseValue = hasQuestion ? getResponseValue(entry) : undefined;
         const formattedResponse =
           entry.question && responseValue !== undefined
-            ? formatResponse(entry.question, responseValue)
+            ? formatResponse(entry.question, responseValue, t)
             : "";
         const responseRecord =
           entry.response && typeof entry.response === "object" && !Array.isArray(entry.response)
@@ -118,13 +121,13 @@ export function ConversationHistory({ entries, defaultShowThinking = false }: Co
               </div>
             ) : (
               <div className="conversation-entry-question">
-                <span className="conversation-entry-question-label">AI Reasoning</span>
+                <span className="conversation-entry-question-label">{t("conversation.aiReasoning", "AI Reasoning")}</span>
               </div>
             )}
 
             {hasQuestion && (
               <div className="conversation-entry-response">
-                <strong>Your response</strong>
+                <strong>{t("conversation.yourResponse", "Your response")}</strong>
                 <p>{formattedResponse || "—"}</p>
                 {comment && <p className="conversation-comment">💬 {comment}</p>}
               </div>
@@ -145,8 +148,8 @@ export function ConversationHistory({ entries, defaultShowThinking = false }: Co
                 >
                   <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
                   {isExpanded
-                    ? `Hide ${hasQuestion ? "AI thinking" : "AI reasoning"}`
-                    : `Show ${hasQuestion ? "AI thinking" : "AI reasoning"}`}
+                    ? t("conversation.hide", `Hide {{type}}`, { type: hasQuestion ? t("conversation.aiThinking", "AI thinking") : t("conversation.aiReasoning", "AI reasoning") })
+                    : t("conversation.show", `Show {{type}}`, { type: hasQuestion ? t("conversation.aiThinking", "AI thinking") : t("conversation.aiReasoning", "AI reasoning") })}
                 </button>
                 {isExpanded && <pre>{entry.thinkingOutput}</pre>}
               </div>

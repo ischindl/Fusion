@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Play, Pause, Pencil, Trash2, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Layers, Globe, Folder } from "lucide-react";
 import type { ScheduledTask, AutomationRunResult, AutomationStepResult } from "@fusion/core";
 import { useConfirm } from "../hooks/useConfirm";
@@ -67,6 +68,7 @@ interface ScheduleCardProps {
 }
 
 function RunResultBadge({ result }: { result: AutomationRunResult }) {
+  const { t } = useTranslation("app");
   const duration = new Date(result.completedAt).getTime() - new Date(result.startedAt).getTime();
   return (
     <span className={`schedule-run-badge ${result.success ? "success" : "failure"}`}>
@@ -75,7 +77,7 @@ function RunResultBadge({ result }: { result: AutomationRunResult }) {
       ) : (
         <XCircle size={12} />
       )}
-      <span>{result.success ? "Success" : "Failed"}</span>
+      <span>{result.success ? t("schedule.resultSuccess", "Success") : t("schedule.resultFailed", "Failed")}</span>
       <span className="schedule-run-duration">{formatDurationMs(duration)}</span>
     </span>
   );
@@ -144,19 +146,20 @@ function RunHistoryItem({ result, index }: { result: AutomationRunResult; index:
 }
 
 export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, running }: ScheduleCardProps) {
+  const { t } = useTranslation("app");
   const [showHistory, setShowHistory] = useState(false);
   const { confirm } = useConfirm();
 
   const handleDelete = useCallback(async () => {
     const shouldDelete = await confirm({
-      title: "Delete Schedule",
-      message: `Delete schedule "${schedule.name}"? This cannot be undone.`,
+      title: t("schedule.deleteTitle", "Delete Schedule"),
+      message: t("schedule.deleteMessage", "Delete schedule \"{{name}}\"? This cannot be undone.", { name: schedule.name }),
       danger: true,
     });
     if (shouldDelete) {
       onDelete(schedule);
     }
-  }, [schedule, onDelete, confirm]);
+  }, [schedule, onDelete, confirm, t]);
 
   const typeColor = SCHEDULE_TYPE_COLORS[schedule.scheduleType] ?? SCHEDULE_TYPE_COLORS.custom;
 
@@ -191,16 +194,16 @@ export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, runn
             className="btn-icon"
             onClick={() => onRun(schedule)}
             disabled={running}
-            title={running ? "Running…" : "Run now"}
-            aria-label={running ? "Running…" : `Run ${schedule.name} now`}
+            title={running ? t("schedule.running", "Running…") : t("schedule.runNow", "Run now")}
+            aria-label={running ? t("schedule.running", "Running…") : t("schedule.runNameNow", "Run {{name}} now", { name: schedule.name })}
           >
             <Play />
           </button>
           <button
             className="btn-icon"
             onClick={() => onToggle(schedule)}
-            title={schedule.enabled ? "Disable" : "Enable"}
-            aria-label={schedule.enabled ? `Disable ${schedule.name}` : `Enable ${schedule.name}`}
+            title={schedule.enabled ? t("schedule.disable", "Disable") : t("schedule.enable", "Enable")}
+            aria-label={schedule.enabled ? t("schedule.disableName", "Disable {{name}}", { name: schedule.name }) : t("schedule.enableName", "Enable {{name}}", { name: schedule.name })}
             aria-pressed={schedule.enabled}
           >
             {schedule.enabled ? <Pause /> : <Play />}
@@ -208,16 +211,16 @@ export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, runn
           <button
             className="btn-icon"
             onClick={() => onEdit(schedule)}
-            title="Edit"
-            aria-label={`Edit ${schedule.name}`}
+            title={t("schedule.edit", "Edit")}
+            aria-label={t("schedule.editName", "Edit {{name}}", { name: schedule.name })}
           >
             <Pencil />
           </button>
           <button
             className="btn-icon"
             onClick={handleDelete}
-            title="Delete"
-            aria-label={`Delete ${schedule.name}`}
+            title={t("schedule.delete", "Delete")}
+            aria-label={t("schedule.deleteName", "Delete {{name}}", { name: schedule.name })}
           >
             <Trash2 />
           </button>
@@ -228,7 +231,7 @@ export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, runn
         {schedule.steps && schedule.steps.length > 0 ? (
           <div className="schedule-meta-item">
             <Layers size={12} />
-            <span className="schedule-steps-badge">{schedule.steps.length} step{schedule.steps.length !== 1 ? "s" : ""}</span>
+            <span className="schedule-steps-badge">{t("schedule.stepCount", "{{count}} step", { count: schedule.steps.length, defaultValue_one: "{{count}} step", defaultValue_other: "{{count}} steps" })}</span>
           </div>
         ) : (
           <div className="schedule-meta-item schedule-meta-command-preview" title={schedule.command}>
@@ -268,7 +271,7 @@ export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, runn
             aria-expanded={showHistory}
           >
             {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            <span>Run History ({schedule.runHistory.length})</span>
+            <span>{t("schedule.runHistory", "Run History ({{count}})", { count: schedule.runHistory.length })}</span>
           </button>
           {showHistory && (
             <div className="schedule-history-list">
@@ -277,7 +280,7 @@ export function ScheduleCard({ schedule, onEdit, onDelete, onRun, onToggle, runn
               ))}
               {schedule.runHistory.length > 10 && (
                 <div className="schedule-history-more">
-                  …and {schedule.runHistory.length - 10} more
+                  {t("schedule.andMore", "…and {{count}} more", { count: schedule.runHistory.length - 10 })}
                 </div>
               )}
             </div>

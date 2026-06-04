@@ -1,5 +1,6 @@
 import "./DocumentsView.css";
 import { useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowLeft, FileText, ChevronDown, ChevronUp, ChevronRight, RefreshCw, Search, X, Eye, EyeOff } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -57,6 +58,7 @@ function getContentPreview(content: string, maxLength: number = 200): string {
 }
 
 function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCardProps) {
+  const { t } = useTranslation("app");
   const [expanded, setExpanded] = useState(false);
 
   const preview = getContentPreview(document.content);
@@ -74,8 +76,8 @@ function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCa
           <button
             className="btn btn-sm document-card-expand-btn"
             onClick={() => setExpanded((current) => !current)}
-            title={expanded ? "Collapse" : "Expand"}
-            aria-label={expanded ? "Collapse content" : "Expand content"}
+            title={expanded ? t("documents.collapse", "Collapse") : t("documents.expand", "Expand")}
+            aria-label={expanded ? t("documents.collapseContent", "Collapse content") : t("documents.expandContent", "Expand content")}
           >
             {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -95,11 +97,11 @@ function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCa
               <button
                 className="btn btn-sm document-mode-toggle"
                 onClick={onToggleMarkdown}
-                aria-label={renderMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                aria-label={renderMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
                 aria-pressed={renderMarkdown}
-                title={renderMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                title={renderMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
               >
-                {renderMarkdown ? "Markdown" : "Plain"}
+                {renderMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
               </button>
             </div>
             {renderMarkdown ? (
@@ -124,6 +126,7 @@ function DocumentCard({ document, renderMarkdown, onToggleMarkdown }: DocumentCa
 }
 
 function TaskGroup({ taskId, taskTitle, documents, onOpenTask, renderMarkdownStates, onToggleMarkdown }: TaskGroupProps) {
+  const { t } = useTranslation("app");
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -133,23 +136,23 @@ function TaskGroup({ taskId, taskTitle, documents, onOpenTask, renderMarkdownSta
           className="documents-group-toggle-btn"
           onClick={() => setExpanded((current) => !current)}
           aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} documents for task ${taskId}`}
+          aria-label={`${expanded ? t("documents.collapse", "Collapse") : t("documents.expand", "Expand")} documents for task ${taskId}`}
         >
           <span className="documents-group-toggle" aria-hidden="true">
             {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           </span>
           <span className="documents-group-task-id">{taskId}</span>
-          <span className="documents-group-task-title">{taskTitle || "Untitled"}</span>
+          <span className="documents-group-task-title">{taskTitle || t("documents.untitled", "Untitled")}</span>
         </button>
 
-        <span className="documents-group-count">{documents.length} doc{documents.length !== 1 ? "s" : ""}</span>
+        <span className="documents-group-count">{t("documents.docCount", "{{count}} doc{{plural}}", { count: documents.length, plural: documents.length !== 1 ? "s" : "" })}</span>
 
         <button
           className="documents-group-task-link"
           onClick={() => onOpenTask(taskId)}
-          aria-label={`Open task ${taskId}: ${taskTitle || "Untitled"}`}
+          aria-label={`Open task ${taskId}: ${taskTitle || t("documents.untitled", "Untitled")}`}
         >
-          Open task
+          {t("documents.openTask", "Open task")}
         </button>
       </div>
 
@@ -170,6 +173,7 @@ function TaskGroup({ taskId, taskTitle, documents, onOpenTask, renderMarkdownSta
 }
 
 export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsViewProps) {
+  const { t } = useTranslation("app");
   const [activeTab, setActiveTab] = useState<DocumentsTab>("project");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFile, setSelectedFile] = useState<MarkdownFileEntry | null>(null);
@@ -372,8 +376,8 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
   const activeCount = activeTab === "project" ? filteredProjectFiles.length : documents.length;
 
   const searchPlaceholder = activeTab === "project"
-    ? "Search project markdown files…"
-    : "Search task documents…";
+    ? t("documents.searchProjectFiles", "Search project markdown files…")
+    : t("documents.searchTaskDocuments", "Search task documents…");
 
   return (
     <div className="documents-view">
@@ -381,10 +385,10 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
         <div className="documents-view-title-row">
           <h2 className="documents-view-title">
             <FileText size={20} />
-            Documents
+            {t("documents.title", "Documents")}
           </h2>
           <span className="documents-view-count">
-            {activeCount} result{activeCount !== 1 ? "s" : ""}
+            {t("documents.resultCount", "{{count}} result{{plural}}", { count: activeCount, plural: activeCount !== 1 ? "s" : "" })}
           </span>
         </div>
 
@@ -394,20 +398,20 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
               className={`btn documents-tab${activeTab === "project" ? " active" : ""}`}
               role="tab"
               aria-selected={activeTab === "project"}
-              aria-label="Show project markdown files"
+              aria-label={t("documents.showProjectFiles", "Show project markdown files")}
               onClick={() => handleTabChange("project")}
             >
-              Project Files
+              {t("documents.projectFilesTab", "Project Files")}
               <span className="documents-tab-count">{projectFiles.length}</span>
             </button>
             <button
               className={`btn documents-tab${activeTab === "tasks" ? " active" : ""}`}
               role="tab"
               aria-selected={activeTab === "tasks"}
-              aria-label="Show task documents"
+              aria-label={t("documents.showTaskDocuments", "Show task documents")}
               onClick={() => handleTabChange("tasks")}
             >
-              Task Documents
+              {t("documents.taskDocumentsTab", "Task Documents")}
               <span className="documents-tab-count">{groupedDocuments.length}</span>
             </button>
           </div>
@@ -417,11 +421,11 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
               className="btn btn-sm documents-hidden-toggle"
               onClick={() => setShowHiddenProjectFiles((prev) => !prev)}
               aria-pressed={showHiddenProjectFiles}
-              aria-label={showHiddenProjectFiles ? "Hide hidden project files" : "Show hidden project files"}
-              title={showHiddenProjectFiles ? "Hide hidden files" : "Show hidden files"}
+              aria-label={showHiddenProjectFiles ? t("documents.hideHidden", "Hide hidden project files") : t("documents.showHidden", "Show hidden project files")}
+              title={showHiddenProjectFiles ? t("documents.hideHiddenFiles", "Hide hidden files") : t("documents.showHiddenFiles", "Show hidden files")}
             >
               {showHiddenProjectFiles ? <EyeOff size={14} /> : <Eye size={14} />}
-              {showHiddenProjectFiles ? "Hide Hidden" : "Show Hidden"}
+              {showHiddenProjectFiles ? t("documents.hideHiddenLabel", "Hide Hidden") : t("documents.showHiddenLabel", "Show Hidden")}
             </button>
           )}
 
@@ -439,7 +443,7 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
               <button
                 className="documents-search-clear"
                 onClick={clearSearch}
-                aria-label="Clear search"
+                aria-label={t("documents.clearSearch", "Clear search")}
               >
                 <X size={16} />
               </button>
@@ -451,25 +455,25 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
       <div className="documents-view-content">
         {activeError ? (
           <div className="documents-view-error">
-            <p>Failed to load {activeTab === "project" ? "project files" : "task documents"}: {activeError}</p>
-            <button className="btn btn-primary" onClick={() => void handleRetry()} aria-label="Retry loading documents">
+            <p>{t("documents.failedToLoad", "Failed to load {{type}}: {{error}}", { type: activeTab === "project" ? t("documents.projectFiles", "project files") : t("documents.taskDocuments", "task documents"), error: activeError })}</p>
+            <button className="btn btn-primary" onClick={() => void handleRetry()} aria-label={t("documents.retryLoading", "Retry loading documents")}>
               <RefreshCw size={16} />
-              Retry
+              {t("documents.retry", "Retry")}
             </button>
           </div>
         ) : activeTab === "project" ? (
           projectFilesLoading && projectFiles.length === 0 ? (
             <div className="documents-view-loading">
-              <p>Loading project markdown files…</p>
+              <p>{t("documents.loadingProjectFiles", "Loading project markdown files…")}</p>
             </div>
           ) : filteredProjectFiles.length === 0 ? (
             <div className="documents-view-empty">
               {searchQuery.trim() ? (
-                <p>No project markdown files match "{searchQuery.trim()}".</p>
+                <p>{t("documents.noMatchProject", "No project markdown files match \"{{query}}\".", { query: searchQuery.trim() })}</p>
               ) : (
                 <>
                   <FileText size={48} className="documents-view-empty-icon" />
-                  <p>No Markdown files found in this project.</p>
+                  <p>{t("documents.noMarkdownFiles", "No Markdown files found in this project.")}</p>
                 </>
               )}
             </div>
@@ -507,16 +511,16 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
                     <button
                       className="btn btn-sm documents-mobile-back"
                       onClick={handleBackToFileList}
-                      aria-label="Back to project files list"
+                      aria-label={t("documents.backToFilesList", "Back to project files list")}
                     >
                       <ArrowLeft size={14} />
-                      Back to files
+                      {t("documents.backToFiles", "Back to files")}
                     </button>
                   )}
 
                   {!selectedFile ? (
                     <div className="documents-view-empty">
-                      <p>Select a Markdown file to view its content.</p>
+                      <p>{t("documents.selectFile", "Select a Markdown file to view its content.")}</p>
                     </div>
                   ) : (
                     <div className="documents-content-viewer">
@@ -525,15 +529,15 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
                         <button
                           className="btn btn-sm document-mode-toggle"
                           onClick={() => setRenderProjectMarkdown((prev) => !prev)}
-                          aria-label={renderProjectMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                          aria-label={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
                           aria-pressed={renderProjectMarkdown}
-                          title={renderProjectMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                          title={renderProjectMarkdown ? t("documents.switchToPlainText", "Switch to plain text") : t("documents.switchToMarkdown", "Switch to markdown")}
                         >
-                          {renderProjectMarkdown ? "Markdown" : "Plain"}
+                          {renderProjectMarkdown ? t("documents.markdown", "Markdown") : t("documents.plain", "Plain")}
                         </button>
                       </div>
                       {fileLoading ? (
-                        <p className="documents-content-state">Loading file content…</p>
+                        <p className="documents-content-state">{t("documents.loadingFileContent", "Loading file content…")}</p>
                       ) : fileError ? (
                         <p className="documents-content-state documents-content-state--error">{fileError}</p>
                       ) : renderProjectMarkdown ? (
@@ -553,18 +557,18 @@ export function DocumentsView({ projectId, addToast, onOpenDetail }: DocumentsVi
           )
         ) : documentsLoading && documents.length === 0 ? (
           <div className="documents-view-loading">
-            <p>Loading task documents…</p>
+            <p>{t("documents.loadingTaskDocuments", "Loading task documents…")}</p>
           </div>
         ) : groupedDocuments.length === 0 ? (
           <div className="documents-view-empty">
             {searchQuery.trim() ? (
-              <p>No task documents match "{searchQuery.trim()}".</p>
+              <p>{t("documents.noMatchTask", "No task documents match \"{{query}}\".", { query: searchQuery.trim() })}</p>
             ) : (
               <>
                 <FileText size={48} className="documents-view-empty-icon" />
-                <p>No task documents yet.</p>
+                <p>{t("documents.noTaskDocuments", "No task documents yet.")}</p>
                 <p className="documents-view-empty-hint">
-                  Documents are created in task detail tabs.
+                  {t("documents.documentsCreatedIn", "Documents are created in task detail tabs.")}
                 </p>
               </>
             )}

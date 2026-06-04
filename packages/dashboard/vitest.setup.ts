@@ -1,5 +1,28 @@
 import "@testing-library/jest-dom";
 import { vi } from "vitest";
+import i18next from "i18next";
+import { initReactI18next } from "react-i18next";
+
+// Initialize a minimal real i18next instance for component tests. Components
+// call useTranslation() without a provider in tests; react-i18next's
+// uninitialized fallback returns inline defaults WITHOUT interpolation
+// (literal "{{count}}" in output). A backend-less en instance keeps t(key,
+// default, options) returning the interpolated English default, so tests
+// keep asserting the same strings as before the i18n migration. Tests that
+// vi.mock("react-i18next") or "../i18n" are unaffected.
+await i18next.use(initReactI18next).init({
+  lng: "en",
+  fallbackLng: "en",
+  // Each namespace present (empty) so hasLoadedNamespace() is true — an
+  // unloaded namespace makes useTranslation() suspend (no Suspense boundary
+  // in component tests) even with useSuspense disabled belt-and-braces below.
+  resources: { en: { common: {}, app: {}, errors: {} } },
+  ns: ["common", "app", "errors"],
+  defaultNS: "common",
+  interpolation: { escapeValue: false },
+  returnNull: false,
+  react: { useSuspense: false },
+});
 
 // Ensure dashboard route/server tests start in no-auth mode unless they
 // explicitly opt in. CI/agent shells may export daemon tokens globally,

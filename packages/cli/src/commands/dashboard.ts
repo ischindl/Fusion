@@ -688,7 +688,7 @@ async function resolveDashboardAuthToken(opts: { noAuth?: boolean; token?: strin
   return tokenManager.generateToken();
 }
 
-export async function runDashboard(port: number, opts: { paused?: boolean; dev?: boolean; interactive?: boolean; open?: boolean; host?: string; noAuth?: boolean; token?: string } = {}) {
+export async function runDashboard(port: number, opts: { paused?: boolean; dev?: boolean; interactive?: boolean; open?: boolean; host?: string; noAuth?: boolean; token?: string; lang?: string } = {}) {
   // Default to localhost so the dashboard (and its shell-capable terminal API)
   // is not exposed on the LAN. Pass --host 0.0.0.0 explicitly to opt-in.
   const selectedHost = opts.host ?? "127.0.0.1";
@@ -754,6 +754,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
   if (isTTY) {
     tui = new DashboardTUI();
+    tui.lang = opts.lang;
     void startupUpdateStatusPromise.then((updateStatus) => {
       tui?.setUpdateStatus(updateStatus);
     });

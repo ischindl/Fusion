@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Trash2, ChevronUp, ChevronDown, Pencil, GripVertical } from "lucide-react";
 import type { AutomationStep, AutomationStepType } from "@fusion/core";
 import { StepTypeBadge } from "./StepTypeBadge";
@@ -61,6 +62,7 @@ interface StepEditorProps {
 }
 
 function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
+  const { t } = useTranslation("app");
   const [name, setName] = useState(step.name);
   const [type, setType] = useState<AutomationStepType>(step.type);
   const [command, setCommand] = useState(step.command ?? "");
@@ -107,22 +109,22 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
 
   const validate = useCallback((): boolean => {
     const e: Record<string, string> = {};
-    if (!name.trim()) e.name = "Step name is required";
-    if (type === "command" && !command.trim()) e.command = "Command is required";
-    if (type === "ai-prompt" && !prompt.trim()) e.prompt = "Prompt is required";
-    if (type === "create-task" && !taskDescription.trim()) e.taskDescription = "Task description is required";
+    if (!name.trim()) e.name = t("schedule.stepNameRequired", "Step name is required");
+    if (type === "command" && !command.trim()) e.command = t("schedule.commandRequired", "Command is required");
+    if (type === "ai-prompt" && !prompt.trim()) e.prompt = t("schedule.promptRequired", "Prompt is required");
+    if (type === "create-task" && !taskDescription.trim()) e.taskDescription = t("schedule.taskDescriptionRequired", "Task description is required");
     // Model pairing validation for ai-prompt and create-task
     if ((type === "ai-prompt" || type === "create-task") && (modelProvider || modelId)) {
       if (!modelProvider || !modelId) {
-        e.modelProvider = "Both model provider and model ID must be set together";
+        e.modelProvider = t("schedule.modelProviderRequired", "Both model provider and model ID must be set together");
       }
     }
     if (timeoutMs !== undefined && timeoutMs < 1000) {
-      e.timeoutMs = "Timeout must be at least 1 second (1000ms)";
+      e.timeoutMs = t("schedule.timeoutMinimum", "Timeout must be at least 1 second (1000ms)");
     }
     setErrors(e);
     return Object.keys(e).length === 0;
-  }, [name, type, command, prompt, taskDescription, modelProvider, modelId, timeoutMs]);
+  }, [name, type, command, prompt, taskDescription, modelProvider, modelId, timeoutMs, t]);
 
   // Compute combined model value from separate fields
   const modelValue = (modelProvider && modelId) ? `${modelProvider}/${modelId}` : "";
@@ -176,11 +178,11 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
   return (
     <div className="step-editor">
       <div className="form-group">
-        <label htmlFor={`step-name-${step.id}`}>Step Name</label>
+        <label htmlFor={`step-name-${step.id}`}>{t("schedule.stepName", "Step Name")}</label>
         <input
           id={`step-name-${step.id}`}
           type="text"
-          placeholder="e.g. Run tests"
+          placeholder={t("schedule.stepNamePlaceholder", "e.g. Run tests")}
           value={name}
           onChange={(e) => setName(e.target.value)}
           aria-invalid={!!errors.name}
@@ -189,24 +191,24 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
       </div>
 
       <div className="form-group">
-        <label htmlFor={`step-type-${step.id}`}>Step Type</label>
+        <label htmlFor={`step-type-${step.id}`}>{t("schedule.stepType", "Step Type")}</label>
         <select
           id={`step-type-${step.id}`}
           value={type}
           onChange={(e) => setType(e.target.value as AutomationStepType)}
         >
-          <option value="command">Command</option>
-          <option value="ai-prompt">AI Prompt</option>
-          <option value="create-task">Create Task</option>
+          <option value="command">{t("schedule.commandType", "Command")}</option>
+          <option value="ai-prompt">{t("schedule.aiPromptType", "AI Prompt")}</option>
+          <option value="create-task">{t("schedule.createTaskType", "Create Task")}</option>
         </select>
       </div>
 
       {type === "command" && (
         <div className="form-group">
-          <label htmlFor={`step-command-${step.id}`}>Command</label>
+          <label htmlFor={`step-command-${step.id}`}>{t("schedule.command", "Command")}</label>
           <textarea
             id={`step-command-${step.id}`}
-            placeholder="e.g. npm test"
+            placeholder={t("schedule.commandPlaceholder", "e.g. npm test")}
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             rows={2}
@@ -219,10 +221,10 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
       {type === "ai-prompt" && (
         <>
           <div className="form-group">
-            <label htmlFor={`step-prompt-${step.id}`}>Prompt</label>
+            <label htmlFor={`step-prompt-${step.id}`}>{t("schedule.prompt", "Prompt")}</label>
             <textarea
               id={`step-prompt-${step.id}`}
-              placeholder="e.g. Summarize the test results and highlight any failures"
+              placeholder={t("schedule.promptPlaceholder", "e.g. Summarize the test results and highlight any failures")}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
@@ -232,18 +234,18 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
           </div>
 
           <div className="form-group">
-            <label htmlFor={`step-model-${step.id}`}>Model (optional)</label>
+            <label htmlFor={`step-model-${step.id}`}>{t("schedule.modelOptional", "Model (optional)")}</label>
             <CustomModelDropdown
               id={`step-model-${step.id}`}
-              label="Model"
+              label={t("schedule.model", "Model")}
               models={models}
               value={modelValue}
               onChange={handleModelChange}
-              placeholder="Use default"
+              placeholder={t("schedule.useDefault", "Use default")}
               disabled={modelsLoading}
             />
             {modelsError && <small className="field-error">{modelsError}</small>}
-            <small>AI model for this step. Uses default if not selected.</small>
+            <small>{t("schedule.modelHelp", "AI model for this step. Uses default if not selected.")}</small>
           </div>
         </>
       )}
@@ -251,22 +253,22 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
       {type === "create-task" && (
         <>
           <div className="form-group">
-            <label htmlFor={`step-task-title-${step.id}`}>Task Title (optional)</label>
+            <label htmlFor={`step-task-title-${step.id}`}>{t("schedule.taskTitleOptional", "Task Title (optional)")}</label>
             <input
               id={`step-task-title-${step.id}`}
               type="text"
-              placeholder="e.g. Review weekly dependencies"
+              placeholder={t("schedule.taskTitlePlaceholder", "e.g. Review weekly dependencies")}
               value={taskTitle}
               onChange={(e) => setTaskTitle(e.target.value)}
             />
-            <small>Leave blank to auto-summarize from description</small>
+            <small>{t("schedule.taskTitleHelp", "Leave blank to auto-summarize from description")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor={`step-task-description-${step.id}`}>Task Description *</label>
+            <label htmlFor={`step-task-description-${step.id}`}>{t("schedule.taskDescription", "Task Description *")}</label>
             <textarea
               id={`step-task-description-${step.id}`}
-              placeholder="e.g. Check all npm dependencies for security vulnerabilities and update outdated packages"
+              placeholder={t("schedule.taskDescriptionPlaceholder", "e.g. Check all npm dependencies for security vulnerabilities and update outdated packages")}
               value={taskDescription}
               onChange={(e) => setTaskDescription(e.target.value)}
               rows={4}
@@ -276,44 +278,44 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
           </div>
 
           <div className="form-group">
-            <label htmlFor={`step-task-column-${step.id}`}>Target Column</label>
+            <label htmlFor={`step-task-column-${step.id}`}>{t("schedule.targetColumn", "Target Column")}</label>
             <select
               id={`step-task-column-${step.id}`}
               value={taskColumn}
               onChange={(e) => setTaskColumn(e.target.value)}
             >
-              <option value="triage">Triage</option>
-              <option value="todo">To Do</option>
+              <option value="triage">{t("schedule.triageColumn", "Triage")}</option>
+              <option value="todo">{t("schedule.todoColumn", "To Do")}</option>
             </select>
-            <small>Column where the new task will be created</small>
+            <small>{t("schedule.targetColumnHelp", "Column where the new task will be created")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor={`step-task-model-${step.id}`}>Executor Model (optional)</label>
+            <label htmlFor={`step-task-model-${step.id}`}>{t("schedule.executorModelOptional", "Executor Model (optional)")}</label>
             <CustomModelDropdown
               id={`step-task-model-${step.id}`}
-              label="Model"
+              label={t("schedule.model", "Model")}
               models={models}
               value={modelValue}
               onChange={handleModelChange}
-              placeholder="Use default"
+              placeholder={t("schedule.useDefault", "Use default")}
               disabled={modelsLoading}
             />
             {modelsError && <small className="field-error">{modelsError}</small>}
             {errors.modelProvider && <small className="field-error">{errors.modelProvider}</small>}
-            <small>AI model for executing the created task. Uses default if not selected.</small>
+            <small>{t("schedule.executorModelHelp", "AI model for executing the created task. Uses default if not selected.")}</small>
           </div>
         </>
       )}
 
       <div className="form-group">
-        <label htmlFor={`step-timeout-${step.id}`}>Timeout (ms, optional)</label>
+        <label htmlFor={`step-timeout-${step.id}`}>{t("schedule.timeoutOptional", "Timeout (ms, optional)")}</label>
         <input
           id={`step-timeout-${step.id}`}
           type="number"
           min={1000}
           step={1000}
-          placeholder="Override schedule timeout"
+          placeholder={t("schedule.timeoutPlaceholder", "Override schedule timeout")}
           value={timeoutMs ?? ""}
           onChange={(e) => setTimeoutMs(e.target.value ? Number(e.target.value) : undefined)}
           aria-invalid={!!errors.timeoutMs}
@@ -329,17 +331,17 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
             checked={continueOnFailure}
             onChange={(e) => setContinueOnFailure(e.target.checked)}
           />
-          Continue on failure
+          {t("schedule.continueOnFailure", "Continue on failure")}
         </label>
-        <small>If checked, the next step will run even if this one fails</small>
+        <small>{t("schedule.continueOnFailureHelp", "If checked, the next step will run even if this one fails")}</small>
       </div>
 
       <div className="step-editor-actions">
         <button type="button" className="btn btn-sm" onClick={onCancel}>
-          Cancel
+          {t("actions.cancel", "Cancel")}
         </button>
         <button type="button" className="btn btn-primary btn-sm" onClick={handleSave}>
-          Save Step
+          {t("schedule.saveStep", "Save Step")}
         </button>
       </div>
     </div>
@@ -347,6 +349,7 @@ function StepEditor({ step, onSave, onCancel }: StepEditorProps) {
 }
 
 export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: ScheduleStepsEditorProps) {
+  const { t } = useTranslation("app");
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
 
   // Notify parent when editing state changes
@@ -383,12 +386,12 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
   return (
     <div className="steps-editor">
       <div className="steps-editor-header">
-        <span className="steps-editor-title">Steps ({steps.length})</span>
+        <span className="steps-editor-title">{t("schedule.steps", "Steps")} ({steps.length})</span>
       </div>
 
       {steps.length === 0 && (
         <div className="steps-empty-state">
-          <p>No steps added yet. Add a command or AI prompt step to get started.</p>
+          <p>{t("schedule.noStepsEmpty", "No steps added yet. Add a command or AI prompt step to get started.")}</p>
         </div>
       )}
 
@@ -410,7 +413,7 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
                 <StepTypeBadge type={step.type} />
                 <span className="step-card-name">{step.name}</span>
                 {step.continueOnFailure && (
-                  <span className="step-card-flag" title="Continues on failure">⚡</span>
+                  <span className="step-card-flag" title={t("schedule.continuesOnFailure", "Continues on failure")}>⚡</span>
                 )}
                 <div className="step-card-actions">
                   <button
@@ -418,8 +421,8 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
                     className="btn-icon"
                     onClick={() => handleMoveStep(step.id, "up")}
                     disabled={index === 0}
-                    title="Move up"
-                    aria-label={`Move ${step.name} up`}
+                    title={t("schedule.moveUp", "Move up")}
+                    aria-label={t("schedule.moveStepUp", "Move {{name}} up", { name: step.name })}
                   >
                     <ChevronUp />
                   </button>
@@ -428,8 +431,8 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
                     className="btn-icon"
                     onClick={() => handleMoveStep(step.id, "down")}
                     disabled={index === steps.length - 1}
-                    title="Move down"
-                    aria-label={`Move ${step.name} down`}
+                    title={t("schedule.moveDown", "Move down")}
+                    aria-label={t("schedule.moveStepDown", "Move {{name}} down", { name: step.name })}
                   >
                     <ChevronDown />
                   </button>
@@ -437,8 +440,8 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
                     type="button"
                     className="btn-icon"
                     onClick={() => setEditingStepId(step.id)}
-                    title="Edit"
-                    aria-label={`Edit ${step.name}`}
+                    title={t("actions.edit", "Edit")}
+                    aria-label={t("schedule.editStep", "Edit {{name}}", { name: step.name })}
                   >
                     <Pencil />
                   </button>
@@ -446,8 +449,8 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
                     type="button"
                     className="btn-icon"
                     onClick={() => handleDeleteStep(step.id)}
-                    title="Delete"
-                    aria-label={`Delete ${step.name}`}
+                    title={t("actions.delete", "Delete")}
+                    aria-label={t("schedule.deleteStep", "Delete {{name}}", { name: step.name })}
                   >
                     <Trash2 />
                   </button>
@@ -465,7 +468,7 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
           onClick={() => handleAddStep("command")}
         >
           <Plus size={14} />
-          Add Command Step
+          {t("schedule.addCommandStep", "Add Command Step")}
         </button>
         <button
           type="button"
@@ -473,7 +476,7 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
           onClick={() => handleAddStep("ai-prompt")}
         >
           <Plus size={14} />
-          Add AI Prompt Step
+          {t("schedule.addAiPromptStep", "Add AI Prompt Step")}
         </button>
         <button
           type="button"
@@ -481,7 +484,7 @@ export function ScheduleStepsEditor({ steps, onChange, onEditingChange }: Schedu
           onClick={() => handleAddStep("create-task")}
         >
           <Plus size={14} />
-          Add Create Task Step
+          {t("schedule.addCreateTaskStep", "Add Create Task Step")}
         </button>
       </div>
     </div>

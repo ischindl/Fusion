@@ -1,15 +1,17 @@
+import { useTranslation } from "react-i18next";
 import type { Task } from "@fusion/core";
 
 interface MergeDetailsProps {
   task: Task;
 }
 
-function shortSha(sha?: string): string {
-  if (!sha) return "Unknown";
+function shortSha(sha?: string, t?: (key: string, defaultValue: string) => string): string {
+  if (!sha) return t ? t("merge.unknown", "Unknown") : "Unknown";
   return sha.slice(0, 7);
 }
 
 export function MergeDetails({ task }: MergeDetailsProps) {
+  const { t } = useTranslation("app");
   if (task.column !== "done" || !task.mergeDetails) {
     return null;
   }
@@ -18,27 +20,27 @@ export function MergeDetails({ task }: MergeDetailsProps) {
 
   return (
     <div className="detail-section">
-      <h4>Merge Details</h4>
+      <h4>{t("merge.title", "Merge Details")}</h4>
       <div className="pr-card merge-details-card">
         <div className="detail-log-entry">
           <div className="detail-log-header">
-            <span className="detail-log-action">Status</span>
-            <span className="detail-log-outcome">{details.mergeConfirmed === false ? "Recorded without local merge confirmation" : "Merged successfully"}</span>
+            <span className="detail-log-action">{t("merge.status", "Status")}</span>
+            <span className="detail-log-outcome">{details.mergeConfirmed === false ? t("merge.recordedNoConfirm", "Recorded without local merge confirmation") : t("merge.mergedSuccess", "Merged successfully")}</span>
           </div>
         </div>
         <div className="detail-log-entry">
           <div className="detail-log-header">
-            <span className="detail-log-action">Commit</span>
-            <span className="detail-log-outcome">{shortSha(details.commitSha)}</span>
+            <span className="detail-log-action">{t("merge.commit", "Commit")}</span>
+            <span className="detail-log-outcome">{shortSha(details.commitSha, t)}</span>
           </div>
         </div>
         <div className="detail-log-entry">
           <div className="detail-log-header">
             <span
               className="detail-log-action"
-              title="Final commit shortstat; for the full landed diff across all task commits, see the Changes tab."
+              title={t("merge.shortstatTitle", "Final commit shortstat; for the full landed diff across all task commits, see the Changes tab.")}
             >
-              Files in merge commit
+              {t("merge.filesChanged", "Files in merge commit")}
             </span>
             <span className="detail-log-outcome">{details.filesChanged ?? 0}</span>
           </div>
@@ -47,9 +49,9 @@ export function MergeDetails({ task }: MergeDetailsProps) {
           <div className="detail-log-header">
             <span
               className="detail-log-action"
-              title="Final commit shortstat; for the full landed diff across all task commits, see the Changes tab."
+              title={t("merge.shortstatTitle", "Final commit shortstat; for the full landed diff across all task commits, see the Changes tab.")}
             >
-              Merge-commit insertions / deletions
+              {t("merge.insertionsDeletions", "Merge-commit insertions / deletions")}
             </span>
             <span className="detail-log-outcome">+{details.insertions ?? 0} / -{details.deletions ?? 0}</span>
           </div>
@@ -57,7 +59,7 @@ export function MergeDetails({ task }: MergeDetailsProps) {
         {details.mergedAt ? (
           <div className="detail-log-entry">
             <div className="detail-log-header">
-              <span className="detail-log-action">Merged at</span>
+              <span className="detail-log-action">{t("merge.mergedAt", "Merged at")}</span>
               <span className="detail-log-outcome">{new Date(details.mergedAt).toLocaleString()}</span>
             </div>
           </div>
@@ -65,7 +67,7 @@ export function MergeDetails({ task }: MergeDetailsProps) {
         {details.prNumber ? (
           <div className="detail-log-entry">
             <div className="detail-log-header">
-              <span className="detail-log-action">PR</span>
+              <span className="detail-log-action">{t("merge.pr", "PR")}</span>
               {task.prInfo?.url ? (
                 <a
                   className="detail-source-link detail-log-outcome"
@@ -84,7 +86,7 @@ export function MergeDetails({ task }: MergeDetailsProps) {
         {details.mergeCommitMessage ? (
           <div className="detail-log-entry">
             <div className="detail-log-header">
-              <span className="detail-log-action">Message</span>
+              <span className="detail-log-action">{t("merge.message", "Message")}</span>
             </div>
             <div className="detail-log-outcome">{details.mergeCommitMessage}</div>
           </div>

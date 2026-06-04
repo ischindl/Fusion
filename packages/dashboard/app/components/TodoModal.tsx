@@ -1,6 +1,7 @@
 import "./TodoModal.css";
 import { Suspense, lazy, useEffect } from "react";
 import { ListChecks, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
@@ -16,6 +17,7 @@ interface TodoModalProps {
 }
 
 export function TodoModal({ onClose, projectId, addToast, onPlanningMode }: TodoModalProps) {
+  const { t } = useTranslation("app");
   const overlayDismissProps = useOverlayDismiss(onClose);
   const mode = useViewportMode();
   const isMobile = mode === "mobile";
@@ -51,11 +53,11 @@ export function TodoModal({ onClose, projectId, addToast, onPlanningMode }: Todo
           <div className="todo-modal-header-title">
             <ListChecks size={18} />
             <div>
-              <h2>Todos</h2>
-              <p>Manage reusable todo lists for your project.</p>
+              <h2>{t("todo.todos", "Todos")}</h2>
+              <p>{t("todo.manageDescription", "Manage reusable todo lists for your project.")}</p>
             </div>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label={t("common.close", "Close")}>
             <X size={20} />
           </button>
         </div>

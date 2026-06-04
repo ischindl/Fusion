@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { CheckCircle2, ExternalLink, Loader2, MinusCircle, RefreshCw, XCircle } from "lucide-react";
 import type { PrCheckStatus } from "../api";
 import "./PrChecksList.css";
@@ -42,6 +43,7 @@ function relativeTime(value?: string): string | null {
 }
 
 export function PrChecksList({ checks, rollup: _rollup, lastCheckedAt, loading, error, onRefresh }: PrChecksListProps) {
+  const { t } = useTranslation("app");
   const sortedChecks = useMemo(() => [...checks].sort((a, b) => {
     const byPriority = getCheckPriority(a) - getCheckPriority(b);
     if (byPriority !== 0) return byPriority;
@@ -63,10 +65,10 @@ export function PrChecksList({ checks, rollup: _rollup, lastCheckedAt, loading, 
   return (
     <section className="pr-checks" aria-live="polite">
       <div className="pr-checks__header">
-        <div className="pr-checks__summary">{summary.passing} passing, {summary.failing} failing, {summary.pending} pending</div>
+        <div className="pr-checks__summary">{t("git.prChecks.summary", "{{passing}} passing, {{failing}} failing, {{pending}} pending", { passing: summary.passing, failing: summary.failing, pending: summary.pending })}</div>
         <div className="pr-checks__header-actions">
           {lastCheckedAt ? <span className="pr-checks__updated">{relativeTime(lastCheckedAt)}</span> : null}
-          <button className="btn btn-sm btn-icon" aria-label="Refresh checks" onClick={onRefresh}>
+          <button className="btn btn-sm btn-icon" aria-label={t("git.prChecks.refreshAriaLabel", "Refresh checks")} onClick={onRefresh}>
             {loading ? <Loader2 className="spin" /> : <RefreshCw />}
           </button>
         </div>
@@ -75,12 +77,12 @@ export function PrChecksList({ checks, rollup: _rollup, lastCheckedAt, loading, 
       {error ? (
         <div className="pr-checks__error" role="alert">
           <span>{error}</span>
-          <button className="btn btn-sm" onClick={onRefresh}>Retry</button>
+          <button className="btn btn-sm" onClick={onRefresh}>{t("git.prChecks.retry", "Retry")}</button>
         </div>
       ) : null}
 
       {sortedChecks.length === 0 ? (
-        <div className="pr-checks__empty">No checks reported yet</div>
+        <div className="pr-checks__empty">{t("git.prChecks.empty", "No checks reported yet")}</div>
       ) : (
         <div className="pr-checks__list" role="list">
           {sortedChecks.map((check) => {
@@ -99,7 +101,7 @@ export function PrChecksList({ checks, rollup: _rollup, lastCheckedAt, loading, 
                 </span>
                 <div className="pr-checks__name-wrap">
                   <span className="pr-checks__name">{check.name}</span>
-                  {check.required ? <span className="pr-checks__required">Required</span> : null}
+                  {check.required ? <span className="pr-checks__required">{t("git.prChecks.required", "Required")}</span> : null}
                   {duration ? <span className="pr-checks__duration">{duration}</span> : null}
                 </div>
                 {check.detailsUrl ? (
@@ -109,7 +111,7 @@ export function PrChecksList({ checks, rollup: _rollup, lastCheckedAt, loading, 
                     rel="noreferrer noopener"
                     className={failing ? "pr-checks__details-link pr-checks__details-link--failing" : "pr-checks__details-link"}
                   >
-                    View details <ExternalLink />
+                    {t("git.prChecks.viewDetails", "View details")} <ExternalLink />
                   </a>
                 ) : null}
               </div>

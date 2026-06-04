@@ -1,5 +1,6 @@
 import "./ScriptsModal.css";
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import { fetchScripts, addScript, removeScript, type ScriptEntry } from "../api";
 import type { ToastType } from "../hooks/useToast";
@@ -45,6 +46,7 @@ function truncateCommand(command: string, maxLength: number = 60): string {
 }
 
 export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript }: ScriptsModalProps) {
+  const { t } = useTranslation("app");
   useMobileScrollLock(isOpen);
   const [scripts, setScripts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -62,7 +64,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
       const data = await fetchScripts(projectId);
       setScripts(data);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load scripts", "error");
+      addToast(getErrorMessage(err) || t("scriptsModal.failedToLoadScripts", "Failed to load scripts"), "error");
     } finally {
       setLoading(false);
     }
@@ -98,35 +100,35 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
   const handleNameChange = useCallback((name: string) => {
     setForm((prev) => ({ ...prev, name }));
     if (name && !isValidScriptName(name)) {
-      setNameError("Name must contain only letters, numbers, hyphens, and underscores (no spaces)");
+      setNameError(t("scriptsModal.nameErrorMsg", "Name must contain only letters, numbers, hyphens, and underscores (no spaces)"));
     } else {
       setNameError(null);
     }
-  }, []);
+  }, [t]);
 
   const handleSave = useCallback(async () => {
     const trimmedName = form.name.trim();
     const trimmedCommand = form.command.trim();
 
     if (!trimmedName) {
-      addToast("Script name is required", "error");
+      addToast(t("scriptsModal.scriptNameRequired", "Script name is required"), "error");
       return;
     }
 
     if (!isValidScriptName(trimmedName)) {
-      addToast("Script name must contain only letters, numbers, hyphens, and underscores (no spaces)", "error");
+      addToast(t("scriptsModal.nameErrorMsg", "Script name must contain only letters, numbers, hyphens, and underscores (no spaces)"), "error");
       return;
     }
 
     if (!trimmedCommand) {
-      addToast("Script command is required", "error");
+      addToast(t("scriptsModal.scriptCommandRequired", "Script command is required"), "error");
       return;
     }
 
     setSaving(true);
     try {
       await addScript(trimmedName, trimmedCommand, projectId);
-      addToast(isEditing ? "Script updated" : "Script created", "success");
+      addToast(isEditing ? t("scriptsModal.scriptUpdated", "Script updated") : t("scriptsModal.scriptCreated", "Script created"), "success");
       setIsEditing(null);
       setIsCreating(false);
       setForm(EMPTY_FORM);
@@ -135,19 +137,19 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
     } catch (err) {
       const msg = getErrorMessage(err);
       if (msg?.includes("already exists")) {
-        addToast("A script with this name already exists", "error");
+        addToast(t("scriptsModal.scriptAlreadyExists", "A script with this name already exists"), "error");
       } else {
-        addToast(msg || "Failed to save script", "error");
+        addToast(msg || t("scriptsModal.failedToSave", "Failed to save script"), "error");
       }
     } finally {
       setSaving(false);
     }
-  }, [form, isEditing, addToast, loadScripts, projectId]);
+  }, [form, isEditing, addToast, loadScripts, projectId, t]);
 
   const handleDelete = useCallback(async (name: string) => {
     try {
       await removeScript(name, projectId);
-      addToast("Script deleted", "success");
+      addToast(t("scriptsModal.scriptDeleted", "Script deleted"), "success");
       setDeleteConfirmName(null);
       if (isEditing === name) {
         setIsEditing(null);
@@ -155,9 +157,9 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
       }
       await loadScripts();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to delete script", "error");
+      addToast(getErrorMessage(err) || t("scriptsModal.failedToDelete", "Failed to delete script"), "error");
     }
-  }, [isEditing, addToast, loadScripts, projectId]);
+  }, [isEditing, addToast, loadScripts, projectId, t]);
 
   const handleRun = useCallback((name: string, command: string) => {
     if (onRunScript) {
@@ -185,9 +187,9 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
         <div className="modal-header">
           <h2>
             <Terminal size={18} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-            Scripts
+            {t("scriptsModal.title", "Scripts")}
           </h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label={t("actions.close", "Close")}>
             &times;
           </button>
         </div>
@@ -196,7 +198,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
           {loading ? (
             <div style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)" }}>
               <Loader2 size={24} className="spin" style={{ margin: "0 auto 8px", display: "block" }} />
-              Loading scripts...
+              {t("scriptsModal.loadingScripts", "Loading scripts...")}
             </div>
           ) : isEditingAny ? (
             /* Form for create/edit */
@@ -212,7 +214,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                     color: "var(--text)",
                   }}
                 >
-                  Script Name
+                  {t("scriptsModal.scriptName", "Script Name")}
                 </label>
                 <input
                   id="script-name"
@@ -220,7 +222,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                   className="input"
                   value={form.name}
                   onChange={(e) => handleNameChange(e.target.value)}
-                  placeholder="e.g., build, test, lint"
+                  placeholder={t("scriptsModal.scriptNamePlaceholder", "e.g., build, test, lint")}
                   disabled={saving || isEditing !== null}
                   data-testid="script-name-input"
                   style={{
@@ -247,7 +249,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                     marginTop: "4px",
                   }}
                 >
-                  Letters, numbers, hyphens, and underscores only
+                  {t("scriptsModal.nameHint", "Letters, numbers, hyphens, and underscores only")}
                 </div>
               </div>
 
@@ -262,14 +264,14 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                     color: "var(--text)",
                   }}
                 >
-                  Command
+                  {t("scriptsModal.command", "Command")}
                 </label>
                 <textarea
                   id="script-command"
                   className="input"
                   value={form.command}
                   onChange={(e) => setForm((prev) => ({ ...prev, command: e.target.value }))}
-                  placeholder="e.g., npm run build"
+                  placeholder={t("scriptsModal.commandPlaceholder", "e.g., npm run build")}
                   rows={3}
                   disabled={saving}
                   data-testid="script-command-input"
@@ -288,7 +290,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                   disabled={saving}
                   data-testid="script-cancel-btn"
                 >
-                  Cancel
+                  {t("actions.cancel", "Cancel")}
                 </button>
                 <button
                   className="btn btn-primary"
@@ -299,12 +301,12 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                   {saving ? (
                     <>
                       <Loader2 size={14} className="spin" style={{ marginRight: "6px" }} />
-                      Saving...
+                      {t("scriptsModal.saving", "Saving...")}
                     </>
                   ) : isEditing ? (
-                    "Update"
+                    t("actions.update", "Update")
                   ) : (
-                    "Create"
+                    t("actions.create", "Create")
                   )}
                 </button>
               </div>
@@ -323,8 +325,8 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
               >
                 <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
                   {scriptEntries.length === 0
-                    ? "No scripts defined"
-                    : `${scriptEntries.length} script${scriptEntries.length === 1 ? "" : "s"}`}
+                    ? t("scriptsModal.noScriptsDefined", "No scripts defined")
+                    : t("scriptsModal.scriptCount", "{{count}} script", { count: scriptEntries.length, defaultValue_other: "{{count}} scripts" })}
                 </div>
                 <button
                   className="btn btn-primary"
@@ -333,7 +335,7 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                   style={{ display: "flex", alignItems: "center", gap: "6px" }}
                 >
                   <Plus size={14} />
-                  Add Script
+                  {t("scriptsModal.addScript", "Add Script")}
                 </button>
               </div>
 
@@ -350,9 +352,9 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                   data-testid="empty-state"
                 >
                   <Terminal size={32} style={{ margin: "0 auto 12px", opacity: 0.5 }} />
-                  <div>No scripts defined yet.</div>
+                  <div>{t("scriptsModal.noScriptsYet", "No scripts defined yet.")}</div>
                   <div style={{ marginTop: "4px", fontSize: "12px" }}>
-                    Add scripts to quickly run common commands from the dashboard.
+                    {t("scriptsModal.addScriptsHint", "Add scripts to quickly run common commands from the dashboard.")}
                   </div>
                 </div>
               ) : (
@@ -422,8 +424,8 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                           <button
                             className="btn btn-secondary"
                             onClick={() => handleRun(script.name, script.command)}
-                            title="Run script"
-                            aria-label={`Run ${script.name}`}
+                            title={t("scriptsModal.runScript", "Run script")}
+                            aria-label={t("scriptsModal.runScriptNamed", "Run {{name}}", { name: script.name })}
                             data-testid={`run-script-${script.name}`}
                             style={{
                               display: "flex",
@@ -434,13 +436,13 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                             }}
                           >
                             <Play size={12} />
-                            Run
+                            {t("actions.run", "Run")}
                           </button>
                           <button
                             className="btn-icon"
                             onClick={() => handleEdit(script.name, script.command)}
-                            title="Edit"
-                            aria-label={`Edit ${script.name}`}
+                            title={t("actions.edit", "Edit")}
+                            aria-label={t("scriptsModal.editScriptNamed", "Edit {{name}}", { name: script.name })}
                             data-testid={`edit-script-${script.name}`}
                           >
                             <Plus size={14} style={{ transform: "rotate(45deg)" }} />
@@ -450,8 +452,8 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                               <button
                                 className="btn-icon"
                                 onClick={() => handleDelete(script.name)}
-                                title="Confirm delete"
-                                aria-label={`Confirm delete ${script.name}`}
+                                title={t("scriptsModal.confirmDelete", "Confirm delete")}
+                                aria-label={t("scriptsModal.confirmDeleteNamed", "Confirm delete {{name}}", { name: script.name })}
                                 data-testid={`confirm-delete-script-${script.name}`}
                                 style={{ color: "var(--color-error)" }}
                               >
@@ -460,8 +462,8 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                               <button
                                 className="btn-icon"
                                 onClick={() => setDeleteConfirmName(null)}
-                                title="Cancel delete"
-                                aria-label="Cancel delete"
+                                title={t("scriptsModal.cancelDelete", "Cancel delete")}
+                                aria-label={t("scriptsModal.cancelDelete", "Cancel delete")}
                                 data-testid={`cancel-delete-script-${script.name}`}
                               >
                                 <X size={14} />
@@ -471,8 +473,8 @@ export function ScriptsModal({ isOpen, onClose, addToast, projectId, onRunScript
                             <button
                               className="btn-icon"
                               onClick={() => setDeleteConfirmName(script.name)}
-                              title="Delete"
-                              aria-label={`Delete ${script.name}`}
+                              title={t("actions.delete", "Delete")}
+                              aria-label={t("scriptsModal.deleteScriptNamed", "Delete {{name}}", { name: script.name })}
                               data-testid={`delete-script-${script.name}`}
                             >
                               <Trash2 size={14} />

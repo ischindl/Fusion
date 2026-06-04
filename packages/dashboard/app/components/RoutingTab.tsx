@@ -1,5 +1,6 @@
 import "./RoutingTab.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Settings, Task, TaskDetail } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import { fetchNodes, updateTask } from "../api";
@@ -19,10 +20,10 @@ type RoutingSettings = Settings & {
   unavailableNodePolicy?: "block" | "fallback-local";
 };
 
-function getRoutingPolicyLabel(policy: RoutingSettings["unavailableNodePolicy"] | undefined): string {
-  if (policy === "block") return "Block execution";
-  if (policy === "fallback-local") return "Fall back to local";
-  return "Not configured";
+function getRoutingPolicyLabel(policy: RoutingSettings["unavailableNodePolicy"] | undefined, t: (key: string, defaultValue: string) => string): string {
+  if (policy === "block") return t("routing.policyLabel.block", "Block execution");
+  if (policy === "fallback-local") return t("routing.policyLabel.fallback", "Fall back to local");
+  return t("routing.policyLabel.notConfigured", "Not configured");
 }
 
 const ACTIVE_STATUSES = new Set(["planning", "researching", "executing", "finalizing", "merging", "merging-fix"]);
@@ -32,6 +33,7 @@ function isUnhealthy(status: NodeInfo["status"] | undefined): boolean {
 }
 
 export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingTabProps) {
+  const { t } = useTranslation("app");
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(false);
   const [nodesError, setNodesError] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
         setNodes(result);
       })
       .catch((err) => {
-        setNodesError(getErrorMessage(err) || "Failed to load nodes");
+        setNodesError(getErrorMessage(err) || t("routing.errorLoadingNodes", "Failed to load nodes"));
       })
       .finally(() => {
         setLoadingNodes(false);
@@ -71,17 +73,17 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
   const routingSettings = settings as RoutingSettings | undefined;
   const effectiveNodeId = task.nodeId ?? routingSettings?.defaultNodeId ?? null;
   const routingSource = task.nodeId
-    ? "Per-task override"
+    ? t("routing.source.override", "Per-task override")
     : routingSettings?.defaultNodeId
-      ? "Project default"
-      : "No routing";
+      ? t("routing.source.projectDefault", "Project default")
+      : t("routing.source.noRouting", "No routing");
 
   const effectiveNode = effectiveNodeId ? nodesById.get(effectiveNodeId) : undefined;
   const effectiveNodeName = effectiveNode
     ? `${effectiveNode.name} (${effectiveNode.type})`
     : effectiveNodeId
-      ? `${effectiveNodeId} (node unavailable or unknown)`
-      : "Local (no routing configured)";
+      ? `${effectiveNodeId} (${t("routing.nodeUnavailable", "node unavailable or unknown")})`
+      : t("routing.localNoConfiguration", "Local (no routing configured)");
 
   const isTaskActive = task.column === "in-progress" || ACTIVE_STATUSES.has(task.status as string);
   const selectorDisabled = isTaskActive || savingNode || loadingNodes;
@@ -103,11 +105,11 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
 
         setSelectedNodeId(updatedTask.nodeId ?? "");
         onTaskUpdated?.(updatedTask);
-        addToast(nextValue ? "Node override updated" : "Node override cleared", "success");
+        addToast(nextValue ? t("routing.overrideUpdated", "Node override updated") : t("routing.overrideCleared", "Node override cleared"), "success");
       } catch (err) {
         if (activeTaskIdRef.current !== requestTaskId) return;
         setSelectedNodeId(previousValue);
-        addToast(getErrorMessage(err) || "Failed to update node override", "error");
+        addToast(getErrorMessage(err) || t("routing.errorUpdatingOverride", "Failed to update node override"), "error");
       } finally {
         if (activeTaskIdRef.current === requestTaskId) {
           setSavingNode(false);
@@ -123,48 +125,48 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
 
   return (
     <div className="routing-tab">
-      <h4>Task Routing</h4>
-      <p className="routing-tab__intro">View the effective execution node and control per-task node override.</p>
+      <h4>{t("routing.title", "Task Routing")}</h4>
+      <p className="routing-tab__intro">{t("routing.intro", "View the effective execution node and control per-task node override.")}</p>
 
       <section className="routing-tab__section">
-        <h5>Routing Summary</h5>
+        <h5>{t("routing.summarySection", "Routing Summary")}</h5>
         <div className="routing-summary-grid" role="list">
           <div className="routing-summary-row" role="listitem">
-            <span className="routing-summary-label">Effective node</span>
+            <span className="routing-summary-label">{t("routing.effectiveNode", "Effective node")}</span>
             <span className="routing-summary-value">
               {effectiveNode ? <NodeHealthDot status={effectiveNode.status} compact /> : null}
               {effectiveNodeName}
               {isUnhealthy(effectiveNode?.status) ? (
-                <span className="routing-summary-warning">Unhealthy</span>
+                <span className="routing-summary-warning">{t("routing.unhealthy", "Unhealthy")}</span>
               ) : null}
             </span>
           </div>
           <div className="routing-summary-row" role="listitem">
-            <span className="routing-summary-label">Routing source</span>
+            <span className="routing-summary-label">{t("routing.source", "Routing source")}</span>
             <span className="routing-summary-value">{routingSource}</span>
           </div>
           <div className="routing-summary-row" role="listitem">
-            <span className="routing-summary-label">Unavailable-node policy</span>
-            <span className="routing-summary-value">{getRoutingPolicyLabel(routingSettings?.unavailableNodePolicy)}</span>
+            <span className="routing-summary-label">{t("routing.unavailablePolicy", "Unavailable-node policy")}</span>
+            <span className="routing-summary-value">{getRoutingPolicyLabel(routingSettings?.unavailableNodePolicy, t)}</span>
           </div>
         </div>
         {isTaskActive && effectiveNodeId ? (
           <div className="routing-tab__info-banner">
-            Routing is locked while this task is active. Node override cannot be changed until the task is no longer active.
+            {t("routing.lockedWhileActive", "Routing is locked while this task is active. Node override cannot be changed until the task is no longer active.")}
           </div>
         ) : null}
       </section>
 
       <section className="routing-tab__section">
-        <h5>Node Override</h5>
+        <h5>{t("routing.overrideSection", "Node Override")}</h5>
         {isTaskActive ? (
           <div className="routing-tab__warning-banner">
-            Node override cannot be changed while the task is active.
+            {t("routing.cannotChangeWhileActive", "Node override cannot be changed while the task is active.")}
           </div>
         ) : null}
 
         <label className="routing-tab__selector-label" htmlFor={`routing-node-${task.id}`}>
-          Select execution node
+          {t("routing.selectLabel", "Select execution node")}
         </label>
         <select
           id={`routing-node-${task.id}`}
@@ -175,7 +177,7 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
             void handleNodeSelect(event.target.value);
           }}
         >
-          <option value="">Use project default</option>
+          <option value="">{t("routing.useProjectDefault", "Use project default")}</option>
           {sortedNodes.map((node) => (
             <option key={node.id} value={node.id} title={`Status: ${node.status}`}>
               {node.name} ({node.type}) — {node.status}
@@ -188,7 +190,7 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
         {task.nodeId ? (
           <div className="routing-tab__override-row">
             <span className="routing-tab__override-text">
-              Override set to: {nodesById.get(task.nodeId)?.name ?? task.nodeId}
+              {t("routing.overrideSetTo", "Override set to")}: {nodesById.get(task.nodeId)?.name ?? task.nodeId}
             </span>
             <button
               type="button"
@@ -196,7 +198,7 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
               disabled={isTaskActive || savingNode}
               onClick={clearOverride}
             >
-              Clear override
+              {t("routing.clearOverride", "Clear override")}
             </button>
           </div>
         ) : null}

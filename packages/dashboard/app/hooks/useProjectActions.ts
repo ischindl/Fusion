@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { pauseProject, resumeProject, unregisterProject } from "../api";
 import type { ProjectInfo } from "../api";
 import type { ViewMode } from "./useViewState";
@@ -34,6 +35,7 @@ export interface UseProjectActionsResult {
 }
 
 export function useProjectActions(options: UseProjectActionsOptions): UseProjectActionsResult {
+  const { t } = useTranslation("app");
   const {
     setCurrentProject,
     clearCurrentProject,
@@ -71,9 +73,9 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
     closeSetupWizard();
     setCurrentProject(project);
     setViewMode("project");
-    addToast(`Project ${project.name} registered successfully`, "success");
+    addToast(t("projects.setup.success", "Project {{name}} registered successfully", { name: project.name }), "success");
     void refreshProjects();
-  }, [closeSetupWizard, setCurrentProject, setViewMode, addToast, refreshProjects]);
+  }, [closeSetupWizard, setCurrentProject, setViewMode, addToast, refreshProjects, t]);
 
   const handleModelOnboardingComplete = useCallback(() => {
     closeModelOnboarding();
@@ -82,27 +84,27 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
   const handlePauseProject = useCallback(async (project: ProjectInfo) => {
     try {
       await pauseProject(project.id);
-      addToast(`Project ${project.name} paused`, "success");
+      addToast(t("projects.actions.pauseSuccess", "Project {{name}} paused", { name: project.name }), "success");
       await refreshProjects();
     } catch {
-      addToast(`Failed to pause project ${project.name}`, "error");
+      addToast(t("projects.actions.pauseError", "Failed to pause project {{name}}", { name: project.name }), "error");
     }
-  }, [addToast, refreshProjects]);
+  }, [addToast, refreshProjects, t]);
 
   const handleResumeProject = useCallback(async (project: ProjectInfo) => {
     try {
       await resumeProject(project.id);
-      addToast(`Project ${project.name} resumed`, "success");
+      addToast(t("projects.actions.resumeSuccess", "Project {{name}} resumed", { name: project.name }), "success");
       await refreshProjects();
     } catch {
-      addToast(`Failed to resume project ${project.name}`, "error");
+      addToast(t("projects.actions.resumeError", "Failed to resume project {{name}}", { name: project.name }), "error");
     }
-  }, [addToast, refreshProjects]);
+  }, [addToast, refreshProjects, t]);
 
   const handleRemoveProject = useCallback(async (project: ProjectInfo) => {
     try {
       await unregisterProject(project.id);
-      addToast(`Project ${project.name} removed`, "success");
+      addToast(t("projects.actions.removeSuccess", "Project {{name}} removed", { name: project.name }), "success");
 
       if (currentProject?.id === project.id) {
         clearCurrentProject();
@@ -111,25 +113,25 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
 
       await refreshProjects();
     } catch {
-      addToast(`Failed to remove project ${project.name}`, "error");
+      addToast(t("projects.actions.removeError", "Failed to remove project {{name}}", { name: project.name }), "error");
     }
-  }, [currentProject, clearCurrentProject, setViewMode, addToast, refreshProjects]);
+  }, [currentProject, clearCurrentProject, setViewMode, addToast, refreshProjects, t]);
 
   const handleToggleFavorite = useCallback(async (provider: string) => {
     try {
       await toggleFavoriteProvider(provider);
     } catch {
-      addToast("Failed to update favorites", "error");
+      addToast(t("projects.actions.favoritesError", "Failed to update favorites"), "error");
     }
-  }, [toggleFavoriteProvider, addToast]);
+  }, [toggleFavoriteProvider, addToast, t]);
 
   const handleToggleModelFavorite = useCallback(async (modelId: string) => {
     try {
       await toggleFavoriteModel(modelId);
     } catch {
-      addToast("Failed to update model favorites", "error");
+      addToast(t("projects.actions.modelFavoritesError", "Failed to update model favorites"), "error");
     }
-  }, [toggleFavoriteModel, addToast]);
+  }, [toggleFavoriteModel, addToast, t]);
 
   return {
     handleSelectProject,

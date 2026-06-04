@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import {
@@ -66,6 +67,7 @@ export function ChangesDiffModal({
   onClose,
   onRefresh,
 }: ChangesDiffModalProps) {
+  const { t } = useTranslation("app");
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [wordWrap, setWordWrap] = useState(true);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -128,7 +130,7 @@ export function ChangesDiffModal({
         <div className="modal-header changes-diff-modal-header">
           <div className="changes-diff-header-title">
             <FileCode size={18} />
-            <span>Changes — {taskId}</span>
+            <span>{t("changes.title", "Changes")} — {taskId}</span>
             <span className="changes-stat-summary">
               <span className="diff-add">+{stats.additions}</span>{" "}
               <span className="diff-del">-{stats.deletions}</span>
@@ -141,8 +143,8 @@ export function ChangesDiffModal({
                   className="btn btn-sm btn-icon"
                   onClick={navigatePrev}
                   disabled={selectedIndex === null || selectedIndex <= 0}
-                  title="Previous file (Ctrl+↑)"
-                  aria-label="Previous file"
+                  title={t("changes.previousFile", "Previous file (Ctrl+↑)")}
+                  aria-label={t("changes.previousFileAria", "Previous file")}
                 >
                   <ChevronLeft />
                 </button>
@@ -157,8 +159,8 @@ export function ChangesDiffModal({
                   disabled={
                     selectedIndex === null || selectedIndex >= files.length - 1
                   }
-                  title="Next file (Ctrl+↓)"
-                  aria-label="Next file"
+                  title={t("changes.nextFile", "Next file (Ctrl+↓)")}
+                  aria-label={t("changes.nextFileAria", "Next file")}
                 >
                   <ChevronRight />
                 </button>
@@ -167,18 +169,18 @@ export function ChangesDiffModal({
             <button
               className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
               onClick={() => setWordWrap((prev) => !prev)}
-              title={wordWrap ? "Disable word wrap" : "Enable word wrap"}
-              aria-label="Toggle word wrap"
+              title={wordWrap ? t("changes.disableWrap", "Disable word wrap") : t("changes.enableWrap", "Enable word wrap")}
+              aria-label={t("changes.toggleWrap", "Toggle word wrap")}
             >
               <WrapText size={14} />
             </button>
             {onRefresh && (
               <button className="btn btn-sm" onClick={onRefresh}>
                 <RefreshCw size={14} />
-                Refresh
+                {t("actions.refresh", "Refresh")}
               </button>
             )}
-            <button className="modal-close" onClick={onClose} aria-label="Close">
+            <button className="modal-close" onClick={onClose} aria-label={t("actions.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -204,7 +206,7 @@ export function ChangesDiffModal({
                 )}
                 {mergeDetails.mergedAt && (
                   <div className="commit-diff-timestamp">
-                    Merged {new Date(mergeDetails.mergedAt).toLocaleString()}
+                    {t("changes.merged", "Merged {{date}}", { date: new Date(mergeDetails.mergedAt).toLocaleString() })}
                   </div>
                 )}
               </div>
@@ -255,14 +257,14 @@ export function ChangesDiffModal({
                   </div>
                 ) : (
                   <div className="changes-diff-empty">
-                    No diff available for this file.
+                    {t("changes.noDiff", "No diff available for this file.")}
                   </div>
                 )}
               </>
             ) : (
               <div className="changes-diff-empty">
                 <FileCode size={48} opacity={0.3} />
-                <p>Select a file to view its diff</p>
+                <p>{t("changes.selectFile", "Select a file to view its diff")}</p>
               </div>
             )}
           </div>

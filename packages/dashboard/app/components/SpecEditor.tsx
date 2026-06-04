@@ -1,5 +1,6 @@
 import "./SpecEditor.css";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -20,6 +21,7 @@ export function SpecEditor({
   isSaving = false,
   isRequesting = false,
 }: SpecEditorProps) {
+  const { t } = useTranslation("app");
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(content);
   const [feedback, setFeedback] = useState("");
@@ -97,7 +99,7 @@ export function SpecEditor({
             onClick={() => isEditing ? handleCancelEdit() : undefined}
             disabled={!isEditing}
           >
-            View
+            {t("specEditor.view", "View")}
           </button>
           {!readOnly && (
             <button
@@ -105,7 +107,7 @@ export function SpecEditor({
               onClick={handleEnterEditMode}
               disabled={isEditing}
             >
-              Edit
+              {t("specEditor.edit", "Edit")}
             </button>
           )}
         </div>
@@ -116,14 +118,14 @@ export function SpecEditor({
               onClick={handleCancelEdit}
               disabled={isSaving}
             >
-              Cancel
+              {t("actions.cancel", "Cancel")}
             </button>
             <button
               className="btn btn-primary btn-sm"
               onClick={() => void handleSave()}
               disabled={!canSave}
             >
-              {isSaving ? "Saving…" : "Save"}
+              {isSaving ? t("specEditor.saving", "Saving…") : t("actions.save", "Save")}
             </button>
           </div>
         )}
@@ -138,7 +140,7 @@ export function SpecEditor({
             value={editContent}
             onChange={(e) => setEditContent(e.target.value)}
             disabled={isSaving}
-            placeholder="Enter task specification in Markdown..."
+            placeholder={t("specEditor.placeholder", "Enter task specification in Markdown...")}
           />
         ) : content ? (
           <div className="markdown-body" onDoubleClick={handleDoubleClick}>
@@ -147,30 +149,30 @@ export function SpecEditor({
             </ReactMarkdown>
           </div>
         ) : (
-          <div className="spec-editor-empty">(no specification)</div>
+          <div className="spec-editor-empty">{t("specEditor.empty", "(no specification)")}</div>
         )}
       </div>
 
       {/* Keyboard hint for edit mode */}
       {isEditing && (
         <div className="spec-editor-hint">
-          Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> (or <kbd>Cmd</kbd>+<kbd>Enter</kbd>) to save
+          <Trans i18nKey="app:specEditor.keyboardHint" defaults="Press <ctrl>Ctrl</ctrl>+<enter>Enter</enter> (or <cmd>Cmd</cmd>+<enter2>Enter</enter2>) to save" components={{ ctrl: <kbd />, enter: <kbd />, cmd: <kbd />, enter2: <kbd /> }} />
         </div>
       )}
 
       {/* AI Revision Section */}
       {!readOnly && onRequestRevision && (
         <div className="spec-editor-revision">
-          <h4>Ask AI to Revise</h4>
+          <h4>{t("specEditor.revisionTitle", "Ask AI to Revise")}</h4>
           <p className="spec-editor-revision-help">
-            Provide feedback for the AI to improve this specification. The task will move to planning for replanning.
+            {t("specEditor.revisionHelp", "Provide feedback for the AI to improve this specification. The task will move to planning for replanning.")}
           </p>
           <textarea
             ref={feedbackRef}
             className="spec-editor-feedback"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'..."
+            placeholder={t("specEditor.feedbackPlaceholder", "e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'...")}
             disabled={isRequesting}
             rows={4}
             maxLength={2000}
@@ -184,7 +186,7 @@ export function SpecEditor({
               onClick={() => void handleRequestRevision()}
               disabled={!feedback.trim() || isRequesting}
             >
-              {isRequesting ? "Requesting…" : "Request AI Revision"}
+              {isRequesting ? t("specEditor.requesting", "Requesting…") : t("specEditor.requestRevision", "Request AI Revision")}
             </button>
           </div>
         </div>

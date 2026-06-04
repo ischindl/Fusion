@@ -19,6 +19,7 @@ import * as useChatModule from "../../hooks/useChat";
 import type { UseChatReturn, ChatSessionInfo, ChatMessageInfo, ToolCallInfo } from "../../hooks/useChat";
 import * as apiModule from "../../api";
 import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
+import { SWR_CACHE_KEYS, writeCache } from "../../utils/swrCache";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
 
@@ -1903,6 +1904,47 @@ describe("ChatView", () => {
 
       fireEvent.keyDown(textarea, { key: "Enter" });
       await waitFor(() => expect(textarea).toHaveValue("/skill:gamma "));
+    });
+
+    it("keeps the keyboard highlight when revalidation re-delivers an identical skill list", async () => {
+      // Regression: the SWR skills cache re-delivers content-identical lists
+      // with fresh array identities (cache reads re-parse; revalidation
+      // notifies a new array). The highlight reset must key on skill ids, not
+      // array identity, or a revalidation landing mid-navigation wipes the
+      // user's keyboard position (the source of this test family's CI flakes).
+      const skillsList = [
+        createMockSkill({ id: "skill-alpha", name: "alpha", relativePath: "skills/alpha.md" }),
+        createMockSkill({ id: "skill-beta", name: "beta", relativePath: "skills/beta.md" }),
+        createMockSkill({ id: "skill-gamma", name: "gamma", relativePath: "skills/gamma.md" }),
+      ];
+      // Seed the cache so the menu renders before the (deferred) revalidation fetch.
+      writeCache(`${SWR_CACHE_KEYS.DISCOVERED_SKILLS_PREFIX}proj-123`, skillsList);
+      let resolveFetch!: (skills: DiscoveredSkill[]) => void;
+      mockFetchDiscoveredSkills.mockImplementationOnce(
+        () => new Promise<DiscoveredSkill[]>((resolve) => { resolveFetch = resolve; }),
+      );
+      setupMockChat({ activeSession: activeSessionFixture, messages: [] });
+      render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const textarea = screen.getByTestId("chat-input");
+      fireEvent.change(textarea, { target: { value: "/" } });
+      await screen.findByRole("option", { name: /alpha/i });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp" });
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: /gamma/i })).toHaveClass(
+          "chat-skill-menu-item--highlighted",
+        ),
+      );
+
+      // Revalidation lands mid-navigation: identical content, new identity.
+      await act(async () => {
+        resolveFetch(JSON.parse(JSON.stringify(skillsList)) as DiscoveredSkill[]);
+      });
+
+      expect(screen.getByRole("option", { name: /gamma/i })).toHaveClass(
+        "chat-skill-menu-item--highlighted",
+      );
     });
 
     it("supports selecting highlighted skill with Tab", async () => {

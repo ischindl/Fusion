@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { AgentGenerationSpec } from "../api";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import {
@@ -38,6 +39,7 @@ export function AgentGenerationModal({
   onGenerated,
   projectId,
 }: AgentGenerationModalProps) {
+  const { t } = useTranslation("app");
   useMobileScrollLock(isOpen);
   const [roleDescription, setRoleDescription] = useState("");
   const [view, setView] = useState<ViewState>({ type: "input" });
@@ -112,7 +114,7 @@ export function AgentGenerationModal({
         err instanceof Error ? err.message : "Failed to generate agent specification";
       // Handle rate limit errors with user-friendly message
       if (message.includes("429") || message.toLowerCase().includes("rate limit")) {
-        setError("Too many requests. Please wait a moment and try again.");
+        setError(t("agents.generation.rateLimited", "Too many requests. Please wait a moment and try again."));
       } else {
         setError(message);
       }
@@ -172,12 +174,12 @@ export function AgentGenerationModal({
         <div className="agent-dialog-header">
           <span className="agent-dialog-header-title">
             <span className="agent-dialog-header-sparkle">✨</span>
-            Generate Agent
+            {t("agents.generation.title", "Generate Agent")}
           </span>
           <button
             className="modal-close"
             onClick={handleCancel}
-            aria-label="Close"
+            aria-label={t("actions.close", "Close")}
           >
             &times;
           </button>
@@ -190,18 +192,16 @@ export function AgentGenerationModal({
           {view.type === "input" && (
             <div>
               <p className="agent-dialog-info">
-                Describe your agent&apos;s role and the AI will generate a complete
-                specification including system prompt, suggested configuration, and
-                more.
+                {t("agents.generation.info", "Describe your agent's role and the AI will generate a complete specification including system prompt, suggested configuration, and more.")}
               </p>
               <div className="agent-dialog-field">
-                <label htmlFor="agent-role-description">Role Description</label>
+                <label htmlFor="agent-role-description">{t("agents.generation.roleLabel", "Role Description")}</label>
                 <textarea
                   ref={textareaRef}
                   id="agent-role-description"
                   className="input agent-dialog-textarea"
                   rows={4}
-                  placeholder='e.g. "Senior frontend code reviewer who specializes in React accessibility"'
+                  placeholder={t("agents.generation.rolePlaceholder", 'e.g. "Senior frontend code reviewer who specializes in React accessibility"')}
                   value={roleDescription}
                   onChange={(e) => setRoleDescription(e.target.value)}
                   onKeyDown={(e) => {
@@ -217,7 +217,7 @@ export function AgentGenerationModal({
                   id="role-description-hint"
                   className="agent-dialog-hint"
                 >
-                  <span>Describe what your agent should do</span>
+                  <span>{t("agents.generation.roleHint", "Describe what your agent should do")}</span>
                   <span>
                     {roleDescription.length}/{MAX_ROLE_LENGTH}
                   </span>
@@ -230,7 +230,7 @@ export function AgentGenerationModal({
             <div className="agent-dialog-loading-center">
               <div className="agent-dialog-spinner spin" />
               <p className="agent-dialog-loading-text">
-                Generating agent specification...
+                {t("agents.generation.loading", "Generating agent specification...")}
               </p>
             </div>
           )}
@@ -240,7 +240,7 @@ export function AgentGenerationModal({
               <div className="agent-dialog-summary agent-dialog-summary--spaced">
                 <div className="agent-dialog-summary-row">
                   <span className="agent-dialog-summary-row-label agent-dialog-summary-row-label--fixed">
-                    Title
+                    {t("agents.generation.previewTitle", "Title")}
                   </span>
                   <span className="agent-dialog-summary-row-value">
                     {view.spec.icon} {view.spec.title}
@@ -248,19 +248,19 @@ export function AgentGenerationModal({
                 </div>
                 <div className="agent-dialog-summary-row">
                   <span className="agent-dialog-summary-row-label agent-dialog-summary-row-label--fixed">
-                    Role
+                    {t("agents.generation.previewRole", "Role")}
                   </span>
                   <span>{view.spec.role}</span>
                 </div>
                 <div className="agent-dialog-summary-row">
                   <span className="agent-dialog-summary-row-label agent-dialog-summary-row-label--fixed">
-                    Description
+                    {t("agents.generation.previewDescription", "Description")}
                   </span>
                   <span className="agent-dialog-summary-row-value agent-dialog-summary-row-value--body">{view.spec.description}</span>
                 </div>
                 <div className="agent-dialog-summary-row">
                   <span className="agent-dialog-summary-row-label agent-dialog-summary-row-label--fixed">
-                    Thinking
+                    {t("agents.generation.previewThinking", "Thinking")}
                   </span>
                   <span className="agent-dialog-summary-row-value agent-dialog-summary-row-value--capitalize">
                     {view.spec.thinkingLevel}
@@ -268,7 +268,7 @@ export function AgentGenerationModal({
                 </div>
                 <div className="agent-dialog-summary-row">
                   <span className="agent-dialog-summary-row-label agent-dialog-summary-row-label--fixed">
-                    Max Turns
+                    {t("agents.generation.previewMaxTurns", "Max Turns")}
                   </span>
                   <span>{view.spec.maxTurns}</span>
                 </div>
@@ -277,13 +277,13 @@ export function AgentGenerationModal({
               {/* System prompt preview */}
               <div className="agent-dialog-field">
                 <label>
-                  System Prompt
+                  {t("agents.generation.systemPrompt", "System Prompt")}
                   <button
                     type="button"
                     className="agent-dialog-expand-btn"
                     onClick={() => setSystemPromptExpanded(!systemPromptExpanded)}
                   >
-                    {systemPromptExpanded ? "Collapse" : "Expand"}
+                    {systemPromptExpanded ? t("agents.generation.collapse", "Collapse") : t("agents.generation.expand", "Expand")}
                   </button>
                 </label>
                 <div
@@ -303,7 +303,7 @@ export function AgentGenerationModal({
         {/* Footer */}
         <div className="agent-dialog-footer">
           <button className="btn" onClick={handleCancel}>
-            Cancel
+            {t("actions.cancel", "Cancel")}
           </button>
           {view.type === "input" && (
             <button
@@ -311,7 +311,7 @@ export function AgentGenerationModal({
               onClick={() => void handleGenerate()}
               disabled={!canGenerate}
             >
-              Generate
+              {t("agents.generation.generate", "Generate")}
             </button>
           )}
           {view.type === "preview" && (
@@ -320,10 +320,10 @@ export function AgentGenerationModal({
                 className="btn"
                 onClick={() => void handleRegenerate()}
               >
-                Regenerate
+                {t("agents.generation.regenerate", "Regenerate")}
               </button>
               <button className="btn btn-task-create" onClick={handleUseSpec}>
-                Use This
+                {t("agents.generation.useThis", "Use This")}
               </button>
             </>
           )}

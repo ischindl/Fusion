@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import type { FileContentResponse, SaveFileResponse } from "../api";
 import { fetchWorkspaceFileContent, saveWorkspaceFileContent } from "../api";
@@ -28,6 +29,7 @@ export function useProjectFileEditor(
   filePath: string | null,
   enabled: boolean
 ): UseProjectFileEditorReturn {
+  const { t } = useTranslation("app");
   const [content, setContentState] = useState<string>("");
   const [originalContent, setOriginalContent] = useState<string>("");
   const [mtime, setMtime] = useState<string | null>(null);
@@ -66,7 +68,7 @@ export function useProjectFileEditor(
         }
       } catch (err) {
         if (!cancelled) {
-          setError(getErrorMessage(err) || "Failed to load file");
+          setError(getErrorMessage(err) || t("editor.failedToLoadFile", "Failed to load file"));
           setContentState("");
           setOriginalContent("");
           setMtime(null);
@@ -100,7 +102,7 @@ export function useProjectFileEditor(
       setOriginalContent(content);
       setMtime(response.mtime);
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to save file");
+      setError(getErrorMessage(err) || t("editor.failedToSaveFile", "Failed to save file"));
       throw err;
     } finally {
       setSaving(false);

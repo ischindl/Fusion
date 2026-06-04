@@ -2,6 +2,7 @@
 // .schedule-form classes that live in ScriptsModal.css. Both modals share that file.
 import "./ScriptsModal.css";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Zap, Globe, Folder, X } from "lucide-react";
 import type { Routine, RoutineCreateInput } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
@@ -32,6 +33,7 @@ interface ScheduledTasksModalProps {
 }
 
 export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledTasksModalProps) {
+  const { t } = useTranslation("app");
   // Scope state: defaults to "project" when projectId exists, else "global"
   const [activeScope, setActiveScope] = useState<SchedulingScope>(() => projectId ? "project" : "global");
 
@@ -73,7 +75,7 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
         return next;
       });
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load routines", "error");
+      addToast(getErrorMessage(err) || t("schedule.loadRoutinesError", "Failed to load routines"), "error");
     }
   }, [addToast, scopeOptions]);
 
@@ -113,14 +115,14 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
     async (input: RoutineCreateInput) => {
       try {
         await createRoutine(input, scopeOptions);
-        addToast("Routine created", "success");
+        addToast(t("schedule.routineCreated", "Routine created"), "success");
         setRoutineView("list");
         await loadRoutines();
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to create routine", "error");
+        addToast(getErrorMessage(err) || t("schedule.createError", "Failed to create routine"), "error");
       }
     },
-    [addToast, loadRoutines, scopeOptions],
+    [addToast, loadRoutines, scopeOptions, t],
   );
 
   const handleEditRoutine = useCallback((routine: Routine) => {
@@ -133,28 +135,28 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
       if (!editingRoutine) return;
       try {
         await updateRoutine(editingRoutine.id, input, scopeOptions);
-        addToast("Routine updated", "success");
+        addToast(t("schedule.routineUpdated", "Routine updated"), "success");
         setRoutineView("list");
         setEditingRoutine(undefined);
         await loadRoutines();
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to update routine", "error");
+        addToast(getErrorMessage(err) || t("schedule.updateError", "Failed to update routine"), "error");
       }
     },
-    [editingRoutine, addToast, loadRoutines, scopeOptions],
+    [editingRoutine, addToast, loadRoutines, scopeOptions, t],
   );
 
   const handleDeleteRoutine = useCallback(
     async (routine: Routine) => {
       try {
         await deleteRoutine(routine.id, scopeOptions);
-        addToast(`Deleted "${routine.name}"`, "success");
+        addToast(t("schedule.routineDeleted", "Deleted \"{{name}}\"", { name: routine.name }), "success");
         await loadRoutines();
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to delete routine", "error");
+        addToast(getErrorMessage(err) || t("schedule.deleteError", "Failed to delete routine"), "error");
       }
     },
-    [addToast, loadRoutines, scopeOptions],
+    [addToast, loadRoutines, scopeOptions, t],
   );
 
   const handleRunRoutine = useCallback(
@@ -171,18 +173,18 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
           },
         }));
         if (result.success) {
-          addToast(`"${routine.name}" completed successfully`, "success");
+          addToast(t("schedule.routineSuccess", "\"{{name}}\" completed successfully", { name: routine.name }), "success");
         } else {
-          addToast(`"${routine.name}" failed: ${result.error || "Unknown error"}`, "error");
+          addToast(t("schedule.routineFailed", "\"{{name}}\" failed: {{error}}", { name: routine.name, error: result.error || t("schedule.unknownError", "Unknown error") }), "error");
         }
         await loadRoutines();
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to run routine", "error");
+        addToast(getErrorMessage(err) || t("schedule.runError", "Failed to run routine"), "error");
       } finally {
         setRunningRoutineId(null);
       }
     },
-    [addToast, loadRoutines, scopeOptions],
+    [addToast, loadRoutines, scopeOptions, t],
   );
 
   const handleToggleRoutine = useCallback(
@@ -190,15 +192,15 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
       try {
         await updateRoutine(routine.id, { enabled: !routine.enabled }, scopeOptions);
         addToast(
-          `"${routine.name}" ${routine.enabled ? "disabled" : "enabled"}`,
+          t(`schedule.routine${routine.enabled ? "Disabled" : "Enabled"}`, `"{{name}}" ${routine.enabled ? "disabled" : "enabled"}`, { name: routine.name }),
           "success",
         );
         await loadRoutines();
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to toggle routine", "error");
+        addToast(getErrorMessage(err) || t("schedule.toggleError", "Failed to toggle routine"), "error");
       }
     },
-    [addToast, loadRoutines, scopeOptions],
+    [addToast, loadRoutines, scopeOptions, t],
   );
 
   const handleRoutineCancel = useCallback(() => {
@@ -246,14 +248,14 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
       return (
         <div className="routine-empty-state">
           <Zap size={48} strokeWidth={1} />
-          <h4>No automations yet</h4>
-          <p>Create an automation with a schedule, webhook, API, or manual trigger.</p>
+          <h4>{t("schedule.noAutomations", "No automations yet")}</h4>
+          <p>{t("schedule.emptyStateDescription", "Create an automation with a schedule, webhook, API, or manual trigger.")}</p>
           <button
             className="btn btn-primary btn-sm"
             onClick={() => setRoutineView("create")}
           >
             <Plus size={14} />
-            Create your first automation
+            {t("schedule.createFirst", "Create your first automation")}
           </button>
         </div>
       );
@@ -290,40 +292,40 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
         <div className="modal-header">
           <div className="detail-title-row">
             <Zap size={20} className="icon-triage" />
-            <h3 id="schedules-modal-title">Automations</h3>
+            <h3 id="schedules-modal-title">{t("schedule.title", "Automations")}</h3>
           </div>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label={t("common.close", "Close")}>
             <X size={20} />
           </button>
         </div>
 
         <div className="scheduling-toolbar" aria-live="polite">
-          <div className="scheduling-toolbar-left" role="group" aria-label="Scheduling scope">
+          <div className="scheduling-toolbar-left" role="group" aria-label={t("schedule.scopeGroup", "Scheduling scope")}>
             <div className="scheduling-scope-selector">
               <button
                 type="button"
                 className={`scope-btn${activeScope === "global" ? " active" : ""}`}
                 onClick={() => handleScopeSwitch("global")}
                 aria-pressed={activeScope === "global"}
-                title="Global (user-level) automations"
+                title={t("schedule.globalScope", "Global (user-level) automations")}
               >
                 <Globe size={14} />
-                Global
+                {t("schedule.global", "Global")}
               </button>
               <button
                 type="button"
                 className={`scope-btn${activeScope === "project" ? " active" : ""}`}
                 onClick={() => handleScopeSwitch("project")}
                 aria-pressed={activeScope === "project"}
-                title="Project-scoped automations"
+                title={t("schedule.projectScope", "Project-scoped automations")}
               >
                 <Folder size={14} />
-                Project
+                {t("schedule.project", "Project")}
               </button>
             </div>
             <span className="scheduling-count">
               <Zap size={14} />
-              {routines.length} automation{routines.length === 1 ? "" : "s"}
+              {t("schedule.automationCount", "{{count}} automation{{plural}}", { count: routines.length, plural: routines.length === 1 ? "" : "s" })}
             </span>
           </div>
           <div className="scheduling-toolbar-right">
@@ -331,10 +333,10 @@ export function ScheduledTasksModal({ onClose, addToast, projectId }: ScheduledT
               <button
                 className="btn btn-primary btn-sm"
                 onClick={() => setRoutineView("create")}
-                aria-label="Create new automation"
+                aria-label={t("schedule.createNew", "Create new automation")}
               >
                 <Plus size={14} />
-                New Automation
+                {t("schedule.newAutomation", "New Automation")}
               </button>
             )}
           </div>

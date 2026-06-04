@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import "./MemoryView.css";
 import "./SettingsModal.css";
@@ -20,18 +21,6 @@ const CATEGORY_HEADERS: Record<string, string> = {
   "Conventions": "convention",
   "Pitfalls": "pitfall",
   "Context": "context",
-};
-
-const MEMORY_LAYER_NAMES: Record<MemoryFileInfo["layer"], string> = {
-  "long-term": "Long-term",
-  daily: "Daily",
-  dreams: "Dreams",
-};
-
-const MEMORY_LAYER_DESCRIPTIONS: Record<MemoryFileInfo["layer"], string> = {
-  "long-term": "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams.",
-  daily: "Raw daily observations, open loops, and running context for dream processing.",
-  dreams: "Synthesized patterns and open loops promoted from daily memory.",
 };
 
 const MEMORY_FILE_OPTION_LABEL_MAX_CHARS = 72;
@@ -109,33 +98,8 @@ function countTotalInsights(categories: ParsedInsightCategory[]): number {
   return categories.reduce((sum, cat) => sum + cat.items.length, 0);
 }
 
-/** Get backend display name */
-function getBackendDisplayName(backend: string): string {
-  switch (backend) {
-    case "file":
-      return "File (.fusion/memory/, agent/<agent-name>/memory/)";
-    case "readonly":
-      return "Read-Only";
-    case "qmd":
-      return "QMD (Quantized Memory Distillation)";
-    default:
-      return backend;
-  }
-}
-
-/** Get health badge text */
-function getHealthBadgeText(health: "healthy" | "warning" | "issues"): string {
-  switch (health) {
-    case "healthy":
-      return "Healthy";
-    case "warning":
-      return "Warning";
-    case "issues":
-      return "Issues Found";
-  }
-}
-
 export function MemoryView({ projectId, addToast }: MemoryViewProps) {
+  const { t } = useTranslation("app");
   const [activeTab, setActiveTab] = useState<Tab>("working");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [editingInsights, setEditingInsights] = useState(false);
@@ -207,8 +171,12 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
   );
 
   const selectedLayerDescription = selectedMemoryFile
-    ? MEMORY_LAYER_DESCRIPTIONS[selectedMemoryFile.layer]
-    : "Edits the selected memory file.";
+    ? (selectedMemoryFile.layer === "long-term"
+        ? t("memory.layerDescLongTerm", "Curated durable decisions, conventions, constraints, and pitfalls promoted from dreams.")
+        : selectedMemoryFile.layer === "daily"
+          ? t("memory.layerDescDaily", "Raw daily observations, open loops, and running context for dream processing.")
+          : t("memory.layerDescDreams", "Synthesized patterns and open loops promoted from daily memory."))
+    : t("memory.editorDefaultDescription", "Edits the selected memory file.");
 
   // Parse insights content
   const parsedCategories = useMemo(
@@ -243,16 +211,16 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
     try {
       await selectFile(path);
     } catch {
-      addToast("Failed to load memory file", "error");
+      addToast(t("memory.loadFileFailed", "Failed to load memory file"), "error");
     }
   }, [selectFile, addToast]);
 
   const handleSaveSelectedFile = useCallback(async () => {
     try {
       await saveSelectedFile();
-      addToast("Memory saved", "success");
+      addToast(t("memory.memorySaved", "Memory saved"), "success");
     } catch {
-      addToast("Failed to save memory", "error");
+      addToast(t("memory.saveMemoryFailed", "Failed to save memory"), "error");
     }
   }, [saveSelectedFile, addToast]);
 
@@ -284,9 +252,9 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
 
     try {
       await saveMemorySettings(patch);
-      addToast("Memory settings saved", "success");
+      addToast(t("memory.settingsSaved", "Memory settings saved"), "success");
     } catch {
-      addToast("Failed to save memory settings", "error");
+      addToast(t("memory.saveSettingsFailed", "Failed to save memory settings"), "error");
     }
   }, [memorySettingsDirty, memorySettingsDraft, memorySettings, saveMemorySettings, addToast]);
 
@@ -294,11 +262,11 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
     try {
       const result = await installQmdAction();
       addToast(
-        result.qmdAvailable ? "qmd installed successfully" : "qmd install finished, but qmd is still unavailable",
+        result.qmdAvailable ? t("memory.qmdInstallSuccess", "qmd installed successfully") : t("memory.qmdInstallUnavailable", "qmd install finished, but qmd is still unavailable"),
         result.qmdAvailable ? "success" : "info",
       );
     } catch {
-      addToast("Failed to install qmd", "error");
+      addToast(t("memory.installQmdFailed", "Failed to install qmd"), "error");
     }
   }, [installQmdAction, addToast]);
 
@@ -310,11 +278,11 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
       const result = await testRetrieval(memoryTestQuery);
       setMemoryTestResult(result);
       addToast(
-        result.qmdAvailable ? "Memory retrieval test complete" : "qmd is not installed; local fallback was used",
+        result.qmdAvailable ? t("memory.retrievalTestComplete", "Memory retrieval test complete") : t("memory.retrievalTestFallback", "qmd is not installed; local fallback was used"),
         result.qmdAvailable ? "success" : "info",
       );
     } catch {
-      addToast("Failed to test memory retrieval", "error");
+      addToast(t("memory.retrievalTestFailed", "Failed to test memory retrieval"), "error");
     } finally {
       setMemoryTestLoading(false);
     }
@@ -323,10 +291,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
   const handleDreamNow = useCallback(async () => {
     try {
       await triggerDreamNow();
-      addToast("Dream processing completed", "success");
+      addToast(t("memory.dreamProcessingComplete", "Dream processing completed"), "success");
       await reloadMemoryFiles();
     } catch (error) {
-      addToast(error instanceof Error ? error.message : "Failed to run dream processing", "error");
+      addToast(error instanceof Error ? error.message : t("memory.dreamProcessingFailed", "Failed to run dream processing"), "error");
     }
   }, [triggerDreamNow, reloadMemoryFiles, addToast]);
 
@@ -334,9 +302,9 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
   const handleCompactMemory = useCallback(async () => {
     try {
       await compactMemory(selectedFilePath);
-      addToast("Memory file compacted", "success");
+      addToast(t("memory.fileCompacted", "Memory file compacted"), "success");
     } catch {
-      addToast("Failed to compact memory", "error");
+      addToast(t("memory.compactFailed", "Failed to compact memory"), "error");
     }
   }, [compactMemory, selectedFilePath, addToast]);
 
@@ -346,7 +314,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
       const result = await extractInsights();
       addToast(result.summary, "success");
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to extract insights", "error");
+      addToast(err instanceof Error ? err.message : t("memory.extractInsightsFailed", "Failed to extract insights"), "error");
     }
   }, [extractInsights, addToast]);
 
@@ -357,9 +325,9 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
       await saveInsights(insightsEditorContent);
       setEditingInsights(false);
       setInsightsEditorContent(null);
-      addToast("Insights saved", "success");
+      addToast(t("memory.insightsSaved", "Insights saved"), "success");
     } catch {
-      addToast("Failed to save insights", "error");
+      addToast(t("memory.saveInsightsFailed", "Failed to save insights"), "error");
     }
   }, [insightsEditorContent, saveInsights, addToast]);
 
@@ -383,9 +351,9 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
       {/* Header */}
       <div className="memory-view-header">
         <div>
-          <h2>Memory</h2>
+          <h2>{t("memory.title", "Memory")}</h2>
           <p className="memory-view-description">
-            Working memory, long-term insights, and engine status
+            {t("memory.description", "Working memory, long-term insights, and engine status")}
           </p>
         </div>
       </div>
@@ -400,7 +368,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
           onClick={() => setActiveTab("working")}
           data-testid="memory-tab-working"
         >
-          Working Memory
+          {t("memory.tabWorking", "Working Memory")}
         </button>
         <button
           type="button"
@@ -410,7 +378,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
           onClick={() => setActiveTab("insights")}
           data-testid="memory-tab-insights"
         >
-          Insights
+          {t("memory.tabInsights", "Insights")}
         </button>
         <button
           type="button"
@@ -420,7 +388,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
           onClick={() => setActiveTab("engines")}
           data-testid="memory-tab-engines"
         >
-          Engines
+          {t("memory.tabEngines", "Engines")}
         </button>
       </div>
 
@@ -431,20 +399,20 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
           <div className="memory-working-tab">
             {backendStatusResolved && !isWritable && (
               <div className="memory-readonly-banner">
-                This memory backend is read-only. Changes cannot be saved.
+                {t("memory.readOnlyBanner", "This memory backend is read-only. Changes cannot be saved.")}
               </div>
             )}
 
             {memoryFilesLoading || selectedFileLoading ? (
               <div className="memory-empty-state">
                 <Loader2 size={20} className="animate-spin" />
-                <span>Loading memory file…</span>
+                <span>{t("memory.loadingFile", "Loading memory file…")}</span>
               </div>
             ) : (
               <>
                 <div className="memory-editor-section">
                   <div className="form-group">
-                    <label htmlFor="memoryViewFilePath">Memory File</label>
+                    <label htmlFor="memoryViewFilePath">{t("memory.fileLabel", "Memory File")}</label>
                     <select
                       id="memoryViewFilePath"
                       className="select"
@@ -462,23 +430,23 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                     </select>
                     <small>
                       {selectedFileDirty
-                        ? "Save or discard the current edits before switching files."
-                        : "Choose any project memory file to view or edit."}
+                        ? t("memory.fileSwitchDirtyHint", "Save or discard the current edits before switching files.")
+                        : t("memory.fileSwitchHint", "Choose any project memory file to view or edit.")}
                     </small>
                   </div>
 
                   {selectedMemoryFile && (
                     <div className="memory-file-summary">
-                      <span>{MEMORY_LAYER_NAMES[selectedMemoryFile.layer]}</span>
+                      <span>{selectedMemoryFile.layer === "long-term" ? t("memory.layerLongTerm", "Long-term") : selectedMemoryFile.layer === "daily" ? t("memory.layerDaily", "Daily") : t("memory.layerDreams", "Dreams")}</span>
                       <strong>{selectedMemoryFile.path}</strong>
                       <small>
-                        {selectedMemoryFile.size.toLocaleString()} bytes · updated {new Date(selectedMemoryFile.updatedAt).toLocaleString()}
+                        {t("memory.fileSummary", "{{size}} bytes · updated {{updatedAt}}", { size: selectedMemoryFile.size.toLocaleString(), updatedAt: new Date(selectedMemoryFile.updatedAt).toLocaleString() })}
                       </small>
                     </div>
                   )}
 
                   <div className="form-group memory-editor-form-group">
-                    <label>{selectedMemoryFile?.label || "Memory Editor"}</label>
+                    <label>{selectedMemoryFile?.label || t("memory.editorLabel", "Memory Editor")}</label>
                     <small>{selectedLayerDescription}</small>
                     <div className="memory-editor-container">
                       <FileEditor
@@ -492,7 +460,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                 </div>
 
                 <div className="memory-action-bar">
-                  <span className="memory-char-count">{selectedFileContent.length} characters</span>
+                  <span className="memory-char-count">{t("memory.charCount", "{{count}} characters", { count: selectedFileContent.length })}</span>
                   <div className="memory-flex-spacer" />
                   {isWritable && selectedFileContent.length > 0 && (
                     <button
@@ -504,10 +472,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                       {compacting ? (
                         <>
                           <Loader2 size={14} className="animate-spin" />
-                          Compacting…
+                          {t("memory.compacting", "Compacting…")}
                         </>
                       ) : (
-                        "Compact Selected File"
+                        t("memory.compactSelectedFile", "Compact Selected File")
                       )}
                     </button>
                   )}
@@ -521,10 +489,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                       {savingSelectedFile ? (
                         <>
                           <Loader2 size={14} className="animate-spin" />
-                          Saving…
+                          {t("memory.saving", "Saving…")}
                         </>
                       ) : (
-                        "Save"
+                        t("memory.save", "Save")
                       )}
                     </button>
                   )}
@@ -546,15 +514,15 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                           }}
                           disabled={!memorySettingsDraft.memoryEnabled || settingsLoading}
                         />
-                        Process dreams from daily memory
+                        {t("memory.dreamsEnabledLabel", "Process dreams from daily memory")}
                       </label>
-                      <small>Turns daily notes into DREAMS.md and promotes reusable lessons into MEMORY.md.</small>
+                      <small>{t("memory.dreamsEnabledHint", "Turns daily notes into DREAMS.md and promotes reusable lessons into MEMORY.md.")}</small>
                     </div>
 
                     {memorySettingsDraft.memoryEnabled && memorySettingsDraft.memoryDreamsEnabled && (
                       <>
                         <div className="form-group">
-                          <label htmlFor="memoryDreamsSchedule">Dream Schedule</label>
+                          <label htmlFor="memoryDreamsSchedule">{t("memory.dreamsScheduleLabel", "Dream Schedule")}</label>
                           <input
                             id="memoryDreamsSchedule"
                             type="text"
@@ -569,7 +537,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                             placeholder="0 4 * * *"
                             disabled={settingsLoading}
                           />
-                          <small>Cron expression for dream processing.</small>
+                          <small>{t("memory.dreamsScheduleHint", "Cron expression for dream processing.")}</small>
                         </div>
                         <div className="form-group">
                           <button
@@ -581,13 +549,13 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                             {dreamRunning ? (
                               <>
                                 <Loader2 size={14} className="animate-spin" />
-                                Dreaming…
+                                {t("memory.dreaming", "Dreaming…")}
                               </>
                             ) : (
-                              "Dream Now"
+                              t("memory.dreamNow", "Dream Now")
                             )}
                           </button>
-                          <small>Manually trigger dream processing now.</small>
+                          <small>{t("memory.dreamNowHint", "Manually trigger dream processing now.")}</small>
                         </div>
                       </>
                     )}
@@ -608,15 +576,15 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                           }}
                           disabled={!memorySettingsDraft.memoryEnabled || settingsLoading}
                         />
-                        Auto-Summarize Memory
+                        {t("memory.autoSummarizeLabel", "Auto-Summarize Memory")}
                       </label>
-                      <small>Automatically compact memory when it exceeds the threshold on a schedule</small>
+                      <small>{t("memory.autoSummarizeHint", "Automatically compact memory when it exceeds the threshold on a schedule")}</small>
                     </div>
 
                     {memorySettingsDraft.memoryEnabled && memorySettingsDraft.memoryAutoSummarizeEnabled && (
                       <>
                         <div className="form-group">
-                          <label htmlFor="memoryAutoSummarizeThresholdChars">Compaction Threshold (chars)</label>
+                          <label htmlFor="memoryAutoSummarizeThresholdChars">{t("memory.compactionThresholdLabel", "Compaction Threshold (chars)")}</label>
                           <input
                             id="memoryAutoSummarizeThresholdChars"
                             type="number"
@@ -631,10 +599,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                             min={1000}
                             disabled={settingsLoading}
                           />
-                          <small>Memory will be compacted when it exceeds this character count</small>
+                          <small>{t("memory.compactionThresholdHint", "Memory will be compacted when it exceeds this character count")}</small>
                         </div>
                         <div className="form-group">
-                          <label htmlFor="memoryAutoSummarizeSchedule">Schedule (cron)</label>
+                          <label htmlFor="memoryAutoSummarizeSchedule">{t("memory.autoSummarizeScheduleLabel", "Schedule (cron)")}</label>
                           <input
                             id="memoryAutoSummarizeSchedule"
                             type="text"
@@ -649,7 +617,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                             placeholder="0 3 * * *"
                             disabled={settingsLoading}
                           />
-                          <small>Cron expression for auto-summarize schedule (default: daily at 3 AM)</small>
+                          <small>{t("memory.autoSummarizeScheduleHint", "Cron expression for auto-summarize schedule (default: daily at 3 AM)")}</small>
                         </div>
                       </>
                     )}
@@ -657,7 +625,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
 
                   {!memorySettingsDraft.memoryEnabled && (
                     <div className="settings-empty-state memory-status-message">
-                      Memory is currently disabled. Enable memory tools in Settings to edit these automations.
+                      {t("memory.disabledMessage", "Memory is currently disabled. Enable memory tools in Settings to edit these automations.")}
                     </div>
                   )}
 
@@ -672,10 +640,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                         {savingMemorySettings ? (
                           <>
                             <Loader2 size={14} className="animate-spin" />
-                            Saving…
+                            {t("memory.saving", "Saving…")}
                           </>
                         ) : (
-                          "Save Settings"
+                          t("memory.saveSettings", "Save Settings")
                         )}
                       </button>
                     </div>
@@ -692,7 +660,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
             {insightsLoading ? (
               <div className="memory-empty-state">
                 <Loader2 size={20} className="animate-spin" />
-                <span>Loading insights…</span>
+                <span>{t("memory.loadingInsights", "Loading insights…")}</span>
               </div>
             ) : editingInsights ? (
               // Raw editor mode
@@ -711,24 +679,23 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                     className="btn btn-secondary btn-sm"
                     onClick={handleCancelEditingInsights}
                   >
-                    Cancel
+                    {t("memory.cancel", "Cancel")}
                   </button>
                   <button
                     type="button"
                     className="btn btn-primary btn-sm"
                     onClick={handleSaveInsights}
                   >
-                    Save Insights
+                    {t("memory.saveInsights", "Save Insights")}
                   </button>
                 </div>
               </div>
             ) : !insightsExists || parsedCategories.length === 0 ? (
               // Empty state
               <div className="memory-empty-state">
-                <p>No insights extracted yet.</p>
+                <p>{t("memory.noInsights", "No insights extracted yet.")}</p>
                 <p>
-                  Insights are automatically extracted from working memory.
-                  Click &quot;Extract Now&quot; to trigger extraction manually.
+                  {t("memory.noInsightsHint", "Insights are automatically extracted from working memory. Click \"Extract Now\" to trigger extraction manually.")}
                 </p>
                 <button
                   type="button"
@@ -739,10 +706,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                   {extracting ? (
                     <>
                       <Loader2 size={14} className="animate-spin" />
-                      Extracting…
+                      {t("memory.extracting", "Extracting…")}
                     </>
                   ) : (
-                    "Extract Now"
+                    t("memory.extractNow", "Extract Now")
                   )}
                 </button>
               </div>
@@ -752,16 +719,16 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                 <div className="memory-stats-row">
                   <div className="memory-stat-card">
                     <div className="memory-stat-value">{totalInsights}</div>
-                    <div className="memory-stat-label">Total Insights</div>
+                    <div className="memory-stat-label">{t("memory.totalInsights", "Total Insights")}</div>
                   </div>
                   <div className="memory-stat-card">
                     <div className="memory-stat-value">{parsedCategories.length}</div>
-                    <div className="memory-stat-label">Categories</div>
+                    <div className="memory-stat-label">{t("memory.categories", "Categories")}</div>
                   </div>
                   {lastUpdated && (
                     <div className="memory-stat-card">
                       <div className="memory-stat-value memory-stat-value--updated">{lastUpdated}</div>
-                      <div className="memory-stat-label">Last Updated</div>
+                      <div className="memory-stat-label">{t("memory.lastUpdated", "Last Updated")}</div>
                     </div>
                   )}
                 </div>
@@ -776,10 +743,10 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                     {extracting ? (
                       <>
                         <Loader2 size={14} className="animate-spin" />
-                        Extracting…
+                        {t("memory.extracting", "Extracting…")}
                       </>
                     ) : (
-                      "Extract Now"
+                      t("memory.extractNow", "Extract Now")
                     )}
                   </button>
                   <button
@@ -787,7 +754,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                     className="btn btn-secondary btn-sm"
                     onClick={handleStartEditingInsights}
                   >
-                    Edit Raw
+                    {t("memory.editRaw", "Edit Raw")}
                   </button>
                 </div>
 
@@ -837,22 +804,22 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
             {backendLoading || auditLoading ? (
               <div className="memory-empty-state">
                 <Loader2 size={20} className="animate-spin" />
-                <span>Loading engine status…</span>
+                <span>{t("memory.loadingEngineStatus", "Loading engine status…")}</span>
               </div>
             ) : (
               <>
                 {/* QMD Integration Card */}
                 <div className="memory-engine-card memory-qmd-card">
-                  <h3>QMD Integration</h3>
+                  <h3>{t("memory.qmdIntegrationTitle", "QMD Integration")}</h3>
                   {backendStatus?.qmdAvailable === true ? (
                     <div className="memory-engine-status">
-                      <span className="memory-health-badge memory-health-badge--healthy">Installed</span>
-                      <span className="memory-char-count">qmd is available on PATH.</span>
+                      <span className="memory-health-badge memory-health-badge--healthy">{t("memory.qmdInstalled", "Installed")}</span>
+                      <span className="memory-char-count">{t("memory.qmdAvailableOnPath", "qmd is available on PATH.")}</span>
                     </div>
                   ) : backendStatus?.qmdAvailable === false ? (
                     <div className="settings-empty-state memory-status-message">
                       <span>
-                        qmd is not installed. Search will use local files. Install indexed retrieval: <code>{backendStatus.qmdInstallCommand || "bun install -g @tobilu/qmd"}</code>
+                        {t("memory.qmdNotInstalled", "qmd is not installed. Search will use local files. Install indexed retrieval:")} <code>{backendStatus.qmdInstallCommand || "bun install -g @tobilu/qmd"}</code>
                       </span>
                       <button
                         type="button"
@@ -860,41 +827,41 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                         onClick={handleInstallQmd}
                         disabled={installingQmd}
                       >
-                        {installingQmd ? "Installing…" : "Install qmd"}
+                        {installingQmd ? t("memory.installing", "Installing…") : t("memory.installQmd", "Install qmd")}
                       </button>
                     </div>
                   ) : (
                     <div className="memory-engine-status">
-                      <span className="memory-health-badge">Checking</span>
-                      <span className="memory-char-count">Checking qmd availability…</span>
+                      <span className="memory-health-badge">{t("memory.qmdChecking", "Checking")}</span>
+                      <span className="memory-char-count">{t("memory.qmdCheckingAvailability", "Checking qmd availability…")}</span>
                     </div>
                   )}
                   <div className="memory-capability-row">
                     {backendStatus?.capabilities?.readable && (
-                      <span className="memory-capability-badge">Readable</span>
+                      <span className="memory-capability-badge">{t("memory.capReadable", "Readable")}</span>
                     )}
                     {backendStatus?.capabilities?.writable && (
-                      <span className="memory-capability-badge">Writable</span>
+                      <span className="memory-capability-badge">{t("memory.capWritable", "Writable")}</span>
                     )}
                     {backendStatus?.capabilities?.supportsAtomicWrite && (
-                      <span className="memory-capability-badge">Atomic Writes</span>
+                      <span className="memory-capability-badge">{t("memory.capAtomicWrites", "Atomic Writes")}</span>
                     )}
                     {backendStatus?.capabilities?.persistent && (
-                      <span className="memory-capability-badge">Persistent</span>
+                      <span className="memory-capability-badge">{t("memory.capPersistent", "Persistent")}</span>
                     )}
                   </div>
                 </div>
 
                 {/* Memory Retrieval Test Card */}
                 <div className="memory-engine-card memory-retrieval-card">
-                  <h3>Test Memory Search</h3>
+                  <h3>{t("memory.testMemorySearchTitle", "Test Memory Search")}</h3>
                   <div className="memory-retrieval-input-row">
                     <input
                       type="text"
                       className="input"
                       value={memoryTestQuery}
                       onChange={(event) => setMemoryTestQuery(event.target.value)}
-                      placeholder="Search memory with qmd"
+                      placeholder={t("memory.searchPlaceholder", "Search memory with qmd")}
                     />
                     <button
                       type="button"
@@ -902,21 +869,20 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                       onClick={handleTestRetrieval}
                       disabled={memoryTestLoading}
                     >
-                      {memoryTestLoading ? "Testing…" : "Test Retrieval"}
+                      {memoryTestLoading ? t("memory.testing", "Testing…") : t("memory.testRetrieval", "Test Retrieval")}
                     </button>
                   </div>
                   <small className="settings-muted">
-                    Runs the same qmd-backed memory_search path agents use.
+                    {t("memory.testSearchHint", "Runs the same qmd-backed memory_search path agents use.")}
                   </small>
 
                   {memoryTestResult && (
                     <div className="memory-test-result">
                       <strong>
-                        {memoryTestResult.results.length} result{memoryTestResult.results.length === 1 ? "" : "s"}
-                        {" "}for "{memoryTestResult.query}"
+                        {t("memory.testResultCount", "{{count}} result for \"{{query}}\"", { count: memoryTestResult.results.length, query: memoryTestResult.query, defaultValue_one: "{{count}} result for \"{{query}}\"", defaultValue_other: "{{count}} results for \"{{query}}\"" })}
                       </strong>
                       <small>
-                        qmd {memoryTestResult.qmdAvailable ? "available" : "missing"} · {memoryTestResult.usedFallback ? "local fallback used" : "qmd path used"}
+                        {t("memory.testResultStatus", "qmd {{qmdStatus}} · {{fallbackStatus}}", { qmdStatus: memoryTestResult.qmdAvailable ? t("memory.qmdStatusAvailable", "available") : t("memory.qmdStatusMissing", "missing"), fallbackStatus: memoryTestResult.usedFallback ? t("memory.localFallbackUsed", "local fallback used") : t("memory.qmdPathUsed", "qmd path used") })}
                       </small>
                       {memoryTestResult.results.length > 0 ? (
                         <ul>
@@ -928,7 +894,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                           ))}
                         </ul>
                       ) : (
-                        <small>No matching memory found.</small>
+                        <small>{t("memory.noMatchingMemory", "No matching memory found.")}</small>
                       )}
                     </div>
                   )}
@@ -936,22 +902,30 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
 
                 {/* Backend Card */}
                 <div className="memory-engine-card">
-                  <h3>Current Backend</h3>
+                  <h3>{t("memory.currentBackendTitle", "Current Backend")}</h3>
                   <div className="memory-engine-status">
-                    <span className="memory-emphasis-text">{getBackendDisplayName(backendStatus?.currentBackend ?? "unknown")}</span>
+                    <span className="memory-emphasis-text">{
+                      backendStatus?.currentBackend === "file"
+                        ? t("memory.backendFile", "File (.fusion/memory/, agent/<agent-name>/memory/)")
+                        : backendStatus?.currentBackend === "readonly"
+                          ? t("memory.backendReadonly", "Read-Only")
+                          : backendStatus?.currentBackend === "qmd"
+                            ? t("memory.backendQmd", "QMD (Quantized Memory Distillation)")
+                            : (backendStatus?.currentBackend ?? "unknown")
+                    }</span>
                   </div>
                   <div className="memory-capability-row">
                     {backendStatus?.capabilities?.readable && (
-                      <span className="memory-capability-badge">Readable</span>
+                      <span className="memory-capability-badge">{t("memory.capReadable", "Readable")}</span>
                     )}
                     {backendStatus?.capabilities?.writable && (
-                      <span className="memory-capability-badge">Writable</span>
+                      <span className="memory-capability-badge">{t("memory.capWritable", "Writable")}</span>
                     )}
                     {backendStatus?.capabilities?.supportsAtomicWrite && (
-                      <span className="memory-capability-badge">Atomic Writes</span>
+                      <span className="memory-capability-badge">{t("memory.capAtomicWrites", "Atomic Writes")}</span>
                     )}
                     {backendStatus?.capabilities?.persistent && (
-                      <span className="memory-capability-badge">Persistent</span>
+                      <span className="memory-capability-badge">{t("memory.capPersistent", "Persistent")}</span>
                     )}
                   </div>
                 </div>
@@ -960,50 +934,50 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                 {auditReport && (
                   <div className="memory-engine-card">
                     <div className="memory-health-header">
-                      <h3>Health Status</h3>
+                      <h3>{t("memory.healthStatusTitle", "Health Status")}</h3>
                       <span className={`memory-health-badge memory-health-badge--${auditReport.health}`}>
-                        {getHealthBadgeText(auditReport.health)}
+                        {auditReport.health === "healthy" ? t("memory.healthHealthy", "Healthy") : auditReport.health === "warning" ? t("memory.healthWarning", "Warning") : t("memory.healthIssues", "Issues Found")}
                       </span>
                     </div>
 
                     <div className="memory-health-grid">
                       <div>
-                        <div className="memory-health-label">Working Memory</div>
-                        <div className="memory-emphasis-text">{auditReport.workingMemory.size} chars</div>
+                        <div className="memory-health-label">{t("memory.workingMemoryLabel", "Working Memory")}</div>
+                        <div className="memory-emphasis-text">{t("memory.sizeChars", "{{size}} chars", { size: auditReport.workingMemory.size })}</div>
                         <div className="memory-health-detail">
-                          {auditReport.workingMemory.sectionCount} sections
+                          {t("memory.sectionCount", "{{count}} sections", { count: auditReport.workingMemory.sectionCount })}
                         </div>
                       </div>
                       <div>
-                        <div className="memory-health-label">Insights Memory</div>
-                        <div className="memory-emphasis-text">{auditReport.insightsMemory.size} chars</div>
+                        <div className="memory-health-label">{t("memory.insightsMemoryLabel", "Insights Memory")}</div>
+                        <div className="memory-emphasis-text">{t("memory.sizeChars", "{{size}} chars", { size: auditReport.insightsMemory.size })}</div>
                         <div className="memory-health-detail">
-                          {auditReport.insightsMemory.insightCount} insights
+                          {t("memory.insightCount", "{{count}} insights", { count: auditReport.insightsMemory.insightCount })}
                         </div>
                       </div>
                     </div>
 
                     <div className="memory-health-section">
-                      <div className="memory-health-label">Last Extraction</div>
+                      <div className="memory-health-label">{t("memory.lastExtractionLabel", "Last Extraction")}</div>
                       <div className="memory-emphasis-text">
                         {auditReport.extraction.success ? (
-                          <span className="memory-status-text memory-status-text--success">Success</span>
+                          <span className="memory-status-text memory-status-text--success">{t("memory.extractionSuccess", "Success")}</span>
                         ) : (
-                          <span className="memory-status-text memory-status-text--error">Failed</span>
+                          <span className="memory-status-text memory-status-text--error">{t("memory.extractionFailed", "Failed")}</span>
                         )}
                       </div>
                       <div className="memory-health-detail">
-                        {auditReport.extraction.summary || `${auditReport.extraction.insightCount} insights extracted`}
+                        {auditReport.extraction.summary || t("memory.insightsExtracted", "{{count}} insights extracted", { count: auditReport.extraction.insightCount })}
                       </div>
                     </div>
 
                     <div className="memory-health-section">
-                      <div className="memory-health-label">Pruning</div>
+                      <div className="memory-health-label">{t("memory.pruningLabel", "Pruning")}</div>
                       <div className="memory-emphasis-text">
                         {auditReport.pruning.applied ? (
-                          <span className="memory-status-text memory-status-text--warning">Applied</span>
+                          <span className="memory-status-text memory-status-text--warning">{t("memory.pruningApplied", "Applied")}</span>
                         ) : (
-                          <span className="memory-status-text memory-status-text--muted">Not needed</span>
+                          <span className="memory-status-text memory-status-text--muted">{t("memory.pruningNotNeeded", "Not needed")}</span>
                         )}
                       </div>
                       {auditReport.pruning.applied && (
@@ -1018,7 +992,7 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                 {/* Audit Checks */}
                 {auditReport && auditReport.checks.length > 0 && (
                   <div className="memory-engine-card">
-                    <h3>Audit Checks</h3>
+                    <h3>{t("memory.auditChecksTitle", "Audit Checks")}</h3>
                     <div>
                       {auditReport.checks.map((check) => (
                         <div key={check.id} className="memory-audit-check">
@@ -1042,23 +1016,23 @@ export function MemoryView({ projectId, addToast }: MemoryViewProps) {
                     className="btn btn-secondary btn-sm"
                     onClick={() => refreshAudit()}
                   >
-                    Run Audit
+                    {t("memory.runAudit", "Run Audit")}
                   </button>
                 </div>
 
                 {/* Note about Settings */}
                 <div className="memory-settings-note">
-                  <span>Note: Change backend type in</span>
+                  <span>{t("memory.settingsNote", "Note: Change backend type in")}</span>
                   <button
                     type="button"
                     className="memory-settings-note-button"
                     onClick={() => {
                       // This would open the settings modal with memory section focused
                       // For now, just add a toast hint
-                      addToast("Open Settings → Memory to change backend type", "info");
+                      addToast(t("memory.settingsNoteToast", "Open Settings → Memory to change backend type"), "info");
                     }}
                   >
-                    Settings → Memory
+                    {t("memory.settingsNoteLink", "Settings → Memory")}
                   </button>
                 </div>
               </>

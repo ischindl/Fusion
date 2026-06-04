@@ -1,4 +1,6 @@
 import "./AgentsView.css";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, useLayoutEffect, lazy, Suspense, type CSSProperties, type ReactNode, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Plus, Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Move, Info } from "lucide-react";
 import type { Agent, AgentCapability, AgentOnboardingSummary, AgentState, OrgTreeNode } from "../api";
@@ -42,15 +44,17 @@ export interface AgentsViewProps {
   agentOnboardingEnabled?: boolean;
 }
 
-const AGENT_ROLES: { value: AgentCapability; label: string; icon: string }[] = [
-  { value: "triage", label: "Triage", icon: "⊕" },
-  { value: "executor", label: "Executor", icon: "▶" },
-  { value: "reviewer", label: "Reviewer", icon: "⊙" },
-  { value: "merger", label: "Merger", icon: "⊞" },
-  { value: "scheduler", label: "Scheduler", icon: "◷" },
-  { value: "engineer", label: "Engineer", icon: "⎔" },
-  { value: "custom", label: "Custom", icon: "✦" },
-];
+function getAgentRoles(t: TFunction<"app">): { value: AgentCapability; label: string; icon: string }[] {
+  return [
+    { value: "triage", label: t("agents.roleTriage", "Triage"), icon: "⊕" },
+    { value: "executor", label: t("agents.roleExecutor", "Executor"), icon: "▶" },
+    { value: "reviewer", label: t("agents.roleReviewer", "Reviewer"), icon: "⊙" },
+    { value: "merger", label: t("agents.roleMerger", "Merger"), icon: "⊞" },
+    { value: "scheduler", label: t("agents.roleScheduler", "Scheduler"), icon: "◷" },
+    { value: "engineer", label: t("agents.roleEngineer", "Engineer"), icon: "⎔" },
+    { value: "custom", label: t("agents.roleCustom", "Custom"), icon: "✦" },
+  ];
+}
 
 const HEARTBEAT_MULTIPLIER_PRESETS = [0.1, 0.25, 0.5, 1, 2, 3, 5, 10] as const;
 
@@ -103,9 +107,9 @@ function getOrgChartLeafCount(node: OrgTreeNode): number {
   return node.children.reduce((sum, child) => sum + getOrgChartLeafCount(child), 0);
 }
 
-function getHealthSummary(agent: Agent, health: AgentHealthStatus): { title: string | undefined; label: string | null } {
+function getHealthSummary(agent: Agent, health: AgentHealthStatus, t: TFunction<"app">): { title: string | undefined; label: string | null } {
   if (agent.state === "error") {
-    return { title: undefined, label: "Error" };
+    return { title: undefined, label: t("agents.healthError", "Error") };
   }
 
   return {
@@ -127,9 +131,10 @@ type OrgChartNodeProps = {
 };
 
 function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, registerNodeElement, linksRef }: OrgChartNodeProps) {
+  const { t } = useTranslation("app");
   const { agent, children } = node;
   const health = getHealthStatus(agent);
-  const healthSummary = getHealthSummary(agent, health);
+  const healthSummary = getHealthSummary(agent, health, t);
   const stateBadgeClass = getStateBadgeClass(agent.state);
   const stateNodeClass = getStateCardClass("org-chart-node-card", agent.state);
   const subtreeLeafCount = getOrgChartLeafCount(node);
@@ -166,7 +171,7 @@ function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, regist
         </div>
       </div>
       {children.length > 0 && (
-        <div className="org-chart-children" role="group" aria-label={`${agent.name} employees`}>
+        <div className="org-chart-children" role="group" aria-label={t("agents.orgChartEmployees", "{{name}} employees", { name: agent.name })}>
           {children.map((child) => {
             linksRef.current.push({ parentId: agent.id, childId: child.agent.id });
             return (
@@ -262,6 +267,8 @@ function OrgChartConnectors({
 }
 
 export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardingEnabled = false }: AgentsViewProps) {
+  const { t } = useTranslation("app");
+  const agentRoles = getAgentRoles(t);
   const [showSystemAgents, setShowSystemAgents] = useState(false);
   const viewportMode = useViewportMode();
   const isMobileViewport = viewportMode === "mobile";
@@ -379,9 +386,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
     setIsSavingMultiplier(true);
     try {
       await updateSettings({ heartbeatMultiplier: clampedValue }, projectId);
-      addToast(`Heartbeat speed set to ×${clampedValue.toFixed(1)}`, "success");
+      addToast(t("agents.heartbeatSpeedSet", "Heartbeat speed set to ×{{value}}", { value: clampedValue.toFixed(1) }), "success");
     } catch (err) {
-      addToast(`Failed to save heartbeat multiplier: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatSpeedSaveFailed", "Failed to save heartbeat multiplier: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       if (isMountedRef.current) {
         setIsSavingMultiplier(false);
@@ -472,7 +479,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       })
       .catch((err) => {
         if (!cancelled) {
-          addToast(`Failed to load org chart: ${getErrorMessage(err)}`, "error");
+          addToast(t("agents.orgChartLoadFailed", "Failed to load org chart: {{error}}", { error: getErrorMessage(err) }), "error");
           setOrgTree([]);
         }
       })
@@ -518,7 +525,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         if (cancelled) return;
         setBulkPauseEligibleCount(0);
         setBulkResumeEligibleCount(0);
-        addToast(`Failed to load bulk agent actions: ${getErrorMessage(err)}`, "error");
+        addToast(t("agents.bulkActionsLoadFailed", "Failed to load bulk agent actions: {{error}}", { error: getErrorMessage(err) }), "error");
       })
       .finally(() => {
         if (!cancelled) {
@@ -567,13 +574,20 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       const skippedCount = nonEphemeralAgents.length - eligibleAgents.length;
 
       if (eligibleAgents.length === 0) {
-        addToast(`No agents eligible to ${targetState === "paused" ? "pause" : "resume"}`, "error");
+        addToast(
+          targetState === "paused"
+            ? t("agents.noAgentsToPause", "No agents eligible to pause")
+            : t("agents.noAgentsToResume", "No agents eligible to resume"),
+          "error",
+        );
         return;
       }
 
       const confirmed = await confirm({
-        title: targetState === "paused" ? "Pause All Agents" : "Resume All Agents",
-        message: `${targetState === "paused" ? "Pause" : "Resume"} ${eligibleAgents.length} agent${eligibleAgents.length === 1 ? "" : "s"} in this project?`,
+        title: targetState === "paused" ? t("agents.pauseAllTitle", "Pause All Agents") : t("agents.resumeAllTitle", "Resume All Agents"),
+        message: targetState === "paused"
+          ? t("agents.pauseAllConfirm", { count: eligibleAgents.length, defaultValue_one: "Pause {{count}} agent in this project?", defaultValue_other: "Pause {{count}} agents in this project?" })
+          : t("agents.resumeAllConfirm", { count: eligibleAgents.length, defaultValue_one: "Resume {{count}} agent in this project?", defaultValue_other: "Resume {{count}} agents in this project?" }),
         danger: targetState === "paused",
       });
       if (!confirmed) return;
@@ -586,7 +600,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         .filter((entry): entry is { result: PromiseRejectedResult; agent: Agent } => entry.result.status === "rejected");
       const successCount = results.length - failedResults.length;
       const failureCount = failedResults.length;
-      const baseSummary = `${targetState === "paused" ? "Paused" : "Resumed"} ${successCount} agent${successCount === 1 ? "" : "s"}; skipped ${skippedCount}`;
+      const baseSummary = targetState === "paused"
+        ? t("agents.pausedSummary", { count: successCount, skipped: skippedCount, defaultValue_one: "Paused {{count}} agent; skipped {{skipped}}", defaultValue_other: "Paused {{count}} agents; skipped {{skipped}}" })
+        : t("agents.resumedSummary", { count: successCount, skipped: skippedCount, defaultValue_one: "Resumed {{count}} agent; skipped {{skipped}}", defaultValue_other: "Resumed {{count}} agents; skipped {{skipped}}" });
 
       if (failureCount > 0) {
         const failureSummary = failedResults
@@ -600,7 +616,12 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
       await loadAgents();
     } catch (err) {
-      addToast(`Failed to ${targetState === "paused" ? "pause" : "resume"} agents: ${getErrorMessage(err)}`, "error");
+      addToast(
+        targetState === "paused"
+          ? t("agents.pauseAgentsFailed", "Failed to pause agents: {{error}}", { error: getErrorMessage(err) })
+          : t("agents.resumeAgentsFailed", "Failed to resume agents: {{error}}", { error: getErrorMessage(err) }),
+        "error",
+      );
     } finally {
       setIsBulkActionRunning(false);
     }
@@ -618,7 +639,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
     try {
       await updateAgentState(agentId, newState, projectId);
-      addToast(`Agent state updated to ${newState}`, "success");
+      addToast(t("agents.stateUpdated", "Agent state updated to {{state}}", { state: newState }), "success");
       await loadAgents();
       setOptimisticStateOverrides((prev) => {
         const next = new Map(prev);
@@ -631,7 +652,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         next.delete(agentId);
         return next;
       });
-      addToast(`Failed to update state: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.stateUpdateFailed", "Failed to update state: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setTransitioningAgentIds((prev) => {
         const next = new Set(prev);
@@ -643,17 +664,17 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
   const handleDelete = async (agentId: string, agentName: string) => {
     const shouldDelete = await confirm({
-      title: "Delete Agent",
-      message: `Delete agent "${agentName}"? This cannot be undone.`,
+      title: t("agents.deleteTitle", "Delete Agent"),
+      message: t("agents.deleteConfirm", "Delete agent \"{{name}}\"? This cannot be undone.", { name: agentName }),
       danger: true,
     });
     if (!shouldDelete) return;
     try {
       await deleteAgent(agentId, projectId);
-      addToast(`Agent "${agentName}" deleted`, "success");
+      addToast(t("agents.deleted", "Agent \"{{name}}\" deleted", { name: agentName }), "success");
       await loadAgents();
     } catch (err) {
-      addToast(`Failed to delete agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.deleteFailed", "Failed to delete agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -669,11 +690,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
     try {
       await updateAgent(agentId, { role: newRole }, projectId);
-      addToast(`Agent role updated to ${AGENT_ROLES.find(r => r.value === newRole)?.label ?? newRole}`, "success");
+      addToast(t("agents.roleUpdated", "Agent role updated to {{role}}", { role: agentRoles.find(r => r.value === newRole)?.label ?? newRole }), "success");
       setEditingRoleForAgent(null);
       void loadAgents();
     } catch (err) {
-      addToast(`Failed to update role: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.roleUpdateFailed", "Failed to update role: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -706,10 +727,10 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         },
         projectId,
       );
-      addToast(`Heartbeat interval updated to ${formatHeartbeatInterval(newIntervalMs)} for ${agent.name}`, "success");
+      addToast(t("agents.heartbeatIntervalUpdated", "Heartbeat interval updated to {{interval}} for {{name}}", { interval: formatHeartbeatInterval(newIntervalMs), name: agent.name }), "success");
       void loadAgents();
     } catch (err) {
-      addToast(`Failed to update heartbeat interval: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatIntervalUpdateFailed", "Failed to update heartbeat interval: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setUpdatingHeartbeatAgentId(null);
     }
@@ -729,20 +750,20 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
     // Validate: empty value
     if (inputValue.trim() === "") {
-      addToast("Please enter a heartbeat interval in minutes", "error");
+      addToast(t("agents.heartbeatEnterMinutes", "Please enter a heartbeat interval in minutes"), "error");
       return;
     }
 
     // Validate: non-numeric value
     const minutes = Number(inputValue);
     if (isNaN(minutes)) {
-      addToast("Heartbeat interval must be a valid number", "error");
+      addToast(t("agents.heartbeatMustBeNumber", "Heartbeat interval must be a valid number"), "error");
       return;
     }
 
     // Validate: zero or negative
     if (minutes <= 0) {
-      addToast("Heartbeat interval must be greater than 0", "error");
+      addToast(t("agents.heartbeatMustBePositive", "Heartbeat interval must be greater than 0"), "error");
       return;
     }
 
@@ -760,7 +781,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
           },
           projectId,
         );
-        addToast(`Heartbeat interval set to 5 minutes (minimum). ${minutes} minute${minutes !== 1 ? "s" : ""} was below the 5-minute minimum.`, "success");
+        addToast(t("agents.heartbeatClampedToMin", { count: minutes, defaultValue_one: "Heartbeat interval set to 5 minutes (minimum). {{count}} minute was below the 5-minute minimum.", defaultValue_other: "Heartbeat interval set to 5 minutes (minimum). {{count}} minutes was below the 5-minute minimum." }), "success");
         setCustomHeartbeatAgentId(null);
         setCustomHeartbeatMinutes((prev) => {
           const next = { ...prev };
@@ -769,7 +790,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         });
         void loadAgents();
       } catch (err) {
-        addToast(`Failed to update heartbeat interval: ${getErrorMessage(err)}`, "error");
+        addToast(t("agents.heartbeatIntervalUpdateFailed", "Failed to update heartbeat interval: {{error}}", { error: getErrorMessage(err) }), "error");
       } finally {
         setUpdatingHeartbeatAgentId(null);
       }
@@ -790,7 +811,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         },
         projectId,
       );
-      addToast(`Heartbeat interval updated to ${formatHeartbeatInterval(intervalMs)} for ${agent.name}`, "success");
+      addToast(t("agents.heartbeatIntervalUpdated", "Heartbeat interval updated to {{interval}} for {{name}}", { interval: formatHeartbeatInterval(intervalMs), name: agent.name }), "success");
       setCustomHeartbeatAgentId(null);
       setCustomHeartbeatMinutes((prev) => {
         const next = { ...prev };
@@ -799,7 +820,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       });
       void loadAgents();
     } catch (err) {
-      addToast(`Failed to update heartbeat interval: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatIntervalUpdateFailed", "Failed to update heartbeat interval: {{error}}", { error: getErrorMessage(err) }), "error");
     } finally {
       setUpdatingHeartbeatAgentId(null);
     }
@@ -867,7 +888,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
     });
     try {
       await startAgentRun(agentId, projectId, { source: "on_demand", triggerDetail: "Triggered from dashboard" });
-      addToast(`Heartbeat run started for ${agentName}`, "success");
+      addToast(t("agents.heartbeatRunStarted", "Heartbeat run started for {{name}}", { name: agentName }), "success");
       await loadAgents();
       setOptimisticStateOverrides((prev) => {
         const next = new Map(prev);
@@ -880,7 +901,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         next.delete(agentId);
         return next;
       });
-      addToast(`Failed to start heartbeat run: ${getErrorMessage(err)}`, "error");
+      addToast(t("agents.heartbeatRunFailed", "Failed to start heartbeat run: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   };
 
@@ -949,7 +970,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
     }
   }, [handleCloseDetail, isMobileViewport, selectedAgentId]);
 
-  const getRoleLabel = (role: AgentCapability) => AGENT_ROLES.find(r => r.value === role)?.label ?? role;
+  const getRoleLabel = (role: AgentCapability) => agentRoles.find(r => r.value === role)?.label ?? role;
   const orgChartLayoutMode: OrgChartLayoutMode = useMemo(() => resolveOrgChartLayoutMode({
     tree: displayOrgTree,
     availableWidth: orgChartViewportWidth,
@@ -981,20 +1002,20 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
   const renderOrgChartZoomControls = useCallback(() => (
     <>
-      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 0.9 }))} aria-label="Zoom out org chart" title="Zoom out">
+      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 0.9 }))} aria-label={t("agents.orgChartZoomOut", "Zoom out org chart")} title={t("agents.zoomOut", "Zoom out")}>
         <ZoomOut size={16} />
       </button>
       <span className="agent-org-chart-controls__zoom-label" aria-live="polite">{Math.round(orgChartTransform.scale * 100)}%</span>
-      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 1.1 }))} aria-label="Zoom in org chart" title="Zoom in">
+      <button type="button" className="btn-icon touch-target" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, scale: current.scale * 1.1 }))} aria-label={t("agents.orgChartZoomIn", "Zoom in org chart")} title={t("agents.zoomIn", "Zoom in")}>
         <ZoomIn size={16} />
       </button>
-      <button type="button" className="btn touch-target btn-sm agent-org-chart-controls__fit-btn" onClick={fitToViewport} aria-label="Fit org chart" title="Fit org chart">
+      <button type="button" className="btn touch-target btn-sm agent-org-chart-controls__fit-btn" onClick={fitToViewport} aria-label={t("agents.orgChartFit", "Fit org chart")} title={t("agents.orgChartFit", "Fit org chart")}>
         <Minimize2 size={16} />
-        Fit
+        {t("agents.fit", "Fit")}
       </button>
-      <button type="button" className="btn touch-target btn-sm" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, x: 0, y: 0 }))} aria-label="Center org chart" title="Center org chart">
+      <button type="button" className="btn touch-target btn-sm" onClick={() => setOrgChartTransform((current) => clampTransform({ ...current, x: 0, y: 0 }))} aria-label={t("agents.orgChartCenter", "Center org chart")} title={t("agents.orgChartCenter", "Center org chart")}>
         <Move size={16} />
-        Center
+        {t("agents.center", "Center")}
       </button>
     </>
   ), [clampTransform, fitToViewport, orgChartTransform.scale]);
@@ -1074,9 +1095,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
 
   const renderOrgChartLayoutToggle = useCallback(() => {
     const options: Array<{ value: OrgChartLayoutPreference; label: string; icon: ReactNode; ariaLabel: string }> = [
-      { value: "horizontal", label: "Horizontal", icon: <Network size={16} />, ariaLabel: "Horizontal layout" },
-      { value: "vertical", label: "Vertical", icon: <List size={16} />, ariaLabel: "Vertical layout" },
-      { value: "auto", label: "Auto", icon: <RefreshCw size={16} />, ariaLabel: "Automatic layout" },
+      { value: "horizontal", label: t("agents.layoutHorizontal", "Horizontal"), icon: <Network size={16} />, ariaLabel: t("agents.layoutHorizontalAria", "Horizontal layout") },
+      { value: "vertical", label: t("agents.layoutVertical", "Vertical"), icon: <List size={16} />, ariaLabel: t("agents.layoutVerticalAria", "Vertical layout") },
+      { value: "auto", label: t("agents.layoutAuto", "Auto"), icon: <RefreshCw size={16} />, ariaLabel: t("agents.layoutAutoAria", "Automatic layout") },
     ];
 
     return (
@@ -1129,15 +1150,15 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       <div className="agents-view-header">
         <div className="agents-view-title">
           <Bot size={24} />
-          <h2>Agents</h2>
+          <h2>{t("agents.title", "Agents")}</h2>
         </div>
         <div className="agents-view-controls">
           <div className="view-toggle">
             <button
               className={`view-toggle-btn${agentView === "list" ? " active" : ""}`}
               onClick={() => handleAgentViewChange("list")}
-              title="List view"
-              aria-label="List view"
+              title={t("agents.listView", "List view")}
+              aria-label={t("agents.listView", "List view")}
               aria-pressed={agentView === "list"}
             >
               <List size={16} />
@@ -1145,8 +1166,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             <button
               className={`view-toggle-btn${agentView === "board" ? " active" : ""}`}
               onClick={() => handleAgentViewChange("board")}
-              title="Board view"
-              aria-label="Board view"
+              title={t("agents.boardView", "Board view")}
+              aria-label={t("agents.boardView", "Board view")}
               aria-pressed={agentView === "board"}
             >
               <Activity size={16} />
@@ -1154,8 +1175,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             <button
               className={`view-toggle-btn${agentView === "org" ? " active" : ""}`}
               onClick={() => handleAgentViewChange("org")}
-              title="Org Chart view"
-              aria-label="Org Chart view"
+              title={t("agents.orgChartView", "Org Chart view")}
+              aria-label={t("agents.orgChartView", "Org Chart view")}
               aria-pressed={agentView === "org"}
             >
               <Network size={16} />
@@ -1166,8 +1187,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
               ref={controlsTriggerRef}
               className={`btn-icon agent-controls-trigger${isControlsPanelOpen ? " agent-controls-trigger--active" : ""}`}
               onClick={() => setIsControlsPanelOpen((open) => !open)}
-              title="Controls"
-              aria-label="Controls"
+              title={t("agents.controls", "Controls")}
+              aria-label={t("agents.controls", "Controls")}
               aria-haspopup="dialog"
               aria-expanded={isControlsPanelOpen}
               aria-controls={controlsPanelId}
@@ -1177,8 +1198,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             <button
               className="btn-icon"
               onClick={() => void loadAgents()}
-              title="Refresh"
-              aria-label="Refresh"
+              title={t("agents.refresh", "Refresh")}
+              aria-label={t("agents.refresh", "Refresh")}
             >
               <RefreshCw size={16} className={isLoading ? "spin" : undefined} />
             </button>
@@ -1190,11 +1211,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                     setIsImporting(true);
                     setIsControlsPanelOpen(false);
                   }}
-                  aria-label="Import"
-                  title="Import"
+                  aria-label={t("agents.import", "Import")}
+                  title={t("agents.import", "Import")}
                 >
                   <Upload size={16} />
-                  Import
+                  {t("agents.import", "Import")}
                 </button>
                 <button
                   className="btn btn-task-create btn-sm"
@@ -1202,11 +1223,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                     handleOpenNewAgent();
                     setIsControlsPanelOpen(false);
                   }}
-                  aria-label="New Agent"
-                  title="New Agent"
+                  aria-label={t("agents.newAgent", "New Agent")}
+                  title={t("agents.newAgent", "New Agent")}
                 >
                   <Plus size={16} />
-                  New Agent
+                  {t("agents.newAgent", "New Agent")}
                 </button>
               </>
             )}
@@ -1216,7 +1237,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                 id={controlsPanelId}
                 className="agent-controls-panel agent-controls-panel--scrollable"
                 role="dialog"
-                aria-label="Agent controls"
+                aria-label={t("agents.agentControls", "Agent controls")}
                 aria-modal="false"
               >
                 <div className="agent-controls">
@@ -1227,14 +1248,14 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         className="agent-state-filter-select"
                         value={filterState}
                         onChange={(e) => setFilterState(e.target.value as AgentState | "all")}
-                        aria-label="Filter agents by state"
+                        aria-label={t("agents.filterByState", "Filter agents by state")}
                       >
-                        <option value="all">All States</option>
-                        <option value="idle">Idle</option>
-                        <option value="active">Active</option>
-                        <option value="running">Running</option>
-                        <option value="paused">Paused</option>
-                        <option value="error">Error</option>
+                        <option value="all">{t("agents.stateAll", "All States")}</option>
+                        <option value="idle">{t("agents.stateIdle", "Idle")}</option>
+                        <option value="active">{t("agents.stateActive", "Active")}</option>
+                        <option value="running">{t("agents.stateRunning", "Running")}</option>
+                        <option value="paused">{t("agents.statePaused", "Paused")}</option>
+                        <option value="error">{t("agents.stateError", "Error")}</option>
                       </select>
                     </div>
 
@@ -1243,9 +1264,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         type="checkbox"
                         checked={showSystemAgents}
                         onChange={(e) => setShowSystemAgents(e.target.checked)}
-                        aria-label="Show system agents"
+                        aria-label={t("agents.showSystemAgents", "Show system agents")}
                       />
-                      Show system agents
+                      {t("agents.showSystemAgents", "Show system agents")}
                     </label>
                   </div>
                 </div>
@@ -1258,11 +1279,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         setIsImporting(true);
                         setIsControlsPanelOpen(false);
                       }}
-                      aria-label="Import"
-                      title="Import"
+                      aria-label={t("agents.import", "Import")}
+                      title={t("agents.import", "Import")}
                     >
                       <Upload size={16} />
-                      Import
+                      {t("agents.import", "Import")}
                     </button>
                     <button
                       className="btn btn-task-create btn-sm"
@@ -1270,16 +1291,16 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         handleOpenNewAgent();
                         setIsControlsPanelOpen(false);
                       }}
-                      aria-label="New Agent"
-                      title="New Agent"
+                      aria-label={t("agents.newAgent", "New Agent")}
+                      title={t("agents.newAgent", "New Agent")}
                     >
                       <Plus size={16} />
-                      New Agent
+                      {t("agents.newAgent", "New Agent")}
                     </button>
                   </div>
                 )}
 
-                <div className="agent-controls-bulk-actions" role="menu" aria-label="Bulk agent actions">
+                <div className="agent-controls-bulk-actions" role="menu" aria-label={t("agents.bulkAgentActions", "Bulk agent actions")}>
                   <button
                     type="button"
                     className="agent-detail-bulk-menu-item"
@@ -1292,14 +1313,14 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   >
                     <span className="agent-controls-bulk-actions__label">
                       <Pause />
-                      <span>Pause All Agents</span>
+                      <span>{t("agents.pauseAllAgents", "Pause All Agents")}</span>
                     </span>
                     <span className="agent-detail-bulk-menu-item-hint">
                       {isBulkEligibilityLoading
-                        ? "Loading eligibility…"
+                        ? t("agents.loadingEligibility", "Loading eligibility…")
                         : bulkPauseEligibleCount === 0
-                          ? "No active or running project agents to pause"
-                          : `Pause ${bulkPauseEligibleCount} active/running agent${bulkPauseEligibleCount === 1 ? "" : "s"}`}
+                          ? t("agents.noAgentsToPauseHint", "No active or running project agents to pause")
+                          : t("agents.pauseCountHint", { count: bulkPauseEligibleCount, defaultValue_one: "Pause {{count}} active/running agent", defaultValue_other: "Pause {{count}} active/running agents" })}
                     </span>
                   </button>
                   <button
@@ -1314,14 +1335,14 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   >
                     <span className="agent-controls-bulk-actions__label">
                       <Play />
-                      <span>Resume All Agents</span>
+                      <span>{t("agents.resumeAllAgents", "Resume All Agents")}</span>
                     </span>
                     <span className="agent-detail-bulk-menu-item-hint">
                       {isBulkEligibilityLoading
-                        ? "Loading eligibility…"
+                        ? t("agents.loadingEligibility", "Loading eligibility…")
                         : bulkResumeEligibleCount === 0
-                          ? "No paused project agents to resume"
-                          : `Resume ${bulkResumeEligibleCount} paused agent${bulkResumeEligibleCount === 1 ? "" : "s"}`}
+                          ? t("agents.noAgentsToResumeHint", "No paused project agents to resume")
+                          : t("agents.resumeCountHint", { count: bulkResumeEligibleCount, defaultValue_one: "Resume {{count}} paused agent", defaultValue_other: "Resume {{count}} paused agents" })}
                     </span>
                   </button>
                 </div>
@@ -1330,7 +1351,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   <div className="heartbeat-multiplier-group">
                     <div className="heartbeat-multiplier-controls">
                       <label htmlFor="globalHeartbeatMultiplier" className="heartbeat-multiplier-label">
-                        Heartbeat Speed
+                        {t("agents.heartbeatSpeed", "Heartbeat Speed")}
                       </label>
                       <input
                         id="globalHeartbeatMultiplier"
@@ -1359,7 +1380,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           void handleHeartbeatMultiplierChange(Number.isFinite(val) && val > 0 ? val : 1);
                         }}
                         disabled={isSavingMultiplier}
-                        aria-label="Heartbeat speed preset"
+                        aria-label={t("agents.heartbeatSpeedPreset", "Heartbeat speed preset")}
                       >
                         {HEARTBEAT_MULTIPLIER_PRESETS.map((multiplier) => (
                           <option key={multiplier} value={String(multiplier)}>
@@ -1369,7 +1390,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                       </select>
                     </div>
                     <small className="text-secondary">
-                      Scales all agent heartbeat intervals. ×0.5 = twice as fast, ×2.0 = twice as slow. Default: ×1.0
+                      {t("agents.heartbeatSpeedHint", "Scales all agent heartbeat intervals. ×0.5 = twice as fast, ×2.0 = twice as slow. Default: ×1.0")}
                     </small>
                   </div>
                 </div>
@@ -1421,9 +1442,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   type="button"
                   className="btn btn-sm agents-org-detail-back"
                   onClick={handleCloseDetail}
-                  aria-label="Back to org chart"
+                  aria-label={t("agents.backToOrgChart", "Back to org chart")}
                 >
-                  Back to org chart
+                  {t("agents.backToOrgChart", "Back to org chart")}
                 </button>
                 <Suspense fallback={null}>
                   <AgentDetailView
@@ -1444,7 +1465,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             ) : showInitialAgentsLoading ? (
               <div className="agents-view-loading" role="status" aria-live="polite">
                 <RefreshCw size={18} className="spin" />
-                <span>Loading agents...</span>
+                <span>{t("agents.loadingAgents", "Loading agents...")}</span>
               </div>
             ) : (
               <div className="agent-org-chart-shell" data-testid="agent-org-chart-shell">
@@ -1467,7 +1488,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                   data-testid="agent-org-chart-viewport"
                   tabIndex={0}
                   role="region"
-                  aria-label="Org chart canvas"
+                  aria-label={t("agents.orgChartCanvas", "Org chart canvas")}
                   onWheel={handleOrgChartWheel}
                   onPointerDown={handleOrgChartPointerDown}
                   onPointerMove={handleOrgChartPointerMove}
@@ -1490,7 +1511,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                       {isOrgTreeLoading ? (
                         <div className="agent-org-chart__loading" role="status" aria-live="polite">
                           <RefreshCw size={18} className="spin" />
-                          <span>Loading org chart...</span>
+                          <span>{t("agents.loadingOrgChart", "Loading org chart...")}</span>
                         </div>
                       ) : displayOrgTree.length === 0 ? (
                         <AgentEmptyState onCtaClick={handleOpenNewAgent} />
@@ -1533,7 +1554,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         {showInitialAgentsLoading ? (
           <div className="agents-view-loading" role="status" aria-live="polite">
             <RefreshCw size={18} className="spin" />
-            <span>Loading agents...</span>
+            <span>{t("agents.loadingAgents", "Loading agents...")}</span>
           </div>
         ) : agentView === "board" ? (
           <div className="agent-board">
@@ -1542,7 +1563,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             ) : (
               displayAgents.map((agent) => {
                 const health = getHealthStatus(agent);
-                const healthSummary = getHealthSummary(agent, health);
+                const healthSummary = getHealthSummary(agent, health, t);
                 const stateBadgeClass = getStateBadgeClass(agent.state);
                 const stateCardClass = getStateCardClass("agent-board-card", agent.state);
                 return (
@@ -1566,7 +1587,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         <span className="agent-board-badge badge text-secondary">{getRoleLabel(agent.role)}</span>
                         <span className={`agent-board-badge badge ${stateBadgeClass}`}>{agent.state}</span>
                         {(agent.pendingApprovalCount ?? 0) > 0 ? (
-                          <span className="agent-board-badge badge agent-approval-badge" title="Pending approvals">
+                          <span className="agent-board-badge badge agent-approval-badge" title={t("agents.pendingApprovals", "Pending approvals")}>
                             <span className="status-dot status-dot--pending" />
                             {agent.pendingApprovalCount}
                           </span>
@@ -1591,7 +1612,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             // List view: detailed card layout
             displayAgents.map(agent => {
               const health = getHealthStatus(agent);
-              const healthSummary = getHealthSummary(agent, health);
+              const healthSummary = getHealthSummary(agent, health, t);
               const stateBadgeClass = getStateBadgeClass(agent.state);
               const stateCardClass = getStateCardClass("agent-card", agent.state);
               const configuredIntervalMs = resolveHeartbeatIntervalMs(agent.runtimeConfig?.heartbeatIntervalMs);
@@ -1627,7 +1648,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                       openAgentDetail(agent.id);
                     }
                   }}
-                  aria-label={`Open details for ${agent.name}`}
+                  aria-label={t("agents.openDetails", "Open details for {{name}}", { name: agent.name })}
                 >
                   <div className="agent-card-header">
                     <div className="agent-info">
@@ -1641,7 +1662,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           onBlur={() => setEditingRoleForAgent(null)}
                           autoFocus
                         >
-                          {AGENT_ROLES.map(role => (
+                          {agentRoles.map(role => (
                             <option key={role.value} value={role.value}>
                               {role.icon} {role.label}
                             </option>
@@ -1654,7 +1675,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                             e.stopPropagation();
                             setEditingRoleForAgent(agent.id);
                           }}
-                          title="Click to change role"
+                          title={t("agents.clickToChangeRole", "Click to change role")}
                           role="button"
                           tabIndex={0}
                           onKeyDown={(e) => {
@@ -1686,7 +1707,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         {getRoleLabel(agent.role)}
                       </span>
                       {(agent.pendingApprovalCount ?? 0) > 0 ? (
-                        <span className="badge agent-approval-badge" title="Pending approvals">
+                        <span className="badge agent-approval-badge" title={t("agents.pendingApprovals", "Pending approvals")}>
                           <span className="status-dot status-dot--pending" />
                           {agent.pendingApprovalCount}
                         </span>
@@ -1724,12 +1745,12 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                     ) : null}
                     {agent.taskId && (
                       <div className="agent-task">
-                        <span className="text-secondary">Working on:</span>
+                        <span className="text-secondary">{t("agents.workingOn", "Working on:")}</span>
                         <span className="badge">{agent.taskId}</span>
                       </div>
                     )}
                     <div className="agent-heartbeat-control">
-                      <span className="text-secondary">Heartbeat:</span>
+                      <span className="text-secondary">{t("agents.heartbeat", "Heartbeat:")}</span>
                       {customHeartbeatAgentId === agent.id ? (
                         // Custom input mode
                         <>
@@ -1756,16 +1777,16 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                               }
                             }}
                             disabled={isUpdatingHeartbeat}
-                            aria-label={`Custom heartbeat interval in minutes for ${agent.name}`}
+                            aria-label={t("agents.customHeartbeatAria", "Custom heartbeat interval in minutes for {{name}}", { name: agent.name })}
                           />
-                          <span className="text-secondary">min</span>
+                          <span className="text-secondary">{t("agents.minutesUnit", "min")}</span>
                           <button
                             className="btn btn-sm"
                             onClick={() => void handleCustomHeartbeatSave(agent)}
                             disabled={isUpdatingHeartbeat}
-                            title="Save custom interval"
+                            title={t("agents.saveCustomInterval", "Save custom interval")}
                           >
-                            Save
+                            {t("agents.save", "Save")}
                           </button>
                           <button
                             className="btn btn-sm"
@@ -1778,9 +1799,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                               });
                             }}
                             disabled={isUpdatingHeartbeat}
-                            title="Cancel custom interval"
+                            title={t("agents.cancelCustomInterval", "Cancel custom interval")}
                           >
-                            Cancel
+                            {t("agents.cancel", "Cancel")}
                           </button>
                         </>
                       ) : (
@@ -1798,7 +1819,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                               }
                             }}
                             disabled={isUpdatingHeartbeat}
-                            aria-label={`Set heartbeat interval for ${agent.name}`}
+                            aria-label={t("agents.setHeartbeatAria", "Set heartbeat interval for {{name}}", { name: agent.name })}
                           >
                             {heartbeatOptions.map((option) => (
                               <option key={option.value} value={option.value}>
@@ -1807,12 +1828,12 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                             ))}
                             {/* Only show "Custom..." if current value is a preset; if it's already custom, it's already in the list */}
                             {HEARTBEAT_INTERVAL_PRESETS.some((p) => p.value === configuredIntervalMs) && (
-                              <option value="__custom__">Custom...</option>
+                              <option value="__custom__">{t("agents.customHeartbeatOption", "Custom...")}</option>
                             )}
                           </select>
                         </>
                       )}
-                      {isUpdatingHeartbeat && <span className="agent-heartbeat-saving text-secondary">Saving…</span>}
+                      {isUpdatingHeartbeat && <span className="agent-heartbeat-saving text-secondary">{t("agents.saving", "Saving…")}</span>}
                       {agent.lastHeartbeatAt && (() => {
                         const lastAt = new Date(agent.lastHeartbeatAt);
                         const nextAt = new Date(lastAt.getTime() + configuredIntervalMs);
@@ -1820,11 +1841,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                         return (
                           <>
                             <span className="agent-heartbeat-last text-secondary" title={lastAt.toLocaleString()}>
-                              Last: {lastAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                              {t("agents.lastHeartbeat", "Last: {{time}}", { time: lastAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) })}
                             </span>
                             {isTicking && (
                               <span className="agent-heartbeat-next text-secondary" title={nextAt.toLocaleString()}>
-                                Next: {nextAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                                {t("agents.nextHeartbeat", "Next: {{time}}", { time: nextAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) })}
                               </span>
                             )}
                           </>
@@ -1840,9 +1861,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           className="btn btn-sm"
                           onClick={() => void handleStateChange(agent.id, "active")}
                           disabled={transitioningAgentIds.has(agent.id)}
-                          title="Activate"
+                          title={t("agents.activate", "Activate")}
                         >
-                          <Play size={14} /> <span className="agent-card-action-label">Start</span>
+                          <Play size={14} /> <span className="agent-card-action-label">{t("agents.start", "Start")}</span>
                         </button>
                       )}
                       {agent.state === "active" && (
@@ -1851,18 +1872,18 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                             className="btn btn-sm"
                             onClick={() => void handleRunHeartbeat(agent.id, agent.name)}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Run Now"
-                            aria-label={`Run now for ${agent.name}`}
+                            title={t("agents.runNow", "Run Now")}
+                            aria-label={t("agents.runNowAria", "Run now for {{name}}", { name: agent.name })}
                           >
-                            <Activity size={14} /> <span className="agent-card-action-label">Run Now</span>
+                            <Activity size={14} /> <span className="agent-card-action-label">{t("agents.runNow", "Run Now")}</span>
                           </button>
                           <button
                             className="btn btn-sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
-                            <Pause size={14} /> <span className="agent-card-action-label">Pause</span>
+                            <Pause size={14} /> <span className="agent-card-action-label">{t("agents.pause", "Pause")}</span>
                           </button>
                         </>
                       )}
@@ -1871,9 +1892,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           className="btn btn-sm"
                           onClick={() => void handleStateChange(agent.id, "active")}
                           disabled={transitioningAgentIds.has(agent.id)}
-                          title="Resume"
+                          title={t("agents.resume", "Resume")}
                         >
-                          <Play size={14} /> <span className="agent-card-action-label">Resume</span>
+                          <Play size={14} /> <span className="agent-card-action-label">{t("agents.resume", "Resume")}</span>
                         </button>
                       )}
                       {agent.state === "running" && (
@@ -1881,18 +1902,18 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           <button
                             className="btn btn-sm"
                             onClick={() => openAgentDetail(agent.id, { initialTab: "runs", initialRunId: null, preferActiveRun: true })}
-                            title="View live run details"
-                            aria-label={`View live run details for ${agent.name}`}
+                            title={t("agents.viewLiveRun", "View live run details")}
+                            aria-label={t("agents.viewLiveRunAria", "View live run details for {{name}}", { name: agent.name })}
                           >
-                            <Activity size={14} /> <span className="agent-card-action-label">Running</span>
+                            <Activity size={14} /> <span className="agent-card-action-label">{t("agents.running", "Running")}</span>
                           </button>
                           <button
                             className="btn btn-sm"
                             onClick={() => void handleStateChange(agent.id, "paused")}
                             disabled={transitioningAgentIds.has(agent.id)}
-                            title="Pause"
+                            title={t("agents.pause", "Pause")}
                           >
-                            <Pause size={14} /> <span className="agent-card-action-label">Pause</span>
+                            <Pause size={14} /> <span className="agent-card-action-label">{t("agents.pause", "Pause")}</span>
                           </button>
                         </>
                       )}
@@ -1901,9 +1922,9 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                           className="btn btn-sm"
                           onClick={() => void handleStateChange(agent.id, "active")}
                           disabled={transitioningAgentIds.has(agent.id)}
-                          title="Retry"
+                          title={t("agents.retry", "Retry")}
                         >
-                          <Play size={14} /> <span className="agent-card-action-label">Retry</span>
+                          <Play size={14} /> <span className="agent-card-action-label">{t("agents.retry", "Retry")}</span>
                         </button>
                       )}
                     </div>
@@ -1911,18 +1932,18 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                       <button
                         className="btn btn-sm agent-card-details-btn"
                         onClick={() => openAgentDetail(agent.id)}
-                        title={`View details for ${agent.name}`}
-                        aria-label={`View details for ${agent.name}`}
+                        title={t("agents.viewDetailsFor", "View details for {{name}}", { name: agent.name })}
+                        aria-label={t("agents.viewDetailsFor", "View details for {{name}}", { name: agent.name })}
                       >
-                        <Info size={14} /> <span className="agent-card-action-label">Details</span>
+                        <Info size={14} /> <span className="agent-card-action-label">{t("agents.details", "Details")}</span>
                       </button>
                       {(agent.state === "idle" || agent.state === "paused") && (
                         <button
                           className="btn btn-sm btn-danger"
                           onClick={() => void handleDelete(agent.id, agent.name)}
-                          title="Delete"
+                          title={t("agents.delete", "Delete")}
                         >
-                          <Trash2 size={14} /> <span className="agent-card-action-label">Delete</span>
+                          <Trash2 size={14} /> <span className="agent-card-action-label">{t("agents.delete", "Delete")}</span>
                         </button>
                       )}
                     </div>
@@ -1958,8 +1979,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
           ) : (
             <div className="agents-detail-empty-state">
               <Bot size={48} />
-              <h3>Select an agent</h3>
-              <p>Choose an agent from the sidebar to view details</p>
+              <h3>{t("agents.selectAnAgent", "Select an agent")}</h3>
+              <p>{t("agents.selectAgentHint", "Choose an agent from the sidebar to view details")}</p>
             </div>
           )}
         </div>

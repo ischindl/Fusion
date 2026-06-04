@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { NodeMeshState } from "@fusion/core";
 import { fetchMeshState } from "../api";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
@@ -14,6 +15,7 @@ export interface UseMeshStateResult {
 }
 
 export function useMeshState(): UseMeshStateResult {
+  const { t } = useTranslation("app");
   const [meshState, setMeshState] = useState<NodeMeshState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,9 +28,9 @@ export function useMeshState(): UseMeshStateResult {
       const data = await fetchMeshState();
       setMeshState(data.nodes);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch mesh state");
+      setError(err instanceof Error ? err.message : t("mesh.failedToFetchMeshState", "Failed to fetch mesh state"));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +45,7 @@ export function useMeshState(): UseMeshStateResult {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to fetch mesh state");
+          setError(err instanceof Error ? err.message : t("mesh.failedToFetchMeshState", "Failed to fetch mesh state"));
         }
       } finally {
         if (!cancelled) {

@@ -1,4 +1,6 @@
 import type { AgentLogEntry } from "@fusion/core";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ProviderIcon } from "./ProviderIcon";
 import React, { useRef, useEffect, useState, useCallback, useLayoutEffect, useMemo, useId, type ReactElement } from "react";
 import ReactMarkdown from "react-markdown";
@@ -31,7 +33,7 @@ function writeBooleanPref(key: string, value: boolean): void {
   }
 }
 
-function formatTimestamp(iso: string): string {
+function formatTimestamp(iso: string, t: TFunction<"app">): string {
   const date = new Date(iso);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -39,10 +41,10 @@ function formatTimestamp(iso: string): string {
   const diffHr = Math.floor(diffMin / 60);
   const diffDay = Math.floor(diffHr / 24);
 
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHr < 24) return `${diffHr}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
+  if (diffMin < 1) return t("agentLog.timeJustNow", "just now");
+  if (diffMin < 60) return t("agentLog.timeMinutesAgo", "{{count}}m ago", { count: diffMin });
+  if (diffHr < 24) return t("agentLog.timeHoursAgo", "{{count}}h ago", { count: diffHr });
+  if (diffDay < 7) return t("agentLog.timeDaysAgo", "{{count}}d ago", { count: diffDay });
   return date.toLocaleDateString();
 }
 
@@ -86,9 +88,10 @@ const markdownComponents: Components = {
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 50;
 
-const AGENT_DISPLAY_NAMES: Record<string, string> = {
-  triage: "Plan",
-};
+function getAgentDisplayName(agent: string, t: TFunction<"app">): string {
+  if (agent === "triage") return t("agentLog.agentNameTriage", "Plan");
+  return agent;
+}
 
 function isNearBottom(container: HTMLDivElement): boolean {
   return container.scrollHeight - (container.scrollTop + container.clientHeight) <= BOTTOM_FOLLOW_THRESHOLD_PX;
@@ -125,12 +128,13 @@ interface CollapsibleToolDetailProps {
 }
 
 function CollapsibleToolDetail({ detail }: CollapsibleToolDetailProps): ReactElement {
+  const { t } = useTranslation("app");
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
   const lineCount = detail.split("\n").length;
   const toggleLabel = expanded
-    ? "Hide output"
-    : `Show output${lineCount > 1 ? ` (${lineCount} lines)` : ""}`;
+    ? t("agentLog.hideOutput", "Hide output")
+    : t("agentLog.showOutput", `Show output${lineCount > 1 ? ` (${lineCount} lines)` : ""}`);
 
   return (
     <div className="agent-log-tool-detail-wrapper">
@@ -281,6 +285,7 @@ export function AgentLogViewer({
   loadingMore = false,
   totalCount = null,
 }: AgentLogViewerProps) {
+  const { t } = useTranslation("app");
   const containerRef = useRef<HTMLDivElement>(null);
   const previousEntryCountRef = useRef<number>(0);
   const previousScrollHeightRef = useRef<number>(0);
@@ -470,7 +475,7 @@ export function AgentLogViewer({
   if (loading && entries.length === 0) {
     return (
       <div className="agent-log-viewer" data-testid="agent-log-viewer">
-        <div className="agent-log-loading">Loading agent logs…</div>
+        <div className="agent-log-loading">{t("agentLog.loading", "Loading agent logs…")}</div>
       </div>
     );
   }
@@ -478,7 +483,7 @@ export function AgentLogViewer({
   if (entries.length === 0) {
     return (
       <div className="agent-log-viewer" data-testid="agent-log-viewer">
-        <div className="agent-log-empty">No agent output yet.</div>
+        <div className="agent-log-empty">{t("agentLog.empty", "No agent output yet.")}</div>
       </div>
     );
   }
@@ -501,7 +506,7 @@ export function AgentLogViewer({
           <button
             className="agent-log-model-expand-btn"
             onClick={() => setModelHeaderExpanded((prev) => !prev)}
-            aria-label={modelHeaderExpanded ? "Collapse model details" : "Expand model details"}
+            aria-label={modelHeaderExpanded ? t("agentLog.collapseModelDetails", "Collapse model details") : t("agentLog.expandModelDetails", "Expand model details")}
             aria-expanded={modelHeaderExpanded}
             aria-controls="agent-log-model-details"
             data-testid="agent-log-model-expand"
@@ -515,29 +520,29 @@ export function AgentLogViewer({
           <button
             className="agent-log-mode-toggle"
             onClick={() => setRenderMarkdown((prev) => !prev)}
-            aria-label={renderMarkdown ? "Switch to plain text mode" : "Switch to markdown mode"}
+            aria-label={renderMarkdown ? t("agentLog.switchPlainText", "Switch to plain text mode") : t("agentLog.switchMarkdown", "Switch to markdown mode")}
             aria-pressed={renderMarkdown}
             data-testid="agent-log-mode-toggle"
-            title={renderMarkdown ? "Show raw text" : "Show formatted markdown"}
+            title={renderMarkdown ? t("agentLog.showRawText", "Show raw text") : t("agentLog.showFormattedMarkdown", "Show formatted markdown")}
           >
-            {renderMarkdown ? "Markdown" : "Plain"}
+            {renderMarkdown ? t("agentLog.markdown", "Markdown") : t("agentLog.plain", "Plain")}
           </button>
           <button
             className="agent-log-mode-toggle"
             onClick={() => setShowToolOutput((prev) => !prev)}
-            aria-label={showToolOutput ? "Hide tool output" : "Show tool output"}
+            aria-label={showToolOutput ? t("agentLog.hideToolOutput", "Hide tool output") : t("agentLog.showToolOutput", "Show tool output")}
             aria-pressed={showToolOutput}
             data-testid="agent-log-tool-output-toggle"
-            title={showToolOutput ? "Hide tool calls and results" : "Show tool calls and results"}
+            title={showToolOutput ? t("agentLog.hideToolCallsResults", "Hide tool calls and results") : t("agentLog.showToolCallsResults", "Show tool calls and results")}
           >
-            {showToolOutput ? "Tools: On" : "Tools: Off"}
+            {showToolOutput ? t("agentLog.toolsOn", "Tools: On") : t("agentLog.toolsOff", "Tools: Off")}
           </button>
           <button
             className="agent-log-mode-toggle"
             onClick={() => setIsFullscreen((prev) => !prev)}
-            aria-label={isFullscreen ? "Exit full screen" : "Expand agent log to full screen"}
+            aria-label={isFullscreen ? t("agentLog.exitFullscreen", "Exit full screen") : t("agentLog.expandFullscreen", "Expand agent log to full screen")}
             data-testid="agent-log-fullscreen-toggle"
-            title={isFullscreen ? "Exit full screen" : "Expand agent log to full screen"}
+            title={isFullscreen ? t("agentLog.exitFullscreen", "Exit full screen") : t("agentLog.expandFullscreen", "Expand agent log to full screen")}
           >
             {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
@@ -546,36 +551,36 @@ export function AgentLogViewer({
         {modelHeaderExpanded && (
           <div id="agent-log-model-details" className="agent-log-model-details">
             <div className="agent-log-model-group">
-              <span className="agent-log-model-label">Executor:</span>
+              <span className="agent-log-model-label">{t("agentLog.executor", "Executor")}:</span>
               {hasExecutorOverride ? (
                 <span className="agent-log-model-value">
                   <ProviderIcon provider={executorModel.provider!} size="sm" />
                   <span>{executorModel.provider}/{executorModel.modelId}</span>
                 </span>
               ) : (
-                <span className="model-badge-default">Using default</span>
+                <span className="model-badge-default">{t("agentLog.usingDefault", "Using default")}</span>
               )}
             </div>
             <div className="agent-log-model-group">
-              <span className="agent-log-model-label">Reviewer:</span>
+              <span className="agent-log-model-label">{t("agentLog.reviewer", "Reviewer")}:</span>
               {hasValidatorOverride ? (
                 <span className="agent-log-model-value">
                   <ProviderIcon provider={validatorModel.provider!} size="sm" />
                   <span>{validatorModel.provider}/{validatorModel.modelId}</span>
                 </span>
               ) : (
-                <span className="model-badge-default">Using default</span>
+                <span className="model-badge-default">{t("agentLog.usingDefault", "Using default")}</span>
               )}
             </div>
             <div className="agent-log-model-group">
-              <span className="agent-log-model-label">Planning:</span>
+              <span className="agent-log-model-label">{t("agentLog.planning", "Planning")}:</span>
               {hasPlanningOverride ? (
                 <span className="agent-log-model-value">
                   <ProviderIcon provider={planningModel.provider!} size="sm" />
                   <span>{planningModel.provider}/{planningModel.modelId}</span>
                 </span>
               ) : (
-                <span className="model-badge-default">Using default</span>
+                <span className="model-badge-default">{t("agentLog.usingDefault", "Using default")}</span>
               )}
             </div>
           </div>
@@ -590,9 +595,9 @@ export function AgentLogViewer({
         {/* Pagination summary */}
         {totalCount !== null && (
           <div className="agent-log-summary" data-testid="agent-log-summary">
-            Showing {visibleEntries.length} of {totalCount} entries
+            {t("agentLog.showing", "Showing {{visible}} of {{total}} entries", { visible: visibleEntries.length, total: totalCount })}
             {!showToolOutput && entries.length !== visibleEntries.length
-              ? ` (${entries.length - visibleEntries.length} tool entries hidden)`
+              ? ` (${t("agentLog.toolEntriesHidden", "{{count}} tool entries hidden", { count: entries.length - visibleEntries.length })})`
               : ""}
           </div>
         )}
@@ -608,10 +613,10 @@ export function AgentLogViewer({
               {loadingMore ? (
                 <>
                   <Loader2 size={14} className="animate-spin" />
-                  Loading…
+                  {t("agentLog.loadingMore", "Loading…")}
                 </>
               ) : (
-                "Load More"
+                t("agentLog.loadMore", "Load More")
               )}
             </button>
           </div>
@@ -621,13 +626,13 @@ export function AgentLogViewer({
           const firstEntry = group.kind === "single" ? group.entry : group.entries[0];
           const timestampSpan = group.showBadge ? (
             <span className="agent-log-timestamp" data-testid="agent-log-timestamp">
-              {formatTimestamp(firstEntry.timestamp)}
+              {formatTimestamp(firstEntry.timestamp, t as TFunction<"app">)}
             </span>
           ) : null;
 
           const agentBadge = group.showBadge ? (
             <span className="agent-log-badge-row">
-              <span className="agent-log-agent-badge">[{AGENT_DISPLAY_NAMES[firstEntry.agent!] ?? firstEntry.agent}]</span>
+              <span className="agent-log-agent-badge">[{getAgentDisplayName(firstEntry.agent!, t as TFunction<"app">)}]</span>
               {timestampSpan}
             </span>
           ) : null;
@@ -711,7 +716,7 @@ export function AgentLogViewer({
             data-testid="agent-log-return-to-live"
           >
             <ChevronDown size={12} />
-            <span>Live</span>
+            <span>{t("agentLog.live", "Live")}</span>
           </button>
         )}
       </div>

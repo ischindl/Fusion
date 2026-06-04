@@ -10,6 +10,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -146,7 +148,7 @@ function formatToolResultSummary(result: unknown): string | null {
   }
 }
 
-function renderToolCalls(toolCalls?: ToolCallInfo[], compact = false): ReactNode {
+function renderToolCalls(toolCalls: ToolCallInfo[] | undefined, compact: boolean, t: TFunction<"app">): ReactNode {
   if (!toolCalls || toolCalls.length === 0) return null;
 
   const renderToolCallItem = (toolCall: ToolCallInfo, index: number) => {
@@ -200,7 +202,7 @@ function renderToolCalls(toolCalls?: ToolCallInfo[], compact = false): ReactNode
       <div className={className} data-testid="chat-tool-calls">
         <div className="chat-tool-calls-header">
           <Wrench size={12} aria-hidden="true" />
-          <span>Tool calls</span>
+          <span>{t("chat.toolCalls", "Tool calls")}</span>
         </div>
         {renderToolCallItem(toolCalls[0], 0)}
       </div>
@@ -227,7 +229,7 @@ function renderToolCalls(toolCalls?: ToolCallInfo[], compact = false): ReactNode
       <details className={`chat-tool-calls-group${compact ? " chat-tool-calls-group--compact" : ""}`} data-testid="chat-tool-calls-group" open={hasRunning}>
         <summary className="chat-tool-calls-group-summary">
           <Wrench size={12} aria-hidden="true" />
-          <span className="chat-tool-calls-count">{toolCalls.length} tool calls</span>
+          <span className="chat-tool-calls-count">{t("chat.toolCallsCount", "{{count}} tool calls", { count: toolCalls.length })}</span>
           <span className="chat-tool-calls-names" title={namesSummary}>{namesSummary}</span>
           {statusSummary && <span className="chat-tool-calls-group-status">{statusSummary}</span>}
         </summary>
@@ -790,6 +792,7 @@ const QuickChatMessageItem = memo(function QuickChatMessageItem({
   projectId,
   onToggleRender,
 }: QuickChatMessageItemProps) {
+  const { t } = useTranslation("app");
   const isSent = message.role === "user";
 
   const renderedUserContent = useMemo<ReactNode>(() => {
@@ -881,7 +884,7 @@ const QuickChatMessageItem = memo(function QuickChatMessageItem({
               type="button"
               className={`quick-chat-message-render-toggle${forcePlain ? " quick-chat-message-render-toggle--plain" : ""}`}
               data-testid="quick-chat-message-render-toggle"
-              aria-label={forcePlain ? "Show rendered markdown" : "Show plain text"}
+              aria-label={forcePlain ? t("chat.showRenderedMarkdown", "Show rendered markdown") : t("chat.showPlainText", "Show plain text")}
               onClick={() => onToggleRender(message.id)}
             >
               {forcePlain ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -889,7 +892,7 @@ const QuickChatMessageItem = memo(function QuickChatMessageItem({
           </>
         )}
       {renderedAttachments}
-      {renderToolCalls(message.toolCalls, true)}
+      {renderToolCalls(message.toolCalls, true, t)}
     </div>
   );
 });
@@ -906,6 +909,7 @@ export function QuickChatFAB({
   onToggleModelFavorite,
   roomContext = null,
 }: QuickChatFABProps) {
+  const { t } = useTranslation("app");
   const { agents } = useAgents(projectId);
   const {
     models,
@@ -1508,9 +1512,18 @@ export function QuickChatFAB({
     return byName;
   }, [agents]);
 
+  // Key the reset on skill ids, not array identity: useDiscoveredSkillsCache
+  // (SWR) re-delivers content-identical lists with fresh identities, and an
+  // identity-keyed reset wipes the user's keyboard highlight mid-navigation
+  // when a revalidation lands (see docs/solutions/ui-bugs/
+  // skill-autocomplete-highlight-reset-on-swr-revalidation.md).
+  const filteredSkillsKey = useMemo(
+    () => filteredSkills.map((skill) => skill.id).join(" "),
+    [filteredSkills],
+  );
   useEffect(() => {
     setHighlightedSkillIndex(0);
-  }, [filteredSkills]);
+  }, [filteredSkillsKey]);
 
   useEffect(() => {
     setMentionHighlightIndex(0);
@@ -1752,9 +1765,9 @@ export function QuickChatFAB({
       return activeOption.label;
     }
     if (sessionsLoading) {
-      return "Loading sessions…";
+      return t("chat.loadingSessions", "Loading sessions…");
     }
-    return "Select a session";
+    return t("chat.selectSession", "Select a session");
   }, [activeSession?.id, roomThreadActive, roomsState.activeRoom, sessionOptions, sessionsLoading, showRoomGroups]);
 
   useEffect(() => {
@@ -1792,20 +1805,20 @@ export function QuickChatFAB({
 
   const inputPlaceholder = useMemo(() => {
     if (roomThreadActive && roomsState.activeRoom) {
-      return `Message #${roomsState.activeRoom.name}`;
+      return t("chat.messageRoomPlaceholder", "Message #{{name}}", { name: roomsState.activeRoom.name });
     }
     if (chatMode === "agent") {
       if (selectedAgent) {
-        return `Message ${selectedAgent.name || selectedAgent.id}`;
+        return t("chat.messageAgentPlaceholder", "Message {{name}}", { name: selectedAgent.name || selectedAgent.id });
       }
-      return "Select an agent to start chatting";
+      return t("chat.selectAgentPlaceholder", "Select an agent to start chatting");
     }
     // model mode
     if (selectedModelTag) {
-      return `Message ${selectedModelTag}`;
+      return t("chat.messageModelPlaceholder", "Message {{name}}", { name: selectedModelTag });
     }
-    return "Select a model to start chatting";
-  }, [chatMode, roomThreadActive, roomsState.activeRoom?.name, selectedAgent, selectedModelTag]);
+    return t("chat.selectModelPlaceholder", "Select a model to start chatting");
+  }, [chatMode, roomThreadActive, roomsState.activeRoom, selectedAgent, selectedModelTag, t]);
 
   const handleSessionSwitch = useCallback((sessionId: string) => {
     const selectedSession = sessions.find((session) => session.id === sessionId);
@@ -1980,7 +1993,7 @@ export function QuickChatFAB({
           await startFreshSession(selectedAgentId);
         }
       } catch {
-        addToast("Failed to clear conversation", "error");
+        addToast(t("chat.clearConversationFailed", "Failed to clear conversation"), "error");
       } finally {
         focusComposerInput();
         preserveComposerFocusRef.current = false;
@@ -2004,7 +2017,7 @@ export function QuickChatFAB({
     } catch (error) {
       const message = error instanceof Error && error.message.trim()
         ? error.message
-        : (chatRoomsEnabled && roomsState.activeRoom ? "Failed to send room message" : "Failed to send message");
+        : (chatRoomsEnabled && roomsState.activeRoom ? t("chat.sendRoomMessageFailed", "Failed to send room message") : t("chat.sendMessageFailed", "Failed to send message"));
       addToast(message, "error");
       // Keep pending attachments on failure so user can retry.
     } finally {
@@ -2453,7 +2466,7 @@ export function QuickChatFAB({
           ref={fabRef}
           type="button"
           className="quick-chat-fab"
-          aria-label="Open quick chat"
+          aria-label={t("chat.openQuickChat", "Open quick chat")}
           data-testid="quick-chat-fab"
           data-dragging={isDragging ? "true" : "false"}
           style={{ right: position.x, bottom: position.y }}
@@ -2490,7 +2503,7 @@ export function QuickChatFAB({
                 onPointerDown={handleResizeStart}
                 role="separator"
                 aria-orientation="horizontal"
-                aria-label="Resize panel from top"
+                aria-label={t("chat.resizePanelTop", "Resize panel from top")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2499,7 +2512,7 @@ export function QuickChatFAB({
                 onPointerDown={handleResizeStart}
                 role="separator"
                 aria-orientation="horizontal"
-                aria-label="Resize panel from bottom"
+                aria-label={t("chat.resizePanelBottom", "Resize panel from bottom")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2508,7 +2521,7 @@ export function QuickChatFAB({
                 onPointerDown={handleResizeStart}
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize panel from right"
+                aria-label={t("chat.resizePanelRight", "Resize panel from right")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2517,7 +2530,7 @@ export function QuickChatFAB({
                 onPointerDown={handleResizeStart}
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize panel from left"
+                aria-label={t("chat.resizePanelLeft", "Resize panel from left")}
               />
               {/* Corner handles */}
               <div
@@ -2526,7 +2539,7 @@ export function QuickChatFAB({
                 data-testid="quick-chat-resize-nw"
                 onPointerDown={handleResizeStart}
                 role="separator"
-                aria-label="Resize panel from top-left corner"
+                aria-label={t("chat.resizePanelTopLeft", "Resize panel from top-left corner")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2534,7 +2547,7 @@ export function QuickChatFAB({
                 data-testid="quick-chat-resize-ne"
                 onPointerDown={handleResizeStart}
                 role="separator"
-                aria-label="Resize panel from top-right corner"
+                aria-label={t("chat.resizePanelTopRight", "Resize panel from top-right corner")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2542,7 +2555,7 @@ export function QuickChatFAB({
                 data-testid="quick-chat-resize-sw"
                 onPointerDown={handleResizeStart}
                 role="separator"
-                aria-label="Resize panel from bottom-left corner"
+                aria-label={t("chat.resizePanelBottomLeft", "Resize panel from bottom-left corner")}
               />
               <div
                 className="quick-chat-resize-handle"
@@ -2550,14 +2563,14 @@ export function QuickChatFAB({
                 data-testid="quick-chat-resize-se"
                 onPointerDown={handleResizeStart}
                 role="separator"
-                aria-label="Resize panel from bottom-right corner"
+                aria-label={t("chat.resizePanelBottomRight", "Resize panel from bottom-right corner")}
               />
             </>
           )}
 
           <div className="quick-chat-panel-header">
             <div className="quick-chat-panel-title-wrap">
-              <h3>Quick Chat</h3>
+              <h3>{t("chat.quickChatTitle", "Quick Chat")}</h3>
               {roomThreadActive && roomsState.activeRoom ? (
                 <span className="quick-chat-model-tag" data-testid="quick-chat-room-tag" title={`#${roomsState.activeRoom.name}`}>
                   #{roomsState.activeRoom.name}
@@ -2595,7 +2608,7 @@ export function QuickChatFAB({
                 type="button"
                 className="btn-icon quick-chat-new-chat-btn"
                 data-testid="quick-chat-new-thread"
-                aria-label="Start a new chat"
+                aria-label={t("chat.startNewChat", "Start a new chat")}
                 onClick={handleStartFreshChat}
                 disabled={sessionsLoading}
               >
@@ -2604,7 +2617,7 @@ export function QuickChatFAB({
               <button
                 type="button"
                 className="btn-icon"
-                aria-label="Close quick chat"
+                aria-label={t("chat.closeQuickChat", "Close quick chat")}
                 data-testid="quick-chat-close"
                 onClick={() => setIsOpen(false)}
               >
@@ -2615,7 +2628,7 @@ export function QuickChatFAB({
 
           <div className="quick-chat-panel-agent-select" data-testid="quick-chat-session-select">
             <div className="quick-chat-session-menu" ref={sessionMenuRef}>
-              <label htmlFor="quick-chat-session-dropdown-trigger" className="visually-hidden">Select session</label>
+              <label htmlFor="quick-chat-session-dropdown-trigger" className="visually-hidden">{t("chat.selectSessionLabel", "Select session")}</label>
               <input
                 type="hidden"
                 data-testid="quick-chat-session-dropdown"
@@ -2646,7 +2659,7 @@ export function QuickChatFAB({
                 <div className="quick-chat-session-dropdown" role="menu" data-testid="quick-chat-session-dropdown-menu">
                   {showRoomGroups && (
                     <>
-                      <div className="quick-chat-session-dropdown-group-label">Rooms</div>
+                      <div className="quick-chat-session-dropdown-group-label">{t("chat.roomsGroupLabel", "Rooms")}</div>
                       {roomOptions.map((room) => {
                         const isActiveRoom = roomsState.activeRoom?.id === room.id;
                         const showUnreadDot = !isActiveRoom && isUnread("room", room.id, room.updatedAt);
@@ -2664,13 +2677,13 @@ export function QuickChatFAB({
                             <span
                               className="chat-unread-dot quick-chat-session-unread-dot"
                               data-testid={`quick-chat-unread-dot-${room.id}`}
-                              aria-label="Unread messages"
+                              aria-label={t("chat.unreadMessages", "Unread messages")}
                             />
                           ) : null}
                         </button>
                         );
                       })}
-                      <div className="quick-chat-session-dropdown-group-label">Sessions</div>
+                      <div className="quick-chat-session-dropdown-group-label">{t("chat.sessionsGroupLabel", "Sessions")}</div>
                     </>
                   )}
                   {sessionOptions.map((sessionOption) => {
@@ -2691,7 +2704,7 @@ export function QuickChatFAB({
                         <span
                           className="chat-unread-dot quick-chat-session-unread-dot"
                           data-testid={`quick-chat-unread-dot-${sessionOption.id}`}
-                          aria-label="Unread messages"
+                          aria-label={t("chat.unreadMessages", "Unread messages")}
                         />
                       ) : null}
                     </button>
@@ -2711,7 +2724,7 @@ export function QuickChatFAB({
                   data-testid="quick-chat-inline-mode-model"
                   onClick={() => setNewSessionMode("model")}
                 >
-                  Model
+                  {t("chat.modeModel", "Model")}
                 </button>
                 <button
                   type="button"
@@ -2719,13 +2732,13 @@ export function QuickChatFAB({
                   data-testid="quick-chat-inline-mode-agent"
                   onClick={() => setNewSessionMode("agent")}
                 >
-                  Agent
+                  {t("chat.modeAgent", "Agent")}
                 </button>
               </div>
 
               {newSessionMode === "agent" ? (
                 <div className="quick-chat-panel-agent-select">
-                  <label htmlFor="quick-chat-new-agent-select" className="visually-hidden">Select agent for new chat</label>
+                  <label htmlFor="quick-chat-new-agent-select" className="visually-hidden">{t("chat.selectAgentForNewChat", "Select agent for new chat")}</label>
                   <select
                     id="quick-chat-new-agent-select"
                     value={newSessionAgentId}
@@ -2744,8 +2757,8 @@ export function QuickChatFAB({
                     models={models}
                     value={newSessionModel}
                     onChange={setNewSessionModel}
-                    label="Select model override"
-                    placeholder={modelsLoading ? "Loading models…" : "Select a model"}
+                    label={t("chat.selectModelOverrideLabel", "Select model override")}
+                    placeholder={modelsLoading ? t("chat.loadingModels", "Loading models…") : t("chat.selectModelPlaceholder2", "Select a model")}
                     disabled={modelsLoading || models.length === 0}
                     favoriteProviders={favoriteProviders}
                     favoriteModels={favoriteModels}
@@ -2765,7 +2778,7 @@ export function QuickChatFAB({
                     setNewSessionMode("model");
                   }}
                 >
-                  Cancel
+                  {t("chat.cancelButton", "Cancel")}
                 </button>
                 <button
                   type="button"
@@ -2774,7 +2787,7 @@ export function QuickChatFAB({
                   onClick={() => void handleCreateFreshSession()}
                   disabled={sessionsLoading || (newSessionMode === "agent" ? !newSessionAgentId : !parseModelSelection(newSessionModel || selectedModel || configuredDefaultModelSelection))}
                 >
-                  Create
+                  {t("chat.createButton", "Create")}
                 </button>
               </div>
             </div>
@@ -2782,7 +2795,7 @@ export function QuickChatFAB({
 
           <div className="quick-chat-panel-messages" ref={messagesRef} data-testid="quick-chat-messages" onScroll={updateScrollState}>
             {sessionsLoading ? (
-              <div className="quick-chat-panel-empty">Loading conversation…</div>
+              <div className="quick-chat-panel-empty">{t("chat.loadingConversation", "Loading conversation…")}</div>
             ) : !roomThreadActive && isStreaming ? (
               <>
                 {displayedMessages.map((message: ChatMessageInfo) => (
@@ -2798,7 +2811,7 @@ export function QuickChatFAB({
                 ))}
                 {helpMessageVisible && (
                   <div className="quick-chat-panel-message quick-chat-panel-message--received" data-testid="quick-chat-help-message">
-                    {renderAssistantMessageContent("Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help")}
+                    {renderAssistantMessageContent(t("chat.helpMessageContent", "Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help"))}
                   </div>
                 )}
                 <div
@@ -2814,7 +2827,7 @@ export function QuickChatFAB({
                         type="button"
                         className={`quick-chat-message-render-toggle${plainTextMessageIds.has("__streaming__") ? " quick-chat-message-render-toggle--plain" : ""}`}
                         data-testid="quick-chat-message-render-toggle"
-                        aria-label={plainTextMessageIds.has("__streaming__") ? "Show rendered markdown" : "Show plain text"}
+                        aria-label={plainTextMessageIds.has("__streaming__") ? t("chat.showRenderedMarkdown", "Show rendered markdown") : t("chat.showPlainText", "Show plain text")}
                         onClick={() => toggleMessageRenderMode("__streaming__")}
                       >
                         {plainTextMessageIds.has("__streaming__") ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -2822,22 +2835,22 @@ export function QuickChatFAB({
                     </>
                   ) : (
                     <p className="quick-chat-panel-waiting" data-testid="quick-chat-waiting">
-                      {streamingThinking ? "Thinking…" : "Connecting…"}
+                      {streamingThinking ? t("chat.thinkingStatus", "Thinking…") : t("chat.connectingStatus", "Connecting…")}
                     </p>
                   )}
-                  {renderToolCalls(streamingToolCalls, true)}
+                  {renderToolCalls(streamingToolCalls, true, t)}
                   {streamingThinking && (
                     <details className="chat-message-thinking" data-testid="quick-chat-streaming-thinking">
-                      <summary>Thinking</summary>
+                      <summary>{t("chat.thinkingLabel", "Thinking")}</summary>
                       <pre className="chat-message-thinking-content">{linkifyFilePaths(streamingThinking)}</pre>
                     </details>
                   )}
                 </div>
               </>
             ) : roomThreadActive ? roomsState.messagesLoading ? (
-              <div className="quick-chat-panel-empty">Loading conversation…</div>
+              <div className="quick-chat-panel-empty">{t("chat.loadingConversation", "Loading conversation…")}</div>
             ) : displayedMessages.length === 0 && !helpMessageVisible ? (
-              <div className="quick-chat-panel-empty">No messages yet. Start the conversation!</div>
+              <div className="quick-chat-panel-empty">{t("chat.noMessagesYet", "No messages yet. Start the conversation!")}</div>
             ) : (
               <>
                 {displayedMessages.map((message: ChatMessageInfo) => (
@@ -2853,14 +2866,14 @@ export function QuickChatFAB({
                 ))}
                 {helpMessageVisible && (
                   <div className="quick-chat-panel-message quick-chat-panel-message--received" data-testid="quick-chat-help-message">
-                    {renderAssistantMessageContent("Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help")}
+                    {renderAssistantMessageContent(t("chat.helpMessageContent", "Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help"))}
                   </div>
                 )}
               </>
             ) : messagesLoading ? (
-              <div className="quick-chat-panel-empty">Loading conversation…</div>
+              <div className="quick-chat-panel-empty">{t("chat.loadingConversation", "Loading conversation…")}</div>
             ) : displayedMessages.length === 0 && !streamingText && !streamingThinking && !isStreaming && !helpMessageVisible ? (
-              <div className="quick-chat-panel-empty">No messages yet. Start the conversation!</div>
+              <div className="quick-chat-panel-empty">{t("chat.noMessagesYet", "No messages yet. Start the conversation!")}</div>
             ) : (
               <>
                 {displayedMessages.map((message: ChatMessageInfo) => (
@@ -2876,7 +2889,7 @@ export function QuickChatFAB({
                 ))}
                 {helpMessageVisible && (
                   <div className="quick-chat-panel-message quick-chat-panel-message--received" data-testid="quick-chat-help-message">
-                    {renderAssistantMessageContent("Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help")}
+                    {renderAssistantMessageContent(t("chat.helpMessageContent", "Available commands:\n- `/new` or `/clear` — Clear conversation and start fresh\n- `/skill:{name}` — Use a specific skill\n- `/help` — Show this help"))}
                   </div>
                 )}
               </>
@@ -2891,7 +2904,7 @@ export function QuickChatFAB({
               onClick={scrollToBottom}
             >
               <ChevronDown size={14} />
-              Latest
+              {t("chat.jumpToLatest", "Latest")}
             </button>
           )}
 
@@ -2910,7 +2923,7 @@ export function QuickChatFAB({
                     type="button"
                     className="quick-chat-attachment-remove"
                     data-testid={`quick-chat-attachment-remove-${index}`}
-                    aria-label={`Remove ${attachment.file.name}`}
+                    aria-label={t("chat.removeAttachment", "Remove {{name}}", { name: attachment.file.name })}
                     onClick={() => removeAttachment(index)}
                   >
                     ×
@@ -2946,7 +2959,7 @@ export function QuickChatFAB({
                   type="button"
                   className="btn-icon quick-chat-attach-btn"
                   data-testid="quick-chat-attach-btn"
-                  aria-label="Attach files"
+                  aria-label={t("chat.attachFiles", "Attach files")}
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Paperclip size={16} />
@@ -3017,7 +3030,7 @@ export function QuickChatFAB({
                       }
                       stopStreaming();
                     }}
-                    aria-label="Stop generation"
+                    aria-label={t("chat.stopGeneration", "Stop generation")}
                     data-testid="quick-chat-stop"
                   >
                     <Square size={14} />
@@ -3089,10 +3102,10 @@ export function QuickChatFAB({
               {showSkillMenu && (
                 <div className="chat-skill-menu" data-testid="quick-chat-skill-menu" role="listbox" aria-label="Skill suggestions">
                   {skillsLoading ? (
-                    <div className="chat-skill-menu-empty">Loading skills…</div>
+                    <div className="chat-skill-menu-empty">{t("chat.loadingSkills", "Loading skills…")}</div>
                   ) : filteredSkills.length === 0 ? (
                     <div className="chat-skill-menu-empty">
-                      {skillFilter ? "No skills found" : "No skills available"}
+                      {skillFilter ? t("chat.noSkillsFound", "No skills found") : t("chat.noSkillsAvailable", "No skills available")}
                     </div>
                   ) : (
                     filteredSkills.map((skill, index) => (
@@ -3117,11 +3130,11 @@ export function QuickChatFAB({
               )}
               {!roomThreadActive && pendingMessage && (
                 <div className="chat-pending-message" data-testid="chat-pending-indicator">
-                  <span>{`Queued: ${pendingPreview}`}</span>
+                  <span>{t("chat.queuedMessage", "Queued: {{preview}}", { preview: pendingPreview })}</span>
                   <button
                     type="button"
                     className="chat-pending-message-dismiss"
-                    aria-label="Dismiss queued message"
+                    aria-label={t("chat.dismissQueuedMessage", "Dismiss queued message")}
                     data-testid="chat-pending-dismiss"
                     onClick={clearPendingMessage}
                   >

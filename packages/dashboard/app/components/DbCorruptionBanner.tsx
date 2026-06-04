@@ -1,4 +1,5 @@
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 
 import "./DbCorruptionBanner.css";
 
@@ -17,6 +18,7 @@ export function DbCorruptionBanner({
   refreshing,
   refreshError,
 }: DbCorruptionBannerProps) {
+  const { t } = useTranslation("app");
   if (errors.length === 0) {
     return null;
   }
@@ -31,9 +33,9 @@ export function DbCorruptionBanner({
           <span className="status-dot status-dot--error" aria-hidden="true" />
           <AlertTriangle aria-hidden="true" />
           <div className="db-corruption-banner__headline-copy">
-            <h2 className="db-corruption-banner__headline">Database corruption detected</h2>
+            <h2 className="db-corruption-banner__headline">{t("dbBanner.title", "Database corruption detected")}</h2>
             {checkedAtLabel ? (
-              <p className="db-corruption-banner__meta">Last checked: {checkedAtLabel}</p>
+              <p className="db-corruption-banner__meta">{t("dbBanner.lastChecked", "Last checked: {{checkedAtLabel}}", { checkedAtLabel })}</p>
             ) : null}
           </div>
         </div>
@@ -46,12 +48,12 @@ export function DbCorruptionBanner({
           disabled={refreshing}
         >
           <RefreshCw className={refreshing ? "db-corruption-banner__refresh-icon db-corruption-banner__refresh-icon--spinning" : "db-corruption-banner__refresh-icon"} aria-hidden="true" />
-          {refreshing ? "Refreshing…" : "Refresh health"}
+          {refreshing ? t("dbBanner.refreshing", "Refreshing…") : t("dbBanner.refreshHealth", "Refresh health")}
         </button>
       </div>
 
       <p className="db-corruption-banner__body">
-        Fusion&apos;s background SQLite integrity check reported corruption. Review the failing objects below before continuing critical operations.
+        {t("dbBanner.body", "Fusion's background SQLite integrity check reported corruption. Review the failing objects below before continuing critical operations.")}
       </p>
 
       <ul className="db-corruption-banner__list">
@@ -63,10 +65,15 @@ export function DbCorruptionBanner({
       </ul>
 
       <p className="db-corruption-banner__footer">
-        <strong className="db-corruption-banner__footer-label">What to do:</strong>{" "}
-        Back up the project, try <code className="db-corruption-banner__inline-code">fn db --vacuum</code> if the database still opens cleanly, and restore from a known-good backup if corruption persists. See{" "}
-        <a href="docs/storage.md" target="_blank" rel="noreferrer" className="db-corruption-banner__link">docs/storage.md</a>
-        {" "}for the storage layout and recovery guidance.
+        <strong className="db-corruption-banner__footer-label">{t("dbBanner.whatToDo", "What to do:")}</strong>{" "}
+        <Trans
+          i18nKey="app:dbBanner.instructions"
+          defaults="Back up the project, try <cmd>fn db --vacuum</cmd> if the database still opens cleanly, and restore from a known-good backup if corruption persists. See <docsLink>docs/storage.md</docsLink> for the storage layout and recovery guidance."
+          components={{
+            cmd: <code />,
+            docsLink: <a href="docs/storage.md" />,
+          }}
+        />
       </p>
       {refreshError ? <p className="db-corruption-banner__error">{refreshError}</p> : null}
     </section>

@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import "./TrackingRepoSelect.css";
 
 const CUSTOM_VALUE = "__custom__";
@@ -46,6 +47,7 @@ export function TrackingRepoSelect({
   placeholder = "owner/repo",
   ariaLabel,
 }: TrackingRepoSelectProps) {
+  const { t } = useTranslation("app");
   const customInputRef = useRef<HTMLInputElement>(null);
   const hintId = useId();
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -71,7 +73,7 @@ export function TrackingRepoSelect({
     onChange(nextValue);
   };
 
-  const renderedHint = error ? error : loading ? "Loading detected GitHub remotes…" : null;
+  const renderedHint = error ? error : loading ? t("trackingRepoSelect.loadingHint", "Loading detected GitHub remotes…") : null;
 
   return (
     <div className="tracking-repo-select">
@@ -88,7 +90,7 @@ export function TrackingRepoSelect({
             {option.source ? `${option.label} — ${option.source}` : option.label}
           </option>
         ))}
-        <option value={CUSTOM_VALUE}>Custom…</option>
+        <option value={CUSTOM_VALUE}>{t("trackingRepoSelect.customOption", "Custom…")}</option>
       </select>
       {showCustomInput ? (
         <input

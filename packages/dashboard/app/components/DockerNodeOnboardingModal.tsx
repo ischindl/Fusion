@@ -1,5 +1,6 @@
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { DockerHostConfig, ManagedDockerNodeInput } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
 import { DockerTargetSelector } from "./DockerTargetSelector";
@@ -33,6 +34,7 @@ interface MountRow {
 const DEFAULT_URL = "http://localhost:4040";
 
 export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast: _addToast }: DockerNodeOnboardingModalProps) {
+  const { t } = useTranslation("app");
   const [name, setName] = useState("");
   const [hostConfig, setHostConfig] = useState<DockerHostConfig>({});
   const [reachableUrl, setReachableUrl] = useState(DEFAULT_URL);
@@ -174,16 +176,16 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
 
     const nextErrors: FormErrors = {};
     if (!input.name || input.name.length > 64) {
-      nextErrors.name = "Name is required and must be 64 characters or fewer";
+      nextErrors.name = t("docker.errors.nameRequired", "Name is required and must be 64 characters or fewer");
     }
     if (!input.reachableUrl) {
-      nextErrors.reachableUrl = "URL is required";
+      nextErrors.reachableUrl = t("docker.errors.urlRequired", "URL is required");
     }
     if (memoryMB < 512) {
-      nextErrors.memoryMB = "Memory must be at least 512 MB";
+      nextErrors.memoryMB = t("docker.errors.memoryMinimum", "Memory must be at least 512 MB");
     }
     if (cpus < 0.5) {
-      nextErrors.cpus = "CPUs must be at least 0.5";
+      nextErrors.cpus = t("docker.errors.cpusMinimum", "CPUs must be at least 0.5");
     }
 
     setErrors(nextErrors);
@@ -200,7 +202,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
     } finally {
       setSubmitting(false);
     }
-  }, [closeModal, cpus, input, memoryMB, onSubmit, submitting]);
+  }, [closeModal, cpus, input, memoryMB, onSubmit, submitting, t]);
 
   if (!isOpen) return null;
 
@@ -210,28 +212,28 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
         className="modal docker-onboarding"
         role="dialog"
         aria-modal="true"
-        aria-label="Docker node onboarding"
+        aria-label={t("docker.ariaLabels.modal", "Docker node onboarding")}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <h3>Provision Docker Node</h3>
-          <button className="modal-close" onClick={closeModal} disabled={submitting} aria-label="Close onboarding modal">
+          <h3>{t("docker.titles.provisionNode", "Provision Docker Node")}</h3>
+          <button className="modal-close" onClick={closeModal} disabled={submitting} aria-label={t("docker.ariaLabels.closeModal", "Close onboarding modal")}>
             &times;
           </button>
         </div>
 
         <div className="modal-body docker-onboarding__body">
           <section className="docker-onboarding__section">
-            <h4 className="docker-onboarding__section-title">Required Settings</h4>
+            <h4 className="docker-onboarding__section-title">{t("docker.sections.requiredSettings", "Required Settings")}</h4>
 
             <label className="docker-onboarding__field">
-              <span>Node Name</span>
+              <span>{t("docker.labels.nodeName", "Node Name")}</span>
               <input
                 className="input"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 disabled={submitting}
-                placeholder="my-docker-node"
+                placeholder={t("docker.placeholders.nodeName", "my-docker-node")}
                 autoFocus
               />
             </label>
@@ -240,7 +242,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
             <DockerTargetSelector value={hostConfig} onChange={setHostConfig} />
 
             <label className="docker-onboarding__field">
-              <span>Reachable URL</span>
+              <span>{t("docker.labels.reachableUrl", "Reachable URL")}</span>
               <input
                 className="input"
                 value={reachableUrl}
@@ -260,7 +262,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                   onChange={() => setApiKeyMode("auto")}
                   disabled={submitting}
                 />
-                Auto-generate
+                {t("docker.options.autoGenerate", "Auto-generate")}
               </label>
               <label className="checkbox-label">
                 <input
@@ -269,20 +271,20 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                   onChange={() => setApiKeyMode("manual")}
                   disabled={submitting}
                 />
-                Provide manually
+                {t("docker.options.provideManually", "Provide manually")}
               </label>
             </div>
 
             {apiKeyMode === "manual" && (
               <label className="docker-onboarding__field">
-                <span>API Key</span>
+                <span>{t("docker.labels.apiKey", "API Key")}</span>
                 <input
                   className="input"
                   type="password"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
                   disabled={submitting}
-                  placeholder="Enter API key"
+                  placeholder={t("docker.placeholders.apiKey", "Enter API key")}
                 />
               </label>
             )}
@@ -295,7 +297,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                   onChange={(event) => setIncludeClaudeCli(event.target.checked)}
                   disabled={submitting}
                 />
-                Claude CLI
+                {t("docker.options.claudeCli", "Claude CLI")}
               </label>
               <label className="checkbox-label">
                 <input
@@ -304,7 +306,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                   onChange={(event) => setIncludeDroidCli(event.target.checked)}
                   disabled={submitting}
                 />
-                Droid CLI
+                {t("docker.options.droidCli", "Droid CLI")}
               </label>
               <label className="checkbox-label">
                 <input
@@ -313,13 +315,13 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                   onChange={(event) => setPersistentStorage(event.target.checked)}
                   disabled={submitting}
                 />
-                Keep data across container recreations
+                {t("docker.options.persistentStorage", "Keep data across container recreations")}
               </label>
             </div>
 
             <div className="docker-onboarding__inline-fields">
               <label className="docker-onboarding__field">
-                <span>Memory (MB)</span>
+                <span>{t("docker.labels.memory", "Memory (MB)")}</span>
                 <input
                   className="input"
                   type="number"
@@ -330,7 +332,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                 />
               </label>
               <label className="docker-onboarding__field">
-                <span>CPUs</span>
+                <span>{t("docker.labels.cpus", "CPUs")}</span>
                 <input
                   className="input"
                   type="number"
@@ -353,7 +355,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
               onClick={() => setShowAdvanced((value) => !value)}
               disabled={submitting}
             >
-              <span>Advanced</span>
+              <span>{t("docker.sections.advanced", "Advanced")}</span>
               <ChevronDown />
             </button>
 
@@ -361,35 +363,35 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
               <div>
                 <div className="docker-onboarding__inline-fields">
                   <label className="docker-onboarding__field">
-                    <span>Image</span>
+                    <span>{t("docker.labels.image", "Image")}</span>
                     <input
                       className="input"
                       value={imageName}
                       onChange={(event) => setImageName(event.target.value)}
                       disabled={submitting}
-                      placeholder="runfusion/fusion"
+                      placeholder={t("docker.placeholders.image", "runfusion/fusion")}
                     />
                   </label>
                   <label className="docker-onboarding__field">
-                    <span>Tag</span>
+                    <span>{t("docker.labels.tag", "Tag")}</span>
                     <input
                       className="input"
                       value={imageTag}
                       onChange={(event) => setImageTag(event.target.value)}
                       disabled={submitting}
-                      placeholder="latest"
+                      placeholder={t("docker.placeholders.tag", "latest")}
                     />
                   </label>
                 </div>
 
 
                 <div className="docker-onboarding__kv-list">
-                  <h5>Environment Variables</h5>
+                  <h5>{t("docker.sections.environmentVariables", "Environment Variables")}</h5>
                   {envRows.map((row, index) => (
                     <div key={`env-${index}`} className="docker-onboarding__kv-row docker-onboarding__kv-row--env">
                       <input
                         className="input"
-                        placeholder="KEY"
+                        placeholder={t("docker.placeholders.envVarKey", "KEY")}
                         value={row.key}
                         disabled={submitting}
                         onChange={(event) =>
@@ -401,7 +403,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                       />
                       <input
                         className="input"
-                        placeholder="Value"
+                        placeholder={t("docker.placeholders.envVarValue", "Value")}
                         value={row.value}
                         disabled={submitting}
                         onChange={(event) =>
@@ -414,7 +416,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                       <button
                         type="button"
                         className="btn btn-icon"
-                        aria-label="Remove environment variable"
+                        aria-label={t("docker.ariaLabels.removeVariable", "Remove environment variable")}
                         onClick={() => removeEnvRow(index)}
                         disabled={submitting}
                       >
@@ -429,17 +431,17 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                     disabled={submitting}
                   >
                     <Plus size={14} />
-                    Add variable
+                    {t("docker.actions.addVariable", "Add variable")}
                   </button>
                 </div>
 
                 <div className="docker-onboarding__kv-list">
-                  <h5>Volume Mounts</h5>
+                  <h5>{t("docker.sections.volumeMounts", "Volume Mounts")}</h5>
                   {mountRows.map((row, index) => (
                     <div key={`mount-${index}`} className="docker-onboarding__kv-row docker-onboarding__kv-row--mount">
                       <input
                         className="input"
-                        placeholder="Host path"
+                        placeholder={t("docker.placeholders.hostPath", "Host path")}
                         value={row.hostPath}
                         disabled={submitting}
                         onChange={(event) =>
@@ -452,7 +454,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                       />
                       <input
                         className="input"
-                        placeholder="Container path"
+                        placeholder={t("docker.placeholders.containerPath", "Container path")}
                         value={row.containerPath}
                         disabled={submitting}
                         onChange={(event) =>
@@ -481,7 +483,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                       <button
                         type="button"
                         className="btn btn-icon"
-                        aria-label="Remove volume mount"
+                        aria-label={t("docker.ariaLabels.removeMount", "Remove volume mount")}
                         onClick={() => removeMountRow(index)}
                         disabled={submitting}
                       >
@@ -496,7 +498,7 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
                     disabled={submitting}
                   >
                     <Plus size={14} />
-                    Add mount
+                    {t("docker.actions.addMount", "Add mount")}
                   </button>
                 </div>
               </div>
@@ -506,10 +508,10 @@ export function DockerNodeOnboardingModal({ isOpen, onClose, onSubmit, addToast:
 
         <div className="modal-actions">
           <button className="btn" onClick={closeModal} disabled={submitting}>
-            Cancel
+            {t("docker.actions.cancel", "Cancel")}
           </button>
           <button className="btn btn-primary" onClick={() => void handleSubmit()} disabled={submitting}>
-            {submitting ? "Creating..." : "Create Docker Node"}
+            {submitting ? t("docker.states.creating", "Creating...") : t("docker.actions.createNode", "Create Docker Node")}
           </button>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { FileText, ChevronDown, ChevronUp, Plus, Trash2, History } from "lucide-react";
 import "./TaskDocumentsTab.css";
 import ReactMarkdown from "react-markdown";
@@ -42,6 +43,7 @@ export function TaskDocumentsTab({
   projectId,
   canEdit = false,
 }: TaskDocumentsTabProps) {
+  const { t } = useTranslation("app");
   const [documents, setDocuments] = useState<TaskDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedDocKey, setExpandedDocKey] = useState<string | null>(null);
@@ -64,7 +66,7 @@ export function TaskDocumentsTab({
       const docs = await fetchTaskDocuments(taskId, projectId);
       setDocuments(docs);
     } catch (error) {
-      addToast(getErrorMessage(error) || "Failed to load documents", "error");
+      addToast(getErrorMessage(error) || t("taskDocuments.failedToLoad", "Failed to load documents"), "error");
     } finally {
       setLoading(false);
     }
@@ -105,7 +107,7 @@ export function TaskDocumentsTab({
         const revs = await fetchTaskDocumentRevisions(taskId, docKey, projectId);
         setRevisions(revs);
       } catch (error) {
-        addToast(getErrorMessage(error) || "Failed to load revisions", "error");
+        addToast(getErrorMessage(error) || t("taskDocuments.failedToLoadRevisions", "Failed to load revisions"), "error");
       } finally {
         setLoadingRevisions(false);
       }
@@ -137,9 +139,9 @@ export function TaskDocumentsTab({
       if (updated) {
         setExpandedContent(updated.content);
       }
-      addToast("Document saved", "success");
+      addToast(t("taskDocuments.saved", "Document saved"), "success");
     } catch (error) {
-      addToast(getErrorMessage(error) || "Failed to save document", "error");
+      addToast(getErrorMessage(error) || t("taskDocuments.failedToSave", "Failed to save document"), "error");
     } finally {
       setSaving(false);
     }
@@ -151,15 +153,15 @@ export function TaskDocumentsTab({
 
     // Validate key
     if (!key) {
-      addToast("Document key is required", "error");
+      addToast(t("taskDocuments.keyRequired", "Document key is required"), "error");
       return;
     }
     if (!DOCUMENT_KEY_REGEX.test(key)) {
-      addToast("Invalid key format. Use 1-64 alphanumeric characters, hyphens, or underscores.", "error");
+      addToast(t("taskDocuments.invalidKeyFormat", "Invalid key format. Use 1-64 alphanumeric characters, hyphens, or underscores."), "error");
       return;
     }
     if (!content) {
-      addToast("Content is required", "error");
+      addToast(t("taskDocuments.contentRequired", "Content is required"), "error");
       return;
     }
 
@@ -170,9 +172,9 @@ export function TaskDocumentsTab({
       setNewDocKey("");
       setNewDocContent("");
       await loadDocuments();
-      addToast("Document created", "success");
+      addToast(t("taskDocuments.created", "Document created"), "success");
     } catch (error) {
-      addToast(getErrorMessage(error) || "Failed to create document", "error");
+      addToast(getErrorMessage(error) || t("taskDocuments.failedToCreate", "Failed to create document"), "error");
     } finally {
       setSaving(false);
     }
@@ -193,9 +195,9 @@ export function TaskDocumentsTab({
         setRevisions([]);
       }
       await loadDocuments();
-      addToast("Document deleted", "success");
+      addToast(t("taskDocuments.deleted", "Document deleted"), "success");
     } catch (error) {
-      addToast(getErrorMessage(error) || "Failed to delete document", "error");
+      addToast(getErrorMessage(error) || t("taskDocuments.failedToDelete", "Failed to delete document"), "error");
     } finally {
       setDeletingKey(null);
     }
@@ -210,41 +212,41 @@ export function TaskDocumentsTab({
   if (loading) {
     return (
       <div className="detail-section">
-        <h4>Documents</h4>
-        <div className="detail-log-empty">Loading documents…</div>
+        <h4>{t("taskDocuments.heading", "Documents")}</h4>
+        <div className="detail-log-empty">{t("taskDocuments.loading", "Loading documents…")}</div>
       </div>
     );
   }
 
   return (
     <div className="detail-section">
-      <h4>Documents</h4>
+      <h4>{t("taskDocuments.heading", "Documents")}</h4>
 
       {/* Create Form */}
       {showCreateForm && (
         <div className="task-document-create-form">
-          <h5>New Document</h5>
+          <h5>{t("taskDocuments.newDocumentTitle", "New Document")}</h5>
           <div className="form-group">
-            <label htmlFor="doc-key">Key</label>
+            <label htmlFor="doc-key">{t("taskDocuments.keyLabel", "Key")}</label>
             <input
               id="doc-key"
               type="text"
               className="task-document-key-input"
               value={newDocKey}
               onChange={(e) => setNewDocKey(e.target.value)}
-              placeholder="e.g., plan, notes, research"
+              placeholder={t("taskDocuments.keyPlaceholder", "e.g., plan, notes, research")}
               disabled={saving}
             />
-            <span className="form-hint">Alphanumeric, hyphens, underscores (1-64 chars)</span>
+            <span className="form-hint">{t("taskDocuments.keyHint", "Alphanumeric, hyphens, underscores (1-64 chars)")}</span>
           </div>
           <div className="form-group">
-            <label htmlFor="doc-content">Content</label>
+            <label htmlFor="doc-content">{t("taskDocuments.contentLabel", "Content")}</label>
             <textarea
               id="doc-content"
               value={newDocContent}
               onChange={(e) => setNewDocContent(e.target.value)}
               rows={6}
-              placeholder="Enter document content…"
+              placeholder={t("taskDocuments.contentPlaceholder", "Enter document content…")}
               disabled={saving}
             />
           </div>
@@ -258,14 +260,14 @@ export function TaskDocumentsTab({
               }}
               disabled={saving}
             >
-              Cancel
+              {t("taskDocuments.cancel", "Cancel")}
             </button>
             <button
               className="btn btn-primary btn-sm"
               onClick={() => void handleCreateDocument()}
               disabled={saving || !newDocKey.trim() || !newDocContent.trim()}
             >
-              {saving ? "Creating…" : "Create"}
+              {saving ? t("taskDocuments.creating", "Creating…") : t("taskDocuments.create", "Create")}
             </button>
           </div>
         </div>
@@ -274,7 +276,7 @@ export function TaskDocumentsTab({
       {/* Document List */}
       {documents.length === 0 && !showCreateForm ? (
         <div className="detail-log-empty">
-          No documents yet.
+          {t("taskDocuments.noDocuments", "No documents yet.")}
         </div>
       ) : (
         <div className="task-documents-list">
@@ -299,11 +301,11 @@ export function TaskDocumentsTab({
                     <button
                       className="btn btn-sm document-mode-toggle"
                       onClick={() => setRenderMarkdown((prev) => !prev)}
-                      aria-label={renderMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                      aria-label={renderMarkdown ? t("taskDocuments.switchToPlainText", "Switch to plain text") : t("taskDocuments.switchToMarkdown", "Switch to markdown")}
                       aria-pressed={renderMarkdown}
-                      title={renderMarkdown ? "Switch to plain text" : "Switch to markdown"}
+                      title={renderMarkdown ? t("taskDocuments.switchToPlainText", "Switch to plain text") : t("taskDocuments.switchToMarkdown", "Switch to markdown")}
                     >
-                      {renderMarkdown ? "Markdown" : "Plain"}
+                      {renderMarkdown ? t("taskDocuments.modeMarkdown", "Markdown") : t("taskDocuments.modePlain", "Plain")}
                     </button>
                   </div>
                   <div className="task-document-content">
@@ -321,11 +323,11 @@ export function TaskDocumentsTab({
                   {/* Revision History */}
                   {showHistory === doc.key && (
                     <div className="task-document-revisions">
-                      <h5>Revision History</h5>
+                      <h5>{t("taskDocuments.revisionHistory", "Revision History")}</h5>
                       {loadingRevisions ? (
-                        <div className="detail-log-empty">Loading…</div>
+                        <div className="detail-log-empty">{t("taskDocuments.loadingRevisions", "Loading…")}</div>
                       ) : revisions.length <= 1 ? (
-                        <div className="detail-log-empty">No previous revisions.</div>
+                        <div className="detail-log-empty">{t("taskDocuments.noPreviousRevisions", "No previous revisions.")}</div>
                       ) : (
                         <div className="task-document-revision-list">
                           {revisions
@@ -363,14 +365,14 @@ export function TaskDocumentsTab({
                   />
                   <div className="form-actions">
                     <button className="btn btn-sm" onClick={handleCancelEdit} disabled={saving}>
-                      Cancel
+                      {t("taskDocuments.cancel", "Cancel")}
                     </button>
                     <button
                       className="btn btn-primary btn-sm"
                       onClick={() => void handleSaveEdit()}
                       disabled={saving || !editContent.trim()}
                     >
-                      {saving ? "Saving…" : "Save"}
+                      {saving ? t("taskDocuments.saving", "Saving…") : t("taskDocuments.save", "Save")}
                     </button>
                   </div>
                 </div>
@@ -384,11 +386,11 @@ export function TaskDocumentsTab({
                 >
                   {expandedDocKey === doc.key ? (
                     <>
-                      <ChevronUp size={14} /> Collapse
+                      <ChevronUp size={14} /> {t("taskDocuments.collapse", "Collapse")}
                     </>
                   ) : (
                     <>
-                      <ChevronDown size={14} /> Expand
+                      <ChevronDown size={14} /> {t("taskDocuments.expand", "Expand")}
                     </>
                   )}
                 </button>
@@ -399,32 +401,32 @@ export function TaskDocumentsTab({
                       className="btn btn-sm"
                       onClick={() => void handleToggleHistory(doc.key)}
                     >
-                      <History size={14} /> History
+                      <History size={14} /> {t("taskDocuments.history", "History")}
                     </button>
 
                     {canEdit && editingDocKey !== doc.key && (
                       <button className="btn btn-sm" onClick={handleStartEdit}>
-                        Edit
+                        {t("taskDocuments.edit", "Edit")}
                       </button>
                     )}
 
                     {canEdit && (
                       confirmDelete === doc.key ? (
                         <div className="confirm-delete-actions">
-                          <span>Delete?</span>
+                          <span>{t("taskDocuments.deleteConfirm", "Delete?")}</span>
                           <button
                             className="btn btn-danger btn-sm"
                             onClick={() => void handleDeleteDocument(doc.key)}
                             disabled={deletingKey === doc.key}
                           >
-                            {deletingKey === doc.key ? "…" : "Yes"}
+                            {deletingKey === doc.key ? "…" : t("taskDocuments.yes", "Yes")}
                           </button>
                           <button
                             className="btn btn-sm"
                             onClick={() => setConfirmDelete(null)}
                             disabled={deletingKey === doc.key}
                           >
-                            No
+                            {t("taskDocuments.no", "No")}
                           </button>
                         </div>
                       ) : (
@@ -450,7 +452,7 @@ export function TaskDocumentsTab({
           className="btn btn-sm task-document-new-btn"
           onClick={() => setShowCreateForm(true)}
         >
-          <Plus size={14} /> New Document
+          <Plus size={14} /> {t("taskDocuments.newDocumentButton", "New Document")}
         </button>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import {
   fetchFnBinaryStatus,
@@ -45,6 +46,7 @@ function persistDismissal(): void {
  * Binary panel always lets the user reinstall later.
  */
 export function CliBinaryInstallBanner({ onOpenSettings }: Props) {
+  const { t } = useTranslation("app");
   const [status, setStatus] = useState<FnBinaryStatus | null>(null);
   const [dismissed, setDismissed] = useState<boolean>(() => isDismissed());
   const [installing, setInstalling] = useState(false);
@@ -106,21 +108,20 @@ export function CliBinaryInstallBanner({ onOpenSettings }: Props) {
   const isMismatch = status.state === "version-mismatch";
   const installedVersion = status.binary.version;
   const targetVersion = status.expectedVersion;
-  const title = isMismatch ? "Update the Fusion CLI" : "Install the Fusion CLI";
+  const title = isMismatch ? t("cli.updateTitle", "Update the Fusion CLI") : t("cli.installTitle", "Install the Fusion CLI");
   const body = isMismatch ? (
     <>
-      Your installed <code>fn</code>/<code>fusion</code> CLI is{" "}
-      <strong>v{installedVersion ?? "unknown"}</strong> but this dashboard expects{" "}
-      <strong>v{targetVersion}</strong>. Update to stay in sync.
+      {t("cli.versionMismatchPrefix", "Your installed")} <code>fn</code>/<code>fusion</code> CLI is{" "}
+      <strong>v{installedVersion ?? "unknown"}</strong> {t("cli.versionMismatchInfix", "but this dashboard expects")} {" "}
+      <strong>v{targetVersion}</strong>. {t("cli.versionMismatchSuffix", "Update to stay in sync.")}
     </>
   ) : (
     <>
-      Get the <code>fn</code> and <code>fusion</code> commands on your terminal so you
-      can drive Fusion from anywhere. One click below or copy the command into your shell.
+      {t("cli.installBody", "Get the {{fn}} and {{fusion}} commands on your terminal so you can drive Fusion from anywhere. One click below or copy the command into your shell.", { fn: "fn", fusion: "fusion" })}
     </>
   );
-  const idleLabel = isMismatch ? "Update with npm" : "Install with npm";
-  const busyLabel = isMismatch ? "Updating…" : "Installing…";
+  const idleLabel = isMismatch ? t("cli.updateButton", "Update with npm") : t("cli.installButton", "Install with npm");
+  const busyLabel = isMismatch ? t("cli.updating", "Updating…") : t("cli.installing", "Installing…");
 
   return (
     <div className="cli-binary-banner" role="status">
@@ -141,7 +142,7 @@ export function CliBinaryInstallBanner({ onOpenSettings }: Props) {
             className="cli-binary-banner__secondary"
             onClick={onOpenSettings}
           >
-            Open Settings
+            {t("cli.openSettings", "Open Settings")}
           </button>
         </div>
         {installError && (
@@ -151,7 +152,7 @@ export function CliBinaryInstallBanner({ onOpenSettings }: Props) {
       <button
         type="button"
         className="cli-binary-banner__dismiss"
-        aria-label="Dismiss"
+        aria-label={t("actions.dismiss", "Dismiss")}
         onClick={handleDismiss}
       >
         <X size={16} />

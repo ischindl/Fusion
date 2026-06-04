@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { FileCode, ChevronDown, ChevronRight, ChevronLeft, AlertCircle, GitCommit, WrapText, Maximize2 } from "lucide-react";
 import type { MergeDetails, Column } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
@@ -50,7 +51,10 @@ function renderModifiedFilesFallback(
   isDone: boolean,
   mergeDetails?: MergeDetails,
   source: "landed" | "execution" = "execution",
+  t?: ReturnType<typeof useTranslation>["t"],
 ) {
+  const getT = (key: string, defaultValue: string, options?: Record<string, unknown>) =>
+    t ? t(key, defaultValue, options) : defaultValue;
   return (
     <div className="detail-section task-changes-tab">
       {isDone && mergeDetails && (
@@ -63,21 +67,21 @@ function renderModifiedFilesFallback(
           )}
           {mergeDetails.mergedAt && (
             <div className="commit-diff-timestamp">
-              Merged {new Date(mergeDetails.mergedAt).toLocaleString()}
+              {getT("taskChanges.merged", "Merged {{date}}", { date: new Date(mergeDetails.mergedAt).toLocaleString() })}
             </div>
           )}
         </div>
       )}
       <div className="task-changes-state task-changes-state--empty">
         <FileCode size={24} />
-        <p>{fileList.length} file{fileList.length === 1 ? "" : "s"} changed.</p>
+        <p>{getT(`taskChanges.fileCount`, "{{count}} file{{plural}} changed.", { count: fileList.length, plural: fileList.length === 1 ? "" : "s" })}</p>
         <span className="task-changes-state-hint">
           {isDone
             // FN-4647: done-task fallback must explicitly describe executor-captured scope.
             ? source === "landed"
-              ? "These are files captured from the merged commit metadata. The lineage-backed diff is unavailable for this task."
-              : "These are files captured from the worktree during execution. They may differ from the files that actually landed on main. The lineage-backed diff is unavailable for this task."
-            : "The live worktree diff is empty. Showing the last file paths captured during execution — patches unavailable."}
+              ? getT("taskChanges.landedFilesHint", "These are files captured from the merged commit metadata. The lineage-backed diff is unavailable for this task.")
+              : getT("taskChanges.executionFilesHint", "These are files captured from the worktree during execution. They may differ from the files that actually landed on main. The lineage-backed diff is unavailable for this task.")
+            : getT("taskChanges.emptyWorktreeHint", "The live worktree diff is empty. Showing the last file paths captured during execution — patches unavailable.")}
         </span>
       </div>
       <div className="changes-file-list task-changes-file-list--compact">
@@ -86,7 +90,7 @@ function renderModifiedFilesFallback(
             <div className="changes-file-header changes-file-header--static">
               <span
                 className="changes-file-status changes-file-status--unknown"
-                title="status unknown"
+                title={getT("taskChanges.statusUnknown", "status unknown")}
               >
                 {getStatusLabel("unknown")}
               </span>
@@ -123,6 +127,7 @@ interface NormalizedFile {
  * graceful behavior while allowing FN-4563/FN-4576 lineage-backed parity.
  */
 export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetails, modifiedFiles }: TaskChangesTabProps) {
+  const { t } = useTranslation("app");
   const [files, setFiles] = useState<NormalizedFile[]>([]);
   const [stats, setStats] = useState<{ filesChanged: number; additions: number; deletions: number }>({ filesChanged: 0, additions: 0, deletions: 0 });
   const [loading, setLoading] = useState(true);
@@ -173,7 +178,7 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
         setStats({ filesChanged: 0, additions: 0, deletions: 0 });
         setError(null);
       } else {
-        setError(getErrorMessage(err) || "Failed to load task changes");
+        setError(getErrorMessage(err) || t("taskChanges.loadError", "Failed to load task changes"));
       }
     } finally {
       setLoading(false);
@@ -217,7 +222,7 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--loading">
           <div className="loading-spinner" />
-          <span>Loading changes...</span>
+          <span>{t("taskChanges.loading", "Loading changes...")}</span>
         </div>
       </div>
     );
@@ -228,7 +233,7 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--error">
           <AlertCircle size={16} />
-          <span>Error loading changes: {error}</span>
+          <span>{t("taskChanges.error", "Error loading changes: {{error}}", { error })}</span>
         </div>
       </div>
     );
@@ -237,16 +242,16 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
   // Non-done task without a worktree → only show fallback state when branch-fallback diff is empty.
   if (!isDone && !worktree && files.length === 0) {
     if (modifiedFiles && modifiedFiles.length > 0) {
-      return renderModifiedFilesFallback(modifiedFiles, false);
+      return renderModifiedFilesFallback(modifiedFiles, false, undefined, "execution", t);
     }
 
     return (
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--empty">
           <FileCode size={24} />
-          <p>No worktree available for this task.</p>
+          <p>{t("taskChanges.noWorktree", "No worktree available for this task.")}</p>
           <span className="task-changes-state-hint">
-            Changes will be shown once the task is in progress.
+            {t("taskChanges.noWorktreeHint", "Changes will be shown once the task is in progress.")}
           </span>
         </div>
       </div>
@@ -260,7 +265,7 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
         ? mergeDetails.landedFiles
         : modifiedFiles;
       if (doneFallbackFiles && doneFallbackFiles.length > 0) {
-        return renderModifiedFilesFallback(doneFallbackFiles, true, mergeDetails, mergeDetails?.landedFiles?.length ? "landed" : "execution");
+        return renderModifiedFilesFallback(doneFallbackFiles, true, mergeDetails, mergeDetails?.landedFiles?.length ? "landed" : "execution", t);
       }
 
       const summaryFiles = mergeDetails?.filesChanged;
@@ -272,11 +277,11 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
         <div className="detail-section">
           <div className="task-changes-state task-changes-state--empty">
             <FileCode size={24} />
-            <p>Detailed file changes unavailable.</p>
+            <p>{t("taskChanges.unavailable", "Detailed file changes unavailable.")}</p>
             <span className="task-changes-state-hint">
               {hasSummary
-                ? `Final commit summary: ${summaryFiles ?? 0} file${(summaryFiles ?? 0) === 1 ? "" : "s"} changed, +${summaryAdditions ?? 0} additions, -${summaryDeletions ?? 0} deletions. Counts only the recorded merge/squash commit, not the full task lineage.`
-                : "No merge commit was recorded for this task."}
+                ? t("taskChanges.summaryHint", "Final commit summary: {{files}} file{{plural}} changed, +{{additions}} additions, -{{deletions}} deletions. Counts only the recorded merge/squash commit, not the full task lineage.", { files: summaryFiles ?? 0, plural: (summaryFiles ?? 0) === 1 ? "" : "s", additions: summaryAdditions ?? 0, deletions: summaryDeletions ?? 0 })
+                : t("taskChanges.noMergeCommit", "No merge commit was recorded for this task.")}
             </span>
           </div>
         </div>
@@ -284,18 +289,18 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
     }
 
     if (!isDone && modifiedFiles && modifiedFiles.length > 0) {
-      return renderModifiedFilesFallback(modifiedFiles, isDone, mergeDetails);
+      return renderModifiedFilesFallback(modifiedFiles, isDone, mergeDetails, "execution", t);
     }
 
     return (
       <div className="detail-section task-changes-tab">
         <div className="task-changes-state task-changes-state--empty">
           <FileCode size={24} />
-          <p>No files modified.</p>
+          <p>{t("taskChanges.noFilesModified", "No files modified.")}</p>
           <span className="task-changes-state-hint">
             {isDone
-              ? "No file changes were recorded in the merge commit."
-              : "The agent did not modify any files during execution."}
+              ? t("taskChanges.noMergeFileChanges", "No file changes were recorded in the merge commit.")
+              : t("taskChanges.noExecutionModifications", "The agent did not modify any files during execution.")}
           </span>
         </div>
       </div>
@@ -318,14 +323,14 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
           )}
           {mergeDetails.mergedAt && (
             <div className="commit-diff-timestamp">
-              Merged {new Date(mergeDetails.mergedAt).toLocaleString()}
+              {t("taskChanges.mergedAt", "Merged {{date}}", { date: new Date(mergeDetails.mergedAt).toLocaleString() })}
             </div>
           )}
           {mergeDetails.noOpVerifiedShortCircuit && (
-            <div className="text-muted">Verified short-circuit — work was already on main (rebase walked foreign commits).</div>
+            <div className="text-muted">{t("taskChanges.noOpShortCircuit", "Verified short-circuit — work was already on main (rebase walked foreign commits).")}</div>
           )}
           {mergeDetails.landedFilesCaptureFallback === "attribution-failed" && (
-            <div className="text-muted">Landed-files set may include foreign commits (attribution unavailable).</div>
+            <div className="text-muted">{t("taskChanges.attributionFailed", "Landed-files set may include foreign commits (attribution unavailable).")}</div>
           )}
         </div>
       )}
@@ -334,7 +339,7 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
         <div className="task-changes-header-title">
           <h4>
             <FileCode size={16} />
-            Files Changed ({stats.filesChanged})
+            {t("taskChanges.filesChangedHeading", "Files Changed ({{count}})", { count: stats.filesChanged })}
           </h4>
           <span className="task-changes-stats changes-stat-summary">
             <span className="diff-add">+{stats.additions}</span>{" "}
@@ -349,8 +354,8 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
                   className="btn btn-sm btn-icon"
                   onClick={() => canGoPrev && navigateToFile(currentFileIndex! - 1)}
                   disabled={!canGoPrev}
-                  title="Previous file"
-                  aria-label="Previous file"
+                  title={t("taskChanges.previousFile", "Previous file")}
+                  aria-label={t("taskChanges.previousFile", "Previous file")}
                 >
                   <ChevronLeft />
                 </button>
@@ -361,8 +366,8 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
                   className="btn btn-sm btn-icon"
                   onClick={() => canGoNext && navigateToFile(currentFileIndex! + 1)}
                   disabled={!canGoNext}
-                  title="Next file"
-                  aria-label="Next file"
+                  title={t("taskChanges.nextFile", "Next file")}
+                  aria-label={t("taskChanges.nextFile", "Next file")}
                 >
                   <ChevronRight />
                 </button>
@@ -371,8 +376,8 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
             <button
               className={`btn btn-sm ${wordWrap ? "btn-primary" : ""}`}
               onClick={() => setWordWrap((prev) => !prev)}
-              title={wordWrap ? "Disable word wrap" : "Enable word wrap"}
-              aria-label="Toggle word wrap"
+              title={t(`taskChanges.${wordWrap ? "disableWordWrap" : "enableWordWrap"}`, wordWrap ? "Disable word wrap" : "Enable word wrap")}
+              aria-label={t("taskChanges.toggleWordWrap", "Toggle word wrap")}
             >
               <WrapText size={14} />
             </button>
@@ -383,13 +388,13 @@ export function TaskChangesTab({ taskId, worktree, projectId, column, mergeDetai
               onClick={loadDiff}
               disabled={loading}
             >
-              Refresh
+              {t("common.refresh", "Refresh")}
             </button>
             <button
               className="btn btn-sm btn-icon"
               onClick={() => setExpandedViewOpen(true)}
-              title="Expand to full-screen diff view"
-              aria-label="Expand diff view"
+              title={t("taskChanges.expandDiff", "Expand to full-screen diff view")}
+              aria-label={t("taskChanges.expandDiffView", "Expand diff view")}
             >
               <Maximize2 />
             </button>

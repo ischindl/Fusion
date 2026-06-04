@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { PlanningQuestion } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
@@ -111,6 +112,7 @@ export function MissionInterviewModal({
   onSendToBackground,
   showSendToBackgroundButton = false,
 }: MissionInterviewModalProps) {
+  const { t } = useTranslation("app");
   useMobileScrollLock(isOpen);
   const [missionGoal, setMissionGoal] = useState("");
   const [view, setView] = useState<ViewState>({ type: "initial" });
@@ -271,7 +273,7 @@ export function MissionInterviewModal({
           });
         },
         onError: (message) => {
-          const errorMessage = message || "Session failed while contacting the AI.";
+          const errorMessage = message || t("missions.interviewErrorDefault", "Session failed while contacting the AI.");
           setIsReconnecting(false);
           setIsRetrying(false);
           setError(null);
@@ -753,20 +755,20 @@ export function MissionInterviewModal({
         <div className="modal-header">
           <div className="detail-title-row">
             <Target size={20} className="icon-triage" />
-            <h3>Plan Mission with AI</h3>
+            <h3>{t("missions.planTitle", "Plan Mission with AI")}</h3>
           </div>
           <div className="modal-header-actions">
             {canSendToBackground && (
               <button
                 className="modal-send-to-background"
                 onClick={handleSendToBackground}
-                title="Send to background"
-                aria-label="Send to background"
+                title={t("missions.sendToBackground", "Send to background")}
+                aria-label={t("missions.sendToBackground", "Send to background")}
               >
                 <Minimize2 size={16} />
               </button>
             )}
-            <button className="modal-close" onClick={handleClose} aria-label="Close">
+            <button className="modal-close" onClick={handleClose} aria-label={t("actions.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -774,10 +776,10 @@ export function MissionInterviewModal({
 
         <div className="planning-modal-body">
           {error && <div className="form-error planning-error">{error}</div>}
-          {isReconnecting && <div className="form-hint text-muted">Reconnecting…</div>}
+          {isReconnecting && <div className="form-hint text-muted">{t("missions.reconnecting", "Reconnecting…")}</div>}
           {activeInAnotherTab && (
             <div className="form-hint text-muted" data-testid="session-active-another-tab-banner">
-              Session is active in another tab.
+              {t("missions.sessionActiveAnother", "Session is active in another tab.")}
             </div>
           )}
 
@@ -786,22 +788,20 @@ export function MissionInterviewModal({
               <div className="planning-view-scroll">
                 <div className="planning-intro">
                   <Sparkles size={32} className="icon-triage-lg" />
-                  <h4>Transform your vision into a structured mission</h4>
+                  <h4>{t("missions.transformVision", "Transform your vision into a structured mission")}</h4>
                   <p className="text-muted">
-                    Describe what you want to build. The AI will interview you to understand scope,
-                    constraints, and requirements, then produce a structured plan with milestones,
-                    slices, and features.
+                    {t("missions.describeGoal", "Describe what you want to build. The AI will interview you to understand scope, constraints, and requirements, then produce a structured plan with milestones, slices, and features.")}
                   </p>
                 </div>
 
                 <div className="form-group">
-                  <label htmlFor="mission-goal">What do you want to build?</label>
+                  <label htmlFor="mission-goal">{t("missions.whatToBuild", "What do you want to build?")}</label>
                   <textarea
                     ref={textareaRef}
                     id="mission-goal"
                     rows={4}
                     className="planning-textarea"
-                    placeholder="e.g., Build a real-time collaborative document editor with presence, comments, and version history..."
+                    placeholder={t("missions.buildExample", "e.g., Build a real-time collaborative document editor with presence, comments, and version history...")}
                     value={missionGoal}
                     onChange={(e) => setMissionGoal(e.target.value)}
                     onKeyDown={(e) => {
@@ -814,7 +814,7 @@ export function MissionInterviewModal({
                 </div>
 
                 <div className="planning-examples">
-                  <span className="planning-examples-label">Try an example:</span>
+                  <span className="planning-examples-label">{t("missions.tryExample", "Try an example:")}</span>
                   <div className="planning-example-chips">
                     {EXAMPLE_MISSIONS.map((mission, i) => (
                       <button
@@ -830,10 +830,10 @@ export function MissionInterviewModal({
 
                 <div className="planning-model-select-group">
                   <label htmlFor="mission-interview-modal-model" className="form-label">
-                    Planning Model
+                    {t("missions.planningModel", "Planning Model")}
                     {modelsLoading && (
                       <span className="text-muted text-muted-sm">
-                        Loading models…
+                        {t("missions.loadingModels", "Loading models…")}
                       </span>
                     )}
                   </label>
@@ -869,14 +869,14 @@ export function MissionInterviewModal({
                               setFavoriteModels(resp.favoriteModels);
                               setModelsError(null);
                             } catch (err) {
-                              setModelsError(getErrorMessage(err) || "Failed to load models");
+                              setModelsError(getErrorMessage(err) || t("missions.failedLoadModels", "Failed to load models"));
                             } finally {
                               setModelsLoading(false);
                             }
                           })();
                         }}
                       >
-                        Retry
+                        {t("actions.retry", "Retry")}
                       </button>
                     </div>
                   )}
@@ -901,7 +901,7 @@ export function MissionInterviewModal({
                   disabled={!missionGoal.trim()}
                 >
                   <Target size={16} className="icon-mr-8" />
-                  Start Interview
+                  {t("missions.startInterview", "Start Interview")}
                 </button>
               </div>
             </div>
@@ -910,14 +910,14 @@ export function MissionInterviewModal({
           {view.type === "loading" && (
             <div className="planning-loading">
               <Loader2 size={40} className="spin icon-todo" />
-              <p>{streamingOutput ? "AI is thinking..." : "Preparing next question..."}</p>
+              <p>{streamingOutput ? t("missions.aiThinking", "AI is thinking...") : t("missions.prepareQuestion", "Preparing next question...")}</p>
               <div className="planning-thinking-container">
                 <button
                   className="planning-thinking-toggle"
                   onClick={() => setShowThinking(!showThinking)}
                   type="button"
                 >
-                  {showThinking ? "Hide thinking" : "Show thinking"}
+                  {showThinking ? t("missions.hideThinking", "Hide thinking") : t("missions.showThinking", "Show thinking")}
                 </button>
                 {showThinking && streamingOutput && (
                   <div className="planning-thinking-output">
@@ -947,9 +947,9 @@ export function MissionInterviewModal({
                   <div className="ai-error-actions">
                     <button className="btn btn-primary" onClick={() => void handleRetryFromError()} disabled={isRetrying}>
                       {isRetrying ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-                      <span className="icon-ml-6">{isRetrying ? "Retrying..." : "Retry"}</span>
+                      <span className="icon-ml-6">{isRetrying ? t("missions.retrying", "Retrying...") : t("actions.retry", "Retry")}</span>
                     </button>
-                    <button className="btn" onClick={handleClose} disabled={isRetrying}>Dismiss</button>
+                    <button className="btn" onClick={handleClose} disabled={isRetrying}>{t("missions.dismiss", "Dismiss")}</button>
                   </div>
                 </div>
               </div>
@@ -991,8 +991,8 @@ export function MissionInterviewModal({
                 <Lock size={16} />
                 <span>
                   {allowTakeover
-                    ? "This session is active in another tab"
-                    : "This session is active in another tab (live heartbeat)"}
+                    ? t("missions.sessionActiveTab", "This session is active in another tab")
+                    : t("missions.sessionActiveHeartbeat", "This session is active in another tab (live heartbeat)")}
                 </span>
                 {allowTakeover && (
                   <button
@@ -1003,7 +1003,7 @@ export function MissionInterviewModal({
                     disabled={isLockLoading}
                     className="btn btn-primary session-lock-take-control"
                   >
-                    {isLockLoading ? "Taking control..." : "Take Control"}
+                    {isLockLoading ? t("missions.takingControl", "Taking control...") : t("missions.takeControl", "Take Control")}
                   </button>
                 )}
               </div>
@@ -1025,6 +1025,7 @@ interface InterviewQuestionFormProps {
 }
 
 function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }: InterviewQuestionFormProps) {
+  const { t } = useTranslation("app");
   const [response, setResponse] = useState<QuestionResponse>({});
   const [textValue, setTextValue] = useState("");
   const [commentValue, setCommentValue] = useState("");
@@ -1089,7 +1090,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                 />
               ))}
             </div>
-            <span className="planning-progress-text">Question {progress} of ~6</span>
+            <span className="planning-progress-text">{t("missions.progressText", "Question {{count}} of ~6", { count: progress })}</span>
           </div>
 
           <div className="planning-question-content">
@@ -1103,7 +1104,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                 <textarea
                   className="planning-textarea"
                   rows={4}
-                  placeholder="Type your answer here..."
+                  placeholder={t("missions.typeAnswer", "Type your answer here...")}
                   value={textValue}
                   onChange={(e) => setTextValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -1173,14 +1174,14 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                     onClick={() => setResponse({ [question.id]: true })}
                   >
                     <CheckCircle size={18} />
-                    Yes
+                    {t("actions.yes", "Yes")}
                   </button>
                   <button
                     className={`planning-confirm-btn ${response[question.id] === false ? "selected" : ""}`}
                     onClick={() => setResponse({ [question.id]: false })}
                   >
                     <X size={18} />
-                    No
+                    {t("actions.no", "No")}
                   </button>
                 </div>
               )}
@@ -1189,13 +1190,13 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
             {question.type !== "text" && (
               <div className="planning-comment-section">
                 <label className="planning-comment-label" htmlFor={`planning-comment-${question.id}`}>
-                  Additional comments (optional)
+                  {t("missions.additionalComments", "Additional comments (optional)")}
                 </label>
                 <textarea
                   id={`planning-comment-${question.id}`}
                   className="planning-textarea"
                   rows={2}
-                  placeholder="Add any extra context or direction..."
+                  placeholder={t("missions.addContext", "Add any extra context or direction...")}
                   value={commentValue}
                   onChange={(e) => setCommentValue(e.target.value)}
                 />
@@ -1211,7 +1212,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
           onClick={handleSubmit}
           disabled={!isValid()}
         >
-          Continue
+          {t("actions.continue", "Continue")}
           <ArrowRight size={16} className="icon-ml-4" />
         </button>
       </div>
@@ -1238,6 +1239,7 @@ function MissionPlanReview({
   onStartOver,
   isCreating,
 }: MissionPlanReviewProps) {
+  const { t } = useTranslation("app");
   const [expandedMilestones, setExpandedMilestones] = useState<Set<number>>(
     () => new Set(summary.milestones.map((_, i) => i))
   );
@@ -1346,16 +1348,16 @@ function MissionPlanReview({
 
         <div className="planning-summary-header">
           <CheckCircle size={24} className="icon-success" />
-          <h4>Mission Plan Ready</h4>
+          <h4>{t("missions.planReady", "Mission Plan Ready")}</h4>
           <p className="text-muted">
-            {summary.milestones.length} milestones, {totalFeatures} features. Review and edit before approving.
+            {t("missions.summaryStats", "{{milestones}} milestones, {{features}} features. Review and edit before approving.", { milestones: summary.milestones.length, features: totalFeatures })}
           </p>
         </div>
 
         <div className="planning-summary-form">
           {/* Mission title & description */}
           <div className="form-group">
-            <label>Mission Title</label>
+            <label>{t("missions.titleLabel", "Mission Title")}</label>
             <input
               type="text"
               className="form-input"
@@ -1364,7 +1366,7 @@ function MissionPlanReview({
             />
           </div>
           <div className="form-group">
-            <label>Mission Description</label>
+            <label>{t("missions.descriptionLabel", "Mission Description")}</label>
             <textarea
               className="planning-textarea"
               rows={3}
@@ -1375,7 +1377,7 @@ function MissionPlanReview({
 
           {/* Milestones hierarchy */}
           <div className="form-group">
-            <label>Roadmap</label>
+            <label>{t("missions.roadmapLabel", "Roadmap")}</label>
             <div className="roadmap-list">
               {summary.milestones.map((milestone, mi) => (
                 <div
@@ -1407,7 +1409,7 @@ function MissionPlanReview({
                           e.stopPropagation();
                           removeMilestone(mi);
                         }}
-                        title="Remove milestone"
+                        title={t("missions.removeMilestone", "Remove milestone")}
                       >
                         <Trash2 size={14} className="icon-text-secondary" />
                       </button>
@@ -1419,18 +1421,18 @@ function MissionPlanReview({
                       <textarea
                         className="planning-textarea roadmap-textarea-md"
                         rows={2}
-                        placeholder="Milestone description..."
+                        placeholder={t("missions.milestoneDescriptionPlaceholder", "Milestone description...")}
                         value={milestone.description || ""}
                         onChange={(e) => updateMilestone(mi, { description: e.target.value })}
                       />
                       <div className="roadmap-field-group">
                         <label className="roadmap-field-label">
-                          Verification Criteria
+                          {t("missions.verificationCriteria", "Verification Criteria")}
                         </label>
                         <textarea
                           className="planning-textarea roadmap-textarea-sm"
                           rows={2}
-                          placeholder="How to confirm this milestone is complete..."
+                          placeholder={t("missions.confirmMilestonePlaceholder", "How to confirm this milestone is complete...")}
                           value={milestone.verification || ""}
                           onChange={(e) => updateMilestone(mi, { verification: e.target.value })}
                         />
@@ -1468,7 +1470,7 @@ function MissionPlanReview({
                                     e.stopPropagation();
                                     removeSlice(mi, si);
                                   }}
-                                  title="Remove slice"
+                                  title={t("missions.removeSlice", "Remove slice")}
                                 >
                                   <Trash2 size={12} className="icon-text-secondary" />
                                 </button>
@@ -1480,12 +1482,12 @@ function MissionPlanReview({
                                 {/* Slice verification */}
                                 <div className="roadmap-slice-field-group">
                                   <label className="roadmap-field-label">
-                                    Slice Verification
+                                    {t("missions.sliceVerification", "Slice Verification")}
                                   </label>
                                   <textarea
                                     className="planning-textarea roadmap-textarea-xs"
                                     rows={1}
-                                    placeholder="How to confirm this slice is done..."
+                                    placeholder={t("missions.confirmSlicePlaceholder", "How to confirm this slice is done...")}
                                     value={slice.verification || ""}
                                     onChange={(e) => updateSlice(mi, si, { verification: e.target.value })}
                                   />
@@ -1520,7 +1522,7 @@ function MissionPlanReview({
                                     <button
                                       className="btn-icon roadmap-shrink"
                                       onClick={() => removeFeature(mi, si, fi)}
-                                      title="Remove feature"
+                                      title={t("missions.removeFeature", "Remove feature")}
                                     >
                                       <Trash2 size={12} className="icon-text-secondary" />
                                     </button>
@@ -1532,7 +1534,7 @@ function MissionPlanReview({
                                   onClick={() => addFeature(mi, si)}
                                 >
                                   <Plus size={12} />
-                                  Add Feature
+                                  {t("missions.addFeature", "Add Feature")}
                                 </button>
                               </div>
                             )}
@@ -1551,7 +1553,7 @@ function MissionPlanReview({
       <div className="planning-actions planning-summary-actions">
         <button className="btn" onClick={onStartOver} disabled={isCreating}>
           <ArrowLeft size={16} className="icon-mr-4" />
-          Start Over
+          {t("missions.startOver", "Start Over")}
         </button>
         <button
           className="btn btn-primary"
@@ -1561,12 +1563,12 @@ function MissionPlanReview({
           {isCreating ? (
             <>
               <Loader2 size={16} className="spin icon-mr-8" />
-              Creating Mission...
+              {t("missions.creatingMission", "Creating Mission...")}
             </>
           ) : (
             <>
               <CheckCircle size={16} className="icon-mr-8" />
-              Approve Plan
+              {t("missions.approvePlan", "Approve Plan")}
             </>
           )}
         </button>

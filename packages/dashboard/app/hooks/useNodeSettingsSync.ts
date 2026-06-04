@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import {
   fetchNodeSettingsSyncStatus,
   pushNodeSettings,
@@ -138,6 +139,7 @@ const POLL_INTERVAL_MS = 30_000; // 30 seconds
  * skeleton flicker and scroll position resets during periodic updates (FN-1734).
  */
 export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
+  const { t } = useTranslation("app");
   const [syncStatusMap, setSyncStatusMap] = useState<Record<string, NodeSettingsSyncStatus>>({});
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
@@ -167,9 +169,9 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
     } catch (err) {
       // Keep stale data visible during polling failures
       console.error(`Failed to fetch sync status for node ${nodeId}:`, err);
-      setError(err instanceof Error ? err.message : "Failed to fetch sync status");
+      setError(err instanceof Error ? err.message : t("nodeSync.error.failedToFetchStatus", "Failed to fetch sync status"));
     }
-  }, []);
+  }, [t]);
 
   /**
    * Refresh sync status for all tracked nodes.
@@ -203,18 +205,18 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
       // Check if any failed
       const failures = results.filter((r) => r.status === "rejected");
       if (failures.length > 0) {
-        setError("Some sync status requests failed");
+        setError(t("nodeSync.error.someRequestsFailed", "Some sync status requests failed"));
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to fetch sync status");
+      setError(err instanceof Error ? err.message : t("nodeSync.error.failedToFetchStatus", "Failed to fetch sync status"));
       initialLoadCompleteRef.current = true;
     } finally {
       setLoading(false);
     }
-  }, [fetchNodeStatus]);
+  }, [fetchNodeStatus, t]);
 
   /**
    * Start polling sync status for all tracked nodes.
@@ -294,7 +296,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
       }
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Push settings failed";
+      const message = err instanceof Error ? err.message : t("nodeSync.error.pushFailed", "Push settings failed");
       setError(message);
       throw err;
     } finally {
@@ -304,7 +306,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
         return next;
       });
     }
-  }, [fetchNodeStatus]);
+  }, [fetchNodeStatus, t]);
 
   /**
    * Pull settings from a remote node.
@@ -322,7 +324,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
       }
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Pull settings failed";
+      const message = err instanceof Error ? err.message : t("nodeSync.error.pullFailed", "Pull settings failed");
       setError(message);
       throw err;
     } finally {
@@ -332,7 +334,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
         return next;
       });
     }
-  }, [fetchNodeStatus]);
+  }, [fetchNodeStatus, t]);
 
   /**
    * Sync auth credentials with a remote node.
@@ -344,7 +346,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
     try {
       return await syncNodeAuth(nodeId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Auth sync failed";
+      const message = err instanceof Error ? err.message : t("nodeSync.error.authSyncFailed", "Auth sync failed");
       setError(message);
       throw err;
     } finally {
@@ -354,7 +356,7 @@ export function useNodeSettingsSync(): UseNodeSettingsSyncResult {
         return next;
       });
     }
-  }, []);
+  }, [t]);
 
   /**
    * Get auth sync state for a specific node.

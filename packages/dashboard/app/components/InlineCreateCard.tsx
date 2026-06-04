@@ -1,6 +1,7 @@
 import "./InlineCreateCard.css";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { Brain, Link, Lightbulb, ListTree, Zap, ChevronDown, ChevronUp, Bot, Maximize2, Minimize2, Server } from "lucide-react";
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, type Task, type TaskPriority, type Settings } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
@@ -45,11 +46,11 @@ interface InlineCreateCardProps {
   onSubtaskBreakdown?: (description: string) => void;
 }
 
-function getNodeStatusLabel(status: NodeInfo["status"]): string {
-  if (status === "online") return "Online";
-  if (status === "connecting") return "Connecting";
-  if (status === "error") return "Error";
-  return "Offline";
+function getNodeStatusLabel(status: NodeInfo["status"], t?: (key: string, defaultValue: string) => string): string {
+  if (status === "online") return t ? t("inline.online", "Online") : "Online";
+  if (status === "connecting") return t ? t("inline.connecting", "Connecting") : "Connecting";
+  if (status === "error") return t ? t("inline.error", "Error") : "Error";
+  return t ? t("inline.offline", "Offline") : "Offline";
 }
 
 function getModelSelectionValue(provider?: string, modelId?: string): string {
@@ -82,6 +83,7 @@ export function InlineCreateCard({
   onPlanningMode,
   onSubtaskBreakdown,
 }: InlineCreateCardProps) {
+  const { t } = useTranslation("app");
   const [description, setDescription] = useState(() => {
     if (typeof window !== "undefined") {
       return getScopedItem(STORAGE_KEY, projectId) || "";
@@ -641,7 +643,7 @@ export function InlineCreateCard({
   const handlePlanClick = useCallback(() => {
     const trimmed = description.trim();
     if (!trimmed) {
-      addToast("Enter a description first", "error");
+      addToast(t("inline.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
     onPlanningMode?.(trimmed);
@@ -667,7 +669,7 @@ export function InlineCreateCard({
   const handleSubtaskClick = useCallback(() => {
     const trimmed = description.trim();
     if (!trimmed) {
-      addToast("Enter a description first", "error");
+      addToast(t("inline.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
     onSubtaskBreakdown?.(trimmed);
@@ -723,13 +725,13 @@ export function InlineCreateCard({
       >
         {isDescriptionExpanded && (
           <div className="description-fullscreen-header">
-            <span>Editing Description</span>
+            <span>{t("inline.editingDescription", "Editing Description")}</span>
             <button
               type="button"
               className="btn btn-sm description-expand-btn"
               onClick={handleToggleDescriptionExpand}
-              aria-label="Collapse description"
-              title="Collapse description"
+              aria-label={t("inline.collapseDescription", "Collapse description")}
+              title={t("inline.collapseDescription", "Collapse description")}
               data-testid="inline-create-collapse"
             >
               <Minimize2 size={14} />
@@ -743,7 +745,7 @@ export function InlineCreateCard({
                 ref={inputRef}
                 rows={1}
                 className="inline-create-input"
-                placeholder="What needs to be done?"
+                placeholder={t("inline.whatNeedsToBeDone", "What needs to be done?")}
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
@@ -764,8 +766,8 @@ export function InlineCreateCard({
                   className="btn btn-sm inline-create-expand-btn"
                   onClick={handleToggleDescriptionExpand}
                   onMouseDown={(e) => e.preventDefault()}
-                  aria-label="Expand description"
-                  title="Expand description"
+                  aria-label={t("inline.expandDescription", "Expand description")}
+                  title={t("inline.expandDescription", "Expand description")}
                   data-testid="inline-create-expand"
                 >
                   <Maximize2 size={14} />
@@ -778,9 +780,9 @@ export function InlineCreateCard({
               onClick={toggleExpanded}
               aria-expanded={isExpanded}
               aria-controls={isExpanded ? "inline-create-controls" : undefined}
-              aria-label={isExpanded ? "Collapse advanced task options" : "Expand advanced task options"}
+              aria-label={isExpanded ? t("inline.collapseTaskOptions", "Collapse advanced task options") : t("inline.expandTaskOptions", "Expand advanced task options")}
               data-testid="inline-create-toggle"
-              title={isExpanded ? "Collapse" : "Expand"}
+              title={isExpanded ? t("inline.collapse", "Collapse") : t("inline.expand", "Expand")}
             >
               {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
@@ -791,7 +793,7 @@ export function InlineCreateCard({
             ref={inputRef}
             rows={10}
             className="inline-create-input inline-create-input--fullscreen"
-            placeholder="What needs to be done?"
+            placeholder={t("inline.whatNeedsToBeDone", "What needs to be done?")}
             value={description}
             onChange={(e) => {
               setDescription(e.target.value);
@@ -818,7 +820,7 @@ export function InlineCreateCard({
                 className="inline-create-preview-remove"
                 onClick={() => removeImage(i)}
                 disabled={submitting}
-                title="Remove image"
+                title={t("inline.removeImage", "Remove image")}
               >
                 ×
               </button>
@@ -836,10 +838,10 @@ export function InlineCreateCard({
               onMouseDown={(e) => e.preventDefault()}
               disabled={!description.trim()}
               data-testid="plan-button"
-              title="Open planning mode with current description"
+              title={t("inline.openPlanningMode", "Open planning mode with current description")}
             >
               <Lightbulb size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Plan
+              {t("inline.plan", "Plan")}
             </button>
             <button
               type="button"
@@ -848,10 +850,10 @@ export function InlineCreateCard({
               onMouseDown={(e) => e.preventDefault()}
               disabled={!description.trim()}
               data-testid="subtask-button"
-              title="Break down into AI-generated subtasks"
+              title={t("inline.breakDownSubtasks", "Break down into AI-generated subtasks")}
             >
               <ListTree size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              Subtask
+              {t("inline.subtask", "Subtask")}
             </button>
             <div className="dep-trigger-wrap">
               <button
@@ -860,7 +862,7 @@ export function InlineCreateCard({
                 onClick={toggleDepsDropdown}
               >
                 <Link size={12} style={{ verticalAlign: "middle" }} />
-                {dependencies.length > 0 ? ` ${dependencies.length} deps` : " Deps"}
+                {dependencies.length > 0 ? ` ${dependencies.length} ${t("inline.deps", "deps")}` : ` ${t("inline.deps", "Deps")}`}
               </button>
               {showDeps && (() => {
                 const term = depSearch.toLowerCase();
@@ -882,14 +884,14 @@ export function InlineCreateCard({
                   <div className="dep-dropdown" onMouseDown={(e) => e.preventDefault()}>
                     <input
                       className="dep-dropdown-search"
-                      placeholder="Search tasks…"
+                      placeholder={t("inline.searchTasks", "Search tasks…")}
                       autoFocus
                       value={depSearch}
                       onChange={(e) => setDepSearch(e.target.value)}
                       onClick={(e) => e.stopPropagation()}
                     />
                     {filtered.length === 0 ? (
-                      <div className="dep-dropdown-empty">No existing tasks</div>
+                      <div className="dep-dropdown-empty">{t("inline.noExistingTasks", "No existing tasks")}</div>
                     ) : (
                       filtered.map((t) => (
                         <div
@@ -927,12 +929,12 @@ export function InlineCreateCard({
                 }}
               >
                 <Server size={12} style={{ verticalAlign: "middle" }} />
-                {selectedNode ? ` ${selectedNode.name}` : " Node"}
+                {selectedNode ? ` ${selectedNode.name}` : ` ${t("inline.node", "Node")}`}
                 {selectedNode && <NodeHealthDot status={selectedNode.status} showLabel />}
               </button>
               {showNodePicker && (
                 <div className="dep-dropdown node-picker-dropdown" onMouseDown={(e) => e.preventDefault()}>
-                  <div className="dep-dropdown-search-header">Select execution node</div>
+                  <div className="dep-dropdown-search-header">{t("inline.selectExecutionNode", "Select execution node")}</div>
                   <button
                     type="button"
                     className={`dep-dropdown-item node-picker-item${nodeId === undefined ? " selected" : ""}`}
@@ -941,7 +943,7 @@ export function InlineCreateCard({
                       setShowNodePicker(false);
                     }}
                   >
-                    <span className="dep-dropdown-title">Project default / local</span>
+                    <span className="dep-dropdown-title">{t("inline.projectDefaultLocal", "Project default / local")}</span>
                   </button>
                   {nodes.map((node) => (
                     <button
@@ -955,7 +957,7 @@ export function InlineCreateCard({
                     >
                       <NodeHealthDot status={node.status} />
                       <span className="dep-dropdown-title">{node.name}</span>
-                      <span className="node-picker-status-label">{getNodeStatusLabel(node.status)}</span>
+                      <span className="node-picker-status-label">{getNodeStatusLabel(node.status, t)}</span>
                     </button>
                   ))}
                 </div>
@@ -976,12 +978,12 @@ export function InlineCreateCard({
                 data-testid="inline-create-agent-button"
               >
                 <Bot size={12} style={{ verticalAlign: "middle" }} />
-                {selectedAgentLabel ? ` ${selectedAgentLabel}` : " Agent"}
+                {selectedAgentLabel ? ` ${selectedAgentLabel}` : ` ${t("inline.agent", "Agent")}`}
               </button>
               {showAgentPicker && (
                 <div className="dep-dropdown agent-picker-dropdown" onMouseDown={(e) => e.preventDefault()}>
-                  <div className="dep-dropdown-search-header">Select agent</div>
-                  {agentsLoading && <div className="dep-dropdown-empty">Loading agents...</div>}
+                  <div className="dep-dropdown-search-header">{t("inline.selectAgent", "Select agent")}</div>
+                  {agentsLoading && <div className="dep-dropdown-empty">{t("inline.loadingAgents", "Loading agents...")}</div>}
                   {!agentsLoading && agents.map((a) => (
                     <div
                       key={a.id}
@@ -998,7 +1000,7 @@ export function InlineCreateCard({
                     </div>
                   ))}
                   {!agentsLoading && agents.length === 0 && (
-                    <div className="dep-dropdown-empty">No agents available</div>
+                    <div className="dep-dropdown-empty">{t("inline.noAgentsAvailable", "No agents available")}</div>
                   )}
                   {selectedAgentId && (
                     <div
@@ -1009,7 +1011,7 @@ export function InlineCreateCard({
                         setShowAgentPicker(false);
                       }}
                     >
-                      <span className="dep-dropdown-title">Clear selection</span>
+                      <span className="dep-dropdown-title">{t("inline.clearSelection", "Clear selection")}</span>
                     </div>
                   )}
                 </div>
@@ -1022,9 +1024,9 @@ export function InlineCreateCard({
               data-testid="inline-create-browser-verification-toggle"
               aria-pressed={browserVerification}
               onClick={() => setBrowserVerification((prev) => !prev)}
-              title="Enable browser verification workflow step"
+              title={t("inline.enableBrowserVerification", "Enable browser verification workflow step")}
             >
-              {browserVerification ? "Browser Verify ✓" : "Browser Verify"}
+              {browserVerification ? t("inline.browserVerifyChecked", "Browser Verify ✓") : t("inline.browserVerify", "Browser Verify")}
             </button>
 
             <WorkflowSelector
@@ -1037,7 +1039,7 @@ export function InlineCreateCard({
             />
 
             <label className="inline-create-priority-wrap" htmlFor="inline-create-priority-select">
-              <span className="visually-hidden">Priority</span>
+              <span className="visually-hidden">{t("inline.priority", "Priority")}</span>
               <select
                 id="inline-create-priority-select"
                 className="select inline-create-priority-select"
@@ -1047,7 +1049,7 @@ export function InlineCreateCard({
               >
                 {TASK_PRIORITIES.map((taskPriority) => (
                   <option key={taskPriority} value={taskPriority}>
-                    {`Priority: ${taskPriority[0].toUpperCase()}${taskPriority.slice(1)}`}
+                    {t("inline.priorityLabel", "Priority: {{level}}", { level: `${taskPriority[0].toUpperCase()}${taskPriority.slice(1)}` })}
                   </option>
                 ))}
               </select>
@@ -1073,7 +1075,7 @@ export function InlineCreateCard({
                 aria-haspopup="listbox"
               >
                 <Zap size={12} style={{ verticalAlign: "middle" }} />
-                {selectedPreset ? ` ${selectedPreset.name}` : " Preset"}
+                {selectedPreset ? ` ${selectedPreset.name}` : ` ${t("inline.preset", "Preset")}`}
               </button>
               {showPresets && (
                 <div className="inline-create-model-dropdown" onMouseDown={handleModelDropdownMouseDown}>
@@ -1089,7 +1091,7 @@ export function InlineCreateCard({
                       setShowPresets(false);
                     }}
                   >
-                    Use default
+                    {t("inline.useDefault", "Use default")}
                   </button>
                   {availablePresets.map((preset) => (
                     <button
@@ -1116,7 +1118,7 @@ export function InlineCreateCard({
                     className="btn btn-sm"
                     onClick={() => setShowPresets(false)}
                   >
-                    Custom
+                    {t("inline.custom", "Custom")}
                   </button>
                 </div>
               )}
@@ -1129,17 +1131,17 @@ export function InlineCreateCard({
               >
                 <Brain size={12} style={{ verticalAlign: "middle" }} />
                 {selectedPreset
-                  ? ` ${selectedPreset.name} · ${selectedModelCount} model${selectedModelCount === 1 ? "" : "s"}`
+                  ? ` ${selectedPreset.name} · ${selectedModelCount} ${t("inline.model", "model", { count: selectedModelCount })}`
                   : selectedModelCount > 0
-                    ? ` ${selectedModelCount} model${selectedModelCount === 1 ? "" : "s"}`
-                    : " Models"}
+                    ? ` ${selectedModelCount} ${t("inline.model", "model", { count: selectedModelCount })}`
+                    : ` ${t("inline.models", "Models")}`}
               </button>
 
             </div>
 
           </div>
           <div className="inline-create-actions">
-            <span className="inline-create-hint">Enter to create · Esc to cancel</span>
+            <span className="inline-create-hint">{t("inline.hintEnterEsc", "Enter to create · Esc to cancel")}</span>
             <button
               type="button"
               className="btn btn-task-create btn-sm"
@@ -1147,7 +1149,7 @@ export function InlineCreateCard({
               disabled={!description.trim() || submitting}
               data-testid="save-button"
             >
-              {submitting ? "Creating..." : "Save"}
+              {submitting ? t("inline.creating", "Creating...") : t("inline.save", "Save")}
             </button>
           </div>
         </div>

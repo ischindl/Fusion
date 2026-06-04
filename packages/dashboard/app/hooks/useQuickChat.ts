@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { ChatInFlightGenerationState, ChatMessage, EnrichedChatSession } from "@fusion/core";
 import {
   fetchResumeChatSession,
@@ -197,6 +198,7 @@ export function useQuickChat(
   projectId?: string,
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
 ): UseQuickChatReturn {
+  const { t } = useTranslation("app");
   // Session state
   const [activeSession, setActiveSession] = useState<EnrichedChatSession | null>(null);
   const [sessions, setSessions] = useState<EnrichedChatSession[]>([]);
@@ -267,10 +269,11 @@ export function useQuickChat(
       setSessions(response.sessions);
     } catch (err) {
       console.error("[useQuickChat] Failed to refresh sessions:", err);
+      addToast?.(t("quickChat.errorRefreshingSessions", "Failed to refresh chat sessions"), "error");
     } finally {
       setSessionsLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, t, addToast]);
 
   const createSessionForTarget = useCallback(
     async (target: SessionTarget): Promise<EnrichedChatSession> => {
@@ -365,7 +368,7 @@ export function useQuickChat(
         isStreamingRef.current = false;
         streamRef.current = null;
         lastAttachedGenerationRef.current = null;
-        const errorMessage = typeof data === "string" && data.trim() ? data : "Failed to get response";
+        const errorMessage = typeof data === "string" && data.trim() ? data : t("quickChat.errorGettingResponse", "Failed to get response");
         if (!options?.silent) {
           addToast?.(errorMessage, "error");
         }
@@ -434,7 +437,7 @@ export function useQuickChat(
         // toasts just create noise.
         initRetryCountRef.current += 1;
         if (initRetryCountRef.current <= INIT_MAX_RETRIES) {
-          addToast?.("Failed to initialize chat", "error");
+          addToast?.(t("quickChat.errorInitializingChat", "Failed to initialize chat"), "error");
         }
       } finally {
         setSessionsLoading(false);
@@ -741,7 +744,7 @@ export function useQuickChat(
       setSessions(sessionList.sessions);
     } catch (err) {
       console.error("[useQuickChat] Failed to start a fresh session:", err);
-      addToast?.("Failed to start a new chat", "error");
+      addToast?.(t("quickChat.errorStartingNewChat", "Failed to start a new chat"), "error");
     } finally {
       skipNextSessionInitRef.current = false;
       setSessionsLoading(false);
@@ -824,7 +827,7 @@ export function useQuickChat(
 
       if (!activeSession) {
         if (attachments && attachments.length > 0) {
-          return Promise.reject(new Error("Cannot send attachments before chat session is ready"));
+          return Promise.reject(new Error(t("quickChat.errorAttachmentsBeforeSession", "Cannot send attachments before chat session is ready")));
         }
 
         return new Promise<void>((resolve, reject) => {
@@ -849,7 +852,7 @@ export function useQuickChat(
 
       if (isStreamingRef.current) {
         if (attachments && attachments.length > 0) {
-          return Promise.reject(new Error("Cannot send attachments while a response is streaming"));
+          return Promise.reject(new Error(t("quickChat.errorAttachmentsWhileStreaming", "Cannot send attachments while a response is streaming")));
         }
 
         pendingMessageRef.current = content;
@@ -946,7 +949,7 @@ export function useQuickChat(
             lastAttachedGenerationRef.current = null;
             console.error("[useQuickChat] Stream error:", data);
 
-            const errorMessage = typeof data === "string" && data.trim() ? data : "Failed to get response";
+            const errorMessage = typeof data === "string" && data.trim() ? data : t("quickChat.errorGettingResponse", "Failed to get response");
             const shouldSuppressSuspensionError = isLikelyTabSuspensionError(errorMessage);
 
             if (shouldSuppressSuspensionError) {
@@ -961,8 +964,9 @@ export function useQuickChat(
               }
               sendCompletionRef.current?.resolve();
             } else {
-              addToast?.(errorMessage, "error");
-              sendCompletionRef.current?.reject(new Error(errorMessage));
+              const finalMessage = errorMessage || t("quickChat.errorGettingResponse", "Failed to get response");
+              addToast?.(finalMessage, "error");
+              sendCompletionRef.current?.reject(new Error(finalMessage));
             }
             sendCompletionRef.current = null;
 

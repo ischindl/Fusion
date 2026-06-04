@@ -4,6 +4,7 @@ import {
   type GlobalSettings,
   DEFAULT_SETTINGS,
   resolveWorktrunkSettings,
+  SUPPORTED_LOCALES,
 } from "@fusion/core";
 import { probeWorktrunk, resolveWorktrunkBinary } from "@fusion/engine";
 import { resolveProject } from "../project-context.js";
@@ -28,9 +29,10 @@ export const VALID_SETTINGS = [
   "worktrunk.enabled",
   "worktrunk.binaryPath",
   "worktrunk.onFailure",
+  "language",
 ] as const;
 
-const GLOBAL_ONLY_SETTINGS = ["ntfyEnabled", "ntfyTopic", "defaultModel"] as const;
+const GLOBAL_ONLY_SETTINGS = ["ntfyEnabled", "ntfyTopic", "defaultModel", "language"] as const;
 const PROJECT_ONLY_SETTINGS = [
   "maxConcurrent",
   "maxWorktrees",
@@ -64,6 +66,8 @@ const ENUM_SETTINGS: Record<string, readonly string[]> = {
   worktreeNaming: ["random", "task-id", "task-title"],
   unavailableNodePolicy: ["block", "fallback-local"],
   "worktrunk.onFailure": ["fail", "fallback-native"],
+  // "auto" clears the persisted locale and reverts to runtime detection.
+  language: [...SUPPORTED_LOCALES, "auto"],
 };
 
 const STRING_SETTINGS: readonly string[] = [
@@ -335,6 +339,16 @@ export async function runSettingsSet(key: string, value: string, projectName?: s
 
   try {
     const parsedValue = parseValue(validKey, value);
+
+    if (key === "language" && parsedValue === "auto") {
+      // null-as-delete: removes the persisted key so the dashboard re-detects
+      // from the browser and the TUI falls back to the environment locale.
+      await globalStore!.updateSettings({ language: null } as unknown as Partial<GlobalSettings>);
+      console.log();
+      console.log("  ✓ Language reset to auto-detect (browser/environment locale)");
+      console.log();
+      return;
+    }
 
     if (key === "defaultModel") {
       const parts = (parsedValue as string).split("/");

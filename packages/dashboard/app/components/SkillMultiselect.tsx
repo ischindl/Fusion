@@ -1,5 +1,6 @@
 import "./SkillMultiselect.css";
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { fetchDiscoveredSkills } from "../api";
 import type { DiscoveredSkill } from "../api";
 
@@ -30,6 +31,7 @@ export function SkillMultiselect({
   id,
   label = "Skills",
 }: SkillMultiselectProps) {
+  const { t } = useTranslation("app");
   const [skills, setSkills] = useState<DiscoveredSkill[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -100,7 +102,7 @@ export function SkillMultiselect({
                 className="skill-chip-remove"
                 onClick={() => handleRemoveSkill(skillId)}
                 disabled={disabled}
-                aria-label={`Remove ${getSkillName(skillId)}`}
+                aria-label={t("skills.removeSkill", "Remove {{name}}", { name: getSkillName(skillId) })}
                 data-testid={`remove-skill-${skillId}`}
               >
                 ×
@@ -114,11 +116,11 @@ export function SkillMultiselect({
       <div className="skill-multiselect-add">
         {isLoading ? (
           <span className="skill-multiselect-loading" data-testid="skills-loading">
-            Loading skills…
+            {t("skills.loading", "Loading skills…")}
           </span>
         ) : availableSkills.length === 0 ? (
           <span className="skill-multiselect-empty" data-testid="skills-empty">
-            {value.length === 0 ? "No skills discovered" : "All skills selected"}
+            {value.length === 0 ? t("skills.noSkillsDiscovered", "No skills discovered") : t("skills.allSkillsSelected", "All skills selected")}
           </span>
         ) : (
           <select
@@ -135,7 +137,7 @@ export function SkillMultiselect({
             disabled={disabled}
             data-testid="skill-dropdown"
           >
-            <option value="">Add a skill…</option>
+            <option value="">{t("skills.addSkill", "Add a skill…")}</option>
             {availableSkills.map((skill) => (
               <option key={skill.id} value={skill.id}>
                 {skill.name}

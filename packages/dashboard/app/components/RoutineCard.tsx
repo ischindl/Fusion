@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Play, Pause, Pencil, Trash2, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Calendar, Webhook, Code, Zap, Globe, Folder, Layers, Loader2 } from "lucide-react";
 import type { Routine, RoutineExecutionResult, RoutineTriggerType, RoutineCatchUpPolicy, RoutineExecutionPolicy } from "@fusion/core";
 import { useConfirm } from "../hooks/useConfirm";
@@ -88,6 +89,7 @@ interface RoutineCardProps {
 }
 
 function RunResultBadge({ result }: { result: RoutineExecutionResult }) {
+  const { t } = useTranslation("app");
   const duration = result.completedAt && result.startedAt
     ? new Date(result.completedAt).getTime() - new Date(result.startedAt).getTime()
     : 0;
@@ -98,7 +100,7 @@ function RunResultBadge({ result }: { result: RoutineExecutionResult }) {
       ) : (
         <XCircle size={12} />
       )}
-      <span>{result.success ? "Success" : "Failed"}</span>
+      <span>{result.success ? t("routine.resultSuccess", "Success") : t("routine.resultFailed", "Failed")}</span>
       {duration > 0 && (
         <span className="schedule-run-duration">{formatDurationMs(duration)}</span>
       )}
@@ -145,19 +147,20 @@ function RunHistoryItem({ result, index }: { result: RoutineExecutionResult; ind
 }
 
 export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, running, lastRunOutput }: RoutineCardProps) {
+  const { t } = useTranslation("app");
   const [showHistory, setShowHistory] = useState(false);
   const { confirm } = useConfirm();
 
   const handleDelete = useCallback(async () => {
     const shouldDelete = await confirm({
-      title: "Delete Routine",
-      message: `Delete routine "${routine.name}"? This cannot be undone.`,
+      title: t("routine.deleteTitle", "Delete Routine"),
+      message: t("routine.deleteMessage", "Delete routine \"{{name}}\"? This cannot be undone.", { name: routine.name }),
       danger: true,
     });
     if (shouldDelete) {
       onDelete(routine);
     }
-  }, [routine, onDelete, confirm]);
+  }, [routine, onDelete, confirm, t]);
 
   const triggerColor = TRIGGER_TYPE_COLORS[routine.trigger.type];
   const TriggerIcon = TRIGGER_TYPE_ICONS[routine.trigger.type];
@@ -199,16 +202,16 @@ export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, runnin
             className="btn-icon"
             onClick={() => onRun(routine)}
             disabled={running}
-            title={running ? "Running…" : "Run now"}
-            aria-label={running ? "Running…" : `Run ${routine.name} now`}
+            title={running ? t("routine.running", "Running…") : t("routine.runNow", "Run now")}
+            aria-label={running ? t("routine.running", "Running…") : t("routine.runNameNow", "Run {{name}} now", { name: routine.name })}
           >
             {running ? <Loader2 className="spinner" /> : <Play />}
           </button>
           <button
             className="btn-icon"
             onClick={() => onToggle(routine)}
-            title={routine.enabled ? "Disable" : "Enable"}
-            aria-label={routine.enabled ? `Disable ${routine.name}` : `Enable ${routine.name}`}
+            title={routine.enabled ? t("routine.disable", "Disable") : t("routine.enable", "Enable")}
+            aria-label={routine.enabled ? t("routine.disableName", "Disable {{name}}", { name: routine.name }) : t("routine.enableName", "Enable {{name}}", { name: routine.name })}
             aria-pressed={routine.enabled}
           >
             {routine.enabled ? <Pause /> : <Play />}
@@ -216,16 +219,16 @@ export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, runnin
           <button
             className="btn-icon"
             onClick={() => onEdit(routine)}
-            title="Edit"
-            aria-label={`Edit ${routine.name}`}
+            title={t("routine.edit", "Edit")}
+            aria-label={t("routine.editName", "Edit {{name}}", { name: routine.name })}
           >
             <Pencil />
           </button>
           <button
             className="btn-icon"
             onClick={handleDelete}
-            title="Delete"
-            aria-label={`Delete ${routine.name}`}
+            title={t("routine.delete", "Delete")}
+            aria-label={t("routine.deleteName", "Delete {{name}}", { name: routine.name })}
           >
             <Trash2 />
           </button>
@@ -236,7 +239,7 @@ export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, runnin
         {routine.steps && routine.steps.length > 0 ? (
           <div className="routine-meta-item">
             <Layers size={12} />
-            <span className="routine-policy-badge">{routine.steps.length} step{routine.steps.length === 1 ? "" : "s"}</span>
+            <span className="routine-policy-badge">{t("routine.stepCount", "{{count}} step", { count: routine.steps.length, defaultValue_one: "{{count}} step", defaultValue_other: "{{count}} steps" })}</span>
           </div>
         ) : routine.command ? (
           <div className="routine-meta-item routine-meta-command-preview" title={routine.command}>
@@ -305,7 +308,7 @@ export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, runnin
             aria-expanded={showHistory}
           >
             {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            <span>Run History ({routine.runHistory.length})</span>
+            <span>{t("routine.runHistory", "Run History ({{count}})", { count: routine.runHistory.length })}</span>
           </button>
           {showHistory && (
             <div className="schedule-history-list">
@@ -314,7 +317,7 @@ export function RoutineCard({ routine, onEdit, onDelete, onRun, onToggle, runnin
               ))}
               {routine.runHistory.length > 10 && (
                 <div className="schedule-history-more">
-                  …and {routine.runHistory.length - 10} more
+                  {t("routine.andMore", "…and {{count}} more", { count: routine.runHistory.length - 10 })}
                 </div>
               )}
             </div>

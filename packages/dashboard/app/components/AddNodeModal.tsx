@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import type { NodeProjectMappingInput, ProjectInfo, RemoteNodeDiscoveredProject, RemoteNodeProjectDiscoveryResult } from "../api";
 import { validateProjectPath } from "../utils/projectDetection";
 import type { ToastType } from "../hooks/useToast";
@@ -47,25 +49,25 @@ interface FormErrors {
 const MAX_CONCURRENT_MIN = 1;
 const MAX_CONCURRENT_MAX = 10;
 
-function validateInput(input: AddNodeInput): FormErrors {
+function validateInput(input: AddNodeInput, t: TFunction<"app">): FormErrors {
   const errors: FormErrors = { projectMappings: {} };
 
   if (!input.name.trim()) {
-    errors.name = "Name is required";
+    errors.name = t("nodes.nameRequired", "Name is required");
   }
 
   if (input.type === "remote" && !input.url?.trim()) {
-    errors.url = "URL is required for remote nodes";
+    errors.url = t("nodes.urlRequired", "URL is required for remote nodes");
   }
 
   if (!Number.isFinite(input.maxConcurrent) || input.maxConcurrent < MAX_CONCURRENT_MIN || input.maxConcurrent > MAX_CONCURRENT_MAX) {
-    errors.maxConcurrent = `Concurrency must be between ${MAX_CONCURRENT_MIN} and ${MAX_CONCURRENT_MAX}`;
+    errors.maxConcurrent = t("nodes.concurrencyRange", "Concurrency must be between {{min}} and {{max}}", { min: MAX_CONCURRENT_MIN, max: MAX_CONCURRENT_MAX });
   }
 
   for (const mapping of input.projectMappings) {
     const validation = validateProjectPath(mapping.path);
     if (!validation.valid) {
-      errors.projectMappings[mapping.projectId] = validation.error ?? "Path is invalid";
+      errors.projectMappings[mapping.projectId] = validation.error ?? t("nodes.pathInvalid", "Path is invalid");
     }
   }
 
@@ -75,6 +77,7 @@ function validateInput(input: AddNodeInput): FormErrors {
 type DiscoveryState = "idle" | "loading" | "success" | "error";
 
 export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjects, addToast, projects }: AddNodeModalProps) {
+  const { t } = useTranslation("app");
   useMobileScrollLock(isOpen);
   const [name, setName] = useState("");
   const [type, setType] = useState<"local" | "remote">("local");
@@ -143,7 +146,7 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
 
     const trimmedUrl = url.trim();
     if (!trimmedUrl) {
-      setErrors((current) => ({ ...current, url: "URL is required for remote nodes" }));
+      setErrors((current) => ({ ...current, url: t("nodes.urlRequired", "URL is required for remote nodes") }));
       return;
     }
 
@@ -175,9 +178,9 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
     } catch (error) {
       setDiscoveryState("error");
       setDiscoveredProjects([]);
-      setDiscoveryError(error instanceof Error ? error.message : "Failed to discover remote projects");
+      setDiscoveryError(error instanceof Error ? error.message : t("nodes.discoveryFailed", "Failed to discover remote projects"));
     }
-  }, [apiKey, apiKeyMode, discoveryState, isSubmitting, onDiscoverRemoteProjects, projects, url]);
+  }, [apiKey, apiKeyMode, discoveryState, isSubmitting, onDiscoverRemoteProjects, projects, t, url]);
 
   useEffect(() => {
     if (type !== "remote") {
@@ -195,7 +198,7 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
   const handleSubmit = useCallback(async () => {
     if (isSubmitting) return;
 
-    const validationErrors = validateInput(input);
+    const validationErrors = validateInput(input, t);
     setErrors(validationErrors);
 
     if (
@@ -208,7 +211,7 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
     }
 
     if (input.type === "remote" && discoveryState !== "success") {
-      setDiscoveryError("Discover remote projects before adding this node.");
+      setDiscoveryError(t("nodes.discoverBeforeAdding", "Discover remote projects before adding this node."));
       return;
     }
 
@@ -216,15 +219,15 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
 
     try {
       await onSubmit(input);
-      addToast(`Node "${input.name}" registered`, "success");
+      addToast(t("nodes.registered", "Node \"{{name}}\" registered", { name: input.name }), "success");
       closeModal();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to register node";
+      const message = error instanceof Error ? error.message : t("nodes.registerFailed", "Failed to register node");
       addToast(message, "error");
     } finally {
       setIsSubmitting(false);
     }
-  }, [addToast, closeModal, discoveryState, input, isSubmitting, onSubmit]);
+  }, [addToast, closeModal, discoveryState, input, isSubmitting, onSubmit, t]);
 
   const toggleProjectSelection = (project: ProjectInfo) => {
     setSelectedProjectPaths((current) => {
@@ -253,25 +256,25 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
 
   return (
     <div className="modal-overlay open" onClick={closeModal}>
-      <div className="modal modal-md add-node-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add Node">
+      <div className="modal modal-md add-node-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={t("nodes.addNode", "Add Node")}>
         <div className="modal-header">
-          <h3>Add Node</h3>
-          <button className="modal-close" onClick={closeModal} disabled={isSubmitting} aria-label="Close add node modal">
+          <h3>{t("nodes.addNode", "Add Node")}</h3>
+          <button className="modal-close" onClick={closeModal} disabled={isSubmitting} aria-label={t("nodes.closeNodeModal", "Close add node modal")}>
             &times;
           </button>
         </div>
 
         <div className="modal-body add-node-modal__body">
-          <p className="add-node-modal__description">Register an existing Fusion node by providing its connection details and concurrency settings.</p>
+          <p className="add-node-modal__description">{t("nodes.description", "Register an existing Fusion node by providing its connection details and concurrency settings.")}</p>
 
           <label className="add-node-modal__field">
-            <span>Name</span>
+            <span>{t("nodes.name", "Name")}</span>
             <input
               className="input"
               type="text"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Build Machine"
+              placeholder={t("nodes.namePlaceholder", "Build Machine")}
               disabled={isSubmitting}
               aria-invalid={Boolean(errors.name)}
               autoFocus
@@ -288,7 +291,7 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
               disabled={isSubmitting}
               aria-pressed={type === "local"}
             >
-              Local
+              {t("nodes.local", "Local")}
             </button>
             <button
               type="button"
@@ -298,14 +301,14 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
               disabled={isSubmitting}
               aria-pressed={type === "remote"}
             >
-              Remote
+              {t("nodes.remote", "Remote")}
             </button>
           </div>
 
           {type === "remote" && (
             <div className="add-node-modal__remote-fields" data-testid="remote-fields-container" data-visible>
               <label className="add-node-modal__field">
-                <span>Reachable URL / Hostname</span>
+                <span>{t("nodes.reachableUrl", "Reachable URL / Hostname")}</span>
                 <input
                   className="input"
                   type="text"
@@ -319,27 +322,27 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
               </label>
 
               <label className="add-node-modal__field">
-                <span>API Key Mode</span>
+                <span>{t("nodes.apiKeyMode", "API Key Mode")}</span>
                 <select
                   className="select"
                   value={apiKeyMode}
                   onChange={(event) => setApiKeyMode(event.target.value as "auto-generate" | "provide")}
                   disabled={isSubmitting}
                 >
-                  <option value="auto-generate">Auto-generate</option>
-                  <option value="provide">Provide key manually</option>
+                  <option value="auto-generate">{t("nodes.autoGenerate", "Auto-generate")}</option>
+                  <option value="provide">{t("nodes.provideManually", "Provide key manually")}</option>
                 </select>
               </label>
 
               {apiKeyMode === "provide" && (
                 <label className="add-node-modal__field">
-                  <span>API Key</span>
+                  <span>{t("nodes.apiKey", "API Key")}</span>
                   <input
                     className="input"
                     type="password"
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
-                    placeholder="Enter node API key"
+                    placeholder={t("nodes.apiKeyPlaceholder", "Enter node API key")}
                     disabled={isSubmitting}
                   />
                 </label>
@@ -352,18 +355,18 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
                   onClick={() => void handleDiscoverProjects()}
                   disabled={isSubmitting || discoveryState === "loading"}
                 >
-                  {discoveryState === "loading" ? "Discovering..." : "Discover Remote Projects"}
+                  {discoveryState === "loading" ? t("nodes.discovering", "Discovering...") : t("nodes.discoverRemoteProjects", "Discover Remote Projects")}
                 </button>
                 {discoveryState === "success" && (
                   <span className="add-node-modal__discovery-state" data-state="success">
-                    {discoveredProjects.length > 0 ? `Discovered ${discoveredProjects.length} remote project${discoveredProjects.length === 1 ? "" : "s"}.` : "No projects discovered on remote node."}
+                    {discoveredProjects.length > 0 ? t("nodes.discoveredCount", "Discovered {{count}} remote project{{plural}}", { count: discoveredProjects.length, plural: discoveredProjects.length === 1 ? "" : "s" }) : t("nodes.noProjectsDiscovered", "No projects discovered on remote node.")}
                   </span>
                 )}
                 {discoveryState === "error" && discoveryError && (
                   <span className="form-error add-node-modal__error">{discoveryError}</span>
                 )}
                 {discoveryState === "idle" && (
-                  <span className="add-node-modal__hint">Discover remote projects before adding this node.</span>
+                  <span className="add-node-modal__hint">{t("nodes.discoverBeforeAdding", "Discover remote projects before adding this node.")}</span>
                 )}
               </div>
 
@@ -384,7 +387,7 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
           )}
 
           <label className="add-node-modal__field">
-            <span>Max Concurrent</span>
+            <span>{t("nodes.maxConcurrent", "Max Concurrent")}</span>
             <input
               className="input"
               type="number"
@@ -395,15 +398,15 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
               disabled={isSubmitting}
               aria-invalid={Boolean(errors.maxConcurrent)}
             />
-            <span className="add-node-modal__hint">Max simultaneous task agents (1–10)</span>
+            <span className="add-node-modal__hint">{t("nodes.maxConcurrentHint", "Max simultaneous task agents (1–10)")}</span>
             {errors.maxConcurrent && <span className="form-error add-node-modal__error">{errors.maxConcurrent}</span>}
           </label>
 
           <section className="add-node-modal__projects" aria-label="Project path mappings">
-            <h4 className="add-node-modal__projects-title">Attach Existing Projects</h4>
-            <p className="add-node-modal__hint">Select existing projects to run on this node and provide the node-specific absolute path for each one.</p>
+            <h4 className="add-node-modal__projects-title">{t("nodes.attachProjects", "Attach Existing Projects")}</h4>
+            <p className="add-node-modal__hint">{t("nodes.attachProjectsHint", "Select existing projects to run on this node and provide the node-specific absolute path for each one.")}</p>
             {projects.length === 0 ? (
-              <p className="add-node-modal__hint">No projects are currently registered.</p>
+              <p className="add-node-modal__hint">{t("nodes.noProjects", "No projects are currently registered.")}</p>
             ) : (
               <div className="add-node-modal__project-list">
                 {projects.map((project) => {
@@ -422,18 +425,18 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
                       </label>
                       {selected && (
                         <label className="add-node-modal__field">
-                          <span>Path on this node</span>
+                          <span>{t("nodes.pathOnNode", "Path on this node")}</span>
                           {type === "remote" && discoveryState === "success" && (
                             <span className="add-node-modal__hint">
                               {(() => {
                                 const matches = discoveredProjects.filter((remoteProject) => remoteProject.name === project.name);
                                 if (matches.length === 1) {
-                                  return `Remote-authoritative path discovered: ${matches[0].path}`;
+                                  return t("nodes.pathDiscovered", "Remote-authoritative path discovered: {{path}}", { path: matches[0].path });
                                 }
                                 if (matches.length > 1) {
-                                  return "Multiple remote projects matched this name. Enter the correct path manually.";
+                                  return t("nodes.multipleMatches", "Multiple remote projects matched this name. Enter the correct path manually.");
                                 }
-                                return "No exact remote name match. Enter this path manually.";
+                                return t("nodes.noMatch", "No exact remote name match. Enter this path manually.");
                               })()}
                             </span>
                           )}
@@ -459,9 +462,9 @@ export function AddNodeModal({ isOpen, onClose, onSubmit, onDiscoverRemoteProjec
         </div>
 
         <div className="modal-actions">
-          <button className="btn btn-sm" onClick={closeModal} disabled={isSubmitting}>Cancel</button>
+          <button className="btn btn-sm" onClick={closeModal} disabled={isSubmitting}>{t("common.cancel", "Cancel")}</button>
           <button className="btn btn-primary btn-sm" data-testid="add-node-submit" onClick={handleSubmit} disabled={isSubmitting}>
-            {isSubmitting ? "Adding..." : "Add Node"}
+            {isSubmitting ? t("nodes.adding", "Adding...") : t("nodes.addNode", "Add Node")}
           </button>
         </div>
       </div>

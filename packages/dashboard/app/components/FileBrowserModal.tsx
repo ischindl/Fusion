@@ -1,5 +1,6 @@
 import "./FileBrowser.css";
 import { useState, useCallback, useEffect, useMemo, useRef, useId } from "react";
+import { useTranslation } from "react-i18next";
 import { X, Save, RotateCcw, Folder, FileType, ArrowLeft, ChevronDown, ChevronUp } from "lucide-react";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { useWorkspaceFileEditor } from "../hooks/useWorkspaceFileEditor";
@@ -75,6 +76,7 @@ export function FileBrowserModal({
   onWorkspaceChange,
   projectId,
 }: FileBrowserModalProps) {
+  const { t } = useTranslation("app");
   const { projectName, workspaces } = useWorkspaces(projectId);
   const modalRef = useRef<HTMLDivElement>(null);
   useModalResizePersist(modalRef, true, "fusion:files-modal-size");
@@ -278,13 +280,13 @@ export function FileBrowserModal({
 
   const workspaceLabel = useMemo(() => {
     if (currentWorkspace === "project") {
-      return "Project";
+      return t("fileBrowser.workspaceProject", "Project");
     }
 
     return workspaces.find((workspace) => workspace.id === currentWorkspace)?.id ?? currentWorkspace;
-  }, [currentWorkspace, workspaces]);
+  }, [currentWorkspace, workspaces, t]);
 
-  const modalTitle = `Files — ${workspaceLabel}`;
+  const modalTitle = t("fileBrowser.modalTitle", "Files — {{workspace}}", { workspace: workspaceLabel });
 
   // Compute image source URL when an image file is selected
   const imageSrc = useMemo(() => {
@@ -318,7 +320,7 @@ export function FileBrowserModal({
               workspaces={workspaces}
               onSelect={handleWorkspaceSelect}
             />
-            <button className="modal-close" onClick={onClose} aria-label="Close">
+            <button className="modal-close" onClick={onClose} aria-label={t("actions.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -351,7 +353,7 @@ export function FileBrowserModal({
               aria-valuemin={SIDEBAR_MIN_WIDTH}
               aria-valuemax={SIDEBAR_MAX_WIDTH}
               aria-valuenow={sidebarWidth}
-              aria-label="Resize sidebar"
+              aria-label={t("fileBrowser.resizeSidebar", "Resize sidebar")}
               tabIndex={0}
               onPointerDown={handleResizeStart}
               onKeyDown={handleResizeKeyDown}
@@ -367,18 +369,18 @@ export function FileBrowserModal({
                       <button
                         className="file-browser-back-button"
                         onClick={handleBackToList}
-                        aria-label="Back to file list"
+                        aria-label={t("fileBrowser.back", "Back to file list")}
                       >
                         <ArrowLeft size={16} />
-                        <span>Back</span>
+                        <span>{t("actions.back", "Back")}</span>
                       </button>
                     )}
                     {!isBinaryFile(selectedFile) && (
                       <button
                         className="btn btn-sm btn-icon file-editor-toolbar-button"
                         onClick={() => setToolbarActionsExpanded((prev) => !prev)}
-                        aria-label="Toggle editor options"
-                        title="Toggle editor options"
+                        aria-label={t("fileBrowser.toggleEditorOptions", "Toggle editor options")}
+                        title={t("fileBrowser.toggleEditorOptions", "Toggle editor options")}
                         aria-expanded={toolbarActionsExpanded}
                         aria-controls={toolbarActionsId}
                       >
@@ -389,16 +391,16 @@ export function FileBrowserModal({
                     {isBinaryFile(selectedFile) && (
                       <span className="file-browser-binary-indicator">
                         <FileType size={12} />
-                        Binary file — read only
+                        {t("fileBrowser.binaryReadOnly", "Binary file — read only")}
                       </span>
                     )}
                     {mtime && (
                       <span className="file-browser-mtime">
-                        Modified: {new Date(mtime).toLocaleString()}
+                        {t("fileBrowser.modified", "Modified: {{date}}", { date: new Date(mtime).toLocaleString() })}
                       </span>
                     )}
                     {editorLoading && (
-                      <span className="file-browser-loading">Loading...</span>
+                      <span className="file-browser-loading">{t("fileBrowser.loading", "Loading…")}</span>
                     )}
                   </div>
                   <div className="file-browser-actions">
@@ -410,7 +412,7 @@ export function FileBrowserModal({
                           disabled={saving}
                         >
                           <RotateCcw size={14} />
-                          Discard
+                          {t("actions.discard", "Discard")}
                         </button>
                         <button
                           className="btn btn-primary btn-sm"
@@ -418,7 +420,7 @@ export function FileBrowserModal({
                           disabled={saving}
                         >
                           <Save size={14} />
-                          {saving ? "Saving..." : "Save"}
+                          {saving ? t("fileBrowser.saving", "Saving…") : t("actions.save", "Save")}
                         </button>
                       </>
                     )}
@@ -456,14 +458,14 @@ export function FileBrowserModal({
                 {!imageSrc && (
                   <div className="file-browser-footer">
                     <span>{formatFileSize(content)}</span>
-                    {hasChanges && <span className="file-browser-unsaved">Unsaved changes</span>}
+                    {hasChanges && <span className="file-browser-unsaved">{t("fileBrowser.unsavedChanges", "Unsaved changes")}</span>}
                   </div>
                 )}
               </>
             ) : (
               <div className="file-browser-placeholder">
                 <Folder size={48} opacity={0.3} />
-                <p>Select a file to edit</p>
+                <p>{t("fileBrowser.selectFileToEdit", "Select a file to edit")}</p>
               </div>
             )}
           </div>

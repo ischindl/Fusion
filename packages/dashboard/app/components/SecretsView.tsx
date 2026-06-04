@@ -1,5 +1,6 @@
 import "./SecretsView.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Copy, Eye, EyeOff, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 type ToastKind = "info" | "success" | "error";
@@ -55,6 +56,7 @@ const spinningActionIconProps = {
 } as const;
 
 export const SecretsView = ({ addToast }: SecretsViewProps) => {
+  const { t } = useTranslation("app");
   const [secrets, setSecrets] = useState<SecretRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
       const data = await request<{ configured: boolean }>("/api/secrets/sync-passphrase");
       setSyncPassphraseConfigured(Boolean(data.configured));
     } catch (err) {
-      addToast?.(`Failed to load sync passphrase status: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast?.(t("secrets.errorLoadSyncStatus", "Failed to load sync passphrase status: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     }
   }, [addToast, request]);
 
@@ -138,25 +140,25 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
     setSyncSaving(true);
     try {
       await saveSyncPassphrase(syncPassphrase);
-      addToast?.(syncPassphraseConfigured ? "Sync passphrase rotated" : "Sync passphrase set", "success");
+      addToast?.(syncPassphraseConfigured ? t("secrets.syncPassphraseRotated", "Sync passphrase rotated") : t("secrets.syncPassphraseSet", "Sync passphrase set"), "success");
       closeSyncModal();
       await loadSyncPassphraseStatus();
     } catch (err) {
-      addToast?.(`Failed to save sync passphrase: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast?.(t("secrets.errorSaveSyncPassphrase", "Failed to save sync passphrase: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     } finally {
       setSyncSaving(false);
     }
   };
 
   const clearSyncPassphraseHandler = async () => {
-    const confirmed = window.confirm("Clear the cross-node sync passphrase? Existing sync pairs will stop working until you set a new passphrase.");
+    const confirmed = window.confirm(t("secrets.confirmClearSyncPassphrase", "Clear the cross-node sync passphrase? Existing sync pairs will stop working until you set a new passphrase."));
     if (!confirmed) return;
     try {
       await request<{ success: boolean }>("/api/secrets/sync-passphrase", { method: "DELETE" });
-      addToast?.("Sync passphrase cleared", "success");
+      addToast?.(t("secrets.syncPassphraseCleared", "Sync passphrase cleared"), "success");
       await loadSyncPassphraseStatus();
     } catch (err) {
-      addToast?.(`Failed to clear sync passphrase: ${err instanceof Error ? err.message : String(err)}`, "error");
+      addToast?.(t("secrets.errorClearSyncPassphrase", "Failed to clear sync passphrase: {{error}}", { error: err instanceof Error ? err.message : String(err) }), "error");
     }
   };
 
@@ -234,7 +236,7 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
   const revealSecret = async (secret: SecretRecord) => {
     const data = await request<{ key: string; value: string }>(`/api/secrets/${secret.scope}/${secret.id}/reveal`, { method: "POST" });
     setRevealedValues((current) => ({ ...current, [secret.id]: data.value }));
-    addToast?.("Revealed", "success");
+    addToast?.(t("secrets.revealed", "Revealed"), "success");
     const timer = setTimeout(() => {
       setRevealedValues((current) => ({ ...current, [secret.id]: null }));
       revealTimersRef.current.delete(secret.id);
@@ -249,7 +251,7 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
     if (!revealed) return;
     await navigator.clipboard.writeText(revealed);
     setCopiedId(secret.id);
-    addToast?.("Copied", "success");
+    addToast?.(t("secrets.copied", "Copied"), "success");
     const timer = setTimeout(() => {
       setCopiedId(null);
       setRevealedValues((current) => ({ ...current, [secret.id]: null }));
@@ -277,32 +279,32 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
   return (
     <section className="secrets-view">
       <div className="secrets-header">
-        <h2>Secrets</h2>
+        <h2>{t("secrets.title", "Secrets")}</h2>
         <div className="secrets-header-actions">
-          <button className="btn btn-sm" onClick={() => void loadSecrets()}><RefreshCw {...actionIconProps} /> Refresh</button>
-          <button className="btn btn-primary btn-sm" onClick={openCreate}><Plus {...actionIconProps} /> Add Secret</button>
+          <button className="btn btn-sm" onClick={() => void loadSecrets()}><RefreshCw {...actionIconProps} /> {t("secrets.refresh", "Refresh")}</button>
+          <button className="btn btn-primary btn-sm" onClick={openCreate}><Plus {...actionIconProps} /> {t("secrets.addSecret", "Add Secret")}</button>
         </div>
       </div>
 
       <article className="card secrets-sync-card">
         <div className="secrets-sync-header">
           <div>
-            <h3>Cross-Node Sync Passphrase</h3>
-            <p className="secrets-sync-status"><span className={`status-dot ${syncPassphraseConfigured ? "status-dot--online" : "status-dot--pending"}`} aria-hidden="true" /> {syncPassphraseConfigured ? "Configured" : "Not configured"}</p>
+            <h3>{t("secrets.syncPassphraseTitle", "Cross-Node Sync Passphrase")}</h3>
+            <p className="secrets-sync-status"><span className={`status-dot ${syncPassphraseConfigured ? "status-dot--online" : "status-dot--pending"}`} aria-hidden="true" /> {syncPassphraseConfigured ? t("secrets.syncConfigured", "Configured") : t("secrets.syncNotConfigured", "Not configured")}</p>
           </div>
           <div className="secrets-sync-actions">
-            <button className="btn" onClick={() => setSyncModalOpen(true)}>{syncPassphraseConfigured ? "Rotate" : "Set passphrase"}</button>
-            {syncPassphraseConfigured ? <button className="btn btn-danger" onClick={() => void clearSyncPassphraseHandler()}>Clear</button> : null}
+            <button className="btn" onClick={() => setSyncModalOpen(true)}>{syncPassphraseConfigured ? t("secrets.rotateSyncPassphrase", "Rotate") : t("secrets.setPassphrase", "Set passphrase")}</button>
+            {syncPassphraseConfigured ? <button className="btn btn-danger" onClick={() => void clearSyncPassphraseHandler()}>{t("secrets.clearSyncPassphrase", "Clear")}</button> : null}
           </div>
         </div>
         <p className="secrets-sync-copy">
-          Shared passphrase used to wrap cross-node secret bundles. Both nodes in a sync pair must share the same value. Stored locally only; never transmitted.
+          {t("secrets.syncPassphraseDescription", "Shared passphrase used to wrap cross-node secret bundles. Both nodes in a sync pair must share the same value. Stored locally only; never transmitted.")}
         </p>
       </article>
 
       {error ? <div className="form-error">{error}</div> : null}
-      {loading ? <div className="secrets-loading"><RefreshCw {...spinningActionIconProps} /> Loading…</div> : null}
-      {!loading && sortedSecrets.length === 0 ? <div className="secrets-empty">No secrets found.</div> : null}
+      {loading ? <div className="secrets-loading"><RefreshCw {...spinningActionIconProps} /> {t("secrets.loading", "Loading…")}</div> : null}
+      {!loading && sortedSecrets.length === 0 ? <div className="secrets-empty">{t("secrets.empty", "No secrets found.")}</div> : null}
 
       <div className="secrets-list">
         {sortedSecrets.map((secret) => {
@@ -314,12 +316,12 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
                 <div className="secrets-row-meta">
                   <span className="secrets-chip">{secret.scope}</span>
                   <span className="secrets-chip">{secret.accessPolicy}</span>
-                  {secret.envExportable ? <span className="secrets-chip">env_exportable</span> : null}
+                  {secret.envExportable ? <span className="secrets-chip">{t("secrets.envExportableChip", "env exportable")}</span> : null}
                 </div>
                 {revealed ? <pre className="secrets-revealed">{revealed}</pre> : null}
               </div>
               <div className="secrets-row-side">
-                <span className="secrets-row-read">{secret.lastReadAt ? new Date(secret.lastReadAt).toLocaleString() : "Never read"}</span>
+                <span className="secrets-row-read">{secret.lastReadAt ? new Date(secret.lastReadAt).toLocaleString() : t("secrets.neverRead", "Never read")}</span>
                 <div className="secrets-row-actions">
                   <button
                     type="button"
@@ -331,20 +333,20 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
                       }
                       void revealSecret(secret);
                     }}
-                    aria-label={revealed ? "Hide" : "Reveal"}
+                    aria-label={revealed ? t("secrets.hideAriaLabel", "Hide") : t("secrets.revealAriaLabel", "Reveal")}
                   >
                     {revealed ? <EyeOff {...actionIconProps} /> : <Eye {...actionIconProps} />}
                   </button>
-                  <button className="btn btn-icon" onClick={() => void copySecret(secret)} aria-label="Copy" disabled={!revealed}>
+                  <button className="btn btn-icon" onClick={() => void copySecret(secret)} aria-label={t("secrets.copyAriaLabel", "Copy")} disabled={!revealed}>
                     {copiedId === secret.id ? <Check {...actionIconProps} /> : <Copy {...actionIconProps} />}
                   </button>
-                  <button className="btn btn-icon" onClick={() => openEdit(secret)} aria-label="Edit"><Pencil {...actionIconProps} /></button>
-                  <button className="btn btn-icon btn-danger" onClick={() => setShowDeleteId(secret.id)} aria-label="Delete"><Trash2 {...actionIconProps} /></button>
+                  <button className="btn btn-icon" onClick={() => openEdit(secret)} aria-label={t("secrets.editAriaLabel", "Edit")}><Pencil {...actionIconProps} /></button>
+                  <button className="btn btn-icon btn-danger" onClick={() => setShowDeleteId(secret.id)} aria-label={t("secrets.deleteAriaLabel", "Delete")}><Trash2 {...actionIconProps} /></button>
                 </div>
                 {showDeleteId === secret.id ? (
                   <div className="secrets-confirm">
-                    <button className="btn btn-sm btn-danger" onClick={() => void deleteSecret(secret)}>Confirm</button>
-                    <button className="btn btn-sm" onClick={() => setShowDeleteId(null)}>Cancel</button>
+                    <button className="btn btn-sm btn-danger" onClick={() => void deleteSecret(secret)}>{t("secrets.confirmDelete", "Confirm")}</button>
+                    <button className="btn btn-sm" onClick={() => setShowDeleteId(null)}>{t("secrets.cancelDelete", "Cancel")}</button>
                   </div>
                 ) : null}
               </div>
@@ -355,39 +357,39 @@ export const SecretsView = ({ addToast }: SecretsViewProps) => {
 
       {syncModalOpen ? (
         <div className="modal-overlay open" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true" aria-label={syncPassphraseConfigured ? "Rotate sync passphrase" : "Set sync passphrase"}>
+          <div className="modal" role="dialog" aria-modal="true" aria-label={syncPassphraseConfigured ? t("secrets.rotateSyncPassphraseModalTitle", "Rotate sync passphrase") : t("secrets.setSyncPassphraseModalTitle", "Set sync passphrase")}>
             <div className="modal-header">
-              <h3>{syncPassphraseConfigured ? "Rotate sync passphrase" : "Set sync passphrase"}</h3>
-              <button className="modal-close" onClick={closeSyncModal} aria-label="Close">×</button>
+              <h3>{syncPassphraseConfigured ? t("secrets.rotateSyncPassphraseModalTitle", "Rotate sync passphrase") : t("secrets.setSyncPassphraseModalTitle", "Set sync passphrase")}</h3>
+              <button className="modal-close" onClick={closeSyncModal} aria-label={t("secrets.closeAriaLabel", "Close")}>×</button>
             </div>
             <div className="secrets-modal-body">
-              <div className="form-group"><label>Passphrase</label><input aria-label="Passphrase" className="input" type="password" autoComplete="new-password" value={syncPassphrase} onChange={(e) => setSyncPassphrase(e.target.value)} /></div>
-              <div className="form-group"><label>Confirm passphrase</label><input aria-label="Confirm passphrase" className="input" type="password" autoComplete="new-password" value={syncPassphraseConfirm} onChange={(e) => setSyncPassphraseConfirm(e.target.value)} /></div>
-              {!syncPassphraseMatches && syncPassphraseConfirm.length > 0 ? <div className="form-error">Passphrases must match.</div> : null}
+              <div className="form-group"><label>{t("secrets.passphraseLabel", "Passphrase")}</label><input aria-label={t("secrets.passphraseLabel", "Passphrase")} className="input" type="password" autoComplete="new-password" value={syncPassphrase} onChange={(e) => setSyncPassphrase(e.target.value)} /></div>
+              <div className="form-group"><label>{t("secrets.confirmPassphraseLabel", "Confirm passphrase")}</label><input aria-label={t("secrets.confirmPassphraseLabel", "Confirm passphrase")} className="input" type="password" autoComplete="new-password" value={syncPassphraseConfirm} onChange={(e) => setSyncPassphraseConfirm(e.target.value)} /></div>
+              {!syncPassphraseMatches && syncPassphraseConfirm.length > 0 ? <div className="form-error">{t("secrets.passphraseMustMatch", "Passphrases must match.")}</div> : null}
             </div>
-            <div className="modal-actions"><div className="modal-actions-right"><button className="btn" onClick={closeSyncModal}>Cancel</button><button className="btn btn-primary" onClick={() => void submitSyncPassphrase()} disabled={!syncPassphraseMatches || syncSaving}>{syncPassphraseConfigured ? "Rotate" : "Set passphrase"}</button></div></div>
+            <div className="modal-actions"><div className="modal-actions-right"><button className="btn" onClick={closeSyncModal}>{t("secrets.cancelBtn", "Cancel")}</button><button className="btn btn-primary" onClick={() => void submitSyncPassphrase()} disabled={!syncPassphraseMatches || syncSaving}>{syncPassphraseConfigured ? t("secrets.rotateSyncPassphrase", "Rotate") : t("secrets.setPassphrase", "Set passphrase")}</button></div></div>
           </div>
         </div>
       ) : null}
 
       {showModal ? (
         <div className="modal-overlay open" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true" aria-label={editing ? "Edit secret" : "Add secret"}>
+          <div className="modal" role="dialog" aria-modal="true" aria-label={editing ? t("secrets.editSecretModalTitle", "Edit secret") : t("secrets.addSecretModalTitle", "Add secret")}>
             <div className="modal-header">
-              <h3>{editing ? "Edit secret" : "Add secret"}</h3>
-              <button className="modal-close" onClick={() => setShowModal(false)} aria-label="Close">×</button>
+              <h3>{editing ? t("secrets.editSecretModalTitle", "Edit secret") : t("secrets.addSecretModalTitle", "Add secret")}</h3>
+              <button className="modal-close" onClick={() => setShowModal(false)} aria-label={t("secrets.closeAriaLabel", "Close")}>×</button>
             </div>
             <div className="secrets-modal-body">
-              <div className="form-group"><label>Key</label><input className="input" value={form.key} onChange={(e) => setForm((c) => ({ ...c, key: e.target.value }))} /></div>
-              <div className="form-group"><label>Value</label><div className="secrets-value-row"><input className="input" type={showValue ? "text" : "password"} autoComplete="off" spellCheck={false} value={form.value} onChange={(e) => setForm((c) => ({ ...c, value: e.target.value }))} /><button type="button" className="btn btn-icon secrets-visibility-toggle" onClick={() => setShowValue((s) => !s)} aria-label={showValue ? "Hide value" : "Show value"}>{showValue ? <EyeOff {...actionIconProps} /> : <Eye {...actionIconProps} />}</button></div></div>
-              <div className="form-group"><label>Description</label><textarea className="input" value={form.description} onChange={(e) => setForm((c) => ({ ...c, description: e.target.value }))} /></div>
-              <div className="form-group"><label>Scope</label><div className="secrets-radio-row"><label><input type="radio" checked={form.scope === "project"} onChange={() => setForm((c) => ({ ...c, scope: "project" }))} disabled={Boolean(editing)} /> Project</label><label><input type="radio" checked={form.scope === "global"} onChange={() => setForm((c) => ({ ...c, scope: "global" }))} disabled={Boolean(editing)} /> Global</label></div></div>
-              <div className="form-group"><label>Access policy</label><select className="select" value={form.accessPolicy} onChange={(e) => setForm((c) => ({ ...c, accessPolicy: e.target.value as SecretPolicy }))}><option value="auto">auto</option><option value="prompt">prompt</option><option value="deny">deny</option></select></div>
-              <div className="form-group"><label className="checkbox-label"><input type="checkbox" checked={form.envExportable} onChange={(e) => setForm((c) => ({ ...c, envExportable: e.target.checked }))} /> Export to env</label></div>
-              {form.envExportable ? <div className="form-group"><label>Env key</label><input className="input" value={form.envExportKey} onChange={(e) => setForm((c) => ({ ...c, envExportKey: e.target.value }))} /></div> : null}
+              <div className="form-group"><label>{t("secrets.keyLabel", "Key")}</label><input className="input" value={form.key} onChange={(e) => setForm((c) => ({ ...c, key: e.target.value }))} /></div>
+              <div className="form-group"><label>{t("secrets.valueLabel", "Value")}</label><div className="secrets-value-row"><input className="input" type={showValue ? "text" : "password"} autoComplete="off" spellCheck={false} value={form.value} onChange={(e) => setForm((c) => ({ ...c, value: e.target.value }))} /><button type="button" className="btn btn-icon secrets-visibility-toggle" onClick={() => setShowValue((s) => !s)} aria-label={showValue ? t("secrets.hideValueAriaLabel", "Hide value") : t("secrets.showValueAriaLabel", "Show value")}>{showValue ? <EyeOff {...actionIconProps} /> : <Eye {...actionIconProps} />}</button></div></div>
+              <div className="form-group"><label>{t("secrets.descriptionLabel", "Description")}</label><textarea className="input" value={form.description} onChange={(e) => setForm((c) => ({ ...c, description: e.target.value }))} /></div>
+              <div className="form-group"><label>{t("secrets.scopeLabel", "Scope")}</label><div className="secrets-radio-row"><label><input type="radio" checked={form.scope === "project"} onChange={() => setForm((c) => ({ ...c, scope: "project" }))} disabled={Boolean(editing)} /> {t("secrets.scopeProject", "Project")}</label><label><input type="radio" checked={form.scope === "global"} onChange={() => setForm((c) => ({ ...c, scope: "global" }))} disabled={Boolean(editing)} /> {t("secrets.scopeGlobal", "Global")}</label></div></div>
+              <div className="form-group"><label>{t("secrets.accessPolicyLabel", "Access policy")}</label><select className="select" value={form.accessPolicy} onChange={(e) => setForm((c) => ({ ...c, accessPolicy: e.target.value as SecretPolicy }))}><option value="auto">{t("secrets.accessPolicyAuto", "auto")}</option><option value="prompt">{t("secrets.accessPolicyPrompt", "prompt")}</option><option value="deny">{t("secrets.accessPolicyDeny", "deny")}</option></select></div>
+              <div className="form-group"><label className="checkbox-label"><input type="checkbox" checked={form.envExportable} onChange={(e) => setForm((c) => ({ ...c, envExportable: e.target.checked }))} /> {t("secrets.exportToEnvLabel", "Export to env")}</label></div>
+              {form.envExportable ? <div className="form-group"><label>{t("secrets.envKeyLabel", "Env key")}</label><input className="input" value={form.envExportKey} onChange={(e) => setForm((c) => ({ ...c, envExportKey: e.target.value }))} /></div> : null}
               {formError ? <div className="form-error">{formError}</div> : null}
             </div>
-            <div className="modal-actions"><div className="modal-actions-right"><button className="btn" onClick={() => setShowModal(false)}>Cancel</button><button className="btn btn-primary" onClick={() => void submit()}>{editing ? "Save" : "Create"}</button></div></div>
+            <div className="modal-actions"><div className="modal-actions-right"><button className="btn" onClick={() => setShowModal(false)}>{t("secrets.cancelBtn", "Cancel")}</button><button className="btn btn-primary" onClick={() => void submit()}>{editing ? t("secrets.saveBtn", "Save") : t("secrets.createBtn", "Create")}</button></div></div>
           </div>
         </div>
       ) : null}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { DockerNodeConfigInfo, NodeCreateInput, NodeInfo, NodeOnboardingInput, NodeUpdateInput, RemoteNodeProjectDiscoveryResult } from "../api";
 import {
   fetchDockerConfigDiff,
@@ -38,6 +39,7 @@ const VISIBILITY_REFRESH_DEBOUNCE_MS = 1000;
  * Refetches when the tab becomes visible again.
  */
 export function useNodes(): UseNodesResult {
+  const { t } = useTranslation("app");
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,10 +52,10 @@ export function useNodes(): UseNodesResult {
       const data = await fetchNodes();
       setNodes(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch nodes");
+      setError(err instanceof Error ? err.message : t("nodes.errorFetching", "Failed to fetch nodes"));
       // Keep stale data visible if polling refresh fails
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +70,7 @@ export function useNodes(): UseNodesResult {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to fetch nodes");
+          setError(err instanceof Error ? err.message : t("nodes.errorFetching", "Failed to fetch nodes"));
         }
       } finally {
         if (!cancelled) {
@@ -139,14 +141,14 @@ export function useNodes(): UseNodesResult {
       try {
         await persistNodeProjectPathMappings(node.id, projectMappings);
       } catch (error) {
-        const mappingError = error instanceof Error ? error.message : "Failed to persist project mappings";
+        const mappingError = error instanceof Error ? error.message : t("nodes.errorPersistMappings", "Failed to persist project mappings");
         let cleanupErrorMessage = "";
         try {
           await unregisterNode(node.id);
         } catch (cleanupError) {
           cleanupErrorMessage = cleanupError instanceof Error
             ? cleanupError.message
-            : "Failed to unregister node after mapping failure";
+            : t("nodes.errorUnregisterAfterMappingFailure", "Failed to unregister node after mapping failure");
         }
 
         await refresh();
@@ -160,7 +162,7 @@ export function useNodes(): UseNodesResult {
 
     await refresh();
     return node;
-  }, [refresh]);
+  }, [refresh, t]);
 
   const update = useCallback(async (id: string, updates: NodeUpdateInput): Promise<NodeInfo> => {
     const node = await updateNode(id, updates);

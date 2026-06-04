@@ -1,4 +1,5 @@
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useFlashOnIncrease } from "../hooks/useFlashOnIncrease";
 import { useConfirm } from "../hooks/useConfirm";
 import type { Task, TaskDetail, Column as ColumnType, TaskCreateInput, GithubIssueAction } from "@fusion/core";
@@ -79,6 +80,7 @@ interface ColumnProps {
 }
 
 function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, taskStuckTimeoutMs, onOpenMission, lastFetchTimeMs, workflowStepNameLookup, blockerFanoutMap, prAuthAvailable }: ColumnProps) {
+  const { t } = useTranslation("app");
   const [dragOver, setDragOver] = useState(false);
   const [visibleTaskCount, setVisibleTaskCount] = useState(VISIBLE_TASKS_INITIAL);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -159,20 +161,20 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
 
       if (shouldPrompt) {
         const keepProgress = await confirm({
-          title: "Preserve Progress?",
-          message: "This task has completed steps. Keep progress before moving?",
-          confirmLabel: "Keep Progress",
-          cancelLabel: "Reset Progress",
+          title: t("column.preserveProgressTitle", "Preserve Progress?"),
+          message: t("column.preserveProgressMessage", "This task has completed steps. Keep progress before moving?"),
+          confirmLabel: t("column.keepProgress", "Keep Progress"),
+          cancelLabel: t("column.resetProgress", "Reset Progress"),
         });
 
         if (keepProgress) {
           moveOptions = { preserveProgress: true };
         } else {
           const resetProgress = await confirm({
-            title: "Reset Progress?",
-            message: "Reset all step progress before moving this task?",
-            confirmLabel: "Reset Progress",
-            cancelLabel: "Cancel Move",
+            title: t("column.resetProgressTitle", "Reset Progress?"),
+            message: t("column.resetProgressMessage", "Reset all step progress before moving this task?"),
+            confirmLabel: t("column.resetProgressConfirm", "Reset Progress"),
+            cancelLabel: t("column.cancelMove", "Cancel Move"),
             danger: true,
           });
           if (!resetProgress) {
@@ -208,8 +210,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     if (tasks.length === 0) return;
 
     const confirmed = await confirm({
-      title: "Replan All Tasks",
-      message: `Move all ${tasks.length} todo task${tasks.length === 1 ? "" : "s"} back to planning to be replanned?`,
+      title: t("column.replanAllTitle", "Replan All Tasks"),
+      message: t("column.replanAllMessage", "Move all {{count}} todo task{{plural}} back to planning to be replanned?", { count: tasks.length, plural: tasks.length === 1 ? "" : "s" }),
     });
     if (!confirmed) return;
 
@@ -222,9 +224,9 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
       const failed = results.filter((r) => r.status === "rejected").length;
       const moved = results.length - failed;
       if (failed === 0) {
-        addToast(`Moved ${moved} task${moved === 1 ? "" : "s"} to planning for replanning`, "success");
+        addToast(t("column.movedToPlanning", "Moved {{count}} task{{plural}} to planning for replanning", { count: moved, plural: moved === 1 ? "" : "s" }), "success");
       } else {
-        addToast(`Moved ${moved} of ${results.length} tasks; ${failed} failed`, "error");
+        addToast(t("column.movePartialFailure", "Moved {{moved}} of {{total}} tasks; {{failed}} failed", { moved, total: results.length, failed }), "error");
       }
     } finally {
       setIsReplanning(false);
@@ -246,8 +248,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     if (pauseEligibleCount === 0) return;
 
     const confirmed = await confirm({
-      title: "Stop All Tasks",
-      message: `Stop all ${pauseEligibleCount} ${COLUMN_LABELS[column].toLowerCase()} task${pauseEligibleCount === 1 ? "" : "s"}?`,
+      title: t("column.stopAllTitle", "Stop All Tasks"),
+      message: t("column.stopAllMessage", "Stop all {{count}} {{columnLabel}} task{{plural}}?", { count: pauseEligibleCount, columnLabel: COLUMN_LABELS[column].toLowerCase(), plural: pauseEligibleCount === 1 ? "" : "s" }),
       danger: true,
     });
     if (!confirmed) return;
@@ -260,9 +262,9 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
       const failed = results.filter((r) => r.status === "rejected").length;
       const paused = results.length - failed;
       if (failed === 0) {
-        addToast(`Stopped ${paused} task${paused === 1 ? "" : "s"}`, "success");
+        addToast(t("column.stoppedTasks", "Stopped {{count}} task{{plural}}", { count: paused, plural: paused === 1 ? "" : "s" }), "success");
       } else {
-        addToast(`Stopped ${paused} of ${results.length} tasks; ${failed} failed`, "error");
+        addToast(t("column.stopPartialFailure", "Stopped {{paused}} of {{total}} tasks; {{failed}} failed", { paused, total: results.length, failed }), "error");
       }
     } finally {
       setIsPausingAll(false);
@@ -274,8 +276,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     if (tasks.length === 0) return;
 
     const confirmed = await confirm({
-      title: "Move All to Todo",
-      message: `Move all ${tasks.length} ${COLUMN_LABELS[column].toLowerCase()} task${tasks.length === 1 ? "" : "s"} to Todo?`,
+      title: t("column.moveAllToTodoTitle", "Move All to Todo"),
+      message: t("column.moveAllToTodoMessage", "Move all {{count}} {{columnLabel}} task{{plural}} to Todo?", { count: tasks.length, columnLabel: COLUMN_LABELS[column].toLowerCase(), plural: tasks.length === 1 ? "" : "s" }),
     });
     if (!confirmed) return;
 
@@ -283,20 +285,20 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     let preserveProgress = false;
     if (hasAnyProgress) {
       const keepProgress = await confirm({
-        title: "Preserve Progress?",
-        message: "Some tasks have completed steps. Keep progress before moving to Todo?",
-        confirmLabel: "Keep Progress",
-        cancelLabel: "Reset Progress",
+        title: t("column.preserveProgressTitle", "Preserve Progress?"),
+        message: t("column.preserveProgressMoveTodoMessage", "Some tasks have completed steps. Keep progress before moving to Todo?"),
+        confirmLabel: t("column.keepProgress", "Keep Progress"),
+        cancelLabel: t("column.resetProgress", "Reset Progress"),
       });
 
       if (keepProgress) {
         preserveProgress = true;
       } else {
         const resetProgress = await confirm({
-          title: "Reset Progress?",
-          message: "Reset step progress for tasks before moving to Todo?",
-          confirmLabel: "Reset Progress",
-          cancelLabel: "Cancel Move",
+          title: t("column.resetProgressTitle", "Reset Progress?"),
+          message: t("column.resetProgressMoveTodoMessage", "Reset step progress for tasks before moving to Todo?"),
+          confirmLabel: t("column.resetProgressConfirm", "Reset Progress"),
+          cancelLabel: t("column.cancelMove", "Cancel Move"),
           danger: true,
         });
         if (!resetProgress) {
@@ -313,9 +315,9 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
       const failed = results.filter((r) => r.status === "rejected").length;
       const moved = results.length - failed;
       if (failed === 0) {
-        addToast(`Moved ${moved} task${moved === 1 ? "" : "s"} to Todo`, "success");
+        addToast(t("column.movedToTodo", "Moved {{count}} task{{plural}} to Todo", { count: moved, plural: moved === 1 ? "" : "s" }), "success");
       } else {
-        addToast(`Moved ${moved} of ${results.length} tasks to Todo; ${failed} failed`, "error");
+        addToast(t("column.moveToTodoPartialFailure", "Moved {{moved}} of {{total}} tasks to Todo; {{failed}} failed", { moved, total: results.length, failed }), "error");
       }
     } finally {
       setIsMovingAllToTodo(false);
@@ -327,19 +329,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     if (tasks.length === 0) return;
 
     const confirmed = await confirm({
-      title: "Archive All Done",
-      message: `Archive all ${tasks.length} done tasks?`,
+      title: t("column.archiveAllTitle", "Archive All Done"),
+      message: t("column.archiveAllMessage", "Archive all {{count}} done tasks?", { count: tasks.length }),
       danger: true,
     });
     if (!confirmed) return;
 
     try {
       const archived = await onArchiveAllDone();
-      addToast(`Archived ${archived.length} tasks`, "success");
+      addToast(t("column.archivedTasks", "Archived {{count}} tasks", { count: archived.length }), "success");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to archive tasks", "error");
+      addToast(getErrorMessage(err) || t("column.failedToArchive", "Failed to archive tasks"), "error");
     }
-  }, [onArchiveAllDone, tasks.length, addToast, confirm]);
+  }, [onArchiveAllDone, tasks.length, addToast, confirm, t]);
 
   return (
     <div
@@ -354,19 +356,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
         <h2>{COLUMN_LABELS[column]}</h2>
         <span className={`column-count${countFlashing ? " count-flash" : ""}`}>{tasks.length}</span>
         {column === "in-review" && onToggleAutoMerge && (
-          <label className="auto-merge-toggle" title={autoMerge ? "Auto-merge enabled" : "Auto-merge disabled"}>
+          <label className="auto-merge-toggle" title={autoMerge ? t("column.autoMergeEnabled", "Auto-merge enabled") : t("column.autoMergeDisabled", "Auto-merge disabled")}>
             <input
               type="checkbox"
               checked={!!autoMerge}
               onChange={onToggleAutoMerge}
             />
             <span className="toggle-slider" />
-            <span className="toggle-label">Auto-merge</span>
+            <span className="toggle-label">{t("column.autoMerge", "Auto-merge")}</span>
           </label>
         )}
         {onNewTask && (
           <button className="btn btn-task-create btn-sm" onClick={onNewTask}>
-            + New Task
+            + {t("column.newTask", "New Task")}
           </button>
         )}
         {column === "done" && onArchiveAllDone && (
@@ -374,8 +376,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
             className="btn btn-icon btn-sm"
             onClick={handleArchiveAll}
             disabled={tasks.length === 0}
-            title="Archive all done tasks"
-            aria-label="Archive all done tasks"
+            title={t("column.archiveAllDoneTitle", "Archive all done tasks")}
+            aria-label={t("column.archiveAllDoneAriaLabel", "Archive all done tasks")}
           >
             <Archive />
           </button>
@@ -384,8 +386,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
           <button
             className="btn btn-icon btn-sm"
             onClick={onToggleCollapse}
-            title={collapsed ? "Expand archived tasks" : "Collapse archived tasks"}
-            aria-label={collapsed ? "Expand archived tasks" : "Collapse archived tasks"}
+            title={collapsed ? t("column.expandArchivedTitle", "Expand archived tasks") : t("column.collapseArchivedTitle", "Collapse archived tasks")}
+            aria-label={collapsed ? t("column.expandArchivedLabel", "Expand archived tasks") : t("column.collapseArchivedLabel", "Collapse archived tasks")}
           >
             {/* Directional chevrons stay explicit for clearer collapsed-state affordance in compact headers. */}
             {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
@@ -399,8 +401,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
               onClick={() => setIsMenuOpen((v) => !v)}
               aria-haspopup="menu"
               aria-expanded={isMenuOpen}
-              aria-label={`${COLUMN_LABELS[column]} column actions`}
-              title="Column actions"
+              aria-label={t("column.actionsAriaLabel", "{{columnLabel}} column actions", { columnLabel: COLUMN_LABELS[column] })}
+              title={t("column.actionsTitle", "Column actions")}
               disabled={isMenuBusy}
             >
               <MoreVertical />
@@ -415,9 +417,9 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                     onClick={() => void handleReplanAll()}
                     disabled={tasks.length === 0 || isReplanning}
                   >
-                    Replan All
+                    {t("column.replanAll", "Replan All")}
                     <span className="column-menu-item-hint">
-                      Move {tasks.length} task{tasks.length === 1 ? "" : "s"} to Planning
+                      {t("column.replanAllHint", "Move {{count}} task{{plural}} to Planning", { count: tasks.length, plural: tasks.length === 1 ? "" : "s" })}
                     </span>
                   </button>
                 )}
@@ -430,13 +432,13 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                       onClick={() => void handlePauseAll()}
                       disabled={pauseEligibleCount === 0 || isPausingAll || !onPauseTask}
                     >
-                      Stop All
+                      {t("column.stopAll", "Stop All")}
                       <span className="column-menu-item-hint">
                         {tasks.length === 0
-                          ? "No tasks in this column"
+                          ? t("column.noTasksInColumn", "No tasks in this column")
                           : pauseEligibleCount === 0
-                            ? "No manually pausable tasks"
-                            : `Pause ${pauseEligibleCount} active unassigned task${pauseEligibleCount === 1 ? "" : "s"}`}
+                            ? t("column.noManuallyPausableTasks", "No manually pausable tasks")
+                            : t("column.pauseHint", "Pause {{count}} active unassigned task{{plural}}", { count: pauseEligibleCount, plural: pauseEligibleCount === 1 ? "" : "s" })}
                       </span>
                     </button>
                     <button
@@ -446,9 +448,9 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                       onClick={() => void handleMoveAllToTodo()}
                       disabled={tasks.length === 0 || isMovingAllToTodo}
                     >
-                      Move All to Todo
+                      {t("column.moveAllToTodo", "Move All to Todo")}
                       <span className="column-menu-item-hint">
-                        Move {tasks.length} task{tasks.length === 1 ? "" : "s"} to Todo
+                        {t("column.moveToTodoHint", "Move {{count}} task{{plural}} to Todo", { count: tasks.length, plural: tasks.length === 1 ? "" : "s" })}
                       </span>
                     </button>
                   </>
@@ -489,7 +491,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
           )}
           {column === "in-progress" ? (
             worktreeGroups.length === 0 ? (
-              <div className="empty-column">No tasks</div>
+              <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
             ) : (
               worktreeGroups.map((group) => (
                 <WorktreeGroup
@@ -515,7 +517,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
               ))
             )
           ) : tasks.length === 0 ? (
-            <div className="empty-column">No tasks</div>
+            <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
           ) : (
             <>
               {visibleTasks.map((task) => (
@@ -549,7 +551,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                   className="btn btn-secondary btn-sm"
                   onClick={handleLoadMore}
                 >
-                  Load {Math.min(VISIBLE_TASKS_INCREMENT, hiddenTaskCount)} more ({hiddenTaskCount} remaining)
+                  {t("column.loadMore", "Load {{count}} more ({{remaining}} remaining)", { count: Math.min(VISIBLE_TASKS_INCREMENT, hiddenTaskCount), remaining: hiddenTaskCount })}
                 </button>
               )}
             </>

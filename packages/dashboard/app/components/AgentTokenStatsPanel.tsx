@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { Agent } from "../api";
 import "./AgentTokenStatsPanel.css";
 
@@ -23,6 +24,7 @@ function formatTokenCount(value: number): string {
 }
 
 export function AgentTokenStatsPanel({ agents }: AgentTokenStatsPanelProps) {
+  const { t } = useTranslation("app");
   const { rows, totalInputTokens, totalOutputTokens, totalTokens } = useMemo(() => {
     const computedRows = agents
       .map((agent): AgentTokenRow => {
@@ -49,22 +51,22 @@ export function AgentTokenStatsPanel({ agents }: AgentTokenStatsPanelProps) {
   const hasUsageData = totalTokens > 0;
 
   return (
-    <section className="agent-token-stats-panel" aria-label="Agent token usage statistics">
+    <section className="agent-token-stats-panel" aria-label={t("agents.tokenStatistics", "Agent token usage statistics")}>
       <header className="agent-token-stats-panel__header">
-        <h3 className="agent-token-stats-panel__title">Token Usage by Agent</h3>
+        <h3 className="agent-token-stats-panel__title">{t("agents.tokenUsageByAgent", "Token Usage by Agent")}</h3>
       </header>
 
-      <div className="agent-token-stats-panel__totals" role="list" aria-label="Token usage totals">
+      <div className="agent-token-stats-panel__totals" role="list" aria-label={t("agents.tokenUsageTotals", "Token usage totals")}>
         <div className="agent-token-stats-panel__total-card" role="listitem">
-          <span className="agent-token-stats-panel__total-label">Input Tokens</span>
+          <span className="agent-token-stats-panel__total-label">{t("agents.inputTokens", "Input Tokens")}</span>
           <span className="agent-token-stats-panel__total-value">{formatTokenCount(totalInputTokens)}</span>
         </div>
         <div className="agent-token-stats-panel__total-card" role="listitem">
-          <span className="agent-token-stats-panel__total-label">Output Tokens</span>
+          <span className="agent-token-stats-panel__total-label">{t("agents.outputTokens", "Output Tokens")}</span>
           <span className="agent-token-stats-panel__total-value">{formatTokenCount(totalOutputTokens)}</span>
         </div>
         <div className="agent-token-stats-panel__total-card" role="listitem">
-          <span className="agent-token-stats-panel__total-label">Combined Tokens</span>
+          <span className="agent-token-stats-panel__total-label">{t("agents.combinedTokens", "Combined Tokens")}</span>
           <span className="agent-token-stats-panel__total-value">{formatTokenCount(totalTokens)}</span>
         </div>
       </div>
@@ -74,10 +76,10 @@ export function AgentTokenStatsPanel({ agents }: AgentTokenStatsPanelProps) {
           <table className="agent-token-stats-panel__table">
             <thead>
               <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">Input</th>
-                <th scope="col">Output</th>
-                <th scope="col">Total</th>
+                <th scope="col">{t("agents.agent", "Agent")}</th>
+                <th scope="col">{t("agents.input", "Input")}</th>
+                <th scope="col">{t("agents.output", "Output")}</th>
+                <th scope="col">{t("agents.total", "Total")}</th>
               </tr>
             </thead>
             <tbody>
@@ -97,7 +99,7 @@ export function AgentTokenStatsPanel({ agents }: AgentTokenStatsPanelProps) {
         </div>
       ) : (
         <div className="agent-token-stats-panel__empty" role="status">
-          No token usage recorded yet. Token totals appear here once agents run.
+          {t("agents.noTokenUsageYet", "No token usage recorded yet. Token totals appear here once agents run.")}
         </div>
       )}
     </section>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { fetchAgents } from "../api";
 import type { Agent } from "@fusion/core";
@@ -14,16 +15,17 @@ export interface RoomDraft {
   memberAgentIds: string[];
 }
 
-export function validateRoomName(input: string, existingRoomNames: string[] = []): { ok: true; name: string } | { ok: false; error: string } {
+export function validateRoomName(input: string, existingRoomNames: string[] = [], t?: (key: string, defaultValue: string) => string): { ok: true; name: string } | { ok: false; error: string } {
   const raw = input.trim().replace(/^#/, "");
-  if (!raw) return { ok: false, error: "Room name is required." };
-  if (/[A-Z]/.test(raw)) return { ok: false, error: "Use lowercase letters only." };
+  const getError = (key: string, defaultValue: string) => t ? t(key, defaultValue) : defaultValue;
+  if (!raw) return { ok: false, error: getError("createRoom.nameRequired", "Room name is required.") };
+  if (/[A-Z]/.test(raw)) return { ok: false, error: getError("createRoom.lowercase", "Use lowercase letters only.") };
   const stripped = raw.toLowerCase();
-  if (stripped.length > 80) return { ok: false, error: "Room names can be at most 80 characters." };
-  if (!/^[a-z0-9_-]+$/.test(stripped)) return { ok: false, error: "Use lowercase letters, numbers, hyphens, or underscores only." };
-  if (/^[-_]|[-_]$/.test(stripped)) return { ok: false, error: "Room names cannot start or end with a hyphen or underscore." };
+  if (stripped.length > 80) return { ok: false, error: getError("createRoom.maxLength", "Room names can be at most 80 characters.") };
+  if (!/^[a-z0-9_-]+$/.test(stripped)) return { ok: false, error: getError("createRoom.validChars", "Use lowercase letters, numbers, hyphens, or underscores only.") };
+  if (/^[-_]|[-_]$/.test(stripped)) return { ok: false, error: getError("createRoom.noEdgeChars", "Room names cannot start or end with a hyphen or underscore.") };
   if (existingRoomNames.some((name) => name.toLowerCase() === stripped)) {
-    return { ok: false, error: "A room with this name already exists." };
+    return { ok: false, error: getError("createRoom.duplicate", "A room with this name already exists.") };
   }
   return { ok: true, name: stripped };
 }
@@ -37,6 +39,7 @@ interface CreateRoomModalProps {
 }
 
 export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existingRoomNames = [] }: CreateRoomModalProps) {
+  const { t } = useTranslation("app");
   const [rawName, setRawName] = useState("");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [search, setSearch] = useState("");
@@ -56,7 +59,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
       .then((result) => setAgents(result))
       .catch(() => {
         setAgents([]);
-        setSubmitError("Failed to load agents.");
+        setSubmitError(t("createRoom.failedLoadAgents", "Failed to load agents."));
       })
       .finally(() => setLoadingAgents(false));
   }, [isOpen, projectId]);
@@ -88,7 +91,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
     previousFocusRef.current?.focus();
   }, [isOpen]);
 
-  const validation = useMemo(() => validateRoomName(rawName, existingRoomNames), [rawName, existingRoomNames]);
+  const validation = useMemo(() => validateRoomName(rawName, existingRoomNames, t), [rawName, existingRoomNames, t]);
 
   const filteredAgents = useMemo(() => {
     const normalized = search.trim().toLowerCase();
@@ -116,7 +119,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
       return;
     }
     if (selectedAgentIds.length === 0) {
-      setSubmitError("Select at least one member.");
+      setSubmitError(t("createRoom.selectMember", "Select at least one member."));
       return;
     }
     setSubmitError(null);
@@ -129,7 +132,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
       });
       onClose();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Failed to create room.");
+      setSubmitError(error instanceof Error ? error.message : t("createRoom.failedCreate", "Failed to create room."));
     } finally {
       setIsSubmitting(false);
     }
@@ -137,14 +140,14 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
 
   return createPortal(
     <div className="modal-overlay open" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal modal-lg create-room-modal" role="dialog" aria-modal="true" aria-label="Create room" onClick={(event) => event.stopPropagation()}>
+      <div className="modal modal-lg create-room-modal" role="dialog" aria-modal="true" aria-label={t("createRoom.title", "Create room")} onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h3>Create room</h3>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>×</button>
+          <h3>{t("createRoom.title", "Create room")}</h3>
+          <button type="button" className="modal-close" aria-label={t("actions.close", "Close")} onClick={onClose}>×</button>
         </div>
 
         <div className="form-group create-room-modal-name-group">
-          <label htmlFor="create-room-name">Room name</label>
+          <label htmlFor="create-room-name">{t("createRoom.nameLabel", "Room name")}</label>
           <div className="create-room-modal-name-field">
             <span aria-hidden="true" className="create-room-modal-name-hash">#</span>
             <input
@@ -163,11 +166,11 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
         </div>
 
         <div className="form-group">
-          <label htmlFor="create-room-member-search">Members</label>
+          <label htmlFor="create-room-member-search">{t("createRoom.members", "Members")}</label>
           <input
             id="create-room-member-search"
             className="input"
-            placeholder="Search agents"
+            placeholder={t("createRoom.searchAgents", "Search agents")}
             value={search}
             disabled={isSubmitting}
             onChange={(event) => setSearch(event.target.value)}
@@ -192,10 +195,10 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
 
         <div className="create-room-modal-member-list" data-testid="create-room-member-list">
           {loadingAgents ? (
-            <div className="create-room-modal-empty">Loading agents...</div>
+            <div className="create-room-modal-empty">{t("createRoom.loadingAgents", "Loading agents...")}</div>
           ) : filteredAgents.length === 0 ? (
             <div className="create-room-modal-empty">
-              {agents.length === 0 ? "No agents in this project yet." : "No agents match your search."}
+              {agents.length === 0 ? t("createRoom.noAgents", "No agents in this project yet.") : t("createRoom.noMatch", "No agents match your search.")}
             </div>
           ) : (
             filteredAgents.map((agent) => {
@@ -220,9 +223,9 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
         {submitError && <div className="form-group"><div className="form-error">{submitError}</div></div>}
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose} disabled={isSubmitting}>Cancel</button>
+          <button type="button" className="btn" onClick={onClose} disabled={isSubmitting}>{t("actions.cancel", "Cancel")}</button>
           <button type="button" className="btn btn-primary" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-            {isSubmitting ? "Creating..." : "Create room"}
+            {isSubmitting ? t("createRoom.creating", "Creating...") : t("createRoom.create", "Create room")}
           </button>
         </div>
       </div>

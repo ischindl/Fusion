@@ -1,4 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import type { PluginUiSlotEntry } from "../api";
 import { DroidCliProviderCard } from "../components/DroidCliProviderCard";
 
@@ -44,25 +45,27 @@ function DroidOnboardingProviderCard({ actions }: PluginSlotComponentProps): Rea
 }
 
 function DroidOnboardingSetupHelp(): ReactNode {
+  const { t } = useTranslation("app");
   return (
     <p className="onboarding-helper-text" data-testid="droid-onboarding-setup-help">
-      Tip: Enable Droid CLI to reuse your Factory AI subscription without adding an API key.
+      {t("plugins.droidOnboardingTip", "Tip: Enable Droid CLI to reuse your Factory AI subscription without adding an API key.")}
     </p>
   );
 }
 
 function DroidPostOnboardingRecommendation({ actions }: PluginSlotComponentProps): ReactNode {
+  const { t } = useTranslation("app");
   return (
     <div className="post-onboarding-recommendations__item" data-testid="droid-post-onboarding-recommendation">
       <span className="post-onboarding-recommendations__item-text">
-        <strong>Enable Droid CLI</strong>
-        <span>Use your local Droid CLI session as an AI provider in Fusion.</span>
+        <strong>{t("plugins.droidRecommendTitle", "Enable Droid CLI")}</strong>
+        <span>{t("plugins.droidRecommendDesc", "Use your local Droid CLI session as an AI provider in Fusion.")}</span>
       </span>
       <button type="button" className="btn btn-sm" onClick={() => actions?.openSettingsSection?.("authentication")}>
-        Open Authentication
+        {t("plugins.openAuthentication", "Open Authentication")}
       </button>
       <button type="button" className="btn btn-sm" onClick={() => actions?.openModelOnboarding?.()}>
-        Open Onboarding
+        {t("plugins.openOnboarding", "Open Onboarding")}
       </button>
     </div>
   );

@@ -1,9 +1,10 @@
 import "./TaskCard.css";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { memo, useCallback, useState, useRef, useEffect, useMemo } from "react";
 import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest } from "lucide-react";
 import type { Task, TaskDetail, Column, PrInfo, IssueInfo, TaskPriority, GithubIssueAction } from "@fusion/core";
 import {
-  COLUMN_LABELS,
   DEFAULT_TASK_PRIORITY,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   TASK_PRIORITIES,
@@ -31,6 +32,7 @@ import { useConfirm } from "../hooks/useConfirm";
 import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from "../utils/taskDelete";
 import { MAX_AUTO_MERGE_RETRIES, type BlockerFanoutEntry } from "../hooks/useBlockerFanout";
 import { useRetryWarning } from "../context/RetryWarningContext";
+import { useColumnLabel } from "../i18n/labels";
 
 // ── Mission title caching ───────────────────────────────────────────────────
 
@@ -154,8 +156,8 @@ const TIME_INDICATOR_COLUMNS = new Set<Column>([
 ]);
 const LIVE_TIME_INDICATOR_POLL_MS = 30_000;
 
-function getTaskStatusLabel(status: string): string {
-  if (status === "merging-fix") return "Merging fixes…";
+function getTaskStatusLabel(status: string, t: TFunction<"app">): string {
+  if (status === "merging-fix") return t("tasks.statusMergingFix", "Merging fixes…");
   return status;
 }
 
@@ -570,6 +572,8 @@ function TaskCardComponent({
   prAuthAvailable,
   autoMergeEnabled = false,
 }: TaskCardProps) {
+  const { t } = useTranslation("app");
+  const columnLabel = useColumnLabel();
   const [dragging, setDragging] = useState(false);
   const [fileDragOver, setFileDragOver] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -744,9 +748,9 @@ function TaskCardComponent({
     for (const file of files) {
       try {
         await uploadAttachment(task.id, file, projectId);
-        addToast(`Attached ${file.name} to ${task.id}`, "success");
+        addToast(t("tasks.attachedFile", "Attached {{fileName}} to {{taskId}}", { fileName: file.name, taskId: task.id }), "success");
       } catch (err) {
-        addToast(`Failed to attach ${file.name}: ${getErrorMessage(err)}`, "error");
+        addToast(t("tasks.attachFileFailed", "Failed to attach {{fileName}}: {{error}}", { fileName: file.name, error: getErrorMessage(err) }), "error");
       }
     }
   }, [task.id, isFileDrag, addToast]);
@@ -818,7 +822,7 @@ function TaskCardComponent({
       const detail = await fetchTaskDetail(depId, projectId);
       onOpenDetail(detail);
     } catch {
-      addToast(`Failed to load dependency ${depId}`, "error");
+      addToast(t("tasks.loadDependencyFailed", "Failed to load dependency {{depId}}", { depId }), "error");
     }
   }, [onOpenDetail, addToast]);
 
@@ -887,8 +891,10 @@ function TaskCardComponent({
   const hasBranchMetadata = Boolean(branchMetadata.branch || branchMetadata.baseBranch);
   const isAgentCreated = isAgentCreatedTask(task);
   const sourceAgentName = getSourceAgentName(task, agentsMap);
-  const agentCreatedVisibleLabel = sourceAgentName ? abbreviateBadge(sourceAgentName, 15) : "Agent";
-  const agentCreatedTitle = sourceAgentName ? `Created by agent: ${sourceAgentName}` : "Created by agent";
+  const agentCreatedVisibleLabel = sourceAgentName ? abbreviateBadge(sourceAgentName, 15) : t("tasks.agentLabel", "Agent");
+  const agentCreatedTitle = sourceAgentName
+    ? t("tasks.createdByAgentNamed", "Created by agent: {{name}}", { name: sourceAgentName })
+    : t("tasks.createdByAgent", "Created by agent");
   const assignedAgentNameFromMap = getResolvedAgentNameFromMap(task.assignedAgentId, agentsMap);
   const assignedAgentNameFromCache = task.assignedAgentId ? agentNameCache.get(task.assignedAgentId) ?? null : null;
   const resolvedAssignedAgentName = assignedAgentNameFromMap ?? assignedAgentNameFromCache ?? agentName;
@@ -960,8 +966,8 @@ function TaskCardComponent({
           const mergeElapsedMs = getMergeElapsedMs(task, timeIndicatorNowMs);
           const mergeLabel = mergeElapsedMs == null ? null : formatElapsedDuration(mergeElapsedMs);
           const title = mergeLabel
-            ? `Execution time ${elapsedLabel}. Merge phase ${mergeLabel}`
-            : `Execution time ${elapsedLabel}. Merging`;
+            ? t("tasks.executionTimeMergePhase", "Execution time {{elapsed}}. Merge phase {{merge}}", { elapsed: elapsedLabel, merge: mergeLabel })
+            : t("tasks.executionTimeMerging", "Execution time {{elapsed}}. Merging", { elapsed: elapsedLabel });
           return {
             label: elapsedLabel,
             title,
@@ -990,8 +996,8 @@ function TaskCardComponent({
 
       return {
         label: elapsedLabel,
-        title: `In progress ${elapsedLabel}`,
-        ariaLabel: `In progress ${elapsedLabel}`,
+        title: t("tasks.inProgressTime", "In progress {{elapsed}}", { elapsed: elapsedLabel }),
+        ariaLabel: t("tasks.inProgressTime", "In progress {{elapsed}}", { elapsed: elapsedLabel }),
       };
     }
 
@@ -1013,16 +1019,16 @@ function TaskCardComponent({
     if (completionMs == null) {
       return {
         label: elapsedLabel,
-        title: `Execution time ${elapsedLabel}`,
-        ariaLabel: `Execution time ${elapsedLabel}`,
+        title: t("tasks.executionTime", "Execution time {{elapsed}}", { elapsed: elapsedLabel }),
+        ariaLabel: t("tasks.executionTime", "Execution time {{elapsed}}", { elapsed: elapsedLabel }),
       };
     }
 
     const completedAt = new Date(completionMs).toLocaleString();
     return {
       label: elapsedLabel,
-      title: `Execution time ${elapsedLabel}. Completed ${completedAt}`,
-      ariaLabel: `Execution time ${elapsedLabel}. Completed ${completedAt}`,
+      title: t("tasks.executionTimeCompleted", "Execution time {{elapsed}}. Completed {{completedAt}}", { elapsed: elapsedLabel, completedAt }),
+      ariaLabel: t("tasks.executionTimeCompleted", "Execution time {{elapsed}}. Completed {{completedAt}}", { elapsed: elapsedLabel, completedAt }),
     };
   }, [task.column, task.status, task.columnMovedAt, task.timedExecutionMs, task.updatedAt, task.workflowStepResults, task.log, task.firstExecutionAt, task.cumulativeActiveMs, task.executionStartedAt, task.executionCompletedAt, timeIndicatorNowMs]);
 
@@ -1157,12 +1163,12 @@ function TaskCardComponent({
       <button
         className="card-send-back-btn"
         onClick={handleSendBackClick}
-        title="Move task"
-        aria-label="Move task"
+        title={t("tasks.moveTask", "Move task")}
+        aria-label={t("tasks.moveTask", "Move task")}
         aria-haspopup="menu"
         aria-expanded={showSendBackMenu}
       >
-        Move
+        {t("tasks.move", "Move")}
         <ChevronDown size={10} />
       </button>
       {showSendBackMenu && (
@@ -1174,7 +1180,7 @@ function TaskCardComponent({
               role="menuitem"
               onClick={(e) => handleSendBackOptionClick(e, col)}
             >
-              {col === "done" ? "Done (no merge)" : COLUMN_LABELS[col]}
+              {col === "done" ? t("tasks.doneNoMerge", "Done (no merge)") : columnLabel(col)}
             </button>
           ))}
         </div>
@@ -1210,10 +1216,10 @@ function TaskCardComponent({
       await onUpdateTask(task.id, {
         description: editDescription.trim() || undefined,
       });
-      addToast(`Updated ${task.id}`, "success");
+      addToast(t("tasks.updated", "Updated {{taskId}}", { taskId: task.id }), "success");
       setIsEditing(false);
     } catch (err) {
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("tasks.updateFailed", "Failed to update {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
       // Stay in edit mode on error so user can retry
     } finally {
       setIsSaving(false);
@@ -1274,9 +1280,9 @@ function TaskCardComponent({
 
     try {
       await onUpdateTask(task.id, { dismissNearDuplicate: true });
-      addToast(`Kept ${task.id}; duplicate warning dismissed`, "success");
+      addToast(t("tasks.duplicateDismissed", "Kept {{taskId}}; duplicate warning dismissed", { taskId: task.id }), "success");
     } catch (err) {
-      addToast(`Failed to keep ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("tasks.keepFailed", "Failed to keep {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
     }
   }, [addToast, onUpdateTask, task.id]);
 
@@ -1285,19 +1291,18 @@ function TaskCardComponent({
     if (!onArchiveTask) return;
 
     void onArchiveTask(task.id).then(() => {
-      addToast(`Archived ${task.id}`, "success");
+      addToast(t("tasks.archived", "Archived {{taskId}}", { taskId: task.id }), "success");
     }).catch(async (err) => {
       const lineageConflict = extractLineageDeleteConflict(err);
       if (!lineageConflict || lineageConflict.lineageChildIds.length === 0) {
-        addToast(`Failed to archive ${task.id}: ${getErrorMessage(err)}`, "error");
+        addToast(t("tasks.archiveFailed", "Failed to archive {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
         return;
       }
 
       const confirmed = await confirm({
-        title: "Force Delete Task",
+        title: t("tasks.forceDeleteTitle", "Force Delete Task"),
         message:
-          `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-          "Archive anyway by unlinking these references first?",
+          t("tasks.archiveLineageConflict", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
         danger: true,
       });
       if (!confirmed) {
@@ -1306,9 +1311,9 @@ function TaskCardComponent({
 
       try {
         await onArchiveTask(task.id, { removeLineageReferences: true });
-        addToast(`Archived ${task.id} after unlinking lineage references`, "success");
+        addToast(t("tasks.archivedUnlinked", "Archived {{taskId}} after unlinking lineage references", { taskId: task.id }), "success");
       } catch (retryErr) {
-        addToast(`Failed to archive ${task.id}: ${getErrorMessage(retryErr)}`, "error");
+        addToast(t("tasks.archiveFailed", "Failed to archive {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(retryErr) }), "error");
       }
     });
   }, [addToast, confirm, onArchiveTask, task.id]);
@@ -1318,9 +1323,9 @@ function TaskCardComponent({
     if (!onUnarchiveTask) return;
 
     void onUnarchiveTask(task.id).then(() => {
-      addToast(`Unarchived ${task.id}`, "success");
+      addToast(t("tasks.unarchived", "Unarchived {{taskId}}", { taskId: task.id }), "success");
     }).catch((err) => {
-      addToast(`Failed to unarchive ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("tasks.unarchiveFailed", "Failed to unarchive {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
     });
   }, [addToast, onUnarchiveTask, task.id]);
 
@@ -1329,8 +1334,8 @@ function TaskCardComponent({
     if (!onDeleteTask) return;
 
     const shouldDelete = await confirm({
-      title: "Delete Task",
-      message: `Delete ${task.id}?`,
+      title: t("tasks.deleteTitle", "Delete Task"),
+      message: t("tasks.deleteConfirm", "Delete {{taskId}}?", { taskId: task.id }),
       danger: true,
     });
     if (!shouldDelete) {
@@ -1362,20 +1367,20 @@ function TaskCardComponent({
     if (issueRef?.owner && issueRef.repo && issueRef.number) {
       const issueLabel = `${issueRef.owner}/${issueRef.repo}#${issueRef.number}`;
       const shouldCloseIssue = await confirm({
-        title: "Linked GitHub Issue",
-        message: `Choose what to do with ${issueLabel} when deleting ${task.id}.\n\nClose the issue?`,
-        confirmLabel: "Close Issue",
-        cancelLabel: "More Options",
+        title: t("tasks.linkedIssueTitle", "Linked GitHub Issue"),
+        message: t("tasks.linkedIssueMessage", "Choose what to do with {{issueLabel}} when deleting {{taskId}}.\n\nClose the issue?", { issueLabel, taskId: task.id }),
+        confirmLabel: t("tasks.closeIssue", "Close Issue"),
+        cancelLabel: t("tasks.moreOptions", "More Options"),
       });
 
       if (shouldCloseIssue) {
         githubIssueAction = "close";
       } else {
         const shouldDeleteIssue = await confirm({
-          title: "Delete Linked GitHub Issue",
-          message: `Delete ${issueLabel} on GitHub, or leave it unchanged?`,
-          confirmLabel: "Delete Issue",
-          cancelLabel: "Leave Unchanged",
+          title: t("tasks.deleteLinkedIssueTitle", "Delete Linked GitHub Issue"),
+          message: t("tasks.deleteLinkedIssueMessage", "Delete {{issueLabel}} on GitHub, or leave it unchanged?", { issueLabel }),
+          confirmLabel: t("tasks.deleteIssue", "Delete Issue"),
+          cancelLabel: t("tasks.leaveUnchanged", "Leave Unchanged"),
           danger: true,
         });
         githubIssueAction = shouldDeleteIssue ? "delete" : "leave";
@@ -1389,18 +1394,17 @@ function TaskCardComponent({
         await onDeleteTask(task.id);
       }
       const issueSuffix = issueRef?.owner && issueRef.repo && issueRef.number && githubIssueAction
-        ? ` and ${githubIssueAction === "close" ? "closed" : githubIssueAction === "delete" ? "deleted" : "left"} issue ${issueRef.owner}/${issueRef.repo}#${issueRef.number}`
+        ? ` and ${githubIssueAction === "close" ? t("tasks.issueClosed", "closed") : githubIssueAction === "delete" ? t("tasks.issueDeleted", "deleted") : t("tasks.issueLeft", "left")} issue ${issueRef.owner}/${issueRef.repo}#${issueRef.number}`
         : "";
-      addToast(`Deleted ${task.id}${issueSuffix}`, "success");
+      addToast(t("tasks.deleted", "Deleted {{taskId}}{{suffix}}", { taskId: task.id, suffix: issueSuffix }), "success");
     } catch (err) {
       const dependencyConflict = extractDependencyDeleteConflict(err);
       if (dependencyConflict && dependencyConflict.dependentIds.length > 0) {
         const dependentList = dependencyConflict.dependentIds.join(", ");
         const confirmed = await confirm({
-          title: "Force Delete Task",
+          title: t("tasks.forceDeleteTitle", "Force Delete Task"),
           message:
-            `${task.id} is a dependency of ${dependentList}.\n\n` +
-            "Delete anyway by removing these dependency references first?",
+            t("tasks.dependencyConflict", "{{taskId}} is a dependency of {{dependentList}}.\n\nDelete anyway by removing these dependency references first?", { taskId: task.id, dependentList }),
           danger: true,
         });
         if (!confirmed) {
@@ -1413,19 +1417,18 @@ function TaskCardComponent({
             removeLineageReferences: true,
             githubIssueAction,
           });
-          addToast(`Deleted ${task.id} after removing dependency references`, "success");
+          addToast(t("tasks.deletedRemovedDeps", "Deleted {{taskId}} after removing dependency references", { taskId: task.id }), "success");
         } catch (retryErr) {
           const lineageConflict = extractLineageDeleteConflict(retryErr);
           if (!lineageConflict || lineageConflict.lineageChildIds.length === 0) {
-            addToast(`Failed to delete ${task.id}: ${getErrorMessage(retryErr)}`, "error");
+            addToast(t("tasks.deleteFailed", "Failed to delete {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(retryErr) }), "error");
             return;
           }
 
           const confirmedLineage = await confirm({
-            title: "Force Delete Task",
+            title: t("tasks.forceDeleteTitle", "Force Delete Task"),
             message:
-              `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-              "Delete anyway by unlinking these references first?",
+              t("tasks.lineageConflict", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nDelete anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
             danger: true,
           });
           if (!confirmedLineage) {
@@ -1438,9 +1441,9 @@ function TaskCardComponent({
               removeLineageReferences: true,
               githubIssueAction,
             });
-            addToast(`Deleted ${task.id} after unlinking lineage references`, "success");
+            addToast(t("tasks.deletedUnlinked", "Deleted {{taskId}} after unlinking lineage references", { taskId: task.id }), "success");
           } catch (lineageRetryErr) {
-            addToast(`Failed to delete ${task.id}: ${getErrorMessage(lineageRetryErr)}`, "error");
+            addToast(t("tasks.deleteFailed", "Failed to delete {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(lineageRetryErr) }), "error");
           }
         }
         return;
@@ -1448,15 +1451,14 @@ function TaskCardComponent({
 
       const lineageConflict = extractLineageDeleteConflict(err);
       if (!lineageConflict || lineageConflict.lineageChildIds.length === 0) {
-        addToast(`Failed to delete ${task.id}: ${getErrorMessage(err)}`, "error");
+        addToast(t("tasks.deleteFailed", "Failed to delete {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
         return;
       }
 
       const confirmed = await confirm({
-        title: "Force Delete Task",
+        title: t("tasks.forceDeleteTitle", "Force Delete Task"),
         message:
-          `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-          "Delete anyway by unlinking these references first?",
+          t("tasks.lineageConflict", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nDelete anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
         danger: true,
       });
       if (!confirmed) {
@@ -1469,12 +1471,12 @@ function TaskCardComponent({
           removeLineageReferences: true,
           githubIssueAction,
         });
-        addToast(`Deleted ${task.id} after unlinking lineage references`, "success");
+        addToast(t("tasks.deletedUnlinked", "Deleted {{taskId}} after unlinking lineage references", { taskId: task.id }), "success");
       } catch (retryErr) {
-        addToast(`Failed to delete ${task.id}: ${getErrorMessage(retryErr)}`, "error");
+        addToast(t("tasks.deleteFailed", "Failed to delete {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(retryErr) }), "error");
       }
     }
-  }, [addToast, confirm, onDeleteTask, task.githubTracking?.enabled, task.githubTracking?.issue, task.id, task.issueInfo?.url, task.sourceIssue, task.sourceMetadata]);
+  }, [addToast, confirm, onDeleteTask, t, task.githubTracking?.enabled, task.githubTracking?.issue, task.id, task.issueInfo?.url, task.sourceIssue, task.sourceMetadata]);
 
   const handleOpenFiles = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1515,20 +1517,20 @@ function TaskCardComponent({
 
       if (shouldPrompt) {
         const keepProgress = await confirm({
-          title: "Preserve Progress?",
-          message: "This task has completed steps. Keep progress before moving?",
-          confirmLabel: "Keep Progress",
-          cancelLabel: "Reset Progress",
+          title: t("tasks.preserveProgressTitle", "Preserve Progress?"),
+          message: t("tasks.preserveProgressMessage", "This task has completed steps. Keep progress before moving?"),
+          confirmLabel: t("tasks.keepProgress", "Keep Progress"),
+          cancelLabel: t("tasks.resetProgress", "Reset Progress"),
         });
 
         if (keepProgress) {
           moveOptions = { preserveProgress: true };
         } else {
           const resetProgress = await confirm({
-            title: "Reset Progress?",
-            message: "Reset all step progress before moving this task?",
-            confirmLabel: "Reset Progress",
-            cancelLabel: "Cancel Move",
+            title: t("tasks.resetProgressTitle", "Reset Progress?"),
+            message: t("tasks.resetProgressMessage", "Reset all step progress before moving this task?"),
+            confirmLabel: t("tasks.resetProgress", "Reset Progress"),
+            cancelLabel: t("tasks.cancelMove", "Cancel Move"),
             danger: true,
           });
           if (!resetProgress) {
@@ -1538,9 +1540,9 @@ function TaskCardComponent({
       }
 
       await onMoveTask(task.id, column, moveOptions);
-      addToast(`Moved ${task.id} to ${COLUMN_LABELS[column]}`, "success");
+      addToast(t("tasks.moved", "Moved {{taskId}} to {{column}}", { taskId: task.id, column: columnLabel(column) }), "success");
     } catch (err) {
-      addToast(`Failed to move ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("tasks.moveFailed", "Failed to move {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
     }
   }, [addToast, confirm, onMoveTask, task.id, task.steps]);
 
@@ -1552,7 +1554,7 @@ function TaskCardComponent({
     try {
       await onRetryTask(task.id);
     } catch (err) {
-      addToast(`Failed to retry ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("tasks.retryFailed", "Failed to retry {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       setIsRetrying(false);
     }
@@ -1580,7 +1582,7 @@ function TaskCardComponent({
           disabled={!onOpenDetailWithTab}
         >
           <Folder size={12} />
-          <span>{displayCount} {displayCount === 1 ? "file" : "files"} changed</span>
+          <span>{t("tasks.filesChanged", "{{count}} file changed", { count: displayCount, defaultValue_one: "{{count}} file changed", defaultValue_other: "{{count}} files changed" })}</span>
         </button>
       );
     }
@@ -1604,7 +1606,7 @@ function TaskCardComponent({
           disabled={!onOpenDetailWithTab}
         >
           <Folder size={12} />
-          <span>{displayCount} {displayCount === 1 ? "file" : "files"} changed</span>
+          <span>{t("tasks.filesChanged", "{{count}} file changed", { count: displayCount, defaultValue_one: "{{count}} file changed", defaultValue_other: "{{count}} files changed" })}</span>
         </button>
       );
     }
@@ -1633,7 +1635,7 @@ function TaskCardComponent({
             disabled={!onOpenDetailWithTab}
           >
             <Folder size={12} />
-            <span>{displayCount} {displayCount === 1 ? "file" : "files"} changed</span>
+            <span>{t("tasks.filesChanged", "{{count}} file changed", { count: displayCount, defaultValue_one: "{{count}} file changed", defaultValue_other: "{{count}} files changed" })}</span>
           </button>
         );
       }
@@ -1660,7 +1662,7 @@ function TaskCardComponent({
           <textarea
             ref={descTextareaRef}
             className="card-edit-desc-textarea"
-            placeholder="Task description"
+            placeholder={t("tasks.descriptionPlaceholder", "Task description")}
             value={editDescription}
             onChange={handleDescChange}
             onKeyDown={handleDescKeyDown}
@@ -1671,7 +1673,7 @@ function TaskCardComponent({
           {isSaving && (
             <div className="card-edit-loading">
               <span className="card-edit-loading-spinner" />
-              <span className="card-edit-loading-text">Saving...</span>
+              <span className="card-edit-loading-text">{t("tasks.saving", "Saving...")}</span>
             </div>
           )}
         </div>
@@ -1703,14 +1705,14 @@ function TaskCardComponent({
           <span
             className="card-status-badge paused"
           >
-            {pausedByAgent ? "paused by agent" : "paused"}
+            {pausedByAgent ? t("tasks.pausedByAgent", "paused by agent") : t("tasks.paused", "paused")}
           </span>
         )}
         {!isPaused && visualStatus && visualStatus !== "queued" && (
           <span
             className={`card-status-badge card-status-badge--${task.column}${isAwaitingApproval ? " awaiting-approval" : ""}${isAwaitingInput ? " awaiting-input" : ""}${ACTIVE_STATUSES.has(visualStatus) ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
           >
-            {isStuck ? "Stuck" : isAwaitingApproval ? "Awaiting Approval" : isAwaitingInput ? "Needs input" : getTaskStatusLabel(visualStatus)}
+            {isStuck ? t("tasks.stuck", "Stuck") : isAwaitingApproval ? t("tasks.awaitingApproval", "Awaiting Approval") : isAwaitingInput ? t("tasks.needsInput", "Needs input") : visualStatus === "merging-fix" ? t("tasks.statusMergingFix", "Merging fixes…") : getTaskStatusLabel(visualStatus, t)}
           </span>
         )}
         {hasInReviewStall && stallCopy && (
@@ -1741,7 +1743,7 @@ function TaskCardComponent({
         )}
         {isStuck && (isPaused || !task.status || task.status === "queued") && (
           <span className="card-status-badge stuck">
-            Stuck
+            {t("tasks.stuck", "Stuck")}
           </span>
         )}
         {showStalledReview && stalledReview && (
@@ -1749,13 +1751,13 @@ function TaskCardComponent({
             className="card-status-badge card-status-badge--in-review stalled-review"
             title={stalledReview.reason}
           >
-            Stalled
+            {t("tasks.stalled", "Stalled")}
           </span>
         )}
         {(livePrInfo || liveIssueInfo) && (
           <>
             {livePrInfo && (task.prInfos?.length ?? 0) >= 2 ? (
-              <a className={`card-github-badge card-github-badge--${livePrInfo.status}`} title={`PR #${livePrInfo.number}: ${livePrInfo.title}`} href={livePrInfo.url} target="_blank" rel="noopener noreferrer">
+              <a className={`card-github-badge card-github-badge--${livePrInfo.status}`} title={t("tasks.prBadgeTitle", "PR #{{number}}: {{title}}", { number: livePrInfo.number, title: livePrInfo.title })} href={livePrInfo.url} target="_blank" rel="noopener noreferrer">
                 <GitPullRequest size={10} />
                 <span>{`${task.prInfos?.length}x #${livePrInfo.number}`}</span>
               </a>
@@ -1787,21 +1789,21 @@ function TaskCardComponent({
         {task.executionMode === "fast" && (
           <span
             className="card-execution-mode-badge card-execution-mode-badge--fast"
-            title="Fast mode"
-            aria-label="Fast mode"
+            title={t("tasks.fastMode", "Fast mode")}
+            aria-label={t("tasks.fastMode", "Fast mode")}
           >
             <Zap aria-hidden="true" />
-            <span className="visually-hidden">Fast mode</span>
+            <span className="visually-hidden">{t("tasks.fastMode", "Fast mode")}</span>
           </span>
         )}
         {task.noCommitsExpected === true && (
-          <span className="card-no-commits-expected-badge" title="Decision-only task">decision-only</span>
+          <span className="card-no-commits-expected-badge" title={t("tasks.decisionOnlyTitle", "Decision-only task")}>{t("tasks.decisionOnly", "decision-only")}</span>
         )}
         {task.missionId && (
           <span
             className="card-mission-badge"
             onClick={handleMissionClick}
-            title={`Mission: ${missionTitle ?? task.missionId}`}
+            title={t("tasks.missionBadgeTitle", "Mission: {{name}}", { name: missionTitle ?? task.missionId })}
             role={onOpenMission ? "button" : undefined}
             tabIndex={onOpenMission ? 0 : undefined}
             style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1815,8 +1817,8 @@ function TaskCardComponent({
             <button
               className="card-edit-btn"
               onClick={handleEditClick}
-              title="Edit task"
-              aria-label="Edit task"
+              title={t("tasks.editTask", "Edit task")}
+              aria-label={t("tasks.editTask", "Edit task")}
             >
               <Pencil size={12} />
             </button>
@@ -1825,8 +1827,8 @@ function TaskCardComponent({
             <button
               className="card-delete-btn"
               onClick={handleDeleteClick}
-              title="Delete task"
-              aria-label="Delete task"
+              title={t("tasks.deleteTask", "Delete task")}
+              aria-label={t("tasks.deleteTask", "Delete task")}
             >
               <Trash2 size={12} />
             </button>
@@ -1835,20 +1837,20 @@ function TaskCardComponent({
             <button
               className="card-archive-btn"
               onClick={handleArchiveClick}
-              title="Archive task"
-              aria-label="Archive task"
+              title={t("tasks.archiveTask", "Archive task")}
+              aria-label={t("tasks.archiveTask", "Archive task")}
             >
-              Archive
+              {t("tasks.archive", "Archive")}
             </button>
           )}
           {task.column === "archived" && onUnarchiveTask && (
             <button
               className="card-unarchive-btn"
               onClick={handleUnarchiveClick}
-              title="Unarchive task"
-              aria-label="Unarchive task"
+              title={t("tasks.unarchiveTask", "Unarchive task")}
+              aria-label={t("tasks.unarchiveTask", "Unarchive task")}
             >
-              Unarchive
+              {t("tasks.unarchive", "Unarchive")}
             </button>
           )}
           {task.column === "in-progress" && onMoveTask && (
@@ -1856,12 +1858,12 @@ function TaskCardComponent({
               <button
                 className="card-send-back-btn"
                 onClick={handleSendBackClick}
-                title="Send back"
-                aria-label="Send back"
+                title={t("tasks.sendBack", "Send back")}
+                aria-label={t("tasks.sendBack", "Send back")}
                 aria-haspopup="menu"
                 aria-expanded={showSendBackMenu}
               >
-                Send back
+                {t("tasks.sendBack", "Send back")}
                 <ChevronDown size={10} />
               </button>
               {showSendBackMenu && (
@@ -1875,7 +1877,7 @@ function TaskCardComponent({
                         role="menuitem"
                         onClick={(e) => handleSendBackOptionClick(e, col)}
                       >
-                        {COLUMN_LABELS[col]}
+                        {columnLabel(col)}
                       </button>
                     ))}
                 </div>
@@ -1906,7 +1908,7 @@ function TaskCardComponent({
               disabled={isRetrying}
             >
               <RotateCw size={12} />
-              {isRetrying ? "Retrying…" : "Retry"}
+              {isRetrying ? t("tasks.retrying", "Retrying…") : t("tasks.retry", "Retry")}
             </button>
           )}
         </div>
@@ -1915,16 +1917,16 @@ function TaskCardComponent({
         {truncate(task.title, MAX_TITLE_LENGTH) || truncate(task.description, MAX_TITLE_LENGTH) || task.id}
       </div>
       {hasBranchMetadata && (
-        <div className="card-branch-row" aria-label="Branch metadata">
+        <div className="card-branch-row" aria-label={t("tasks.branchMetadata", "Branch metadata")}>
           {branchMetadata.branch && (
             <span className="card-branch-chip" title={branchMetadata.branch}>
-              <span className="card-branch-label">Branch</span>
+              <span className="card-branch-label">{t("tasks.branch", "Branch")}</span>
               <span className="card-branch-value">{branchMetadata.branch}</span>
             </span>
           )}
           {branchMetadata.baseBranch && (
             <span className="card-branch-chip" title={branchMetadata.baseBranch}>
-              <span className="card-branch-label">Base</span>
+              <span className="card-branch-label">{t("tasks.baseBranch", "Base")}</span>
               <span className="card-branch-value">{branchMetadata.baseBranch}</span>
             </span>
           )}
@@ -1949,7 +1951,7 @@ function TaskCardComponent({
                 }}
               >
                 <span className="card-branch-label">
-                  {branchContext.assignmentMode === "shared" ? "Shared" : "Group"}
+                  {branchContext.assignmentMode === "shared" ? t("tasks.sharedBranch", "Shared") : t("tasks.groupBranch", "Group")}
                 </span>
                 <span className="card-branch-value">
                   {branchContext.assignmentMode === "shared" && branchMetadata.branch
@@ -1982,9 +1984,9 @@ function TaskCardComponent({
               className="card-steps-toggle"
               onClick={handleToggleSteps}
               aria-expanded={showSteps}
-              aria-label={showSteps ? "Hide steps" : "Show steps"}
+              aria-label={showSteps ? t("tasks.hideSteps", "Hide steps") : t("tasks.showSteps", "Show steps")}
             >
-              <span>{unifiedProgress.total} step{unifiedProgress.total === 1 ? "" : "s"}</span>
+              <span>{t("tasks.stepCount", "{{count}} step", { count: unifiedProgress.total, defaultValue_one: "{{count}} step", defaultValue_other: "{{count}} steps" })}</span>
               <ChevronDown
                 size={14}
                 className={`card-steps-toggle-icon${showSteps ? " expanded" : ""}`}
@@ -2007,9 +2009,9 @@ function TaskCardComponent({
                       {step.source === "workflow" && (
                         <span
                           className={`card-step-workflow-badge card-step-workflow-badge--${step.phase}`}
-                          title="Workflow check"
+                          title={t("tasks.workflowCheck", "Workflow check")}
                         >
-                          workflow
+                          {t("tasks.workflow", "workflow")}
                         </span>
                       )}
                     </div>
@@ -2026,8 +2028,8 @@ function TaskCardComponent({
           {isGitHubImportedTask && !showLinkedIssueChipForImport && (
             <span
               className="card-source-provenance"
-              title={sourceIssueUrl ? `Imported from GitHub: ${sourceIssueUrl}` : "Imported from GitHub"}
-              aria-label="Imported from GitHub"
+              title={sourceIssueUrl ? t("tasks.importedFromGitHubUrl", "Imported from GitHub: {{url}}", { url: sourceIssueUrl }) : t("tasks.importedFromGitHub", "Imported from GitHub")}
+              aria-label={t("tasks.importedFromGitHub", "Imported from GitHub")}
             >
               <ProviderIcon provider="github" size="sm" />
             </span>
@@ -2038,20 +2040,20 @@ function TaskCardComponent({
                 <>
                   <span
                     className="card-duplicate-chip"
-                    title={`Potential near-duplicate of ${String(task.sourceMetadata?.nearDuplicateOf)}`}
-                    aria-label={`Potential near-duplicate of ${String(task.sourceMetadata?.nearDuplicateOf)}`}
+                    title={t("tasks.nearDuplicateTitle", "Potential near-duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
+                    aria-label={t("tasks.nearDuplicateTitle", "Potential near-duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}
                   >
-                    <span>{`Duplicate of ${String(task.sourceMetadata?.nearDuplicateOf)}`}</span>
+                    <span>{t("tasks.duplicateOf", "Duplicate of {{id}}", { id: String(task.sourceMetadata?.nearDuplicateOf) })}</span>
                   </span>
                   {onUpdateTask && (
                     <button
                       type="button"
                       className="card-duplicate-keep"
                       onClick={(e) => void handleDismissNearDuplicate(e)}
-                      title="Keep this task and dismiss duplicate warning"
-                      aria-label="Keep this task and dismiss duplicate warning"
+                      title={t("tasks.keepTaskTitle", "Keep this task and dismiss duplicate warning")}
+                      aria-label={t("tasks.keepTaskTitle", "Keep this task and dismiss duplicate warning")}
                     >
-                      Keep
+                      {t("tasks.keep", "Keep")}
                     </button>
                   )}
                 </>
@@ -2062,8 +2064,8 @@ function TaskCardComponent({
                   href={githubTrackedIssue.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  title={`Linked GitHub issue: ${githubTrackedIssue.owner}/${githubTrackedIssue.repo}#${githubTrackedIssue.number}`}
-                  aria-label={`Linked GitHub issue #${githubTrackedIssue.number}`}
+                  title={t("tasks.linkedIssueChipTitle", "Linked GitHub issue: {{owner}}/{{repo}}#{{number}}", { owner: githubTrackedIssue.owner, repo: githubTrackedIssue.repo, number: githubTrackedIssue.number })}
+                  aria-label={t("tasks.linkedIssueChipAriaLabel", "Linked GitHub issue #{{number}}", { number: githubTrackedIssue.number })}
                   onClick={(e) => e.stopPropagation()}
                 >
                   <ProviderIcon provider="github" size="sm" />
@@ -2083,8 +2085,8 @@ function TaskCardComponent({
                       onOpenDetailWithTab?.(task, "retries");
                     }
                   }}
-                  aria-label={`${task.retrySummary?.total ?? 0} retries`}
-                  title="Open retry breakdown"
+                  aria-label={t("tasks.retriesAriaLabel", "{{count}} retries", { count: task.retrySummary?.total ?? 0 })}
+                  title={t("tasks.openRetryBreakdown", "Open retry breakdown")}
                 >
                   <RotateCw size={11} />
                   <span>{task.retrySummary?.total ?? 0}</span>
@@ -2097,8 +2099,8 @@ function TaskCardComponent({
                     href={githubTrackedIssue.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`Linked GitHub issue: ${githubTrackedIssue.owner}/${githubTrackedIssue.repo}#${githubTrackedIssue.number}`}
-                    aria-label={`Linked GitHub issue #${githubTrackedIssue.number}`}
+                    title={t("tasks.linkedIssueChipTitle", "Linked GitHub issue: {{owner}}/{{repo}}#{{number}}", { owner: githubTrackedIssue.owner, repo: githubTrackedIssue.repo, number: githubTrackedIssue.number })}
+                    aria-label={t("tasks.linkedIssueChipAriaLabel", "Linked GitHub issue #{{number}}", { number: githubTrackedIssue.number })}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <ProviderIcon provider="github" size="sm" />
@@ -2128,7 +2130,7 @@ function TaskCardComponent({
                   key={depId}
                   className="card-dep-badge clickable"
                   onClick={(e) => void handleDepClick(e, depId)}
-                  title={`Click to view ${depId}`}
+                  title={t("tasks.viewDependency", "Click to view {{depId}}", { depId })}
                 >
                   <Link size={12} style={{ verticalAlign: "middle" }} /> {depId}
                 </span>
@@ -2136,24 +2138,24 @@ function TaskCardComponent({
             </div>
           )}
           {(task.overlapBlockedBy || task.blockedBy) && (
-            <span className="card-scope-badge" data-tooltip={`Blocked by ${task.overlapBlockedBy || task.blockedBy} (file overlap)`}>
+            <span className="card-scope-badge" data-tooltip={t("tasks.blockedByTooltip", "Blocked by {{taskId}} (file overlap)", { taskId: task.overlapBlockedBy || task.blockedBy })}>
               <Layers size={12} style={{ verticalAlign: "middle" }} /> {task.overlapBlockedBy || task.blockedBy}
             </span>
           )}
           {fanout && fanout.totalCount > 0 && (
             <span
               className={`card-fanout-badge${fanout.staleBlockedByDependentIds.length > 0 ? " card-fanout-badge--stale" : ""}`}
-              data-tooltip={`Blocking ${fanout.totalCount} active task(s); overlap blockedBy queue: ${fanout.overlapBlockedTodoCount} todo${fanout.isHighFanout ? ` (overlap bottleneck threshold: ${HIGH_FANOUT_BLOCKER_TODO_THRESHOLD})` : ""}${fanout.escalation ? ` · escalated after ${Math.floor(fanout.escalation.blockingAgeMs / 60000)}m in blocking column` : ""}`}
+              data-tooltip={t("tasks.fanoutTooltip", "Blocking {{count}} active task(s); overlap blockedBy queue: {{queueCount}} todo{{highFanout}}{{escalation}}", { count: fanout.totalCount, queueCount: fanout.overlapBlockedTodoCount, highFanout: fanout.isHighFanout ? t("tasks.fanoutHighFanoutSuffix", " (overlap bottleneck threshold: {{threshold}})", { threshold: HIGH_FANOUT_BLOCKER_TODO_THRESHOLD }) : "", escalation: fanout.escalation ? t("tasks.fanoutEscalationSuffix", " · escalated after {{minutes}}m in blocking column", { minutes: Math.floor(fanout.escalation.blockingAgeMs / 60000) }) : "" })}
             >
               <GitBranch size={12} style={{ verticalAlign: "middle" }} />
               <span>
-                {fanout.escalation ? "Escalated overlap" : fanout.isHighFanout ? "Overlap bottleneck" : "Blocks"}{" "}
+                {fanout.escalation ? t("tasks.fanoutEscalated", "Escalated overlap") : fanout.isHighFanout ? t("tasks.fanoutBottleneck", "Overlap bottleneck") : t("tasks.fanoutBlocks", "Blocks")}{" "}
                 <span className="card-fanout-count">{fanout.totalCount}</span>
-                {fanout.staleBlockedByDependentIds.length > 0 ? ` (${fanout.staleBlockedByDependentIds.length} stale)` : ""}
+                {fanout.staleBlockedByDependentIds.length > 0 ? ` (${t("tasks.fanoutStale", "{{count}} stale", { count: fanout.staleBlockedByDependentIds.length })})` : ""}
               </span>
             </span>
           )}
-          {(queued || task.status === "queued") && task.column !== "in-progress" && <span className="queued-badge"><Clock size={12} style={{ verticalAlign: "middle" }} /> Queued</span>}
+          {(queued || task.status === "queued") && task.column !== "in-progress" && <span className="queued-badge"><Clock size={12} style={{ verticalAlign: "middle" }} /> {t("tasks.queued", "Queued")}</span>}
           {showInReviewMoveControl && renderInReviewMoveControl()}
         </div>
       )}
@@ -2169,13 +2171,13 @@ function TaskCardComponent({
           {task.assignedAgentId && (
             <span
               className={`card-agent-badge${isAgentNameLoading ? " card-agent-badge--loading" : ""}`}
-              title={`Assigned to ${assignedAgentBadgeLabel}`}
+              title={t("tasks.assignedTo", "Assigned to {{name}}", { name: assignedAgentBadgeLabel })}
             >
               <Bot size={11} />
               <span className="card-agent-badge-text" aria-hidden="true">
                 {abbreviateBadge(assignedAgentBadgeLabel, 15)}
               </span>
-              <span className="visually-hidden">Assigned to {assignedAgentBadgeLabel}</span>
+              <span className="visually-hidden">{t("tasks.assignedTo", "Assigned to {{name}}", { name: assignedAgentBadgeLabel })}</span>
             </span>
           )}
         </div>
@@ -2186,15 +2188,15 @@ function TaskCardComponent({
             <button
               type="button"
               className="card-create-pr-action"
-              title="Create a PR for this task"
-              aria-label="Create pull request"
+              title={t("tasks.createPrTitle", "Create a PR for this task")}
+              aria-label={t("tasks.createPrAriaLabel", "Create pull request")}
               onClick={(event) => {
                 event.stopPropagation();
                 setIsPrCreateOpen(true);
               }}
             >
               <GitPullRequest size={12} />
-              Create PR
+              {t("tasks.createPr", "Create PR")}
             </button>
           )}
           {showInReviewMoveControl && !metaRowVisible && renderInReviewMoveControl()}
@@ -2209,7 +2211,7 @@ function TaskCardComponent({
           onClose={() => setIsPrCreateOpen(false)}
           onCreated={(prInfo) => {
             setIsPrCreateOpen(false);
-            addToast(`Created PR #${prInfo.number}`, "success");
+            addToast(t("tasks.createdPr", "Created PR #{{number}}", { number: prInfo.number }), "success");
           }}
           addToast={addToast}
         />

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, Search } from "lucide-react";
 import type { CustomProviderConfig, CustomProviderModelInput } from "../api";
 import { probeProviderModels } from "../api";
@@ -36,6 +37,7 @@ function emptyModel(): CustomProviderModelInput {
 }
 
 export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = false, error }: Props) {
+  const { t } = useTranslation("app");
   const editing = Boolean(initialConfig);
   const [id, setId] = useState(initialConfig?.id ?? "");
   const [name, setName] = useState(initialConfig?.name ?? "");
@@ -72,7 +74,7 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
   const handleDetectModels = useCallback(async () => {
     const trimmedBaseUrl = baseUrl.trim();
     if (!trimmedBaseUrl) {
-      setDetectError("Base URL is required to detect models.");
+      setDetectError(t("providers.detectError.urlRequired", "Base URL is required to detect models."));
       return;
     }
 
@@ -87,7 +89,7 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
       });
 
       if (result.models.length === 0) {
-        setDetectError("No models found. The provider may require an API key.");
+        setDetectError(t("providers.detectError.noModels", "No models found. The provider may require an API key."));
         return;
       }
 
@@ -110,35 +112,35 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
           return [...nonEmpty, ...newModels];
         });
       } else {
-        setDetectError("All discovered models are already in the list.");
+        setDetectError(t("providers.detectError.allDuplicate", "All discovered models are already in the list."));
       }
     } catch (err) {
       setDetectError(
-        err instanceof Error ? err.message : "Failed to detect models",
+        err instanceof Error ? err.message : t("providers.detectError.failed", "Failed to detect models"),
       );
     } finally {
       setDetecting(false);
     }
-  }, [baseUrl, apiKey, probeApiType, models]);
+  }, [baseUrl, apiKey, probeApiType, models, t]);
 
   function validate(): string | null {
-    if (!id.trim()) return "Provider ID is required.";
-    if (!PROVIDER_ID_PATTERN.test(id.trim())) return "Provider ID must be kebab-case.";
-    if (!editing && BUILT_IN_PROVIDER_IDS.has(id.trim())) return "Provider ID conflicts with a built-in provider.";
+    if (!id.trim()) return t("providers.validation.idRequired", "Provider ID is required.");
+    if (!PROVIDER_ID_PATTERN.test(id.trim())) return t("providers.validation.idKebabCase", "Provider ID must be kebab-case.");
+    if (!editing && BUILT_IN_PROVIDER_IDS.has(id.trim())) return t("providers.validation.idConflict", "Provider ID conflicts with a built-in provider.");
 
-    if (!baseUrl.trim()) return "Base URL is required.";
+    if (!baseUrl.trim()) return t("providers.validation.urlRequired", "Base URL is required.");
     try {
       const parsed = new URL(baseUrl.trim());
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return "Base URL must use http or https.";
+        return t("providers.validation.urlProtocol", "Base URL must use http or https.");
       }
     } catch {
-      return "Base URL must be a valid URL.";
+      return t("providers.validation.urlValid", "Base URL must be a valid URL.");
     }
 
-    if (!API_TYPES.includes(api)) return "API type is required.";
-    if (models.length === 0) return "At least one model is required.";
-    if (models.some((model) => !model.id?.trim())) return "Each model must have a model ID.";
+    if (!API_TYPES.includes(api)) return t("providers.validation.apiTypeRequired", "API type is required.");
+    if (models.length === 0) return t("providers.validation.modelRequired", "At least one model is required.");
+    if (models.some((model) => !model.id?.trim())) return t("providers.validation.modelId", "Each model must have a model ID.");
     return null;
   }
 
@@ -167,49 +169,49 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
   return (
     <form onSubmit={onSubmit} className="custom-provider-form" aria-label="custom-provider-form">
       <div className="form-group custom-provider-form__group">
-        <label htmlFor="custom-provider-id">Provider ID</label>
+        <label htmlFor="custom-provider-id">{t("providers.fields.id", "Provider ID")}</label>
         <input id="custom-provider-id" className="input" value={id} onChange={(e) => setId(e.target.value)} disabled={editing || saving} />
       </div>
 
       <div className="form-group custom-provider-form__group">
-        <label htmlFor="custom-provider-name">Display Name</label>
+        <label htmlFor="custom-provider-name">{t("providers.fields.name", "Display Name")}</label>
         <input id="custom-provider-name" className="input" value={name} onChange={(e) => setName(e.target.value)} disabled={saving} />
       </div>
 
       <div className="form-group custom-provider-form__group">
-        <label htmlFor="custom-provider-base-url">Base URL</label>
+        <label htmlFor="custom-provider-base-url">{t("providers.fields.baseUrl", "Base URL")}</label>
         <input id="custom-provider-base-url" className="input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} disabled={saving} />
       </div>
 
       <div className="form-group custom-provider-form__group">
-        <label htmlFor="custom-provider-api">API Type</label>
+        <label htmlFor="custom-provider-api">{t("providers.fields.apiType", "API Type")}</label>
         <select id="custom-provider-api" className="select" value={api} onChange={(e) => setApi(e.target.value as CustomProviderConfig["api"])} disabled={saving}>
           {API_TYPES.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
       </div>
 
       <div className="form-group custom-provider-form__group">
-        <label htmlFor="custom-provider-api-key">API Key</label>
-        <input id="custom-provider-api-key" className="input" placeholder="sk-..., MY_API_KEY, or !command" value={apiKey} onChange={(e) => setApiKey(e.target.value)} disabled={saving} />
+        <label htmlFor="custom-provider-api-key">{t("providers.fields.apiKey", "API Key")}</label>
+        <input id="custom-provider-api-key" className="input" placeholder={t("providers.placeholders.apiKey", "sk-..., MY_API_KEY, or !command")} value={apiKey} onChange={(e) => setApiKey(e.target.value)} disabled={saving} />
       </div>
 
       <div className="form-group custom-provider-form__group">
-        <label>Models</label>
+        <label>{t("providers.fields.models", "Models")}</label>
         <div className="custom-provider-form__models">
           {models.map((model, index) => (
             <div key={`${index}-model`} className="custom-provider-form__model-row">
               <input
                 className="input"
-                aria-label={`Model ID ${index + 1}`}
-                placeholder="Model ID"
+                aria-label={`${t("providers.fields.modelId", "Model ID")} ${index + 1}`}
+                placeholder={t("providers.fields.modelId", "Model ID")}
                 value={model.id}
                 onChange={(e) => updateModel(index, { id: e.target.value })}
                 disabled={saving}
               />
               <input
                 className="input"
-                aria-label={`Model name ${index + 1}`}
-                placeholder="Display name"
+                aria-label={`${t("providers.fields.modelNameLabel", "Model name")} ${index + 1}`}
+                placeholder={t("providers.fields.modelName", "Display name")}
                 value={model.name ?? ""}
                 onChange={(e) => updateModel(index, { name: e.target.value })}
                 disabled={saving}
@@ -221,12 +223,12 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
                   onChange={(e) => updateModel(index, { reasoning: e.target.checked })}
                   disabled={saving}
                 />
-                Reasoning
+                {t("providers.fields.reasoning", "Reasoning")}
               </label>
               <input
                 className="input"
-                aria-label={`Context window ${index + 1}`}
-                placeholder="Context window"
+                aria-label={`${t("providers.fields.contextWindow", "Context window")} ${index + 1}`}
+                placeholder={t("providers.fields.contextWindow", "Context window")}
                 type="number"
                 value={model.contextWindow ?? ""}
                 onChange={(e) => updateModel(index, { contextWindow: e.target.value ? Number(e.target.value) : undefined })}
@@ -234,8 +236,8 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
               />
               <input
                 className="input"
-                aria-label={`Max tokens ${index + 1}`}
-                placeholder="Max tokens"
+                aria-label={`${t("providers.fields.maxTokens", "Max tokens")} ${index + 1}`}
+                placeholder={t("providers.fields.maxTokens", "Max tokens")}
                 type="number"
                 value={model.maxTokens ?? ""}
                 onChange={(e) => updateModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })}
@@ -246,7 +248,7 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
                 className="btn btn-icon btn-sm"
                 onClick={() => removeModel(index)}
                 disabled={saving || !canRemoveModel}
-                aria-label={`Remove model ${index + 1}`}
+                aria-label={t("providers.actions.removeModel", "Remove model", { count: index + 1 })}
               >
                 ×
               </button>
@@ -255,22 +257,22 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
         </div>
         <div className="custom-provider-form__model-actions" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <button type="button" className="btn btn-sm" onClick={() => setModels((prev) => [...prev, emptyModel()])} disabled={saving}>
-            + Add model
+            {t("providers.actions.addModel", "+ Add model")}
           </button>
           <button
             type="button"
             className="btn btn-sm"
             onClick={() => void handleDetectModels()}
             disabled={saving || detecting || !baseUrl.trim()}
-            title="Call the provider's /models endpoint to discover available models"
+            title={t("providers.actions.detectModelsTitle", "Call the provider's /models endpoint to discover available models")}
           >
             {detecting ? (
               <>
-                <Loader2 className="spin" size={14} /> Detecting…
+                <Loader2 className="spin" size={14} /> {t("providers.actions.detecting", "Detecting…")}
               </>
             ) : (
               <>
-                <Search size={14} /> Detect Models
+                <Search size={14} /> {t("providers.actions.detectModels", "Detect Models")}
               </>
             )}
           </button>
@@ -281,8 +283,8 @@ export function CustomProviderForm({ initialConfig, onSave, onCancel, saving = f
       {mergedError ? <div className="form-error">{mergedError}</div> : null}
 
       <div className="custom-provider-form__actions">
-        {onCancel ? <button type="button" className="btn" onClick={onCancel} disabled={saving}>Cancel</button> : null}
-        <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Saving..." : "Save Provider"}</button>
+        {onCancel ? <button type="button" className="btn" onClick={onCancel} disabled={saving}>{t("actions.cancel", "Cancel")}</button> : null}
+        <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? t("providers.actions.saving", "Saving...") : t("providers.actions.save", "Save Provider")}</button>
       </div>
     </form>
   );

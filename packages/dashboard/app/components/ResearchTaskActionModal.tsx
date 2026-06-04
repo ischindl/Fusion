@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, TaskPriority } from "@fusion/core";
 import { fetchTasks } from "../api";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
@@ -18,6 +19,7 @@ interface ResearchTaskActionModalProps {
 }
 
 export function ResearchTaskActionModal({ open, mode, run, finding, projectId, onClose, onConfirm }: ResearchTaskActionModalProps) {
+  const { t } = useTranslation("app");
   useMobileScrollLock(open);
   const [attachExport, setAttachExport] = useState(false);
   const [title, setTitle] = useState("");
@@ -30,8 +32,8 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
 
   const preview = useMemo(() => {
     const firstSentence = (finding.content ?? "").split(/(?<=[.!?])\s+/)[0] ?? "";
-    return `${finding.heading || "Research finding"} — ${firstSentence}`.trim();
-  }, [finding.content, finding.heading]);
+    return `${finding.heading || t("research.defaultFindingHeading", "Research finding")} — ${firstSentence}`.trim();
+  }, [finding.content, finding.heading, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,41 +57,41 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
     <div className="modal-overlay open" role="presentation" onClick={onClose}>
       <div className="modal modal-lg research-task-action-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h3>{mode === "create" ? "Create task from finding" : "Enrich existing task"}</h3>
-          <button className="modal-close" type="button" aria-label="Close" onClick={onClose}>×</button>
+          <h3>{mode === "create" ? t("research.createTaskTitle", "Create task from finding") : t("research.enrichTaskTitle", "Enrich existing task")}</h3>
+          <button className="modal-close" type="button" aria-label={t("actions.close", "Close")} onClick={onClose}>×</button>
         </div>
 
         <div className="research-task-action-modal__body">
           <div className="card research-task-action-modal__preview">
-            <p><strong>Run:</strong> {run.id}</p>
-            <p><strong>Finding:</strong> {finding.id}{finding.heading ? ` — ${finding.heading}` : ""}</p>
-            <p>{preview || "No preview available."}</p>
+            <p><strong>{t("research.runLabel", "Run:")} </strong> {run.id}</p>
+            <p><strong>{t("research.findingLabel", "Finding:")} </strong> {finding.id}{finding.heading ? ` — ${finding.heading}` : ""}</p>
+            <p>{preview || t("research.noPreview", "No preview available.")}</p>
           </div>
 
           {mode === "create" ? (
             <>
-              <label className="research-task-action-modal__field">Title
+              <label className="research-task-action-modal__field">{t("research.titleLabel", "Title")}
                 <input className="input" value={title} onChange={(event) => setTitle(event.target.value)} />
               </label>
-              <label className="research-task-action-modal__field">Description
+              <label className="research-task-action-modal__field">{t("research.descriptionLabel", "Description")}
                 <textarea className="input research-task-action-modal__textarea" value={description} onChange={(event) => setDescription(event.target.value)} />
               </label>
-              <label className="research-task-action-modal__field">Priority
+              <label className="research-task-action-modal__field">{t("research.priorityLabel", "Priority")}
                 <select className="select" value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)}>
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                  <option value="low">{t("research.priorityLow", "Low")}</option>
+                  <option value="normal">{t("research.priorityNormal", "Normal")}</option>
+                  <option value="high">{t("research.priorityHigh", "High")}</option>
+                  <option value="urgent">{t("research.priorityUrgent", "Urgent")}</option>
                 </select>
               </label>
             </>
           ) : (
-            <label className="research-task-action-modal__field">Target task
+            <label className="research-task-action-modal__field">{t("research.targetTaskLabel", "Target task")}
               <input
                 className="input"
                 list="research-task-action-task-list"
                 value={taskId}
-                placeholder={loadingTasks ? "Loading tasks…" : "Enter task ID"}
+                placeholder={loadingTasks ? t("research.loadingTasks", "Loading tasks…") : t("research.enterTaskId", "Enter task ID")}
                 onChange={(event) => setTaskId(event.target.value)}
               />
               <datalist id="research-task-action-task-list">
@@ -102,12 +104,12 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
 
           <label className="checkbox-label">
             <input type="checkbox" checked={attachExport} onChange={(event) => setAttachExport(event.target.checked)} />
-            <span>Attach markdown export artifact</span>
+            <span>{t("research.attachExport", "Attach markdown export artifact")}</span>
           </label>
         </div>
 
         <div className="modal-actions">
-          <button className="btn" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn" type="button" onClick={onClose}>{t("actions.cancel", "Cancel")}</button>
           <button
             className="btn btn-primary"
             type="button"
@@ -123,7 +125,7 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
               }).finally(() => setSaving(false));
             }}
           >
-            {mode === "create" ? "Create Task" : "Enrich Task"}
+            {mode === "create" ? t("research.createTaskButton", "Create Task") : t("research.enrichTaskButton", "Enrich Task")}
           </button>
         </div>
       </div>

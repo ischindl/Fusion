@@ -1,5 +1,6 @@
 import "./CustomModelDropdown.css";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../api";
 import { filterModels } from "../utils/modelFilter";
@@ -51,7 +52,7 @@ export function CustomModelDropdown({
   models,
   value,
   onChange,
-  placeholder = "Select a model…",
+  placeholder: placeholderProp,
   disabled = false,
   id,
   label,
@@ -60,8 +61,11 @@ export function CustomModelDropdown({
   favoriteModels = [],
   onToggleModelFavorite,
   noChangeValue,
-  noChangeLabel = "No change",
+  noChangeLabel: noChangeLabelProp,
 }: CustomModelDropdownProps) {
+  const { t } = useTranslation("app");
+  const placeholder = placeholderProp ?? t("model.selectPlaceholder", "Select a model…");
+  const noChangeLabel = noChangeLabelProp ?? t("model.noChange", "No change");
   const [isOpen, setIsOpen] = useState(false);
   const [localFilter, setLocalFilter] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -139,7 +143,7 @@ export function CustomModelDropdown({
     if (hasNoChangeOption) {
       options.push({ type: "no-change", value: noChangeValue, label: noChangeLabel });
     }
-    options.push({ type: "default", value: "", label: "Use default" });
+    options.push({ type: "default", value: "", label: t("models.useDefault", "Use default") });
     return options;
   }, [hasNoChangeOption, noChangeLabel, noChangeValue]);
 
@@ -179,7 +183,7 @@ export function CustomModelDropdown({
     if (hasNoChangeOption && value === noChangeValue) {
       return noChangeLabel;
     }
-    if (!value) return "Use default";
+    if (!value) return t("models.useDefault", "Use default");
     const slashIdx = value.indexOf("/");
     if (slashIdx === -1) return value;
     const provider = value.slice(0, slashIdx);
@@ -488,7 +492,7 @@ export function CustomModelDropdown({
           ref={searchInputRef}
           type="text"
           className="model-combobox-search"
-          placeholder="Filter models…"
+          placeholder={t("models.filterPlaceholder", "Filter models…")}
           value={localFilter}
           onChange={(e) => setLocalFilter(e.target.value)}
           onClick={(e) => e.stopPropagation()}
@@ -498,7 +502,7 @@ export function CustomModelDropdown({
             type="button"
             className="model-combobox-clear"
             onClick={handleClearFilter}
-            aria-label="Clear filter"
+            aria-label={t("models.clearFilter", "Clear filter")}
           >
             ×
           </button>
@@ -506,7 +510,7 @@ export function CustomModelDropdown({
       </div>
 
       <div className="model-combobox-results-count">
-        {filteredModels.length} model{filteredModels.length !== 1 ? "s" : ""}
+        {t("models.count", { count: filteredModels.length, defaultValue_one: "{{count}} model", defaultValue_other: "{{count}} models" })}
       </div>
 
       <div ref={listRef} className="model-combobox-list">
@@ -557,8 +561,8 @@ export function CustomModelDropdown({
                         e.stopPropagation();
                         onToggleModelFavorite(fullId);
                       }}
-                      title="Remove from favorites"
-                      aria-label={`Remove ${model.name} from favorites`}
+                      title={t("models.removeFromFavorites", "Remove from favorites")}
+                      aria-label={t("models.removeFromFavoritesAriaLabel", "Remove {{name}} from favorites", { name: model.name })}
                     >
                       ★
                     </button>
@@ -596,8 +600,8 @@ export function CustomModelDropdown({
                       e.stopPropagation();
                       onToggleFavorite(provider);
                     }}
-                    title={isFavorite ? "Remove from favorites" : "Add to favorites"}
-                    aria-label={isFavorite ? `Remove ${provider} from favorites` : `Add ${provider} to favorites`}
+                    title={isFavorite ? t("models.removeFromFavorites", "Remove from favorites") : t("models.addToFavorites", "Add to favorites")}
+                    aria-label={isFavorite ? t("models.removeProviderFromFavoritesAriaLabel", "Remove {{provider}} from favorites", { provider }) : t("models.addProviderToFavoritesAriaLabel", "Add {{provider}} to favorites", { provider })}
                   >
                     ★
                   </button>
@@ -630,8 +634,8 @@ export function CustomModelDropdown({
                           e.stopPropagation();
                           onToggleModelFavorite(optionValue);
                         }}
-                        title={isFavorited ? "Remove from favorites" : "Add to favorites"}
-                        aria-label={isFavorited ? `Remove ${m.name} from favorites` : `Add ${m.name} to favorites`}
+                        title={isFavorited ? t("models.removeFromFavorites", "Remove from favorites") : t("models.addToFavorites", "Add to favorites")}
+                        aria-label={isFavorited ? t("models.removeFromFavoritesAriaLabel", "Remove {{name}} from favorites", { name: m.name }) : t("models.addToFavoritesAriaLabel", "Add {{name}} to favorites", { name: m.name })}
                       >
                         {isFavorited ? "★" : "☆"}
                       </button>
@@ -644,7 +648,7 @@ export function CustomModelDropdown({
         })}
 
         {filteredModels.length === 0 && hasFilter && (
-          <div className="model-combobox-no-results">No models match &apos;{localFilter}&apos;</div>
+          <div className="model-combobox-no-results">{t("models.noResults", "No models match '{{filter}}'", { filter: localFilter })}</div>
         )}
       </div>
     </div>

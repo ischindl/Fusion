@@ -2,6 +2,8 @@
 // in ScriptsModal.css. Until extracted, import that file so this eager modal is styled.
 import "./ScriptsModal.css";
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { X, History, Trash2, Filter, RefreshCw, CheckCircle, XCircle, ArrowRight, Plus, Settings, AlertCircle, Loader2, Folder } from "lucide-react";
 import { clearActivityLog, type ActivityLogEntry, type ActivityEventType, type ActivityFeedEntry } from "../api";
 import { useActivityLog } from "../hooks/useActivityLog";
@@ -23,23 +25,25 @@ interface ActivityLogModalProps {
   currentProject?: ProjectInfo | null;
 }
 
-const EVENT_TYPE_LABELS: Record<ActivityEventType, string> = {
-  "task:created": "Task Created",
-  "task:moved": "Task Moved",
-  "task:updated": "Task Updated",
-  "task:deleted": "Task Deleted",
-  "task:merged": "Task Merged",
-  "task:failed": "Task Failed",
-  "task:duplicate-warning-overridden": "Duplicate Warning Overridden",
-  "task:auto-archived-ghost-bug": "Task Auto-Archived (Ghost Bug)",
-  "task:auto-archived-duplicate": "Task Auto-Archived (Duplicate)",
-  "task:merge-worktree-reacquired": "Merge Worktree Reacquired",
-  "task:auto-archived-deterministic-duplicate": "Task Auto-Archived (Deterministic Duplicate)",
-  "task:auto-archived-near-duplicate": "Task Auto-Archived (Near-Duplicate)",
-  "task:near-duplicate-flagged": "Near-Duplicate Flagged",
-  "settings:updated": "Settings Updated",
-  "project:isolation-transition": "Project Isolation Transition",
-};
+function getEventTypeLabels(t: TFunction<"app">): Record<ActivityEventType, string> {
+  return {
+    "task:created": t("activityLog.eventType.taskCreated", "Task Created"),
+    "task:moved": t("activityLog.eventType.taskMoved", "Task Moved"),
+    "task:updated": t("activityLog.eventType.taskUpdated", "Task Updated"),
+    "task:deleted": t("activityLog.eventType.taskDeleted", "Task Deleted"),
+    "task:merged": t("activityLog.eventType.taskMerged", "Task Merged"),
+    "task:failed": t("activityLog.eventType.taskFailed", "Task Failed"),
+    "task:duplicate-warning-overridden": t("activityLog.eventType.duplicateWarningOverridden", "Duplicate Warning Overridden"),
+    "task:auto-archived-ghost-bug": t("activityLog.eventType.autoArchivedGhostBug", "Task Auto-Archived (Ghost Bug)"),
+    "task:auto-archived-duplicate": t("activityLog.eventType.autoArchivedDuplicate", "Task Auto-Archived (Duplicate)"),
+    "task:merge-worktree-reacquired": t("activityLog.eventType.mergeWorktreeReacquired", "Merge Worktree Reacquired"),
+    "task:auto-archived-deterministic-duplicate": t("activityLog.eventType.autoArchivedDeterministicDuplicate", "Task Auto-Archived (Deterministic Duplicate)"),
+    "task:auto-archived-near-duplicate": t("activityLog.eventType.autoArchivedNearDuplicate", "Task Auto-Archived (Near-Duplicate)"),
+    "task:near-duplicate-flagged": t("activityLog.eventType.nearDuplicateFlagged", "Near-Duplicate Flagged"),
+    "settings:updated": t("activityLog.eventType.settingsUpdated", "Settings Updated"),
+    "project:isolation-transition": t("activityLog.eventType.projectIsolationTransition", "Project Isolation Transition"),
+  };
+}
 
 const EVENT_TYPE_ICONS: Record<ActivityEventType, React.ReactNode> = {
   "task:created": <Plus size={14} className="activity-icon created" />,
@@ -59,7 +63,7 @@ const EVENT_TYPE_ICONS: Record<ActivityEventType, React.ReactNode> = {
   "project:isolation-transition": <Folder size={14} className="activity-icon settings" />,
 };
 
-function formatTimestamp(timestamp: string): string {
+function formatTimestamp(timestamp: string, t: TFunction<"app">): string {
   const date = new Date(timestamp);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -67,10 +71,10 @@ function formatTimestamp(timestamp: string): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t("activityLog.time.justNow", "Just now");
+  if (diffMins < 60) return t("activityLog.time.minutesAgo", "{{count}}m ago", { count: diffMins });
+  if (diffHours < 24) return t("activityLog.time.hoursAgo", "{{count}}h ago", { count: diffHours });
+  if (diffDays < 7) return t("activityLog.time.daysAgo", "{{count}}d ago", { count: diffDays });
 
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
@@ -91,7 +95,7 @@ function formatTimestamp(timestamp: string): string {
  * - Event type filter
  * - Real-time updates via useActivityLog hook
  */
-export function ActivityLogModal({ 
+export function ActivityLogModal({
   isOpen,
   onClose,
   tasks: _tasks,
@@ -101,6 +105,8 @@ export function ActivityLogModal({
   onProjectFilterChange,
   currentProject,
 }: ActivityLogModalProps) {
+  const { t } = useTranslation("app");
+  const EVENT_TYPE_LABELS = getEventTypeLabels(t);
   const [filteredType, setFilteredType] = useState<ActivityEventType | "all">("all");
   const [filteredProjectId, setFilteredProjectId] = useState<string | "all">(projectId || "all");
   const [showConfirmClear, setShowConfirmClear] = useState(false);
@@ -209,7 +215,7 @@ export function ActivityLogModal({
         <div className="modal-header activity-log-header">
           <div className="activity-log-title">
             <History size={18} />
-            <span>Activity Log</span>
+            <span>{t("activityLog.title", "Activity Log")}</span>
           </div>
           <div className="activity-log-actions">
             {/* Project filter dropdown (when projects provided) */}
@@ -222,7 +228,7 @@ export function ActivityLogModal({
                   className="activity-log-filter-select"
                   data-testid="activity-project-filter"
                 >
-                  <option value="all">All Projects</option>
+                  <option value="all">{t("activityLog.allProjects", "All Projects")}</option>
                   {projects.map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.name}
@@ -241,7 +247,7 @@ export function ActivityLogModal({
                 className="activity-log-filter-select"
                 data-testid="activity-filter"
               >
-                <option value="all">All Events</option>
+                <option value="all">{t("activityLog.allEvents", "All Events")}</option>
                 {Object.entries(EVENT_TYPE_LABELS).map(([type, label]) => (
                   <option key={type} value={type}>
                     {label}
@@ -254,7 +260,7 @@ export function ActivityLogModal({
             <button
               className="activity-log-refresh"
               onClick={() => refresh()}
-              title="Refresh"
+              title={t("activityLog.refresh", "Refresh")}
               data-testid="activity-refresh"
             >
               {isLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
@@ -265,7 +271,7 @@ export function ActivityLogModal({
               <button
                 className="activity-log-clear"
                 onClick={() => setShowConfirmClear(true)}
-                title="Clear Log"
+                title={t("activityLog.clearLog", "Clear Log")}
                 data-testid="activity-clear"
               >
                 <Trash2 size={14} />
@@ -276,8 +282,8 @@ export function ActivityLogModal({
           <button
             className="modal-close"
             onClick={onClose}
-            aria-label="Close"
-            title="Close"
+            aria-label={t("actions.close", "Close")}
+            title={t("actions.close", "Close")}
             data-testid="activity-close"
           >
             ×
@@ -287,7 +293,7 @@ export function ActivityLogModal({
         {/* Active filters display */}
         {isFilterActive && (
           <div className="activity-log-active-filters">
-            <span className="activity-log-filter-label">Active filters:</span>
+            <span className="activity-log-filter-label">{t("activityLog.activeFilters", "Active filters:")}</span>
             {filteredProjectId !== "all" && (
               <span className="activity-log-filter-badge">
                 Project: {projects.find(p => p.id === filteredProjectId)?.name || filteredProjectId}
@@ -306,7 +312,7 @@ export function ActivityLogModal({
                 onProjectFilterChange?.(undefined);
               }}
             >
-              Clear all
+              {t("activityLog.clearFilters", "Clear all")}
             </button>
           </div>
         )}
@@ -324,9 +330,9 @@ export function ActivityLogModal({
             <div className="activity-log-empty" data-testid="activity-empty">
               <History size={48} className="activity-log-empty-icon" />
               <p>
-                {isFilterActive 
-                  ? "No activity matches the current filters" 
-                  : "No activity recorded yet"}
+                {isFilterActive
+                  ? t("activityLog.noMatchingActivity", "No activity matches the current filters")
+                  : t("activityLog.noActivityRecorded", "No activity recorded yet")}
               </p>
               {isFilterActive && (
                 <button
@@ -337,7 +343,7 @@ export function ActivityLogModal({
                     onProjectFilterChange?.(undefined);
                   }}
                 >
-                  Clear Filters
+                  {t("activityLog.clearFiltersBtnLabel", "Clear Filters")}
                 </button>
               )}
             </div>
@@ -359,7 +365,7 @@ export function ActivityLogModal({
                       {EVENT_TYPE_LABELS[entry.type]}
                     </span>
                     <span className="activity-log-entry-time">
-                      {formatTimestamp(entry.timestamp)}
+                      {formatTimestamp(entry.timestamp, t)}
                     </span>
                   </div>
                   <div className="activity-log-entry-details">
@@ -386,7 +392,9 @@ export function ActivityLogModal({
                       )}
                       {typeof entry.metadata.merged === "boolean" && (
                         <span className={`activity-log-metadata-item ${entry.metadata.merged ? "success" : "error"}`}>
-                          {entry.metadata.merged ? "Merged" : "Not merged"}
+                          {entry.metadata.merged
+                            ? t("activityLog.merged", "Merged")
+                            : t("activityLog.notMerged", "Not merged")}
                         </span>
                       )}
                     </div>
@@ -402,7 +410,7 @@ export function ActivityLogModal({
               onClick={refresh}
               data-testid="activity-load-more"
             >
-              Load More
+              {t("activityLog.loadMore", "Load More")}
             </button>
           )}
 
@@ -417,20 +425,20 @@ export function ActivityLogModal({
         {showConfirmClear && (
           <div className="activity-log-confirm-overlay">
             <div className="activity-log-confirm-dialog">
-              <h3>Clear Activity Log?</h3>
-              <p>This will permanently delete all activity log entries. This action cannot be undone.</p>
+              <h3>{t("activityLog.confirmClear", "Clear Activity Log?")}</h3>
+              <p>{t("activityLog.confirmClearMessage", "This will permanently delete all activity log entries. This action cannot be undone.")}</p>
               <div className="activity-log-confirm-actions">
                 <button
                   className="activity-log-confirm-cancel"
                   onClick={() => setShowConfirmClear(false)}
                 >
-                  Cancel
+                  {t("actions.cancel", "Cancel")}
                 </button>
                 <button
                   className="activity-log-confirm-clear"
                   onClick={handleClearLog}
                 >
-                  Clear Log
+                  {t("activityLog.confirmClearButton", "Clear Log")}
                 </button>
               </div>
             </div>

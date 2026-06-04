@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Activity, FileText } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { Agent } from "../api";
 import type { TaskDetail } from "@fusion/core";
 import { fetchTaskDetail } from "../api";
@@ -17,6 +18,7 @@ interface LiveAgentCardProps {
 const TASK_STATUS_POLL_MS = 5000;
 
 function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgentCardProps) {
+  const { t } = useTranslation("app");
   const { entries, isConnected } = useLiveTranscript(agent.taskId, projectId);
   const [task, setTask] = useState<TaskDetail | null>(null);
 
@@ -64,8 +66,8 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
     const nextMs = new Date(agent.lastHeartbeatAt).getTime() + intervalMs;
     const deltaSec = Math.round((nextMs - Date.now()) / 1000);
     if (!Number.isFinite(deltaSec)) return null;
-    if (deltaSec <= 0) return `Heartbeat overdue ${formatElapsed(-deltaSec)}`;
-    return `Next heartbeat in ${formatElapsed(deltaSec)}`;
+    if (deltaSec <= 0) return t("agents.heartbeatOverdue", "Heartbeat overdue {{elapsed}}", { elapsed: formatElapsed(-deltaSec) });
+    return t("agents.nextHeartbeat", "Next heartbeat in {{elapsed}}", { elapsed: formatElapsed(deltaSec) });
   })();
 
   const currentStep = task?.steps?.[task.currentStep ?? 0];
@@ -100,7 +102,7 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
-      aria-label={`Select agent ${agent.name}`}
+      aria-label={t("agents.selectAgent", "Select agent {{name}}", { name: agent.name })}
     >
       <div className="live-agent-card-header">
         <div className="live-agent-card-name">
@@ -122,12 +124,11 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
               // SSE stream to attach to; useLiveTranscript bails out with
               // isConnected=false. Showing "Connecting..." here is misleading
               // — the agent is just idle.
-              <span>{agent.state === "running" ? "Starting..." : "Idle — no task assigned"}</span>
+              <span>{agent.state === "running" ? t("agents.starting", "Starting...") : t("agents.idleNoTask", "Idle — no task assigned")}</span>
             ) : currentStep ? (
               <>
                 <div className="live-agent-card-status">
-                  Step {stepNumber}
-                  {totalSteps ? `/${totalSteps}` : ""}: {currentStep.name}
+                  {t("agents.step", "Step {{number}}{{total}}: {{name}}", { number: stepNumber, total: totalSteps ? `/${totalSteps}` : "", name: currentStep.name })}
                 </div>
                 {executorModel && (
                   <div className="live-agent-card-status-sub">
@@ -135,11 +136,11 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
                   </div>
                 )}
                 <div className="live-agent-card-status-sub">
-                  {isConnected ? "Waiting for output..." : "Connecting to log stream..."}
+                  {isConnected ? t("agents.waitingOutput", "Waiting for output...") : t("agents.connectingStream", "Connecting to log stream...")}
                 </div>
               </>
             ) : (
-              <span>{isConnected ? "Waiting for output..." : "Connecting..."}</span>
+              <span>{isConnected ? t("agents.waitingOutput", "Waiting for output...") : t("agents.connecting", "Connecting...")}</span>
             )}
           </div>
         ) : (
@@ -167,11 +168,11 @@ function LiveAgentCard({ agent, projectId, onSelect, onOpenTaskLogs }: LiveAgent
               type="button"
               className="live-agent-card-logs-btn"
               onClick={handleViewLogs}
-              title="View live run logs"
-              aria-label={`View live logs for ${agent.taskId}`}
+              title={t("agents.viewLiveLogs", "View live run logs")}
+              aria-label={t("agents.viewLogsFor", "View live logs for {{taskId}}", { taskId: agent.taskId })}
             >
               <FileText size={12} />
-              <span>Live logs</span>
+              <span>{t("agents.liveLogs", "Live logs")}</span>
             </button>
           )}
           {isConnected && <Activity size={12} className="live-agent-streaming-dot" />}
@@ -196,6 +197,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ agents, projectId, onAgentSelect, onOpenTaskLogs, className = "" }: ActiveAgentsPanelProps) {
+  const { t } = useTranslation("app");
   // Dedupe by id defensively. The store should return unique agents but a race
   // between the initial fetch and an SSE refresh can briefly surface the same
   // agent twice — without this guard React floods the console with duplicate
@@ -208,7 +210,7 @@ export function ActiveAgentsPanel({ agents, projectId, onAgentSelect, onOpenTask
     <div className={`active-agents-panel ${className}`.trim()}>
       <div className="active-agents-panel-header">
         <Activity size={16} />
-        <span>Active Agents ({uniqueAgents.length})</span>
+        <span>{t("agents.activeAgents", "Active Agents ({{count}})", { count: uniqueAgents.length })}</span>
       </div>
       <div className="active-agents-grid">
         {uniqueAgents.map(agent => (

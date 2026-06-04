@@ -1,4 +1,6 @@
 import { memo, useCallback, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { Play, Pause, Trash2, Folder, ArrowRight } from "lucide-react";
 import "./ProjectCard.css";
 import type { RegisteredProject, ProjectHealth } from "@fusion/core";
@@ -16,9 +18,9 @@ export interface ProjectCardProps {
   isLoading?: boolean;
 }
 
-function formatRelativeTime(timestamp: string | undefined): string {
-  if (!timestamp) return "Never";
-  
+function formatRelativeTime(timestamp: string | undefined, t: TFunction<"app">): string {
+  if (!timestamp) return t("projectCard.never", "Never");
+
   const date = new Date(timestamp);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -26,10 +28,10 @@ function formatRelativeTime(timestamp: string | undefined): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t("projectCard.justNow", "Just now");
+  if (diffMins < 60) return t("projectCard.minutesAgo", "{{count}}m ago", { count: diffMins });
+  if (diffHours < 24) return t("projectCard.hoursAgo", "{{count}}h ago", { count: diffHours });
+  if (diffDays < 7) return t("projectCard.daysAgo", "{{count}}d ago", { count: diffDays });
   return date.toLocaleDateString();
 }
 
@@ -88,6 +90,7 @@ function ProjectCardInner({
   availabilityMappings = [],
   isLoading = false,
 }: ProjectCardProps) {
+  const { t } = useTranslation("app");
   const [removeArmed, setRemoveArmed] = useState(false);
   const statusConfig = getProjectStatusConfig(project.status);
   const StatusIcon = statusConfig.icon;
@@ -144,7 +147,7 @@ function ProjectCardInner({
             {project.name}
           </h3>
           {availabilityMappings.length > 0 && (
-            <div className="project-card-availability" aria-label="Project node availability">
+            <div className="project-card-availability" aria-label={t("projectCard.nodeAvailability", "Project node availability")}>
               {availabilityMappings.slice(0, 3).map((mapping) => (
                 <div key={`${mapping.nodeId}-${mapping.path}`} className="project-card-availability__row" title={`${mapping.displayName} → ${mapping.path}`}>
                   <span className="project-card-availability__node">{mapping.displayName}</span>
@@ -153,7 +156,7 @@ function ProjectCardInner({
                 </div>
               ))}
               {availabilityMappings.length > 3 && (
-                <span className="project-card-availability__more">+{availabilityMappings.length - 3} more</span>
+                <span className="project-card-availability__more">{t("projectCard.moreItems", "+{{count}} more", { count: availabilityMappings.length - 3 })}</span>
               )}
             </div>
           )}
@@ -175,30 +178,30 @@ function ProjectCardInner({
           <>
             <div className="project-card-metric">
               <span className="project-card-metric-value">{health.activeTaskCount}</span>
-              <span className="project-card-metric-label">Active Tasks</span>
+              <span className="project-card-metric-label">{t("projectCard.activeTasks", "Active Tasks")}</span>
             </div>
             <div className="project-card-metric">
               <span className="project-card-metric-value">{health.inFlightAgentCount}</span>
-              <span className="project-card-metric-label">Agents</span>
+              <span className="project-card-metric-label">{t("projectCard.agents", "Agents")}</span>
             </div>
             <div className="project-card-metric">
               <span className="project-card-metric-value">{health.totalTasksCompleted}</span>
-              <span className="project-card-metric-label">Completed</span>
+              <span className="project-card-metric-label">{t("projectCard.completed", "Completed")}</span>
             </div>
           </>
         )}
         {!health && (
           <div className="project-card-metric project-card-metric-empty">
-            <span className="project-card-metric-label">No health data available</span>
+            <span className="project-card-metric-label">{t("projectCard.noHealthData", "No health data available")}</span>
           </div>
         )}
       </div>
 
       <div className="project-card-footer">
         <div className="project-card-activity">
-          <span className="project-card-activity-label">Last activity:</span>
+          <span className="project-card-activity-label">{t("projectCard.lastActivity", "Last activity:")} </span>
           <span className="project-card-activity-time">
-            {formatRelativeTime(project.lastActivityAt || health?.lastActivityAt)}
+            {formatRelativeTime(project.lastActivityAt || health?.lastActivityAt, t)}
           </span>
         </div>
 
@@ -208,22 +211,22 @@ function ProjectCardInner({
               className="project-card-action project-card-action-resume"
               onClick={handleResume}
               disabled={isLoading}
-              title="Resume project"
-              aria-label="Resume project"
+              title={t("projectCard.resumeProject", "Resume project")}
+              aria-label={t("projectCard.resumeProject", "Resume project")}
             >
               <Play size={14} />
-              <span>Resume</span>
+              <span>{t("projectCard.resume", "Resume")}</span>
             </button>
           ) : (
             <button
               className="project-card-action project-card-action-pause"
               onClick={handlePause}
               disabled={isLoading || isInitializing}
-              title={isInitializing ? "Cannot pause while initializing" : "Pause project"}
-              aria-label="Pause project"
+              title={isInitializing ? t("projectCard.cannotPauseWhileInitializing", "Cannot pause while initializing") : t("projectCard.pauseProject", "Pause project")}
+              aria-label={t("projectCard.pauseProject", "Pause project")}
             >
               <Pause size={14} />
-              <span>Pause</span>
+              <span>{t("projectCard.pause", "Pause")}</span>
             </button>
           )}
           
@@ -231,22 +234,22 @@ function ProjectCardInner({
             className="project-card-action project-card-action-open"
             onClick={handleSelect}
             disabled={isLoading}
-            title="Open project"
-            aria-label="Open project"
+            title={t("projectCard.openProject", "Open project")}
+            aria-label={t("projectCard.openProject", "Open project")}
           >
             <ArrowRight size={14} />
-            <span>Open</span>
+            <span>{t("projectCard.open", "Open")}</span>
           </button>
 
           <button
             className={`project-card-action project-card-action-remove ${removeArmed ? "is-armed" : ""}`}
             onClick={handleRemove}
             disabled={isLoading}
-            title={removeArmed ? "Confirm remove" : "Remove project"}
-            aria-label={removeArmed ? "Confirm remove project" : "Remove project"}
+            title={removeArmed ? t("projectCard.confirmRemove", "Confirm remove") : t("projectCard.removeProject", "Remove project")}
+            aria-label={removeArmed ? t("projectCard.confirmRemoveProject", "Confirm remove project") : t("projectCard.removeProject", "Remove project")}
           >
             <Trash2 size={14} />
-            <span>{removeArmed ? "Confirm" : ""}</span>
+            <span>{removeArmed ? t("projectCard.confirm", "Confirm") : ""}</span>
           </button>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import "./SkillsView.css";
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Wrench, RefreshCw, X, ChevronRight, ChevronDown, AlertCircle, Loader2 } from "lucide-react";
 import {
   fetchDiscoveredSkills,
@@ -22,6 +23,7 @@ export interface DiscoveredSkillDisplay extends DiscoveredSkill {
 }
 
 export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
+  const { t } = useTranslation("app");
   const [discoveredSkills, setDiscoveredSkills] = useState<DiscoveredSkillDisplay[]>([]);
   const [isLoadingDiscovered, setIsLoadingDiscovered] = useState(true);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
@@ -56,7 +58,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
       const skills = await fetchDiscoveredSkills(projectId);
       setDiscoveredSkills(skills);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load discovered skills";
+      const message = err instanceof Error ? err.message : t("skills.loadDiscoveredError", "Failed to load discovered skills");
       addToast(message, "error");
     } finally {
       setIsLoadingDiscovered(false);
@@ -93,9 +95,9 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
       setCatalogEntries(result.entries);
     } catch (err) {
       if (isCatalogUnavailableError(err)) {
-        setCatalogError("Catalog is temporarily unavailable. Please try again later.");
+        setCatalogError(t("skills.catalogUnavailable", "Catalog is temporarily unavailable. Please try again later."));
       } else {
-        const message = err instanceof Error ? err.message : "Failed to load catalog";
+        const message = err instanceof Error ? err.message : t("skills.loadCatalogError", "Failed to load catalog");
         setCatalogError(message);
       }
     } finally {
@@ -154,15 +156,15 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
         prev.map((s) => (s.id === skillId ? { ...s, enabled: newEnabled, toggling: false } : s))
       );
 
-      addToast(`Skill ${newEnabled ? "enabled" : "disabled"}`, "success");
+      addToast(t(`skills.${newEnabled ? "enabled" : "disabled"}`, newEnabled ? "Skill enabled" : "Skill disabled"), "success");
     } catch (err) {
       // Revert optimistic update
       setDiscoveredSkills((prev) =>
         prev.map((s) => (s.id === skillId ? { ...s, toggling: false } : s))
       );
 
-      const message = err instanceof Error ? err.message : "Failed to toggle skill";
-      addToast(`Failed to toggle skill: ${message}`, "error");
+      const message = err instanceof Error ? err.message : t("skills.toggleError", "Failed to toggle skill");
+      addToast(t("skills.toggleFailed", "Failed to toggle skill: {{message}}", { message }), "error");
     }
   }, [projectId, addToast]);
 
@@ -175,11 +177,11 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
     setInstallingCatalogEntryId(entry.id);
     try {
       await installSkill(source, entry.slug || entry.name, projectId);
-      addToast(`Installed ${entry.name}`, "success");
+      addToast(t("skills.installSuccess", "Installed {{name}}", { name: entry.name }), "success");
       await loadDiscoveredSkills();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to install skill";
-      addToast(`Failed to install ${entry.name}: ${message}`, "error");
+      const message = err instanceof Error ? err.message : t("skills.installError", "Failed to install skill");
+      addToast(t("skills.installFailed", "Failed to install {{name}}: {{message}}", { name: entry.name, message }), "error");
     } finally {
       setInstallingCatalogEntryId((current) => (current === entry.id ? null : current));
     }
@@ -194,7 +196,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
       const content = await fetchSkillContent(skillId, projectId);
       setSkillContent(content);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load skill content";
+      const message = err instanceof Error ? err.message : t("skills.loadContentError", "Failed to load skill content");
       setContentError(message);
     } finally {
       setIsLoadingContent(false);
@@ -236,16 +238,16 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
         <div className="skills-view-title">
           <h2>
             <Wrench size={20} />
-            Skills
+            {t("skills.title", "Skills")}
           </h2>
-          <span className="skills-view-count" aria-label={`${discoveredSkills.length} discovered skills`}>{discoveredSkills.length} discovered</span>
+          <span className="skills-view-count" aria-label={t("skills.discoveredCount", "{{count}} discovered skills", { count: discoveredSkills.length })}>{discoveredSkills.length} {t("skills.discovered", "discovered")}</span>
         </div>
 
         <div className="skills-view-actions">
           <button
             className="btn-icon skills-view-close touch-target"
             onClick={onClose}
-            aria-label="Close skills view"
+            aria-label={t("skills.closeView", "Close skills view")}
           >
             <X size={16} />
           </button>
@@ -255,7 +257,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
             disabled={isLoadingDiscovered}
           >
             <RefreshCw size={14} className={isLoadingDiscovered ? "spin" : ""} />
-            Refresh
+            {t("common.refresh", "Refresh")}
           </button>
         </div>
       </div>
@@ -267,31 +269,31 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
           <input
             type="text"
             className="form-input"
-            placeholder="Search skills..."
+            placeholder={t("skills.searchPlaceholder", "Search skills...")}
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
-            aria-label="Search skills"
+            aria-label={t("skills.searchLabel", "Search skills")}
           />
         </div>
 
         {/* Discovered Skills Section */}
         <section className="skills-view-section" aria-labelledby="discovered-skills-title">
           <h3 id="discovered-skills-title" className="skills-view-section-title">
-            Discovered Skills
+            {t("skills.discoveredSection", "Discovered Skills")}
           </h3>
 
           {isLoadingDiscovered ? (
             <div className="skills-view-loading">
               <span className="spinner" />
-              Loading discovered skills...
+              {t("skills.loadingDiscovered", "Loading discovered skills...")}
             </div>
           ) : discoveredSkills.length === 0 ? (
             <div className="skills-view-empty">
-              <p>No skills discovered in this project.</p>
+              <p>{t("skills.noDiscovered", "No skills discovered in this project.")}</p>
             </div>
           ) : filteredDiscoveredSkills.length === 0 ? (
             <div className="skills-view-empty">
-              <p>No discovered skills match your search.</p>
+              <p>{t("skills.noMatchingDiscovered", "No discovered skills match your search.")}</p>
             </div>
           ) : (
             <div className="skills-view-list">
@@ -311,7 +313,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                         }
                       }}
                       aria-expanded={isSelected}
-                      aria-label={`View details for ${skill.name}`}
+                      aria-label={t("skills.viewDetails", "View details for {{name}}", { name: skill.name })}
                     >
                       <div className="skills-view-item-info">
                         <span className="skills-view-item-name">
@@ -330,7 +332,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                           checked={skill.enabled}
                           disabled={skill.toggling}
                           onChange={() => void handleToggleSkill(skill.id, skill.enabled)}
-                          aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
+                          aria-label={t(`skills.${skill.enabled ? "disable" : "enable"}Skill`, skill.enabled ? "Disable {{name}}" : "Enable {{name}}", { name: skill.name })}
                         />
                         <span className="skills-view-toggle-slider" />
                       </label>
@@ -348,17 +350,17 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                               setSkillContent(null);
                               setContentError(null);
                             }}
-                            aria-label="Close skill detail"
+                            aria-label={t("skills.closeDetail", "Close skill detail")}
                           >
                             <X size={14} />
-                            Close
+                            {t("common.close", "Close")}
                           </button>
                         </div>
 
                         {isLoadingContent ? (
                           <div className="skills-view-detail-loading">
                             <Loader2 size={16} className="spin" />
-                            Loading skill content...
+                            {t("skills.loadingContent", "Loading skill content...")}
                           </div>
                         ) : contentError ? (
                           <div className="skills-view-detail-error">
@@ -368,17 +370,17 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                               className="btn btn-sm"
                               onClick={() => handleRetrySkillContent(skill.id)}
                             >
-                              Retry
+                              {t("common.retry", "Retry")}
                             </button>
                           </div>
                         ) : skillContent ? (
                           <>
                             <pre className="skills-view-detail-content">
-                              {skillContent.skillMd || "(No SKILL.md found)"}
+                              {skillContent.skillMd || t("skills.noSkillMd", "(No SKILL.md found)")}
                             </pre>
                             {skillContent.files.length > 0 && (
                               <div className="skills-view-detail-files">
-                                <span className="skills-view-detail-files-label">Files:</span>
+                                <span className="skills-view-detail-files-label">{t("skills.filesLabel", "Files")}:</span>
                                 {skillContent.files.map((file) => (
                                   <span key={file.relativePath} className="badge badge--sm">
                                     {file.name}
@@ -401,7 +403,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
         {/* Catalog Section */}
         <section className="skills-view-section" aria-labelledby="catalog-title">
           <h3 id="catalog-title" className="skills-view-section-title">
-            Skills Catalog
+            {t("skills.catalogSection", "Skills Catalog")}
           </h3>
 
           {/* Catalog Content */}
@@ -412,20 +414,20 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                 className="btn btn-sm"
                 onClick={() => void loadCatalog(debouncedQuery)}
               >
-                Try Again
+                {t("common.tryAgain", "Try Again")}
               </button>
             </div>
           ) : isLoadingCatalog ? (
             <div className="skills-view-loading">
               <span className="spinner" />
-              Loading catalog...
+              {t("skills.loadingCatalog", "Loading catalog...")}
             </div>
           ) : catalogEntries.length === 0 ? (
             <div className="skills-view-empty">
               {searchQuery ? (
-                <p>No skills match your search.</p>
+                <p>{t("skills.noMatchingSearch", "No skills match your search.")}</p>
               ) : (
-                <p>No skills available in the catalog.</p>
+                <p>{t("skills.noCatalogAvailable", "No skills available in the catalog.")}</p>
               )}
             </div>
           ) : (
@@ -445,10 +447,10 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                           className="btn btn-sm skills-view-card-install"
                           onClick={() => void handleInstallCatalogSkill(entry)}
                           disabled={isInstalling}
-                          aria-label={`Install ${entry.name}`}
+                          aria-label={t("skills.installSkill", "Install {{name}}", { name: entry.name })}
                         >
                           {isInstalling ? <Loader2 size={14} className="spin" /> : null}
-                          {isInstalling ? "Installing…" : "Install"}
+                          {isInstalling ? t("skills.installing", "Installing…") : t("skills.install", "Install")}
                         </button>
                       ) : null}
                     </div>
@@ -466,7 +468,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                     )}
                     {entry.installs !== undefined && (
                       <span className="skills-view-card-installs">
-                        {entry.installs.toLocaleString()} installs
+                        {t("skills.installsCount", "{{value}} installs", { value: entry.installs.toLocaleString() })}
                       </span>
                     )}
                   </div>

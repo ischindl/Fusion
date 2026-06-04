@@ -1,0 +1,4 @@
+{
+  "fetchProjectsFailed": "Failed to fetch projects",
+  "openTaskLogsFailed": "Failed to open task logs: {{detail}}"
+}

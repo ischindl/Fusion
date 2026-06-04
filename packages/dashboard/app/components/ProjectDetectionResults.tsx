@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { Folder, Check, AlertCircle, Edit2, CheckCheck, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { DetectedProject } from "../api";
 import { sortDetectedProjects } from "../utils/projectDetection";
 
@@ -32,6 +33,7 @@ export function ProjectDetectionResults({
   onRegisterSelected,
   isRegistering = false,
 }: ProjectDetectionResultsProps) {
+  const { t } = useTranslation("app");
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -108,9 +110,9 @@ export function ProjectDetectionResults({
     return (
       <div className="detection-results detection-results--empty">
         <AlertCircle size={48} />
-        <p>No projects detected</p>
+        <p>{t("projectDetection.empty", "No projects detected")}</p>
         <span className="detection-results-hint">
-          Try a different base path or add a project manually
+          {t("projectDetection.emptyHint", "Try a different base path or add a project manually")}
         </span>
       </div>
     );
@@ -127,10 +129,10 @@ export function ProjectDetectionResults({
             onChange={toggleAll}
             disabled={isRegistering}
           />
-          <span>Select All ({sortedProjects.length})</span>
+          <span>{t("projectDetection.selectAll", "Select All ({{count}})", { count: sortedProjects.length })}</span>
         </label>
         <span className="detection-results-count">
-          {selectedCount} selected
+          {t("projectDetection.selectedCount", "{{count}} selected", { count: selectedCount })}
         </span>
       </div>
 
@@ -176,7 +178,7 @@ export function ProjectDetectionResults({
                     <button
                       className="btn btn-sm"
                       onClick={saveEdit}
-                      title="Save"
+                      title={t("actions.save", "Save")}
                     >
                       <Check size={14} />
                     </button>
@@ -187,7 +189,7 @@ export function ProjectDetectionResults({
                     <button
                       className="btn btn-icon btn-sm"
                       onClick={() => startEditing(index, project.suggestedName)}
-                      title="Edit name"
+                      title={t("projectDetection.editName", "Edit name")}
                       disabled={isRegistering}
                     >
                       <Edit2 />
@@ -202,7 +204,7 @@ export function ProjectDetectionResults({
                 {!hasKbDb && (
                   <div className="detection-result-warning">
                     <AlertCircle size={12} />
-                    <span>No fn database found - will be initialized</span>
+                    <span>{t("projectDetection.noDbWarning", "No fn database found - will be initialized")}</span>
                   </div>
                 )}
               </div>
@@ -221,12 +223,12 @@ export function ProjectDetectionResults({
           {isRegistering ? (
             <>
               <Loader2 size={14} className="spin" />
-              Registering...
+              {t("projectDetection.registering", "Registering...")}
             </>
           ) : (
             <>
               <CheckCheck size={14} />
-              Register All
+              {t("projectDetection.registerAll", "Register All")}
             </>
           )}
         </button>
@@ -238,12 +240,12 @@ export function ProjectDetectionResults({
           {isRegistering ? (
             <>
               <Loader2 size={14} className="spin" />
-              Registering...
+              {t("projectDetection.registering", "Registering...")}
             </>
           ) : (
             <>
               <Check size={14} />
-              Register Selected ({selectedCount})
+              {t("projectDetection.registerSelected", "Register Selected ({{count}})", { count: selectedCount })}
             </>
           )}
         </button>

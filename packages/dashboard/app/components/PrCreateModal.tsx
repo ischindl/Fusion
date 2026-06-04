@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, CheckCircle2, RefreshCw, Sparkles, X, XCircle } from "lucide-react";
 import { getErrorMessage, type PrInfo, type StructuredGhError } from "@fusion/core";
 import {
@@ -98,6 +99,7 @@ function OptionChips<T extends { login?: string; name?: string; color?: string }
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder={`Filter ${label.toLowerCase()}`}
+        aria-label={`Filter ${label.toLowerCase()}`}
       />
       {filtered.length > 0 && (
         <div className="pr-create-modal__option-list">
@@ -129,6 +131,7 @@ export function PrCreateModal({
   onCreated,
   addToast,
 }: PrCreateModalProps) {
+  const { t } = useTranslation("app");
   const headingId = useId();
   const modalRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -256,31 +259,31 @@ export function PrCreateModal({
     return [
       {
         key: "branch",
-        label: "Branch pushed to remote",
+        label: t("pr.checkBranch", "Branch pushed to remote"),
         ok: preflight.branchOnRemote,
-        message: preflight.branchOnRemote ? "Remote branch is available." : "Push branch to remote before creating a PR.",
+        message: preflight.branchOnRemote ? t("pr.branchRemoteOk", "Remote branch is available.") : t("pr.branchRemoteFail", "Push branch to remote before creating a PR."),
       },
       {
         key: "commits",
-        label: "Commits available",
+        label: t("pr.checkCommits", "Commits available"),
         ok: preflight.commitsPresent,
-        message: preflight.commitsPresent ? "Commits are ready to submit." : "No commits found for this branch.",
+        message: preflight.commitsPresent ? t("pr.commitsOk", "Commits are ready to submit.") : t("pr.commitsFail", "No commits found for this branch."),
       },
       {
         key: "conflicts",
-        label: "No conflicts with base",
+        label: t("pr.checkConflicts", "No conflicts with base"),
         ok: !preflight.conflictsWithBase,
         warning: preflight.conflictsWithBase,
-        message: preflight.conflictsWithBase ? "Conflicts detected. Resolve conflicts or re-run preflight." : "No merge conflicts detected.",
+        message: preflight.conflictsWithBase ? t("pr.conflictsDetected", "Conflicts detected. Resolve conflicts or re-run preflight.") : t("pr.noConflicts", "No merge conflicts detected."),
       },
       {
         key: "auth",
-        label: "GitHub auth available",
+        label: t("pr.checkAuth", "GitHub auth available"),
         ok: preflight.ghAuthOk,
-        message: preflight.ghAuthOk ? "GitHub CLI auth is available." : "Run gh auth login and try again.",
+        message: preflight.ghAuthOk ? t("pr.authOk", "GitHub CLI auth is available.") : t("pr.authFail", "Run gh auth login and try again."),
       },
     ];
-  }, [preflight]);
+  }, [preflight, t]);
 
   const canSubmit = useMemo(() => checks.every((check) => check.ok), [checks]);
 
@@ -354,17 +357,17 @@ export function PrCreateModal({
         aria-labelledby={headingId}
       >
         <div className="modal-header">
-          <h2 id={headingId}>Create Pull Request</h2>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close create pull request modal">
+          <h2 id={headingId}>{t("pr.createTitle", "Create Pull Request")}</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label={t("actions.close", "Close")}>
             <X size={20} />
           </button>
         </div>
 
         <div className="pr-create-modal__body">
-          {loading ? <div className="pr-create-modal__loading">Loading PR metadata…</div> : (
+          {loading ? <div className="pr-create-modal__loading">{t("pr.loadingMetadata", "Loading PR metadata…")}</div> : (
             <>
               <section className="pr-create-modal__section">
-              <h3 className="pr-create-modal__section-title">Pre-flight checks</h3>
+              <h3 className="pr-create-modal__section-title">{t("pr.preflightChecks", "Pre-flight checks")}</h3>
               <div className="pr-create-modal__preflight">
                 {checks.map((check) => (
                   <div key={check.key} className={`pr-create-modal__preflight-row ${check.ok ? "is-ok" : "is-failed"}`}>
@@ -378,7 +381,7 @@ export function PrCreateModal({
                 ))}
               </div>
               <button type="button" className="btn btn-sm" onClick={() => void handleBaseChange(baseBranch)}>
-                Re-run preflight
+                {t("pr.rerunPreflight", "Re-run preflight")}
               </button>
               {preflight?.conflictsWithBase ? (
                 <div className="card pr-create-modal__conflict-resolution">
@@ -401,10 +404,10 @@ export function PrCreateModal({
 
             <section className="pr-create-modal__section">
               <div className="pr-create-modal__title-row">
-                <label className="pr-create-modal__label" htmlFor="pr-create-modal-title">Title</label>
+                <label className="pr-create-modal__label" htmlFor="pr-create-modal-title">{t("pr.titleLabel", "Title")}</label>
                 <div className="pr-create-modal__inline-actions">
-                  <button type="button" className="btn btn-sm" onClick={() => void regenerate()}><Sparkles size={14} />Regenerate</button>
-                  {userEditedTitle && <button type="button" className="btn btn-sm" onClick={() => { setTitle(aiTitle); setUserEditedTitle(false); }}>Revert to AI version</button>}
+                  <button type="button" className="btn btn-sm" onClick={() => void regenerate()}><Sparkles size={14} />{t("pr.regenerate", "Regenerate")}</button>
+                  {userEditedTitle && <button type="button" className="btn btn-sm" onClick={() => { setTitle(aiTitle); setUserEditedTitle(false); }}>{t("pr.revertToAi", "Revert to AI version")}</button>}
                 </div>
               </div>
               <input id="pr-create-modal-title" className="input" value={title} onChange={(event) => { setTitle(event.target.value); setUserEditedTitle(true); }} />
@@ -412,26 +415,26 @@ export function PrCreateModal({
 
             <section className="pr-create-modal__section">
               <div className="pr-create-modal__title-row">
-                <label className="pr-create-modal__label" htmlFor="pr-create-modal-body">Body</label>
+                <label className="pr-create-modal__label" htmlFor="pr-create-modal-body">{t("pr.bodyLabel", "Body")}</label>
                 <div className="pr-create-modal__inline-actions">
-                  <button type="button" className="btn btn-sm" onClick={() => void regenerate()}><Sparkles size={14} />Regenerate</button>
-                  {userEditedBody && <button type="button" className="btn btn-sm" onClick={() => { setBody(aiBody); setUserEditedBody(false); }}>Revert to AI version</button>}
+                  <button type="button" className="btn btn-sm" onClick={() => void regenerate()}><Sparkles size={14} />{t("pr.regenerate", "Regenerate")}</button>
+                  {userEditedBody && <button type="button" className="btn btn-sm" onClick={() => { setBody(aiBody); setUserEditedBody(false); }}>{t("pr.revertToAi", "Revert to AI version")}</button>}
                 </div>
               </div>
               <textarea id="pr-create-modal-body" className="input pr-create-modal__body-input" value={body} onChange={(event) => { setBody(event.target.value); setUserEditedBody(true); }} rows={8} />
-              {templateUsed && <p className="pr-create-template-hint">Using <code>.github/pull_request_template.md</code></p>}
+              {templateUsed && <p className="pr-create-template-hint">{t("pr.usingTemplate", "Using <code>.github/pull_request_template.md</code>")}</p>}
             </section>
 
             <section className="pr-create-modal__section pr-create-modal__grid-two">
               <div>
-                <label className="pr-create-modal__label" htmlFor="pr-create-modal-base">Base branch</label>
+                <label className="pr-create-modal__label" htmlFor="pr-create-modal-base">{t("pr.baseBranch", "Base branch")}</label>
                 <select id="pr-create-modal-base" className="select" value={baseBranch} onChange={(event) => void handleBaseChange(event.target.value)}>
                   {(options?.baseBranches ?? []).map((branch) => <option key={branch} value={branch}>{branch}</option>)}
                 </select>
               </div>
               <label className="checkbox-label pr-create-modal__draft">
                 <input type="checkbox" checked={draft} onChange={(event) => setDraft(event.target.checked)} />
-                Create as draft
+                {t("pr.createAsDraft", "Create as draft")}
               </label>
             </section>
 
@@ -462,9 +465,9 @@ export function PrCreateModal({
             />
 
             <details className="pr-create-collapsible" open>
-              <summary>Diff & commit preview</summary>
+              <summary>{t("pr.previewTitle", "Diff & commit preview")}</summary>
               <div className="pr-create-modal__preview">
-                <h4>Commits</h4>
+                <h4>{t("pr.commitsLabel", "Commits")}</h4>
                 {(preflight?.commits ?? []).map((commit) => (
                   <div className="pr-create-modal__commit-row" key={commit.sha}>
                     <code>{commit.sha.slice(0, 7)}</code>
@@ -472,7 +475,7 @@ export function PrCreateModal({
                     <span>{commit.author}</span>
                   </div>
                 ))}
-                <h4>Changed files</h4>
+                <h4>{t("pr.changedFilesLabel", "Changed files")}</h4>
                 {(preflight?.changedFiles ?? []).map((file) => (
                   <div className="pr-create-modal__file-row" key={file.path}>
                     <span>{file.path}</span>
@@ -499,8 +502,8 @@ export function PrCreateModal({
                   <div className="pr-error__actions">
                     {lastGhError?.action?.kind === "shell" ? <p>Action: run <code>{lastGhError.action.command}</code></p> : null}
                     {lastGhError?.action?.kind === "open" ? <p>Action: open <a href={lastGhError.action.url} target="_blank" rel="noreferrer">docs</a></p> : null}
-                    {lastGhError?.retryable ? <button type="button" className="btn btn-sm pr-error__retry" onClick={() => void submit()}>Retry</button> : null}
-                    <button type="button" className="btn btn-sm pr-error__dismiss" onClick={() => { setLastGhError(null); setError(null); }} aria-label="Dismiss PR error">×</button>
+                    {lastGhError?.retryable ? <button type="button" className="btn btn-sm pr-error__retry" onClick={() => void submit()}>{t("actions.retry", "Retry")}</button> : null}
+                    <button type="button" className="btn btn-sm pr-error__dismiss" onClick={() => { setLastGhError(null); setError(null); }} aria-label={t("pr.dismissError", "Dismiss PR error")}>×</button>
                   </div>
                 </div>
               )}
@@ -509,10 +512,10 @@ export function PrCreateModal({
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose} disabled={submitting}>Cancel</button>
+          <button type="button" className="btn" onClick={onClose} disabled={submitting}>{t("actions.cancel", "Cancel")}</button>
           <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={!canSubmit || !title.trim() || submitting || loading}>
             {submitting ? <RefreshCw size={14} className="spin" /> : null}
-            {draft ? "Create draft PR" : "Create PR"}
+            {draft ? t("pr.createDraftPr", "Create draft PR") : t("pr.createPr", "Create PR")}
           </button>
         </div>
       </div>

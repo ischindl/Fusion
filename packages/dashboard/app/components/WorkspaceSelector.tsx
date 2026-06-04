@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, FolderGit2, FolderRoot } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { WorkspaceInfo } from "../hooks/useWorkspaces";
 import "./WorkspaceSelector.css";
 
@@ -22,17 +23,18 @@ export function WorkspaceSelector({
   workspaces,
   onSelect,
 }: WorkspaceSelectorProps) {
+  const { t } = useTranslation("app");
   const [open, setOpen] = useState(false);
   const safeWorkspace = typeof currentWorkspace === "string" ? currentWorkspace : "project";
 
   const currentLabel = useMemo(() => {
     if (safeWorkspace === "project") {
-      return projectName || "Project Root";
+      return projectName || t("workspace.projectRoot", "Project Root");
     }
 
     const match = workspaces.find((workspace) => workspace.id === safeWorkspace);
     return match?.label ?? safeWorkspace;
-  }, [safeWorkspace, projectName, workspaces]);
+  }, [safeWorkspace, projectName, workspaces, t]);
 
   return (
     <div className="workspace-selector">
@@ -49,7 +51,7 @@ export function WorkspaceSelector({
       </button>
 
       {open && (
-        <div className="workspace-selector-menu" role="listbox" aria-label="Select workspace">
+        <div className="workspace-selector-menu" role="listbox" aria-label={t("workspace.selectWorkspace", "Select workspace")}>
           <button
             type="button"
             className={`workspace-selector-option${safeWorkspace === "project" ? " active" : ""}`}
@@ -60,14 +62,14 @@ export function WorkspaceSelector({
           >
             <div className="workspace-selector-option-main">
               <FolderRoot size={14} />
-              <span>Project Root</span>
+              <span>{t("workspace.projectRoot", "Project Root")}</span>
             </div>
             <span className="workspace-selector-option-meta">{projectName}</span>
           </button>
 
           {workspaces.length > 0 && (
             <div className="workspace-selector-group">
-              <div className="workspace-selector-group-label">Task Worktrees</div>
+              <div className="workspace-selector-group-label">{t("workspace.taskWorktrees", "Task Worktrees")}</div>
               {workspaces.map((workspace) => (
                 <button
                   key={workspace.id}

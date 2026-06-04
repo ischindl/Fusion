@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { FusionShellApi, ShellConnectionProfile, ShellConnectionState } from "../types/native-shell";
 import "./NativeShellConnectionManager.css";
 
@@ -10,6 +11,7 @@ interface NativeShellConnectionManagerProps {
 }
 
 export function NativeShellConnectionManager({ open, shellApi, shellState, onClose }: NativeShellConnectionManagerProps) {
+  const { t } = useTranslation("app");
   const activeProfile = useMemo(
     () => shellState.profiles.find((profile) => profile.id === shellState.activeProfileId) ?? null,
     [shellState.activeProfileId, shellState.profiles],
@@ -40,11 +42,11 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
     try {
       const parsed = new URL(workingUrl.trim());
       if (!/^https?:$/.test(parsed.protocol)) {
-        throw new Error("Server URL must use http or https");
+        throw new Error(t("shell.serverUrlProtocolError", "Server URL must use http or https"));
       }
       const saved = await shellApi.saveProfile({
         id: isAddingConnection ? undefined : (editingProfileId ?? editingProfile?.id),
-        name: workingName || "Remote Server",
+        name: workingName || t("shell.defaultProfileName", "Remote Server"),
         serverUrl: workingUrl,
         authToken: workingToken || null,
       });
@@ -82,25 +84,25 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
 
   return (
     <div className="modal-overlay open">
-      <div className="modal native-shell-connection-manager" role="dialog" aria-label="Connection Manager">
+      <div className="modal native-shell-connection-manager" role="dialog" aria-label={t("shell.connectionManagerLabel", "Connection Manager")}>
         <div className="modal-header">
-          <h2>Connection Manager</h2>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+          <h2>{t("shell.connectionManager", "Connection Manager")}</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label={t("actions.close", "Close")}>
             ×
           </button>
         </div>
 
         {shellState.host === "desktop-shell" && (
           <div className="native-shell-connection-manager__mode-row">
-            <button type="button" className={`btn ${shellState.desktopMode === "local" ? "btn-primary" : ""}`} onClick={() => void shellApi.setDesktopMode("local")}>Local</button>
-            <button type="button" className={`btn ${shellState.desktopMode !== "local" ? "btn-primary" : ""}`} onClick={() => void shellApi.setDesktopMode("remote")}>Remote</button>
+            <button type="button" className={`btn ${shellState.desktopMode === "local" ? "btn-primary" : ""}`} onClick={() => void shellApi.setDesktopMode("local")}>{t("shell.modeLocal", "Local")}</button>
+            <button type="button" className={`btn ${shellState.desktopMode !== "local" ? "btn-primary" : ""}`} onClick={() => void shellApi.setDesktopMode("remote")}>{t("shell.modeRemote", "Remote")}</button>
           </div>
         )}
 
         <div className="native-shell-connection-manager__profiles">
           {shellState.profiles.length === 0 ? (
             <div className="card native-shell-connection-manager__empty-state">
-              <p className="settings-muted">No remote servers saved yet.</p>
+              <p className="settings-muted">{t("shell.noServersSaved", "No remote servers saved yet.")}</p>
               <div className="native-shell-connection-manager__profile-actions">
                 <button
                   type="button"
@@ -111,11 +113,11 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
                     setError(null);
                   }}
                 >
-                  Add server
+                  {t("shell.addServer", "Add server")}
                 </button>
                 {shellState.host === "mobile-shell" && (
                   <button type="button" className="btn btn-sm" onClick={() => void handleScanQr()}>
-                    Scan QR
+                    {t("shell.scanQr", "Scan QR")}
                   </button>
                 )}
               </div>
@@ -126,22 +128,22 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
                 <div>
                   <strong>{profile.name}</strong>
                   <div className="settings-muted">{profile.serverUrl}</div>
-                  {profile.id === shellState.activeProfileId && <span className="native-shell-connection-manager__active-pill">Active</span>}
+                  {profile.id === shellState.activeProfileId && <span className="native-shell-connection-manager__active-pill">{t("shell.activePill", "Active")}</span>}
                 </div>
                 <div className="native-shell-connection-manager__profile-actions">
                   <button
                     type="button"
                     className="btn btn-sm"
-                    aria-label={`Edit ${profile.name}`}
+                    aria-label={t("shell.editProfile", "Edit {{name}}", { name: profile.name })}
                     onClick={() => {
                       setEditingProfileId(profile.id);
                       setDraft(profile);
                     }}
                   >
-                    Edit
+                    {t("actions.edit", "Edit")}
                   </button>
-                  <button type="button" className="btn btn-sm" aria-label={`Use ${profile.name}`} onClick={() => void shellApi.setActiveProfile(profile.id)}>Use</button>
-                  <button type="button" className="btn btn-sm btn-danger" aria-label={`Delete ${profile.name}`} onClick={() => setDeleteCandidate(profile)}>Delete</button>
+                  <button type="button" className="btn btn-sm" aria-label={t("shell.useProfile", "Use {{name}}", { name: profile.name })} onClick={() => void shellApi.setActiveProfile(profile.id)}>{t("shell.use", "Use")}</button>
+                  <button type="button" className="btn btn-sm btn-danger" aria-label={t("shell.deleteProfile", "Delete {{name}}", { name: profile.name })} onClick={() => setDeleteCandidate(profile)}>{t("actions.delete", "Delete")}</button>
                 </div>
               </div>
             ))
@@ -158,39 +160,39 @@ export function NativeShellConnectionManager({ open, shellApi, shellState, onClo
               setError(null);
             }}
           >
-            Add connection
+            {t("shell.addConnection", "Add connection")}
           </button>
           {shellState.host === "mobile-shell" && (
             <button type="button" className="btn" onClick={() => void handleScanQr()}>
-              Scan QR
+              {t("shell.scanQr", "Scan QR")}
             </button>
           )}
         </div>
 
         <div className="form-group native-shell-connection-manager__editor">
-          <label htmlFor="native-shell-connection-manager-name">Name</label>
+          <label htmlFor="native-shell-connection-manager-name">{t("shell.nameLabel", "Name")}</label>
           <input id="native-shell-connection-manager-name" className="input" value={workingName} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} />
-          <label htmlFor="native-shell-connection-manager-url">Server URL</label>
+          <label htmlFor="native-shell-connection-manager-url">{t("shell.serverUrlLabel", "Server URL")}</label>
           <input id="native-shell-connection-manager-url" className="input" value={workingUrl} onChange={(event) => setDraft((value) => ({ ...value, serverUrl: event.target.value }))} />
-          <label htmlFor="native-shell-connection-manager-token">Auth token (optional)</label>
+          <label htmlFor="native-shell-connection-manager-token">{t("shell.authTokenLabel", "Auth token (optional)")}</label>
           <input id="native-shell-connection-manager-token" className="input" type="password" value={workingToken ?? ""} onChange={(event) => setDraft((value) => ({ ...value, authToken: event.target.value }))} />
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>
 
         {deleteCandidate && (
-          <div className="native-shell-connection-manager__delete-confirm" role="alertdialog" aria-label="Delete server confirmation">
-            <p>Delete <strong>{deleteCandidate.name}</strong>? This removes the saved profile.</p>
+          <div className="native-shell-connection-manager__delete-confirm" role="alertdialog" aria-label={t("shell.deleteConfirmLabel", "Delete server confirmation")}>
+            <p>{t("shell.deleteConfirmMessage", "Delete {{name}}? This removes the saved profile.", { name: deleteCandidate.name })}</p>
             <div className="native-shell-connection-manager__profile-actions">
-              <button type="button" className="btn btn-sm" onClick={() => setDeleteCandidate(null)}>Cancel</button>
-              <button type="button" className="btn btn-sm btn-danger" onClick={() => void handleConfirmDelete()}>Delete</button>
+              <button type="button" className="btn btn-sm" onClick={() => setDeleteCandidate(null)}>{t("actions.cancel", "Cancel")}</button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => void handleConfirmDelete()}>{t("actions.delete", "Delete")}</button>
             </div>
           </div>
         )}
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose}>Close</button>
-          <button type="button" className="btn" onClick={resetEditor}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={() => void saveCurrent()} disabled={!workingUrl.trim()}>Save</button>
+          <button type="button" className="btn" onClick={onClose}>{t("actions.close", "Close")}</button>
+          <button type="button" className="btn" onClick={resetEditor}>{t("actions.cancel", "Cancel")}</button>
+          <button type="button" className="btn btn-primary" onClick={() => void saveCurrent()} disabled={!workingUrl.trim()}>{t("actions.save", "Save")}</button>
         </div>
       </div>
     </div>

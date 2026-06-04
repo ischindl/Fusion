@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task, TaskDetail } from "@fusion/core";
 import type { SectionId } from "../components/SettingsModal";
 import type { ToastType } from "./useToast";
@@ -146,6 +147,7 @@ export interface ModalManager {
  * and cross-modal transitions (for example, script runner -> terminal handoff).
  */
 export function useModalManager(options: UseModalManagerOptions): ModalManager {
+  const { t } = useTranslation("app");
   const { planningSessions } = options;
 
   const [newTaskModalOpen, setNewTaskModalOpen] = useState(false);
@@ -366,24 +368,24 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
   const closeModelOnboarding = useCallback(() => setModelOnboardingOpen(false), []);
 
   const onPlanningTaskCreated = useCallback((task: Task, addToast: (message: string, type?: ToastType) => void) => {
-    addToast(`Created ${task.id} from planning mode`, "success");
+    addToast(t("modalManager.createdFromPlanning", "Created {{id}} from planning mode", { id: task.id }), "success");
     setIsPlanningOpen(false);
     setPlanningInitialPlan(null);
-  }, []);
+  }, [t]);
 
   const onPlanningTasksCreated = useCallback((tasks: Task[], addToast: (message: string, type?: ToastType) => void) => {
     const ids = tasks.map((task) => task.id).join(", ");
-    addToast(`Created ${ids} from planning mode`, "success");
+    addToast(t("modalManager.createdMultipleFromPlanning", "Created {{ids}} from planning mode", { ids }), "success");
     setIsPlanningOpen(false);
     setPlanningInitialPlan(null);
-  }, []);
+  }, [t]);
 
   const onSubtaskTasksCreated = useCallback((tasks: Task[], addToast: (message: string, type?: ToastType) => void) => {
     const ids = tasks.map((task) => task.id).join(", ");
-    addToast(`Created ${ids} from subtask breakdown`, "success");
+    addToast(t("modalManager.createdFromSubtask", "Created {{ids}} from subtask breakdown", { ids }), "success");
     setIsSubtaskOpen(false);
     setSubtaskInitialDescription(null);
-  }, []);
+  }, [t]);
 
   return {
     newTaskModalOpen,

@@ -1,5 +1,6 @@
 import "./DuplicateWarningModal.css";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { DuplicateMatch } from "../api";
 
 interface DuplicateWarningModalProps {
@@ -14,6 +15,7 @@ function toStatusClass(column: string): string {
 }
 
 export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: DuplicateWarningModalProps) {
+  const { t } = useTranslation("app");
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -35,10 +37,10 @@ export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: 
     <div className="modal-overlay open" role="presentation">
       <div className="modal duplicate-warning-modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-warning-modal-title">
         <div className="modal-header">
-          <h3 id="duplicate-warning-modal-title">Possible duplicates</h3>
+          <h3 id="duplicate-warning-modal-title">{t("duplicateWarning.title", "Possible duplicates")}</h3>
         </div>
         <div className="duplicate-warning-modal-body">
-          <p className="duplicate-warning-modal-copy">We found similar active tasks. Open an existing task or create this one anyway.</p>
+          <p className="duplicate-warning-modal-copy">{t("duplicateWarning.message", "We found similar active tasks. Open an existing task or create this one anyway.")}</p>
           <div className="duplicate-warning-modal-list">
             {matches.map((match) => (
               <article className="card duplicate-warning-modal-item" key={match.id}>
@@ -47,9 +49,9 @@ export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: 
                   <span className={`card-status-badge ${toStatusClass(match.column)}`}>{match.column}</span>
                   <span className="duplicate-warning-modal-score">{Math.round(match.score * 100)}%</span>
                 </div>
-                <div className="card-title duplicate-warning-modal-title">{match.title || "Untitled task"}</div>
+                <div className="card-title duplicate-warning-modal-title">{match.title || t("duplicateWarning.untitledTask", "Untitled task")}</div>
                 <div className="duplicate-warning-modal-actions">
-                  <button className="btn btn-sm" type="button" onClick={() => onOpen(match.id)}>Open</button>
+                  <button className="btn btn-sm" type="button" onClick={() => onOpen(match.id)}>{t("duplicateWarning.open", "Open")}</button>
                 </div>
               </article>
             ))}
@@ -57,10 +59,10 @@ export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: 
         </div>
         <div className="modal-actions">
           <div className="modal-actions-left">
-            <button className="btn" type="button" ref={cancelButtonRef} onClick={onCancel}>Cancel</button>
+            <button className="btn" type="button" ref={cancelButtonRef} onClick={onCancel}>{t("duplicateWarning.cancel", "Cancel")}</button>
           </div>
           <div className="modal-actions-right">
-            <button className="btn btn-primary" type="button" onClick={onProceed}>Create anyway</button>
+            <button className="btn btn-primary" type="button" onClick={onProceed}>{t("duplicateWarning.createAnyway", "Create anyway")}</button>
           </div>
         </div>
       </div>

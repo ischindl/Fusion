@@ -33,6 +33,7 @@ Defaults from `DEFAULT_GLOBAL_SETTINGS`; key scope from `GLOBAL_SETTINGS_KEYS`.
 |---|---|---:|---|
 | `themeMode` | `"dark" \| "light" \| "system"` | `"dark"` | Dashboard theme mode. |
 | `colorTheme` | `ColorTheme` | `"default"` | Dashboard color theme preset. |
+| `language` | `"en" \| "zh-CN" \| "zh-TW" \| "fr" \| "es" \| "ko"` | `undefined` | UI language for the dashboard and TUI. When unset, the dashboard detects from localStorage → browser language and the CLI from `--lang` flag → environment locale, falling back to `en`. Validated at the store write boundary (`validateLocale`); invalid values are dropped. Reset to auto-detect via the dashboard's "Auto" language option or `fn settings set language auto` (clears the persisted key). |
 | `dashboardFontScalePct` | `number` | `100` | Dashboard font scale percentage used by Appearance settings. Valid range: `85` to `125`; applied pre-hydration via document root font-size so board typography (column headers/counts, task cards, and quick-entry text) scales with the setting from first paint. |
 | `defaultProvider` | `string` | `undefined` | Default AI provider. |
 | `defaultModelId` | `string` | `undefined` | Default AI model ID. |

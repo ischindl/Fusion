@@ -9,6 +9,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { Insight, InsightCategory, InsightStatus, InsightRun } from "@fusion/core";
 import {
   ApiRequestError,
@@ -42,7 +43,7 @@ export const INSIGHT_CATEGORIES: InsightCategory[] = [
   "other",
 ];
 
-// Human-readable labels for categories
+// Human-readable labels for categories (English fallbacks; hook uses t() at runtime)
 export const CATEGORY_LABELS: Record<InsightCategory, string> = {
   quality: "Quality",
   performance: "Performance",
@@ -62,7 +63,7 @@ export const CATEGORY_LABELS: Record<InsightCategory, string> = {
   trends: "Trends",
 };
 
-// Status labels
+// Status labels (English fallbacks; translate at render time using t())
 export const STATUS_LABELS: Record<InsightStatus, string> = {
   generated: "Generated",
   confirmed: "Confirmed",
@@ -129,6 +130,7 @@ export interface UseInsightsResult {
  * @returns Insights data and action handlers
  */
 export function useInsights(projectId?: string): UseInsightsResult {
+  const { t } = useTranslation("app");
   const cacheSuffix = projectId ?? "";
   const insightsCacheKey = `${SWR_CACHE_KEYS.INSIGHTS_PREFIX}${cacheSuffix}`;
   const latestRunCacheKey = `${SWR_CACHE_KEYS.INSIGHT_LATEST_RUN_PREFIX}${cacheSuffix}`;
@@ -136,9 +138,14 @@ export function useInsights(projectId?: string): UseInsightsResult {
   const initialLatestRun = readCache<InsightRun | null>(latestRunCacheKey, { maxAgeMs: SWR_LONG_MAX_AGE_MS });
   const hasHydratedRef = useRef(Array.isArray(initialInsights) && initialInsights.length > 0);
 
+  const getCategoryLabel = useCallback((category: InsightCategory): string => {
+    return t(`insights.category.${category}`, CATEGORY_LABELS[category] ?? category);
+  }, [t]);
+
   const [allInsights, setAllInsights] = useState<Insight[]>(() => (Array.isArray(initialInsights) ? initialInsights : []));
 
-  // Section items (keyed by category)
+  // Section items (keyed by category). Labels are set to English defaults here
+  // and overwritten with translated strings by the grouping useEffect below.
   const [sections, setSections] = useState<InsightSection[]>(() =>
     INSIGHT_CATEGORIES.map((category) => ({
       category,
@@ -339,13 +346,13 @@ export function useInsights(projectId?: string): UseInsightsResult {
     setSections(
       INSIGHT_CATEGORIES.map((category) => ({
         category,
-        label: CATEGORY_LABELS[category] ?? category,
+        label: getCategoryLabel(category),
         items: grouped.get(category) ?? [],
         isLoading: false,
         error: null,
       })),
     );
-  }, [allInsights, showArchived]);
+  }, [allInsights, showArchived, getCategoryLabel]);
 
   const archive = useCallback(
     async (id: string) => {

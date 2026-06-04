@@ -1,4 +1,6 @@
 import "./PlanningModeModal.css";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -78,12 +80,14 @@ type ViewState =
   | { type: "breakdown"; sessionId: string; originalSubtasks: SubtaskItem[]; subtasks: SubtaskItem[]; dirty: boolean }
   | { type: "loading" };
 
-const EXAMPLE_PLANS = [
-  "Build a user authentication system with login and signup",
-  "Add dark mode support to the dashboard",
-  "Create an API endpoint for exporting tasks as CSV",
-  "Refactor the task card component for better performance",
-];
+function getExamplePlans(t: TFunction<"app">): string[] {
+  return [
+    t("planning.examplePlan1", "Build a user authentication system with login and signup"),
+    t("planning.examplePlan2", "Add dark mode support to the dashboard"),
+    t("planning.examplePlan3", "Create an API endpoint for exporting tasks as CSV"),
+    t("planning.examplePlan4", "Refactor the task card component for better performance"),
+  ];
+}
 
 function normalizeTaskPriority(priority?: TaskPriority): TaskPriority {
   if (priority && (TASK_PRIORITIES as readonly string[]).includes(priority)) {
@@ -185,6 +189,7 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
 }
 
 export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreated, tasks, initialPlan: initialPlanProp, projectId, resumeSessionId }: PlanningModeModalProps) {
+  const { t } = useTranslation("app");
   const [initialPlan, setInitialPlan] = useState("");
   const [view, setView] = useState<ViewState>({ type: "initial" });
   const [error, setError] = useState<string | null>(null);
@@ -435,7 +440,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       if (!provider || !modelId) {
         return resolvedPlanningModel.provider && resolvedPlanningModel.modelId
           ? `${resolvedPlanningModel.provider}/${resolvedPlanningModel.modelId}`
-          : "Using default";
+          : t("planning.usingDefault", "Using default");
       }
       const matched = loadedModels.find((model) => model.provider === provider && model.id === modelId);
       return matched ? `${matched.provider}/${matched.id}` : `${provider}/${modelId}`;
@@ -457,7 +462,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         modelId: response.resolvedPlanningModelId,
       });
     } catch (err) {
-      setModelsError(getErrorMessage(err) || "Failed to load models");
+      setModelsError(getErrorMessage(err) || t("planning.failedLoadModels", "Failed to load models"));
     } finally {
       setModelsLoading(false);
     }
@@ -599,7 +604,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           });
         },
         onError: (message) => {
-          const errorMessage = message || "Session failed while contacting the AI.";
+          const errorMessage = message || t("planning.sessionFailed", "Session failed while contacting the AI.");
 
           // A single transient stream error (e.g. tab was backgrounded long
           // enough for the SSE to time out) should not bounce the user to a
@@ -709,7 +714,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       setResponseHistory([]);
     } catch (err) {
       setIsReconnecting(false);
-      setError(getErrorMessage(err) || "Failed to start planning session");
+      setError(getErrorMessage(err) || t("planning.failedStartSession", "Failed to start planning session"));
       setView({ type: "initial" });
       currentSessionIdRef.current = null;
       setLockSessionId(null);
@@ -810,7 +815,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           setView({
             type: "error",
             session: { sessionId, currentQuestion: null, summary: null },
-            errorMessage: session.error || "Session failed",
+            errorMessage: session.error || t("planning.sessionFailed2", "Session failed"),
           });
           return;
         }
@@ -886,7 +891,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         setView({
           type: "error",
           session: { sessionId, currentQuestion: null, summary: null },
-          errorMessage: getErrorMessage(err) || "Failed to load session",
+          errorMessage: getErrorMessage(err) || t("planning.failedLoadSession", "Failed to load session"),
         });
       }
     },
@@ -1171,7 +1176,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       try {
         await deleteAiSession(sessionId);
       } catch (err) {
-        addToast(getErrorMessage(err) || "Failed to delete session", "error");
+        addToast(getErrorMessage(err) || t("planning.failedDeleteSession", "Failed to delete session"), "error");
         void refreshSessionsList();
         setPendingDeleteId(null);
         return;
@@ -1413,7 +1418,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       const sessionId = session.sessionId;
       const activeQuestion = session.currentQuestion;
       if (!activeQuestion) {
-        setError("No active question in session");
+        setError(t("planning.noActiveQuestion", "No active question in session"));
         return;
       }
 
@@ -1453,7 +1458,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         await respondToPlanning(sessionId, responses, projectId, sessionTabId);
         // Events (question/summary) will arrive via the existing SSE stream
       } catch (err) {
-        setError(getErrorMessage(err) || "Failed to submit response");
+        setError(getErrorMessage(err) || t("planning.failedSubmitResponse", "Failed to submit response"));
         setView({ type: "question", session });
       }
     },
@@ -1482,7 +1487,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     } catch (err) {
       streamConnectionRef.current?.close();
       streamConnectionRef.current = null;
-      setError(getErrorMessage(err) || "Failed to refine plan");
+      setError(getErrorMessage(err) || t("planning.failedRefinePlan", "Failed to refine plan"));
       setView({ type: "summary", session, summary: editedSummary ?? summary });
     }
   }, [connectToPlanningStream, editedSummary, projectId, sessionTabId, view]);
@@ -1506,7 +1511,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     setView({
       type: "error",
       session: { sessionId, currentQuestion: null, summary: null },
-      errorMessage: "Generation stopped by user. You can retry or start a new session.",
+      errorMessage: t("planning.generationStopped", "Generation stopped by user. You can retry or start a new session."),
     });
     setStreamingOutput("");
   }, [projectId, sessionTabId]);
@@ -1584,7 +1589,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
             setView({
               type: "error",
               session: { sessionId: session.id, currentQuestion: null, summary: null },
-              errorMessage: session.error || "Retry failed. Please try again.",
+              errorMessage: session.error || t("planning.retryFailed", "Retry failed. Please try again."),
             });
           }
 
@@ -1600,7 +1605,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       setView({
         type: "error",
         session: retryTarget,
-        errorMessage: getErrorMessage(retryError) || "Retry failed. Please try again.",
+        errorMessage: getErrorMessage(retryError) || t("planning.retryFailed", "Retry failed. Please try again."),
       });
       setIsReconnecting(false);
     } finally {
@@ -1636,7 +1641,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       });
       handleClose();
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to create task");
+      setError(getErrorMessage(err) || t("planning.failedCreateTask", "Failed to create task"));
     } finally {
       setIsCreatingTask(false);
     }
@@ -1664,7 +1669,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         dirty: false,
       });
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to start breakdown");
+      setError(getErrorMessage(err) || t("planning.failedStartBreakdown", "Failed to start breakdown"));
     } finally {
       setIsStartingBreakdown(false);
     }
@@ -1722,7 +1727,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       setSelectedSessionId(null);
       handleClose();
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to create tasks");
+      setError(getErrorMessage(err) || t("planning.failedCreateTasks", "Failed to create tasks"));
     } finally {
       setIsCreatingFromBreakdown(false);
     }
@@ -1763,7 +1768,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         },
       });
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to go back to the previous question");
+      setError(getErrorMessage(err) || t("planning.failedGoBack", "Failed to go back to the previous question"));
       setView({ type: "question", session: view.session });
     }
   }, [projectId, responseHistory.length, sessionTabId, view]);
@@ -1803,17 +1808,17 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
               <button
                 className="modal-back planning-mobile-back"
                 onClick={handleBackToList}
-                aria-label="Back to sessions"
-                title="Back to sessions"
+                aria-label={t("planning.backToSessions", "Back to sessions")}
+                title={t("planning.backToSessions", "Back to sessions")}
               >
                 <ChevronLeft size={18} />
               </button>
             )}
             <Lightbulb size={20} className="icon-triage" />
-            <h3>Planning Mode</h3>
+            <h3>{t("planning.title", "Planning Mode")}</h3>
           </div>
           <div className="modal-header-actions">
-            <button className="modal-close" onClick={handleClose} aria-label="Close">
+            <button className="modal-close" onClick={handleClose} aria-label={t("common.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -1841,27 +1846,26 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
           <div className="planning-detail">
           {error && <div className="form-error planning-error">{error}</div>}
-          {isReconnecting && <div className="form-hint text-muted">Reconnecting…</div>}
+          {isReconnecting && <div className="form-hint text-muted">{t("planning.reconnecting", "Reconnecting…")}</div>}
 
           {view.type === "initial" && (
             <div className="planning-initial">
               <div className="planning-view-scroll">
                 <div className="planning-intro">
                   <Sparkles size={32} className="icon-triage-lg" />
-                  <h4>Transform your idea into a detailed task</h4>
+                  <h4>{t("planning.initialHeading", "Transform your idea into a detailed task")}</h4>
                   <p className="text-muted">
-                    Describe what you want to build in plain language. The AI will ask clarifying
-                    questions and help you structure a well-defined task.
+                    {t("planning.initialSubheading", "Describe what you want to build in plain language. The AI will ask clarifying questions and help you structure a well-defined task.")}
                   </p>
                 </div>
 
                 <div className="form-group">
-                  <label htmlFor="initial-plan">What do you want to build?</label>
+                  <label htmlFor="initial-plan">{t("planning.whatToBuild", "What do you want to build?")}</label>
                   <textarea
                     ref={setInitialPlanTextareaRef}
                     id="initial-plan"
                     className="planning-textarea"
-                    placeholder="e.g., Build a user authentication system with login, signup, and password reset..."
+                    placeholder={t("planning.whatToBuildPlaceholder", "e.g., Build a user authentication system with login, signup, and password reset...")}
                     value={initialPlan}
                     onChange={(e) => {
                       const nextValue = e.target.value;
@@ -1928,9 +1932,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                 </div>
 
                 <div className="planning-examples">
-                  <span className="planning-examples-label">Try an example:</span>
+                  <span className="planning-examples-label">{t("planning.tryAnExample", "Try an example:")}</span>
                   <div className="planning-example-chips">
-                    {EXAMPLE_PLANS.map((plan, i) => (
+                    {getExamplePlans(t).map((plan, i) => (
                       <button
                         key={i}
                         className="planning-example-chip"
@@ -1942,23 +1946,23 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                   </div>
                 </div>
 
-                <OnboardingDisclosure summary="Advanced planning settings" className="planning-advanced-disclosure">
+                <OnboardingDisclosure summary={t("planning.advancedSettings", "Advanced planning settings")} className="planning-advanced-disclosure">
                   <div className="planning-advanced-content">
                     <div className="planning-advanced-section planning-model-select-group">
                     <label htmlFor="planning-modal-model" className="form-label">
-                      Planning Model
+                      {t("planning.planningModel", "Planning Model")}
                       {modelsLoading && (
                         <span className="text-muted text-muted-sm">
-                          Loading models…
+                          {t("planning.loadingModels", "Loading models…")}
                         </span>
                       )}
                     </label>
                     <p className="planning-advanced-blurb">
-                      Selects which model runs the planning interview and writes the final draft.
+                      {t("planning.planningModelBlurb", "Selects which model runs the planning interview and writes the final draft.")}
                     </p>
                     <CustomModelDropdown
                       id="planning-modal-model"
-                      label="Planning Model"
+                      label={t("planning.planningModel", "Planning Model")}
                       value={planningSelectionValue}
                       onChange={(value) => {
                         const { provider, modelId } = parseModelSelection(value);
@@ -1982,7 +1986,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                             void loadModels();
                           }}
                         >
-                          Retry
+                          {t("common.retry", "Retry")}
                         </button>
                       </div>
                     )}
@@ -2001,15 +2005,18 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
                     <div className="planning-advanced-section planning-depth-selector">
                       <p className="planning-advanced-blurb">
-                        Plan size sets default interview depth. Questions lets you override with an exact count.
+                        {t("planning.depthBlurb", "Plan size sets default interview depth. Questions lets you override with an exact count.")}
                       </p>
                       <div className="planning-depth-controls-row">
-                        <div className="planning-depth-chip-group" role="group" aria-label="Planning depth">
-                          {([
-                            { value: "small", label: "Small" },
-                            { value: "medium", label: "Medium" },
-                            { value: "large", label: "Large" },
-                          ] as const).map((depthOption) => (
+                        <div className="planning-depth-chip-group" role="group" aria-label={t("planning.planningDepth", "Planning depth")}>
+                          {(["small", "medium", "large"] as const).map((depthValue) => {
+                            const depthLabels: Record<string, string> = {
+                              small: t("planning.depthSmall", "Small"),
+                              medium: t("planning.depthMedium", "Medium"),
+                              large: t("planning.depthLarge", "Large"),
+                            };
+                            const depthOption = { value: depthValue, label: depthLabels[depthValue] };
+                            return (
                             <button
                               key={depthOption.value}
                               type="button"
@@ -2019,11 +2026,11 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                             >
                               {depthOption.label}
                             </button>
-                          ))}
+                          );})}
                         </div>
 
                         <label className="planning-depth-question-count" htmlFor="planning-depth-questions">
-                          <span>Questions</span>
+                          <span>{t("planning.questionsLabel", "Questions")}</span>
                           <input
                             id="planning-depth-questions"
                             className="input planning-depth-question-input"
@@ -2032,7 +2039,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                             max={20}
                             value={customQuestionCount}
                             onChange={(e) => setCustomQuestionCount(e.target.value)}
-                            placeholder="Auto"
+                            placeholder={t("planning.questionsAuto", "Auto")}
                           />
                         </label>
                       </div>
@@ -2048,7 +2055,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                   disabled={!initialPlan.trim()}
                 >
                   <Lightbulb size={16} className="icon-mr-8" />
-                  Start Planning
+                  {t("planning.startPlanning", "Start Planning")}
                 </button>
               </div>
             </div>
@@ -2057,9 +2064,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           {view.type === "loading" && (
             <div className="planning-loading">
               <Loader2 size={40} className="spin icon-todo" />
-              <p>{streamingOutput ? "AI is thinking..." : "Generating next question..."}</p>
+              <p>{streamingOutput ? t("planning.aiThinking", "AI is thinking...") : t("planning.generatingQuestion", "Generating next question...")}</p>
               {generationStartTime && (
-                <div className="planning-elapsed">Thinking… ({elapsedSeconds}s)</div>
+                <div className="planning-elapsed">{t("planning.thinkingElapsed", "Thinking… ({{seconds}}s)", { seconds: elapsedSeconds })}</div>
               )}
               <div className="planning-thinking-container">
                 <button
@@ -2067,12 +2074,12 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                   onClick={() => setShowThinking(!showThinking)}
                   type="button"
                 >
-                  {showThinking ? "Hide thinking" : "Show thinking"}
+                  {showThinking ? t("planning.hideThinking", "Hide thinking") : t("planning.showThinking", "Show thinking")}
                 </button>
                 <div className="planning-loading-actions">
                   <button className="btn planning-stop-btn" type="button" onClick={() => void handleStopGeneration()}>
                     <StopCircle size={14} />
-                    <span className="icon-ml-6">Stop</span>
+                    <span className="icon-ml-6">{t("planning.stop", "Stop")}</span>
                   </button>
                 </div>
                 {showThinking && streamingOutput && (
@@ -2103,9 +2110,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                   <div className="ai-error-actions">
                     <button className="btn btn-primary" onClick={() => void handleRetryFromError()} disabled={isRetrying}>
                       {isRetrying ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-                      <span className="icon-ml-6">{isRetrying ? "Retrying..." : "Retry"}</span>
+                      <span className="icon-ml-6">{isRetrying ? t("planning.retrying", "Retrying...") : t("common.retry", "Retry")}</span>
                     </button>
-                    <button className="btn" onClick={handleClose} disabled={isRetrying}>Dismiss</button>
+                    <button className="btn" onClick={handleClose} disabled={isRetrying}>{t("planning.dismiss", "Dismiss")}</button>
                   </div>
                 </div>
               </div>
@@ -2176,8 +2183,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                 <Lock size={16} />
                 <span>
                   {allowTakeover
-                    ? "This session is active in another tab"
-                    : "This session is active in another tab (live heartbeat)"}
+                    ? t("planning.sessionActiveOtherTab", "This session is active in another tab")
+                    : t("planning.sessionActiveOtherTabLive", "This session is active in another tab (live heartbeat)")}
                 </span>
                 {allowTakeover && (
                   <button
@@ -2188,7 +2195,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                     disabled={isLockLoading}
                     className="btn btn-primary session-lock-take-control"
                   >
-                    {isLockLoading ? "Taking control..." : "Take Control"}
+                    {isLockLoading ? t("planning.takingControl", "Taking control...") : t("planning.takeControl", "Take Control")}
                   </button>
                 )}
               </div>
@@ -2209,6 +2216,7 @@ interface QuestionFormProps {
 }
 
 function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: QuestionFormProps) {
+  const { t } = useTranslation("app");
   const [response, setResponse] = useState<QuestionResponse>({});
   const [textValue, setTextValue] = useState("");
   const [commentValue, setCommentValue] = useState("");
@@ -2286,7 +2294,7 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
                 />
               ))}
             </div>
-            <span className="planning-progress-text">Question {progress} of ~3</span>
+            <span className="planning-progress-text">{t("planning.questionProgress", "Question {{progress}} of ~3", { progress })}</span>
           </div>
 
           <div className="planning-question-content">
@@ -2300,7 +2308,7 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
                 <textarea
                   ref={textAnswerAutosizeRef}
                   className="planning-textarea"
-                  placeholder="Type your answer here..."
+                  placeholder={t("planning.typeAnswerPlaceholder", "Type your answer here...")}
                   value={textValue}
                   onChange={(e) => setTextValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -2370,14 +2378,14 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
                     onClick={() => setResponse({ [question.id]: true })}
                   >
                     <CheckCircle size={18} />
-                    Yes
+                    {t("common.yes", "Yes")}
                   </button>
                   <button
                     className={`planning-confirm-btn ${response[question.id] === false ? "selected" : ""}`}
                     onClick={() => setResponse({ [question.id]: false })}
                   >
                     <X size={18} />
-                    No
+                    {t("common.no", "No")}
                   </button>
                 </div>
               )}
@@ -2386,13 +2394,13 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
             {question.type !== "text" && (
               <div className="planning-comment-section">
                 <label className="planning-comment-label" htmlFor={`planning-comment-${question.id}`}>
-                  Additional comments (optional)
+                  {t("planning.additionalComments", "Additional comments (optional)")}
                 </label>
                 <textarea
                   ref={commentAutosizeRef}
                   id={`planning-comment-${question.id}`}
                   className="planning-textarea"
-                  placeholder="Add any extra context or direction..."
+                  placeholder={t("planning.additionalCommentsPlaceholder", "Add any extra context or direction...")}
                   value={commentValue}
                   onChange={(e) => setCommentValue(e.target.value)}
                 />
@@ -2406,7 +2414,7 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
         {onBack && (
           <button className="btn" onClick={onBack}>
             <ArrowLeft size={16} className="icon-mr-4" />
-            Back
+            {t("common.back", "Back")}
           </button>
         )}
         <button
@@ -2414,7 +2422,7 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
           onClick={handleSubmit}
           disabled={!isValid()}
         >
-          Continue
+          {t("planning.continue", "Continue")}
           <ArrowRight size={16} className="icon-ml-4" />
         </button>
       </div>
@@ -2457,6 +2465,7 @@ function SummaryView({
   isCreatingTask,
   isStartingBreakdown,
 }: SummaryViewProps) {
+  const { t } = useTranslation("app");
   const [isExpanded, setIsExpanded] = useState(false);
   const [renderMarkdown, setRenderMarkdown] = useState(false);
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(
@@ -2485,7 +2494,7 @@ function SummaryView({
     <div className="planning-summary">
       <div className="planning-view-scroll planning-summary-scroll">
         {historyEntries.length > 0 && (
-          <OnboardingDisclosure summary="Show user Q&A" className="planning-summary-qa-disclosure">
+          <OnboardingDisclosure summary={t("planning.showQA", "Show user Q&A")} className="planning-summary-qa-disclosure">
             <ConversationHistory entries={historyEntries} />
             <div className="conversation-separator" />
           </OnboardingDisclosure>
@@ -2493,31 +2502,31 @@ function SummaryView({
 
         <div className="planning-summary-header">
           <CheckCircle size={24} className="icon-success" />
-          <h4>Planning Complete!</h4>
-          <p className="text-muted">Review and refine your task before creating it.</p>
+          <h4>{t("planning.planningComplete", "Planning Complete!")}</h4>
+          <p className="text-muted">{t("planning.planningCompleteSubheading", "Review and refine your task before creating it.")}</p>
         </div>
 
         <div className="planning-summary-form">
           <div className="form-group">
             <label>
-              Description
+              {t("planning.description", "Description")}
               <button
                 type="button"
                 className="planning-expand-btn"
                 aria-pressed={renderMarkdown}
-                aria-label={renderMarkdown ? "Show raw text" : "Show formatted markdown"}
-                title={renderMarkdown ? "Show raw text" : "Show formatted markdown"}
+                aria-label={renderMarkdown ? t("planning.showRawText", "Show raw text") : t("planning.showFormattedMarkdown", "Show formatted markdown")}
+                title={renderMarkdown ? t("planning.showRawText", "Show raw text") : t("planning.showFormattedMarkdown", "Show formatted markdown")}
                 data-testid="planning-description-markdown-toggle"
                 onClick={() => setRenderMarkdown(!renderMarkdown)}
               >
-                {renderMarkdown ? "Plain" : "Markdown"}
+                {renderMarkdown ? t("planning.plain", "Plain") : t("planning.markdown", "Markdown")}
               </button>
               <button
                 type="button"
                 className="planning-expand-btn"
                 onClick={() => setIsExpanded(!isExpanded)}
               >
-                {isExpanded ? "Collapse" : "Expand"}
+                {isExpanded ? t("planning.collapse", "Collapse") : t("planning.expand", "Expand")}
               </button>
             </label>
             {renderMarkdown ? (
@@ -2536,22 +2545,22 @@ function SummaryView({
 
           <div className="task-detail-section">
             <div className="form-group">
-              <label htmlFor="planning-branch-strategy">Branch strategy</label>
+              <label htmlFor="planning-branch-strategy">{t("planning.branchStrategy", "Branch strategy")}</label>
               <select
                 id="planning-branch-strategy"
                 value={branchMode}
                 onChange={(event) => onBranchModeChange(event.target.value as "project-default" | "auto-new" | "existing" | "custom-new")}
                 disabled={isLoading}
               >
-                <option value="project-default">Use project/default branch</option>
-                <option value="auto-new">Create auto-named branch per task</option>
-                <option value="existing">Use existing branch</option>
-                <option value="custom-new">Create custom new branch</option>
+                <option value="project-default">{t("planning.branchProjectDefault", "Use project/default branch")}</option>
+                <option value="auto-new">{t("planning.branchAutoNew", "Create auto-named branch per task")}</option>
+                <option value="existing">{t("planning.branchExisting", "Use existing branch")}</option>
+                <option value="custom-new">{t("planning.branchCustomNew", "Create custom new branch")}</option>
               </select>
             </div>
             {isBranchNameRequired && (
               <div className="form-group">
-                <label htmlFor="planning-branch-name">Branch name</label>
+                <label htmlFor="planning-branch-name">{t("planning.branchName", "Branch name")}</label>
                 <input
                   id="planning-branch-name"
                   value={branchName}
@@ -2561,23 +2570,23 @@ function SummaryView({
               </div>
             )}
             <div className="form-group">
-              <label htmlFor="planning-base-branch">Merge target / base branch (optional)</label>
+              <label htmlFor="planning-base-branch">{t("planning.baseBranch", "Merge target / base branch (optional)")}</label>
               <input
                 id="planning-base-branch"
                 value={baseBranch}
                 onChange={(event) => onBaseBranchChange(event.target.value)}
                 disabled={isLoading}
-                placeholder="main"
+                placeholder={t("planning.baseBranchPlaceholder", "main")}
               />
             </div>
             {hasInvalidBranchSelection && (
-              <div className="form-error planning-error">Branch name is required for this branch strategy.</div>
+              <div className="form-error planning-error">{t("planning.branchNameRequired", "Branch name is required for this branch strategy.")}</div>
             )}
           </div>
 
           <div className="planning-summary-meta-row">
             <div className="form-group">
-              <label htmlFor="planning-summary-size">Suggested Size</label>
+              <label htmlFor="planning-summary-size">{t("planning.suggestedSize", "Suggested Size")}</label>
               <select
                 id="planning-summary-size"
                 className="planning-size-select"
@@ -2590,14 +2599,14 @@ function SummaryView({
                 }
                 disabled={isLoading}
               >
-                <option value="S">S (Small)</option>
-                <option value="M">M (Medium)</option>
-                <option value="L">L (Large)</option>
+                <option value="S">{t("planning.sizeSmall", "S (Small)")}</option>
+                <option value="M">{t("planning.sizeMedium", "M (Medium)")}</option>
+                <option value="L">{t("planning.sizeLarge", "L (Large)")}</option>
               </select>
             </div>
 
             <div className="form-group">
-              <label htmlFor="planning-summary-priority">Priority</label>
+              <label htmlFor="planning-summary-priority">{t("planning.priority", "Priority")}</label>
               <select
                 id="planning-summary-priority"
                 className="planning-size-select"
@@ -2621,7 +2630,7 @@ function SummaryView({
 
           {tasks.length > 0 && (
             <div className="form-group">
-              <label>Suggested Dependencies</label>
+              <label>{t("planning.suggestedDependencies", "Suggested Dependencies")}</label>
               <div className="planning-deps-list">
                 {tasks.map((task) => (
                   <label
@@ -2644,7 +2653,7 @@ function SummaryView({
           )}
 
           <div className="form-group">
-            <label>Key Deliverables</label>
+            <label>{t("planning.keyDeliverables", "Key Deliverables")}</label>
             <ul className="planning-deliverables">
               {summary.keyDeliverables.map((item, i) => (
                 <li key={i}>{item}</li>
@@ -2657,19 +2666,19 @@ function SummaryView({
       <div className="planning-actions planning-summary-actions">
         <button className="btn" onClick={onRefine} disabled={isLoading}>
           <ArrowLeft size={16} className="icon-mr-4" />
-          Refine Further
+          {t("planning.refineFurther", "Refine Further")}
         </button>
         <div className="planning-summary-actions-right">
           <button className="btn" onClick={onCreateTask} disabled={isLoading || hasInvalidBranchSelection}>
             {isCreatingTask ? (
               <>
                 <Loader2 size={16} className="spin icon-mr-8" />
-                Creating...
+                {t("planning.creating", "Creating...")}
               </>
             ) : (
               <>
                 <CheckCircle size={16} className="icon-mr-8" />
-                Create Single Task
+                {t("planning.createSingleTask", "Create Single Task")}
               </>
             )}
           </button>
@@ -2677,17 +2686,17 @@ function SummaryView({
             className="btn btn-primary"
             onClick={onBreakIntoTasks}
             disabled={isLoading}
-            title="Break the plan into multiple tasks with dependencies"
+            title={t("planning.breakIntoTasksTitle", "Break the plan into multiple tasks with dependencies")}
           >
             {isStartingBreakdown ? (
               <>
                 <Loader2 size={16} className="spin icon-mr-8" />
-                Breaking down...
+                {t("planning.breakingDown", "Breaking down...")}
               </>
             ) : (
               <>
                 <ListTree size={16} className="icon-mr-8" />
-                Break into Tasks
+                {t("planning.breakIntoTasks", "Break into Tasks")}
               </>
             )}
           </button>
@@ -2745,6 +2754,7 @@ function BreakdownView({
   onCreateTasks,
   onBack,
 }: BreakdownViewProps) {
+  const { t } = useTranslation("app");
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragOverPosition, setDragOverPosition] = useState<"before" | "after" | null>(null);
@@ -2850,10 +2860,9 @@ function BreakdownView({
       <div className="planning-view-scroll planning-summary-scroll">
         <div className="planning-summary-header">
           <ListTree size={24} className="icon-triage" />
-          <h4>Break into Tasks</h4>
+          <h4>{t("planning.breakIntoTasks", "Break into Tasks")}</h4>
           <p className="text-muted">
-            Review and edit the subtasks generated from your plan. Adjust titles,
-            descriptions, sizes, priorities, and dependencies before creating.
+            {t("planning.breakdownSubheading", "Review and edit the subtasks generated from your plan. Adjust titles, descriptions, sizes, priorities, and dependencies before creating.")}
           </p>
         </div>
 
@@ -2887,7 +2896,7 @@ function BreakdownView({
                 <div
                   className="detail-title-row subtask-item-header subtask-item-header--between"
                 >
-                  <div className="subtask-drag-handle" title="Drag to reorder">
+                  <div className="subtask-drag-handle" title={t("planning.dragToReorder", "Drag to reorder")}>
                     <GripVertical size={16} />
                     <strong>{subtask.id}</strong>
                   </div>
@@ -2897,8 +2906,8 @@ function BreakdownView({
                       className="btn btn-icon btn-sm"
                       onClick={() => moveSubtask(index, index - 1)}
                       disabled={isLoading || index === 0}
-                      title="Move up"
-                      aria-label="Move subtask up"
+                      title={t("planning.moveUp", "Move up")}
+                      aria-label={t("planning.moveSubtaskUp", "Move subtask up")}
                     >
                       <ArrowUp size={14} />
                     </button>
@@ -2907,8 +2916,8 @@ function BreakdownView({
                       className="btn btn-icon btn-sm"
                       onClick={() => moveSubtask(index, index + 1)}
                       disabled={isLoading || index === subtasks.length - 1}
-                      title="Move down"
-                      aria-label="Move subtask down"
+                      title={t("planning.moveDown", "Move down")}
+                      aria-label={t("planning.moveSubtaskDown", "Move subtask down")}
                     >
                       <ArrowDown size={14} />
                     </button>
@@ -2918,13 +2927,13 @@ function BreakdownView({
                       onClick={() => removeSubtask(subtask.id)}
                       disabled={isLoading}
                     >
-                      <Trash2 size={14} /> Remove
+                      <Trash2 size={14} /> {t("planning.remove", "Remove")}
                     </button>
                   </div>
                 </div>
 
                 <div className="form-group">
-                  <label>Title</label>
+                  <label>{t("planning.subtaskTitle", "Title")}</label>
                   <input
                     ref={(element) => {
                       titleRefs.current[index] = element;
@@ -2944,7 +2953,7 @@ function BreakdownView({
                 </div>
 
                 <div className="form-group">
-                  <label>Description</label>
+                  <label>{t("planning.subtaskDescription", "Description")}</label>
                   <textarea
                     rows={3}
                     value={subtask.description}
@@ -2957,7 +2966,7 @@ function BreakdownView({
 
                 <div className="planning-summary-meta-row">
                   <div className="form-group">
-                    <label htmlFor={`${subtask.id}-size`}>Size</label>
+                    <label htmlFor={`${subtask.id}-size`}>{t("planning.subtaskSize", "Size")}</label>
                     <select
                       id={`${subtask.id}-size`}
                       className="planning-size-select"
@@ -2976,7 +2985,7 @@ function BreakdownView({
                   </div>
 
                   <div className="form-group">
-                    <label htmlFor={`${subtask.id}-priority`}>Priority</label>
+                    <label htmlFor={`${subtask.id}-priority`}>{t("planning.subtaskPriority", "Priority")}</label>
                     <select
                       id={`${subtask.id}-priority`}
                       className="planning-size-select"
@@ -2998,7 +3007,7 @@ function BreakdownView({
                 </div>
 
                 <div className="form-group">
-                  <label>Dependencies</label>
+                  <label>{t("planning.dependencies", "Dependencies")}</label>
                   <div className="planning-deps-list">
                     {subtasks
                       .slice(0, index)
@@ -3023,19 +3032,19 @@ function BreakdownView({
                             />
                             <span className="planning-dep-id">{candidate.id}</span>
                             <span className="planning-dep-title">
-                              {candidate.title || "Untitled"}
+                              {candidate.title || t("planning.untitled", "Untitled")}
                             </span>
                           </label>
                         );
                       })}
                     {index === 0 && (
-                      <div className="text-muted">First subtask cannot have dependencies.</div>
+                      <div className="text-muted">{t("planning.firstSubtaskNoDeps", "First subtask cannot have dependencies.")}</div>
                     )}
                     {index > 0 &&
                       subtasks
                         .slice(0, index)
                         .filter((item) => item.id !== subtask.id).length === 0 && (
-                        <div className="text-muted">No previous subtasks available.</div>
+                        <div className="text-muted">{t("planning.noPreviousSubtasks", "No previous subtasks available.")}</div>
                       )}
                   </div>
                 </div>
@@ -3044,12 +3053,12 @@ function BreakdownView({
           })}
 
           <button type="button" className="btn" onClick={addSubtask} disabled={isLoading}>
-            <Plus size={16} className="icon-mr-6" /> Add subtask
+            <Plus size={16} className="icon-mr-6" /> {t("planning.addSubtask", "Add subtask")}
           </button>
 
           {hasDependencyCycle(subtasks) && (
             <div className="form-error planning-error">
-              Dependencies contain a cycle. Remove circular references before creating tasks.
+              {t("planning.dependencyCycle", "Dependencies contain a cycle. Remove circular references before creating tasks.")}
             </div>
           )}
         </div>
@@ -3058,7 +3067,7 @@ function BreakdownView({
       <div className="planning-actions planning-summary-actions">
         <button className="btn" onClick={onBack} disabled={isLoading}>
           <ArrowLeft size={16} className="icon-mr-4" />
-          Back to Summary
+          {t("planning.backToSummary", "Back to Summary")}
         </button>
         <button
           className="btn btn-primary"
@@ -3068,10 +3077,10 @@ function BreakdownView({
           {isLoading ? (
             <>
               <Loader2 size={16} className="spin icon-mr-6" />
-              Creating...
+              {t("planning.creating", "Creating...")}
             </>
           ) : (
-            <>Create Tasks</>
+            <>{t("planning.createTasks", "Create Tasks")}</>
           )}
         </button>
       </div>
@@ -3110,8 +3119,9 @@ function PlanningSessionList({
   onConfirmDelete,
   onCancelDelete,
 }: PlanningSessionListProps) {
+  const { t } = useTranslation("app");
   return (
-    <aside className="planning-sidebar" aria-label="Planning sessions">
+    <aside className="planning-sidebar" aria-label={t("planning.planningSessions", "Planning sessions")}>
       <div className="planning-sidebar-header">
         <button
           className={`planning-sidebar-new ${selectedSessionId === null ? "active" : ""}`}
@@ -3119,14 +3129,14 @@ function PlanningSessionList({
           type="button"
         >
           <MessageSquarePlus size={16} />
-          <span>New session</span>
+          <span>{t("planning.newSession", "New session")}</span>
         </button>
       </div>
 
       <div className="planning-sidebar-list">
         {sessions.length === 0 && !loading && (
           <div className="planning-sidebar-empty text-muted">
-            No saved sessions yet. Start one on the right to see it here.
+            {t("planning.noSavedSessions", "No saved sessions yet. Start one on the right to see it here.")}
           </div>
         )}
 
@@ -3159,13 +3169,13 @@ function PlanningSessionList({
                       that the user never sees in the sidebar.
                     */}
                     {session.status === "draft" && (!session.title || session.title === "New planning session")
-                      ? (session.preview ?? "New planning session")
-                      : session.title || "Untitled session"}
+                      ? (session.preview ?? t("planning.newPlanningSession", "New planning session"))
+                      : session.title || t("planning.untitledSession", "Untitled session")}
                   </span>
                   <span className="planning-sidebar-item-meta">
                     <PlanningSessionStatusLabel status={session.status} />
                     <span aria-hidden> · </span>
-                    <span>{formatRelativeTime(session.updatedAt)}</span>
+                    <span>{formatRelativeTime(session.updatedAt, t)}</span>
                   </span>
                 </span>
               </button>
@@ -3177,14 +3187,14 @@ function PlanningSessionList({
                     className="btn btn-sm btn-danger"
                     onClick={() => onConfirmDelete(session.id)}
                   >
-                    Delete
+                    {t("planning.delete", "Delete")}
                   </button>
                   <button
                     type="button"
                     className="btn btn-sm"
                     onClick={onCancelDelete}
                   >
-                    Cancel
+                    {t("common.cancel", "Cancel")}
                   </button>
                 </div>
               ) : (
@@ -3197,8 +3207,8 @@ function PlanningSessionList({
                         e.stopPropagation();
                         onArchive(session.id);
                       }}
-                      aria-label={isArchived ? "Unarchive session" : "Archive session"}
-                      title={isArchived ? "Unarchive session" : "Archive session"}
+                      aria-label={isArchived ? t("planning.unarchiveSession", "Unarchive session") : t("planning.archiveSession", "Archive session")}
+                      title={isArchived ? t("planning.unarchiveSession", "Unarchive session") : t("planning.archiveSession", "Archive session")}
                     >
                       {isArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
                     </button>
@@ -3210,8 +3220,8 @@ function PlanningSessionList({
                       e.stopPropagation();
                       onRequestDelete(session.id);
                     }}
-                    aria-label="Delete session"
-                    title="Delete session"
+                    aria-label={t("planning.deleteSession", "Delete session")}
+                    title={t("planning.deleteSession", "Delete session")}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -3231,7 +3241,7 @@ function PlanningSessionList({
           }}
           aria-pressed={showArchived}
         >
-          {showArchived ? "Hide archived" : "Show archived"}
+          {showArchived ? t("planning.hideArchived", "Hide archived") : t("planning.showArchived", "Show archived")}
         </a>
       </div>
     </aside>
@@ -3254,32 +3264,33 @@ function PlanningSessionStatusIcon({ status }: { status: AiSessionSummary["statu
 }
 
 function PlanningSessionStatusLabel({ status }: { status: AiSessionSummary["status"] }) {
+  const { t } = useTranslation("app");
   switch (status) {
     case "generating":
-      return <span>Generating</span>;
+      return <span>{t("planning.statusGenerating", "Generating")}</span>;
     case "awaiting_input":
-      return <span>Needs input</span>;
+      return <span>{t("planning.statusNeedsInput", "Needs input")}</span>;
     case "complete":
-      return <span>Complete</span>;
+      return <span>{t("planning.statusComplete", "Complete")}</span>;
     case "error":
-      return <span>Error</span>;
+      return <span>{t("planning.statusError", "Error")}</span>;
     default:
       return <span>{status}</span>;
   }
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, t: TFunction<"app">): string {
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms) || ms < 0) return "";
   const sec = Math.floor(ms / 1000);
-  if (sec < 60) return "just now";
+  if (sec < 60) return t("planning.relativeTimeJustNow", "just now");
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
+  if (min < 60) return t("planning.relativeTimeMinutes", "{{count}}m ago", { count: min });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
+  if (hr < 24) return t("planning.relativeTimeHours", "{{count}}h ago", { count: hr });
   const days = Math.floor(hr / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return t("planning.relativeTimeDays", "{{count}}d ago", { count: days });
   const weeks = Math.floor(days / 7);
-  if (weeks < 4) return `${weeks}w ago`;
+  if (weeks < 4) return t("planning.relativeTimeWeeks", "{{count}}w ago", { count: weeks });
   return new Date(iso).toLocaleDateString();
 }

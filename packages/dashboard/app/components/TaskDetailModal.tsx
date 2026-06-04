@@ -1,15 +1,16 @@
 import "./TaskDetailModal.css";
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2, AlertTriangle } from "lucide-react";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
+import { useColumnLabel } from "../i18n/labels";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Task, TaskDetail, TaskAttachment, Column, MergeResult, Settings, GlobalSettings, AgentLogEntry, Agent, TaskPriority, TaskSourceIssue, WorkflowStepResult, GithubIssueAction } from "@fusion/core";
 import {
-  COLUMN_LABELS,
   DEFAULT_TASK_PRIORITY,
   REPO_OVERRIDE_RE,
   TASK_PRIORITIES,
@@ -47,6 +48,7 @@ import { appendTokenQuery } from "../auth";
 import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from "../utils/taskDelete";
 import { MAX_AUTO_MERGE_RETRIES, computeBlockerFanoutMap } from "../hooks/useBlockerFanout";
 import { resolveEffectiveGithubRepoDefault } from "./githubTracking";
+import type { TFunction } from "i18next";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
@@ -357,6 +359,7 @@ interface ProvenanceDisplay {
 
 interface ProvenanceLabelOptions {
   sourceAgentName?: string;
+  t?: TFunction<"app">;
 }
 
 function getIssueUrlFromMetadata(metadata: Task["sourceMetadata"]): string | undefined {
@@ -390,32 +393,33 @@ function getResearchContextInfo(metadata: Task["sourceMetadata"]): string | unde
 const AgentDetailView = lazy(() => import("./AgentDetailView").then((m) => ({ default: m.AgentDetailView })));
 
 function getProvenanceLabel(task: Task | TaskDetail, options: ProvenanceLabelOptions = {}): ProvenanceDisplay | null {
+  const tr = options.t;
   switch (task.sourceType) {
     case "dashboard_ui":
-      return { label: "Dashboard" };
+      return { label: tr ? tr("taskDetail.provenance.dashboard", "Dashboard") : "Dashboard" };
     case "quick_chat":
-      return { label: "Quick Chat" };
+      return { label: tr ? tr("taskDetail.provenance.quickChat", "Quick Chat") : "Quick Chat" };
     case "chat_session":
-      return { label: "Chat Session" };
+      return { label: tr ? tr("taskDetail.provenance.chatSession", "Chat Session") : "Chat Session" };
     case "agent_heartbeat": {
       const sourceLabel = options.sourceAgentName ?? task.sourceAgentId;
       return {
-        label: sourceLabel ?? "agent",
+        label: sourceLabel ?? (tr ? tr("taskDetail.provenance.agent", "agent") : "agent"),
         sourceAgentId: task.sourceAgentId,
       };
     }
     case "automation":
-      return { label: "Automation" };
+      return { label: tr ? tr("taskDetail.provenance.automation", "Automation") : "Automation" };
     case "cron":
-      return { label: "Scheduled Task" };
+      return { label: tr ? tr("taskDetail.provenance.scheduledTask", "Scheduled Task") : "Scheduled Task" };
     case "workflow_step":
-      return { label: "Workflow Step" };
+      return { label: tr ? tr("taskDetail.provenance.workflowStep", "Workflow Step") : "Workflow Step" };
     case "github_import": {
       const issueUrl = getIssueUrlFromMetadata(task.sourceMetadata);
       const parsedIssue = issueUrl ? parseGithubIssueLabel(issueUrl) : null;
       return {
-        label: "GitHub Import",
-        contextInfo: issueUrl ? (parsedIssue?.label ?? "Open issue") : undefined,
+        label: tr ? tr("taskDetail.provenance.githubImport", "GitHub Import") : "GitHub Import",
+        contextInfo: issueUrl ? (parsedIssue?.label ?? (tr ? tr("taskDetail.provenance.openIssue", "Open issue") : "Open issue")) : undefined,
         contextHref: issueUrl,
         contextInfoFull: issueUrl,
       };
@@ -423,27 +427,27 @@ function getProvenanceLabel(task: Task | TaskDetail, options: ProvenanceLabelOpt
     case "research": {
       const contextInfo = getResearchContextInfo(task.sourceMetadata);
       return {
-        label: "Research",
+        label: tr ? tr("taskDetail.provenance.research", "Research") : "Research",
         contextInfo,
         contextInfoFull: contextInfo,
       };
     }
     case "task_refine":
       return {
-        label: "Refinement",
+        label: tr ? tr("taskDetail.provenance.refinement", "Refinement") : "Refinement",
         parentTaskId: task.sourceParentTaskId,
       };
     case "task_duplicate":
       return {
-        label: "Duplicate",
+        label: tr ? tr("taskDetail.provenance.duplicate", "Duplicate") : "Duplicate",
         parentTaskId: task.sourceParentTaskId,
       };
     case "cli":
-      return { label: "CLI" };
+      return { label: tr ? tr("taskDetail.provenance.cli", "CLI") : "CLI" };
     case "api":
-      return { label: "API" };
+      return { label: tr ? tr("taskDetail.provenance.api", "API") : "API" };
     case "recovery":
-      return { label: "Recovery" };
+      return { label: tr ? tr("taskDetail.provenance.recovery", "Recovery") : "Recovery" };
     case "unknown":
     default:
       return null;
@@ -475,6 +479,8 @@ export function TaskDetailContent({
   embedded = false,
   onRequestClose,
 }: TaskDetailContentProps) {
+  const { t } = useTranslation("app");
+  const columnLabel = useColumnLabel();
   const [activeTab, setActiveTab] = useState<TabId>(initialTab === "retries" ? "definition" : initialTab);
 
   // ── Async detail loading ──────────────────────────────────────────────────
@@ -554,6 +560,7 @@ export function TaskDetailContent({
   const [selectedSourceAgentId, setSelectedSourceAgentId] = useState<string | null>(null);
   const provenanceDisplay = getProvenanceLabel(workingTask, {
     sourceAgentName: sourceAgent?.name,
+    t,
   });
 
   // Sync activeTab when the caller changes initialTab (e.g. opening a different tab)
@@ -773,7 +780,7 @@ export function TaskDetailContent({
       })
       .catch((err) => {
         if (!cancelled) {
-          addToast(`Failed to load workflow results: ${getErrorMessage(err)}`, "error");
+          addToast(t("taskDetail.workflow.loadFailed", "Failed to load workflow results: {{error}}", { error: getErrorMessage(err) }), "error");
         }
       })
       .finally(() => {
@@ -931,24 +938,24 @@ export function TaskDetailContent({
   const showGithubTrackingSection = canEditGithubTracking || githubTrackingEnabled || Boolean(githubTrackedIssue);
   const retrySummary = task.retrySummary;
   const retryRows = [
-    { key: "stuckKill", label: "Stuck kills", title: "Stuck-task detector forced agent kill retries", value: retrySummary?.stuckKill ?? 0 },
-    { key: "recovery", label: "Recovery retries", title: "Transient executor recovery retries", value: retrySummary?.recovery ?? 0 },
-    { key: "taskDone", label: "task_done retries", title: "Agent exited without task_done and task was retried", value: retrySummary?.taskDone ?? 0 },
-    { key: "workflowStep", label: "Workflow retries", title: "Workflow step failure retries", value: retrySummary?.workflowStep ?? 0 },
-    { key: "verification", label: "Verification bounces", title: "Verification failure bounce retries", value: retrySummary?.verification ?? 0 },
-    { key: "postReviewFix", label: "Post-review fixes", title: "Post-review remediation retries", value: retrySummary?.postReviewFix ?? 0 },
-    { key: "mergeConflict", label: "Merge conflict bounces", title: "Merge conflict bounce retries", value: retrySummary?.mergeConflict ?? 0 },
-    { key: "branchConflict", label: "Branch conflict recovery", title: "FN-4068 branch-conflict recovery retries", value: retrySummary?.branchConflict ?? 0 },
-    { key: "reviewerContext", label: "Reviewer context retries", title: "FN-4082 compact reviewer retry", value: retrySummary?.reviewerContext ?? 0 },
-    { key: "reviewerFallback", label: "Reviewer fallback retries", title: "FN-4092 fallback-model retry", value: retrySummary?.reviewerFallback ?? 0 },
+    { key: "stuckKill", label: t("taskDetail.retries.stuckKill", "Stuck kills"), title: t("taskDetail.retries.stuckKillTitle", "Stuck-task detector forced agent kill retries"), value: retrySummary?.stuckKill ?? 0 },
+    { key: "recovery", label: t("taskDetail.retries.recovery", "Recovery retries"), title: t("taskDetail.retries.recoveryTitle", "Transient executor recovery retries"), value: retrySummary?.recovery ?? 0 },
+    { key: "taskDone", label: t("taskDetail.retries.taskDone", "task_done retries"), title: t("taskDetail.retries.taskDoneTitle", "Agent exited without task_done and task was retried"), value: retrySummary?.taskDone ?? 0 },
+    { key: "workflowStep", label: t("taskDetail.retries.workflowStep", "Workflow retries"), title: t("taskDetail.retries.workflowStepTitle", "Workflow step failure retries"), value: retrySummary?.workflowStep ?? 0 },
+    { key: "verification", label: t("taskDetail.retries.verification", "Verification bounces"), title: t("taskDetail.retries.verificationTitle", "Verification failure bounce retries"), value: retrySummary?.verification ?? 0 },
+    { key: "postReviewFix", label: t("taskDetail.retries.postReviewFix", "Post-review fixes"), title: t("taskDetail.retries.postReviewFixTitle", "Post-review remediation retries"), value: retrySummary?.postReviewFix ?? 0 },
+    { key: "mergeConflict", label: t("taskDetail.retries.mergeConflict", "Merge conflict bounces"), title: t("taskDetail.retries.mergeConflictTitle", "Merge conflict bounce retries"), value: retrySummary?.mergeConflict ?? 0 },
+    { key: "branchConflict", label: t("taskDetail.retries.branchConflict", "Branch conflict recovery"), title: t("taskDetail.retries.branchConflictTitle", "FN-4068 branch-conflict recovery retries"), value: retrySummary?.branchConflict ?? 0 },
+    { key: "reviewerContext", label: t("taskDetail.retries.reviewerContext", "Reviewer context retries"), title: t("taskDetail.retries.reviewerContextTitle", "FN-4082 compact reviewer retry"), value: retrySummary?.reviewerContext ?? 0 },
+    { key: "reviewerFallback", label: t("taskDetail.retries.reviewerFallback", "Reviewer fallback retries"), title: t("taskDetail.retries.reviewerFallbackTitle", "FN-4092 fallback-model retry"), value: retrySummary?.reviewerFallback ?? 0 },
   ].filter((row) => row.value > 0);
   const githubTrackingStatus = githubTrackingDetailPending
-    ? "Loading"
+    ? t("taskDetail.githubTracking.statusLoading", "Loading")
     : githubTrackedIssue
-      ? "Linked"
+      ? t("taskDetail.githubTracking.statusLinked", "Linked")
       : githubTrackingEnabled
-        ? "Enabled"
-        : "Disabled";
+        ? t("taskDetail.githubTracking.statusEnabled", "Enabled")
+        : t("taskDetail.githubTracking.statusDisabled", "Disabled");
   const showGithubTrackingSpinner = !githubTrackedIssue && (isSavingGithubTracking || githubTrackingDetailPending);
   const effectiveGithubRepoDefault = resolveEffectiveGithubRepoDefault(settings ?? null, globalSettings);
   const githubRepoOverrideTrimmed = githubRepoOverrideDraft.trim();
@@ -977,7 +984,7 @@ export function TaskDetailContent({
         return;
       }
       setGithubTrackingEnabledDraft(workingTask.githubTracking?.enabled === true);
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current && activeTaskIdRef.current === requestTaskId) setIsSavingGithubTracking(false);
     }
@@ -987,7 +994,7 @@ export function TaskDetailContent({
     if (!canEditGithubTracking || isSavingGithubTracking) return;
     const requestTaskId = task.id;
     if (githubRepoOverrideTrimmed.length > 0 && !REPO_OVERRIDE_RE.test(githubRepoOverrideTrimmed)) {
-      setGithubRepoOverrideError("Repository override must be in owner/repo format");
+      setGithubRepoOverrideError(t("taskDetail.githubTracking.repoOverrideFormat", "Repository override must be in owner/repo format"));
       return;
     }
     setGithubRepoOverrideError(null);
@@ -1009,7 +1016,7 @@ export function TaskDetailContent({
       if (activeTaskIdRef.current !== requestTaskId) {
         return;
       }
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current && activeTaskIdRef.current === requestTaskId) setIsSavingGithubTracking(false);
     }
@@ -1018,7 +1025,7 @@ export function TaskDetailContent({
   const handleRetryGithubTrackingIssueCreate = useCallback(async () => {
     if (!githubTrackingEnabled || githubTrackedIssue || isSavingGithubTracking) return;
     if (!hasUsableTrackingTitle(task)) {
-      addToast("Add a title before creating a tracking issue", "info");
+      addToast(t("taskDetail.githubTracking.addTitleBeforeCreating", "Add a title before creating a tracking issue"), "info");
       return;
     }
     const requestTaskId = task.id;
@@ -1036,12 +1043,12 @@ export function TaskDetailContent({
         ? ({ ...prev, ...updatedTask, githubTracking: updatedTask.githubTracking } as TaskDetail)
         : (updatedTask as TaskDetail));
       onTaskUpdated?.(updatedTask);
-      addToast("Requested GitHub tracking issue creation", "info");
+      addToast(t("taskDetail.githubTracking.issueCreationRequested", "Requested GitHub tracking issue creation"), "info");
     } catch (err) {
       if (activeTaskIdRef.current !== requestTaskId) {
         return;
       }
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current && activeTaskIdRef.current === requestTaskId) setIsSavingGithubTracking(false);
     }
@@ -1155,12 +1162,12 @@ export function TaskDetailContent({
       if (task.sourceIssue) updates.sourceIssue = null;
     } else {
       if (!normalizedProvider || !normalizedRepository || !normalizedExternalId) {
-        return { updates: null, error: "Source issue provider, repository, and issue identifier are required" };
+        return { updates: null, error: t("taskDetail.edit.sourceIssueRequiredFields", "Source issue provider, repository, and issue identifier are required") };
       }
       const fallbackIssueNumber = Number.parseInt(normalizedExternalId, 10);
       const issueNumber = task.sourceIssue?.issueNumber ?? fallbackIssueNumber;
       if (!Number.isFinite(issueNumber) || issueNumber <= 0) {
-        return { updates: null, error: "Source issue identifier must be numeric for new metadata" };
+        return { updates: null, error: t("taskDetail.edit.sourceIssueIdentifierNumeric", "Source issue identifier must be numeric for new metadata") };
       }
       const nextSourceIssue: TaskSourceIssue = {
         provider: normalizedProvider,
@@ -1187,7 +1194,7 @@ export function TaskDetailContent({
     if (!updates) {
       setEditAutoSaveStatus("error");
       if (error) {
-        addToast(`Failed to update ${task.id}: ${error}`, "error");
+        addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error }), "error");
       }
       return false;
     }
@@ -1206,7 +1213,7 @@ export function TaskDetailContent({
     } catch (err) {
       if (revision === editAutoSaveRevisionRef.current) {
         setEditAutoSaveStatus("error");
-        addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+        addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
       }
       return false;
     } finally {
@@ -1225,7 +1232,7 @@ export function TaskDetailContent({
     if (!didSave) {
       return;
     }
-    addToast(`Updated ${task.id}`, "success");
+    addToast(t("taskDetail.updateSuccess", "Updated {{id}}", { id: task.id }), "success");
     if (mountedRef.current) {
       setIsEditing(false);
     }
@@ -1285,10 +1292,10 @@ export function TaskDetailContent({
       const updatedTask = await updateTask(task.id, { priority: normalizedNextPriority }, projectId);
       setInlinePriority(normalizeTaskPriorityValue(updatedTask.priority));
       onTaskUpdated?.(updatedTask);
-      addToast(`Priority updated to ${normalizeTaskPriorityValue(updatedTask.priority)}`, "success");
+      addToast(t("taskDetail.priority.updated", "Priority updated to {{priority}}", { priority: normalizeTaskPriorityValue(updatedTask.priority) }), "success");
     } catch (err) {
       setInlinePriority(previousPriority);
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current) {
         setIsSavingInlinePriority(false);
@@ -1309,10 +1316,10 @@ export function TaskDetailContent({
       const normalizedUpdatedMode = normalizeExecutionModeValue(updatedTask.executionMode);
       setInlineExecutionMode(normalizedUpdatedMode);
       onTaskUpdated?.(updatedTask);
-      addToast(`Execution mode updated to ${normalizedUpdatedMode}`, "success");
+      addToast(t("taskDetail.executionMode.updated", "Execution mode updated to {{mode}}", { mode: normalizedUpdatedMode }), "success");
     } catch (err) {
       setInlineExecutionMode(previousMode);
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current) {
         setIsSavingInlineExecutionMode(false);
@@ -1332,10 +1339,12 @@ export function TaskDetailContent({
       const normalizedUpdatedValue = updatedTask.noCommitsExpected === true;
       setInlineNoCommitsExpected(normalizedUpdatedValue);
       onTaskUpdated?.(updatedTask);
-      addToast(`No-commits expectation ${normalizedUpdatedValue ? "enabled" : "disabled"}`, "success");
+      addToast(normalizedUpdatedValue
+        ? t("taskDetail.noCommits.enabled", "No-commits expectation enabled")
+        : t("taskDetail.noCommits.disabled", "No-commits expectation disabled"), "success");
     } catch (err) {
       setInlineNoCommitsExpected(previousValue);
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current) {
         setIsSavingInlineNoCommitsExpected(false);
@@ -1368,9 +1377,9 @@ export function TaskDetailContent({
   const handleUnlinkGithubIssue = useCallback(async () => {
     if (!canEdit || !githubTrackedIssue || isSavingGithubTracking) return;
     const confirmed = await confirm({
-      title: "Unlink GitHub issue?",
-      message: "This stops Fusion from syncing with the linked GitHub issue. The issue itself will not be modified.",
-      confirmLabel: "Unlink",
+      title: t("taskDetail.githubTracking.unlinkTitle", "Unlink GitHub issue?"),
+      message: t("taskDetail.githubTracking.unlinkMessage", "This stops Fusion from syncing with the linked GitHub issue. The issue itself will not be modified."),
+      confirmLabel: t("taskDetail.githubTracking.unlinkConfirm", "Unlink"),
       danger: true,
     });
     if (!confirmed) return;
@@ -1379,9 +1388,9 @@ export function TaskDetailContent({
     try {
       const updatedTask = await updateTask(task.id, { githubTracking: { issue: null } }, projectId);
       onTaskUpdated?.(updatedTask);
-      addToast("GitHub issue unlinked", "success");
+      addToast(t("taskDetail.githubTracking.issueUnlinked", "GitHub issue unlinked"), "success");
     } catch (err) {
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
     } finally {
       if (mountedRef.current) setIsSavingGithubTracking(false);
     }
@@ -1421,20 +1430,20 @@ export function TaskDetailContent({
         let moveOptions: { preserveProgress?: boolean } | undefined;
         if (shouldPrompt) {
           const keepProgress = await confirm({
-            title: "Preserve Progress?",
-            message: "This task has completed steps. Keep progress before moving?",
-            confirmLabel: "Keep Progress",
-            cancelLabel: "Reset Progress",
+            title: t("taskDetail.move.preserveProgressTitle", "Preserve Progress?"),
+            message: t("taskDetail.move.preserveProgressMessage", "This task has completed steps. Keep progress before moving?"),
+            confirmLabel: t("taskDetail.move.keepProgress", "Keep Progress"),
+            cancelLabel: t("taskDetail.move.resetProgress", "Reset Progress"),
           });
 
           if (keepProgress) {
             moveOptions = { preserveProgress: true };
           } else {
             const resetProgress = await confirm({
-              title: "Reset Progress?",
-              message: "Reset all step progress before moving this task?",
-              confirmLabel: "Reset Progress",
-              cancelLabel: "Cancel Move",
+              title: t("taskDetail.move.resetProgressTitle", "Reset Progress?"),
+              message: t("taskDetail.move.resetProgressMessage", "Reset all step progress before moving this task?"),
+              confirmLabel: t("taskDetail.move.resetProgress", "Reset Progress"),
+              cancelLabel: t("taskDetail.move.cancelMove", "Cancel Move"),
               danger: true,
             });
             if (!resetProgress) {
@@ -1445,7 +1454,7 @@ export function TaskDetailContent({
 
         await onMoveTask(task.id, column, moveOptions);
         requestClose();
-        addToast(`Moved to ${COLUMN_LABELS[column]}`, "success");
+        addToast(t("taskDetail.move.movedTo", "Moved to {{column}}", { column: columnLabel(column) }), "success");
       } catch (err) {
         addToast(getErrorMessage(err), "error");
       }
@@ -1458,17 +1467,17 @@ export function TaskDetailContent({
 
     if (task.column === "done" && onArchiveTask) {
       const deleteChoice = await confirmWithChoice({
-        title: "Delete Task",
-        message: `Delete ${task.id}?`,
-        confirmLabel: "Delete",
-        cancelLabel: "Cancel",
-        tertiaryLabel: "Archive Instead",
+        title: t("taskDetail.delete.title", "Delete Task"),
+        message: t("taskDetail.delete.message", "Delete {{id}}?", { id: task.id }),
+        confirmLabel: t("taskDetail.delete.confirm", "Delete"),
+        cancelLabel: t("common.cancel", "Cancel"),
+        tertiaryLabel: t("taskDetail.delete.archiveInstead", "Archive Instead"),
         danger: true,
       });
       if (deleteChoice === "tertiary") {
         try {
           await onArchiveTask(task.id);
-          addToast(`Archived ${task.id}`, "success");
+          addToast(t("taskDetail.nearDuplicate.archived", "Archived {{id}}", { id: task.id }), "success");
           requestClose();
         } catch (err) {
           const lineageConflict = extractLineageDeleteConflict(err);
@@ -1478,10 +1487,10 @@ export function TaskDetailContent({
           }
 
           const confirmedArchive = await confirm({
-            title: "Force Delete Task",
+            title: t("taskDetail.delete.forceDeleteTitle", "Force Delete Task"),
             message:
               `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-              "Archive anyway by unlinking these references first?",
+              t("taskDetail.delete.archiveUnlinkPrompt", "Archive anyway by unlinking these references first?"),
             danger: true,
           });
           if (!confirmedArchive) {
@@ -1490,7 +1499,7 @@ export function TaskDetailContent({
 
           try {
             await onArchiveTask(task.id, { removeLineageReferences: true });
-            addToast(`Archived ${task.id} after unlinking lineage references`, "success");
+            addToast(t("taskDetail.delete.archivedAfterUnlink", "Archived {{id}} after unlinking lineage references", { id: task.id }), "success");
             requestClose();
           } catch (retryErr) {
             addToast(getErrorMessage(retryErr), "error");
@@ -1503,12 +1512,12 @@ export function TaskDetailContent({
       }
     } else {
       const { choice, checkboxValue } = await confirmWithCheckbox({
-        title: "Delete Task",
-        message: `Delete ${task.id}?`,
+        title: t("taskDetail.delete.title", "Delete Task"),
+        message: t("taskDetail.delete.message", "Delete {{id}}?", { id: task.id }),
         danger: true,
         checkbox: {
-          label: "Allow re-creation later (operator unlock)",
-          description: "Lets agents recreate this task ID without --force-resurrect. Leave unchecked to keep this task tombstoned.",
+          label: t("taskDetail.delete.allowRecreation", "Allow re-creation later (operator unlock)"),
+          description: t("taskDetail.delete.allowRecreationDesc", "Lets agents recreate this task ID without --force-resurrect. Leave unchecked to keep this task tombstoned."),
           defaultChecked: false,
         },
       });
@@ -1521,20 +1530,20 @@ export function TaskDetailContent({
     if (trackedIssue?.owner && trackedIssue.repo && trackedIssue.number) {
       const issueRef = `${trackedIssue.owner}/${trackedIssue.repo}#${trackedIssue.number}`;
       const shouldCloseIssue = await confirm({
-        title: "Linked GitHub Issue",
-        message: `Choose what to do with ${issueRef} when deleting ${task.id}.\n\nClose the issue?`,
-        confirmLabel: "Close Issue",
-        cancelLabel: "More Options",
+        title: t("taskDetail.delete.linkedIssueTitle", "Linked GitHub Issue"),
+        message: t("taskDetail.delete.linkedIssueMessage", "Choose what to do with {{issueRef}} when deleting {{id}}.\n\nClose the issue?", { issueRef, id: task.id }),
+        confirmLabel: t("taskDetail.delete.closeIssue", "Close Issue"),
+        cancelLabel: t("taskDetail.delete.moreOptions", "More Options"),
       });
 
       if (shouldCloseIssue) {
         githubIssueAction = "close";
       } else {
         const shouldDeleteIssue = await confirm({
-          title: "Delete Linked GitHub Issue",
-          message: `Delete ${issueRef} on GitHub, or leave it unchanged?`,
-          confirmLabel: "Delete Issue",
-          cancelLabel: "Leave Unchanged",
+          title: t("taskDetail.delete.deleteLinkedIssueTitle", "Delete Linked GitHub Issue"),
+          message: t("taskDetail.delete.deleteLinkedIssueMessage", "Delete {{issueRef}} on GitHub, or leave it unchanged?", { issueRef }),
+          confirmLabel: t("taskDetail.delete.deleteIssue", "Delete Issue"),
+          cancelLabel: t("taskDetail.delete.leaveUnchanged", "Leave Unchanged"),
           danger: true,
         });
         githubIssueAction = shouldDeleteIssue ? "delete" : "leave";
@@ -1549,18 +1558,18 @@ export function TaskDetailContent({
       }
       requestClose();
       const issueSuffix = trackedIssue?.owner && trackedIssue.repo && trackedIssue.number && githubIssueAction
-        ? ` and ${githubIssueAction === "close" ? "closed" : githubIssueAction === "delete" ? "deleted" : "left"} issue ${trackedIssue.owner}/${trackedIssue.repo}#${trackedIssue.number}`
+        ? ` ${t("taskDetail.delete.issueSuffix", "and {{action}} issue {{ref}}", { action: githubIssueAction === "close" ? t("taskDetail.delete.actionClosed", "closed") : githubIssueAction === "delete" ? t("taskDetail.delete.actionDeleted", "deleted") : t("taskDetail.delete.actionLeft", "left"), ref: `${trackedIssue.owner}/${trackedIssue.repo}#${trackedIssue.number}` })}`
         : "";
-      addToast(`Deleted ${task.id}${issueSuffix}`, "info");
+      addToast(t("taskDetail.delete.deletedToast", "Deleted {{id}}{{suffix}}", { id: task.id, suffix: issueSuffix }), "info");
     } catch (err) {
       const dependencyConflict = extractDependencyDeleteConflict(err);
       if (dependencyConflict && dependencyConflict.dependentIds.length > 0) {
         const dependentList = dependencyConflict.dependentIds.join(", ");
         const confirmed = await confirm({
-          title: "Force Delete Task",
+          title: t("taskDetail.delete.forceDeleteTitle", "Force Delete Task"),
           message:
             `${task.id} is a dependency of ${dependentList}.\n\n` +
-            "Delete anyway by removing these dependency references first?",
+            t("taskDetail.delete.deleteUnlinkDepsPrompt", "Delete anyway by removing these dependency references first?"),
           danger: true,
         });
         if (!confirmed) {
@@ -1575,7 +1584,7 @@ export function TaskDetailContent({
             allowResurrection,
           });
           requestClose();
-          addToast(`Deleted ${task.id} after removing dependency references`, "info");
+          addToast(t("taskDetail.delete.deletedAfterRemovingDeps", "Deleted {{id}} after removing dependency references", { id: task.id }), "info");
         } catch (retryErr) {
           const lineageConflict = extractLineageDeleteConflict(retryErr);
           if (!lineageConflict || lineageConflict.lineageChildIds.length === 0) {
@@ -1584,10 +1593,10 @@ export function TaskDetailContent({
           }
 
           const confirmedLineage = await confirm({
-            title: "Force Delete Task",
+            title: t("taskDetail.delete.forceDeleteTitle", "Force Delete Task"),
             message:
               `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-              "Delete anyway by unlinking these references first?",
+              t("taskDetail.delete.deleteUnlinkLineagePrompt", "Delete anyway by unlinking these references first?"),
             danger: true,
           });
           if (!confirmedLineage) {
@@ -1602,7 +1611,7 @@ export function TaskDetailContent({
               allowResurrection,
             });
             requestClose();
-            addToast(`Deleted ${task.id} after unlinking lineage references`, "info");
+            addToast(t("taskDetail.delete.deletedAfterUnlinkLineage", "Deleted {{id}} after unlinking lineage references", { id: task.id }), "info");
           } catch (lineageRetryErr) {
             addToast(getErrorMessage(lineageRetryErr), "error");
           }
@@ -1617,10 +1626,10 @@ export function TaskDetailContent({
       }
 
       const confirmed = await confirm({
-        title: "Force Delete Task",
+        title: t("taskDetail.delete.forceDeleteTitle", "Force Delete Task"),
         message:
           `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-          "Delete anyway by unlinking these references first?",
+          t("taskDetail.delete.deleteUnlinkLineagePrompt", "Delete anyway by unlinking these references first?"),
         danger: true,
       });
       if (!confirmed) {
@@ -1635,7 +1644,7 @@ export function TaskDetailContent({
           allowResurrection,
         });
         requestClose();
-        addToast(`Deleted ${task.id} after unlinking lineage references`, "info");
+        addToast(t("taskDetail.delete.deletedAfterUnlinkLineage", "Deleted {{id}} after unlinking lineage references", { id: task.id }), "info");
       } catch (retryErr) {
         addToast(getErrorMessage(retryErr), "error");
       }
@@ -1644,17 +1653,17 @@ export function TaskDetailContent({
 
   const handleMerge = useCallback(async () => {
     const shouldMerge = await confirm({
-      title: "Merge Task",
-      message: `Merge ${task.id} into the current branch?`,
+      title: t("taskDetail.merge.title", "Merge Task"),
+      message: t("taskDetail.merge.message", "Merge {{id}} into the current branch?", { id: task.id }),
     });
     if (!shouldMerge) return;
     requestClose();
-    addToast(`Merging ${task.id}...`, "info");
+    addToast(t("taskDetail.merge.merging", "Merging {{id}}…", { id: task.id }), "info");
     onMergeTask(task.id)
       .then((result) => {
         const msg = result.merged
-          ? `Merged ${task.id} (branch: ${result.branch})`
-          : `Closed ${task.id} (${result.error || "no branch to merge"})`;
+          ? t("taskDetail.merge.merged", "Merged {{id}} (branch: {{branch}})", { id: task.id, branch: result.branch })
+          : t("taskDetail.merge.closed", "Closed {{id}} ({{reason}})", { id: task.id, reason: result.error || t("taskDetail.merge.noBranchToMerge", "no branch to merge") });
         addToast(msg, "success");
       })
       .catch((err) => {
@@ -1667,7 +1676,7 @@ export function TaskDetailContent({
     requestClose();
     onRetryTask(task.id)
       .then(() => {
-        addToast(`Retried ${task.id}`, "success");
+        addToast(t("taskDetail.retry.retried", "Retried {{id}}", { id: task.id }), "success");
       })
       .catch((err) => {
         addToast(getErrorMessage(err), "error");
@@ -1676,11 +1685,11 @@ export function TaskDetailContent({
 
   const handleReset = useCallback(() => {
     if (!onResetTask) return;
-    if (!window.confirm(`This will erase all progress for ${task.id} and start the task from scratch. Continue?`)) return;
+    if (!window.confirm(t("taskDetail.reset.confirmMessage", "This will erase all progress for {{id}} and start the task from scratch. Continue?", { id: task.id }))) return;
     requestClose();
     onResetTask(task.id)
       .then(() => {
-        addToast(`Reset ${task.id} — fresh run will be allocated`, "success");
+        addToast(t("taskDetail.reset.resetSuccess", "Reset {{id}} — fresh run will be allocated", { id: task.id }), "success");
       })
       .catch((err) => {
         addToast(getErrorMessage(err), "error");
@@ -1690,14 +1699,14 @@ export function TaskDetailContent({
   const handleDuplicate = useCallback(async () => {
     if (!onDuplicateTask) return;
     const shouldDuplicate = await confirm({
-      title: "Duplicate Task",
-      message: `Duplicate ${task.id}? This will create a new task in Triage with the same description and prompt.`,
+      title: t("taskDetail.duplicate.title", "Duplicate Task"),
+      message: t("taskDetail.duplicate.message", "Duplicate {{id}}? This will create a new task in Triage with the same description and prompt.", { id: task.id }),
     });
     if (!shouldDuplicate) return;
     try {
       const newTask = await onDuplicateTask(task.id);
       requestClose();
-      addToast(`Duplicated ${task.id} → ${newTask.id}`, "success");
+      addToast(t("taskDetail.duplicate.success", "Duplicated {{id}} → {{newId}}", { id: task.id, newId: newTask.id }), "success");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -1707,7 +1716,7 @@ export function TaskDetailContent({
     try {
       const updatedTask = await updateTask(task.id, { dismissNearDuplicate: true }, projectId);
       onTaskUpdated?.(updatedTask);
-      addToast(`Kept ${task.id} and dismissed duplicate warning`, "success");
+      addToast(t("taskDetail.nearDuplicate.kept", "Kept {{id}} and dismissed duplicate warning", { id: task.id }), "success");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -1716,16 +1725,16 @@ export function TaskDetailContent({
   const handleArchiveNearDuplicate = useCallback(async () => {
     if (!onArchiveTask) return;
     const confirmed = await confirm({
-      title: "Archive near-duplicate task",
-      message: `Archive ${task.id} as a duplicate of ${nearDuplicateOf}?`,
-      confirmLabel: "Archive",
-      cancelLabel: "Cancel",
+      title: t("taskDetail.nearDuplicate.archiveTitle", "Archive near-duplicate task"),
+      message: t("taskDetail.nearDuplicate.archiveMessage", "Archive {{id}} as a duplicate of {{duplicateOf}}?", { id: task.id, duplicateOf: nearDuplicateOf }),
+      confirmLabel: t("taskDetail.nearDuplicate.archiveConfirm", "Archive"),
+      cancelLabel: t("common.cancel", "Cancel"),
       danger: true,
     });
     if (!confirmed) return;
     try {
       await onArchiveTask(task.id);
-      addToast(`Archived ${task.id}`, "success");
+      addToast(t("taskDetail.nearDuplicate.archived", "Archived {{id}}", { id: task.id }), "success");
       requestClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -1741,10 +1750,10 @@ export function TaskDetailContent({
       const outcome = await recoverBranchBinding(task.id, projectId);
       setRecoverBranchBindingOutcome(outcome);
       if (outcome.result === "applied") {
-        addToast(`Reattached branch for ${task.id} (${outcome.branch})`, "success");
+        addToast(t("taskDetail.branchBinding.reattached", "Reattached branch for {{id}} ({{branch}})", { id: task.id, branch: outcome.branch }), "success");
         onTaskUpdated?.({ ...task, branch: outcome.branch, worktree: undefined });
       } else {
-        addToast(`Branch reattachment skipped for ${task.id}: ${outcome.reason}`, "info");
+        addToast(t("taskDetail.branchBinding.skipped", "Branch reattachment skipped for {{id}}: {{reason}}", { id: task.id, reason: outcome.reason }), "info");
       }
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -1757,10 +1766,10 @@ export function TaskDetailContent({
     try {
       if (isTaskPaused) {
         await unpauseTask(task.id, projectId);
-        addToast(`Unpaused ${task.id}`, "success");
+        addToast(t("taskDetail.pause.unpaused", "Unpaused {{id}}", { id: task.id }), "success");
       } else {
         await pauseTask(task.id, projectId);
-        addToast(`Paused ${task.id}`, "success");
+        addToast(t("taskDetail.pause.paused", "Paused {{id}}", { id: task.id }), "success");
       }
       requestClose();
     } catch (err) {
@@ -1771,7 +1780,7 @@ export function TaskDetailContent({
   const handleApprovePlan = useCallback(async () => {
     try {
       await approvePlan(task.id, projectId);
-      addToast(`Plan approved — ${task.id} moved to Todo`, "success");
+      addToast(t("taskDetail.plan.approved", "Plan approved — {{id}} moved to Todo", { id: task.id }), "success");
       requestClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -1780,14 +1789,14 @@ export function TaskDetailContent({
 
   const handleRejectPlan = useCallback(async () => {
     const shouldReject = await confirm({
-      title: "Reject Plan",
-      message: "Reject this plan? The specification will be discarded and regenerated.",
+      title: t("taskDetail.plan.rejectTitle", "Reject Plan"),
+      message: t("taskDetail.plan.rejectMessage", "Reject this plan? The specification will be discarded and regenerated."),
       danger: true,
     });
     if (!shouldReject) return;
     try {
       await rejectPlan(task.id, projectId);
-      addToast(`Plan rejected — ${task.id} returned to Planning for replanning`, "info");
+      addToast(t("taskDetail.plan.rejected", "Plan rejected — {{id}} returned to Planning for replanning", { id: task.id }), "info");
       requestClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -1796,14 +1805,14 @@ export function TaskDetailContent({
 
   const handleRespecify = useCallback(async () => {
     const shouldRebuild = await confirm({
-      title: "Rebuild Plan",
-      message: "Rebuild the plan for this task? The task will move to planning for replanning.",
+      title: t("taskDetail.plan.rebuildTitle", "Rebuild Plan"),
+      message: t("taskDetail.plan.rebuildMessage", "Rebuild the plan for this task? The task will move to planning for replanning."),
     });
     if (!shouldRebuild) return;
     try {
       await rebuildTaskSpec(task.id, projectId);
       requestClose();
-      addToast(`Replanning ${task.id}...`, "info");
+      addToast(t("taskDetail.plan.replanning", "Replanning {{id}}…", { id: task.id }), "info");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -1842,7 +1851,7 @@ export function TaskDetailContent({
     setIsCheckingPrStatus(true);
     try {
       const result = await refreshPrStatus(task.id, projectId);
-      addToast("PR status refreshed", "success");
+      addToast(t("taskDetail.pr.statusRefreshed", "PR status refreshed"), "success");
       onTaskUpdated?.({
         ...task,
         prInfo: result.prInfo,
@@ -1863,17 +1872,17 @@ export function TaskDetailContent({
 
   const handleSubmitRefine = useCallback(async () => {
     if (!refineFeedback.trim()) {
-      addToast("Please enter feedback describing what needs refinement", "error");
+      addToast(t("taskDetail.refine.feedbackRequired", "Please enter feedback describing what needs refinement"), "error");
       return;
     }
     if (refineFeedback.length > 2000) {
-      addToast("Feedback must be 2000 characters or less", "error");
+      addToast(t("taskDetail.refine.feedbackTooLong", "Feedback must be 2000 characters or less"), "error");
       return;
     }
     setIsRefining(true);
     try {
       const newTask = await refineTask(task.id, refineFeedback.trim(), projectId);
-      addToast(`Refinement task created: ${newTask.id}`, "success");
+      addToast(t("taskDetail.refine.taskCreated", "Refinement task created: {{id}}", { id: newTask.id }), "success");
       requestClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -1887,7 +1896,7 @@ export function TaskDetailContent({
     try {
       const attachment = await uploadAttachment(task.id, file, projectId);
       setAttachments((prev) => [...prev, attachment]);
-      addToast("Screenshot attached", "success");
+      addToast(t("taskDetail.attachments.attached", "Screenshot attached"), "success");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     } finally {
@@ -1942,7 +1951,7 @@ export function TaskDetailContent({
     try {
       await deleteAttachment(task.id, filename, projectId);
       setAttachments((prev) => prev.filter((a) => a.filename !== filename));
-      addToast("Attachment deleted", "info");
+      addToast(t("taskDetail.attachments.deleted", "Attachment deleted"), "info");
     } catch (err) {
       addToast(getErrorMessage(err), "error");
     }
@@ -1954,11 +1963,11 @@ export function TaskDetailContent({
 
     try {
       const updatedTask = await updateTask(task.id, { enabledWorkflowSteps }, projectId);
-      addToast("Workflow steps updated", "success");
+      addToast(t("taskDetail.workflow.stepsUpdated", "Workflow steps updated"), "success");
       onTaskUpdated?.(updatedTask);
     } catch (err) {
       setWorkflowEnabledSteps(previousSteps);
-      addToast(`Failed to update workflow steps: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.workflow.stepsUpdateFailed", "Failed to update workflow steps: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   }, [task.id, projectId, workflowEnabledSteps, onTaskUpdated, addToast]);
 
@@ -1969,7 +1978,7 @@ export function TaskDetailContent({
       setAgents(loadedAgents);
       setShowAgentPicker(true);
     } catch (err) {
-      addToast(`Failed to load agents: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.agent.loadFailed", "Failed to load agents: {{error}}", { error: getErrorMessage(err) }), "error");
       setShowAgentPicker(false);
     } finally {
       setAgentsLoading(false);
@@ -1987,9 +1996,9 @@ export function TaskDetailContent({
       }
       setShowAgentPicker(false);
       onTaskUpdated?.(updatedTask);
-      addToast("Assigned agent updated", "success");
+      addToast(t("taskDetail.agent.assignedUpdated", "Assigned agent updated"), "success");
     } catch (err) {
-      addToast(`Failed to assign agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.agent.assignFailed", "Failed to assign agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   }, [task.id, projectId, agents, onTaskUpdated, addToast]);
 
@@ -1999,9 +2008,9 @@ export function TaskDetailContent({
       setAssignedAgent(null);
       setShowAgentPicker(false);
       onTaskUpdated?.(updatedTask);
-      addToast("Agent unassigned", "success");
+      addToast(t("taskDetail.agent.unassigned", "Agent unassigned"), "success");
     } catch (err) {
-      addToast(`Failed to unassign agent: ${getErrorMessage(err)}`, "error");
+      addToast(t("taskDetail.agent.unassignFailed", "Failed to unassign agent: {{error}}", { error: getErrorMessage(err) }), "error");
     }
   }, [task.id, projectId, onTaskUpdated, addToast]);
 
@@ -2073,7 +2082,7 @@ export function TaskDetailContent({
       const detail = await fetchTaskDetail(depId, projectId);
       onOpenDetail(detail);
     } catch {
-      addToast(`Failed to load dependency ${depId}`, "error");
+      addToast(t("taskDetail.deps.loadFailed", "Failed to load dependency {{id}}", { id: depId }), "error");
     }
   }, [onOpenDetail, addToast]);
 
@@ -2082,7 +2091,7 @@ export function TaskDetailContent({
     setIsSavingSpec(true);
     try {
       await updateTask(workingTask.id, { prompt: newContent }, projectId);
-      addToast("Spec updated", "success");
+      addToast(t("taskDetail.spec.updated", "Spec updated"), "success");
       // Update local detail data
       if (fullDetail) {
         fullDetail.prompt = newContent;
@@ -2099,13 +2108,13 @@ export function TaskDetailContent({
     setIsRequestingRevision(true);
     try {
       await requestSpecRevision(task.id, feedback, projectId);
-      addToast("AI revision requested. Task moved to planning.", "success");
+      addToast(t("taskDetail.spec.revisionRequested", "AI revision requested. Task moved to planning."), "success");
       // Task has been moved to planning, close modal
       requestClose();
     } catch (err) {
       const msg = getErrorMessage(err);
       if (msg.includes("done") || msg.includes("archived")) {
-        addToast("Cannot request revision: Task must be in 'triage', 'todo', 'in-progress', or 'in-review' column.", "error");
+        addToast(t("taskDetail.spec.revisionColumnError", "Cannot request revision: Task must be in 'triage', 'todo', 'in-progress', or 'in-review' column."), "error");
       } else {
         addToast(msg, "error");
       }
@@ -2280,24 +2289,25 @@ export function TaskDetailContent({
   }, [showMoveMenu]);
 
   const prAutomationStatusLabels: Record<string, string> = {
-    "creating-pr": "Creating PR…",
-    "awaiting-pr-checks": "Awaiting PR checks",
-    "merging-pr": "Merging PR…",
-    "merging-fix": "Merging fixes…",
+    "creating-pr": t("taskDetail.pr.creatingPr", "Creating PR…"),
+    "awaiting-pr-checks": t("taskDetail.pr.awaitingChecks", "Awaiting PR checks"),
+    "merging-pr": t("taskDetail.pr.mergingPr", "Merging PR…"),
+    "merging-fix": t("taskDetail.pr.mergingFixes", "Merging fixes…"),
   };
   const prAutomationLabel = task.status ? prAutomationStatusLabels[task.status] : undefined;
   const mergeStrategy = settings?.mergeStrategy ?? "direct";
   const autoMergeEnabled = settings?.autoMerge ?? false;
   const isManualPrFlow = mergeStrategy === "pull-request" && !autoMergeEnabled;
 
-  let manualReviewActionLabel = "Merge & Close";
+  const isCheckPrStatusAction = isManualPrFlow && !prAutomationLabel && task.prInfo?.status === "open";
+  let manualReviewActionLabel = t("taskDetail.pr.mergeAndClose", "Merge & Close");
   if (isManualPrFlow && !prAutomationLabel) {
     if (!task.prInfo) {
-      manualReviewActionLabel = "Start PR Review";
+      manualReviewActionLabel = t("taskDetail.pr.startPrReview", "Start PR Review");
     } else if (task.prInfo.status === "open") {
-      manualReviewActionLabel = "Check PR Status";
+      manualReviewActionLabel = t("taskDetail.pr.checkPrStatus", "Check PR Status");
     } else if (task.prInfo.status === "merged") {
-      manualReviewActionLabel = "Finish & Close";
+      manualReviewActionLabel = t("taskDetail.pr.finishAndClose", "Finish & Close");
     }
   }
 
@@ -2311,7 +2321,7 @@ export function TaskDetailContent({
           <div className="detail-title-row">
             <span className="detail-id">{task.id}</span>
             <span className={`detail-column-badge badge-${task.column}`}>
-              {COLUMN_LABELS[task.column]}
+              {columnLabel(task.column)}
             </span>
           </div>
           <div className="modal-header-actions">
@@ -2319,8 +2329,8 @@ export function TaskDetailContent({
               <button
                 className="modal-edit-btn"
                 onClick={enterEditMode}
-                title="Edit task"
-                aria-label="Edit task"
+                title={t("taskDetail.header.editTask", "Edit task")}
+                aria-label={t("taskDetail.header.editTask", "Edit task")}
               >
                 <Pencil size={14} />
               </button>
@@ -2329,15 +2339,15 @@ export function TaskDetailContent({
               <button
                 className="modal-close task-detail-mobile-back"
                 onClick={requestClose}
-                aria-label="Back to task list"
+                aria-label={t("taskDetail.header.backToList", "Back to task list")}
                 type="button"
               >
                 <ArrowLeft aria-hidden="true" />
-                <span>Back</span>
+                <span>{t("taskDetail.header.back", "Back")}</span>
               </button>
             )}
             {!embedded && mobileHeaderMode !== "back" && (
-              <button className="modal-close" onClick={requestClose} aria-label="Close" type="button">
+              <button className="modal-close" onClick={requestClose} aria-label={t("common.close", "Close")} type="button">
                 &times;
               </button>
             )}
@@ -2388,17 +2398,17 @@ export function TaskDetailContent({
                 onNodeIdChange={setEditNodeId}
                 nodeOptions={nodes}
                 nodeOverrideDisabled={isNodeOverrideLocked}
-                nodeOverrideDisabledReason={isNodeOverrideLocked ? "Execution node override is locked while a task is active/in progress." : undefined}
+                nodeOverrideDisabledReason={isNodeOverrideLocked ? t("taskDetail.edit.nodeOverrideLocked", "Execution node override is locked while a task is active/in progress.") : undefined}
                 executionMode={editExecutionMode}
                 onExecutionModeChange={setEditExecutionMode}
                 renderBelowModelConfiguration={(
                   <div className="form-group detail-source-edit-group">
-                    <label>Source Issue</label>
+                    <label>{t("taskDetail.edit.sourceIssueLabel", "Source Issue")}</label>
                     <div className="detail-source-edit-grid">
                       <input
                         type="text"
                         className="modal-edit-input"
-                        placeholder="Provider (e.g. github)"
+                        placeholder={t("taskDetail.edit.sourceProviderPlaceholder", "Provider (e.g. github)")}
                         value={editSourceIssueProvider}
                         onChange={(e) => setEditSourceIssueProvider(e.target.value)}
                         disabled={isSaving}
@@ -2407,7 +2417,7 @@ export function TaskDetailContent({
                       <input
                         type="text"
                         className="modal-edit-input"
-                        placeholder="Repository (e.g. owner/repo)"
+                        placeholder={t("taskDetail.edit.sourceRepositoryPlaceholder", "Repository (e.g. owner/repo)")}
                         value={editSourceIssueRepository}
                         onChange={(e) => setEditSourceIssueRepository(e.target.value)}
                         disabled={isSaving}
@@ -2416,7 +2426,7 @@ export function TaskDetailContent({
                       <input
                         type="text"
                         className="modal-edit-input"
-                        placeholder="Issue identifier"
+                        placeholder={t("taskDetail.edit.sourceExternalIdPlaceholder", "Issue identifier")}
                         value={editSourceIssueExternalId}
                         onChange={(e) => setEditSourceIssueExternalId(e.target.value)}
                         disabled={isSaving}
@@ -2425,14 +2435,14 @@ export function TaskDetailContent({
                       <input
                         type="url"
                         className="modal-edit-input"
-                        placeholder="Issue URL"
+                        placeholder={t("taskDetail.edit.sourceUrlPlaceholder", "Issue URL")}
                         value={editSourceIssueUrl}
                         onChange={(e) => setEditSourceIssueUrl(e.target.value)}
                         disabled={isSaving}
                         data-testid="task-source-url-input"
                       />
                     </div>
-                    <small>Leave all fields empty to clear source issue metadata.</small>
+                    <small>{t("taskDetail.edit.sourceIssueHint", "Leave all fields empty to clear source issue metadata.")}</small>
                   </div>
                 )}
               />
@@ -2452,7 +2462,7 @@ export function TaskDetailContent({
                         className="detail-description-toggle"
                         onClick={() => setDescriptionExpanded(!descriptionExpanded)}
                       >
-                        {descriptionExpanded ? "Show less" : "Show more"}
+                        {descriptionExpanded ? t("taskDetail.description.showLess", "Show less") : t("taskDetail.description.showMore", "Show more")}
                       </button>
                     )}
                   </>
@@ -2462,10 +2472,10 @@ export function TaskDetailContent({
                 <div className="detail-near-duplicate-banner" role="status" aria-live="polite">
                   <div className="detail-near-duplicate-banner__header">
                     <AlertTriangle aria-hidden="true" />
-                    <span className="detail-near-duplicate-banner__headline">Potential duplicate detected</span>
+                    <span className="detail-near-duplicate-banner__headline">{t("taskDetail.nearDuplicate.headline", "Potential duplicate detected")}</span>
                   </div>
                   <p className="detail-near-duplicate-banner__copy">
-                    This task appears to be a near-duplicate of{" "}
+                    {t("taskDetail.nearDuplicate.copy", "This task appears to be a near-duplicate of")}{" "}
                     <button
                       type="button"
                       className="detail-provenance-link"
@@ -2477,16 +2487,16 @@ export function TaskDetailContent({
                     >
                       {nearDuplicateOf}
                     </button>
-                    . Choose Archive to move this task to archived, or Keep to continue with this task.
+                    {". "}{t("taskDetail.nearDuplicate.actions", "Choose Archive to move this task to archived, or Keep to continue with this task.")}
                   </p>
                   <div className="detail-near-duplicate-banner__actions">
                     {onArchiveTask && (
                       <button type="button" className="btn btn-danger btn-sm" onClick={() => void handleArchiveNearDuplicate()}>
-                        Archive
+                        {t("taskDetail.nearDuplicate.archiveBtn", "Archive")}
                       </button>
                     )}
                     <button type="button" className="btn btn-sm" onClick={() => void handleDismissNearDuplicate()}>
-                      Keep
+                      {t("taskDetail.nearDuplicate.keepBtn", "Keep")}
                     </button>
                   </div>
                 </div>
@@ -2496,7 +2506,7 @@ export function TaskDetailContent({
                   <label
                     className={`card-priority-badge card-priority-badge--${inlinePriority} detail-priority-chip ${isSavingInlinePriority ? "detail-priority-chip--saving" : ""}`}
                   >
-                    <span>Priority:</span>
+                    <span>{t("taskDetail.priority.label", "Priority:")}</span>
                     <select
                       className="detail-priority-select"
                       value={inlinePriority}
@@ -2504,7 +2514,7 @@ export function TaskDetailContent({
                         void handleInlinePriorityChange(event.target.value);
                       }}
                       disabled={isSavingInlinePriority}
-                      aria-label="Task priority"
+                      aria-label={t("taskDetail.priority.ariaLabel", "Task priority")}
                     >
                       {TASK_PRIORITIES.map((priorityOption) => (
                         <option key={priorityOption} value={priorityOption}>
@@ -2520,11 +2530,11 @@ export function TaskDetailContent({
                       void handleInlineExecutionModeToggle();
                     }}
                     disabled={isSavingInlineExecutionMode}
-                    aria-label={`Execution mode: ${inlineExecutionMode}`}
+                    aria-label={t("taskDetail.executionMode.ariaLabel", "Execution mode: {{mode}}", { mode: inlineExecutionMode })}
                     aria-pressed={inlineExecutionMode === "fast"}
                   >
                     <Zap aria-hidden="true" />
-                    <span>{inlineExecutionMode === "fast" ? "Fast" : "Standard"}</span>
+                    <span>{inlineExecutionMode === "fast" ? t("taskDetail.executionMode.fast", "Fast") : t("taskDetail.executionMode.standard", "Standard")}</span>
                   </button>
                 </div>
                 {provenanceDisplay && (
@@ -2533,7 +2543,7 @@ export function TaskDetailContent({
                     <span>
                       {workingTask.sourceType === "agent_heartbeat" ? (
                         <>
-                          Created by{" "}
+                          {t("taskDetail.provenance.createdBy", "Created by")}{" "}
                           {provenanceDisplay.sourceAgentId ? (
                             <button
                               type="button"
@@ -2547,7 +2557,7 @@ export function TaskDetailContent({
                           )}
                         </>
                       ) : (
-                        <>Created via {provenanceDisplay.label}</>
+                        <>{t("taskDetail.provenance.createdVia", "Created via")} {provenanceDisplay.label}</>
                       )}
                       {provenanceDisplay.parentTaskId && (
                         <>
@@ -2607,9 +2617,9 @@ export function TaskDetailContent({
                     </span>
                   </div>
                 )}
-                <div className="detail-timestamps" aria-label="Task timestamps">
+                <div className="detail-timestamps" aria-label={t("taskDetail.timestamps.ariaLabel", "Task timestamps")}>
                   <span className="detail-timestamp-item">
-                    <span className="detail-timestamp-label">Created</span>{" "}
+                    <span className="detail-timestamp-label">{t("taskDetail.timestamps.created", "Created")}</span>{" "}
                     <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>
                       {formatTimestamp(task.createdAt)}
                     </time>
@@ -2618,7 +2628,7 @@ export function TaskDetailContent({
                     ·
                   </span>
                   <span className="detail-timestamp-item">
-                    <span className="detail-timestamp-label">Updated</span>{" "}
+                    <span className="detail-timestamp-label">{t("taskDetail.timestamps.updated", "Updated")}</span>{" "}
                     <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>
                       {formatTimestamp(task.updatedAt)}
                     </time>
@@ -2634,14 +2644,14 @@ export function TaskDetailContent({
             <div className="detail-error-alert">
               <span className="detail-error-icon">⚠</span>
               <div className="detail-error-content">
-                <div className="detail-error-title">Task Failed</div>
+                <div className="detail-error-title">{t("taskDetail.error.taskFailed", "Task Failed")}</div>
                 <div className="detail-error-message">{task.error}</div>
               </div>
             </div>
           )}
           {task.pausedReason === "worktrunk_operation_failed" && (
             <div className="task-pause-reason" role="status" aria-live="polite">
-              <div className="task-pause-reason-label">Worktrunk operation failed</div>
+              <div className="task-pause-reason-label">{t("taskDetail.pause.worktrunkFailed", "Worktrunk operation failed")}</div>
               {task.worktrunkFailure?.stderr && (
                 <pre className="task-pause-stderr">{task.worktrunkFailure.stderr.slice(0, 2048)}</pre>
               )}
@@ -2654,71 +2664,71 @@ export function TaskDetailContent({
               className={`detail-tab${activeTab === "definition" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("definition")}
             >
-              Definition
+              {t("taskDetail.tabs.definition", "Definition")}
             </button>
             <button
               className={`detail-tab${activeTab === "logs" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("logs")}
             >
-              Logs
+              {t("taskDetail.tabs.logs", "Logs")}
             </button>
             {(task.column === "in-progress" || task.column === "in-review" || task.column === "done") && (
               <button
                 className={`detail-tab${activeTab === "changes" ? " detail-tab-active" : ""}`}
                 onClick={() => setActiveTab("changes")}
               >
-                Changes
+                {t("taskDetail.tabs.changes", "Changes")}
               </button>
             )}
             <button
               className={`detail-tab${activeTab === "review" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("review")}
             >
-              Review
+              {t("taskDetail.tabs.review", "Review")}
             </button>
             {task.column === "in-review" && (
               <button
                 className={`detail-tab${activeTab === "pr" ? " detail-tab-active" : ""}`}
                 onClick={() => setActiveTab("pr")}
               >
-                Pull Request
+                {t("taskDetail.tabs.pullRequest", "Pull Request")}
               </button>
             )}
             <button
               className={`detail-tab${activeTab === "comments" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("comments")}
             >
-              Comments
+              {t("taskDetail.tabs.comments", "Comments")}
             </button>
             <button
               className={`detail-tab${activeTab === "documents" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("documents")}
             >
-              Documents
+              {t("taskDetail.tabs.documents", "Documents")}
             </button>
             <button
               className={`detail-tab${activeTab === "model" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("model")}
             >
-              Model
+              {t("taskDetail.tabs.model", "Model")}
             </button>
             <button
               className={`detail-tab${activeTab === "workflow" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("workflow")}
             >
-              Workflow
+              {t("taskDetail.tabs.workflow", "Workflow")}
             </button>
             <button
               className={`detail-tab${activeTab === "stats" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("stats")}
             >
-              Stats
+              {t("taskDetail.tabs.stats", "Stats")}
             </button>
             <button
               className={`detail-tab${activeTab === "routing" ? " detail-tab-active" : ""}`}
               onClick={() => setActiveTab("routing")}
             >
-              Routing
+              {t("taskDetail.tabs.routing", "Routing")}
             </button>
             {/* Plugin tabs */}
             {pluginTabs.map(({ entry, tabId }) => {
@@ -2766,13 +2776,13 @@ export function TaskDetailContent({
                   className={`log-subview-btn${logSubview === "activity" ? " log-subview-btn-active" : ""}`}
                   onClick={() => setLogSubview("activity")}
                 >
-                  Activity
+                  {t("taskDetail.logs.activity", "Activity")}
                 </button>
                 <button
                   className={`log-subview-btn${logSubview === "agent-log" ? " log-subview-btn-active" : ""}`}
                   onClick={() => setLogSubview("agent-log")}
                 >
-                  Agent Log
+                  {t("taskDetail.logs.agentLog", "Agent Log")}
                 </button>
               </div>
               {logSubview === "agent-log" ? (
@@ -2789,10 +2799,10 @@ export function TaskDetailContent({
                 />
               ) : (
                 <div className="detail-activity">
-                  <h4>Activity</h4>
+                  <h4>{t("taskDetail.logs.activityHeading", "Activity")}</h4>
                   {(workingTask as typeof workingTask & { activityLogTruncatedCount?: number }).activityLogTruncatedCount ? (
                     <div className="detail-log-truncated">
-                      Showing the most recent {workingTask.log.length} activity entries.
+                      {t("taskDetail.logs.truncated", "Showing the most recent {{count}} activity entries.", { count: workingTask.log.length })}
                     </div>
                   ) : null}
                   {workingTask.log && workingTask.log.length > 0 ? (
@@ -2829,7 +2839,7 @@ export function TaskDetailContent({
                       })()}
                     </div>
                   ) : (
-                    <div className="detail-log-empty">(no activity)</div>
+                    <div className="detail-log-empty">{t("taskDetail.logs.noActivity", "(no activity)")}</div>
                   )}
                 </div>
               )}
@@ -2871,7 +2881,7 @@ export function TaskDetailContent({
                         <div className="detail-in-review-stall-description">{copy.description}</div>
                         <div className="detail-in-review-stall-action">{copy.suggestedAction}</div>
                         <div className="detail-in-review-stall-meta">
-                          <span>Observed {formatTimestamp(workingTask.inReviewStall.observedAt)}</span>
+                          <span>{t("taskDetail.stall.observed", "Observed")} {formatTimestamp(workingTask.inReviewStall.observedAt)}</span>
                           {logMatch ? (
                             <button
                               type="button"
@@ -2882,14 +2892,14 @@ export function TaskDetailContent({
                                 setHighlightStallCode(workingTask.inReviewStall?.code ?? null);
                               }}
                             >
-                              View activity log
+                              {t("taskDetail.stall.viewActivityLog", "View activity log")}
                             </button>
                           ) : (
                             <span
                               className="detail-in-review-stall-no-log"
-                              title="No 'In-review stall surfaced' entry on this task yet — self-healing may not have logged one within its rate-limit window."
+                              title={t("taskDetail.stall.noLogEntryTitle", "No 'In-review stall surfaced' entry on this task yet — self-healing may not have logged one within its rate-limit window.")}
                             >
-                              No log entry yet
+                              {t("taskDetail.stall.noLogEntry", "No log entry yet")}
                             </span>
                           )}
                         </div>
@@ -2917,9 +2927,9 @@ export function TaskDetailContent({
                         <div className="detail-in-review-stall-description">{copy.description}</div>
                         <div className="detail-in-review-stall-action">{copy.suggestedAction}</div>
                         <div className="detail-in-review-stall-meta">
-                          <span>Age {formatDurationCompact(workingTask.stalePausedReview.ageMs)}</span>
-                          <span>Threshold {formatDurationCompact(workingTask.stalePausedReview.thresholdMs)}</span>
-                          <span>Observed {formatTimestamp(workingTask.stalePausedReview.observedAt)}</span>
+                          <span>{t("taskDetail.ageStaleness.age", "Age")} {formatDurationCompact(workingTask.stalePausedReview.ageMs)}</span>
+                          <span>{t("taskDetail.stall.threshold", "Threshold")} {formatDurationCompact(workingTask.stalePausedReview.thresholdMs)}</span>
+                          <span>{t("taskDetail.stall.observed", "Observed")} {formatTimestamp(workingTask.stalePausedReview.observedAt)}</span>
                           {logMatch ? (
                             <button
                               type="button"
@@ -2930,10 +2940,10 @@ export function TaskDetailContent({
                                 setHighlightStallCode(workingTask.stalePausedReview?.code ?? null);
                               }}
                             >
-                              View activity log
+                              {t("taskDetail.stall.viewActivityLog", "View activity log")}
                             </button>
                           ) : (
-                            <span className="detail-in-review-stall-no-log">No log entry yet</span>
+                            <span className="detail-in-review-stall-no-log">{t("taskDetail.stall.noLogEntry", "No log entry yet")}</span>
                           )}
                         </div>
                       </div>
@@ -3015,7 +3025,7 @@ export function TaskDetailContent({
           {/* Summary section - only for done tasks with summary */}
           {task.column === "done" && task.summary && (
             <div className="detail-section detail-summary">
-              <h4>Summary</h4>
+              <h4>{t("taskDetail.summary.heading", "Summary")}</h4>
               <div className="markdown-body">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkifyComponents}>
                   {task.summary}
@@ -3028,14 +3038,14 @@ export function TaskDetailContent({
             <div className="detail-section detail-retries-section">
               <div className="detail-source-header">
                 <div className="detail-source-summary">
-                  <span className="detail-source-label">Retries</span>
+                  <span className="detail-source-label">{t("taskDetail.retries.label", "Retries")}</span>
                   <span className="detail-source-number">{retrySummary?.total ?? 0}</span>
                 </div>
                 <button
                   type="button"
                   className="detail-source-toggle"
                   aria-expanded={retriesExpanded}
-                  aria-label={retriesExpanded ? "Collapse retries details" : "Expand retries details"}
+                  aria-label={retriesExpanded ? t("taskDetail.retries.collapse", "Collapse retries details") : t("taskDetail.retries.expand", "Expand retries details")}
                   onClick={() => setRetriesExpanded((expanded) => !expanded)}
                 >
                   <ChevronRight size={16} className={retriesExpanded ? "detail-source-chevron--expanded" : undefined} />
@@ -3052,7 +3062,7 @@ export function TaskDetailContent({
                 </dl>
               )}
               {settings?.maxTotalRetriesBeforeFail != null && (retrySummary?.total ?? 0) >= settings.maxTotalRetriesBeforeFail && (
-                <p className="detail-retries-warning">Retry cap reached for this task.</p>
+                <p className="detail-retries-warning">{t("taskDetail.retries.capReached", "Retry cap reached for this task.")}</p>
               )}
             </div>
           )}
@@ -3060,11 +3070,11 @@ export function TaskDetailContent({
             <div className="detail-section detail-source-section">
               <div className="detail-source-header">
                 <div className="detail-source-summary">
-                  <span className="detail-source-label">Source issue</span>
+                  <span className="detail-source-label">{t("taskDetail.sourceIssue.label", "Source issue")}</span>
                   {task.sourceIssue.provider.toLowerCase() === "github" && (
-                    <span className="detail-source-provider-badge" aria-label="GitHub source issue">
+                    <span className="detail-source-provider-badge" aria-label={t("taskDetail.sourceIssue.githubAriaLabel", "GitHub source issue")}>
                       <GitBranch aria-hidden="true" />
-                      <span>GitHub</span>
+                      <span>{t("taskDetail.sourceIssue.githubBadge", "GitHub")}</span>
                     </span>
                   )}
                   {task.sourceIssue.url ? (
@@ -3084,7 +3094,7 @@ export function TaskDetailContent({
                   type="button"
                   className="detail-source-toggle"
                   aria-expanded={sourceIssueExpanded}
-                  aria-label={sourceIssueExpanded ? "Collapse source issue details" : "Expand source issue details"}
+                  aria-label={sourceIssueExpanded ? t("taskDetail.sourceIssue.collapse", "Collapse source issue details") : t("taskDetail.sourceIssue.expand", "Expand source issue details")}
                   onClick={() => setSourceIssueExpanded((expanded) => !expanded)}
                 >
                   <ChevronRight
@@ -3096,19 +3106,19 @@ export function TaskDetailContent({
               {sourceIssueExpanded && (
                 <dl className="detail-source-grid">
                   <div>
-                    <dt>Provider</dt>
+                    <dt>{t("taskDetail.sourceIssue.provider", "Provider")}</dt>
                     <dd>{task.sourceIssue.provider}</dd>
                   </div>
                   <div>
-                    <dt>Repository</dt>
+                    <dt>{t("taskDetail.sourceIssue.repository", "Repository")}</dt>
                     <dd>{task.sourceIssue.repository}</dd>
                   </div>
                   <div>
-                    <dt>Issue Identifier</dt>
+                    <dt>{t("taskDetail.sourceIssue.identifier", "Issue Identifier")}</dt>
                     <dd>{task.sourceIssue.externalIssueId}</dd>
                   </div>
                   <div>
-                    <dt>URL</dt>
+                    <dt>{t("taskDetail.sourceIssue.url", "URL")}</dt>
                     <dd>
                       {task.sourceIssue.url ? (
                         <a
@@ -3120,7 +3130,7 @@ export function TaskDetailContent({
                           {task.sourceIssue.url}
                         </a>
                       ) : (
-                        <span className="detail-source-empty">(none)</span>
+                        <span className="detail-source-empty">{t("taskDetail.sourceIssue.none", "(none)")}</span>
                       )}
                     </dd>
                   </div>
@@ -3132,18 +3142,18 @@ export function TaskDetailContent({
             <div className="detail-section detail-github-tracking-section">
               <div className="detail-source-header">
                 <div className="detail-source-summary">
-                  <span className="detail-source-label">GitHub tracking</span>
-                  <span className="detail-source-provider-badge" aria-label="GitHub tracking status">
+                  <span className="detail-source-label">{t("taskDetail.githubTracking.label", "GitHub tracking")}</span>
+                  <span className="detail-source-provider-badge" aria-label={t("taskDetail.githubTracking.statusAriaLabel", "GitHub tracking status")}>
                     <GitBranch aria-hidden="true" />
                     <span>{githubTrackingStatus}</span>
                   </span>
                   {!githubTrackedIssue && (
                     <span className="detail-source-empty">
                       {githubTrackingDetailPending
-                        ? "Checking tracking status"
+                        ? t("taskDetail.githubTracking.checking", "Checking tracking status")
                         : githubTrackingEnabled
-                          ? "Issue not yet created"
-                          : "Tracking is currently disabled"}
+                          ? t("taskDetail.githubTracking.notYetCreated", "Issue not yet created")
+                          : t("taskDetail.githubTracking.disabled", "Tracking is currently disabled")}
                     </span>
                   )}
                 </div>
@@ -3151,11 +3161,11 @@ export function TaskDetailContent({
                   <button
                     type="button"
                     className="btn btn-sm btn-primary detail-github-tracking-enable"
-                    aria-label="Enable GitHub tracking"
+                    aria-label={t("taskDetail.githubTracking.enableAriaLabel", "Enable GitHub tracking")}
                     disabled={isSavingGithubTracking}
                     onClick={() => void handleToggleGithubTracking()}
                   >
-                    Enable
+                    {t("taskDetail.githubTracking.enableBtn", "Enable")}
                   </button>
                 )}
                 {showGithubTrackingSpinner && (
@@ -3163,11 +3173,11 @@ export function TaskDetailContent({
                     className="detail-github-tracking-spinner"
                     role="status"
                     aria-live="polite"
-                    aria-label={isSavingGithubTracking ? "Enabling GitHub tracking" : "Loading GitHub tracking status"}
+                    aria-label={isSavingGithubTracking ? t("taskDetail.githubTracking.enablingAriaLabel", "Enabling GitHub tracking") : t("taskDetail.githubTracking.loadingAriaLabel", "Loading GitHub tracking status")}
                   >
                     <Loader2 size={16} className="spin" aria-hidden="true" />
                     <span className="visually-hidden">
-                      {isSavingGithubTracking ? "Enabling GitHub tracking…" : "Loading GitHub tracking status…"}
+                      {isSavingGithubTracking ? t("taskDetail.githubTracking.enabling", "Enabling GitHub tracking…") : t("taskDetail.githubTracking.loading", "Loading GitHub tracking status…")}
                     </span>
                   </span>
                 )}
@@ -3175,7 +3185,7 @@ export function TaskDetailContent({
                   type="button"
                   className="detail-source-toggle"
                   aria-expanded={githubTrackingExpanded}
-                  aria-label={githubTrackingExpanded ? "Collapse GitHub tracking details" : "Expand GitHub tracking details"}
+                  aria-label={githubTrackingExpanded ? t("taskDetail.githubTracking.collapse", "Collapse GitHub tracking details") : t("taskDetail.githubTracking.expand", "Expand GitHub tracking details")}
                   onClick={() => setGithubTrackingExpanded((expanded) => !expanded)}
                 >
                   <ChevronRight
@@ -3189,7 +3199,7 @@ export function TaskDetailContent({
                   {githubTrackedIssue && (
                     <dl className="detail-source-grid detail-github-tracking-grid">
                       <div>
-                        <dt>Issue</dt>
+                        <dt>{t("taskDetail.githubTracking.issue", "Issue")}</dt>
                         <dd>
                           {githubTrackedIssue.url ? (
                             <a className="detail-source-link" href={githubTrackedIssue.url} target="_blank" rel="noopener noreferrer">
@@ -3201,7 +3211,7 @@ export function TaskDetailContent({
                         </dd>
                       </div>
                       <div>
-                        <dt>State</dt>
+                        <dt>{t("taskDetail.githubTracking.state", "State")}</dt>
                         <dd>
                           <span className={`detail-github-issue-state ${task.issueInfo?.state === "closed" ? "detail-github-issue-state--closed" : "detail-github-issue-state--open"}`}>
                             {task.issueInfo?.state ?? "open"}
@@ -3217,12 +3227,12 @@ export function TaskDetailContent({
                           className="btn btn-sm touch-target"
                           onClick={() => void handleRetryGithubTrackingIssueCreate()}
                           disabled={isSavingGithubTracking || !canCreateTrackingIssue}
-                          title={!canCreateTrackingIssue ? "Add a title or description so a tracking issue can be created." : undefined}
+                          title={!canCreateTrackingIssue ? t("taskDetail.githubTracking.createIssueDisabledTitle", "Add a title or description so a tracking issue can be created.") : undefined}
                         >
-                          Create tracking issue
+                          {t("taskDetail.githubTracking.createIssueBtn", "Create tracking issue")}
                         </button>
                         {!canCreateTrackingIssue && (
-                          <small className="detail-github-tracking-helper">Tracking issue will be created once this task has a title or description to summarize.</small>
+                          <small className="detail-github-tracking-helper">{t("taskDetail.githubTracking.createIssueHelper", "Tracking issue will be created once this task has a title or description to summarize.")}</small>
                         )}
                       </>
                     )}
@@ -3236,7 +3246,7 @@ export function TaskDetailContent({
                             disabled={isSavingGithubTracking}
                             onChange={() => void handleToggleGithubTracking()}
                           />
-                          Enable GitHub tracking
+                          {t("taskDetail.githubTracking.enableCheckboxLabel", "Enable GitHub tracking")}
                         </label>
                         <div className="detail-github-tracking-repo-row">
                           <input
@@ -3249,13 +3259,13 @@ export function TaskDetailContent({
                             placeholder={effectiveGithubRepoDefault || "owner/repo"}
                           />
                           <button className="btn btn-sm" onClick={() => void handleSaveGithubRepoOverride()} disabled={isSavingGithubTracking}>
-                            Save
+                            {t("common.save", "Save")}
                           </button>
                         </div>
                         {githubRepoOverrideError && <small className="detail-github-tracking-error">{githubRepoOverrideError}</small>}
                         {githubTrackedIssue && (
                           <button className="btn btn-sm touch-target" onClick={() => void handleUnlinkGithubIssue()} disabled={isSavingGithubTracking}>
-                            Unlink GitHub issue
+                            {t("taskDetail.githubTracking.unlinkBtn", "Unlink GitHub issue")}
                           </button>
                         )}
                       </>
@@ -3277,7 +3287,7 @@ export function TaskDetailContent({
                 )}
                 <span className="detail-meta-label">
                   <Bot size={14} className="detail-meta-label-icon" />
-                  Agent
+                  {t("taskDetail.agent.label", "Agent")}
                 </span>
               </div>
               <div className="detail-agent-actions">
@@ -3288,7 +3298,7 @@ export function TaskDetailContent({
                     <button
                       className="detail-agent-clear"
                       onClick={() => void handleClearAgent()}
-                      title="Unassign agent"
+                      title={t("taskDetail.agent.unassignTitle", "Unassign agent")}
                     >
                       <X size={12} />
                     </button>
@@ -3304,12 +3314,12 @@ export function TaskDetailContent({
                       }
                     }}
                   >
-                    Assign Agent
+                    {t("taskDetail.agent.assignBtn", "Assign Agent")}
                   </button>
                 )}
                 {showAgentPicker && (
                   <div className="agent-picker-dropdown">
-                    {agentsLoading && <div className="agent-picker-loading">Loading agents...</div>}
+                    {agentsLoading && <div className="agent-picker-loading">{t("taskDetail.agent.loadingAgents", "Loading agents...")}</div>}
                     {!agentsLoading && agents.map((a) => (
                       <button
                         key={a.id}
@@ -3322,7 +3332,7 @@ export function TaskDetailContent({
                       </button>
                     ))}
                     {!agentsLoading && agents.length === 0 && (
-                      <div className="agent-picker-empty">No agents available</div>
+                      <div className="agent-picker-empty">{t("taskDetail.agent.noAgents", "No agents available")}</div>
                     )}
                   </div>
                 )}
@@ -3330,7 +3340,7 @@ export function TaskDetailContent({
             </div>
           </div>
           <div className="detail-section detail-step-progress">
-            <h4>Progress</h4>
+            <h4>{t("taskDetail.progress.heading", "Progress")}</h4>
             {workingTask.steps && workingTask.steps.length > 0 ? (
               <div className="step-progress-wrapper">
                 <div className="step-progress-bar">
@@ -3344,18 +3354,18 @@ export function TaskDetailContent({
                   ))}
                 </div>
                 <span className="step-progress-label">
-                  {workingTask.steps.filter(s => s.status === "done").length}/{workingTask.steps.length} step{workingTask.steps.length === 1 ? "" : "s"}
+                  {t("taskDetail.progress.stepCount", { count: workingTask.steps.filter(s => s.status === "done").length, total: workingTask.steps.length, defaultValue_one: "{{count}}/{{total}} step", defaultValue_other: "{{count}}/{{total}} steps" })}
                 </span>
               </div>
             ) : (
-              <div className="step-progress-empty">(no steps defined)</div>
+              <div className="step-progress-empty">{t("taskDetail.progress.noSteps", "(no steps defined)")}</div>
             )}
           </div>
           <div className="detail-section">
             {!isEditingSpec && (
               <div className="detail-spec-edit-trigger">
                 <button className="btn btn-sm" onClick={enterSpecEditMode}>
-                  Edit
+                  {t("taskDetail.spec.editBtn", "Edit")}
                 </button>
               </div>
             )}
@@ -3367,7 +3377,7 @@ export function TaskDetailContent({
                   onChange={(e) => setSpecEditContent(e.target.value)}
                   onKeyDown={handleSpecTextareaKeyDown}
                   disabled={isSavingSpec}
-                  placeholder="Enter task specification in Markdown..."
+                  placeholder={t("taskDetail.spec.placeholder", "Enter task specification in Markdown...")}
                   rows={12}
                 />
                 <div className="spec-editor-actions-row">
@@ -3376,30 +3386,30 @@ export function TaskDetailContent({
                     onClick={exitSpecEditMode}
                     disabled={isSavingSpec}
                   >
-                    Cancel
+                    {t("common.cancel", "Cancel")}
                   </button>
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={() => void handleSaveSpecFromEdit()}
                     disabled={specEditContent === (workingTask.prompt || "") || isSavingSpec}
                   >
-                    {isSavingSpec ? "Saving…" : "Save"}
+                    {isSavingSpec ? t("taskDetail.spec.saving", "Saving…") : t("common.save", "Save")}
                   </button>
                 </div>
                 <div className="spec-editor-hint">
-                  <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save · <kbd>Escape</kbd> to cancel
+                  <kbd>Ctrl</kbd>+<kbd>Enter</kbd> {t("taskDetail.spec.hintSave", "to save")} · <kbd>Escape</kbd> {t("taskDetail.spec.hintCancel", "to cancel")}
                 </div>
                 {/* AI Revision Section */}
                 <div className="spec-editor-revision">
-                  <h4>Ask AI to Revise</h4>
+                  <h4>{t("taskDetail.spec.aiReviseHeading", "Ask AI to Revise")}</h4>
                   <p className="spec-editor-revision-help">
-                    Provide feedback for the AI to improve this specification. The task will move to planning for replanning.
+                    {t("taskDetail.spec.aiReviseHelp", "Provide feedback for the AI to improve this specification. The task will move to planning for replanning.")}
                   </p>
                   <textarea
                     className="spec-editor-feedback"
                     value={specFeedback}
                     onChange={(e) => setSpecFeedback(e.target.value)}
-                    placeholder="e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'..."
+                    placeholder={t("taskDetail.spec.feedbackPlaceholder", "e.g., 'Add more details about error handling', 'Split this into smaller steps', 'Include tests for the API endpoints'...")}
                     disabled={isRequestingRevision}
                     rows={4}
                     maxLength={2000}
@@ -3413,13 +3423,13 @@ export function TaskDetailContent({
                       onClick={() => void handleRequestRevisionFromEdit()}
                       disabled={!specFeedback.trim() || isRequestingRevision}
                     >
-                      {isRequestingRevision ? "Requesting…" : "Request AI Revision"}
+                      {isRequestingRevision ? t("taskDetail.spec.requesting", "Requesting…") : t("taskDetail.spec.requestRevisionBtn", "Request AI Revision")}
                     </button>
                   </div>
                 </div>
               </div>
             ) : detailLoading ? (
-              <div className="spec-loading">Loading specification…</div>
+              <div className="spec-loading">{t("taskDetail.spec.loading", "Loading specification…")}</div>
             ) : workingTask.prompt ? (
               <div className="markdown-body">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkifyComponents}>
@@ -3427,7 +3437,7 @@ export function TaskDetailContent({
                 </ReactMarkdown>
               </div>
             ) : (
-              <div className="detail-prompt">(no prompt)</div>
+              <div className="detail-prompt">{t("taskDetail.spec.noPrompt", "(no prompt)")}</div>
             )}
           </div>
           <div className="detail-section detail-no-commits-expected-section">
@@ -3442,13 +3452,13 @@ export function TaskDetailContent({
                     void handleInlineNoCommitsExpectedToggle();
                   }}
                 />
-                No commits expected (decision-only task)
+                {t("taskDetail.noCommits.label", "No commits expected (decision-only task)")}
               </label>
-              <small>Allows the task to complete without producing git commits. Use for evaluation, verification, or audit tasks where the deliverable is the recorded decision.</small>
+              <small>{t("taskDetail.noCommits.hint", "Allows the task to complete without producing git commits. Use for evaluation, verification, or audit tasks where the deliverable is the recorded decision.")}</small>
             </div>
           </div>
           <div className="detail-section">
-            <h4>Attachments</h4>
+            <h4>{t("taskDetail.attachments.heading", "Attachments")}</h4>
             {attachments.length > 0 ? (
               <div className="detail-attachments-grid">
                 {attachments.map((a) => {
@@ -3473,7 +3483,7 @@ export function TaskDetailContent({
                       <button
                         className="detail-attachment-delete"
                         onClick={() => handleDeleteAttachment(a.filename)}
-                        title="Delete attachment"
+                        title={t("taskDetail.attachments.deleteTitle", "Delete attachment")}
                       >
                         ×
                       </button>
@@ -3482,7 +3492,7 @@ export function TaskDetailContent({
                 })}
               </div>
             ) : (
-              <div className="detail-empty-inline">(no attachments)</div>
+              <div className="detail-empty-inline">{t("taskDetail.attachments.none", "(no attachments)")}</div>
             )}
             <input
               className="detail-hidden-file-input"
@@ -3496,11 +3506,11 @@ export function TaskDetailContent({
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
             >
-              {uploading ? "Uploading…" : "Attach Screenshot"}
+              {uploading ? t("taskDetail.attachments.uploading", "Uploading…") : t("taskDetail.attachments.attachBtn", "Attach Screenshot")}
             </button>
           </div>
           <div className="detail-deps">
-            <h4>Dependencies</h4>
+            <h4>{t("taskDetail.deps.heading", "Dependencies")}</h4>
             {dependencies.length > 0 ? (
               <ul className="detail-dep-list">
                 {dependencies.map((dep) => {
@@ -3521,7 +3531,7 @@ export function TaskDetailContent({
                         }}
                         role="link"
                         tabIndex={0}
-                        title={`Click to view ${dep}`}
+                        title={t("taskDetail.deps.clickToView", "Click to view {{id}}", { id: dep })}
                       >
                         <span className="detail-dep-id">{dep}</span>
                         <span className="detail-dep-label">{truncate(depLabel, 40)}</span>
@@ -3529,7 +3539,7 @@ export function TaskDetailContent({
                       <button
                         className="dep-remove-btn"
                         onClick={(e) => handleRemoveDep(e, dep)}
-                        title={`Remove dependency ${dep}`}
+                        title={t("taskDetail.deps.removeTitle", "Remove dependency {{id}}", { id: dep })}
                       >
                         ×
                       </button>
@@ -3538,21 +3548,21 @@ export function TaskDetailContent({
                 })}
               </ul>
             ) : (
-              <div className="detail-empty-inline">(no dependencies)</div>
+              <div className="detail-empty-inline">{t("taskDetail.deps.none", "(no dependencies)")}</div>
             )}
             {workingTask.overlapBlockedBy && (
               <div className="detail-empty-inline">
                 <span>
-                  File scope overlap blocker: {workingTask.overlapBlockedBy}
-                  {!overlapBlockerActive && " (stale)"}
+                  {t("taskDetail.deps.overlapBlocker", "File scope overlap blocker:")} {workingTask.overlapBlockedBy}
+                  {!overlapBlockerActive && ` ${t("taskDetail.deps.stale", "(stale)")}`}
                 </span>
                 <button
                   type="button"
                   className="btn btn-sm"
                   onClick={() => void handleClearOverlapBlocker()}
-                  title={`Clear overlap blocker ${workingTask.overlapBlockedBy}`}
+                  title={t("taskDetail.deps.clearBlockerTitle", "Clear overlap blocker {{id}}", { id: workingTask.overlapBlockedBy })}
                 >
-                  Clear
+                  {t("taskDetail.deps.clearBtn", "Clear")}
                 </button>
               </div>
             )}
@@ -3565,7 +3575,7 @@ export function TaskDetailContent({
                   setShowDepDropdown((v) => !v);
                 }}
               >
-                Add Dependency
+                {t("taskDetail.deps.addBtn", "Add Dependency")}
               </button>
               {showDepDropdown && (() => {
                 const term = depSearch.toLowerCase();
@@ -3580,14 +3590,14 @@ export function TaskDetailContent({
                   <div className="dep-dropdown">
                     <input
                       className="dep-dropdown-search"
-                      placeholder="Search tasks…"
+                      placeholder={t("taskDetail.deps.searchPlaceholder", "Search tasks…")}
                       autoFocus
                       value={depSearch}
                       onChange={(e) => setDepSearch(e.target.value)}
                       onClick={(e) => e.stopPropagation()}
                     />
                     {filtered.length === 0 ? (
-                      <div className="dep-dropdown-empty">No available tasks</div>
+                      <div className="dep-dropdown-empty">{t("taskDetail.deps.noAvailableTasks", "No available tasks")}</div>
                     ) : (
                       filtered.map((t) => (
                         <div
@@ -3609,7 +3619,7 @@ export function TaskDetailContent({
             </div>
           </div>
           <div className="detail-deps detail-blocking">
-            <h4>Blocking</h4>
+            <h4>{t("taskDetail.blocking.heading", "Blocking")}</h4>
             {blockingEntry && (
               <div className="detail-empty-inline">
                 {overlapBlockingSummary}
@@ -3630,7 +3640,7 @@ export function TaskDetailContent({
                       }}
                       role="link"
                       tabIndex={0}
-                      title={`Click to view ${dependent.id}`}
+                      title={t("taskDetail.deps.clickToView", "Click to view {{id}}", { id: dependent.id })}
                     >
                       <span className="detail-dep-id">{dependent.id}</span>
                       <span className="detail-dep-label">{truncate(dependent.label, 40)}</span>
@@ -3638,16 +3648,16 @@ export function TaskDetailContent({
                     {dependent.stale && (
                       <span
                         className="detail-blocking-item--stale"
-                        title="Stale blockedBy edge: self-healing clearStaleBlockedBy should clear this automatically"
+                        title={t("taskDetail.blocking.staleTitle", "Stale blockedBy edge: self-healing clearStaleBlockedBy should clear this automatically")}
                       >
-                        (stale)
+                        {t("taskDetail.blocking.stale", "(stale)")}
                       </span>
                     )}
                   </li>
                 ))}
               </ul>
             ) : (
-              <div className="detail-empty-inline">(no downstream tasks blocked)</div>
+              <div className="detail-empty-inline">{t("taskDetail.blocking.none", "(no downstream tasks blocked)")}</div>
             )}
           </div>
           {workingTask.ageStaleness && (() => {
@@ -3655,16 +3665,16 @@ export function TaskDetailContent({
             if (!copy) return null;
             return (
               <div className="detail-section">
-                <div className="detail-sidebar-title">Task age staleness</div>
+                <div className="detail-sidebar-title">{t("taskDetail.ageStaleness.title", "Task age staleness")}</div>
                 <div>{copy.headline}</div>
                 <div className="detail-description">{copy.description}</div>
                 <div className="detail-in-review-stall-meta">
-                  <span>Column {workingTask.ageStaleness.column}</span>
-                  <span>Age {formatDurationCompact(workingTask.ageStaleness.ageMs)}</span>
-                  <span>Warning {formatDurationCompact(workingTask.ageStaleness.warningThresholdMs)}</span>
-                  <span>Critical {formatDurationCompact(workingTask.ageStaleness.criticalThresholdMs)}</span>
-                  <span>Observed {formatTimestamp(workingTask.ageStaleness.observedAt)}</span>
-                  <span>{workingTask.ageStaleness.paused ? "Paused" : "Active"}</span>
+                  <span>{t("taskDetail.ageStaleness.column", "Column")} {workingTask.ageStaleness.column}</span>
+                  <span>{t("taskDetail.ageStaleness.age", "Age")} {formatDurationCompact(workingTask.ageStaleness.ageMs)}</span>
+                  <span>{t("taskDetail.ageStaleness.warning", "Warning")} {formatDurationCompact(workingTask.ageStaleness.warningThresholdMs)}</span>
+                  <span>{t("taskDetail.ageStaleness.critical", "Critical")} {formatDurationCompact(workingTask.ageStaleness.criticalThresholdMs)}</span>
+                  <span>{t("taskDetail.ageStaleness.observed", "Observed")} {formatTimestamp(workingTask.ageStaleness.observedAt)}</span>
+                  <span>{workingTask.ageStaleness.paused ? t("taskDetail.ageStaleness.paused", "Paused") : t("taskDetail.ageStaleness.active", "Active")}</span>
                 </div>
               </div>
             );
@@ -3695,19 +3705,19 @@ export function TaskDetailContent({
           <div className="detail-section rebind-banner" role="status">
             <div className="rebind-banner-header">
               <GitBranch aria-hidden="true" />
-              <span className="rebind-banner-headline">Branch needs reattachment</span>
+              <span className="rebind-banner-headline">{t("taskDetail.branchBinding.headline", "Branch needs reattachment")}</span>
             </div>
             <p className="rebind-banner-copy">
-              This in-review task isn't currently attached to a fusion branch. If a live fusion branch still exists for it, you can reattach it here.
+              {t("taskDetail.branchBinding.copy", "This in-review task isn't currently attached to a fusion branch. If a live fusion branch still exists for it, you can reattach it here.")}
             </p>
             {recoverBranchBindingOutcome && (
               <div className="rebind-banner-result">
                 {recoverBranchBindingOutcome.result === "applied"
-                  ? `Reattached ${recoverBranchBindingOutcome.branch} (${recoverBranchBindingOutcome.aheadCount} commits ahead of ${recoverBranchBindingOutcome.integrationBase}).`
-                  : `Reattachment skipped: ${recoverBranchBindingOutcome.reason}`}
+                  ? t("taskDetail.branchBinding.reattachedResult", "Reattached {{branch}} ({{count}} commits ahead of {{base}}).", { branch: recoverBranchBindingOutcome.branch, count: recoverBranchBindingOutcome.aheadCount, base: recoverBranchBindingOutcome.integrationBase })
+                  : t("taskDetail.branchBinding.skippedResult", "Reattachment skipped: {{reason}}", { reason: recoverBranchBindingOutcome.reason })}
                 {recoverBranchBindingOutcome.result === "skipped" && recoverBranchBindingOutcome.candidates?.length ? (
                   <span>
-                    {` Candidates: ${recoverBranchBindingOutcome.candidates.map((entry) => `${entry.branch} (${entry.aheadCount})`).join(", ")}`}
+                    {` ${t("taskDetail.branchBinding.candidates", "Candidates:")} ${recoverBranchBindingOutcome.candidates.map((entry) => `${entry.branch} (${entry.aheadCount})`).join(", ")}`}
                   </span>
                 ) : null}
               </div>
@@ -3722,9 +3732,9 @@ export function TaskDetailContent({
                 {isRecoveringBranchBinding ? (
                   <>
                     <Loader2 size={16} className="spin" aria-hidden="true" />
-                    Reattaching…
+                    {t("taskDetail.branchBinding.reattaching", "Reattaching…")}
                   </>
-                ) : "Reattach branch"}
+                ) : t("taskDetail.branchBinding.reattachBtn", "Reattach branch")}
               </button>
             </div>
           </div>
@@ -3733,7 +3743,7 @@ export function TaskDetailContent({
           {isEditing ? (
             <>
               <span className="modal-edit-hint">
-                {editAutoSaveStatus === "saving" ? "Autosaving…" : editAutoSaveStatus === "saved" ? "Saved" : editAutoSaveStatus === "error" ? "Save failed" : "Changes autosave as you edit"}
+                {editAutoSaveStatus === "saving" ? t("taskDetail.edit.autosaving", "Autosaving…") : editAutoSaveStatus === "saved" ? t("taskDetail.edit.saved", "Saved") : editAutoSaveStatus === "error" ? t("taskDetail.edit.saveFailed", "Save failed") : t("taskDetail.edit.autosaveHint", "Changes autosave as you edit")}
               </span>
               <div className="modal-actions-spacer" />
               <button
@@ -3741,14 +3751,14 @@ export function TaskDetailContent({
                 onClick={exitEditMode}
                 disabled={isSaving}
               >
-                Cancel
+                {t("common.cancel", "Cancel")}
               </button>
               <button
                 className="btn btn-primary btn-sm"
                 onClick={() => void handleSave()}
                 disabled={isSaving}
               >
-                {isSaving ? "Saving…" : "Save"}
+                {isSaving ? t("taskDetail.edit.saving", "Saving…") : t("common.save", "Save")}
               </button>
             </>
           ) : (
@@ -3757,10 +3767,10 @@ export function TaskDetailContent({
               {task.column === "triage" && task.status === "awaiting-approval" && workingTask.prompt && (
                 <>
                   <button className="btn btn-primary btn-sm" onClick={handleApprovePlan}>
-                    Approve Plan
+                    {t("taskDetail.plan.approveBtn", "Approve Plan")}
                   </button>
                   <button className="btn btn-danger btn-sm" onClick={handleRejectPlan}>
-                    Reject Plan
+                    {t("taskDetail.plan.rejectBtn", "Reject Plan")}
                   </button>
                 </>
               )}
@@ -3772,10 +3782,10 @@ export function TaskDetailContent({
                 <button
                   className="btn btn-sm btn-danger"
                   onClick={handleDelete}
-                  aria-label="Delete task"
-                  title="Delete task"
+                  aria-label={t("taskDetail.delete.ariaLabel", "Delete task")}
+                  title={t("taskDetail.delete.ariaLabel", "Delete task")}
                 >
-                  Delete
+                  {t("taskDetail.delete.btn", "Delete")}
                 </button>
               )}
 
@@ -3791,7 +3801,7 @@ export function TaskDetailContent({
                     aria-haspopup="menu"
                     aria-expanded={showActionsMenu}
                   >
-                    Actions
+                    {t("taskDetail.actions.menuBtn", "Actions")}
                     <ChevronDown size={12} />
                   </button>
                   {showActionsMenu && (
@@ -3802,7 +3812,7 @@ export function TaskDetailContent({
                         role="menuitem"
                         onClick={() => handleActionsMenuItemClick(handleDelete)}
                       >
-                        Delete
+                        {t("taskDetail.delete.btn", "Delete")}
                       </button>
 
                       {/* Duplicate */}
@@ -3812,7 +3822,7 @@ export function TaskDetailContent({
                           role="menuitem"
                           onClick={() => handleActionsMenuItemClick(handleDuplicate)}
                         >
-                          Duplicate
+                          {t("taskDetail.duplicate.btn", "Duplicate")}
                         </button>
                       )}
 
@@ -3823,7 +3833,7 @@ export function TaskDetailContent({
                           role="menuitem"
                           onClick={() => handleActionsMenuItemClick(handleOpenRefineModal)}
                         >
-                          Refine
+                          {t("taskDetail.refine.btn", "Refine")}
                         </button>
                       )}
 
@@ -3833,7 +3843,7 @@ export function TaskDetailContent({
                         role="menuitem"
                         onClick={() => handleActionsMenuItemClick(handleRespecify)}
                       >
-                        Respecify
+                        {t("taskDetail.respecify.btn", "Respecify")}
                       </button>
 
                       {/* Retry */}
@@ -3843,7 +3853,7 @@ export function TaskDetailContent({
                           role="menuitem"
                           onClick={() => handleActionsMenuItemClick(handleRetry)}
                         >
-                          Retry
+                          {t("taskDetail.retry.btn", "Retry")}
                         </button>
                       )}
 
@@ -3854,7 +3864,7 @@ export function TaskDetailContent({
                           role="menuitem"
                           onClick={() => handleActionsMenuItemClick(handleReset)}
                         >
-                          Reset
+                          {t("taskDetail.reset.btn", "Reset")}
                         </button>
                       )}
 
@@ -3865,7 +3875,7 @@ export function TaskDetailContent({
                           role="menuitem"
                           onClick={() => handleActionsMenuItemClick(handleTogglePause)}
                         >
-                          {isTaskPaused ? "Unpause" : "Pause"}
+                          {isTaskPaused ? t("taskDetail.pause.unpauseBtn", "Unpause") : t("taskDetail.pause.pauseBtn", "Pause")}
                         </button>
                       )}
                       {task.column !== "done" && task.paused && task.pausedByAgentId && (
@@ -3873,7 +3883,7 @@ export function TaskDetailContent({
                           className="detail-actions-menu-item detail-actions-menu-note"
                           role="note"
                         >
-                          Paused by agent
+                          {t("taskDetail.pause.pausedByAgent", "Paused by agent")}
                         </span>
                       )}
                     </div>
@@ -3894,12 +3904,12 @@ export function TaskDetailContent({
                         onClick={handleMoveButtonClick}
                         onKeyDown={handleMoveButtonKeyDown}
                         disabled={!primaryMoveTransition}
-                        aria-label={primaryMoveTransition ? `Move to ${COLUMN_LABELS[primaryMoveTransition]}` : undefined}
+                        aria-label={primaryMoveTransition ? t("taskDetail.move.moveTo", "Move to {{column}}", { column: columnLabel(primaryMoveTransition) }) : undefined}
                         aria-haspopup={hasSecondaryMoveOptions ? "menu" : undefined}
                         aria-expanded={hasSecondaryMoveOptions ? showMoveMenu : undefined}
                       >
                         <span className="detail-move-btn__label">
-                          Move to {primaryMoveTransition ? COLUMN_LABELS[primaryMoveTransition] : ""}
+                          {t("taskDetail.move.moveTo", "Move to {{column}}", { column: primaryMoveTransition ? columnLabel(primaryMoveTransition) : "" })}
                         </span>
                         {hasSecondaryMoveOptions && (
                           <span className="detail-move-btn__arrow" aria-hidden="true">
@@ -3917,7 +3927,7 @@ export function TaskDetailContent({
                               onClick={() => handleMoveMenuItemClick(col)}
                               onKeyDown={handleMoveMenuKeyDown}
                             >
-                              {col === "in-progress" ? "Back to In Progress" : `Move to ${COLUMN_LABELS[col]}`}
+                              {col === "in-progress" ? t("taskDetail.move.backToInProgress", "Back to In Progress") : t("taskDetail.move.moveTo", "Move to {{column}}", { column: columnLabel(col) })}
                             </button>
                           ))}
                         </div>
@@ -3930,8 +3940,8 @@ export function TaskDetailContent({
                     ) : (
                       <button
                         className="btn btn-primary btn-sm"
-                        onClick={manualReviewActionLabel === "Check PR Status" ? handleCheckPrStatus : handleMergeMenuItemClick}
-                        disabled={manualReviewActionLabel === "Check PR Status" && isCheckingPrStatus}
+                        onClick={isCheckPrStatusAction ? handleCheckPrStatus : handleMergeMenuItemClick}
+                        disabled={isCheckPrStatusAction && isCheckingPrStatus}
                       >
                         {manualReviewActionLabel}
                       </button>
@@ -3945,12 +3955,12 @@ export function TaskDetailContent({
                       onClick={handleMoveButtonClick}
                       onKeyDown={handleMoveButtonKeyDown}
                       disabled={!primaryMoveTransition}
-                      aria-label={primaryMoveTransition ? `Move to ${COLUMN_LABELS[primaryMoveTransition]}` : undefined}
+                      aria-label={primaryMoveTransition ? t("taskDetail.move.moveTo", "Move to {{column}}", { column: columnLabel(primaryMoveTransition) }) : undefined}
                       aria-haspopup={hasSecondaryMoveOptions ? "menu" : undefined}
                       aria-expanded={hasSecondaryMoveOptions ? showMoveMenu : undefined}
                     >
                       <span className="detail-move-btn__label">
-                        Move to {primaryMoveTransition ? COLUMN_LABELS[primaryMoveTransition] : ""}
+                        {t("taskDetail.move.moveTo", "Move to {{column}}", { column: primaryMoveTransition ? columnLabel(primaryMoveTransition) : "" })}
                       </span>
                       {hasSecondaryMoveOptions && (
                         <span className="detail-move-btn__arrow" aria-hidden="true">
@@ -3968,7 +3978,7 @@ export function TaskDetailContent({
                             onClick={() => handleMoveMenuItemClick(col)}
                             onKeyDown={handleMoveMenuKeyDown}
                           >
-                            Move to {COLUMN_LABELS[col]}
+                            {t("taskDetail.move.moveTo", "Move to {{column}}", { column: columnLabel(col) })}
                           </button>
                         ))}
                       </div>
@@ -3991,40 +4001,40 @@ export function TaskDetailContent({
               onClick={(e) => e.stopPropagation()}
             >
               <div className="modal-header">
-                <h3 className="detail-refine-title">Refine</h3>
-                <button className="modal-close" onClick={handleCloseRefineModal} aria-label="Close">
+                <h3 className="detail-refine-title">{t("taskDetail.refine.modalTitle", "Refine")}</h3>
+                <button className="modal-close" onClick={handleCloseRefineModal} aria-label={t("common.close", "Close")}>
                   &times;
                 </button>
               </div>
               <div className="detail-body">
                 <p className="detail-refine-help">
-                  Describe what needs to be refined or improved...
+                  {t("taskDetail.refine.help", "Describe what needs to be refined or improved...")}
                 </p>
                 <textarea
                   className="detail-refine-textarea"
                   value={refineFeedback}
                   onChange={(e) => setRefineFeedback(e.target.value)}
-                  placeholder="Enter your feedback here..."
+                  placeholder={t("taskDetail.refine.placeholder", "Enter your feedback here...")}
                   rows={6}
                   maxLength={2000}
                   autoFocus
                 />
                 <div className="detail-refine-input-group">
                   <div className="detail-refine-char-count">
-                    {refineFeedback.length}/2000 characters
+                    {t("taskDetail.refine.charCount", "{{count}}/2000 characters", { count: refineFeedback.length })}
                   </div>
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={handleSubmitRefine}
                     disabled={!refineFeedback.trim() || isRefining}
                   >
-                    {isRefining ? "Creating..." : "Create Refinement Task"}
+                    {isRefining ? t("taskDetail.refine.creating", "Creating...") : t("taskDetail.refine.createBtn", "Create Refinement Task")}
                   </button>
                 </div>
               </div>
               <div className="modal-actions">
                 <button className="btn btn-sm" onClick={handleCloseRefineModal} disabled={isRefining}>
-                  Cancel
+                  {t("common.cancel", "Cancel")}
                 </button>
               </div>
             </div>

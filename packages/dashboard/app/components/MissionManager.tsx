@@ -1,5 +1,6 @@
 import "./MissionManager.css";
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getErrorMessage } from "@fusion/core";
@@ -164,12 +165,6 @@ const autopilotStateColors: Record<AutopilotState, { bg: string; text: string }>
   completing: { bg: "var(--autopilot-completing-bg)", text: "var(--autopilot-completing-text)" },
 };
 
-const autopilotStateLabels: Record<AutopilotState, string> = {
-  inactive: "Off",
-  watching: "Watching",
-  activating: "Activating slice",
-  completing: "Completing",
-};
 
 /** Assertion status colors */
 const assertionStatusColors: Record<MissionAssertionStatus, { bg: string; text: string }> = {
@@ -196,52 +191,47 @@ const missionInterviewListStatuses: ReadonlySet<AiSessionSummary["status"]> = ne
   "complete",
 ]);
 
-function getInterviewStatusLabel(status: AiSessionSummary["status"]): string {
+function getInterviewStatusLabel(status: AiSessionSummary["status"], t: (key: string, fallback: string) => string): string {
   switch (status) {
     case "generating":
-      return "Generating plan";
+      return t("missions.interviewStatusGenerating", "Generating plan");
     case "awaiting_input":
-      return "Awaiting input";
+      return t("missions.interviewStatusAwaitingInput", "Awaiting input");
     case "error":
-      return "Needs retry";
+      return t("missions.interviewStatusError", "Needs retry");
     case "complete":
-      return "Plan ready";
+      return t("missions.interviewStatusComplete", "Plan ready");
     default:
       return status;
   }
 }
 
-function getInterviewActionLabel(status: AiSessionSummary["status"]): string {
-  switch (status) {
-    case "error":
-      return "Retry interview";
-    case "generating":
-      return "Generating plan";
-    case "complete":
-      return "Review plan";
-    default:
-      return "Resume interview";
-  }
-}
-
-function getMissionRunHelperText(status: MissionStatus): string | null {
+function getMissionRunHelperText(status: MissionStatus, t: (key: string, fallback: string) => string): string | null {
   switch (status) {
     case "planning":
-      return "Starting activates the first slice so work can begin.";
+      return t("missions.runHelperPlanning", "Starting activates the first slice so work can begin.");
     case "active":
-      return "Stopping pauses linked tasks and marks the mission blocked.";
+      return t("missions.runHelperActive", "Stopping pauses linked tasks and marks the mission blocked.");
     case "blocked":
-      return "Resuming re-activates the mission and continues execution.";
+      return t("missions.runHelperBlocked", "Resuming re-activates the mission and continues execution.");
     default:
       return null;
   }
 }
 
-function getAutopilotStateLabel(state: string): string {
-  if (state in autopilotStateLabels) {
-    return autopilotStateLabels[state as AutopilotState];
+function getAutopilotStateLabel(state: string, t: (key: string, fallback: string) => string): string {
+  switch (state as AutopilotState) {
+    case "inactive":
+      return t("missions.autopilotStateInactive", "Off");
+    case "watching":
+      return t("missions.autopilotStateWatching", "Watching");
+    case "activating":
+      return t("missions.autopilotStateActivating", "Activating slice");
+    case "completing":
+      return t("missions.autopilotStateCompleting", "Completing");
+    default:
+      return state ? state.replace(/_/g, " ") : t("missions.autopilotStateUnknown", "Unknown");
   }
-  return state ? state.replace(/_/g, " ") : "Unknown";
 }
 
 /** Get the plan state for a milestone (derived from interviewState) */
@@ -253,6 +243,7 @@ function getMilestonePlanState(interviewState?: string): "not_started" | "planne
 
 /** Render a plan state indicator badge */
 function PlanStateIndicator({ state }: { state: "not_started" | "planned" | "needs_update" }) {
+  const { t } = useTranslation("app");
   const stateClass =
     state === "planned"
       ? "mission-plan-state-indicator--planned"
@@ -262,10 +253,10 @@ function PlanStateIndicator({ state }: { state: "not_started" | "planned" | "nee
 
   const title =
     state === "planned"
-      ? "Planned"
+      ? t("missions.planStatePlanned", "Planned")
       : state === "needs_update"
-        ? "Needs update"
-        : "Not planned";
+        ? t("missions.planStateNeedsUpdate", "Needs update")
+        : t("missions.planStateNotPlanned", "Not planned");
 
   return (
     <span
@@ -277,8 +268,8 @@ function PlanStateIndicator({ state }: { state: "not_started" | "planned" | "nee
 }
 
 /** Convert validation state snake_case to human-readable label */
-function formatValidationState(state?: string): string {
-  if (!state) return "Not started";
+function formatValidationState(state: string | undefined, t: (key: string, fallback: string) => string): string {
+  if (!state) return t("missions.validationStateNotStarted", "Not started");
   // Replace underscores with spaces and title-case the result
   return state.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
@@ -404,24 +395,24 @@ type MissionHealthState = "healthy" | "warning" | "error";
 
 const HOUR_MS = 60 * 60 * 1000;
 
-function getRelativeTime(timestamp?: string): string {
+function getRelativeTime(timestamp: string | undefined, t: (key: string, fallback: string, opts?: Record<string, unknown>) => string): string {
   if (!timestamp) return "—";
 
   const ts = new Date(timestamp).getTime();
   if (Number.isNaN(ts)) return "—";
 
   const diffMs = Date.now() - ts;
-  if (diffMs < 0) return "just now";
+  if (diffMs < 0) return t("missions.relativeTimeJustNow", "just now");
 
   const diffMinutes = Math.floor(diffMs / (60 * 1000));
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffMinutes < 1) return t("missions.relativeTimeJustNow", "just now");
+  if (diffMinutes < 60) return t("missions.relativeTimeMinutes", "{{count}}m ago", { count: diffMinutes });
 
   const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return t("missions.relativeTimeHours", "{{count}}h ago", { count: diffHours });
 
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return t("missions.relativeTimeDays", "{{count}}d ago", { count: diffDays });
 }
 
 function getMissionHealthState(health?: MissionHealth): MissionHealthState {
@@ -564,16 +555,16 @@ function renderMarkdownText(text: string): ReactNode {
   );
 }
 
-function getAutopilotActivitySummary(state: AutopilotState, lastActivityAt?: string): string | null {
+function getAutopilotActivitySummary(state: AutopilotState, lastActivityAt: string | undefined, t: (key: string, fallback: string, opts?: Record<string, unknown>) => string): string | null {
   if (!lastActivityAt) {
     return null;
   }
 
   if (state === "watching") {
-    return `Watching since ${getRelativeTime(lastActivityAt)}`;
+    return t("missions.autopilotWatchingSince", "Watching since {{time}}", { time: getRelativeTime(lastActivityAt, t) });
   }
 
-  return `Last activation ${getRelativeTime(lastActivityAt)}`;
+  return t("missions.autopilotLastActivation", "Last activation {{time}}", { time: getRelativeTime(lastActivityAt, t) });
 }
 
 function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHierarchy {
@@ -607,6 +598,7 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
 }
 
 export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
+  const { t } = useTranslation("app");
   const isActive = isInline || isOpen;
   const cacheSuffix = projectId ?? "";
   const missionsCacheKey = `${SWR_CACHE_KEYS.MISSIONS_PREFIX}${cacheSuffix}`;
@@ -1007,7 +999,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       hasHydratedRef.current = true;
       void loadMissionHealth(data);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load missions", "error");
+      addToast(getErrorMessage(err) || t("missions.loadFailed", "Failed to load missions"), "error");
     } finally {
       setLoading(false);
     }
@@ -1074,7 +1066,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       }
     } catch (err) {
       console.error("[MissionManager] loadMissionDetail:", err);
-      addToast(getErrorMessage(err) || "Failed to load mission details", "error");
+      addToast(getErrorMessage(err) || t("missions.loadDetailFailed", "Failed to load mission details"), "error");
     } finally {
       setDetailLoading(false);
     }
@@ -1205,7 +1197,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         });
       }
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load mission activity", "error");
+      addToast(getErrorMessage(err) || t("missions.loadActivityFailed", "Failed to load mission activity"), "error");
     } finally {
       if (!append) {
         setEventsLoading(false);
@@ -1623,7 +1615,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleSaveMission = useCallback(async () => {
     if (!missionForm.title.trim()) {
-      addToast("Mission title is required", "error");
+      addToast(t("missions.titleRequired", "Mission title is required"), "error");
       return;
     }
 
@@ -1631,7 +1623,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       missionForm.branchStrategy.mode === "existing" || missionForm.branchStrategy.mode === "custom-new";
     const branchName = missionForm.branchStrategy.branchName?.trim() ?? "";
     if (branchNameRequired && !branchName) {
-      addToast("Branch name is required for selected branch strategy", "error");
+      addToast(t("missions.branchNameRequired", "Branch name is required for selected branch strategy"), "error");
       return;
     }
 
@@ -1650,7 +1642,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           baseBranch: missionForm.baseBranch.trim() || undefined,
           branchStrategy,
         }, projectId);
-        addToast("Mission created", "success");
+        addToast(t("missions.created", "Mission created"), "success");
       } else if (editingMissionId) {
         // Build update payload - when autopilot is enabled, also set autoAdvance
         // for backward compat with the engine (though engine no longer reads it)
@@ -1666,7 +1658,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           updates.autoAdvance = true;
         }
         await updateMission(editingMissionId, updates as Parameters<typeof updateMission>[1], projectId);
-        addToast("Mission updated", "success");
+        addToast(t("missions.updated", "Mission updated"), "success");
         // Refresh detail view if viewing this mission
         if (selectedMission?.id === editingMissionId) {
           await loadMissionDetail(editingMissionId);
@@ -1675,7 +1667,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       await loadMissions();
       handleCancelMission();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to save mission", "error");
+      addToast(getErrorMessage(err) || t("missions.saveFailed", "Failed to save mission"), "error");
     } finally {
       setSaving(false);
     }
@@ -1684,14 +1676,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleDeleteMission = useCallback(async (missionId: string) => {
     try {
       await deleteMission(missionId, projectId);
-      addToast("Mission deleted", "success");
+      addToast(t("missions.deleted", "Mission deleted"), "success");
       if (selectedMission?.id === missionId) {
         setSelectedMission(null);
       }
       await loadMissions();
       setDeleteConfirmId(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to delete mission", "error");
+      addToast(getErrorMessage(err) || t("missions.deleteFailed", "Failed to delete mission"), "error");
     }
   }, [addToast, loadMissions, selectedMission, projectId]);
 
@@ -1722,7 +1714,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleSaveMilestone = useCallback(async () => {
     if (!milestoneForm.title.trim()) {
-      addToast("Milestone title is required", "error");
+      addToast(t("missions.milestoneTitleRequired", "Milestone title is required"), "error");
       return;
     }
 
@@ -1735,7 +1727,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           acceptanceCriteria: milestoneForm.acceptanceCriteria.trim() || undefined,
           dependencies: milestoneForm.dependencies,
         }, projectId);
-        addToast("Milestone created", "success");
+        addToast(t("missions.milestoneCreated", "Milestone created"), "success");
       } else if (editingMilestoneId) {
         await updateMilestone(editingMilestoneId, {
           title: milestoneForm.title.trim(),
@@ -1744,12 +1736,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           status: milestoneForm.status,
           dependencies: milestoneForm.dependencies,
         }, projectId);
-        addToast("Milestone updated", "success");
+        addToast(t("missions.milestoneUpdated", "Milestone updated"), "success");
       }
       await loadMissionDetail(selectedMission!.id);
       handleCancelMilestone();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to save milestone", "error");
+      addToast(getErrorMessage(err) || t("missions.milestoneSaveFailed", "Failed to save milestone"), "error");
     } finally {
       setSaving(false);
     }
@@ -1758,11 +1750,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleDeleteMilestone = useCallback(async (milestoneId: string) => {
     try {
       await deleteMilestone(milestoneId, projectId);
-      addToast("Milestone deleted", "success");
+      addToast(t("missions.milestoneDeleted", "Milestone deleted"), "success");
       await loadMissionDetail(selectedMission!.id);
       setDeleteConfirmId(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to delete milestone", "error");
+      addToast(getErrorMessage(err) || t("missions.milestoneDeleteFailed", "Failed to delete milestone"), "error");
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
@@ -1817,7 +1809,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleSaveSlice = useCallback(async () => {
     if (!sliceForm.title.trim()) {
-      addToast("Slice title is required", "error");
+      addToast(t("missions.sliceTitleRequired", "Slice title is required"), "error");
       return;
     }
 
@@ -1828,19 +1820,19 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           title: sliceForm.title.trim(),
           description: sliceForm.description.trim() || undefined,
         }, projectId);
-        addToast("Slice created", "success");
+        addToast(t("missions.sliceCreated", "Slice created"), "success");
       } else if (editingSliceId) {
         await updateSlice(editingSliceId, {
           title: sliceForm.title.trim(),
           description: sliceForm.description.trim() || undefined,
           status: sliceForm.status,
         }, projectId);
-        addToast("Slice updated", "success");
+        addToast(t("missions.sliceUpdated", "Slice updated"), "success");
       }
       await loadMissionDetail(selectedMission!.id);
       handleCancelSlice();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to save slice", "error");
+      addToast(getErrorMessage(err) || t("missions.sliceSaveFailed", "Failed to save slice"), "error");
     } finally {
       setSaving(false);
     }
@@ -1849,21 +1841,21 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleDeleteSlice = useCallback(async (sliceId: string) => {
     try {
       await deleteSlice(sliceId, projectId);
-      addToast("Slice deleted", "success");
+      addToast(t("missions.sliceDeleted", "Slice deleted"), "success");
       await loadMissionDetail(selectedMission!.id);
       setDeleteConfirmId(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to delete slice", "error");
+      addToast(getErrorMessage(err) || t("missions.sliceDeleteFailed", "Failed to delete slice"), "error");
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
   const handleActivateSlice = useCallback(async (sliceId: string) => {
     try {
       await activateSlice(sliceId, projectId);
-      addToast("Slice activated", "success");
+      addToast(t("missions.sliceActivated", "Slice activated"), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to activate slice", "error");
+      addToast(getErrorMessage(err) || t("missions.sliceActivateFailed", "Failed to activate slice"), "error");
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
@@ -1907,7 +1899,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleSaveFeature = useCallback(async () => {
     if (!featureForm.title.trim()) {
-      addToast("Feature title is required", "error");
+      addToast(t("missions.featureTitleRequired", "Feature title is required"), "error");
       return;
     }
 
@@ -1919,7 +1911,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           description: featureForm.description.trim() || undefined,
           acceptanceCriteria: featureForm.acceptanceCriteria.trim() || undefined,
         }, projectId);
-        addToast("Feature created", "success");
+        addToast(t("missions.featureCreated", "Feature created"), "success");
       } else if (editingFeatureId) {
         await updateFeature(editingFeatureId, {
           title: featureForm.title.trim(),
@@ -1927,12 +1919,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           acceptanceCriteria: featureForm.acceptanceCriteria.trim() || undefined,
           status: featureForm.status,
         }, projectId);
-        addToast("Feature updated", "success");
+        addToast(t("missions.featureUpdated", "Feature updated"), "success");
       }
       await loadMissionDetail(selectedMission!.id);
       handleCancelFeature();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to save feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureSaveFailed", "Failed to save feature"), "error");
     } finally {
       setSaving(false);
     }
@@ -1941,38 +1933,38 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleDeleteFeature = useCallback(async (featureId: string) => {
     try {
       await deleteFeature(featureId, projectId);
-      addToast("Feature deleted", "success");
+      addToast(t("missions.featureDeleted", "Feature deleted"), "success");
       await loadMissionDetail(selectedMission!.id);
       setDeleteConfirmId(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to delete feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureDeleteFailed", "Failed to delete feature"), "error");
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
   const handleLinkTask = useCallback(async () => {
     if (!linkTaskFeatureId || !selectedTaskId.trim()) {
-      addToast("Task ID is required", "error");
+      addToast(t("missions.taskIdRequired", "Task ID is required"), "error");
       return;
     }
 
     try {
       await linkFeatureToTask(linkTaskFeatureId, selectedTaskId.trim(), projectId);
-      addToast("Feature linked to task", "success");
+      addToast(t("missions.featureLinkedToTask", "Feature linked to task"), "success");
       await loadMissionDetail(selectedMission!.id);
       setLinkTaskFeatureId(null);
       setSelectedTaskId("");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to link feature to task", "error");
+      addToast(getErrorMessage(err) || t("missions.featureLinkTaskFailed", "Failed to link feature to task"), "error");
     }
   }, [linkTaskFeatureId, selectedTaskId, addToast, loadMissionDetail, selectedMission, projectId]);
 
   const handleUnlinkTask = useCallback(async (featureId: string) => {
     try {
       await unlinkFeatureFromTask(featureId, projectId);
-      addToast("Feature unlinked from task", "success");
+      addToast(t("missions.featureUnlinkedFromTask", "Feature unlinked from task"), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to unlink feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureUnlinkFailed", "Failed to unlink feature"), "error");
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
@@ -1981,10 +1973,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       setSaving(true);
       await triageFeature(featureId, undefined, undefined, projectId, toMissionBranchOptions(selectedMission ?? undefined));
-      addToast("Feature triaged — task created", "success");
+      addToast(t("missions.featureTriaged", "Feature triaged — task created"), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to triage feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureTriageFailed", "Failed to triage feature"), "error");
     } finally {
       setSaving(false);
     }
@@ -2021,10 +2013,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       setSaving(true);
       const result = await triageAllSliceFeatures(sliceId, projectId, toMissionBranchOptions(selectedMission ?? undefined));
-      addToast(`Triaged ${result.count} feature${result.count !== 1 ? "s" : ""}`, "success");
+      addToast(t("missions.sliceTriaged", { count: result.count, defaultValue_one: "Triaged {{count}} feature", defaultValue_other: "Triaged {{count}} features" }), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to triage slice features", "error");
+      addToast(getErrorMessage(err) || t("missions.sliceTriageFailed", "Failed to triage slice features"), "error");
     } finally {
       setSaving(false);
     }
@@ -2047,7 +2039,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleCreateAssertion = useCallback(async (milestoneId: string) => {
     if (!assertionForm.title.trim() || !assertionForm.assertion.trim()) {
-      addToast("Title and assertion text are required", "error");
+      addToast(t("missions.assertionFieldsRequired", "Title and assertion text are required"), "error");
       return;
     }
     try {
@@ -2057,13 +2049,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         assertion: assertionForm.assertion.trim(),
         status: assertionForm.status,
       }, projectId);
-      addToast("Assertion created", "success");
+      addToast(t("missions.assertionCreated", "Assertion created"), "success");
       await loadAssertionsForMilestone(milestoneId);
       await loadValidationRollup(milestoneId);
       setIsCreatingAssertion(false);
       setAssertionForm({ title: "", assertion: "", status: "pending" });
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to create assertion", "error");
+      addToast(getErrorMessage(err) || t("missions.assertionCreateFailed", "Failed to create assertion"), "error");
     } finally {
       setSaving(false);
     }
@@ -2086,7 +2078,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleSaveAssertion = useCallback(async (assertionId: string, milestoneId: string) => {
     if (!assertionForm.title.trim() || !assertionForm.assertion.trim()) {
-      addToast("Title and assertion text are required", "error");
+      addToast(t("missions.assertionFieldsRequired", "Title and assertion text are required"), "error");
       return;
     }
     try {
@@ -2096,12 +2088,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         assertion: assertionForm.assertion.trim(),
         status: assertionForm.status,
       }, projectId);
-      addToast("Assertion updated", "success");
+      addToast(t("missions.assertionUpdated", "Assertion updated"), "success");
       await loadAssertionsForMilestone(milestoneId);
       await loadValidationRollup(milestoneId);
       handleCancelAssertion();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to update assertion", "error");
+      addToast(getErrorMessage(err) || t("missions.assertionUpdateFailed", "Failed to update assertion"), "error");
     } finally {
       setSaving(false);
     }
@@ -2143,11 +2135,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       setLinkingAssertions((prev) => new Set(prev).add(assertionId));
       await linkFeatureToAssertion(featureId, assertionId, projectId);
-      addToast("Feature linked to assertion", "success");
+      addToast(t("missions.featureLinkedToAssertion", "Feature linked to assertion"), "success");
       await loadLinkedFeaturesForAssertion(assertionId);
       setFeaturePickerOpenForAssertion(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to link feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureLinkFailed", "Failed to link feature"), "error");
     } finally {
       setLinkingAssertions((prev) => {
         const next = new Set(prev);
@@ -2162,10 +2154,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       setUnlinkingFeatures((prev) => new Set(prev).add(key));
       await unlinkFeatureFromAssertion(featureId, assertionId, projectId);
-      addToast("Feature unlinked from assertion", "success");
+      addToast(t("missions.featureUnlinkedFromAssertion", "Feature unlinked from assertion"), "success");
       await loadLinkedFeaturesForAssertion(assertionId);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to unlink feature", "error");
+      addToast(getErrorMessage(err) || t("missions.featureUnlinkFromAssertionFailed", "Failed to unlink feature"), "error");
     } finally {
       setUnlinkingFeatures((prev) => {
         const next = new Set(prev);
@@ -2181,7 +2173,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       setValidatingFeatures((prev) => new Set(prev).add(featureId));
       await triggerValidation(featureId, projectId);
-      addToast("Validation triggered", "success");
+      addToast(t("missions.validationTriggered", "Validation triggered"), "success");
       // Reload feature loop state
       const snapshot = await fetchValidationLoopState(featureId, projectId);
       setFeatureLoopStates((prev) => {
@@ -2190,7 +2182,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         return next;
       });
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to trigger validation", "error");
+      addToast(getErrorMessage(err) || t("missions.validationTriggerFailed", "Failed to trigger validation"), "error");
     } finally {
       setValidatingFeatures((prev) => {
         const next = new Set(prev);
@@ -2307,11 +2299,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleResumeMission = useCallback(async (missionId: string) => {
     try {
       await resumeMission(missionId, projectId);
-      addToast("Mission resumed", "success");
+      addToast(t("missions.resumed", "Mission resumed"), "success");
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to resume mission", "error");
+      addToast(getErrorMessage(err) || t("missions.resumeFailed", "Failed to resume mission"), "error");
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId]);
 
@@ -2320,11 +2312,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     try {
       const result = await stopMission(missionId, projectId);
       const count = result.pausedTaskIds?.length ?? 0;
-      addToast(`Mission stopped (${count} task${count !== 1 ? "s" : ""} paused)`, "success");
+      addToast(t("missions.stopped", { count, defaultValue_one: "Mission stopped ({{count}} task paused)", defaultValue_other: "Mission stopped ({{count}} tasks paused)" }), "success");
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to stop mission", "error");
+      addToast(getErrorMessage(err) || t("missions.stopFailed", "Failed to stop mission"), "error");
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId]);
 
@@ -2332,11 +2324,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleStartMission = useCallback(async (missionId: string) => {
     try {
       await startMission(missionId, projectId);
-      addToast("Mission started — first slice activated", "success");
+      addToast(t("missions.started", "Mission started — first slice activated"), "success");
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to start mission", "error");
+      addToast(getErrorMessage(err) || t("missions.startFailed", "Failed to start mission"), "error");
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId]);
 
@@ -2345,12 +2337,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleToggleAutopilot = useCallback(async (missionId: string, enabled: boolean) => {
     try {
       await updateMissionAutopilot(missionId, { enabled }, projectId);
-      addToast(enabled ? "Autopilot enabled" : "Autopilot disabled", "success");
+      addToast(enabled ? t("missions.autopilotEnabled", "Autopilot enabled") : t("missions.autopilotDisabled", "Autopilot disabled"), "success");
       // Reload mission detail to reflect updated fields
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to update autopilot", "error");
+      addToast(getErrorMessage(err) || t("missions.autopilotUpdateFailed", "Failed to update autopilot"), "error");
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId]);
 
@@ -2384,6 +2376,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const autopilotActivitySummary = getAutopilotActivitySummary(
     autopilotState,
     selectedMission?.lastAutopilotActivityAt,
+    t,
   );
 
   const previousSelectedMissionIdRef = useRef<string | null>(selectedMission?.id ?? null);
@@ -2498,7 +2491,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-detail__title-row">
                   <div className="mission-detail__title-text">
                     {autopilotPulseActive && (
-                      <span className="mission-detail__autopilot-dot" title="Autopilot watching" />
+                      <span className="mission-detail__autopilot-dot" title={t("missions.autopilotWatching", "Autopilot watching")} />
                     )}
                     <h3 className="mission-detail__title">{selectedMission.title}</h3>
                   </div>
@@ -2517,15 +2510,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 )}
                 <div className="mission-detail__meta">
                   <span className="mission-detail__meta-info">
-                    {selectedMission.milestones.length} milestones
+                    {t("missions.milestonesCount", "{{count}} milestones", { count: selectedMission.milestones.length })}
                   </span>
                 </div>
 
-                <section className="mission-detail__linked-goals" aria-label="Linked goals">
+                <section className="mission-detail__linked-goals" aria-label={t("missions.linkedGoals", "Linked goals")}>
                   <div className="mission-detail__linked-goals-header">
-                    <h4 className="mission-detail__linked-goals-title">Linked Goals</h4>
+                    <h4 className="mission-detail__linked-goals-title">{t("missions.linkedGoalsTitle", "Linked Goals")}</h4>
                     <span className="mission-detail__meta-info">
-                      {selectedMission.linkedGoals?.length ?? 0} linked
+                      {t("missions.linkedCount", { count: selectedMission.linkedGoals?.length ?? 0, defaultValue_one: "{{count}} linked", defaultValue_other: "{{count}} linked" })}
                     </span>
                   </div>
                   {(selectedMission.linkedGoals?.length ?? 0) > 0 ? (
@@ -2543,12 +2536,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       ))}
                     </div>
                   ) : (
-                    <p className="mission-detail__linked-goals-empty">No linked goals.</p>
+                    <p className="mission-detail__linked-goals-empty">{t("missions.noLinkedGoals", "No linked goals.")}</p>
                   )}
                 </section>
 
-                <section className="mission-detail__run-settings" aria-label="Mission run settings">
-                  <h4 className="mission-detail__run-settings-title">Mission run settings</h4>
+                <section className="mission-detail__run-settings" aria-label={t("missions.runSettings", "Mission run settings")}>
+                  <h4 className="mission-detail__run-settings-title">{t("missions.runSettingsTitle", "Mission run settings")}</h4>
                   {/* ── Autopilot section ── */}
                   <div className="mission-detail__autopilot">
                     <div className="mission-detail__autopilot-toggle">
@@ -2557,14 +2550,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           type="checkbox"
                           checked={selectedMission.autopilotEnabled ?? false}
                           onChange={(e) => handleToggleAutopilot(selectedMission.id, e.target.checked)}
-                          aria-label="Autopilot"
+                          aria-label={t("missions.autopilotLabel", "Autopilot")}
                         />
                         <span className="mission-toggle__track" aria-hidden="true">
                           <span className="mission-toggle__thumb" />
                         </span>
                         <span className="mission-toggle__label">
                           <Zap size={14} className="mission-detail__autopilot-icon" />
-                          Autopilot
+                          {t("missions.autopilotLabel", "Autopilot")}
                         </span>
                       </label>
                       <span
@@ -2576,11 +2569,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         data-testid="autopilot-state-badge"
                       >
                         {autopilotPulseActive && <span className="mission-detail__autopilot-pulse" />}
-                        {getAutopilotStateLabel(autopilotState)}
+                        {autopilotState === "inactive" ? t("missions.autopilotOff", "Off")
+                          : autopilotState === "watching" ? t("missions.autopilotWatchingState", "Watching")
+                          : autopilotState === "activating" ? t("missions.autopilotActivatingSlice", "Activating slice")
+                          : autopilotState === "completing" ? t("missions.autopilotCompleting", "Completing")
+                          : getAutopilotStateLabel(autopilotState, t)}
                       </span>
                     </div>
                     <span className="mission-detail__autopilot-description">
-                      When on, Fusion automatically activates the next slice and plans its features as work completes.
+                      {t("missions.autopilotDescription", "When on, Fusion automatically activates the next slice and plans its features as work completes.")}
                     </span>
                     {autopilotActivitySummary && (
                       <span className="mission-detail__autopilot-activity mission-relative-time">
@@ -2595,53 +2592,53 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       <button
                         className="mission-btn mission-btn--danger"
                         onClick={() => handleStopMission(selectedMission.id)}
-                        title="Stop mission"
-                        aria-label="Stop mission"
+                        title={t("missions.stopMission", "Stop mission")}
+                        aria-label={t("missions.stopMission", "Stop mission")}
                       >
                         <Square size={14} />
-                        <span>Stop mission</span>
+                        <span>{t("missions.stopMission", "Stop mission")}</span>
                       </button>
                     )}
                     {selectedMission.status === "blocked" && (
                       <button
                         className="mission-btn mission-btn--primary"
                         onClick={() => handleResumeMission(selectedMission.id)}
-                        title="Resume mission"
-                        aria-label="Resume mission"
+                        title={t("missions.resumeMission", "Resume mission")}
+                        aria-label={t("missions.resumeMission", "Resume mission")}
                       >
                         <Play size={14} />
-                        <span>Resume mission</span>
+                        <span>{t("missions.resumeMission", "Resume mission")}</span>
                       </button>
                     )}
                     {selectedMission.status === "planning" && (
                       <button
                         className="mission-btn mission-btn--primary"
                         onClick={() => handleStartMission(selectedMission.id)}
-                        title="Start mission"
-                        aria-label="Start mission"
+                        title={t("missions.startMission", "Start mission")}
+                        aria-label={t("missions.startMission", "Start mission")}
                       >
                         <Play size={14} />
-                        <span>Start mission</span>
+                        <span>{t("missions.startMission", "Start mission")}</span>
                       </button>
                     )}
-                    {getMissionRunHelperText(selectedMission.status) && (
-                      <span className="mission-detail__run-help">{getMissionRunHelperText(selectedMission.status)}</span>
+                    {getMissionRunHelperText(selectedMission.status, t) && (
+                      <span className="mission-detail__run-help">{getMissionRunHelperText(selectedMission.status, t)}</span>
                     )}
                   </div>
                     <div className="mission-detail__management-actions">
                       <button
                         className="mission-icon-btn"
                         onClick={() => handleEditMission(selectedMission)}
-                        title="Edit mission"
-                        aria-label="Edit mission"
+                        title={t("missions.editMission", "Edit mission")}
+                        aria-label={t("missions.editMission", "Edit mission")}
                       >
                         <Pencil size={14} />
                       </button>
                       <button
                         className="mission-icon-btn mission-icon-btn--danger"
                         onClick={() => setDeleteConfirmId({ type: "mission", id: selectedMission.id })}
-                        title="Delete mission"
-                        aria-label="Delete mission"
+                        title={t("missions.deleteMission", "Delete mission")}
+                        aria-label={t("missions.deleteMission", "Delete mission")}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -2655,30 +2652,30 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-form-card">
                   <input
                     type="text"
-                    placeholder="Mission title"
+                    placeholder={t("missions.missionTitlePlaceholder", "Mission title")}
                     value={missionForm.title}
                     onChange={(e) => setMissionForm({ ...missionForm, title: e.target.value })}
                     onKeyDown={handleMissionFormKeyDown}
                     autoFocus
                   />
                   <textarea
-                    placeholder="Description (optional)"
+                    placeholder={t("missions.descriptionOptional", "Description (optional)")}
                     value={missionForm.description}
                     onChange={(e) => setMissionForm({ ...missionForm, description: e.target.value })}
                     rows={2}
                   />
                   <label>
-                    Target branch
+                    {t("missions.targetBranch", "Target branch")}
                     <input
                       type="text"
-                      placeholder="e.g. main"
+                      placeholder={t("missions.targetBranchPlaceholder", "e.g. main")}
                       value={missionForm.baseBranch}
                       onChange={(e) => setMissionForm({ ...missionForm, baseBranch: e.target.value })}
-                      aria-label="Mission target branch"
+                      aria-label={t("missions.missionTargetBranchAriaLabel", "Mission target branch")}
                     />
                   </label>
                   <label>
-                    Branch strategy
+                    {t("missions.branchStrategy", "Branch strategy")}
                     <select
                       value={missionForm.branchStrategy.mode}
                       onChange={(e) =>
@@ -2690,20 +2687,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           },
                         })
                       }
-                      aria-label="Mission branch strategy"
+                      aria-label={t("missions.branchStrategyAriaLabel", "Mission branch strategy")}
                     >
-                      <option value="project-default">Use project/default branch</option>
-                      <option value="auto-per-task">Auto-name a branch per task (from details)</option>
-                      <option value="existing">Use existing branch</option>
-                      <option value="custom-new">Create custom branch</option>
+                      <option value="project-default">{t("missions.branchStrategyProjectDefault", "Use project/default branch")}</option>
+                      <option value="auto-per-task">{t("missions.branchStrategyAutoPerTask", "Auto-name a branch per task (from details)")}</option>
+                      <option value="existing">{t("missions.branchStrategyExisting", "Use existing branch")}</option>
+                      <option value="custom-new">{t("missions.branchStrategyCustomNew", "Create custom branch")}</option>
                     </select>
                   </label>
                   {(missionForm.branchStrategy.mode === "existing" || missionForm.branchStrategy.mode === "custom-new") && (
                     <label>
-                      Branch name
+                      {t("missions.branchName", "Branch name")}
                       <input
                         type="text"
-                        placeholder="e.g. feature/mission-work"
+                        placeholder={t("missions.branchNamePlaceholder", "e.g. feature/mission-work")}
                         value={missionForm.branchStrategy.branchName ?? ""}
                         onChange={(e) =>
                           setMissionForm({
@@ -2714,7 +2711,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                             },
                           })
                         }
-                        aria-label="Mission branch name"
+                        aria-label={t("missions.branchNameAriaLabel", "Mission branch name")}
                       />
                     </label>
                   )}
@@ -2723,11 +2720,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       value={missionForm.status}
                       onChange={(e) => setMissionForm({ ...missionForm, status: e.target.value as MissionStatus })}
                     >
-                      <option value="planning">Planning</option>
-                      <option value="active">Active</option>
-                      <option value="blocked">Blocked</option>
-                      <option value="complete">Complete</option>
-                      <option value="archived">Archived</option>
+                      <option value="planning">{t("missions.statusPlanning", "Planning")}</option>
+                      <option value="active">{t("missions.statusActive", "Active")}</option>
+                      <option value="blocked">{t("missions.statusBlocked", "Blocked")}</option>
+                      <option value="complete">{t("missions.statusComplete", "Complete")}</option>
+                      <option value="archived">{t("missions.statusArchived", "Archived")}</option>
                     </select>
                     <label className="mission-checkbox">
                       <input
@@ -2735,22 +2732,22 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         checked={missionForm.autopilotEnabled}
                         onChange={(e) => setMissionForm({ ...missionForm, autopilotEnabled: e.target.checked })}
                       />
-                      <Zap size={12} /> Autopilot
+                      <Zap size={12} /> {t("missions.autopilotLabel", "Autopilot")}
                     </label>
                   </div>
                   <div className="mission-form-card__actions">
                     <button className="mission-btn mission-btn--primary" onClick={handleSaveMission} disabled={saving}>
                       {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                      Update
+                      {t("missions.updateButton", "Update")}
                     </button>
                     <button className="mission-btn mission-btn--ghost" onClick={handleCancelMission}>
-                      Cancel
+                      {t("missions.cancelButton", "Cancel")}
                     </button>
                   </div>
                 </div>
               )}
 
-              <div className="mission-detail__tabs" role="tablist" aria-label="Mission detail tabs">
+              <div className="mission-detail__tabs" role="tablist" aria-label={t("missions.detailTabs", "Mission detail tabs")}>
                 <button
                   className={`mission-btn ${activeTab === "structure" ? "mission-btn--primary" : "mission-btn--ghost"} mission-btn--sm mission-detail__tab`}
                   onClick={() => setActiveTab("structure")}
@@ -2758,7 +2755,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   aria-selected={activeTab === "structure"}
                   data-testid="mission-tab-structure"
                 >
-                  Structure
+                  {t("missions.tabStructure", "Structure")}
                 </button>
                 <button
                   className={`mission-btn ${activeTab === "activity" ? "mission-btn--primary" : "mission-btn--ghost"} mission-btn--sm mission-detail__tab`}
@@ -2767,7 +2764,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   aria-selected={activeTab === "activity"}
                   data-testid="mission-tab-activity"
                 >
-                  Activity ({activityTabEventCount})
+                  {t("missions.tabActivity", "Activity ({{count}})", { count: activityTabEventCount })}
                 </button>
               </div>
 
@@ -2810,7 +2807,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       >
                         {milestone.status}
                       </span>
-                      <span className="mission-milestone__count">{milestone.slices.length} slices</span>
+                      <span className="mission-milestone__count">{t("missions.slicesCount", "{{count}} slices", { count: milestone.slices.length })}</span>
                       <PlanStateIndicator state={getMilestonePlanState(milestone.interviewState)} />
                       {/* Validation state badge and coverage bar in milestone header */}
                       {milestoneRollup && (
@@ -2821,9 +2818,9 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                               backgroundColor: milestoneValidationColors.bg,
                               color: milestoneValidationColors.text,
                             }}
-                            title="Validation state"
+                            title={t("missions.validationState", "Validation state")}
                           >
-                            {formatValidationState(milestoneRollup.state)}
+                            {formatValidationState(milestoneRollup.state, t)}
                           </span>
                           {milestoneRollup.totalAssertions > 0 && (
                             <div
@@ -2847,8 +2844,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         <button
                           className="mission-icon-btn"
                           onClick={() => setInterviewTarget({ type: "milestone", id: milestone.id, title: milestone.title })}
-                          title="Plan milestone"
-                          aria-label="Plan milestone"
+                          title={t("missions.planMilestone", "Plan milestone")}
+                          aria-label={t("missions.planMilestone", "Plan milestone")}
                         >
                           <FileText size={14} />
                         </button>
@@ -2857,21 +2854,21 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         <button
                           className="mission-icon-btn"
                           onClick={() => handleCreateSlice(milestone.id)}
-                          title="Add slice"
+                          title={t("missions.addSlice", "Add slice")}
                         >
                           <Plus size={14} />
                         </button>
                         <button
                           className="mission-icon-btn"
                           onClick={() => handleEditMilestone(milestone)}
-                          title="Edit milestone"
+                          title={t("missions.editMilestone", "Edit milestone")}
                         >
                           <Pencil size={14} />
                         </button>
                         <button
                           className="mission-icon-btn mission-icon-btn--danger"
                           onClick={() => setDeleteConfirmId({ type: "milestone", id: milestone.id })}
-                          title="Delete milestone"
+                          title={t("missions.deleteMilestone", "Delete milestone")}
                         >
                           <Trash2 size={14} />
                         </button>
@@ -2882,7 +2879,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       <div className="mission-milestone__body">
                         {milestone.acceptanceCriteria && (
                           <div className="mission-feature__criteria">
-                            <strong>Acceptance:</strong>
+                            <strong>{t("missions.acceptance", "Acceptance:")}</strong>
                             {renderMarkdownText(milestone.acceptanceCriteria)}
                           </div>
                         )}
@@ -2892,20 +2889,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           <div className="mission-form-card">
                             <input
                               type="text"
-                              placeholder="Milestone title"
+                              placeholder={t("missions.milestoneTitlePlaceholder", "Milestone title")}
                               value={milestoneForm.title}
                               onChange={(e) => setMilestoneForm({ ...milestoneForm, title: e.target.value })}
                               onKeyDown={handleMilestoneFormKeyDown}
                               autoFocus
                             />
                             <textarea
-                              placeholder="Description (optional)"
+                              placeholder={t("missions.descriptionOptional", "Description (optional)")}
                               value={milestoneForm.description}
                               onChange={(e) => setMilestoneForm({ ...milestoneForm, description: e.target.value })}
                               rows={2}
                             />
                             <textarea
-                              placeholder="Acceptance criteria (optional)"
+                              placeholder={t("missions.acceptanceCriteriaOptional", "Acceptance criteria (optional)")}
                               value={milestoneForm.acceptanceCriteria}
                               onChange={(e) => setMilestoneForm({ ...milestoneForm, acceptanceCriteria: e.target.value })}
                               rows={2}
@@ -2913,10 +2910,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                             <div className="mission-form-card__actions">
                               <button className="mission-btn mission-btn--primary" onClick={handleSaveMilestone} disabled={saving}>
                                 {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                {editingMilestoneId ? "Update" : "Create"}
+                                {editingMilestoneId ? t("missions.updateButton", "Update") : t("missions.createButton", "Create")}
                               </button>
                               <button className="mission-btn mission-btn--ghost" onClick={handleCancelMilestone}>
-                                Cancel
+                                {t("missions.cancelButton", "Cancel")}
                               </button>
                             </div>
                           </div>
@@ -2925,18 +2922,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         {milestoneTelemetry && (
                           <div className="mission-validation-telemetry">
                             <div className="mission-validation-telemetry__header">
-                              <span className="mission-validation-telemetry__title">Validation Telemetry</span>
+                              <span className="mission-validation-telemetry__title">{t("missions.validationTelemetry", "Validation Telemetry")}</span>
                               <span className="mission-validation-telemetry__meta">
-                                {milestoneTelemetry.validationTelemetry.totalRuns} rounds
+                                {t("missions.validationRoundsCount", { count: milestoneTelemetry.validationTelemetry.totalRuns, defaultValue_one: "{{count}} round", defaultValue_other: "{{count}} rounds" })}
                                 {milestoneTelemetry.validationTelemetry.lastValidatorStatus
-                                  ? ` · Last ${milestoneTelemetry.validationTelemetry.lastValidatorStatus}`
+                                  ? ` · ${t("missions.lastValidatorStatus", "Last {{status}}", { status: milestoneTelemetry.validationTelemetry.lastValidatorStatus })}`
                                   : ""}
                               </span>
                             </div>
 
                             {milestoneBlockedReason && (
                               <div className="mission-blocked-reason">
-                                <strong>Blocked reason:</strong> {milestoneBlockedReason}
+                                <strong>{t("missions.blockedReason", "Blocked reason:")}</strong> {milestoneBlockedReason}
                               </div>
                             )}
 
@@ -2945,10 +2942,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                 <button
                                   className="mission-btn mission-btn--ghost mission-btn--sm mission-validation-rounds__toggle"
                                   onClick={() => setValidationRoundsExpanded((prev) => !prev)}
-                                  title={validationRoundsExpanded ? "Hide validation rounds" : "Show validation rounds"}
+                                  title={validationRoundsExpanded ? t("missions.hideValidationRounds", "Hide validation rounds") : t("missions.showValidationRounds", "Show validation rounds")}
                                 >
                                   {validationRoundsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                                  Validation rounds ({milestoneRounds.length})
+                                  {t("missions.validationRoundsLabel", "Validation rounds ({{count}})", { count: milestoneRounds.length })}
                                 </button>
 
                                 {validationRoundsExpanded && (
@@ -2966,7 +2963,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         </div>
 
                                         <div className="mission-validation-round__links">
-                                          <span className="mission-validation-round__label">Failed assertions:</span>
+                                          <span className="mission-validation-round__label">{t("missions.failedAssertions", "Failed assertions:")}</span>
                                           {round.failedAssertionIds.length > 0 ? (
                                             <div className="mission-validation-round__chip-list">
                                               {round.failedAssertionIds.map((assertionId) => (
@@ -2981,12 +2978,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               ))}
                                             </div>
                                           ) : (
-                                            <span className="mission-validation-round__empty">None</span>
+                                            <span className="mission-validation-round__empty">{t("missions.none", "None")}</span>
                                           )}
                                         </div>
 
                                         <div className="mission-validation-round__links">
-                                          <span className="mission-validation-round__label">Generated fix features:</span>
+                                          <span className="mission-validation-round__label">{t("missions.generatedFixFeatures", "Generated fix features:")}</span>
                                           {round.generatedFixFeatureIds.length > 0 ? (
                                             <div className="mission-validation-round__chip-list">
                                               {round.generatedFixFeatureIds.map((fixFeatureId) => (
@@ -3001,7 +2998,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               ))}
                                             </div>
                                           ) : (
-                                            <span className="mission-validation-round__empty">None</span>
+                                            <span className="mission-validation-round__empty">{t("missions.none", "None")}</span>
                                           )}
                                         </div>
 
@@ -3019,7 +3016,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
                             {milestoneFixFeatures.length > 0 && (
                               <div className="mission-fix-features">
-                                <div className="mission-fix-features__title">Generated Fix Features</div>
+                                <div className="mission-fix-features__title">{t("missions.generatedFixFeaturesTitle", "Generated Fix Features")}</div>
                                 <div className="mission-fix-features__list">
                                   {milestoneFixFeatures.map((fixFeature) => (
                                     <div key={fixFeature.id} className="mission-fix-feature">
@@ -3047,7 +3044,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         )}
                                       </div>
                                       <div className="mission-fix-feature__meta">
-                                        <span>Source:</span>
+                                        <span>{t("missions.source", "Source:")}</span>
                                         <button
                                           className="mission-validation-round__link-chip"
                                           onClick={() => focusFeature(fixFeature.sourceFeatureId)}
@@ -3055,12 +3052,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         >
                                           {fixFeature.sourceFeatureId}
                                         </button>
-                                        <span>Run:</span>
+                                        <span>{t("missions.run", "Run:")}</span>
                                         <span className="mission-fix-feature__run">{fixFeature.runId}</span>
                                       </div>
                                       {fixFeature.failedAssertionIds.length > 0 && (
                                         <div className="mission-fix-feature__assertions">
-                                          <span className="mission-validation-round__label">Failed assertions:</span>
+                                          <span className="mission-validation-round__label">{t("missions.failedAssertions", "Failed assertions:")}</span>
                                           <div className="mission-validation-round__chip-list">
                                             {fixFeature.failedAssertionIds.map((assertionId) => (
                                               <button
@@ -3102,14 +3099,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                 >
                                   {slice.status}
                                 </span>
-                                <span className="mission-slice__count">{slice.features?.length || 0} features</span>
+                                <span className="mission-slice__count">{t("missions.featuresCount", "{{count}} features", { count: slice.features?.length || 0 })}</span>
                                 <PlanStateIndicator state={slice.planState ?? "not_started"} />
                                 {slice.status !== "complete" && (
                                   <button
                                     className="mission-icon-btn"
                                     onClick={() => setInterviewTarget({ type: "slice", id: slice.id, title: slice.title })}
-                                    title="Plan slice"
-                                    aria-label="Plan slice"
+                                    title={t("missions.planSlice", "Plan slice")}
+                                    aria-label={t("missions.planSlice", "Plan slice")}
                                   >
                                     <FileText size={14} />
                                   </button>
@@ -3119,7 +3116,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     <button
                                       className="mission-icon-btn mission-icon-btn--success"
                                       onClick={() => handleActivateSlice(slice.id)}
-                                      title="Activate slice"
+                                      title={t("missions.activateSlice", "Activate slice")}
                                     >
                                       <Play size={14} />
                                     </button>
@@ -3128,7 +3125,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     <button
                                       className="mission-icon-btn"
                                       onClick={() => handleTriageAllSliceFeatures(slice.id)}
-                                      title="Triage all features"
+                                      title={t("missions.triageAllFeatures", "Triage all features")}
                                       disabled={saving}
                                     >
                                       {saving ? <Loader2 size={14} className="spinner" /> : <Zap size={14} />}
@@ -3137,21 +3134,21 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   <button
                                     className="mission-icon-btn"
                                     onClick={() => handleCreateFeature(slice.id)}
-                                    title="Add feature"
+                                    title={t("missions.addFeature", "Add feature")}
                                   >
                                     <Plus size={14} />
                                   </button>
                                   <button
                                     className="mission-icon-btn"
                                     onClick={() => handleEditSlice(slice)}
-                                    title="Edit slice"
+                                    title={t("missions.editSlice", "Edit slice")}
                                   >
                                     <Pencil size={14} />
                                   </button>
                                   <button
                                     className="mission-icon-btn mission-icon-btn--danger"
                                     onClick={() => setDeleteConfirmId({ type: "slice", id: slice.id })}
-                                    title="Delete slice"
+                                    title={t("missions.deleteSlice", "Delete slice")}
                                   >
                                     <Trash2 size={14} />
                                   </button>
@@ -3162,7 +3159,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                 <div className="mission-slice__body">
                                   {slice.verification?.trim() && (
                                     <div className="mission-feature__criteria">
-                                      <strong>Verification:</strong>
+                                      <strong>{t("missions.verification", "Verification:")}</strong>
                                       {renderMarkdownText(slice.verification)}
                                     </div>
                                   )}
@@ -3172,14 +3169,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     <div className="mission-form-card">
                                       <input
                                         type="text"
-                                        placeholder="Slice title"
+                                        placeholder={t("missions.sliceTitlePlaceholder", "Slice title")}
                                         value={sliceForm.title}
                                         onChange={(e) => setSliceForm({ ...sliceForm, title: e.target.value })}
                                         onKeyDown={handleSliceFormKeyDown}
                                         autoFocus
                                       />
                                       <textarea
-                                        placeholder="Description (optional)"
+                                        placeholder={t("missions.descriptionOptional", "Description (optional)")}
                                         value={sliceForm.description}
                                         onChange={(e) => setSliceForm({ ...sliceForm, description: e.target.value })}
                                         rows={2}
@@ -3187,10 +3184,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                       <div className="mission-form-card__actions">
                                         <button className="mission-btn mission-btn--primary" onClick={handleSaveSlice} disabled={saving}>
                                           {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                          Create
+                                          {t("missions.createButton", "Create")}
                                         </button>
                                         <button className="mission-btn mission-btn--ghost" onClick={handleCancelSlice}>
-                                          Cancel
+                                          {t("missions.cancelButton", "Cancel")}
                                         </button>
                                       </div>
                                     </div>
@@ -3201,14 +3198,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     <div className="mission-form-card">
                                       <input
                                         type="text"
-                                        placeholder="Slice title"
+                                        placeholder={t("missions.sliceTitlePlaceholder", "Slice title")}
                                         value={sliceForm.title}
                                         onChange={(e) => setSliceForm({ ...sliceForm, title: e.target.value })}
                                         onKeyDown={handleSliceFormKeyDown}
                                         autoFocus
                                       />
                                       <textarea
-                                        placeholder="Description (optional)"
+                                        placeholder={t("missions.descriptionOptional", "Description (optional)")}
                                         value={sliceForm.description}
                                         onChange={(e) => setSliceForm({ ...sliceForm, description: e.target.value })}
                                         rows={2}
@@ -3217,17 +3214,17 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         value={sliceForm.status}
                                         onChange={(e) => setSliceForm({ ...sliceForm, status: e.target.value as SliceStatus })}
                                       >
-                                        <option value="pending">Pending</option>
-                                        <option value="active">Active</option>
-                                        <option value="complete">Complete</option>
+                                        <option value="pending">{t("missions.statusPending", "Pending")}</option>
+                                        <option value="active">{t("missions.statusActive", "Active")}</option>
+                                        <option value="complete">{t("missions.statusComplete", "Complete")}</option>
                                       </select>
                                       <div className="mission-form-card__actions">
                                         <button className="mission-btn mission-btn--primary" onClick={handleSaveSlice} disabled={saving}>
                                           {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                          Update
+                                          {t("missions.updateButton", "Update")}
                                         </button>
                                         <button className="mission-btn mission-btn--ghost" onClick={handleCancelSlice}>
-                                          Cancel
+                                          {t("missions.cancelButton", "Cancel")}
                                         </button>
                                       </div>
                                     </div>
@@ -3245,7 +3242,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           <button
                                             className="mission-feature__expand"
                                             onClick={() => toggleFeatureExpanded(feature.id)}
-                                            title={expandedFeatureId === feature.id ? "Collapse details" : "Expand to show run history"}
+                                            title={expandedFeatureId === feature.id ? t("missions.collapseDetails", "Collapse details") : t("missions.expandRunHistory", "Expand to show run history")}
                                           >
                                             {expandedFeatureId === feature.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                                           </button>
@@ -3264,7 +3261,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           {(feature.loopState && feature.loopState !== "idle") && (
                                             <span
                                               className={`mission-loop-state mission-loop-state--${feature.loopState}`}
-                                              title={`Loop state: ${feature.loopState}`}
+                                              title={t("missions.loopState", "Loop state: {{state}}", { state: feature.loopState })}
                                             >
                                               {feature.loopState === "implementing" && "⏳"}
                                               {feature.loopState === "validating" && "🔄"}
@@ -3278,7 +3275,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             <button
                                               className="mission-feature__lineage"
                                               onClick={() => focusFeature(feature.generatedFromFeatureId!)}
-                                              title={`Generated from feature: ${feature.generatedFromFeatureId}`}
+                                              title={t("missions.generatedFromFeature", "Generated from feature: {{id}}", { id: feature.generatedFromFeatureId })}
                                             >
                                               🔗 Fix
                                             </button>
@@ -3297,9 +3294,9 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             return (
                                               <span
                                                 className="mission-feature__retry-budget"
-                                                title="Implementation attempts and remaining retry budget"
+                                                title={t("missions.retryBudgetTitle", "Implementation attempts and remaining retry budget")}
                                               >
-                                                Attempt {implementationAttempt} · {retryBudgetRemaining} {retryBudgetRemaining === 1 ? "retry" : "retries"} left
+                                                {t("missions.attemptRetries", "Attempt {{attempt}} · {{count}} {{label}} left", { attempt: implementationAttempt, count: retryBudgetRemaining, label: retryBudgetRemaining === 1 ? t("missions.retry", "retry") : t("missions.retries", "retries") })}
                                               </span>
                                             );
                                           })()}
@@ -3308,7 +3305,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             <button
                                               className="mission-icon-btn mission-icon-btn--validate"
                                               onClick={() => handleTriggerValidation(feature.id)}
-                                              title="Validate feature"
+                                              title={t("missions.validateFeature", "Validate feature")}
                                               disabled={validatingFeatures.has(feature.id)}
                                             >
                                               {validatingFeatures.has(feature.id) ? (
@@ -3322,7 +3319,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             <span
                                               className="mission-feature__task-link"
                                               onClick={() => onSelectTask?.(feature.taskId!)}
-                                              title="Click to view task"
+                                              title={t("missions.clickToViewTask", "Click to view task")}
                                             >
                                               {feature.taskId}
                                             </span>
@@ -3332,7 +3329,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               <button
                                                 className="mission-icon-btn"
                                                 onClick={() => handleTriageFeatureWithPreview(feature.id)}
-                                                title="Triage — create task"
+                                                title={t("missions.triageCreateTask", "Triage — create task")}
                                                 disabled={saving || triagePreviewLoading === feature.id}
                                               >
                                                 {triagePreviewLoading === feature.id ? (
@@ -3346,7 +3343,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               <button
                                                 className="mission-icon-btn"
                                                 onClick={() => handleUnlinkTask(feature.id)}
-                                                title="Unlink task"
+                                                title={t("missions.unlinkTask", "Unlink task")}
                                               >
                                                 <Unlink size={14} />
                                               </button>
@@ -3354,7 +3351,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               <button
                                                 className="mission-icon-btn"
                                                 onClick={() => setLinkTaskFeatureId(feature.id)}
-                                                title="Link to task"
+                                                title={t("missions.linkToTask", "Link to task")}
                                               >
                                                 <Link size={14} />
                                               </button>
@@ -3362,14 +3359,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             <button
                                               className="mission-icon-btn"
                                               onClick={() => handleEditFeature(feature)}
-                                              title="Edit feature"
+                                              title={t("missions.editFeature", "Edit feature")}
                                             >
                                               <Pencil size={14} />
                                             </button>
                                             <button
                                               className="mission-icon-btn mission-icon-btn--danger"
                                               onClick={() => setDeleteConfirmId({ type: "feature", id: feature.id })}
-                                              title="Delete feature"
+                                              title={t("missions.deleteFeature", "Delete feature")}
                                             >
                                               <Trash2 size={14} />
                                             </button>
@@ -3381,7 +3378,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         )}
                                         {feature.acceptanceCriteria && (
                                           <div className="mission-feature__criteria">
-                                            <strong>Acceptance:</strong>
+                                            <strong>{t("missions.acceptance", "Acceptance:")}</strong>
                                             {renderMarkdownText(feature.acceptanceCriteria)}
                                           </div>
                                         )}
@@ -3390,7 +3387,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         {triagePreview?.featureId === feature.id && (
                                           <div className="mission-triage-preview">
                                             <div className="mission-triage-preview__header">
-                                              Enriched Description Preview
+                                              {t("missions.enrichedDescPreview", "Enriched Description Preview")}
                                             </div>
                                             <div className="mission-triage-preview__content">
                                               {triagePreview.enrichedDescription}
@@ -3402,14 +3399,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                 disabled={saving}
                                               >
                                                 {saving ? <Loader2 size={14} className="spinner" /> : null}
-                                                Create Task
+                                                {t("missions.createTask", "Create Task")}
                                               </button>
                                               <button
                                                 className="btn"
                                                 onClick={handleCancelTriagePreview}
                                                 disabled={saving}
                                               >
-                                                Cancel
+                                                {t("missions.cancelButton", "Cancel")}
                                               </button>
                                             </div>
                                           </div>
@@ -3420,20 +3417,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           <div className="mission-form-card">
                                             <input
                                               type="text"
-                                              placeholder="Feature title"
+                                              placeholder={t("missions.featureTitlePlaceholder", "Feature title")}
                                               value={featureForm.title}
                                               onChange={(e) => setFeatureForm({ ...featureForm, title: e.target.value })}
                                               onKeyDown={handleFeatureFormKeyDown}
                                               autoFocus
                                             />
                                             <textarea
-                                              placeholder="Description (optional)"
+                                              placeholder={t("missions.descriptionOptional", "Description (optional)")}
                                               value={featureForm.description}
                                               onChange={(e) => setFeatureForm({ ...featureForm, description: e.target.value })}
                                               rows={2}
                                             />
                                             <textarea
-                                              placeholder="Acceptance criteria (optional)"
+                                              placeholder={t("missions.acceptanceCriteriaOptional", "Acceptance criteria (optional)")}
                                               value={featureForm.acceptanceCriteria}
                                               onChange={(e) => setFeatureForm({ ...featureForm, acceptanceCriteria: e.target.value })}
                                               rows={2}
@@ -3442,18 +3439,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               value={featureForm.status}
                                               onChange={(e) => setFeatureForm({ ...featureForm, status: e.target.value as FeatureStatus })}
                                             >
-                                              <option value="defined">Defined</option>
-                                              <option value="triaged">Triaged</option>
-                                              <option value="in-progress">In Progress</option>
-                                              <option value="done">Done</option>
+                                              <option value="defined">{t("missions.statusDefined", "Defined")}</option>
+                                              <option value="triaged">{t("missions.statusTriaged", "Triaged")}</option>
+                                              <option value="in-progress">{t("missions.statusInProgress", "In Progress")}</option>
+                                              <option value="done">{t("missions.statusDone", "Done")}</option>
                                             </select>
                                             <div className="mission-form-card__actions">
                                               <button className="mission-btn mission-btn--primary" onClick={handleSaveFeature} disabled={saving}>
                                                 {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                                Update
+                                                {t("missions.updateButton", "Update")}
                                               </button>
                                               <button className="mission-btn mission-btn--ghost" onClick={handleCancelFeature}>
-                                                Cancel
+                                                {t("missions.cancelButton", "Cancel")}
                                               </button>
                                             </div>
                                           </div>
@@ -3463,7 +3460,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         {expandedFeatureId === feature.id && (
                                           <div className="mission-feature__run-history">
                                             <div className="mission-feature__run-history-header">
-                                              <span className="mission-feature__run-history-title">Validation Runs</span>
+                                              <span className="mission-feature__run-history-title">{t("missions.validationRuns", "Validation Runs")}</span>
                                             </div>
                                             {(validationRunsByFeature.get(feature.id) ?? []).map((run) => (
                                               <div key={run.id} className="mission-run">
@@ -3492,7 +3489,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                   )}
                                                   <button
                                                     className="mission-icon-btn"
-                                                    title={expandedRunId === run.id ? "Hide details" : "Show details"}
+                                                    title={expandedRunId === run.id ? t("missions.hideDetails", "Hide details") : t("missions.showDetails", "Show details")}
                                                   >
                                                     {expandedRunId === run.id ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                                                   </button>
@@ -3504,23 +3501,23 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                     )}
                                                     {run.blockedReason && (
                                                       <p className="mission-run__blocked-reason">
-                                                        <strong>Blocked:</strong> {run.blockedReason}
+                                                        <strong>{t("missions.blocked", "Blocked:")}</strong> {run.blockedReason}
                                                       </p>
                                                     )}
                                                     {runDetailsByRunId.get(run.id)?.failures && runDetailsByRunId.get(run.id)!.failures!.length > 0 && (
                                                       <div className="mission-run__failures">
-                                                        <span className="mission-run__failures-title">Failed Assertions:</span>
+                                                        <span className="mission-run__failures-title">{t("missions.failedAssertionsTitle", "Failed Assertions:")}</span>
                                                         {runDetailsByRunId.get(run.id)!.failures!.map((failure) => (
                                                           <div key={failure.id} className="mission-run__failure">
                                                             <span className="mission-run__failure-message">{failure.message}</span>
                                                             {failure.expected && (
                                                               <span className="mission-run__failure-expected">
-                                                                Expected: {failure.expected}
+                                                                {t("missions.expected", "Expected: {{value}}", { value: failure.expected })}
                                                               </span>
                                                             )}
                                                             {failure.actual && (
                                                               <span className="mission-run__failure-actual">
-                                                                Actual: {failure.actual}
+                                                                {t("missions.actual", "Actual: {{value}}", { value: failure.actual })}
                                                               </span>
                                                             )}
                                                           </div>
@@ -3528,7 +3525,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                       </div>
                                                     )}
                                                     {(!runDetailsByRunId.get(run.id)?.failures || runDetailsByRunId.get(run.id)!.failures!.length === 0) && (
-                                                      <p className="mission-run__no-failures">No assertion failures</p>
+                                                      <p className="mission-run__no-failures">{t("missions.noAssertionFailures", "No assertion failures")}</p>
                                                     )}
                                                   </div>
                                                 )}
@@ -3536,7 +3533,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             ))}
                                             {(!validationRunsByFeature.get(feature.id) || validationRunsByFeature.get(feature.id)!.length === 0) && (
                                               <div className="mission-run-history__empty">
-                                                No validation runs yet.
+                                                {t("missions.noValidationRunsYet", "No validation runs yet.")}
                                               </div>
                                             )}
                                           </div>
@@ -3549,20 +3546,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                       <div className="mission-form-card">
                                         <input
                                           type="text"
-                                          placeholder="Feature title"
+                                          placeholder={t("missions.featureTitlePlaceholder", "Feature title")}
                                           value={featureForm.title}
                                           onChange={(e) => setFeatureForm({ ...featureForm, title: e.target.value })}
                                           onKeyDown={handleFeatureFormKeyDown}
                                           autoFocus
                                         />
                                         <textarea
-                                          placeholder="Description (optional)"
+                                          placeholder={t("missions.descriptionOptional", "Description (optional)")}
                                           value={featureForm.description}
                                           onChange={(e) => setFeatureForm({ ...featureForm, description: e.target.value })}
                                           rows={2}
                                         />
                                         <textarea
-                                          placeholder="Acceptance criteria (optional)"
+                                          placeholder={t("missions.acceptanceCriteriaOptional", "Acceptance criteria (optional)")}
                                           value={featureForm.acceptanceCriteria}
                                           onChange={(e) => setFeatureForm({ ...featureForm, acceptanceCriteria: e.target.value })}
                                           rows={2}
@@ -3570,10 +3567,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         <div className="mission-form-card__actions">
                                           <button className="mission-btn mission-btn--primary" onClick={handleSaveFeature} disabled={saving}>
                                             {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                            Create
+                                            {t("missions.createButton", "Create")}
                                           </button>
                                           <button className="mission-btn mission-btn--ghost" onClick={handleCancelFeature}>
-                                            Cancel
+                                            {t("missions.cancelButton", "Cancel")}
                                           </button>
                                         </div>
                                       </div>
@@ -3583,7 +3580,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     {!isCreatingFeature && (!slice.features || slice.features.length === 0) && (
                                       <div className="mission-manager__empty mission-features__empty">
                                         <Box size={16} />
-                                        <span>No fix features generated.</span>
+                                        <span>{t("missions.noFixFeaturesGenerated", "No fix features generated.")}</span>
                                       </div>
                                     )}
                                   </div>
@@ -3595,17 +3592,17 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           {milestone.slices.length === 0 && !isCreatingSlice && (
                             <div className="mission-manager__empty">
                               <Package size={16} />
-                              <span>No slices yet</span>
+                              <span>{t("missions.noSlicesYet", "No slices yet")}</span>
                             </div>
                           )}
 
                           {/* Assertions Panel */}
                           <div className="mission-assertions">
                             <div className="mission-assertions__header">
-                              <span className="mission-assertions__title">Contract assertions (AI-validated)</span>
+                              <span className="mission-assertions__title">{t("missions.contractAssertions", "Contract assertions (AI-validated)")}</span>
                               <span className="mission-assertions__mode-tag" data-testid="milestone-assertions-enforced-indicator">
                                 <span className="status-dot status-dot--running" />
-                                AI-validated mission gate
+                                {t("missions.aiValidatedMissionGate", "AI-validated mission gate")}
                               </span>
                               {milestoneRollup && (
                                 <span
@@ -3615,7 +3612,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                     color: milestoneValidationColors.text,
                                   }}
                                 >
-                                  {formatValidationState(milestoneRollup.state)}
+                                  {formatValidationState(milestoneRollup.state, t)}
                                 </span>
                               )}
                               {/* Assertion coverage bar */}
@@ -3639,7 +3636,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   setEditingAssertionId(null);
                                   setAssertionForm({ title: "", assertion: "", status: "pending" });
                                 }}
-                                title="Add assertion"
+                                title={t("missions.addAssertion", "Add assertion")}
                               >
                                 <Plus size={14} />
                               </button>
@@ -3650,13 +3647,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                               <div className="mission-form-card">
                                 <input
                                   type="text"
-                                  placeholder="Assertion title"
+                                  placeholder={t("missions.assertionTitlePlaceholder", "Assertion title")}
                                   value={assertionForm.title}
                                   onChange={(e) => setAssertionForm({ ...assertionForm, title: e.target.value })}
                                   autoFocus
                                 />
                                 <textarea
-                                  placeholder="Assertion text (what should be true when complete)"
+                                  placeholder={t("missions.assertionTextPlaceholder", "Assertion text (what should be true when complete)")}
                                   value={assertionForm.assertion}
                                   onChange={(e) => setAssertionForm({ ...assertionForm, assertion: e.target.value })}
                                   rows={2}
@@ -3665,18 +3662,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   value={assertionForm.status}
                                   onChange={(e) => setAssertionForm({ ...assertionForm, status: e.target.value as MissionAssertionStatus })}
                                 >
-                                  <option value="pending">Pending</option>
-                                  <option value="passed">Passed</option>
-                                  <option value="failed">Failed</option>
-                                  <option value="blocked">Blocked</option>
+                                  <option value="pending">{t("missions.statusPending", "Pending")}</option>
+                                  <option value="passed">{t("missions.statusPassed", "Passed")}</option>
+                                  <option value="failed">{t("missions.statusFailed", "Failed")}</option>
+                                  <option value="blocked">{t("missions.statusBlocked", "Blocked")}</option>
                                 </select>
                                 <div className="mission-form-card__actions">
                                   <button className="mission-btn mission-btn--primary" onClick={() => handleCreateAssertion(milestone.id)} disabled={saving}>
                                     {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                    Create
+                                    {t("missions.createButton", "Create")}
                                   </button>
                                   <button className="mission-btn mission-btn--ghost" onClick={handleCancelAssertion}>
-                                    Cancel
+                                    {t("missions.cancelButton", "Cancel")}
                                   </button>
                                 </div>
                               </div>
@@ -3695,13 +3692,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                       <div className="mission-form-card">
                                         <input
                                           type="text"
-                                          placeholder="Assertion title"
+                                          placeholder={t("missions.assertionTitlePlaceholder", "Assertion title")}
                                           value={assertionForm.title}
                                           onChange={(e) => setAssertionForm({ ...assertionForm, title: e.target.value })}
                                           autoFocus
                                         />
                                         <textarea
-                                          placeholder="Assertion text"
+                                          placeholder={t("missions.assertionTextEditPlaceholder", "Assertion text")}
                                           value={assertionForm.assertion}
                                           onChange={(e) => setAssertionForm({ ...assertionForm, assertion: e.target.value })}
                                           rows={2}
@@ -3710,18 +3707,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           value={assertionForm.status}
                                           onChange={(e) => setAssertionForm({ ...assertionForm, status: e.target.value as MissionAssertionStatus })}
                                         >
-                                          <option value="pending">Pending</option>
-                                          <option value="passed">Passed</option>
-                                          <option value="failed">Failed</option>
-                                          <option value="blocked">Blocked</option>
+                                          <option value="pending">{t("missions.statusPending", "Pending")}</option>
+                                          <option value="passed">{t("missions.statusPassed", "Passed")}</option>
+                                          <option value="failed">{t("missions.statusFailed", "Failed")}</option>
+                                          <option value="blocked">{t("missions.statusBlocked", "Blocked")}</option>
                                         </select>
                                         <div className="mission-form-card__actions">
                                           <button className="mission-btn mission-btn--primary" onClick={() => handleSaveAssertion(assertion.id, milestone.id)} disabled={saving}>
                                             {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                                            Save
+                                            {t("missions.saveButton", "Save")}
                                           </button>
                                           <button className="mission-btn mission-btn--ghost" onClick={handleCancelAssertion}>
-                                            Cancel
+                                            {t("missions.cancelButton", "Cancel")}
                                           </button>
                                         </div>
                                       </div>
@@ -3741,7 +3738,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           const linked = linkedFeaturesByAssertion.get(assertion.id);
                                           const count = linked?.length ?? 0;
                                           return count > 0 ? (
-                                            <span className="mission-assertion__linked-count" title={`${count} linked feature${count !== 1 ? "s" : ""}`}>
+                                            <span className="mission-assertion__linked-count" title={t("missions.linkedFeaturesCount", { count, defaultValue_one: "{{count}} linked feature", defaultValue_other: "{{count}} linked features" })}>
                                               ({count} linked)
                                             </span>
                                           ) : null;
@@ -3749,21 +3746,21 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         <button
                                           className="mission-icon-btn"
                                           onClick={() => handleToggleAssertionExpanded(assertion.id)}
-                                          title="Toggle details"
+                                          title={t("missions.toggleDetails", "Toggle details")}
                                         >
                                           {expandedAssertionId === assertion.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                                         </button>
                                         <button
                                           className="mission-icon-btn"
                                           onClick={() => handleEditAssertion(assertion)}
-                                          title="Edit assertion"
+                                          title={t("missions.editAssertion", "Edit assertion")}
                                         >
                                           <Pencil size={14} />
                                         </button>
                                         <button
                                           className="mission-icon-btn mission-icon-btn--danger"
                                           onClick={() => setDeleteConfirmId({ type: "assertion", id: assertion.id })}
-                                          title="Delete assertion"
+                                          title={t("missions.deleteAssertion", "Delete assertion")}
                                         >
                                           <Trash2 size={14} />
                                         </button>
@@ -3776,7 +3773,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                       {/* Linked features section */}
                                       <div className="mission-assertion__linked-features">
                                         <div className="mission-assertion__linked-features-header">
-                                          <span className="mission-assertion__linked-features-label">Linked Features</span>
+                                          <span className="mission-assertion__linked-features-label">{t("missions.linkedFeaturesLabel", "Linked Features")}</span>
                                           <button
                                             className="mission-btn mission-btn--ghost mission-btn--sm"
                                             onClick={async () => {
@@ -3787,10 +3784,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               // Then toggle the picker
                                               setFeaturePickerOpenForAssertion(featurePickerOpenForAssertion === assertion.id ? null : assertion.id);
                                             }}
-                                            title="Link a feature"
+                                            title={t("missions.linkAFeature", "Link a feature")}
                                           >
                                             <Link size={12} />
-                                            Link Feature
+                                            {t("missions.linkFeatureButton", "Link Feature")}
                                           </button>
                                         </div>
                                         {/* Feature picker dropdown */}
@@ -3804,7 +3801,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                   m.slices.forEach((s) => allFeatures.push(...s.features.filter((f) => !linkedFeatureIds.has(f.id))))
                                                 );
                                                 if (allFeatures.length === 0) {
-                                                  return <span className="mission-assertion__feature-picker-empty">All features already linked</span>;
+                                                  return <span className="mission-assertion__feature-picker-empty">{t("missions.allFeaturesLinked", "All features already linked")}</span>;
                                                 }
                                                 return allFeatures.map((feature) => (
                                                   <button
@@ -3825,7 +3822,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                         {(() => {
                                           const linked = linkedFeaturesByAssertion.get(assertion.id) ?? [];
                                           if (linked.length === 0) {
-                                            return <span className="mission-assertion__linked-empty">No features linked yet</span>;
+                                            return <span className="mission-assertion__linked-empty">{t("missions.noFeaturesLinkedYet", "No features linked yet")}</span>;
                                           }
                                           return linked.map((feature) => {
                                             const key = `${feature.id}-${assertion.id}`;
@@ -3837,7 +3834,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                                   className="mission-icon-btn mission-icon-btn--danger"
                                                   onClick={() => handleUnlinkFeatureFromAssertion(feature.id, assertion.id)}
                                                   disabled={isUnlinking}
-                                                  title="Unlink feature"
+                                                  title={t("missions.unlinkFeature", "Unlink feature")}
                                                 >
                                                   {isUnlinking ? <Loader2 size={12} className="spinner" /> : <Unlink size={12} />}
                                                 </button>
@@ -3858,14 +3855,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   featuresWithAcceptanceCriteria.length > 0 ? (
                                     <>
                                       <div className="mission-manager__empty mission-assertions__empty">
-                                        <span>No linked contract assertions are loaded yet. Feature criteria below will still be AI-validated when mission validation runs.</span>
+                                        <span>{t("missions.noAssertionsYet", "No linked contract assertions are loaded yet. Feature criteria below will still be AI-validated when mission validation runs.")}</span>
                                       </div>
                                       <div className="mission-assertions__list" data-testid="milestone-feature-acceptance-rollup">
                                         <div className="mission-assertions__rollup-header">
-                                          <span className="mission-assertions__title">Feature criteria awaiting assertion sync</span>
+                                          <span className="mission-assertions__title">{t("missions.featureCriteriaAwaitingSync", "Feature criteria awaiting assertion sync")}</span>
                                           <span className="mission-assertions__mode-tag" data-testid="milestone-feature-acceptance-ai-validated-indicator">
                                             <span className="status-dot status-dot--running" />
-                                            AI-validated at runtime
+                                            {t("missions.aiValidatedAtRuntime", "AI-validated at runtime")}
                                           </span>
                                         </div>
                                         {featuresWithAcceptanceCriteria.map((feature) => (
@@ -3884,7 +3881,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                               </span>
                                             </div>
                                             <div className="mission-assertion__text">
-                                              <strong>Acceptance:</strong>
+                                              <strong>{t("missions.acceptance", "Acceptance:")}</strong>
                                               {renderMarkdownText(feature.acceptanceCriteria ?? "")}
                                             </div>
                                           </div>
@@ -3894,7 +3891,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   ) : (
                                     !milestone.acceptanceCriteria?.trim() ? (
                                       <div className="mission-manager__empty mission-assertions__empty">
-                                        <span>No feature acceptance criteria or contract assertions defined yet.</span>
+                                        <span>{t("missions.noAssertionsDefined", "No feature acceptance criteria or contract assertions defined yet.")}</span>
                                       </div>
                                     ) : null
                                   )
@@ -3912,7 +3909,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 {selectedMission && !isCreatingMilestone && editingMilestoneId === null && (
                   <button className="mission-add-btn" onClick={handleCreateMilestone}>
                     <Plus size={16} />
-                    Add Milestone
+                    {t("missions.addMilestone", "Add Milestone")}
                   </button>
                 )}
 
@@ -3921,20 +3918,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   <div className="mission-form-card">
                     <input
                       type="text"
-                      placeholder="Milestone title"
+                      placeholder={t("missions.milestoneTitlePlaceholder", "Milestone title")}
                       value={milestoneForm.title}
                       onChange={(e) => setMilestoneForm({ ...milestoneForm, title: e.target.value })}
                       onKeyDown={handleMilestoneFormKeyDown}
                       autoFocus
                     />
                     <textarea
-                      placeholder="Description (optional)"
+                      placeholder={t("missions.descriptionOptional", "Description (optional)")}
                       value={milestoneForm.description}
                       onChange={(e) => setMilestoneForm({ ...milestoneForm, description: e.target.value })}
                       rows={2}
                     />
                     <textarea
-                      placeholder="Acceptance criteria (optional)"
+                      placeholder={t("missions.acceptanceCriteriaOptional", "Acceptance criteria (optional)")}
                       value={milestoneForm.acceptanceCriteria}
                       onChange={(e) => setMilestoneForm({ ...milestoneForm, acceptanceCriteria: e.target.value })}
                       rows={2}
@@ -3942,10 +3939,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     <div className="mission-form-card__actions">
                       <button className="mission-btn mission-btn--primary" onClick={handleSaveMilestone} disabled={saving}>
                         {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                        Create
+                        {t("missions.createButton", "Create")}
                       </button>
                       <button className="mission-btn mission-btn--ghost" onClick={handleCancelMilestone}>
-                        Cancel
+                        {t("missions.cancelButton", "Cancel")}
                       </button>
                     </div>
                   </div>
@@ -3954,7 +3951,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 {selectedMission.milestones.length === 0 && !isCreatingMilestone && (
                   <div className="mission-manager__empty">
                     <Layers size={24} />
-                    <span>No milestones yet. Add one to get started.</span>
+                    <span>{t("missions.noMilestonesYet", "No milestones yet. Add one to get started.")}</span>
                   </div>
                 )}
                 </div>
@@ -3962,18 +3959,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-detail__activity" data-testid="mission-activity-tab">
                   <div className="mission-detail__activity-controls">
                     <label className="mission-detail__activity-filter">
-                      <span>Filter</span>
+                      <span>{t("missions.filterLabel", "Filter")}</span>
                       <select
                         value={eventsFilter}
                         onChange={(event) => setEventsFilter(event.target.value as typeof eventsFilter)}
                         data-testid="mission-activity-filter"
                       >
-                        <option value="all">All events</option>
-                        <option value="errors">Errors &amp; warnings</option>
-                        <option value="state_changes">State changes</option>
-                        <option value="tasks">Task events</option>
-                        <option value="slices">Slice &amp; milestone events</option>
-                        <option value="autopilot">Autopilot events</option>
+                        <option value="all">{t("missions.filterAll", "All events")}</option>
+                        <option value="errors">{t("missions.filterErrors", "Errors & warnings")}</option>
+                        <option value="state_changes">{t("missions.filterStateChanges", "State changes")}</option>
+                        <option value="tasks">{t("missions.filterTasks", "Task events")}</option>
+                        <option value="slices">{t("missions.filterSlices", "Slice & milestone events")}</option>
+                        <option value="autopilot">{t("missions.filterAutopilot", "Autopilot events")}</option>
                       </select>
                     </label>
                     <span className="mission-detail__activity-count">
@@ -3988,7 +3985,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         onClick={handleLoadMoreEvents}
                         data-testid="mission-activity-load-more"
                       >
-                        Load more
+                        {t("missions.loadMore", "Load more")}
                       </button>
                     </div>
                   )}
@@ -3996,12 +3993,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   {eventsLoading ? (
                     <div className="mission-manager__loading mission-detail__activity-loading">
                       <Loader2 size={18} className="spinner" />
-                      <span>Loading mission activity...</span>
+                      <span>{t("missions.loadingActivity", "Loading mission activity...")}</span>
                     </div>
                   ) : missionEvents.length === 0 ? (
                     <div className="mission-manager__empty">
                       <Activity size={18} />
-                      <span>No events yet.</span>
+                      <span>{t("missions.noEventsYet", "No events yet.")}</span>
                     </div>
                   ) : (
                     <div
@@ -4019,7 +4016,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                               <span className={`mission-event__type ${getEventTypeClassName(event.eventType)}`}>
                                 {getEventTypeLabel(event.eventType)}
                               </span>
-                              <span className="mission-event__time">{getRelativeTime(event.timestamp)}</span>
+                              <span className="mission-event__time">{getRelativeTime(event.timestamp, t)}</span>
                             </div>
                             <p className="mission-event__description">{event.description}</p>
                             <span className="mission-event__timestamp">
@@ -4032,7 +4029,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                   onClick={() => toggleEventMetadata(event.id)}
                                   data-testid={`mission-event-metadata-${event.id}`}
                                 >
-                                  {metadataExpanded ? "Hide" : "Show"} metadata
+                                  {metadataExpanded ? t("missions.hideMetadata", "Hide metadata") : t("missions.showMetadata", "Show metadata")}
                                 </button>
                                 {metadataExpanded && (
                                   <pre className="mission-event__metadata-content">
@@ -4090,14 +4087,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {
-        addToast("Draft is open in another tab", "error");
+        addToast(t("missions.draftOpenInAnotherTab", "Draft is open in another tab"), "error");
         return;
       }
       if (err instanceof ApiRequestError && err.status === 404) {
         setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
         return;
       }
-      addToast(getErrorMessage(err) || "Failed to discard draft", "error");
+      addToast(getErrorMessage(err) || t("missions.draftDiscardFailed", "Failed to discard draft"), "error");
       return;
     } finally {
       setDeleteConfirmId(null);
@@ -4108,15 +4105,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     const isErrored = session.status === "error";
     const isGenerating = session.status === "generating";
     const isComplete = session.status === "complete";
-    const resumeActionLabel = getInterviewActionLabel(session.status);
+    const resumeActionLabel = session.status === "error" ? t("missions.interviewActionRetry", "Retry interview")
+      : session.status === "generating" ? t("missions.interviewActionGenerating", "Generating plan")
+      : session.status === "complete" ? t("missions.interviewActionReview", "Review plan")
+      : t("missions.interviewActionResume", "Resume interview");
     const description = isGenerating
-      ? "Generating mission hierarchy from interview context."
+      ? t("missions.interviewGenerating", "Generating mission hierarchy from interview context.")
       : isErrored
-        ? "Interview hit an error. Retry from this list item."
+        ? t("missions.interviewErrored", "Interview hit an error. Retry from this list item.")
         : isComplete
-          ? "Plan ready — review and approve to create the mission."
-          : "Interview is waiting for your next response.";
-    const actionText = isGenerating ? "Generating…" : isErrored ? "Retry" : isComplete ? "Review" : "Resume";
+          ? t("missions.interviewComplete", "Plan ready — review and approve to create the mission.")
+          : t("missions.interviewWaiting", "Interview is waiting for your next response.");
+    const actionText = isGenerating ? t("missions.actionGenerating", "Generating…") : isErrored ? t("missions.actionRetry", "Retry") : isComplete ? t("missions.actionReview", "Review") : t("missions.actionResume", "Resume");
 
     return (
       <div
@@ -4124,7 +4124,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         className="mission-list__item mission-list__item--interview"
         role="button"
         tabIndex={0}
-        aria-label={`Resume interview ${session.title || "Mission interview"}`}
+        aria-label={t("missions.resumeInterviewAriaLabel", "Resume interview {{title}}", { title: session.title || t("missions.defaultInterviewTitle", "Mission interview") })}
         onClick={() => handleResumeInterviewSession(session.id)}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target) return;
@@ -4141,11 +4141,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         <div className="mission-list__item-content">
           <div className="mission-list__item-header">
             <Sparkles size={16} className="mission-list__item-icon" />
-            <span className="mission-list__item-title">{session.title || "Mission interview"}</span>
+            <span className="mission-list__item-title">{session.title || t("missions.defaultInterviewTitle", "Mission interview")}</span>
           </div>
           <div className="mission-list__item-tags">
             <span className={`mission-status-badge mission-status-badge--sm mission-interview-status mission-interview-status--${session.status}`}>
-              {getInterviewStatusLabel(session.status)}
+              {getInterviewStatusLabel(session.status, t)}
             </span>
           </div>
           <p className="mission-list__item-description">{description}</p>
@@ -4164,11 +4164,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           <button
             className="mission-btn mission-btn--danger mission-btn--sm"
             onClick={() => setDeleteConfirmId({ type: "interview_draft", id: session.id })}
-            title="Discard draft"
-            aria-label="Discard draft"
+            title={t("missions.discardDraft", "Discard draft")}
+            aria-label={t("missions.discardDraft", "Discard draft")}
           >
             <Trash2 size={14} />
-            <span>Discard</span>
+            <span>{t("missions.discardButton", "Discard")}</span>
           </button>
         </div>
       </div>
@@ -4200,7 +4200,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         className={`mission-list__item ${isSelected ? "mission-list__item--selected" : ""} ${isInterviewStyle ? "mission-list__item--interview" : ""}`}
         role="button"
         tabIndex={0}
-        aria-label={`Open mission ${m.title}`}
+        aria-label={t("missions.openMissionAriaLabel", "Open mission {{title}}", { title: m.title })}
         aria-pressed={isSelected}
         onClick={() => handleSelectMission(mission)}
         onKeyDown={(event) => {
@@ -4222,12 +4222,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           </div>
           <div className="mission-list__item-tags">
             {mission.autopilotEnabled && (
-              <span title="Autopilot enabled"><Zap size={12} className="mission-list__item-autopilot-icon" /></span>
+              <span title={t("missions.autopilotEnabledLabel", "Autopilot enabled")}><Zap size={12} className="mission-list__item-autopilot-icon" /></span>
             )}
             <span
               className={`mission-health-badge mission-health-badge--${healthState}`}
               data-testid={`mission-health-badge-${m.id}`}
-              aria-label={`Mission health: ${healthState}`}
+              aria-label={t("missions.missionHealthAriaLabel", "Mission health: {{state}}", { state: healthState })}
             />
             <span
               className="mission-status-badge mission-status-badge--sm"
@@ -4241,21 +4241,21 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
             {showUnlinkedIndicator && (
               <span
                 className="mission-status-badge mission-status-badge--sm mission-status-badge--unlinked"
-                title="No goals linked to this mission"
-                aria-label="No goals linked to this mission"
+                title={t("missions.noGoalsLinked", "No goals linked to this mission")}
+                aria-label={t("missions.noGoalsLinked", "No goals linked to this mission")}
                 data-testid={`mission-unlinked-indicator-${m.id}`}
               >
-                Unlinked
+                {t("missions.unlinkedBadge", "Unlinked")}
               </span>
             )}
             {isInterviewStyle && (
               <span className="mission-status-badge mission-status-badge--sm mission-interview-status mission-interview-status--awaiting_input">
-                Interview in progress
+                {t("missions.interviewInProgress", "Interview in progress")}
               </span>
             )}
           </div>
           {isInterviewStyle ? (
-            <p className="mission-list__item-description">Mission interview is still in progress. Open this mission to continue planning.</p>
+            <p className="mission-list__item-description">{t("missions.missionInterviewInProgressDesc", "Mission interview is still in progress. Open this mission to continue planning.")}</p>
           ) : m.description ? (
             <div className="mission-list__item-description">{renderMarkdownText(m.description)}</div>
           ) : null}
@@ -4264,15 +4264,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               {hasContent && (
                 <>
                   <span className="mission-list__item-stat">
-                    {summary!.completedMilestones}/{summary!.totalMilestones} milestones
+                    {t("missions.completedMilestones", "{{completed}}/{{total}} milestones", { completed: summary!.completedMilestones, total: summary!.totalMilestones })}
                   </span>
                   <span className="mission-list__item-stat">
-                    {summary!.completedFeatures}/{summary!.totalFeatures} features
+                    {t("missions.completedFeatures", "{{completed}}/{{total}} features", { completed: summary!.completedFeatures, total: summary!.totalFeatures })}
                   </span>
                 </>
               )}
               <span className="mission-list__item-stat" data-testid={`mission-task-stats-${m.id}`}>
-                {tasksCompleted}/{totalTasks} tasks
+                {t("missions.completedTasks", "{{completed}}/{{total}} tasks", { completed: tasksCompleted, total: totalTasks })}
               </span>
               {tasksFailed > 0 && (
                 <button
@@ -4282,9 +4282,9 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     handleSelectMission(mission);
                   }}
                   data-testid={`mission-failed-${m.id}`}
-                  title="View mission failures"
+                  title={t("missions.viewMissionFailures", "View mission failures")}
                 >
-                  {tasksFailed} failed
+                  {t("missions.tasksFailed", { count: tasksFailed, defaultValue_one: "{{count}} failed", defaultValue_other: "{{count}} failed" })}
                 </button>
               )}
               <div className={`mission-list__item-progress mission-list__item-progress--${healthState}`}>
@@ -4298,7 +4298,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           {showSummaryBlock && (
             <div className="mission-list__item-activity">
               <span className="mission-relative-time" data-testid={`mission-last-activity-${m.id}`}>
-                Activity {getRelativeTime(health?.lastActivityAt)}
+                {t("missions.activityTime", "Activity {{time}}", { time: getRelativeTime(health?.lastActivityAt, t) })}
               </span>
             </div>
           )}
@@ -4309,52 +4309,52 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               <button
                 className="mission-btn mission-btn--danger mission-btn--sm"
                 onClick={() => handleStopMission(m.id)}
-                title="Stop mission"
-                aria-label="Stop mission"
+                title={t("missions.stopMission", "Stop mission")}
+                aria-label={t("missions.stopMission", "Stop mission")}
               >
                 <Square size={14} />
-                <span>Stop mission</span>
+                <span>{t("missions.stopMission", "Stop mission")}</span>
               </button>
             )}
             {m.status === "blocked" && (
               <button
                 className="mission-btn mission-btn--primary mission-btn--sm"
                 onClick={() => handleResumeMission(m.id)}
-                title="Resume mission"
-                aria-label="Resume mission"
+                title={t("missions.resumeMission", "Resume mission")}
+                aria-label={t("missions.resumeMission", "Resume mission")}
               >
                 <Play size={14} />
-                <span>Resume mission</span>
+                <span>{t("missions.resumeMission", "Resume mission")}</span>
               </button>
             )}
             {m.status === "planning" && (
               <button
                 className="mission-btn mission-btn--primary mission-btn--sm"
                 onClick={() => handleStartMission(m.id)}
-                title="Start mission"
-                aria-label="Start mission"
+                title={t("missions.startMission", "Start mission")}
+                aria-label={t("missions.startMission", "Start mission")}
               >
                 <Play size={14} />
-                <span>Start mission</span>
+                <span>{t("missions.startMission", "Start mission")}</span>
               </button>
             )}
-            {getMissionRunHelperText(m.status) && (
-              <span className="mission-list__item-run-help">{getMissionRunHelperText(m.status)}</span>
+            {getMissionRunHelperText(m.status, t) && (
+              <span className="mission-list__item-run-help">{getMissionRunHelperText(m.status, t)}</span>
             )}
           </div>
           <button
             className="mission-icon-btn"
             onClick={() => handleEditMission(mission)}
-            title="Edit mission"
-            aria-label="Edit mission"
+            title={t("missions.editMission", "Edit mission")}
+            aria-label={t("missions.editMission", "Edit mission")}
           >
             <Pencil size={14} />
           </button>
           <button
             className="mission-icon-btn mission-icon-btn--danger"
             onClick={() => setDeleteConfirmId({ type: "mission", id: m.id })}
-            title="Delete mission"
-            aria-label="Delete mission"
+            title={t("missions.deleteMission", "Delete mission")}
+            aria-label={t("missions.deleteMission", "Delete mission")}
           >
             <Trash2 size={14} />
           </button>
@@ -4376,30 +4376,30 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-form-card">
                   <input
                     type="text"
-                    placeholder="Mission title"
+                    placeholder={t("missions.missionTitlePlaceholder", "Mission title")}
                     value={missionForm.title}
                     onChange={(e) => setMissionForm({ ...missionForm, title: e.target.value })}
                     onKeyDown={handleMissionFormKeyDown}
                     autoFocus
                   />
                   <textarea
-                    placeholder="Description (optional)"
+                    placeholder={t("missions.descriptionOptional", "Description (optional)")}
                     value={missionForm.description}
                     onChange={(e) => setMissionForm({ ...missionForm, description: e.target.value })}
                     rows={2}
                   />
                   <label>
-                    Target branch
+                    {t("missions.targetBranch", "Target branch")}
                     <input
                       type="text"
-                      placeholder="e.g. main"
+                      placeholder={t("missions.targetBranchPlaceholder", "e.g. main")}
                       value={missionForm.baseBranch}
                       onChange={(e) => setMissionForm({ ...missionForm, baseBranch: e.target.value })}
-                      aria-label="Mission target branch"
+                      aria-label={t("missions.missionTargetBranchAriaLabel", "Mission target branch")}
                     />
                   </label>
                   <label>
-                    Branch strategy
+                    {t("missions.branchStrategy", "Branch strategy")}
                     <select
                       value={missionForm.branchStrategy.mode}
                       onChange={(e) =>
@@ -4411,20 +4411,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           },
                         })
                       }
-                      aria-label="Mission branch strategy"
+                      aria-label={t("missions.branchStrategyAriaLabel", "Mission branch strategy")}
                     >
-                      <option value="project-default">Use project/default branch</option>
-                      <option value="auto-per-task">Auto-name a branch per task (from details)</option>
-                      <option value="existing">Use existing branch</option>
-                      <option value="custom-new">Create custom branch</option>
+                      <option value="project-default">{t("missions.branchStrategyProjectDefault", "Use project/default branch")}</option>
+                      <option value="auto-per-task">{t("missions.branchStrategyAutoPerTask", "Auto-name a branch per task (from details)")}</option>
+                      <option value="existing">{t("missions.branchStrategyExisting", "Use existing branch")}</option>
+                      <option value="custom-new">{t("missions.branchStrategyCustomNew", "Create custom branch")}</option>
                     </select>
                   </label>
                   {(missionForm.branchStrategy.mode === "existing" || missionForm.branchStrategy.mode === "custom-new") && (
                     <label>
-                      Branch name
+                      {t("missions.branchName", "Branch name")}
                       <input
                         type="text"
-                        placeholder="e.g. feature/mission-work"
+                        placeholder={t("missions.branchNamePlaceholder", "e.g. feature/mission-work")}
                         value={missionForm.branchStrategy.branchName ?? ""}
                         onChange={(e) =>
                           setMissionForm({
@@ -4435,17 +4435,17 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                             },
                           })
                         }
-                        aria-label="Mission branch name"
+                        aria-label={t("missions.branchNameAriaLabel", "Mission branch name")}
                       />
                     </label>
                   )}
                   <div className="mission-form-card__actions">
                     <button className="mission-btn mission-btn--primary" onClick={handleSaveMission} disabled={saving}>
                       {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                      Create
+                      {t("missions.createButton", "Create")}
                     </button>
                     <button className="mission-btn mission-btn--ghost" onClick={handleCancelMission}>
-                      Cancel
+                      {t("missions.cancelButton", "Cancel")}
                     </button>
                   </div>
                 </div>
@@ -4458,7 +4458,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     onClick={openNewMissionInterview}
                   >
                     <Sparkles size={14} />
-                    Plan New Mission
+                    {t("missions.planNewMission", "Plan New Mission")}
                   </button>
                 </div>
               )}
@@ -4468,7 +4468,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-list__drafts-group">
                   <div className="mission-list__drafts-header">
                     <Sparkles size={16} className="mission-list__item-icon" />
-                    <span>Drafts</span>
+                    <span>{t("missions.draftsLabel", "Drafts")}</span>
                     <span>({missionInterviewDrafts.length})</span>
                   </div>
                   {renderInterviewSessionItems()}
@@ -4482,30 +4482,30 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 <div className="mission-form-card">
                   <input
                     type="text"
-                    placeholder="Mission title"
+                    placeholder={t("missions.missionTitlePlaceholder", "Mission title")}
                     value={missionForm.title}
                     onChange={(e) => setMissionForm({ ...missionForm, title: e.target.value })}
                     onKeyDown={handleMissionFormKeyDown}
                     autoFocus
                   />
                   <textarea
-                    placeholder="Description (optional)"
+                    placeholder={t("missions.descriptionOptional", "Description (optional)")}
                     value={missionForm.description}
                     onChange={(e) => setMissionForm({ ...missionForm, description: e.target.value })}
                     rows={2}
                   />
                   <label>
-                    Target branch
+                    {t("missions.targetBranch", "Target branch")}
                     <input
                       type="text"
-                      placeholder="e.g. main"
+                      placeholder={t("missions.targetBranchPlaceholder", "e.g. main")}
                       value={missionForm.baseBranch}
                       onChange={(e) => setMissionForm({ ...missionForm, baseBranch: e.target.value })}
-                      aria-label="Mission target branch"
+                      aria-label={t("missions.missionTargetBranchAriaLabel", "Mission target branch")}
                     />
                   </label>
                   <label>
-                    Branch strategy
+                    {t("missions.branchStrategy", "Branch strategy")}
                     <select
                       value={missionForm.branchStrategy.mode}
                       onChange={(e) =>
@@ -4517,20 +4517,20 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                           },
                         })
                       }
-                      aria-label="Mission branch strategy"
+                      aria-label={t("missions.branchStrategyAriaLabel", "Mission branch strategy")}
                     >
-                      <option value="project-default">Use project/default branch</option>
-                      <option value="auto-per-task">Auto-name a branch per task (from details)</option>
-                      <option value="existing">Use existing branch</option>
-                      <option value="custom-new">Create custom branch</option>
+                      <option value="project-default">{t("missions.branchStrategyProjectDefault", "Use project/default branch")}</option>
+                      <option value="auto-per-task">{t("missions.branchStrategyAutoPerTask", "Auto-name a branch per task (from details)")}</option>
+                      <option value="existing">{t("missions.branchStrategyExisting", "Use existing branch")}</option>
+                      <option value="custom-new">{t("missions.branchStrategyCustomNew", "Create custom branch")}</option>
                     </select>
                   </label>
                   {(missionForm.branchStrategy.mode === "existing" || missionForm.branchStrategy.mode === "custom-new") && (
                     <label>
-                      Branch name
+                      {t("missions.branchName", "Branch name")}
                       <input
                         type="text"
-                        placeholder="e.g. feature/mission-work"
+                        placeholder={t("missions.branchNamePlaceholder", "e.g. feature/mission-work")}
                         value={missionForm.branchStrategy.branchName ?? ""}
                         onChange={(e) =>
                           setMissionForm({
@@ -4541,7 +4541,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                             },
                           })
                         }
-                        aria-label="Mission branch name"
+                        aria-label={t("missions.branchNameAriaLabel", "Mission branch name")}
                       />
                     </label>
                   )}
@@ -4550,11 +4550,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                       value={missionForm.status}
                       onChange={(e) => setMissionForm({ ...missionForm, status: e.target.value as MissionStatus })}
                     >
-                      <option value="planning">Planning</option>
-                      <option value="active">Active</option>
-                      <option value="blocked">Blocked</option>
-                      <option value="complete">Complete</option>
-                      <option value="archived">Archived</option>
+                      <option value="planning">{t("missions.statusPlanning", "Planning")}</option>
+                      <option value="active">{t("missions.statusActive", "Active")}</option>
+                      <option value="blocked">{t("missions.statusBlocked", "Blocked")}</option>
+                      <option value="complete">{t("missions.statusComplete", "Complete")}</option>
+                      <option value="archived">{t("missions.statusArchived", "Archived")}</option>
                     </select>
                     <label className="mission-checkbox">
                       <input
@@ -4562,16 +4562,16 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         checked={missionForm.autopilotEnabled}
                         onChange={(e) => setMissionForm({ ...missionForm, autopilotEnabled: e.target.checked })}
                       />
-                      <Zap size={12} /> Autopilot
+                      <Zap size={12} /> {t("missions.autopilotLabel", "Autopilot")}
                     </label>
                   </div>
                   <div className="mission-form-card__actions">
                     <button className="mission-btn mission-btn--primary" onClick={handleSaveMission} disabled={saving}>
                       {saving ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
-                      Update
+                      {t("missions.updateButton", "Update")}
                     </button>
                     <button className="mission-btn mission-btn--ghost" onClick={handleCancelMission}>
-                      Cancel
+                      {t("missions.cancelButton", "Cancel")}
                     </button>
                   </div>
                 </div>
@@ -4580,18 +4580,16 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               {missions.length === 0 && missionInterviewDrafts.length === 0 && persistedInterviewMissions.length === 0 && !isCreatingMission && (
                 <div className="mission-manager__empty mission-manager__empty--large mission-manager__empty--mission">
                   <Target size={32} />
-                  <h3 className="mission-manager__empty-title">No missions yet</h3>
+                  <h3 className="mission-manager__empty-title">{t("missions.noMissionsYetTitle", "No missions yet")}</h3>
                   <p className="mission-manager__empty-body">
-                    Missions are large initiatives that bundle milestones, slices, and features into a
-                    single plan. Plan a mission to break down a goal end-to-end and let agents work
-                    through it autopilot-style.
+                    {t("missions.noMissionsYetBody", "Missions are large initiatives that bundle milestones, slices, and features into a single plan. Plan a mission to break down a goal end-to-end and let agents work through it autopilot-style.")}
                   </p>
                   <button
                     className="btn btn-sm btn-primary mission-manager__empty-cta"
                     onClick={openNewMissionInterview}
                   >
                     <Sparkles size={14} />
-                    Plan New Mission
+                    {t("missions.planNewMission", "Plan New Mission")}
                   </button>
                 </div>
               )}
@@ -4602,7 +4600,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                     <div className="mission-list__footer-actions">
                       <button className="mission-add-btn" onClick={openNewMissionInterview}>
                         <Sparkles size={16} />
-                        Plan New Mission
+                        {t("missions.planNewMission", "Plan New Mission")}
                       </button>
                     </div>
                   )}
@@ -4620,8 +4618,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         <div className="mission-confirm-panel__content">
           <p>
             {isInterviewDraftDelete
-              ? "Discard this interview draft? This removes the saved draft and cannot be undone."
-              : `Delete this ${deleteConfirmId?.type}? This cannot be undone.`}
+              ? t("missions.discardDraftConfirm", "Discard this interview draft? This removes the saved draft and cannot be undone.")
+              : t("missions.deleteConfirm", "Delete this {{type}}? This cannot be undone.", { type: deleteConfirmId?.type })}
           </p>
           <div className="mission-confirm-panel__actions">
             <button
@@ -4641,10 +4639,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                 }
               }}
             >
-              {isInterviewDraftDelete ? "Discard" : "Delete"}
+              {isInterviewDraftDelete ? t("missions.discardButton", "Discard") : t("missions.deleteButton", "Delete")}
             </button>
             <button className="mission-btn mission-btn--ghost" onClick={() => setDeleteConfirmId(null)}>
-              Cancel
+              {t("missions.cancelButton", "Cancel")}
             </button>
           </div>
         </div>
@@ -4655,17 +4653,17 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const renderLinkTaskPanel = () => (
     <div className="mission-confirm-panel mission-confirm-panel--link">
       <div className="mission-confirm-panel__content">
-        <p>Link feature to task:</p>
+        <p>{t("missions.linkFeatureToTask", "Link feature to task:")}</p>
         <input
           type="text"
-          placeholder="Task ID (e.g., FN-001)"
+          placeholder={t("missions.taskIdPlaceholder", "Task ID (e.g., FN-001)")}
           value={selectedTaskId}
           onChange={(e) => setSelectedTaskId(e.target.value)}
           autoFocus
         />
         {availableTasks.length > 0 && (
           <div className="mission-task-suggestions">
-            <small>Or select:</small>
+            <small>{t("missions.orSelect", "Or select:")}</small>
             <div className="mission-task-suggestions__list">
               {availableTasks.slice(0, 5).map((task) => (
                 <button
@@ -4673,7 +4671,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                   className="mission-task-suggestions__item"
                   onClick={() => setSelectedTaskId(task.id)}
                 >
-                  {task.id}: {task.title || "Untitled"}
+                  {task.id}: {task.title || t("missions.untitled", "Untitled")}
                 </button>
               ))}
             </div>
@@ -4681,10 +4679,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         )}
         <div className="mission-confirm-panel__actions">
           <button className="mission-btn mission-btn--primary" onClick={handleLinkTask}>
-            Link
+            {t("missions.linkButton", "Link")}
           </button>
           <button className="mission-btn mission-btn--ghost" onClick={() => { setLinkTaskFeatureId(null); setSelectedTaskId(""); }}>
-            Cancel
+            {t("missions.cancelButton", "Cancel")}
           </button>
         </div>
       </div>
@@ -4697,7 +4695,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       className={`mission-manager mission-manager--desktop${isInline ? " mission-manager--inline" : ""}`}
       role={isInline ? undefined : "dialog"}
       aria-modal={isInline ? undefined : true}
-      aria-label={isInline ? undefined : "Mission Manager"}
+      aria-label={isInline ? undefined : t("missions.missionManagerAriaLabel", "Mission Manager")}
       data-testid="mission-manager-dialog"
     >
       <div className={`mission-manager__header${isInline ? " mission-manager__header--inline" : ""}`}>
@@ -4706,8 +4704,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
             <button
               className="mission-manager__back-btn"
               onClick={handleBackToList}
-              title="Back to missions"
-              aria-label="Back to missions list"
+              title={t("missions.backToMissions", "Back to missions")}
+              aria-label={t("missions.backToMissionsList", "Back to missions list")}
               data-testid="mission-back-btn"
             >
               <ChevronLeft size={18} />
@@ -4715,9 +4713,9 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           )}
           <Target size={18} className="mission-manager__header-icon" />
           <h2 className="mission-manager__title" data-testid="mission-header-title">
-            <span className="mission-manager__title-text mission-manager__title-text--desktop">Missions</span>
+            <span className="mission-manager__title-text mission-manager__title-text--desktop">{t("missions.title", "Missions")}</span>
             <span className="mission-manager__title-text mission-manager__title-text--mobile">
-              {selectedMission ? selectedMission.title : "Missions"}
+              {selectedMission ? selectedMission.title : t("missions.title", "Missions")}
             </span>
           </h2>
         </div>
@@ -4725,8 +4723,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           <button
             className="modal-close"
             onClick={onClose}
-            title="Close"
-            aria-label="Close Mission Manager"
+            title={t("missions.close", "Close")}
+            aria-label={t("missions.closeMissionManager", "Close Mission Manager")}
             data-testid="mission-close-btn"
           >
             <X size={18} />
@@ -4739,12 +4737,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           {loading ? (
             <div className="mission-manager__loading">
               <Loader2 size={24} className="spinner" />
-              <span>Loading missions...</span>
+              <span>{t("missions.loadingMissions", "Loading missions...")}</span>
             </div>
           ) : detailLoading ? (
             <div className="mission-manager__loading">
               <Loader2 size={24} className="spinner" />
-              <span>Loading mission details...</span>
+              <span>{t("missions.loadingMissionDetails", "Loading mission details...")}</span>
             </div>
           ) : selectedMission ? (
             renderMissionDetailContent()
@@ -4759,14 +4757,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           <aside
             className="mission-manager__sidebar"
             data-testid="mission-sidebar"
-            aria-label="Mission list"
+            aria-label={t("missions.missionList", "Mission list")}
             style={isMobile ? undefined : { width: `${sidebarWidth}px` }}
           >
             <div className="mission-manager__sidebar-list">
               {loading ? (
                 <div className="mission-manager__loading">
                   <Loader2 size={24} className="spinner" />
-                  <span>Loading missions...</span>
+                  <span>{t("missions.loadingMissions", "Loading missions...")}</span>
                 </div>
               ) : (
                 renderMissionListContent({ hideBottomButtons: true })
@@ -4777,11 +4775,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               <button
                 className="btn btn-primary mission-manager__sidebar-cta"
                 onClick={openNewMissionInterview}
-                title="Plan New Mission"
-                aria-label="Plan New Mission"
+                title={t("missions.planNewMission", "Plan New Mission")}
+                aria-label={t("missions.planNewMission", "Plan New Mission")}
               >
                 <Sparkles size={14} />
-                Plan New Mission
+                {t("missions.planNewMission", "Plan New Mission")}
               </button>
             </div>
           </aside>
@@ -4794,7 +4792,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               aria-valuemin={MISSION_SIDEBAR_MIN_WIDTH}
               aria-valuemax={MISSION_SIDEBAR_MAX_WIDTH}
               aria-valuenow={sidebarWidth}
-              aria-label="Resize mission sidebar"
+              aria-label={t("missions.resizeSidebar", "Resize mission sidebar")}
               tabIndex={0}
               onPointerDown={handleSidebarResizeStart}
               onKeyDown={handleSidebarResizeKeyDown}
@@ -4805,14 +4803,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
             {detailLoading ? (
               <div className="mission-manager__loading">
                 <Loader2 size={24} className="spinner" />
-                <span>Loading mission details...</span>
+                <span>{t("missions.loadingMissionDetails", "Loading mission details...")}</span>
               </div>
             ) : selectedMission ? (
               renderMissionDetailContent()
             ) : (
               <div className="mission-manager__detail-pane-empty" data-testid="mission-empty-detail">
                 <Target size={32} />
-                <span>Select a mission to view details</span>
+                <span>{t("missions.selectMissionToView", "Select a mission to view details")}</span>
               </div>
             )}
             {deleteConfirmId && !shouldRenderSidebarDeleteConfirm && renderDeleteConfirmPanel()}
@@ -4832,7 +4830,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       showSendToBackgroundButton={interviewLaunchMode === "resume"}
       onMissionCreated={() => {
         loadMissions();
-        addToast("Mission created from AI interview", "success");
+        addToast(t("missions.createdFromInterview", "Mission created from AI interview"), "success");
       }}
       projectId={projectId}
       resumeSessionId={interviewLaunchMode === "resume" ? effectiveResumeSessionId : undefined}

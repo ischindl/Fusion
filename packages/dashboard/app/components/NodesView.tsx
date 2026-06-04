@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Box, Plus, Server, Wifi, WifiOff, Globe, RefreshCw, X } from "lucide-react";
 import "./NodesView.css";
 import { useNodes } from "../hooks/useNodes";
@@ -21,6 +22,7 @@ interface NodesViewProps {
 }
 
 export function NodesView({ addToast, onClose }: NodesViewProps) {
+  const { t } = useTranslation("app");
   const {
     nodes,
     loading,
@@ -83,14 +85,14 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
   const handleCreateDockerNode = useCallback(async (input: ManagedDockerNodeInput) => {
     try {
       await createDockerNode(input);
-      addToast(`Docker node "${input.name}" created`, "success");
+      addToast(t("nodes.dockerNodeCreated", `Docker node "{{name}}" created`, { name: input.name }), "success");
       setDockerOnboardingOpen(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to create Docker node";
+      const message = err instanceof Error ? err.message : t("nodes.failedCreateDocker", "Failed to create Docker node");
       addToast(message, "error");
       throw err;
     }
-  }, [addToast, createDockerNode]);
+  }, [addToast, createDockerNode, t]);
 
   const dockerNodeMap = useMemo(() => {
     const map = new Map<string, ManagedDockerNodeInfo>();
@@ -106,32 +108,32 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
     try {
       await Promise.all([refresh(), refreshDocker()]);
     } catch {
-      addToast("Failed to refresh nodes", "error");
+      addToast(t("nodes.failedRefresh", "Failed to refresh nodes"), "error");
     }
-  }, [addToast, refresh, refreshDocker]);
+  }, [addToast, refresh, refreshDocker, t]);
 
   const handleHealthCheck = useCallback(async (id: string) => {
     try {
       await healthCheck(id);
-      addToast("Node health check complete", "success");
+      addToast(t("nodes.healthCheckComplete", "Node health check complete"), "success");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Health check failed";
+      const message = err instanceof Error ? err.message : t("nodes.healthCheckFailed", "Health check failed");
       addToast(message, "error");
     }
-  }, [addToast, healthCheck]);
+  }, [addToast, healthCheck, t]);
 
   const handleUnregister = useCallback(async (id: string) => {
     try {
       await unregister(id);
-      addToast("Node removed", "success");
+      addToast(t("nodes.removed", "Node removed"), "success");
       if (selectedNode?.id === id) {
         setSelectedNode(null);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to remove node";
+      const message = err instanceof Error ? err.message : t("nodes.failedRemove", "Failed to remove node");
       addToast(message, "error");
     }
-  }, [addToast, selectedNode?.id, unregister]);
+  }, [addToast, selectedNode?.id, unregister, t]);
 
   const handleUpdate = useCallback(async (id: string, updates: NodeUpdateInput) => {
     await update(id, updates);
@@ -143,57 +145,57 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
         <div className="nodes-view-title">
           <h2>
             <Server size={20} />
-            Nodes
+            {t("nodes.heading", "Nodes")}
           </h2>
-          <span className="nodes-view-count">{nodes.length} registered</span>
+          <span className="nodes-view-count">{t("nodes.registeredCount", "{{count}} registered", { count: nodes.length })}</span>
         </div>
 
         <div className="nodes-view-actions">
           <button
             className="btn-icon nodes-view-close"
             onClick={onClose}
-            aria-label="Close nodes view"
+            aria-label={t("nodes.closeAriaLabel", "Close nodes view")}
           >
             <X size={16} />
           </button>
           <button className="btn btn-sm" onClick={() => void handleRefresh()} disabled={loading || dockerLoading}>
             <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh
+            {t("nodes.refresh", "Refresh")}
           </button>
           <button className="btn btn-sm" onClick={() => setAddModalOpen(true)}>
             <Plus size={14} />
-            Add Node
+            {t("nodes.addNode", "Add Node")}
           </button>
-          <button className="btn btn-sm" onClick={() => setDockerOnboardingOpen(true)} title="Add a managed Docker node">
+          <button className="btn btn-sm" onClick={() => setDockerOnboardingOpen(true)} title={t("nodes.addDockerNodeTitle", "Add a managed Docker node")}>
             <Box size={14} />
-            Add Docker Node
+            {t("nodes.addDockerNode", "Add Docker Node")}
           </button>
         </div>
       </div>
 
       <div className="nodes-view-stats">
         <div className="nodes-view-stat" data-testid="nodes-stat-total">
-          <span>Total</span>
+          <span>{t("nodes.total", "Total")}</span>
           <strong>{stats.total}</strong>
         </div>
         <div className="nodes-view-stat nodes-view-stat--online" data-testid="nodes-stat-online">
-          <span><Wifi size={14} /> Online</span>
+          <span><Wifi size={14} /> {t("nodes.online", "Online")}</span>
           <strong>{stats.online}</strong>
         </div>
         <div className="nodes-view-stat nodes-view-stat--offline" data-testid="nodes-stat-offline">
-          <span><WifiOff size={14} /> Offline</span>
+          <span><WifiOff size={14} /> {t("nodes.offline", "Offline")}</span>
           <strong>{stats.offline}</strong>
         </div>
         <div className="nodes-view-stat" data-testid="nodes-stat-remote">
-          <span><Globe size={14} /> Remote</span>
+          <span><Globe size={14} /> {t("nodes.remote", "Remote")}</span>
           <strong>{stats.remote}</strong>
         </div>
         <div className="nodes-view-stat nodes-view-stat--synced" data-testid="nodes-stat-synced">
-          <span><RefreshCw size={14} /> Synced</span>
+          <span><RefreshCw size={14} /> {t("nodes.synced", "Synced")}</span>
           <strong>{stats.synced}</strong>
         </div>
         <div className="nodes-view-stat" data-testid="nodes-stat-docker">
-          <span><Box size={14} /> Docker</span>
+          <span><Box size={14} /> {t("nodes.docker", "Docker")}</span>
           <strong>{stats.docker}</strong>
         </div>
       </div>
@@ -202,8 +204,8 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
 
       {/* Mesh Topology Visualization */}
       {!meshLoading && meshState.length > 0 && (
-        <section className="nodes-view-topology" aria-label="Mesh Topology">
-          <h3 className="nodes-view-section-title">Mesh Topology</h3>
+        <section className="nodes-view-topology" aria-label={t("nodes.meshTopologyAriaLabel", "Mesh Topology")}>
+          <h3 className="nodes-view-section-title">{t("nodes.meshTopology", "Mesh Topology")}</h3>
           <MeshTopology nodes={meshState} />
         </section>
       )}
@@ -216,10 +218,10 @@ export function NodesView({ addToast, onClose }: NodesViewProps) {
         </div>
       ) : nodes.length === 0 ? (
         <div className="nodes-view-empty">
-          <p>No nodes are registered yet.</p>
+          <p>{t("nodes.noRegistered", "No nodes are registered yet.")}</p>
           <button className="btn btn-primary" onClick={() => setAddModalOpen(true)}>
             <Plus size={14} />
-            Add First Node
+            {t("nodes.addFirstNode", "Add First Node")}
           </button>
         </div>
       ) : (

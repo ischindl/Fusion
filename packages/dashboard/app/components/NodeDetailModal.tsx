@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Activity,
   ChevronDown,
@@ -135,6 +136,7 @@ export function NodeDetailModal({
   onUpdateDockerConfig,
   onFetchDockerConfigDiff,
 }: NodeDetailModalProps) {
+  const { t } = useTranslation("app");
   const isMountedRef = useRef(true);
   const [editMode, setEditMode] = useState(false);
   const [name, setName] = useState("");
@@ -212,15 +214,15 @@ export function NodeDetailModal({
 
   const dockerHost = useMemo(() => {
     if (!managedDockerNode) return "—";
-    return managedDockerNode.hostConfig.type === "remote" ? managedDockerNode.hostConfig.host ?? "—" : "Local Docker";
-  }, [managedDockerNode]);
+    return managedDockerNode.hostConfig.type === "remote" ? managedDockerNode.hostConfig.host ?? "—" : t("nodes.localDocker", "Local Docker");
+  }, [managedDockerNode, t]);
 
   const dockerResourceSizing = useMemo(() => {
     if (!managedDockerNode?.resourceSizing?.cpuLimit && !managedDockerNode?.resourceSizing?.memoryLimit) {
-      return "Default";
+      return t("nodes.dockerResourceDefault", "Default");
     }
-    return `${managedDockerNode.resourceSizing?.cpuLimit ?? "Default CPU"} / ${managedDockerNode.resourceSizing?.memoryLimit ?? "Default memory"}`;
-  }, [managedDockerNode]);
+    return `${managedDockerNode.resourceSizing?.cpuLimit ?? t("nodes.dockerDefaultCpu", "Default CPU")} / ${managedDockerNode.resourceSizing?.memoryLimit ?? t("nodes.dockerDefaultMemory", "Default memory")}`;
+  }, [managedDockerNode, t]);
 
   const handleHealthCheck = useCallback(async () => {
     if (!node) return;
@@ -228,10 +230,10 @@ export function NodeDetailModal({
     try {
       await onHealthCheck(node.id);
       if (!isMountedRef.current) return;
-      addToast(`Health check completed for ${node.name}`, "success");
+      addToast(t("nodes.healthCheckSuccess", "Health check completed for {{name}}", { name: node.name }), "success");
     } catch (error) {
       if (!isMountedRef.current) return;
-      const message = error instanceof Error ? error.message : "Health check failed";
+      const message = error instanceof Error ? error.message : t("nodes.healthCheckFailed", "Health check failed");
       addToast(message, "error");
     }
   }, [addToast, node, onHealthCheck]);
@@ -243,10 +245,10 @@ export function NodeDetailModal({
     try {
       await onPushSettings(node.id);
       if (!isMountedRef.current) return;
-      addToast("Settings pushed successfully", "success");
+      addToast(t("nodes.pushSettingsSuccess", "Settings pushed successfully"), "success");
     } catch (error) {
       if (!isMountedRef.current) return;
-      const message = error instanceof Error ? error.message : "Push settings failed";
+      const message = error instanceof Error ? error.message : t("nodes.pushSettingsFailed", "Push settings failed");
       setSyncError(message);
       addToast(message, "error");
     } finally {
@@ -263,10 +265,10 @@ export function NodeDetailModal({
     try {
       await onPullSettings(node.id);
       if (!isMountedRef.current) return;
-      addToast("Settings pulled successfully", "success");
+      addToast(t("nodes.pullSettingsSuccess", "Settings pulled successfully"), "success");
     } catch (error) {
       if (!isMountedRef.current) return;
-      const message = error instanceof Error ? error.message : "Pull settings failed";
+      const message = error instanceof Error ? error.message : t("nodes.pullSettingsFailed", "Pull settings failed");
       setSyncError(message);
       addToast(message, "error");
     } finally {
@@ -283,10 +285,10 @@ export function NodeDetailModal({
     try {
       await onSyncAuth(node.id);
       if (!isMountedRef.current) return;
-      addToast("Auth credentials synced successfully", "success");
+      addToast(t("nodes.syncAuthSuccess", "Auth credentials synced successfully"), "success");
     } catch (error) {
       if (!isMountedRef.current) return;
-      const message = error instanceof Error ? error.message : "Auth sync failed";
+      const message = error instanceof Error ? error.message : t("nodes.syncAuthFailed", "Auth sync failed");
       setSyncError(message);
       addToast(message, "error");
     } finally {
@@ -308,7 +310,7 @@ export function NodeDetailModal({
       if (!isMountedRef.current) return;
       setLiveContainerStatus(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to fetch container status";
+      const message = error instanceof Error ? error.message : t("nodes.fetchContainerStatusFailed", "Failed to fetch container status");
       addToast(message, "error");
     } finally {
       if (isMountedRef.current) {
@@ -328,7 +330,7 @@ export function NodeDetailModal({
     } catch (error) {
       if (!isMountedRef.current) return;
       setLogs("");
-      const message = error instanceof Error ? error.message : "Failed to fetch container logs";
+      const message = error instanceof Error ? error.message : t("nodes.fetchContainerLogsFailed", "Failed to fetch container logs");
       addToast(message, "error");
     } finally {
       if (isMountedRef.current) {
@@ -342,17 +344,17 @@ export function NodeDetailModal({
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      addToast("Name is required", "error");
+      addToast(t("nodes.nameRequired", "Name is required"), "error");
       return;
     }
 
     if (node.type === "remote" && !url.trim()) {
-      addToast("URL is required for remote nodes", "error");
+      addToast(t("nodes.urlRequired", "URL is required for remote nodes"), "error");
       return;
     }
 
     if (!Number.isFinite(maxConcurrent) || maxConcurrent < 1) {
-      addToast("Concurrency must be at least 1", "error");
+      addToast(t("nodes.concurrencyMin", "Concurrency must be at least 1"), "error");
       return;
     }
 
@@ -364,10 +366,10 @@ export function NodeDetailModal({
         apiKey: node.type === "remote" ? apiKey || undefined : undefined,
         maxConcurrent,
       });
-      addToast(`Updated ${trimmedName}`, "success");
+      addToast(t("nodes.updateSuccess", "Updated {{name}}", { name: trimmedName }), "success");
       setEditMode(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to update node";
+      const message = error instanceof Error ? error.message : t("nodes.updateFailed", "Failed to update node");
       addToast(message, "error");
     } finally {
       setIsSaving(false);
@@ -403,10 +405,10 @@ export function NodeDetailModal({
       });
       if (!isMountedRef.current) return;
       setDockerConfigDraft(result);
-      addToast("Docker config saved", "success");
+      addToast(t("nodes.dockerConfigSaveSuccess", "Docker config saved"), "success");
     } catch (error) {
       if (!isMountedRef.current) return;
-      const message = error instanceof Error ? error.message : "Failed to save Docker config";
+      const message = error instanceof Error ? error.message : t("nodes.dockerConfigSaveFailed", "Failed to save Docker config");
       addToast(message, "error");
     } finally {
       if (isMountedRef.current) setDockerConfigSaving(false);
@@ -434,28 +436,28 @@ export function NodeDetailModal({
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label={`Node details for ${node.name}`}
+        aria-label={t("nodes.modalAriaLabel", "Node details for {{name}}", { name: node.name })}
       >
         <div className="modal-header">
-          <h3>Node Details</h3>
-          <button className="modal-close" onClick={onClose} aria-label="Close node detail modal">&times;</button>
+          <h3>{t("nodes.modalTitle", "Node Details")}</h3>
+          <button className="modal-close" onClick={onClose} aria-label={t("nodes.closeModalAriaLabel", "Close node detail modal")}>&times;</button>
         </div>
 
         <div className="modal-body node-detail-modal__body">
           <section className="node-detail-modal__section">
             <div className="node-detail-modal__section-header">
-              <h4>Overview</h4>
+              <h4>{t("nodes.sectionOverview", "Overview")}</h4>
               {!editMode && (
                 <button className="btn btn-sm" onClick={() => setEditMode(true)}>
                   <Pencil size={14} />
-                  Edit
+                  {t("nodes.editButton", "Edit")}
                 </button>
               )}
             </div>
 
             <div className="node-detail-modal__grid">
               <label className="node-detail-modal__field">
-                <span>Name</span>
+                <span>{t("nodes.fieldName", "Name")}</span>
                 {editMode ? (
                   <input className="input" value={name} onChange={(event) => setName(event.target.value)} disabled={isSaving} />
                 ) : (
@@ -464,17 +466,17 @@ export function NodeDetailModal({
               </label>
 
               <div className="node-detail-modal__field">
-                <span>Type</span>
-                <strong>{node.type === "local" ? "Local" : "Remote"}</strong>
+                <span>{t("nodes.fieldType", "Type")}</span>
+                <strong>{node.type === "local" ? t("nodes.typeLocal", "Local") : t("nodes.typeRemote", "Remote")}</strong>
               </div>
 
               <div className="node-detail-modal__field">
-                <span>Status</span>
+                <span>{t("nodes.fieldStatus", "Status")}</span>
                 <strong>{node.status}</strong>
               </div>
 
               <label className="node-detail-modal__field">
-                <span>Max Concurrent</span>
+                <span>{t("nodes.fieldMaxConcurrent", "Max Concurrent")}</span>
                 {editMode ? (
                   <input
                     className="input"
@@ -493,7 +495,7 @@ export function NodeDetailModal({
               {node.type === "remote" && (
                 <>
                   <label className="node-detail-modal__field node-detail-modal__field--full">
-                    <span>URL</span>
+                    <span>{t("nodes.fieldUrl", "URL")}</span>
                     {editMode ? (
                       <input className="input" value={url} onChange={(event) => setUrl(event.target.value)} disabled={isSaving} />
                     ) : (
@@ -502,30 +504,30 @@ export function NodeDetailModal({
                   </label>
 
                   <label className="node-detail-modal__field node-detail-modal__field--full">
-                    <span>API Key</span>
+                    <span>{t("nodes.fieldApiKey", "API Key")}</span>
                     {editMode ? (
                       <input
                         className="input"
                         type="password"
                         value={apiKey}
                         onChange={(event) => setApiKey(event.target.value)}
-                        placeholder="Leave blank to keep unchanged"
+                        placeholder={t("nodes.apiKeyPlaceholder", "Leave blank to keep unchanged")}
                         disabled={isSaving}
                       />
                     ) : (
-                      <strong>{node.apiKey ? "••••••••" : "Not configured"}</strong>
+                      <strong>{node.apiKey ? "••••••••" : t("nodes.apiKeyNotConfigured", "Not configured")}</strong>
                     )}
                   </label>
                 </>
               )}
 
               <div className="node-detail-modal__field">
-                <span>Created</span>
+                <span>{t("nodes.fieldCreated", "Created")}</span>
                 <strong>{formatTimestamp(node.createdAt)}</strong>
               </div>
 
               <div className="node-detail-modal__field">
-                <span>Updated</span>
+                <span>{t("nodes.fieldUpdated", "Updated")}</span>
                 <strong>{formatTimestamp(node.updatedAt)}</strong>
               </div>
             </div>
@@ -534,23 +536,23 @@ export function NodeDetailModal({
               <div className="node-detail-modal__edit-actions">
                 <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={isSaving}>
                   <Save size={14} />
-                  {isSaving ? "Saving..." : "Save"}
+                  {isSaving ? t("nodes.saving", "Saving...") : t("nodes.saveButton", "Save")}
                 </button>
                 <button className="btn btn-sm" onClick={handleCancelEdit} disabled={isSaving}>
                   <X size={14} />
-                  Cancel
+                  {t("nodes.cancelButton", "Cancel")}
                 </button>
               </div>
             )}
           </section>
 
           <section className="node-detail-modal__section">
-            <h4>{node.type === "local" ? "Projects" : "Assigned Projects"} ({assignedProjects.length})</h4>
+            <h4>{node.type === "local" ? t("nodes.sectionProjects", "Projects") : t("nodes.sectionAssignedProjects", "Assigned Projects")} ({assignedProjects.length})</h4>
             {assignedProjects.length === 0 ? (
               <p className="node-detail-modal__empty">
                 {node.type === "local"
-                  ? "No projects are running on this node."
-                  : "No projects are assigned to this node."}
+                  ? t("nodes.noProjectsRunning", "No projects are running on this node.")
+                  : t("nodes.noProjectsAssigned", "No projects are assigned to this node.")}
               </p>
             ) : (
               <ul className="node-detail-modal__project-list">
@@ -565,10 +567,10 @@ export function NodeDetailModal({
           </section>
 
           <section className="node-detail-modal__section">
-            <h4>Health</h4>
+            <h4>{t("nodes.sectionHealth", "Health")}</h4>
             <div className="node-detail-modal__health-row">
-              <span>Status: <strong>{node.status}</strong></span>
-              <span>Last check: <strong>{formatTimestamp(node.updatedAt)}</strong></span>
+              <span>{t("nodes.healthStatus", "Status:")} <strong>{node.status}</strong></span>
+              <span>{t("nodes.healthLastCheck", "Last check:")} <strong>{formatTimestamp(node.updatedAt)}</strong></span>
             </div>
           </section>
 
@@ -580,29 +582,29 @@ export function NodeDetailModal({
                 aria-expanded={dockerConfigExpanded}
               >
                 <ChevronDown size={14} className={dockerConfigExpanded ? "node-detail-modal__docker-toggle-icon--expanded" : ""} />
-                Docker Configuration
+                {t("nodes.dockerConfiguration", "Docker Configuration")}
               </button>
 
               {dockerConfigExpanded && (
                 <div className="node-detail-modal__docker-config-content">
                   <div className="node-detail-modal__grid">
                     <label className="node-detail-modal__field node-detail-modal__field--full">
-                      <span>Image</span>
+                      <span>{t("nodes.dockerFieldImage", "Image")}</span>
                       <input className="input" value={dockerConfigDraft.image} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, image: event.target.value })} />
                     </label>
                   </div>
 
                   <details>
-                    <summary>Volume Mounts</summary>
+                    <summary>{t("nodes.dockerVolumeMounts", "Volume Mounts")}</summary>
                     <div className="node-detail-modal__docker-list">
                       {dockerConfigDraft.volumeMounts.map((mount: DockerNodeConfigInfo["volumeMounts"][number], index: number) => (
                         <div key={`${mount.hostPath}-${mount.containerPath}-${index}`} className="node-detail-modal__docker-row">
-                          <input className="input" value={mount.hostPath} placeholder="Host path" onChange={(event) => {
+                          <input className="input" value={mount.hostPath} placeholder={t("nodes.dockerHostPath", "Host path")} onChange={(event) => {
                             const next = [...dockerConfigDraft.volumeMounts];
                             next[index] = { ...next[index], hostPath: event.target.value };
                             setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: next });
                           }} />
-                          <input className="input" value={mount.containerPath} placeholder="Container path" onChange={(event) => {
+                          <input className="input" value={mount.containerPath} placeholder={t("nodes.dockerContainerPath", "Container path")} onChange={(event) => {
                             const next = [...dockerConfigDraft.volumeMounts];
                             next[index] = { ...next[index], containerPath: event.target.value };
                             setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: next });
@@ -623,15 +625,15 @@ export function NodeDetailModal({
                             <option value="volume">volume</option>
                             <option value="bind">bind</option>
                           </select>
-                          <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: dockerConfigDraft.volumeMounts.filter((_, i: number) => i !== index) })}>Remove</button>
+                          <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: dockerConfigDraft.volumeMounts.filter((_, i: number) => i !== index) })}>{t("nodes.removeButton", "Remove")}</button>
                         </div>
                       ))}
-                      <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: [...dockerConfigDraft.volumeMounts, { hostPath: "", containerPath: "", mode: "rw", type: "volume" }] })}>Add Mount</button>
+                      <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, volumeMounts: [...dockerConfigDraft.volumeMounts, { hostPath: "", containerPath: "", mode: "rw", type: "volume" }] })}>{t("nodes.addMountButton", "Add Mount")}</button>
                     </div>
                   </details>
 
                   <details>
-                    <summary>Environment Variables</summary>
+                    <summary>{t("nodes.dockerEnvVars", "Environment Variables")}</summary>
                     <div className="node-detail-modal__docker-list">
                       {Object.entries(dockerConfigDraft.environment as Record<string, string>).map(([key, value]: [string, string]) => {
                         const masked = SENSITIVE_ENV_KEY_PATTERN.test(key) && !dockerEnvReveal[key];
@@ -651,40 +653,40 @@ export function NodeDetailModal({
                               const next = { ...dockerConfigDraft.environment };
                               delete next[key];
                               setDockerConfigDraft({ ...dockerConfigDraft, environment: next });
-                            }}>Remove</button>
+                            }}>{t("nodes.removeButton", "Remove")}</button>
                           </div>
                         );
                       })}
                       <button className="btn btn-sm" onClick={() => {
                         const nextKey = `NEW_VAR_${Object.keys(dockerConfigDraft.environment).length + 1}`;
                         setDockerConfigDraft({ ...dockerConfigDraft, environment: { ...dockerConfigDraft.environment, [nextKey]: "" } });
-                      }}>Add Variable</button>
+                      }}>{t("nodes.addVariableButton", "Add Variable")}</button>
                     </div>
                   </details>
 
                   <details>
-                    <summary>Resources</summary>
+                    <summary>{t("nodes.dockerResources", "Resources")}</summary>
                     <div className="node-detail-modal__docker-stack">
-                      <input className="input" type="number" placeholder="Memory bytes (2 GB = 2147483648)" value={dockerConfigDraft.resources?.memoryBytes ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, memoryBytes: event.target.value ? Number(event.target.value) : undefined } })} />
-                      <input className="input" type="number" placeholder="CPU count" value={dockerConfigDraft.resources?.cpuCount ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, cpuCount: event.target.value ? Number(event.target.value) : undefined } })} />
-                      <input className="input" type="number" placeholder="PIDs limit" value={dockerConfigDraft.resources?.pidsLimit ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, pidsLimit: event.target.value ? Number(event.target.value) : undefined } })} />
+                      <input className="input" type="number" placeholder={t("nodes.dockerMemoryBytes", "Memory bytes (2 GB = 2147483648)")} value={dockerConfigDraft.resources?.memoryBytes ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, memoryBytes: event.target.value ? Number(event.target.value) : undefined } })} />
+                      <input className="input" type="number" placeholder={t("nodes.dockerCpuCount", "CPU count")} value={dockerConfigDraft.resources?.cpuCount ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, cpuCount: event.target.value ? Number(event.target.value) : undefined } })} />
+                      <input className="input" type="number" placeholder={t("nodes.dockerPidsLimit", "PIDs limit")} value={dockerConfigDraft.resources?.pidsLimit ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, resources: { ...dockerConfigDraft.resources, pidsLimit: event.target.value ? Number(event.target.value) : undefined } })} />
                     </div>
                   </details>
 
                   <details>
-                    <summary>Host Config</summary>
+                    <summary>{t("nodes.dockerHostConfig", "Host Config")}</summary>
                     <div className="node-detail-modal__docker-stack">
-                      <input className="input" placeholder="Context name" value={dockerConfigDraft.host?.contextName ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, contextName: event.target.value } })} />
-                      <input className="input" placeholder="Docker host URL" value={dockerConfigDraft.host?.dockerHost ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, dockerHost: event.target.value } })} />
-                      <input className="input" placeholder="TLS CA cert path" value={dockerConfigDraft.host?.tlsCaCert ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsCaCert: event.target.value } })} />
-                      <input className="input" placeholder="TLS cert path" value={dockerConfigDraft.host?.tlsCert ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsCert: event.target.value } })} />
-                      <input className="input" placeholder="TLS key path" value={dockerConfigDraft.host?.tlsKey ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsKey: event.target.value } })} />
-                      <label className="node-detail-modal__checkbox"><input type="checkbox" checked={dockerConfigDraft.host?.tlsVerify ?? true} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsVerify: event.target.checked } })} />TLS verify</label>
+                      <input className="input" placeholder={t("nodes.dockerContextName", "Context name")} value={dockerConfigDraft.host?.contextName ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, contextName: event.target.value } })} />
+                      <input className="input" placeholder={t("nodes.dockerHostUrl", "Docker host URL")} value={dockerConfigDraft.host?.dockerHost ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, dockerHost: event.target.value } })} />
+                      <input className="input" placeholder={t("nodes.dockerTlsCaCert", "TLS CA cert path")} value={dockerConfigDraft.host?.tlsCaCert ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsCaCert: event.target.value } })} />
+                      <input className="input" placeholder={t("nodes.dockerTlsCert", "TLS cert path")} value={dockerConfigDraft.host?.tlsCert ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsCert: event.target.value } })} />
+                      <input className="input" placeholder={t("nodes.dockerTlsKey", "TLS key path")} value={dockerConfigDraft.host?.tlsKey ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsKey: event.target.value } })} />
+                      <label className="node-detail-modal__checkbox"><input type="checkbox" checked={dockerConfigDraft.host?.tlsVerify ?? true} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, host: { ...dockerConfigDraft.host, tlsVerify: event.target.checked } })} />{t("nodes.dockerTlsVerify", "TLS verify")}</label>
                     </div>
                   </details>
 
                   <details>
-                    <summary>Extra CLIs</summary>
+                    <summary>{t("nodes.dockerExtraClis", "Extra CLIs")}</summary>
                     <div className="node-detail-modal__docker-list">
                       {(dockerConfigDraft.extraClis ?? []).map((cli: string, index: number) => (
                         <div key={`${cli}-${index}`} className="node-detail-modal__docker-row">
@@ -693,29 +695,29 @@ export function NodeDetailModal({
                             next[index] = event.target.value;
                             setDockerConfigDraft({ ...dockerConfigDraft, extraClis: next });
                           }} />
-                          <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, extraClis: (dockerConfigDraft.extraClis ?? []).filter((_, i: number) => i !== index) })}>Remove</button>
+                          <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, extraClis: (dockerConfigDraft.extraClis ?? []).filter((_, i: number) => i !== index) })}>{t("nodes.removeButton", "Remove")}</button>
                         </div>
                       ))}
-                      <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, extraClis: [...(dockerConfigDraft.extraClis ?? []), ""] })}>Add CLI</button>
+                      <button className="btn btn-sm" onClick={() => setDockerConfigDraft({ ...dockerConfigDraft, extraClis: [...(dockerConfigDraft.extraClis ?? []), ""] })}>{t("nodes.addCliButton", "Add CLI")}</button>
                     </div>
                   </details>
 
                   <details>
-                    <summary>Persistence</summary>
+                    <summary>{t("nodes.dockerPersistence", "Persistence")}</summary>
                     <div className="node-detail-modal__docker-stack">
-                      <input className="input" placeholder="Volume name" value={dockerConfigDraft.persistence?.volumeName ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, persistence: { ...dockerConfigDraft.persistence, volumeName: event.target.value } })} />
-                      <label className="node-detail-modal__checkbox"><input type="checkbox" checked={dockerConfigDraft.persistence?.retainOnDelete ?? false} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, persistence: { ...dockerConfigDraft.persistence, retainOnDelete: event.target.checked } })} />Retain on delete</label>
+                      <input className="input" placeholder={t("nodes.dockerVolumeName", "Volume name")} value={dockerConfigDraft.persistence?.volumeName ?? ""} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, persistence: { ...dockerConfigDraft.persistence, volumeName: event.target.value } })} />
+                      <label className="node-detail-modal__checkbox"><input type="checkbox" checked={dockerConfigDraft.persistence?.retainOnDelete ?? false} onChange={(event) => setDockerConfigDraft({ ...dockerConfigDraft, persistence: { ...dockerConfigDraft.persistence, retainOnDelete: event.target.checked } })} />{t("nodes.dockerRetainOnDelete", "Retain on delete")}</label>
                     </div>
                   </details>
 
                   <div className="node-detail-modal__docker-meta">
                     <span>Config v{dockerConfigDraft.configVersion} • Updated {formatRelativeTime(dockerConfigDraft.lastUpdated ?? node.updatedAt)}</span>
-                    {dockerConfigNeedsRecreate && <span className="node-detail-modal__docker-recreate">Needs Recreate</span>}
+                    {dockerConfigNeedsRecreate && <span className="node-detail-modal__docker-recreate">{t("nodes.dockerNeedsRecreate", "Needs Recreate")}</span>}
                   </div>
 
                   <button className="btn btn-primary btn-sm" onClick={() => void handleDockerConfigSave()} disabled={dockerConfigSaving}>
                     <Save size={14} />
-                    {dockerConfigSaving ? "Saving..." : "Save Docker Config"}
+                    {dockerConfigSaving ? t("nodes.saving", "Saving...") : t("nodes.saveDockerConfig", "Save Docker Config")}
                   </button>
                 </div>
               )}
@@ -724,62 +726,62 @@ export function NodeDetailModal({
 
           {managedDockerNode && (
             <section className="node-detail-modal__section docker-management">
-              <h4>Docker Management</h4>
+              <h4>{t("nodes.sectionDockerManagement", "Docker Management")}</h4>
 
               <div className="docker-management__status-card">
                 <div className="docker-management__status-row">
                   <span className={`docker-management__status-dot docker-management__status-dot--${dockerStatusTone}`} aria-hidden />
-                  <strong>{getDockerStatusLabel(effectiveDockerStatus)}</strong>
+                  <strong>{effectiveDockerStatus ? getDockerStatusLabel(effectiveDockerStatus) : t("nodes.dockerStatusUnknown", "Unknown")}</strong>
                   {(effectiveDockerStatus === "creating" || effectiveDockerStatus === "recreating" || effectiveDockerStatus === "restarting") && (
                     <RotateCcw size={14} className="spin" aria-hidden />
                   )}
                 </div>
                 <div className="docker-management__status-meta">
-                  {effectiveDockerStatus === "running" && <span>Uptime: {formatDockerUptime(liveContainerStatus?.startedAt)}</span>}
+                  {effectiveDockerStatus === "running" && <span>{t("nodes.dockerUptime", "Uptime:")} {formatDockerUptime(liveContainerStatus?.startedAt)}</span>}
                   {effectiveDockerStatus !== "running" && liveContainerStatus?.exitCode !== undefined && (
-                    <span>Exit code: {liveContainerStatus.exitCode}</span>
+                    <span>{t("nodes.dockerExitCode", "Exit code:")} {liveContainerStatus.exitCode}</span>
                   )}
                   {(liveContainerStatus?.error || managedDockerNode.errorMessage) && (
                     <span>{liveContainerStatus?.error ?? managedDockerNode.errorMessage}</span>
                   )}
                 </div>
                 <button className="btn btn-sm" onClick={() => void handleRefreshContainerStatus()} disabled={!onFetchContainerStatus || isRefreshingContainerStatus}>
-                  {isRefreshingContainerStatus ? "Refreshing..." : "Refresh Status"}
+                  {isRefreshingContainerStatus ? t("nodes.refreshing", "Refreshing...") : t("nodes.refreshStatus", "Refresh Status")}
                 </button>
               </div>
 
               <div className="node-detail-modal__grid docker-management__info-grid">
-                <div className="node-detail-modal__field"><span>Image</span><strong><code>{managedDockerNode.imageName}:{managedDockerNode.imageTag}</code></strong></div>
-                <div className="node-detail-modal__field"><span>Container ID</span><strong><code>{managedDockerNode.containerId ? managedDockerNode.containerId.slice(0, 12) : "—"}</code></strong></div>
-                <div className="node-detail-modal__field"><span>Host</span><strong>{dockerHost}</strong></div>
-                <div className="node-detail-modal__field"><span>Persistent Storage</span><strong>{managedDockerNode.persistentStorage ? "Yes" : "No"}</strong></div>
-                <div className="node-detail-modal__field"><span>Port</span><strong>{parsePortFromReachableUrl(managedDockerNode.reachableUrl)}</strong></div>
-                <div className="node-detail-modal__field"><span>Resource Sizing</span><strong>{dockerResourceSizing}</strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerFieldImage", "Image")}</span><strong><code>{managedDockerNode.imageName}:{managedDockerNode.imageTag}</code></strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerContainerId", "Container ID")}</span><strong><code>{managedDockerNode.containerId ? managedDockerNode.containerId.slice(0, 12) : "—"}</code></strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerHost", "Host")}</span><strong>{dockerHost}</strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerPersistentStorage", "Persistent Storage")}</span><strong>{managedDockerNode.persistentStorage ? t("nodes.yes", "Yes") : t("nodes.no", "No")}</strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerPort", "Port")}</span><strong>{parsePortFromReachableUrl(managedDockerNode.reachableUrl)}</strong></div>
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerResourceSizing", "Resource Sizing")}</span><strong>{dockerResourceSizing}</strong></div>
               </div>
 
               <div className="docker-management__actions">
-                <button className="btn btn-sm" disabled title="Available after FN-3113"><Play size={14} />Start</button>
-                <button className="btn btn-sm" disabled title="Available after FN-3113"><Square size={14} />Stop</button>
-                <button className="btn btn-sm" disabled title="Available after FN-3113"><RotateCcw size={14} />Restart</button>
-                <button className="btn btn-sm" onClick={() => void handleFetchLogs()} disabled={!onFetchLogs}><FileText size={14} />View Logs</button>
+                <button className="btn btn-sm" disabled title={t("nodes.availableSoon", "Available after FN-3113")}><Play size={14} />{t("nodes.startButton", "Start")}</button>
+                <button className="btn btn-sm" disabled title={t("nodes.availableSoon", "Available after FN-3113")}><Square size={14} />{t("nodes.stopButton", "Stop")}</button>
+                <button className="btn btn-sm" disabled title={t("nodes.availableSoon", "Available after FN-3113")}><RotateCcw size={14} />{t("nodes.restartButton", "Restart")}</button>
+                <button className="btn btn-sm" onClick={() => void handleFetchLogs()} disabled={!onFetchLogs}><FileText size={14} />{t("nodes.viewLogsButton", "View Logs")}</button>
               </div>
 
               {logsOpen && (
                 <div className="docker-management__log-viewer">
                   <div className="docker-management__log-viewer-header">
-                    <strong>Container Logs</strong>
-                    <button className="btn-icon" onClick={() => setLogsOpen(false)} aria-label="Close logs"><X size={14} /></button>
+                    <strong>{t("nodes.containerLogs", "Container Logs")}</strong>
+                    <button className="btn-icon" onClick={() => setLogsOpen(false)} aria-label={t("nodes.closeLogsAriaLabel", "Close logs")}><X size={14} /></button>
                   </div>
                   {logsLoading ? (
-                    <p>Fetching logs...</p>
+                    <p>{t("nodes.fetchingLogs", "Fetching logs...")}</p>
                   ) : (
-                    <pre>{logs.trim() || "No logs available"}</pre>
+                    <pre>{logs.trim() || t("nodes.noLogsAvailable", "No logs available")}</pre>
                   )}
                 </div>
               )}
 
               <details>
-                <summary>Environment Variables</summary>
+                <summary>{t("nodes.dockerEnvVars", "Environment Variables")}</summary>
                 <dl className="docker-management__env-list">
                   {Object.entries(managedDockerNode.envVars).map(([key, value]) => (
                     <div key={key}>
@@ -791,12 +793,12 @@ export function NodeDetailModal({
               </details>
 
               <details>
-                <summary>Volume Mounts</summary>
+                <summary>{t("nodes.dockerVolumeMounts", "Volume Mounts")}</summary>
                 <ul className="docker-management__mounts-list">
                   {managedDockerNode.volumeMounts.map((mount) => (
                     <li key={`${mount.hostPath}:${mount.containerPath}`}>
                       <span>{mount.hostPath} → {mount.containerPath}</span>
-                      {mount.readOnly && <span className="node-card__type-badge">Read-only</span>}
+                      {mount.readOnly && <span className="node-card__type-badge">{t("nodes.readOnly", "Read-only")}</span>}
                     </li>
                   ))}
                 </ul>
@@ -806,7 +808,7 @@ export function NodeDetailModal({
 
           {node.type === "remote" && (
             <section className="node-detail-modal__section">
-              <h4>Settings Sync</h4>
+              <h4>{t("nodes.sectionSettingsSync", "Settings Sync")}</h4>
 
               {syncStatus && (
                 <div className="node-detail-modal__sync-status">
@@ -815,11 +817,11 @@ export function NodeDetailModal({
                     aria-hidden
                   />
                   <span>
-                    Last sync: <strong>{syncStatus.lastSyncAt ? formatRelativeTime(syncStatus.lastSyncAt) : "Never synced"}</strong>
+                    {t("nodes.syncLastSync", "Last sync:")} <strong>{syncStatus.lastSyncAt ? formatRelativeTime(syncStatus.lastSyncAt) : t("nodes.syncNeverSynced", "Never synced")}</strong>
                   </span>
                   {syncStatus.diffCount > 0 && (
                     <span className="node-detail-modal__sync-diff">
-                      Differences: <strong>{syncStatus.diffCount}</strong>
+                      {t("nodes.syncDifferences", "Differences:")} <strong>{syncStatus.diffCount}</strong>
                     </span>
                   )}
                 </div>
@@ -828,24 +830,24 @@ export function NodeDetailModal({
               <div className="node-detail-modal__sync-actions">
                 <button className="btn btn-sm" onClick={handlePushSettings} disabled={isPushing || !onPushSettings}>
                   <Upload size={14} />
-                  {isPushing ? "Pushing..." : "Push Settings"}
+                  {isPushing ? t("nodes.pushing", "Pushing...") : t("nodes.pushSettings", "Push Settings")}
                 </button>
 
                 <button className="btn btn-sm" onClick={handlePullSettings} disabled={isPulling || !onPullSettings}>
                   <Download size={14} />
-                  {isPulling ? "Pulling..." : "Pull Settings"}
+                  {isPulling ? t("nodes.pulling", "Pulling...") : t("nodes.pullSettings", "Pull Settings")}
                 </button>
 
                 <button className="btn btn-sm" onClick={handleSyncAuth} disabled={isSyncingAuth || !onSyncAuth}>
                   <Shield size={14} />
-                  {isSyncingAuth ? "Syncing..." : "Sync Auth"}
+                  {isSyncingAuth ? t("nodes.syncing", "Syncing...") : t("nodes.syncAuth", "Sync Auth")}
                 </button>
               </div>
 
               {syncError && (
                 <div className="node-detail-modal__sync-error">
                   <span>{syncError}</span>
-                  <button className="node-detail-modal__sync-error-dismiss" onClick={handleDismissSyncError} aria-label="Dismiss error">
+                  <button className="node-detail-modal__sync-error-dismiss" onClick={handleDismissSyncError} aria-label={t("nodes.dismissError", "Dismiss error")}>
                     <X size={14} />
                   </button>
                 </div>
@@ -855,7 +857,7 @@ export function NodeDetailModal({
 
           {node.type === "remote" && (
             <section className="node-detail-modal__section">
-              <h4>Sync History</h4>
+              <h4>{t("nodes.sectionSyncHistory", "Sync History")}</h4>
               <SettingsSyncLog nodeId={node.id} entries={syncHistory} singleNode={true} />
             </section>
           )}
@@ -864,9 +866,9 @@ export function NodeDetailModal({
         <div className="modal-actions node-detail-modal__actions">
           <button className="btn btn-sm" onClick={handleHealthCheck}>
             <Activity size={14} />
-            Health Check
+            {t("nodes.healthCheckButton", "Health Check")}
           </button>
-          <button className="btn btn-sm" onClick={onClose}>Close</button>
+          <button className="btn btn-sm" onClick={onClose}>{t("nodes.closeButton", "Close")}</button>
         </div>
       </div>
 
@@ -876,7 +878,7 @@ export function NodeDetailModal({
           onClose={() => setShowConflictModal(false)}
           onResolve={onResolveConflicts ?? (async () => {})}
           conflicts={conflicts}
-          localNodeName="Local"
+          localNodeName={t("nodes.localNodeName", "Local")}
           remoteNodeName={node.name}
           addToast={addToast}
         />

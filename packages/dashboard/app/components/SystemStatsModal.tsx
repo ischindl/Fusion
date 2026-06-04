@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Monitor, RefreshCw, ShieldAlert, Skull, X } from "lucide-react";
 import {
   fetchGlobalSettings,
@@ -68,10 +69,10 @@ function severityClassName(severity: Severity): string {
   return "";
 }
 
-function formatTimestamp(value: string | null | undefined): string {
-  if (!value) return "Not yet";
+function formatTimestamp(value: string | null | undefined, notYetLabel: string): string {
+  if (!value) return notYetLabel;
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Not yet";
+  if (Number.isNaN(parsed.getTime())) return notYetLabel;
   return parsed.toLocaleString();
 }
 
@@ -81,6 +82,7 @@ function formatTimestamp(value: string | null | undefined): string {
  * by column, and agent state counts.
  */
 export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModalProps) {
+  const { t } = useTranslation("app");
   const [stats, setStats] = useState<SystemStatsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +105,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
         setKillResult(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load system stats");
+      setError(err instanceof Error ? err.message : t("systemStats.errorLoadStats", "Failed to load system stats"));
     } finally {
       setLoading(false);
     }
@@ -132,7 +134,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
         setKillThreshold(settings.vitestKillThresholdPct ?? 90);
         setSettingsError(null);
       } catch (err) {
-        setSettingsError(err instanceof Error ? err.message : "Failed to load vitest settings");
+        setSettingsError(err instanceof Error ? err.message : t("systemStats.errorLoadVitestSettings", "Failed to load vitest settings"));
       }
     };
 
@@ -154,11 +156,11 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
     const heapClassName = severityClassName(heapSeverity(system.heapUsed, system.heapLimit));
     const rssClassName = severityClassName(rssSeverity(system.rss, system.systemTotalMem));
     return [
-      { label: "RSS", value: formatBytes(system.rss), detail: toPercent(system.rss, system.systemTotalMem), className: rssClassName },
-      { label: "Heap Used", value: formatBytes(system.heapUsed), detail: `of ${formatBytes(system.heapTotal)}`, className: heapClassName },
-      { label: "Heap Limit", value: formatBytes(system.heapLimit), detail: "V8 limit" },
-      { label: "External", value: formatBytes(system.external) },
-      { label: "Array Buffers", value: formatBytes(system.arrayBuffers) },
+      { label: t("systemStats.rowRss", "RSS"), value: formatBytes(system.rss), detail: toPercent(system.rss, system.systemTotalMem), className: rssClassName },
+      { label: t("systemStats.rowHeapUsed", "Heap Used"), value: formatBytes(system.heapUsed), detail: t("systemStats.rowHeapUsedDetail", "of {{total}}", { total: formatBytes(system.heapTotal) }), className: heapClassName },
+      { label: t("systemStats.rowHeapLimit", "Heap Limit"), value: formatBytes(system.heapLimit), detail: t("systemStats.rowHeapLimitDetail", "V8 limit") },
+      { label: t("systemStats.rowExternal", "External"), value: formatBytes(system.external) },
+      { label: t("systemStats.rowArrayBuffers", "Array Buffers"), value: formatBytes(system.arrayBuffers) },
     ];
   }, [stats]);
 
@@ -168,7 +170,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
       await updateGlobalSettings({ vitestAutoKillEnabled: enabled });
       setSettingsError(null);
     } catch (err) {
-      setSettingsError(err instanceof Error ? err.message : "Failed to save vitest settings");
+      setSettingsError(err instanceof Error ? err.message : t("systemStats.errorSaveVitestSettings", "Failed to save vitest settings"));
     }
   }, []);
 
@@ -180,7 +182,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
       await updateGlobalSettings({ vitestKillThresholdPct: clamped });
       setSettingsError(null);
     } catch (err) {
-      setSettingsError(err instanceof Error ? err.message : "Failed to save vitest settings");
+      setSettingsError(err instanceof Error ? err.message : t("systemStats.errorSaveVitestSettings", "Failed to save vitest settings"));
     }
   }, []);
 
@@ -198,7 +200,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
       setConfirmKill(false);
       await loadStats({ preserveKillResult: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to kill vitest processes");
+      setError(err instanceof Error ? err.message : t("systemStats.errorKillVitest", "Failed to kill vitest processes"));
     } finally {
       setIsKilling(false);
     }
@@ -209,12 +211,14 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
   const system = stats?.systemStats;
   const isBackgroundRefreshing = loading && Boolean(stats);
   const refreshLabel = lastRefreshedAt
-    ? `Updated ${new Date(lastRefreshedAt).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })}`
-    : "Waiting for first update";
+    ? t("systemStats.updatedAt", "Updated {{time}}", {
+        time: new Date(lastRefreshedAt).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      })
+    : t("systemStats.waitingFirstUpdate", "Waiting for first update");
   const taskStats = stats?.taskStats;
   const usedSystemMem = system ? system.systemTotalMem - system.systemFreeMem : 0;
   const usedSystemMemSeverity = system ? systemMemSeverity(usedSystemMem, system.systemTotalMem) : "normal";
@@ -224,24 +228,28 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
       ? Math.max(0, Math.min(100, (usedSystemMem / system.systemTotalMem) * 100))
       : 0;
   const usedSystemMemProgressLabel = system
-    ? `System memory used: ${usedSystemMemPercent.toFixed(1)}% (${formatBytes(usedSystemMem)} of ${formatBytes(system.systemTotalMem)})`
-    : "System memory usage unavailable";
+    ? t("systemStats.systemMemProgressLabel", "System memory used: {{percent}}% ({{used}} of {{total}})", {
+        percent: usedSystemMemPercent.toFixed(1),
+        used: formatBytes(usedSystemMem),
+        total: formatBytes(system.systemTotalMem),
+      })
+    : t("systemStats.systemMemUnavailable", "System memory usage unavailable");
   const vitestProcessCount = stats?.vitestProcessCount;
   const cpuLoadSeverity = cpuSeverity(system?.cpuPercent ?? null, system?.cpuCount ?? 0);
   const cpuClassName = severityClassName(cpuLoadSeverity);
   const cpuPercentValue = system?.cpuPercent ?? null;
   const cpuBarPercent = cpuPercentValue === null ? 0 : Math.max(0, Math.min(100, cpuPercentValue));
-  const cpuPercentLabel = cpuPercentValue === null ? "Sampling…" : `${cpuPercentValue.toFixed(1)}%`;
+  const cpuPercentLabel = cpuPercentValue === null ? t("systemStats.cpuSampling", "Sampling…") : `${cpuPercentValue.toFixed(1)}%`;
   const cpuProgressLabel =
     cpuPercentValue === null
-      ? "App CPU usage unavailable: waiting for another sample"
-      : `App CPU usage: ${cpuPercentValue.toFixed(1)}%`;
+      ? t("systemStats.cpuProgressUnavailable", "App CPU usage unavailable: waiting for another sample")
+      : t("systemStats.cpuProgressLabel", "App CPU usage: {{percent}}%", { percent: cpuPercentValue.toFixed(1) });
   const killResultClassName = killResult
     ? killResult.killed > 0
       ? "system-stats-modal__kill-result system-stats-modal__kill-result--success"
       : "system-stats-modal__kill-result system-stats-modal__kill-result--error"
     : "";
-  const lastAutoKillLabel = formatTimestamp(stats?.vitestLastAutoKillAt);
+  const lastAutoKillLabel = formatTimestamp(stats?.vitestLastAutoKillAt, t("systemStats.notYet", "Not yet"));
 
   return (
     <div
@@ -258,32 +266,32 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
         <div className="modal-header system-stats-modal__header">
           <h2 id="system-stats-modal-title" className="system-stats-modal__title">
             <Monitor />
-            <span>System Stats</span>
+            <span>{t("systemStats.title", "System Stats")}</span>
           </h2>
           <div className="system-stats-modal__header-actions">
             <span className="system-stats-modal__auto-refresh" aria-live="polite">
-              <span>Auto-refresh · 5s</span>
+              <span>{t("systemStats.autoRefresh", "Auto-refresh · 5s")}</span>
               <span className="system-stats-modal__auto-refresh-time">{refreshLabel}</span>
             </span>
             <button
               type="button"
               className="btn-icon"
               onClick={() => void loadStats()}
-              title="Refresh"
-              aria-label="Refresh system stats"
+              title={t("systemStats.refreshTitle", "Refresh")}
+              aria-label={t("systemStats.refreshAriaLabel", "Refresh system stats")}
             >
               <RefreshCw
                 size={16}
                 className={isBackgroundRefreshing ? "system-stats-modal__refresh--spinning" : undefined}
               />
             </button>
-            <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+            <button type="button" className="modal-close" onClick={onClose} aria-label={t("systemStats.closeAriaLabel", "Close")}>
               <X />
             </button>
           </div>
         </div>
 
-        {loading && !stats && <div className="system-stats-modal__state">Loading system stats…</div>}
+        {loading && !stats && <div className="system-stats-modal__state">{t("systemStats.loading", "Loading system stats…")}</div>}
 
         {error && !stats && (
           <div className="system-stats-modal__state system-stats-modal__state--error" role="alert">
@@ -293,8 +301,8 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
 
         {stats && (
           <div className="system-stats-modal__content">
-            <section className="system-stats-modal__section" aria-label="Process stats">
-              <h3 className="system-stats-modal__section-title">Process</h3>
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionProcessAriaLabel", "Process stats")}>
+              <h3 className="system-stats-modal__section-title">{t("systemStats.sectionProcess", "Process")}</h3>
               <dl className="system-stats-modal__grid">
                 {processRows.map((row) => (
                   <div key={row.label} className="system-stats-modal__row">
@@ -308,14 +316,14 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
               </dl>
             </section>
 
-            <section className="system-stats-modal__section" aria-label="CPU and load stats">
-              <h3 className="system-stats-modal__section-title">CPU &amp; Load</h3>
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionCpuAriaLabel", "CPU and load stats")}>
+              <h3 className="system-stats-modal__section-title">{t("systemStats.sectionCpu", "CPU & Load")}</h3>
               <dl className="system-stats-modal__grid">
                 <div className="system-stats-modal__row system-stats-modal__row--cpu-used">
-                  <dt>App CPU</dt>
+                  <dt>{t("systemStats.rowAppCpu", "App CPU")}</dt>
                   <dd>
                     <span className={`system-stats-modal__value ${cpuClassName}`.trim()}>{cpuPercentLabel}</span>
-                    <span className="system-stats-modal__detail">{cpuPercentValue === null ? "First sample pending" : "process usage"}</span>
+                    <span className="system-stats-modal__detail">{cpuPercentValue === null ? t("systemStats.cpuFirstSamplePending", "First sample pending") : t("systemStats.cpuProcessUsage", "process usage")}</span>
                   </dd>
                   <div className="system-stats-modal__memory-progress-wrapper">
                     <div
@@ -334,33 +342,33 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                   </div>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>Load Avg</dt>
+                  <dt>{t("systemStats.rowLoadAvg", "Load Avg")}</dt>
                   <dd>{system?.loadAvg.map((value) => value.toFixed(2)).join(" ") ?? "—"}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>Cores</dt>
+                  <dt>{t("systemStats.rowCores", "Cores")}</dt>
                   <dd>{system?.cpuCount ?? "—"}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>Platform</dt>
+                  <dt>{t("systemStats.rowPlatform", "Platform")}</dt>
                   <dd>{system?.platform ?? "—"}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>Node</dt>
+                  <dt>{t("systemStats.rowNode", "Node")}</dt>
                   <dd>{system?.nodeVersion ?? "—"}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>PID</dt>
+                  <dt>{t("systemStats.rowPid", "PID")}</dt>
                   <dd>{system?.pid ?? "—"}</dd>
                 </div>
               </dl>
             </section>
 
-            <section className="system-stats-modal__section" aria-label="System memory stats">
-              <h3 className="system-stats-modal__section-title">System</h3>
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionSystemMemAriaLabel", "System memory stats")}>
+              <h3 className="system-stats-modal__section-title">{t("systemStats.sectionSystem", "System")}</h3>
               <dl className="system-stats-modal__grid">
                 <div className="system-stats-modal__row system-stats-modal__row--memory-used">
-                  <dt>Memory Used</dt>
+                  <dt>{t("systemStats.rowMemoryUsed", "Memory Used")}</dt>
                   <dd>
                     <span className={`system-stats-modal__value ${usedSystemClassName}`.trim()}>
                       {system ? formatBytes(usedSystemMem) : "—"}
@@ -386,17 +394,17 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                   </div>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>Memory Free</dt>
+                  <dt>{t("systemStats.rowMemoryFree", "Memory Free")}</dt>
                   <dd>{system ? formatBytes(system.systemFreeMem) : "—"}</dd>
                 </div>
               </dl>
             </section>
 
-            <section className="system-stats-modal__section" aria-label="Task stats">
-              <h3 className="system-stats-modal__section-title">Tasks</h3>
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionTasksAriaLabel", "Task stats")}>
+              <h3 className="system-stats-modal__section-title">{t("systemStats.sectionTasks", "Tasks")}</h3>
               <dl className="system-stats-modal__grid">
                 <div className="system-stats-modal__row">
-                  <dt>Total</dt>
+                  <dt>{t("systemStats.rowTotal", "Total")}</dt>
                   <dd>{taskStats?.total ?? 0}</dd>
                 </div>
                 {Object.entries(taskStats?.byColumn ?? {}).map(([column, count]) => (
@@ -408,36 +416,36 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
               </dl>
             </section>
 
-            <section className="system-stats-modal__section" aria-label="Agent stats">
-              <h3 className="system-stats-modal__section-title">Agents</h3>
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionAgentsAriaLabel", "Agent stats")}>
+              <h3 className="system-stats-modal__section-title">{t("systemStats.sectionAgents", "Agents")}</h3>
               <dl className="system-stats-modal__grid">
                 <div className="system-stats-modal__row">
-                  <dt>idle</dt>
+                  <dt>{t("systemStats.agentIdle", "idle")}</dt>
                   <dd>{taskStats?.agents.idle ?? 0}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>active</dt>
+                  <dt>{t("systemStats.agentActive", "active")}</dt>
                   <dd>{taskStats?.agents.active ?? 0}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>running</dt>
+                  <dt>{t("systemStats.agentRunning", "running")}</dt>
                   <dd>{taskStats?.agents.running ?? 0}</dd>
                 </div>
                 <div className="system-stats-modal__row">
-                  <dt>error</dt>
+                  <dt>{t("systemStats.agentError", "error")}</dt>
                   <dd>{taskStats?.agents.error ?? 0}</dd>
                 </div>
               </dl>
             </section>
 
-            <section className="system-stats-modal__section" aria-label="Vitest controls">
+            <section className="system-stats-modal__section" aria-label={t("systemStats.sectionVitestAriaLabel", "Vitest controls")}>
               <h3 className="system-stats-modal__section-title system-stats-modal__section-title--with-icon">
                 <ShieldAlert />
-                <span>Vitest Controls</span>
+                <span>{t("systemStats.sectionVitest", "Vitest Controls")}</span>
               </h3>
               <dl className="system-stats-modal__grid system-stats-modal__vitest-controls">
                 <div className="system-stats-modal__row">
-                  <dt>Vitest Processes</dt>
+                  <dt>{t("systemStats.vitestProcesses", "Vitest Processes")}</dt>
                   <dd>{vitestProcessCount ?? "—"}</dd>
                 </div>
               </dl>
@@ -451,7 +459,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                     disabled={isKilling || vitestProcessCount === 0}
                   >
                     <Skull />
-                    <span>{confirmKill ? "Confirm Kill?" : "Kill Vitest Processes"}</span>
+                    <span>{confirmKill ? t("systemStats.confirmKill", "Confirm Kill?") : t("systemStats.killVitest", "Kill Vitest Processes")}</span>
                   </button>
                 </div>
 
@@ -463,11 +471,11 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                       void persistAutoKill(event.target.checked);
                     }}
                   />
-                  <span>Auto-kill vitest on memory pressure</span>
+                  <span>{t("systemStats.autoKillLabel", "Auto-kill vitest on memory pressure")}</span>
                 </label>
 
                 <div className="system-stats-modal__threshold-row">
-                  <label htmlFor="vitest-threshold-number">Kill threshold (%)</label>
+                  <label htmlFor="vitest-threshold-number">{t("systemStats.killThresholdLabel", "Kill threshold (%)")}</label>
                   <div className="system-stats-modal__threshold-controls">
                     <input
                       id="vitest-threshold-range"
@@ -475,7 +483,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                       min={50}
                       max={99}
                       value={killThreshold}
-                      aria-label="Kill threshold slider (%)"
+                      aria-label={t("systemStats.killThresholdSliderAriaLabel", "Kill threshold slider (%)")}
                       onChange={(event) => {
                         const nextValue = Number.parseInt(event.target.value, 10);
                         void persistKillThreshold(Number.isNaN(nextValue) ? 90 : nextValue);
@@ -488,7 +496,7 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                       min={50}
                       max={99}
                       value={killThreshold}
-                      aria-label="Kill threshold (%)"
+                      aria-label={t("systemStats.killThresholdInputAriaLabel", "Kill threshold (%)")}
                       onChange={(event) => {
                         const nextValue = Number.parseInt(event.target.value, 10);
                         void persistKillThreshold(Number.isNaN(nextValue) ? 90 : nextValue);
@@ -500,15 +508,15 @@ export function SystemStatsModal({ isOpen, onClose, projectId }: SystemStatsModa
                   </div>
                 </div>
 
-                {killResult && <p className={killResultClassName}>Killed {killResult.killed} processes</p>}
-                <p className="system-stats-modal__last-kill">Last auto-kill: {lastAutoKillLabel}</p>
+                {killResult && <p className={killResultClassName}>{t("systemStats.killedProcesses", "Killed {{count}} processes", { count: killResult.killed })}</p>}
+                <p className="system-stats-modal__last-kill">{t("systemStats.lastAutoKill", "Last auto-kill: {{time}}", { time: lastAutoKillLabel })}</p>
                 {settingsError && <p className="system-stats-modal__kill-result system-stats-modal__kill-result--error">{settingsError}</p>}
               </div>
             </section>
           </div>
         )}
 
-        {error && stats && <div className="system-stats-modal__footer-error">Latest refresh failed: {error}</div>}
+        {error && stats && <div className="system-stats-modal__footer-error">{t("systemStats.footerRefreshFailed", "Latest refresh failed: {{error}}", { error })}</div>}
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import "./AuthTokenRecoveryDialog.css";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { clearAuthToken, setAuthToken } from "../auth";
 
 export interface AuthTokenRecoveryDialogProps {
@@ -7,6 +8,7 @@ export interface AuthTokenRecoveryDialogProps {
 }
 
 export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) {
+  const { t } = useTranslation("app");
   const [tokenInput, setTokenInput] = useState("");
   const tokenInputRef = useRef<HTMLInputElement>(null);
 
@@ -51,17 +53,16 @@ export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) 
         aria-describedby="auth-token-recovery-description"
       >
         <div className="modal-header auth-token-recovery-header">
-          <h3 id="auth-token-recovery-title">Authentication token required</h3>
+          <h3 id="auth-token-recovery-title">{t("auth.tokenRequired", "Authentication token required")}</h3>
         </div>
 
         <div className="auth-token-recovery-content">
           <p id="auth-token-recovery-description">
-            This dashboard session can&apos;t authenticate with the daemon. Set a replacement token or clear the
-            current token and retry.
+            {t("auth.tokenRecoveryDescription", "This dashboard session can't authenticate with the daemon. Set a replacement token or clear the current token and retry.")}
           </p>
 
           <div className="auth-token-recovery-field">
-            <label htmlFor="auth-token-recovery-input">Replacement token</label>
+            <label htmlFor="auth-token-recovery-input">{t("auth.replacementToken", "Replacement token")}</label>
             <input
               ref={tokenInputRef}
               id="auth-token-recovery-input"
@@ -69,7 +70,7 @@ export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) 
               type="password"
               value={tokenInput}
               onChange={(event) => setTokenInput(event.target.value)}
-              placeholder="Paste token"
+              placeholder={t("auth.pasteToken", "Paste token")}
               autoComplete="off"
               spellCheck={false}
             />
@@ -82,7 +83,7 @@ export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) 
             className="btn"
             onClick={handleClearAndRetry}
           >
-            Clear token and retry
+            {t("auth.clearAndRetry", "Clear token and retry")}
           </button>
           <button
             type="button"
@@ -90,7 +91,7 @@ export function AuthTokenRecoveryDialog({ open }: AuthTokenRecoveryDialogProps) 
             onClick={handleSetToken}
             disabled={tokenInput.trim().length === 0}
           >
-            Set token and reload
+            {t("auth.setAndReload", "Set token and reload")}
           </button>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ExternalLink, RefreshCw, Settings } from "lucide-react";
 import { fetchSettings } from "../api";
 import { useEvals } from "../hooks/useEvals";
@@ -12,6 +13,7 @@ interface EvalsViewProps {
 }
 
 export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: EvalsViewProps) {
+  const { t } = useTranslation("app");
   const { loading, error, results, runs, filters, setFilters, selectedEvalId, setSelectedEvalId, selectedEval, refresh } = useEvals({ projectId });
   const [scheduledEnabled, setScheduledEnabled] = useState(true);
 
@@ -37,11 +39,11 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
   if (!scheduledEnabled) {
     return (
       <section className="evals-view card" data-testid="evals-disabled">
-        <h2 className="evals-title">Scheduled evals are disabled</h2>
-        <p className="evals-empty-copy">Enable Scheduled Evals to review scored tasks, evidence, and follow-up recommendations.</p>
-        <button className="btn btn-primary" type="button" onClick={() => onOpenSettings?.("scheduled-evals")}> 
+        <h2 className="evals-title">{t("evals.disabledTitle", "Scheduled evals are disabled")}</h2>
+        <p className="evals-empty-copy">{t("evals.enablePrompt", "Enable Scheduled Evals to review scored tasks, evidence, and follow-up recommendations.")}</p>
+        <button className="btn btn-primary" type="button" onClick={() => onOpenSettings?.("scheduled-evals")}>
           <Settings size={16} />
-          Open Scheduled Evals Settings
+          {t("evals.openSettings", "Open Scheduled Evals Settings")}
         </button>
       </section>
     );
@@ -53,7 +55,7 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
         <div className="evals-toolbar">
           <input
             className="input"
-            placeholder="Search task or rationale"
+            placeholder={t("evals.searchPlaceholder", "Search task or rationale")}
             value={filters.q}
             onChange={(event) => setFilters((prev) => ({ ...prev, q: event.target.value }))}
           />
@@ -62,20 +64,20 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
             value={filters.runId}
             onChange={(event) => setFilters((prev) => ({ ...prev, runId: event.target.value }))}
           >
-            <option value="">All runs</option>
+            <option value="">{t("evals.allRuns", "All runs")}</option>
             {runs.map((run) => (
               <option key={run.id} value={run.id}>{run.id}</option>
             ))}
           </select>
-          <input className="input" placeholder="Min score" value={filters.scoreMin} onChange={(event) => setFilters((prev) => ({ ...prev, scoreMin: event.target.value }))} />
-          <input className="input" placeholder="Max score" value={filters.scoreMax} onChange={(event) => setFilters((prev) => ({ ...prev, scoreMax: event.target.value }))} />
-          <button className="btn btn-icon" type="button" onClick={() => void refresh()} aria-label="Refresh evals"><RefreshCw size={16} /></button>
+          <input className="input" placeholder={t("evals.minScorePlaceholder", "Min score")} value={filters.scoreMin} onChange={(event) => setFilters((prev) => ({ ...prev, scoreMin: event.target.value }))} />
+          <input className="input" placeholder={t("evals.maxScorePlaceholder", "Max score")} value={filters.scoreMax} onChange={(event) => setFilters((prev) => ({ ...prev, scoreMax: event.target.value }))} />
+          <button className="btn btn-icon" type="button" onClick={() => void refresh()} aria-label={t("evals.refreshAria", "Refresh evals")}><RefreshCw size={16} /></button>
         </div>
 
-        {loading && <p className="evals-state" data-testid="evals-loading">Loading evals…</p>}
+        {loading && <p className="evals-state" data-testid="evals-loading">{t("evals.loading", "Loading evals…")}</p>}
         {error && <p className="evals-state evals-state--error">{error}</p>}
         {!loading && !error && !hasResults && (
-          <p className="evals-state">No evals yet. Scheduled evals review tasks completed since the last run.</p>
+          <p className="evals-state">{t("evals.empty", "No evals yet. Scheduled evals review tasks completed since the last run.")}</p>
         )}
 
         <ul className="evals-results" data-testid="evals-results">
@@ -83,7 +85,7 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
             <li key={result.id}>
               <button className={`evals-result ${result.id === selectedEvalId ? "evals-result--active" : ""}`} type="button" onClick={() => setSelectedEvalId(result.id)}>
                 <span className="evals-result-title">{result.taskTitle}</span>
-                <span className="evals-result-meta">{result.taskId} · {result.runId} · {result.overallScore ?? "n/a"}</span>
+                <span className="evals-result-meta">{result.taskId} · {result.runId} · {result.overallScore ?? t("evals.naPlaceholder", "n/a")}</span>
               </button>
             </li>
           ))}
@@ -91,21 +93,21 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
       </div>
 
       <div className="evals-detail card" data-testid="evals-detail">
-        {!selectedEval && <p className="evals-state">Select an evaluation to inspect scores, rationale, and evidence.</p>}
+        {!selectedEval && <p className="evals-state">{t("evals.selectPrompt", "Select an evaluation to inspect scores, rationale, and evidence.")}</p>}
         {selectedEval && (
           <>
             <h3 className="evals-detail-title">{selectedSummary?.taskTitle ?? selectedEval.taskTitle}</h3>
             <p className="evals-result-meta">{selectedEval.taskId} · {selectedEval.runId}</p>
-            <p className="evals-score">Overall score: {selectedEval.overallScore ?? "n/a"}</p>
+            <p className="evals-score">{t("evals.overallScore", "Overall score: {{score}}", { score: selectedEval.overallScore ?? t("evals.naPlaceholder", "n/a") })}</p>
             <ul className="evals-categories">
               {selectedEval.categoryScores.map((score) => (
                 <li key={score.category}>{score.category}: {score.finalScore}</li>
               ))}
             </ul>
-            <p className="evals-rationale">{selectedEval.rationale || "No rationale recorded."}</p>
+            <p className="evals-rationale">{selectedEval.rationale || t("evals.noRationale", "No rationale recorded.")}</p>
 
             <div>
-              <h4>Evidence</h4>
+              <h4>{t("evals.evidenceHeading", "Evidence")}</h4>
               <ul className="evals-links">
                 {selectedEval.evidence.map((item, index) => {
                   const taskId = typeof item.metadata?.taskId === "string" ? item.metadata.taskId : undefined;
@@ -126,9 +128,9 @@ export function EvalsView({ projectId, onOpenSettings, onOpenTaskDetail }: Evals
             </div>
 
             <div>
-              <h4>Suggested follow-up tasks</h4>
+              <h4>{t("evals.suggestedFollowupsHeading", "Suggested follow-up tasks")}</h4>
               <ul className="evals-follow-ups">
-                {selectedEval.followUps.length === 0 && <li>None</li>}
+                {selectedEval.followUps.length === 0 && <li>{t("evals.noFollowups", "None")}</li>}
                 {selectedEval.followUps.map((followUp) => (
                   <li key={followUp.suggestionId}><strong>{followUp.title}</strong><p>{followUp.rationale}</p></li>
                 ))}

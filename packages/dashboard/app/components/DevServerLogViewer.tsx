@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, Loader2, Maximize2, Minimize2, Search } from "lucide-react";
 import "./DevServerLogViewer.css";
 import type { DevServerLogEntry } from "../hooks/useDevServerLogs";
@@ -93,6 +94,7 @@ export function DevServerLogViewer({
   onLoadMore,
   isRunning,
 }: DevServerLogViewerProps) {
+  const { t } = useTranslation("app");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const prevEntryCountRef = useRef(entries.length);
   const prevRunningRef = useRef(isRunning);
@@ -170,7 +172,7 @@ export function DevServerLogViewer({
       <section className="devserver-log-viewer" data-testid="devserver-log-viewer">
         <div className="devserver-log-viewer__loading" data-testid="devserver-log-loading">
           <Loader2 size={16} className="devserver-log-viewer__spinner" />
-          <span>Loading logs…</span>
+          <span>{t("devserver.loadingLogs", "Loading logs…")}</span>
         </div>
       </section>
     );
@@ -183,32 +185,32 @@ export function DevServerLogViewer({
     >
       <header className="devserver-log-viewer__toolbar">
         <div className="devserver-log-viewer__toolbar-meta">
-          <span className="devserver-log-viewer__title">Logs</span>
+          <span className="devserver-log-viewer__title">{t("devserver.logs", "Logs")}</span>
           <span className="devserver-log-viewer__count" data-testid="devserver-log-count">
-            {total !== null ? `${entries.length}/${total}` : `${entries.length}`} lines
+            {total !== null ? `${entries.length}/${total}` : `${entries.length}`} {t("devserver.lines", "lines")}
           </span>
         </div>
 
         <div className="devserver-log-viewer__toolbar-actions">
           <label className="devserver-log-viewer__severity" htmlFor="devserver-log-severity-filter">
-            <span className="visually-hidden">Filter logs by severity</span>
+            <span className="visually-hidden">{t("devserver.filterBySeverity", "Filter logs by severity")}</span>
             <select
               id="devserver-log-severity-filter"
               className="select devserver-log-viewer__severity-select"
               value={severityFilter}
               onChange={(event) => setSeverityFilter(event.target.value as LogSeverityFilter)}
               data-testid="devserver-log-severity-filter"
-              aria-label="Filter logs by severity"
+              aria-label={t("devserver.filterBySeverity", "Filter logs by severity")}
             >
-              <option value="all">All severities</option>
-              <option value="info">Info</option>
-              <option value="warn">Warn</option>
-              <option value="error">Error</option>
+              <option value="all">{t("devserver.allSeverities", "All severities")}</option>
+              <option value="info">{t("devserver.info", "Info")}</option>
+              <option value="warn">{t("devserver.warn", "Warn")}</option>
+              <option value="error">{t("devserver.error", "Error")}</option>
             </select>
           </label>
 
           <label className="devserver-log-viewer__search" htmlFor="devserver-log-search">
-            <span className="visually-hidden">Search logs</span>
+            <span className="visually-hidden">{t("devserver.searchLogs", "Search logs")}</span>
             <Search size={14} />
             <input
               id="devserver-log-search"
@@ -216,15 +218,15 @@ export function DevServerLogViewer({
               type="text"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search logs"
+              placeholder={t("devserver.searchLogs", "Search logs")}
               data-testid="devserver-log-search-input"
-              aria-label="Search logs"
+              aria-label={t("devserver.searchLogs", "Search logs")}
             />
           </label>
 
           {searchQuery.trim().length > 0 && (
             <span className="devserver-log-viewer__matches" data-testid="devserver-log-match-count">
-              {matchCount} match{matchCount === 1 ? "" : "es"}
+              {t("devserver.matchCount", { count: matchCount, defaultValue_one: "{{count}} match", defaultValue_other: "{{count}} matches" })}
             </span>
           )}
 
@@ -233,7 +235,7 @@ export function DevServerLogViewer({
             className="btn btn-sm btn-icon"
             onClick={() => setIsFullscreen((prev) => !prev)}
             data-testid="devserver-log-fullscreen-toggle"
-            aria-label={isFullscreen ? "Exit fullscreen logs" : "Enter fullscreen logs"}
+            aria-label={isFullscreen ? t("devserver.exitFullscreen", "Exit fullscreen logs") : t("devserver.enterFullscreen", "Enter fullscreen logs")}
           >
             {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
@@ -253,10 +255,10 @@ export function DevServerLogViewer({
               {loadingMore ? (
                 <>
                   <Loader2 size={14} className="devserver-log-viewer__spinner" />
-                  Loading older logs…
+                  {t("devserver.loadingOlderLogs", "Loading older logs…")}
                 </>
               ) : (
-                "Load older logs"
+                t("devserver.loadOlderLogs", "Load older logs")
               )}
             </button>
           </div>
@@ -271,10 +273,10 @@ export function DevServerLogViewer({
           {!loading && filteredEntries.length === 0 && (
             <p className="devserver-log-viewer__empty" data-testid="devserver-log-empty">
               {entries.length === 0
-                ? "No logs yet. Start the dev server to see output."
+                ? t("devserver.noLogsYet", "No logs yet. Start the dev server to see output.")
                 : (filteredBySeverity.length === 0
-                    ? "No log lines match the selected severity."
-                    : "No log lines match your search.")}
+                    ? t("devserver.noMatchesSeverity", "No log lines match the selected severity.")
+                    : t("devserver.noMatchesSearch", "No log lines match your search."))}
             </p>
           )}
 
@@ -288,7 +290,7 @@ export function DevServerLogViewer({
                   <span className="devserver-log-timestamp" data-testid="devserver-log-timestamp">{timestamp}</span>
                 )}
                 {entry.stream === "stderr" && (
-                  <span className="devserver-log-stream-badge" data-testid="devserver-log-stderr-badge">ERR</span>
+                  <span className="devserver-log-stream-badge" data-testid="devserver-log-stderr-badge">{t("devserver.errBadge", "ERR")}</span>
                 )}
                 <span className="devserver-log-text">{linkifyReactChildren(highlightText(plainText, searchQuery.trim()))}</span>
               </div>
@@ -304,7 +306,7 @@ export function DevServerLogViewer({
             data-testid="devserver-log-jump-button"
           >
             <ChevronDown size={14} />
-            New logs
+            {t("devserver.newLogs", "New logs")}
           </button>
         )}
       </div>

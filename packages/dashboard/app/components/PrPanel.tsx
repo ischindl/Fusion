@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { GitPullRequest, ExternalLink, RefreshCw, Plus, MessageSquare, CircleDot, XCircle, GitMerge, ChevronDown, ChevronUp } from "lucide-react";
 import { getErrorMessage, type DirectMergeCommitStrategy, type StructuredGhError } from "@fusion/core";
 import { fetchPrReviews, mergePr, reclaimPrConflict, refreshPrStatus, setAutoMergeOnGreen, unlinkPr, type PrCheckStatus, type PrInfo, type PrRefreshResponse, type PrReviewsResponse } from "../api";
@@ -84,6 +85,7 @@ function PrCard({
   directMergeCommitStrategy: DirectMergeCommitStrategy;
   addToast: (message: string, type?: ToastType) => void;
 }) {
+  const { t } = useTranslation("app");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshState, setRefreshState] = useState<PrRefreshResponse | null>(null);
   const [reviewsState, setReviewsState] = useState<PrReviewsResponse | null>(null);
@@ -120,7 +122,7 @@ function PrCard({
       const details = (err as { details?: { githubError?: StructuredGhError } })?.details?.githubError;
       const structured = details ? { ...details, operation: "refresh" as const } : { code: "unknown" as const, message: getErrorMessage(err) || "Failed to refresh PR", retryable: true, action: { kind: "retry" as const }, operation: "refresh" as const };
       setLastGhError(structured);
-      addToast(structured.message || "Failed to refresh PR", "error");
+      addToast(structured.message || t("git.prRefreshFailed", "Failed to refresh PR"), "error");
       return false;
     } finally {
       setIsRefreshing(false);
@@ -130,7 +132,7 @@ function PrCard({
   const handleRefresh = useCallback(async () => {
     const refreshed = await doRefresh();
     if (refreshed) {
-      addToast("PR status refreshed", "success");
+      addToast(t("git.prStatusRefreshed", "PR status refreshed"), "success");
     }
   }, [addToast, doRefresh]);
 
@@ -147,9 +149,9 @@ function PrCard({
     try {
       const result = await mergePr(taskId, mergeStrategy, projectId, prInfo.number);
       onPrUpdated(result.prInfo);
-      addToast("Pull request merged", "success");
+      addToast(t("git.prMerged", "Pull request merged"), "success");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to merge pull request", "error");
+      addToast(getErrorMessage(err) || t("git.prMergeFailed", "Failed to merge pull request"), "error");
     } finally {
       setIsMerging(false);
     }
@@ -159,19 +161,19 @@ function PrCard({
     try {
       const result = await setAutoMergeOnGreen(taskId, enabled, mergeStrategy, projectId, prInfo.number);
       onPrUpdated(result.prInfo);
-      addToast(enabled ? "Auto-merge enabled" : "Auto-merge disabled", "success");
+      addToast(enabled ? t("git.autoMergeEnabled", "Auto-merge enabled") : t("git.autoMergeDisabled", "Auto-merge disabled"), "success");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to update auto-merge", "error");
+      addToast(getErrorMessage(err) || t("git.autoMergeUpdateFailed", "Failed to update auto-merge"), "error");
     }
   }, [addToast, mergeStrategy, onPrUpdated, prInfo.number, projectId, taskId]);
 
   const handleUnlink = useCallback(async () => {
-    if (!window.confirm(`Unlink PR #${prInfo.number} from this task? The PR will not be closed.`)) {
+    if (!window.confirm(t("git.prUnlinkConfirm", "Unlink PR #{{number}} from this task? The PR will not be closed.", { number: prInfo.number }))) {
       return;
     }
     await unlinkPr(taskId, prInfo.number, projectId);
     onPrUnlinked?.(prInfo.number);
-    addToast(`Unlinked PR #${prInfo.number}`, "success");
+    addToast(t("git.prUnlinked", "Unlinked PR #{{number}}", { number: prInfo.number }), "success");
   }, [addToast, onPrUnlinked, prInfo.number, projectId, taskId]);
 
   const statusIcon = STATUS_ICONS[prInfo.status] ?? <CircleDot size={16} />;
@@ -225,10 +227,10 @@ function PrCard({
         <span className={`pr-status-badge pr-status-badge--${prInfo.status}`}>{prInfo.status}</span>
         <span className="pr-number">#{prInfo.number}</span>
         <div className="pr-spacer" />
-        <button className="btn btn-sm pr-refresh-btn" onClick={handleRefresh} disabled={isRefreshing} title="Refresh PR status">
+        <button className="btn btn-sm pr-refresh-btn" onClick={handleRefresh} disabled={isRefreshing} title={t("git.refreshPrStatus", "Refresh PR status")}>
           <RefreshCw size={14} className={isRefreshing ? "spin pr-panel-refresh-icon--muted" : undefined} />
         </button>
-        <button className="btn btn-sm" onClick={() => void handleUnlink()}>Unlink</button>
+        <button className="btn btn-sm" onClick={() => void handleUnlink()}>{t("git.unlinkButton", "Unlink")}</button>
       </div>
       <div className="pr-title">{prInfo.title}</div>
       {lastGhError ? (
@@ -237,8 +239,8 @@ function PrCard({
           {lastGhError.hint ? <div className="pr-error__hint">{lastGhError.hint}</div> : null}
           <div className="pr-error__actions">
             {lastGhError.action?.kind === "shell" ? <div>Action: run <code>{lastGhError.action.command}</code></div> : null}
-            {lastGhError.retryable ? <button className="btn btn-sm pr-error__retry" onClick={() => void handleRefresh()}>Retry</button> : null}
-            <button className="btn btn-sm pr-error__dismiss" onClick={() => setLastGhError(null)} aria-label="Dismiss PR error">×</button>
+            {lastGhError.retryable ? <button className="btn btn-sm pr-error__retry" onClick={() => void handleRefresh()}>{t("git.retryButton", "Retry")}</button> : null}
+            <button className="btn btn-sm pr-error__dismiss" onClick={() => setLastGhError(null)} aria-label={t("git.dismissPrError", "Dismiss PR error")}>×</button>
           </div>
         </div>
       ) : null}
@@ -255,11 +257,11 @@ function PrCard({
         />
       ) : null}
 
-      <div className="pr-panel-section"><div className="pr-panel-row-label">Review</div>{reviewDecision ? <span className={`pr-panel-review-badge pr-panel-review-badge--${getReviewTone(reviewDecision)}`}>{reviewDecision}</span> : <span className="pr-panel-tone-muted">No reviews yet</span>}</div>
+      <div className="pr-panel-section"><div className="pr-panel-row-label">{t("git.reviewLabel", "Review")}</div>{reviewDecision ? <span className={`pr-panel-review-badge pr-panel-review-badge--${getReviewTone(reviewDecision)}`}>{reviewDecision}</span> : <span className="pr-panel-tone-muted">{t("git.noReviewsYet", "No reviews yet")}</span>}</div>
 
       <div className="pr-panel-section">
-        <div className="pr-panel-row-label">Reviews</div>
-        {groupedReviews.length === 0 ? <span className="pr-panel-tone-muted">No review comments synced yet</span> : null}
+        <div className="pr-panel-row-label">{t("git.reviewsLabel", "Reviews")}</div>
+        {groupedReviews.length === 0 ? <span className="pr-panel-tone-muted">{t("git.noReviewComments", "No review comments synced yet")}</span> : null}
         {groupedReviews.map(([reviewer, items]) => (
           <div key={reviewer} className="pr-panel-review-thread">
             <div className="pr-panel-review-thread-header"><strong>@{reviewer}</strong><span className={`pr-panel-review-badge pr-panel-review-badge--${getReviewTone((items.at(-1)?.state as PrRefreshResponse["reviewDecision"]) ?? "REVIEW_REQUIRED")}`}>{items.at(-1)?.state ?? "COMMENTED"}</span></div>
@@ -269,46 +271,47 @@ function PrCard({
       </div>
 
       {showMergeControls ? (
-        <div className="pr-panel-section"><div className="pr-panel-row-label">Merge</div><div className="pr-merge-controls"><select className="select" value={mergeStrategy} disabled={isMerging} onChange={(event) => setMergeStrategy(event.target.value as "merge" | "squash" | "rebase")}><option value="merge">merge</option><option value="squash">squash</option><option value="rebase">rebase</option></select><button className="btn btn-primary btn-sm" onClick={handleMerge} disabled={!mergeReady || isMerging} aria-busy={isMerging} data-testid="pr-merge-button" title={mergeReady ? "Merge pull request" : blockingReasonsTitle || "Refresh PR status to check merge readiness"}>{isMerging ? <><RefreshCw size={14} className="spin" />Merging…</> : "Merge pull request"}</button><label className="checkbox-label"><input type="checkbox" checked={Boolean(prInfo.autoMergeOnGreen)} disabled={isMerging} onChange={(event) => { void handleAutoMergeToggle(event.currentTarget.checked); }} />Auto-merge when green</label></div>{isMerging ? <div className="pr-hint pr-hint--info" role="status" aria-live="polite">Merging pull request…</div> : null}{prInfo.lastMergeError ? <div className="pr-merge-error"><span>{prInfo.lastMergeError}</span><button className="btn btn-sm" onClick={handleMerge} disabled={isMerging}>Retry</button></div> : null}</div>
+        <div className="pr-panel-section"><div className="pr-panel-row-label">{t("git.mergeLabel", "Merge")}</div><div className="pr-merge-controls"><select className="select" value={mergeStrategy} disabled={isMerging} onChange={(event) => setMergeStrategy(event.target.value as "merge" | "squash" | "rebase")}><option value="merge">{t("git.mergeStrategyMerge", "merge")}</option><option value="squash">{t("git.mergeStrategySquash", "squash")}</option><option value="rebase">{t("git.mergeStrategyRebase", "rebase")}</option></select><button className="btn btn-primary btn-sm" onClick={handleMerge} disabled={!mergeReady || isMerging} aria-busy={isMerging} data-testid="pr-merge-button" title={mergeReady ? t("git.mergePrButton", "Merge pull request") : blockingReasonsTitle || t("git.refreshToCheckMerge", "Refresh PR status to check merge readiness")}>{isMerging ? <><RefreshCw size={14} className="spin" />{t("git.mergingStatus", "Merging…")}</> : t("git.mergePrButton", "Merge pull request")}</button><label className="checkbox-label"><input type="checkbox" checked={Boolean(prInfo.autoMergeOnGreen)} disabled={isMerging} onChange={(event) => { void handleAutoMergeToggle(event.currentTarget.checked); }} />{t("git.autoMergeWhenGreen", "Auto-merge when green")}</label></div>{isMerging ? <div className="pr-hint pr-hint--info" role="status" aria-live="polite">{t("git.mergingPrHint", "Merging pull request…")}</div> : null}{prInfo.lastMergeError ? <div className="pr-merge-error"><span>{prInfo.lastMergeError}</span><button className="btn btn-sm" onClick={handleMerge} disabled={isMerging}>{t("git.retryButton", "Retry")}</button></div> : null}</div>
       ) : null}
 
-      {showConflictHint ? <div className="pr-hint pr-hint--conflict">Merge conflict detected. Resolve/rebase branch and retry reclaim.<button className="btn btn-sm" onClick={async () => { setIsReclaimingConflict(true); try { const result = await reclaimPrConflict(taskId, projectId); if (result.queued) { addToast("Conflict reclaim queued", "success"); const updated = await refreshPrStatus(taskId, projectId); setRefreshState(updated); const targetPr = (updated.all?.map((entry) => entry.prInfo) ?? [updated.prInfo]).find((entry) => entry.number === prInfo.number); if (targetPr) onPrUpdated(targetPr); } else { addToast(result.reason ?? "Conflict reclaim unavailable", "warning"); } } catch (err) { addToast(getErrorMessage(err) || "Failed to queue conflict reclaim", "error"); } finally { setIsReclaimingConflict(false); } }} disabled={isReclaimingConflict}>Retry conflict reclaim</button></div> : null}
+      {showConflictHint ? <div className="pr-hint pr-hint--conflict">{t("git.mergeConflictDetected", "Merge conflict detected. Resolve/rebase branch and retry reclaim.")}<button className="btn btn-sm" onClick={async () => { setIsReclaimingConflict(true); try { const result = await reclaimPrConflict(taskId, projectId); if (result.queued) { addToast(t("git.conflictReclaimQueued", "Conflict reclaim queued"), "success"); const updated = await refreshPrStatus(taskId, projectId); setRefreshState(updated); const targetPr = (updated.all?.map((entry) => entry.prInfo) ?? [updated.prInfo]).find((entry) => entry.number === prInfo.number); if (targetPr) onPrUpdated(targetPr); } else { addToast(result.reason ?? t("git.conflictReclaimUnavailable", "Conflict reclaim unavailable"), "warning"); } } catch (err) { addToast(getErrorMessage(err) || t("git.conflictReclaimFailed", "Failed to queue conflict reclaim"), "error"); } finally { setIsReclaimingConflict(false); } }} disabled={isReclaimingConflict}>{t("git.retryConflictReclaim", "Retry conflict reclaim")}</button></div> : null}
 
       {conflictDiagnostics && (prInfo.mergeable === "conflicting" || hasConflictBlockingReason) ? (
         <div className="pr-conflict-section">
-          <div className="pr-conflict-section__header"><button type="button" className="btn btn-sm" onClick={() => setConflictsExpanded((value) => !value)}>{conflictsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />} Conflicts</button><button type="button" className="btn btn-sm" onClick={() => void handleRefresh()} disabled={isRefreshing}>Re-check conflicts</button></div>
-          {conflictsExpanded ? <><ul className="pr-conflict-files">{conflictDiagnostics.conflictingFiles.map((file) => <li key={file}>{linkifyFilePaths(file, { keyPrefix: `pr-conflict-${file}` })}</li>)}</ul><pre className="pr-conflict-commands"><code>{conflictDiagnostics.suggestedCommands.join("\n")}</code></pre><div className="pr-conflict-section__header"><button type="button" className="btn btn-sm" onClick={async () => { await navigator.clipboard.writeText(conflictDiagnostics.suggestedCommands.join("\n")); setCopiedConflicts(true); setTimeout(() => setCopiedConflicts(false), 1200); }}>{copiedConflicts ? "Copied" : "Copy"}</button><span className="pr-panel-tone-muted">Captured: {new Date(conflictDiagnostics.capturedAt).toLocaleString()}</span></div></> : null}
+          <div className="pr-conflict-section__header"><button type="button" className="btn btn-sm" onClick={() => setConflictsExpanded((value) => !value)}>{conflictsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />} {t("git.conflictsButton", "Conflicts")}</button><button type="button" className="btn btn-sm" onClick={() => void handleRefresh()} disabled={isRefreshing}>{t("git.reCheckConflicts", "Re-check conflicts")}</button></div>
+          {conflictsExpanded ? <><ul className="pr-conflict-files">{conflictDiagnostics.conflictingFiles.map((file) => <li key={file}>{linkifyFilePaths(file, { keyPrefix: `pr-conflict-${file}` })}</li>)}</ul><pre className="pr-conflict-commands"><code>{conflictDiagnostics.suggestedCommands.join("\n")}</code></pre><div className="pr-conflict-section__header"><button type="button" className="btn btn-sm" onClick={async () => { await navigator.clipboard.writeText(conflictDiagnostics.suggestedCommands.join("\n")); setCopiedConflicts(true); setTimeout(() => setCopiedConflicts(false), 1200); }}>{copiedConflicts ? t("git.copiedButton", "Copied") : t("git.copyButton", "Copy")}</button><span className="pr-panel-tone-muted">{t("git.capturedAt", "Captured:")} {new Date(conflictDiagnostics.capturedAt).toLocaleString()}</span></div></> : null}
         </div>
       ) : null}
 
-      {reviewDecision === "CHANGES_REQUESTED" && taskColumn === "todo" && <div className="pr-hint pr-hint--warning">Auto-moved to Todo — reviewer feedback ready</div>}
-      {automationStatus === "merging-pr" && <div className="pr-hint pr-hint--info">fn is merging this pull request automatically.</div>}
-      {automationStatus === "awaiting-pr-checks" && <div className="pr-hint pr-hint--info">{blockingReasons.length > 0 ? `Waiting for: ${blockingReasons.join("; ")}` : "Waiting for required checks or review feedback before auto-merge."}</div>}
-      {prInfo.status === "merged" && <div className="pr-hint pr-hint--success">Merged — task moved to Done</div>}
+      {reviewDecision === "CHANGES_REQUESTED" && taskColumn === "todo" && <div className="pr-hint pr-hint--warning">{t("git.autoMovedToTodo", "Auto-moved to Todo — reviewer feedback ready")}</div>}
+      {automationStatus === "merging-pr" && <div className="pr-hint pr-hint--info">{t("git.fnMergingPr", "fn is merging this pull request automatically.")}</div>}
+      {automationStatus === "awaiting-pr-checks" && <div className="pr-hint pr-hint--info">{blockingReasons.length > 0 ? t("git.waitingFor", "Waiting for: {{reasons}}", { reasons: blockingReasons.join("; ") }) : t("git.awaitingPrChecks", "Waiting for required checks or review feedback before auto-merge.")}</div>}
+      {prInfo.status === "merged" && <div className="pr-hint pr-hint--success">{t("git.mergedTaskDone", "Merged — task moved to Done")}</div>}
 
-      <div className="pr-footer"><span className="pr-comments"><MessageSquare size={14} />{prInfo.commentCount}{prInfo.lastCommentAt ? <span className="pr-panel-comment-time">Last: {new Date(prInfo.lastCommentAt).toLocaleString()}</span> : null}</span><a href={prInfo.url} target="_blank" rel="noopener noreferrer" className="pr-link"><ExternalLink size={14} />View on GitHub</a></div>
+      <div className="pr-footer"><span className="pr-comments"><MessageSquare size={14} />{prInfo.commentCount}{prInfo.lastCommentAt ? <span className="pr-panel-comment-time">{t("git.commentLast", "Last:")} {new Date(prInfo.lastCommentAt).toLocaleString()}</span> : null}</span><a href={prInfo.url} target="_blank" rel="noopener noreferrer" className="pr-link"><ExternalLink size={14} />{t("git.viewOnGithub", "View on GitHub")}</a></div>
     </div>
   );
 }
 
 export function PrPanel({ taskId, projectId, prInfo, prInfos, automationStatus, taskColumn, autoMerge = false, isManualPrFlow = false, prAuthAvailable, onPrUpdated, onPrUnlinked, onPrsRefreshed, onRequestCreatePr, directMergeCommitStrategy = "auto", addToast }: PrPanelProps) {
+  const { t } = useTranslation("app");
   const prList = prInfos ?? (prInfo ? [prInfo] : []);
 
   if (prList.length === 0) {
     if (automationStatus === "creating-pr") {
-      return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />Pull Request</h4><div className="pr-hint pr-hint--muted">fn is creating a pull request automatically for this task.</div></div>;
+      return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />{t("git.pullRequestHeading", "Pull Request")}</h4><div className="pr-hint pr-hint--muted">{t("git.fnCreatingPr", "fn is creating a pull request automatically for this task.")}</div></div>;
     }
     if (autoMerge) {
-      return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />Pull Request</h4><div className="pr-hint pr-hint--muted">Auto-merge will handle this task automatically.</div></div>;
+      return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />{t("git.pullRequestHeading", "Pull Request")}</h4><div className="pr-hint pr-hint--muted">{t("git.autoMergeWillHandle", "Auto-merge will handle this task automatically.")}</div></div>;
     }
     const createDisabled = !prAuthAvailable || !onRequestCreatePr;
-    return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />Pull Request</h4><button className="btn btn-primary btn-sm" onClick={onRequestCreatePr} disabled={createDisabled} data-testid="pr-panel-create-pr" title={prAuthAvailable ? "Create a PR for this task" : "PR auth unavailable — run 'gh auth login'"}><Plus />Create PR</button>{isManualPrFlow && <div className="pr-hint pr-hint--subtle">Use the footer action to run PR-first completion for this task.</div>}{(!prAuthAvailable || !onRequestCreatePr) && <div className="pr-hint pr-hint--subtle">Run <code>gh auth login</code> to enable PR creation.</div>}</div>;
+    return <div className="pr-section"><h4><GitPullRequest size={16} className="pr-section-icon" />{t("git.pullRequestHeading", "Pull Request")}</h4><button className="btn btn-primary btn-sm" onClick={onRequestCreatePr} disabled={createDisabled} data-testid="pr-panel-create-pr" title={prAuthAvailable ? t("git.createPrTitle", "Create a PR for this task") : t("git.prAuthUnavailable", "PR auth unavailable — run 'gh auth login'")}><Plus />{t("git.createPrButton", "Create PR")}</button>{isManualPrFlow && <div className="pr-hint pr-hint--subtle">{t("git.manualPrFlowHint", "Use the footer action to run PR-first completion for this task.")}</div>}{(!prAuthAvailable || !onRequestCreatePr) && <div className="pr-hint pr-hint--subtle">{t("git.ghAuthLoginHint", "Run {{code}} to enable PR creation.", { code: "gh auth login" })}</div>}</div>;
   }
 
   return (
     <div className="pr-section">
-      <h4><GitPullRequest size={16} className="pr-section-icon" />Pull Request</h4>
-      {prList.length > 1 ? <div className="pr-panel-summary"><span>{prList.length} pull requests</span><span className="pr-panel-summary-badge">{getWorstRollupState(prList)}</span></div> : null}
+      <h4><GitPullRequest size={16} className="pr-section-icon" />{t("git.pullRequestHeading", "Pull Request")}</h4>
+      {prList.length > 1 ? <div className="pr-panel-summary"><span>{t("git.pullRequestsCount", "{{count}} pull requests", { count: prList.length })}</span><span className="pr-panel-summary-badge">{getWorstRollupState(prList)}</span></div> : null}
       <div className="pr-panel-stack">
         {prList.map((prEntry) => (
           <PrCard

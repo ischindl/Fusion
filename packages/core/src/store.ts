@@ -27,6 +27,7 @@ import {
  *  filtered out of the user-facing step manager and cleaned up on re-selection. */
 const WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX = "workflow:";
 import { resolveWorktrunkSettings, validateWorktrunkSettings } from "./worktrunk-settings.js";
+import { validateLocale } from "./settings-validation.js";
 import { normalizeTaskPriority } from "./task-priority.js";
 import { validateBranchGroupBranchName, filterTasksByBranchGroup } from "./branch-assignment.js";
 import { allowsAutoMergeProcessing } from "./task-merge.js";
@@ -3321,6 +3322,23 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       }
 
       (globalPatch as Record<string, unknown>)["experimentalFeatures"] = mergedMap;
+    }
+
+    // Validate the optional UI locale at the write boundary: drop unrecognized
+    // values rather than persisting junk into settings.json. Runtime consumers
+    // also guard via isLocale, but the contract is `language?: Locale`.
+    // `null` passes through intact — GlobalSettingsStore treats null as
+    // "delete this key", which reverts the language to runtime auto-detect.
+    if ("language" in globalPatch) {
+      const rawLanguage = (globalPatch as Record<string, unknown>)["language"];
+      if (rawLanguage !== null) {
+        const validatedLanguage = validateLocale(rawLanguage);
+        if (validatedLanguage === undefined) {
+          delete (globalPatch as Record<string, unknown>)["language"];
+        } else {
+          globalPatch.language = validatedLanguage;
+        }
+      }
     }
 
     const updatedGlobal = await this.globalSettingsStore.updateSettings(globalPatch);

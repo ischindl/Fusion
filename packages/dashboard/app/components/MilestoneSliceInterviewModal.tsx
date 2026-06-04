@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import type { PlanningQuestion } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
@@ -76,6 +77,7 @@ export function MilestoneSliceInterviewModal({
   projectId,
   resumeSessionId,
 }: MilestoneSliceInterviewModalProps) {
+  const { t } = useTranslation("app");
   const viewportMode = useViewportMode();
   useMobileScrollLock(isOpen);
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
@@ -122,7 +124,9 @@ export function MilestoneSliceInterviewModal({
   const applyInterview =
     targetType === "milestone" ? applyMilestoneInterview : applySliceInterview;
   const skipInterview = targetType === "milestone" ? skipMilestoneInterview : skipSliceInterview;
-  const targetLabel = targetType === "milestone" ? "Milestone" : "Slice";
+  const targetLabel = targetType === "milestone"
+    ? t("interview.targetLabel.milestone", "Milestone")
+    : t("interview.targetLabel.slice", "Slice");
   const interviewType = targetType === "milestone" ? "milestone_interview" : "slice_interview";
 
   const connectToInterviewStream = useCallback(
@@ -175,7 +179,7 @@ export function MilestoneSliceInterviewModal({
           });
         },
         onError: (message) => {
-          const errorMessage = message || "Session failed while contacting the AI.";
+          const errorMessage = message || t("interview.error.sessionFailed", "Session failed while contacting the AI.");
           setIsReconnecting(false);
           setError(null);
           setView({ type: "error", sessionId, errorMessage });
@@ -228,7 +232,7 @@ export function MilestoneSliceInterviewModal({
       connectToInterviewStream(sessionId);
     } catch (err) {
       setIsReconnecting(false);
-      setError(getErrorMessage(err) || `Failed to start ${targetLabel.toLowerCase()} interview`);
+      setError(getErrorMessage(err) || t("interview.error.failedToStart", "Failed to start {{targetLabel}} interview", { targetLabel: targetLabel.toLowerCase() }));
       setView({ type: "initial" });
       currentSessionIdRef.current = null;
       setLockSessionId(null);
@@ -244,7 +248,7 @@ export function MilestoneSliceInterviewModal({
       onApplied();
       setView({ type: "applied" });
     } catch (err) {
-      setError(getErrorMessage(err) || `Failed to skip ${targetLabel.toLowerCase()} interview`);
+      setError(getErrorMessage(err) || t("interview.error.failedToSkip", "Failed to skip {{targetLabel}} interview", { targetLabel: targetLabel.toLowerCase() }));
       setIsApplying(false);
     }
   }, [onApplied, projectId, skipInterview, targetId, targetLabel]);
@@ -282,7 +286,7 @@ export function MilestoneSliceInterviewModal({
           currentSessionIdRef.current = session.id;
           setView({ type: "question", sessionId: session.id, question });
         } catch {
-          setError("Failed to restore session question.");
+          setError(t("interview.error.failedToRestoreQuestion", "Failed to restore session question."));
         }
       } else if (session.status === "complete" && session.result) {
         try {
@@ -291,7 +295,7 @@ export function MilestoneSliceInterviewModal({
           setEditedSummary(summary);
           setView({ type: "summary", sessionId: session.id, summary });
         } catch {
-          setError("Failed to restore session result.");
+          setError(t("interview.error.failedToRestoreResult", "Failed to restore session result."));
         }
       } else if (session.status === "generating") {
         currentSessionIdRef.current = session.id;
@@ -306,11 +310,11 @@ export function MilestoneSliceInterviewModal({
         setView({
           type: "error",
           sessionId: session.id,
-          errorMessage: session.error ?? "The session encountered an error.",
+          errorMessage: session.error ?? t("interview.error.sessionEncounteredError", "The session encountered an error."),
         });
       }
     }).catch(() => {
-      if (!cancelled) setError("Failed to resume session.");
+      if (!cancelled) setError(t("interview.error.failedToResume", "Failed to resume session."));
     });
 
     return () => {
@@ -414,7 +418,7 @@ export function MilestoneSliceInterviewModal({
       } catch (err) {
         streamConnectionRef.current?.close();
         streamConnectionRef.current = null;
-        setError(getErrorMessage(err) || "Failed to submit response");
+        setError(getErrorMessage(err) || t("interview.error.failedToSubmit", "Failed to submit response"));
         setView({ type: "question", sessionId, question: view.question });
       }
     },
@@ -432,7 +436,7 @@ export function MilestoneSliceInterviewModal({
       onApplied();
       setView({ type: "applied" });
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to apply interview results");
+      setError(getErrorMessage(err) || t("interview.error.failedToApply", "Failed to apply interview results"));
       setIsApplying(false);
     }
   }, [applyInterview, editedSummary, onApplied, projectId, view]);
@@ -477,13 +481,13 @@ export function MilestoneSliceInterviewModal({
               <button
                 className="modal-send-to-background"
                 onClick={handleSendToBackground}
-                title="Send to background"
-                aria-label="Send to background"
+                title={t("interview.sendToBackground", "Send to background")}
+                aria-label={t("interview.sendToBackground", "Send to background")}
               >
                 <Minimize2 size={16} />
               </button>
             )}
-            <button className="modal-close" onClick={handleCancel} aria-label="Close">
+            <button className="modal-close" onClick={handleCancel} aria-label={t("actions.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -491,10 +495,10 @@ export function MilestoneSliceInterviewModal({
 
         <div className="planning-modal-body">
           {error && <div className="form-error planning-error">{error}</div>}
-          {isReconnecting && <div className="form-hint text-muted">Reconnecting…</div>}
+          {isReconnecting && <div className="form-hint text-muted">{t("interview.reconnecting", "Reconnecting…")}</div>}
           {activeInAnotherTab && (
             <div className="form-hint text-muted" data-testid="session-active-another-tab-banner">
-              Session is active in another tab.
+              {t("interview.sessionActiveAnotherTab", "Session is active in another tab.")}
             </div>
           )}
 
@@ -503,15 +507,13 @@ export function MilestoneSliceInterviewModal({
               <div className="planning-view-scroll">
                 <div className="planning-intro">
                   <Sparkles size={32} className="icon-triage-lg" />
-                  <h4>Refine {targetLabel} scope with AI</h4>
+                  <h4>{t("interview.refineScope", `Refine ${targetLabel} scope with AI`)}</h4>
                   <p className="text-muted">
-                    The AI will interview you to refine the {targetType}&apos;s scope, acceptance criteria,
-                    and verification methods. Each {targetType} can have its own refined plan or inherit
-                    context from the mission level.
+                    {t("interview.interviewDescription", `The AI will interview you to refine the ${targetType}'s scope, acceptance criteria, and verification methods. Each ${targetType} can have its own refined plan or inherit context from the mission level.`)}
                   </p>
                   {missionContext && (
                     <div className="planning-context-info">
-                      <span className="planning-context-label">Mission context:</span>
+                      <span className="planning-context-label">{t("interview.missionContext", "Mission context:")}</span>
                       <span className="planning-context-text">{missionContext}</span>
                     </div>
                   )}
@@ -524,7 +526,7 @@ export function MilestoneSliceInterviewModal({
                   onClick={() => void handleStartInterview()}
                 >
                   <Sparkles size={16} className="icon-mr-8" />
-                  Start Interview
+                  {t("interview.startInterview", "Start Interview")}
                 </button>
                 <button
                   className="btn planning-use-context-btn"
@@ -532,10 +534,10 @@ export function MilestoneSliceInterviewModal({
                   disabled={isApplying}
                 >
                   {isApplying ? <Loader2 size={16} className="spin" /> : null}
-                  Use Mission Context
+                  {t("interview.useMissionContext", "Use Mission Context")}
                 </button>
                 <button className="btn" onClick={handleCancel}>
-                  Cancel
+                  {t("actions.cancel", "Cancel")}
                 </button>
               </div>
             </div>
@@ -544,14 +546,14 @@ export function MilestoneSliceInterviewModal({
           {view.type === "loading" && (
             <div className="planning-loading">
               <Loader2 size={40} className="spin icon-todo" />
-              <p>{streamingOutput ? "AI is thinking..." : "Preparing next question..."}</p>
+              <p>{streamingOutput ? t("interview.aiThinking", "AI is thinking...") : t("interview.preparingQuestion", "Preparing next question...")}</p>
               <div className="planning-thinking-container">
                 <button
                   className="planning-thinking-toggle"
                   onClick={() => setShowThinking(!showThinking)}
                   type="button"
                 >
-                  {showThinking ? "Hide thinking" : "Show thinking"}
+                  {showThinking ? t("interview.hideThinking", "Hide thinking") : t("interview.showThinking", "Show thinking")}
                 </button>
                 {showThinking && streamingOutput && (
                   <div className="planning-thinking-output">
@@ -577,7 +579,7 @@ export function MilestoneSliceInterviewModal({
                   <div className="ai-error-message">{view.errorMessage}</div>
                   <div className="ai-error-actions">
                     <button className="btn" onClick={handleCancel}>
-                      Cancel
+                      {t("actions.cancel", "Cancel")}
                     </button>
                   </div>
                 </div>
@@ -610,16 +612,16 @@ export function MilestoneSliceInterviewModal({
               <div className="planning-view-scroll">
                 <div className="planning-applied-content">
                   <CheckCircle size={48} className="icon-success" />
-                  <h4>{targetLabel} Updated</h4>
+                  <h4>{t("interview.updated", `${targetLabel} Updated`)}</h4>
                   <p className="text-muted">
-                    The {targetType}&apos;s scope and verification have been {view.type === "applied" ? "applied" : "updated"}.
+                    {t("interview.appliedMessage", `The ${targetType}'s scope and verification have been applied.`)}
                   </p>
                 </div>
               </div>
 
               <div className="planning-view-footer">
                 <button className="btn btn-primary" onClick={onApplied}>
-                  Done
+                  {t("actions.done", "Done")}
                 </button>
               </div>
             </div>
@@ -640,6 +642,7 @@ interface InterviewQuestionFormProps {
 }
 
 function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }: InterviewQuestionFormProps) {
+  const { t } = useTranslation("app");
   const [response, setResponse] = useState<QuestionResponse>({});
   const [textValue, setTextValue] = useState("");
   const [commentValue, setCommentValue] = useState("");
@@ -704,7 +707,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                 />
               ))}
             </div>
-            <span className="planning-progress-text">Question {progress} of ~6</span>
+            <span className="planning-progress-text">{t("interview.progressText", `Question ${progress} of ~6`)}</span>
           </div>
 
           <div className="planning-question-content">
@@ -718,7 +721,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                 <textarea
                   className="planning-textarea"
                   rows={4}
-                  placeholder="Type your answer here..."
+                  placeholder={t("interview.typeAnswerHere", "Type your answer here...")}
                   value={textValue}
                   onChange={(e) => setTextValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -788,14 +791,14 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
                     onClick={() => setResponse({ [question.id]: true })}
                   >
                     <CheckCircle size={18} />
-                    Yes
+                    {t("interview.yes", "Yes")}
                   </button>
                   <button
                     className={`planning-confirm-btn ${response[question.id] === false ? "selected" : ""}`}
                     onClick={() => setResponse({ [question.id]: false })}
                   >
                     <X size={18} />
-                    No
+                    {t("interview.no", "No")}
                   </button>
                 </div>
               )}
@@ -804,13 +807,13 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
             {question.type !== "text" && (
               <div className="planning-comment-section">
                 <label className="planning-comment-label" htmlFor={`planning-comment-${question.id}`}>
-                  Additional comments (optional)
+                  {t("interview.additionalComments", "Additional comments (optional)")}
                 </label>
                 <textarea
                   id={`planning-comment-${question.id}`}
                   className="planning-textarea"
                   rows={2}
-                  placeholder="Add any extra context or direction..."
+                  placeholder={t("interview.addContextDirection", "Add any extra context or direction...")}
                   value={commentValue}
                   onChange={(e) => setCommentValue(e.target.value)}
                 />
@@ -826,7 +829,7 @@ function InterviewQuestionForm({ question, progress, historyEntries, onSubmit }:
           onClick={handleSubmit}
           disabled={!isValid()}
         >
-          Continue
+          {t("actions.continue", "Continue")}
           <ArrowRight size={16} className="icon-ml-4" />
         </button>
       </div>
@@ -853,6 +856,7 @@ function SummaryReview({
   onCancel,
   isApplying,
 }: SummaryReviewProps) {
+  const { t } = useTranslation("app");
   const [editedSummary, setEditedSummary] = useState<TargetInterviewSummary>(summary);
   const [expanded, setExpanded] = useState(true);
 
@@ -880,7 +884,7 @@ function SummaryReview({
               aria-expanded={expanded}
             >
               {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-              <span>Refined Scope</span>
+              <span>{t("interview.refinedScope", "Refined Scope")}</span>
             </button>
           </div>
 
@@ -888,7 +892,7 @@ function SummaryReview({
             <div className="planning-summary-content">
               {editedSummary.description && (
                 <div className="planning-summary-field">
-                  <label>Description</label>
+                  <label>{t("interview.description", "Description")}</label>
                   <textarea
                     rows={3}
                     value={editedSummary.description}
@@ -899,7 +903,7 @@ function SummaryReview({
 
               {editedSummary.planningNotes && (
                 <div className="planning-summary-field">
-                  <label>Planning Notes</label>
+                  <label>{t("interview.planningNotes", "Planning Notes")}</label>
                   <textarea
                     rows={3}
                     value={editedSummary.planningNotes}
@@ -910,7 +914,7 @@ function SummaryReview({
 
               {editedSummary.verification && (
                 <div className="planning-summary-field">
-                  <label>Verification Criteria</label>
+                  <label>{t("interview.verificationCriteria", "Verification Criteria")}</label>
                   <textarea
                     rows={2}
                     value={editedSummary.verification}
@@ -923,7 +927,7 @@ function SummaryReview({
                 !editedSummary.planningNotes &&
                 !editedSummary.verification && (
                   <p className="text-muted planning-summary-empty">
-                    No additional details were generated for this item.
+                    {t("interview.noAdditionalDetails", "No additional details were generated for this item.")}
                   </p>
                 )}
             </div>
@@ -938,10 +942,10 @@ function SummaryReview({
           disabled={isApplying}
         >
           {isApplying ? <Loader2 size={16} className="spin" /> : null}
-          Apply
+          {t("actions.apply", "Apply")}
         </button>
         <button className="btn" onClick={onCancel} disabled={isApplying}>
-          Cancel
+          {t("actions.cancel", "Cancel")}
         </button>
       </div>
     </div>

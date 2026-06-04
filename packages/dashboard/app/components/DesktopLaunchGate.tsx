@@ -1,4 +1,5 @@
 import { useEffect, useState, type PropsWithChildren } from "react";
+import { useTranslation } from "react-i18next";
 import type { ShellConnectionState } from "../types/native-shell";
 import "./DesktopLaunchGate.css";
 
@@ -61,6 +62,7 @@ function applyServerBaseUrl(baseUrl: string): void {
 }
 
 export function DesktopLaunchGate({ children }: PropsWithChildren) {
+  const { t } = useTranslation("app");
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
 
   useEffect(() => {
@@ -95,7 +97,7 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
             setPhase({ kind: "ready", serverBaseUrl: params.get("serverBaseUrl") ?? undefined });
             return;
           }
-          setPhase({ kind: "starting-local", message: "Starting local Fusion runtime…" });
+          setPhase({ kind: "starting-local", message: t("desktop.startingLocalRuntime", "Starting local Fusion runtime…") });
           const { baseUrl } = await waitForLocalRuntime(shell);
           if (cancelled) return;
           applyServerBaseUrl(baseUrl);
@@ -139,7 +141,7 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
   }, []);
 
   if (phase.kind === "loading" || phase.kind === "starting-local") {
-    const message = phase.kind === "loading" ? "Loading Fusion…" : phase.message;
+    const message = phase.kind === "loading" ? t("desktop.loading", "Loading Fusion…") : phase.message;
     return (
       <div className="desktop-launch-gate" role="status" aria-live="polite">
         <div className="desktop-launch-gate__panel">
@@ -153,7 +155,7 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
     return (
       <div className="desktop-launch-gate" role="alert">
         <div className="desktop-launch-gate__panel">
-          <h2>Couldn&apos;t start local Fusion</h2>
+          <h2>{t("desktop.couldNotStart", "Couldn't start local Fusion")}</h2>
           <p>{phase.message}</p>
           <button
             type="button"
@@ -162,7 +164,7 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
               window.location.reload();
             }}
           >
-            Retry
+            {t("desktop.retry", "Retry")}
           </button>
         </div>
       </div>
@@ -177,7 +179,7 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
           if (!shell) return;
           setPhase({
             kind: "starting-local",
-            message: mode === "local" ? "Starting local Fusion runtime…" : "Setting up remote connection…",
+            message: mode === "local" ? t("desktop.startingLocalRuntime", "Starting local Fusion runtime…") : t("desktop.settingUpRemote", "Setting up remote connection…"),
           });
           try {
             await shell.setDesktopMode(mode);
@@ -205,14 +207,14 @@ export function DesktopLaunchGate({ children }: PropsWithChildren) {
 }
 
 function DesktopModeChooser({ onPick }: { onPick: (mode: "local" | "remote") => void }) {
+  const { t } = useTranslation("app");
   const [pending, setPending] = useState<"local" | "remote" | null>(null);
   return (
     <div className="desktop-launch-gate" role="dialog" aria-labelledby="desktop-launch-gate-title">
       <div className="desktop-launch-gate__panel">
-        <h1 id="desktop-launch-gate-title">How do you want to run Fusion?</h1>
+        <h1 id="desktop-launch-gate-title">{t("desktop.chooseMode", "How do you want to run Fusion?")}</h1>
         <p>
-          Run Fusion locally in this app, or connect to a Fusion server you&apos;re already running
-          somewhere else.
+          {t("desktop.chooseModeDescription", "Run Fusion locally in this app, or connect to a Fusion server you're already running somewhere else.")}
         </p>
         <div className="desktop-launch-gate__actions">
           <button
@@ -224,7 +226,7 @@ function DesktopModeChooser({ onPick }: { onPick: (mode: "local" | "remote") => 
               onPick("local");
             }}
           >
-            {pending === "local" ? "Starting…" : "Run Fusion Locally"}
+            {pending === "local" ? t("desktop.starting", "Starting…") : t("desktop.runLocalButton", "Run Fusion Locally")}
           </button>
           <button
             type="button"
@@ -235,7 +237,7 @@ function DesktopModeChooser({ onPick }: { onPick: (mode: "local" | "remote") => 
               onPick("remote");
             }}
           >
-            {pending === "remote" ? "Opening…" : "Connect to Remote Fusion"}
+            {pending === "remote" ? t("desktop.opening", "Opening…") : t("desktop.connectRemoteButton", "Connect to Remote Fusion")}
           </button>
         </div>
       </div>

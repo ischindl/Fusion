@@ -1,5 +1,6 @@
 import "./TerminalModal.css";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { getErrorMessage } from "@fusion/core";
 import {
   X,
@@ -239,6 +240,7 @@ interface TerminalModalProps {
  * The terminal spawns a real shell (bash/zsh/powershell based on platform).
  */
 export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: TerminalModalProps) {
+  const { t } = useTranslation("app");
   const [error, setError] = useState<string | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [xtermReady, setXtermReady] = useState(false);
@@ -1131,12 +1133,12 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
   const getStatusIndicator = () => {
     switch (connectionStatus) {
       case "connected":
-        return <span className="terminal-status connected" title="Connected" />;
+        return <span className="terminal-status connected" title={t("terminal.statusConnected", "Connected")} />;
       case "connecting":
       case "reconnecting":
-        return <span className="terminal-status connecting" title="Connecting..." />;
+        return <span className="terminal-status connecting" title={t("terminal.statusConnecting", "Connecting...")} />;
       case "disconnected":
-        return <span className="terminal-status disconnected" title="Disconnected" />;
+        return <span className="terminal-status disconnected" title={t("terminal.statusDisconnected", "Disconnected")} />;
       default:
         return null;
     }
@@ -1202,7 +1204,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
                       e.stopPropagation();
                       closeTab(tab.id);
                     }}
-                    title="Close tab"
+                    title={t("terminal.closeTab", "Close tab")}
                   >
                     ×
                   </button>
@@ -1212,7 +1214,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
             <button
               className="terminal-tab terminal-tab--new"
               onClick={createTab}
-              title="New terminal"
+              title={t("terminal.newTerminal", "New terminal")}
             >
               +
             </button>
@@ -1230,48 +1232,48 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
               <button
                 className="terminal-reconnect-btn"
                 onClick={reconnect}
-                title="Reconnect"
+                title={t("terminal.reconnect", "Reconnect")}
                 data-testid="terminal-reconnect-btn"
               >
                 <RefreshCw size={14} />
-                <span className="terminal-action-label">Reconnect</span>
+                <span className="terminal-action-label">{t("terminal.reconnect", "Reconnect")}</span>
               </button>
             )}
             {exitCode !== null && (
               <button
                 className="terminal-restart-btn"
                 onClick={handleRestart}
-                title="New Session"
+                title={t("terminal.newSession", "New Session")}
                 data-testid="terminal-restart-btn"
               >
                 <RefreshCw size={14} />
-                <span className="terminal-action-label">New Session</span>
+                <span className="terminal-action-label">{t("terminal.newSession", "New Session")}</span>
               </button>
             )}
             <button
               className="terminal-clear-btn"
               onClick={handleClear}
               data-testid="terminal-clear-btn"
-              title="Clear terminal"
+              title={t("terminal.clearTerminal", "Clear terminal")}
             >
               <Trash2 size={14} />
-              <span className="terminal-action-label">Clear</span>
+              <span className="terminal-action-label">{t("terminal.clear", "Clear")}</span>
             </button>
             <button
               className="terminal-clear-btn terminal-clear-btn--shortcut"
               onClick={() => setShowShortcuts((current) => !current)}
               data-testid="terminal-shortcut-toggle"
-              title="Shortcuts"
+              title={t("terminal.shortcuts", "Shortcuts")}
               aria-pressed={showShortcuts}
             >
               <Keyboard size={14} />
-              <span className="terminal-action-label">Shortcuts</span>
+              <span className="terminal-action-label">{t("terminal.shortcuts", "Shortcuts")}</span>
             </button>
             <button
               className="terminal-close"
               onClick={onClose}
               data-testid="terminal-close-btn"
-              title="Close terminal"
+              title={t("terminal.closeTerminal", "Close terminal")}
             >
               <X size={20} />
             </button>
@@ -1290,13 +1292,13 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
           {isLoading && !bootstrapError && (
             <div className="terminal-loading" data-testid="terminal-loading">
               <div className="terminal-spinner" />
-              <span>Starting terminal...</span>
+              <span>{t("terminal.startingTerminal", "Starting terminal...")}</span>
             </div>
           )}
           {bootstrapError && !activeTab && (
             <div className="terminal-loading" data-testid="terminal-bootstrap-error">
               <div className="terminal-error-content">
-                <span>Failed to start terminal: {bootstrapError}</span>
+                <span>{t("terminal.failedToStartTerminal", "Failed to start terminal: {{error}}", { error: bootstrapError })}</span>
                 <div className="terminal-error-actions">
                   <button
                     className="terminal-retry-btn"
@@ -1304,7 +1306,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
                     data-testid="terminal-retry-btn"
                   >
                     <RefreshCw size={14} />
-                    Retry
+                    {t("actions.retry", "Retry")}
                   </button>
                   <button
                     className="terminal-retry-btn"
@@ -1312,7 +1314,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
                     data-testid="terminal-bootstrap-refresh-btn"
                   >
                     <RefreshCw size={14} />
-                    Refresh page
+                    {t("terminal.refreshPage", "Refresh page")}
                   </button>
                 </div>
               </div>
@@ -1321,7 +1323,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
           {xtermInitError && activeTab && (
             <div className="terminal-loading" data-testid="terminal-xterm-init-error">
               <div className="terminal-error-content">
-                <span>Terminal UI failed to initialize: {xtermInitError}</span>
+                <span>{t("terminal.initializeError", "Terminal UI failed to initialize: {{error}}", { error: xtermInitError })}</span>
                 <div className="terminal-error-actions">
                   <button
                     className="terminal-retry-btn"
@@ -1329,7 +1331,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
                     data-testid="terminal-reinit-btn"
                   >
                     <RefreshCw size={14} />
-                    Reinitialize
+                    {t("terminal.reinitialize", "Reinitialize")}
                   </button>
                   <button
                     className="terminal-retry-btn"
@@ -1337,7 +1339,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
                     data-testid="terminal-xterm-refresh-btn"
                   >
                     <RefreshCw size={14} />
-                    Refresh page
+                    {t("terminal.refreshPage", "Refresh page")}
                   </button>
                 </div>
               </div>
@@ -1418,14 +1420,14 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
         {/* Connection status bar */}
         <div className="terminal-status-bar" data-testid="terminal-status-bar">
           <span className={`terminal-connection-status ${connectionStatus}`}>
-            {connectionStatus === "connected" && "Connected"}
-            {connectionStatus === "connecting" && "Connecting..."}
-            {connectionStatus === "reconnecting" && "Reconnecting..."}
-            {connectionStatus === "disconnected" && "Disconnected"}
+            {connectionStatus === "connected" && t("terminal.statusConnected", "Connected")}
+            {connectionStatus === "connecting" && t("terminal.statusConnecting", "Connecting...")}
+            {connectionStatus === "reconnecting" && t("terminal.statusReconnecting", "Reconnecting...")}
+            {connectionStatus === "disconnected" && t("terminal.statusDisconnected", "Disconnected")}
           </span>
           {exitCode !== null && (
             <span className="terminal-exit-code" data-testid="terminal-exit-code">
-              Exit: {exitCode}
+              {t("terminal.exitLabel", "Exit: {{code}}", { code: exitCode })}
             </span>
           )}
           <span className="terminal-font-size-controls">
@@ -1434,7 +1436,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
               className="terminal-font-size-btn"
               onClick={handleDecreaseFontSize}
               data-testid="terminal-font-size-decrease"
-              aria-label="Decrease terminal font size"
+              aria-label={t("terminal.decreaseFontSize", "Decrease terminal font size")}
             >
               <Minus size={14} />
             </button>
@@ -1446,13 +1448,13 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
               className="terminal-font-size-btn"
               onClick={handleIncreaseFontSize}
               data-testid="terminal-font-size-increase"
-              aria-label="Increase terminal font size"
+              aria-label={t("terminal.increaseFontSize", "Increase terminal font size")}
             >
               <Plus size={14} />
             </button>
           </span>
           <span className="terminal-shortcuts">
-            Ctrl++/- zoom • ⌨ Shortcuts panel • Esc close
+            {t("terminal.helpText", "Ctrl++/- zoom • ⌨ Shortcuts panel • Esc close")}
           </span>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import type { ProjectStatus } from "@fusion/core";
 import type { ProjectHealth } from "../api";
 import { getProjectStatusConfig, isInitializingStatus } from "../utils/projectStatusConfig";
@@ -22,6 +23,7 @@ export function ProjectHealthBadge({
   size = "md",
   showTooltip = true,
 }: ProjectHealthBadgeProps) {
+  const { t } = useTranslation("app");
   const [isHovered, setIsHovered] = useState(false);
   const config = getProjectStatusConfig(status);
   const StatusIcon = config.icon;
@@ -65,28 +67,28 @@ export function ProjectHealthBadge({
       {isHovered && health && (
         <div className="project-health-badge__tooltip">
           <div className="project-health-tooltip__header">
-            <strong>Health Metrics</strong>
+            <strong>{t("health.metricsTitle", "Health Metrics")}</strong>
           </div>
           <div className="project-health-tooltip__content">
             <div className="project-health-tooltip__metric">
-              <span className="project-health-tooltip__label">Active Tasks:</span>
+              <span className="project-health-tooltip__label">{t("health.activeTasks", "Active Tasks:")}:</span>
               <span className="project-health-tooltip__value">{health.activeTaskCount}</span>
             </div>
             <div className="project-health-tooltip__metric">
-              <span className="project-health-tooltip__label">In-Flight Agents:</span>
+              <span className="project-health-tooltip__label">{t("health.inFlightAgents", "In-Flight Agents:")}:</span>
               <span className="project-health-tooltip__value">{health.inFlightAgentCount}</span>
             </div>
             <div className="project-health-tooltip__metric">
-              <span className="project-health-tooltip__label">Completed:</span>
+              <span className="project-health-tooltip__label">{t("health.completed", "Completed:")}:</span>
               <span className="project-health-tooltip__value">{health.totalTasksCompleted}</span>
             </div>
             <div className="project-health-tooltip__metric">
-              <span className="project-health-tooltip__label">Failed:</span>
+              <span className="project-health-tooltip__label">{t("health.failed", "Failed:")}:</span>
               <span className="project-health-tooltip__value">{health.totalTasksFailed}</span>
             </div>
             {health.lastErrorMessage && (
               <div className="project-health-tooltip__error">
-                <span className="project-health-tooltip__label">Last Error:</span>
+                <span className="project-health-tooltip__label">{t("health.lastError", "Last Error:")}:</span>
                 <span className="project-health-tooltip__error-text">
                   {health.lastErrorMessage}
                 </span>

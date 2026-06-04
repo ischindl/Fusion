@@ -20,7 +20,9 @@ import { ProjectDefaultWorkflowField } from "./WorkflowSelector";
 import { useMemoryBackendStatus } from "../hooks/useMemoryBackendStatus";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import type { ToastType } from "../hooks/useToast";
+import { useTranslation } from "react-i18next";
 import { ThemeSelector } from "./ThemeSelector";
+import { LanguageSelector } from "./LanguageSelector";
 import { useSessionBannersHidden, setSessionBannersHidden } from "../hooks/useSessionBannerPref";
 import "./SettingsModal.css";
 import { CustomModelDropdown } from "./CustomModelDropdown";
@@ -215,6 +217,7 @@ function useGitHubStarCount(): number | null {
 type SettingsSection = {
   id: string;
   label: string;
+  labelKey: string;
   scope: "global" | "project" | undefined;
   icon?: typeof Globe;
   isGroupHeader?: boolean;
@@ -250,43 +253,43 @@ function fromCommaSeparatedInput(value: string): string[] {
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   // Account group (scope-less items — independent of settings storage)
-  { id: "__account_header", label: "Account", scope: undefined, isGroupHeader: true },
-  { id: "authentication", label: "Authentication", scope: undefined, icon: Globe },
+  { id: "__account_header", label: "Account", labelKey: "settings.nav.accountHeader", scope: undefined, isGroupHeader: true },
+  { id: "authentication", label: "Authentication", labelKey: "settings.nav.authentication", scope: undefined, icon: Globe },
 
   // Global group (shared across all Fusion projects)
-  { id: "__global_header", label: "Global", scope: undefined, isGroupHeader: true },
-  { id: "global-general", label: "General", scope: "global" },
-  { id: "appearance", label: "Appearance", scope: "global" },
-  { id: "notifications", label: "Notifications", scope: "global" },
-  { id: "node-sync", label: "Node Sync", scope: "global" },
-  { id: "global-models", label: "Models", scope: "global" },
-  { id: "research-global", label: "Research Defaults", scope: "global" },
-  { id: "experimental", label: "Experimental Features", scope: "global" },
-  { id: "remote", label: "Remote Access", scope: "global" },
+  { id: "__global_header", label: "Global", labelKey: "settings.nav.globalHeader", scope: undefined, isGroupHeader: true },
+  { id: "global-general", label: "General", labelKey: "settings.nav.globalGeneral", scope: "global" },
+  { id: "appearance", label: "Appearance", labelKey: "settings.nav.appearance", scope: "global" },
+  { id: "notifications", label: "Notifications", labelKey: "settings.nav.notifications", scope: "global" },
+  { id: "node-sync", label: "Node Sync", labelKey: "settings.nav.nodeSync", scope: "global" },
+  { id: "global-models", label: "Models", labelKey: "settings.nav.globalModels", scope: "global" },
+  { id: "research-global", label: "Research Defaults", labelKey: "settings.nav.researchGlobal", scope: "global" },
+  { id: "experimental", label: "Experimental Features", labelKey: "settings.nav.experimental", scope: "global" },
+  { id: "remote", label: "Remote Access", labelKey: "settings.nav.remote", scope: "global" },
 
   // Runtimes group (plugin runtimes with their own settings)
-  { id: "__runtimes_header", label: "Runtimes", scope: undefined, isGroupHeader: true },
-  { id: "hermes-runtime", label: "Hermes", scope: "global" },
-  { id: "openclaw-runtime", label: "OpenClaw", scope: "global" },
-  { id: "paperclip-runtime", label: "Paperclip", scope: "global" },
+  { id: "__runtimes_header", label: "Runtimes", labelKey: "settings.nav.runtimesHeader", scope: undefined, isGroupHeader: true },
+  { id: "hermes-runtime", label: "Hermes", labelKey: "settings.nav.hermesRuntime", scope: "global" },
+  { id: "openclaw-runtime", label: "OpenClaw", labelKey: "settings.nav.openclawRuntime", scope: "global" },
+  { id: "paperclip-runtime", label: "Paperclip", labelKey: "settings.nav.paperclipRuntime", scope: "global" },
 
   // Project group (specific to this project)
-  { id: "__project_header", label: "Project", scope: undefined, isGroupHeader: true },
-  { id: "general", label: "Project General", scope: "project" },
-  { id: "secrets", label: "Secrets", scope: "project" },
-  { id: "project-models", label: "Project Models", scope: "project" },
-  { id: "scheduling", label: "Scheduling", scope: "project" },
-  { id: "scheduled-evals", label: "Scheduled Evals", scope: "project" },
-  { id: "node-routing", label: "Node Routing", scope: "project" },
-  { id: "worktrees", label: "Worktrees", scope: "project" },
-  { id: "commands", label: "Commands", scope: "project" },
-  { id: "merge", label: "Merge", scope: "project" },
-  { id: "agent-permissions", label: "Agent Permissions", scope: "project" },
-  { id: "memory", label: "Memory", scope: "project" },
-  { id: "research-project", label: "Research", scope: "project" },
-  { id: "prompts", label: "Prompts", scope: "project" },
-  { id: "backups", label: "Backups", scope: "project" },
-  { id: "plugins", label: "Plugins", scope: "project" },
+  { id: "__project_header", label: "Project", labelKey: "settings.nav.projectHeader", scope: undefined, isGroupHeader: true },
+  { id: "general", label: "Project General", labelKey: "settings.nav.projectGeneral", scope: "project" },
+  { id: "secrets", label: "Secrets", labelKey: "settings.nav.secrets", scope: "project" },
+  { id: "project-models", label: "Project Models", labelKey: "settings.nav.projectModels", scope: "project" },
+  { id: "scheduling", label: "Scheduling", labelKey: "settings.nav.scheduling", scope: "project" },
+  { id: "scheduled-evals", label: "Scheduled Evals", labelKey: "settings.nav.scheduledEvals", scope: "project" },
+  { id: "node-routing", label: "Node Routing", labelKey: "settings.nav.nodeRouting", scope: "project" },
+  { id: "worktrees", label: "Worktrees", labelKey: "settings.nav.worktrees", scope: "project" },
+  { id: "commands", label: "Commands", labelKey: "settings.nav.commands", scope: "project" },
+  { id: "merge", label: "Merge", labelKey: "settings.nav.merge", scope: "project" },
+  { id: "agent-permissions", label: "Agent Permissions", labelKey: "settings.nav.agentPermissions", scope: "project" },
+  { id: "memory", label: "Memory", labelKey: "settings.nav.memory", scope: "project" },
+  { id: "research-project", label: "Research", labelKey: "settings.nav.researchProject", scope: "project" },
+  { id: "prompts", label: "Prompts", labelKey: "settings.nav.prompts", scope: "project" },
+  { id: "backups", label: "Backups", labelKey: "settings.nav.backups", scope: "project" },
+  { id: "plugins", label: "Plugins", labelKey: "settings.nav.plugins", scope: "project" },
 ];
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -433,6 +436,7 @@ export function SettingsModal({
   onReopenOnboarding,
   onOpenApprovals,
 }: SettingsModalProps) {
+  const { t } = useTranslation("app");
   const { confirm } = useConfirm();
   const worktrunkInstall = useWorktrunkInstallStatus(projectId);
   const worktrunkInstallVerified = worktrunkInstall.status === "installed";
@@ -826,20 +830,20 @@ export function SettingsModal({
     if (updateCheckResult.updateAvailable && updateCheckResult.latestVersion) {
       return (
         <>
-          v{updateCheckResult.latestVersion} available ·{" "}
+          {t("settings.general.updateAvailablePrefix", "v{{version}} available", { version: updateCheckResult.latestVersion })} ·{" "}
           <a
             href="https://runfusion.ai"
             target="_blank"
             rel="noreferrer"
             className="settings-update-result-link"
           >
-            Learn more
+            {t("settings.general.learnMore", "Learn more")}
           </a>
         </>
       );
     }
 
-    return "You're up to date ✓";
+    return t("settings.general.upToDate", "You're up to date ✓");
   }, [updateCheckResult]);
 
   // Load auth status when the authentication section is active
@@ -1272,11 +1276,10 @@ export function SettingsModal({
     const provider = authProviders.find((entry) => entry.id === providerId);
     if (provider?.requiresManualCode === true) {
       const shouldContinue = await confirm({
-        title: "Heads up — manual paste-back required",
-        message:
-          `After you sign in with ${provider.name}, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?`,
-        confirmLabel: "Continue to login",
-        cancelLabel: "Cancel",
+        title: t("settings.auth.manualPasteTitle", "Heads up — manual paste-back required"),
+        message: t("settings.auth.manualPasteMessage", "After you sign in with {{name}}, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?", { name: provider.name }),
+        confirmLabel: t("settings.auth.continueToLogin", "Continue to login"),
+        cancelLabel: t("settings.actions.cancel", "Cancel"),
       });
       if (!shouldContinue) {
         return;
@@ -1315,7 +1318,7 @@ export function SettingsModal({
             }
             setAuthActionInProgress(null);
             clearAuthLoginUiState(providerId);
-            addToast("Login successful", "success");
+            addToast(t("settings.auth.loginSuccessful", "Login successful"), "success");
             window.dispatchEvent(new CustomEvent(OAUTH_RELOGIN_SUCCESS_EVENT, { detail: { providerId } }));
             scrollSettingsToTop();
             return;
@@ -1328,7 +1331,7 @@ export function SettingsModal({
             }
             setAuthActionInProgress(null);
             clearAuthLoginUiState(providerId);
-            addToast("Login did not complete. Please try again.", "error");
+            addToast(t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again."), "error");
           }
         } catch {
           // Continue polling on transient errors
@@ -1338,7 +1341,7 @@ export function SettingsModal({
       const message = getErrorMessage(err) || "Login failed";
       const isConflict = message.includes("already in progress") || (typeof err === "object" && err !== null && "status" in err && (err as { status?: number }).status === 409);
       if (isConflict) {
-        addToast("Login already in progress. You can cancel it and retry.", "warning");
+        addToast(t("settings.auth.loginAlreadyInProgress", "Login already in progress. You can cancel it and retry."), "warning");
         await loadAuthStatus();
       } else {
         addToast(message, "error");
@@ -1351,7 +1354,7 @@ export function SettingsModal({
   const handleSubmitManualCode = useCallback(async (providerId: string) => {
     const code = manualCodeInputs[providerId]?.trim();
     if (!code) {
-      addToast("Paste the full redirect URL or authorization code first.", "warning");
+      addToast(t("settings.auth.pasteRedirectUrlFirst", "Paste the full redirect URL or authorization code first."), "warning");
       return;
     }
 
@@ -1367,9 +1370,9 @@ export function SettingsModal({
           delete next[providerId];
           return next;
         });
-        addToast("Authorization code received. Finishing login…", "success");
+        addToast(t("settings.auth.authCodeReceived", "Authorization code received. Finishing login…"), "success");
       } else {
-        addToast("That authorization code was already submitted. Waiting for login…", "warning");
+        addToast(t("settings.auth.authCodeAlreadySubmitted", "That authorization code was already submitted. Waiting for login…"), "warning");
       }
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to submit authorization code", "error");
@@ -1387,7 +1390,7 @@ export function SettingsModal({
       await cancelProviderLogin(providerId);
       clearAuthLoginUiState(providerId);
       await loadAuthStatus().catch(() => {});
-      addToast("Login cancelled", "success");
+      addToast(t("settings.auth.loginCancelled", "Login cancelled"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to cancel login", "error");
     } finally {
@@ -1405,7 +1408,7 @@ export function SettingsModal({
     try {
       await logoutProvider(providerId);
       await loadAuthStatus();
-      addToast("Logged out", "success");
+      addToast(t("settings.auth.loggedOut", "Logged out"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Logout failed", "error");
     } finally {
@@ -1469,7 +1472,7 @@ export function SettingsModal({
           });
         }
       }
-      addToast("API key saved", "success");
+      addToast(t("settings.auth.apiKeySaved", "API key saved"), "success");
       scrollSettingsToTop();
     } catch (err) {
       setApiKeyErrors((prev) => ({ ...prev, [providerId]: getErrorMessage(err) || "Failed to save API key" }));
@@ -1500,7 +1503,7 @@ export function SettingsModal({
         return next;
       });
       await loadAuthStatus();
-      addToast("API key cleared", "success");
+      addToast(t("settings.auth.apiKeyCleared", "API key cleared"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to clear API key", "error");
     } finally {
@@ -1599,7 +1602,7 @@ export function SettingsModal({
     try {
       const result = await createBackup(projectId);
       if (result.success) {
-        addToast("Backup created successfully", "success");
+        addToast(t("settings.backups.backupCreated", "Backup created successfully"), "success");
         // Refresh backup list
         const info = await fetchBackups(projectId);
         setBackupInfo(info);
@@ -2116,7 +2119,7 @@ export function SettingsModal({
           : Promise.resolve(),
       ]);
 
-      addToast("Settings saved", "success");
+      addToast(t("settings.general.settingsSaved", "Settings saved"), "success");
       onClose();
     } catch (err) {
       addToast(getErrorMessage(err), "error");
@@ -2127,7 +2130,7 @@ export function SettingsModal({
     try {
       await saveMemoryFile(selectedMemoryPath, memoryContent, projectId);
       setMemoryDirty(false);
-      addToast("Memory saved", "success");
+      addToast(t("settings.memory.memorySaved", "Memory saved"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to save memory", "error");
     }
@@ -2148,7 +2151,7 @@ export function SettingsModal({
       const { files } = await fetchMemoryFiles(projectId);
       setMemoryFiles(files);
 
-      addToast("Memory file compacted", "success");
+      addToast(t("settings.memory.memoryCompacted", "Memory file compacted"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to compact memory", "error");
     } finally {
@@ -2177,7 +2180,7 @@ export function SettingsModal({
     setDreamRunning(true);
     try {
       await triggerMemoryDreams(projectId);
-      addToast("Dream processing completed", "success");
+      addToast(t("settings.memory.dreamCompleted", "Dream processing completed"), "success");
     } catch (error) {
       addToast(error instanceof Error ? error.message : "Failed to run dream processing", "error");
     } finally {
@@ -2206,7 +2209,7 @@ export function SettingsModal({
 
     const nextName = presetDraft.name.trim();
     if (!nextName) {
-      addToast("Preset name is required", "error");
+      addToast(t("settings.models.presetNameRequired", "Preset name is required"), "error");
       return;
     }
 
@@ -2294,7 +2297,7 @@ export function SettingsModal({
       }
       const status = await fetchRemoteStatus(projectId);
       setRemoteStatus(status);
-      addToast("cloudflared installed successfully", "success");
+      addToast(t("settings.remote.cloudflaredInstalled", "cloudflared installed successfully"), "success");
     } catch (err) {
       setCloudflaredInstallError(err instanceof Error ? err.message : "Installation failed");
     } finally {
@@ -2308,7 +2311,7 @@ export function SettingsModal({
       return (
         <div className="settings-scope-banner settings-scope-global">
           <span className="settings-scope-icon"><Globe size={14} /></span>
-          <span>These settings are shared across all your Fusion projects.</span>
+          <span>{t("settings.scope.globalBanner", "These settings are shared across all your Fusion projects.")}</span>
         </div>
       );
     }
@@ -2316,7 +2319,7 @@ export function SettingsModal({
       return (
         <div className="settings-scope-banner settings-scope-project">
           <span className="settings-scope-icon"><Folder size={14} /></span>
-          <span>These settings only affect this project.</span>
+          <span>{t("settings.scope.projectBanner", "These settings only affect this project.")}</span>
         </div>
       );
     }
@@ -2793,10 +2796,10 @@ export function SettingsModal({
             {/* --- Default Model --- */}
             <h4 className="settings-section-heading">Default Model</h4>
             {modelsLoading ? (
-              <div className="settings-empty-state">Loading available models…</div>
+              <div className="settings-empty-state">{t("settings.models.loadingModels", "Loading available models…")}</div>
             ) : availableModels.length === 0 ? (
               <div className="settings-empty-state settings-muted">
-                No models available. Configure authentication first.
+                {t("settings.models.noModels", "No models available. Configure authentication first.")}
               </div>
             ) : (
               <>
@@ -3405,8 +3408,8 @@ export function SettingsModal({
                             onClick={async () => {
                               if (inUsePresetIds.has(preset.id)) {
                                 const shouldDelete = await confirm({
-                                  title: "Delete Preset",
-                                  message: `Preset "${preset.name}" is used in auto-selection. Delete it anyway?`,
+                                  title: t("settings.models.deletePresetTitle", "Delete Preset"),
+                                  message: t("settings.models.deletePresetMessage", "Preset \"{{name}}\" is used in auto-selection. Delete it anyway?", { name: preset.name }),
                                   danger: true,
                                 });
                                 if (!shouldDelete) {
@@ -3526,8 +3529,8 @@ export function SettingsModal({
                   )}
                 </div>
                 <div className="modal-actions settings-preset-editor-actions">
-                  <button type="button" className="btn btn-primary btn-sm" onClick={savePresetDraft}>Save preset</button>
-                  <button type="button" className="btn btn-sm" onClick={() => { setEditingPresetId(null); setPresetDraft(null); }}>Cancel</button>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={savePresetDraft}>{t("settings.models.savePreset", "Save preset")}</button>
+                  <button type="button" className="btn btn-sm" onClick={() => { setEditingPresetId(null); setPresetDraft(null); }}>{t("settings.actions.cancel", "Cancel")}</button>
                 </div>
               </div>
             ) : null}
@@ -3721,7 +3724,7 @@ export function SettingsModal({
         return (
           <>
             {renderScopeBanner()}
-            <h4 className="settings-section-heading">Appearance</h4>
+            <h4 className="settings-section-heading">{t("settings.appearance.title", "Appearance")}</h4>
             <ThemeSelector
               themeMode={themeMode}
               colorTheme={colorTheme}
@@ -3739,6 +3742,7 @@ export function SettingsModal({
                 onDashboardFontScaleChange?.(scalePct);
               }}
             />
+            <LanguageSelector />
             <div className="form-group">
               <label className="checkbox-label">
                 <input
@@ -4487,20 +4491,20 @@ export function SettingsModal({
                     onClick={() => void worktrunkInstall.requestInstall()}
                     disabled={worktrunkInstall.requesting || worktrunkInstall.status === "installing"}
                   >
-                    Install worktrunk binary
+                    {t("settings.worktrees.installWorktrunk", "Install worktrunk binary")}
                   </button>
                   <small className="settings-muted">Enable worktrunk and request approval to install the pinned release.</small>
                 </>
               )}
               {worktrunkInstall.status === "pending-approval" && (
                 <>
-                  <small className="settings-muted">Awaiting approval — open Approvals to continue.</small>
+                  <small className="settings-muted">{t("settings.worktrees.awaitingApproval", "Awaiting approval — open Approvals to continue.")}</small>
                   <button
                     type="button"
                     className="btn btn-secondary"
                     onClick={() => onOpenApprovals?.(worktrunkInstall.pendingApprovalId)}
                   >
-                    Open Approvals
+                    {t("settings.worktrees.openApprovals", "Open Approvals")}
                   </button>
                 </>
               )}
@@ -4508,7 +4512,7 @@ export function SettingsModal({
                 <>
                   <small style={{ color: "var(--color-error)" }}>{worktrunkInstall.error ?? "Worktrunk install failed."}</small>
                   <button type="button" className="btn btn-secondary" onClick={() => void worktrunkInstall.requestInstall()}>
-                    Try again
+                    {t("settings.worktrees.tryAgain", "Try again")}
                   </button>
                 </>
               )}
@@ -5334,7 +5338,7 @@ export function SettingsModal({
                   onClick={handleInstallQmd}
                   disabled={qmdInstallLoading}
                 >
-                  {qmdInstallLoading ? "Installing…" : "Install qmd"}
+                  {qmdInstallLoading ? t("settings.memory.installing", "Installing…") : t("settings.memory.installQmd", "Install qmd")}
                 </button>
               </div>
             )}
@@ -5435,7 +5439,7 @@ export function SettingsModal({
                         Dreaming…
                       </>
                     ) : (
-                      "Dream Now"
+                      t("settings.memory.dreamNow", "Dream Now")
                     )}
                   </button>
                   <small>Manually trigger dream processing now.</small>
@@ -5462,7 +5466,7 @@ export function SettingsModal({
                   onClick={handleTestMemoryRetrieval}
                   disabled={memoryTestLoading}
                 >
-                  {memoryTestLoading ? "Testing…" : "Test Retrieval"}
+                  {memoryTestLoading ? t("settings.memory.testing", "Testing…") : t("settings.memory.testRetrieval", "Test Retrieval")}
                 </button>
               </div>
               {memoryTestResult && (
@@ -5568,7 +5572,7 @@ export function SettingsModal({
                   onClick={handleCompactMemory}
                   disabled={!isEditingAllowed || memoryDirty || memoryCompactLoading}
                 >
-                  {memoryCompactLoading ? "Compacting…" : "Compact Selected File"}
+                  {memoryCompactLoading ? t("settings.memory.compacting", "Compacting…") : t("settings.memory.compactSelectedFile", "Compact Selected File")}
                 </button>
                 <small>
                   {memoryDirty
@@ -5585,7 +5589,7 @@ export function SettingsModal({
                   className="btn btn-primary btn-sm"
                   onClick={handleSaveMemory}
                 >
-                  Save Memory
+                  {t("settings.memory.saveMemory", "Save Memory")}
                 </button>
               </div>
             )}
@@ -6260,7 +6264,7 @@ export function SettingsModal({
                 onClick={handleBackupNow}
                 disabled={backupLoading}
               >
-                {backupLoading ? "Creating…" : "Backup Now"}
+                {backupLoading ? t("settings.backups.creating", "Creating…") : t("settings.backups.backupNow", "Backup Now")}
               </button>
             </div>
           </>
@@ -6454,7 +6458,7 @@ export function SettingsModal({
                         !/^[a-zA-Z0-9_-]{1,64}$/.test(form.ntfyTopic)
                       }
                     >
-                      {testNotificationLoading["ntfy"] ? "Sending…" : "Test notification"}
+                      {testNotificationLoading["ntfy"] ? t("settings.notifications.sending", "Sending…") : t("settings.notifications.testNotification", "Test notification")}
                     </button>
                     <button
                       type="button"
@@ -6469,7 +6473,7 @@ export function SettingsModal({
                         !/^[a-zA-Z0-9_-]{1,64}$/.test(form.ntfyTopic)
                       }
                     >
-                      {testNotificationLoading["ntfy-message"] ? "Sending…" : "Test message inbox"}
+                      {testNotificationLoading["ntfy-message"] ? t("settings.notifications.sending", "Sending…") : t("settings.notifications.testMessageInbox", "Test message inbox")}
                     </button>
                     <button
                       type="button"
@@ -6484,7 +6488,7 @@ export function SettingsModal({
                         !/^[a-zA-Z0-9_-]{1,64}$/.test(form.ntfyTopic)
                       }
                     >
-                      {testNotificationLoading["ntfy-room"] ? "Sending…" : "Test room reply"}
+                      {testNotificationLoading["ntfy-room"] ? t("settings.notifications.sending", "Sending…") : t("settings.notifications.testRoomReply", "Test room reply")}
                     </button>
                   </div>
                   {(testNotificationResult["ntfy"] || testNotificationResult["ntfy-message"] || testNotificationResult["ntfy-room"]) && (
@@ -6590,7 +6594,7 @@ export function SettingsModal({
                       onClick={() => handleTestProviderNotification("webhook")}
                       disabled={testNotificationLoading["webhook"] || !form.webhookUrl}
                     >
-                      {testNotificationLoading["webhook"] ? "Sending…" : "Test notification"}
+                      {testNotificationLoading["webhook"] ? t("settings.notifications.sending", "Sending…") : t("settings.notifications.testNotification", "Test notification")}
                     </button>
                   </div>
                   {testNotificationResult["webhook"] && (
@@ -6868,9 +6872,9 @@ export function SettingsModal({
               {tunnelState === "running" || tunnelState === "starting" ? (
                 <button type="button" className="btn btn-danger" disabled={remoteBusyAction !== null} onClick={() => void runRemoteAction("stop", async () => {
                   await stopRemoteTunnel(projectId);
-                  addToast("Remote tunnel stopped", "success");
+                  addToast(t("settings.remote.tunnelStopped", "Remote tunnel stopped"), "success");
                 })}>
-                  {remoteBusyAction === "stop" ? "Stopping…" : "Stop Tunnel"}
+                  {remoteBusyAction === "stop" ? t("settings.remote.stopping", "Stopping…") : t("settings.remote.stopTunnel", "Stop Tunnel")}
                 </button>
               ) : (
                 <>
@@ -6896,9 +6900,9 @@ export function SettingsModal({
                         await updateRemoteSettings(savePayload, projectId);
                         await killExternalTunnel(projectId);
                         await startRemoteTunnel(projectId);
-                        addToast("Remote tunnel restarted", "success");
+                        addToast(t("settings.remote.tunnelRestarted", "Remote tunnel restarted"), "success");
                       })}>
-                        {remoteBusyAction === "start fresh" ? "Restarting…" : "Start Fresh"}
+                        {remoteBusyAction === "start fresh" ? t("settings.remote.restarting", "Restarting…") : t("settings.remote.startFresh", "Start Fresh")}
                       </button>
                       <button type="button" className="btn btn-primary" disabled={!activeProvider || remoteBusyAction !== null} onClick={() => void runRemoteAction("use existing", async () => {
                         const formState = form as Record<string, unknown>;
@@ -6919,9 +6923,9 @@ export function SettingsModal({
                         };
                         await updateRemoteSettings(savePayload, projectId);
                         await startRemoteTunnel(projectId);
-                        addToast("Remote tunnel started", "success");
+                        addToast(t("settings.remote.tunnelStarted", "Remote tunnel started"), "success");
                       })}>
-                        {remoteBusyAction === "use existing" ? "Starting…" : "Use Existing"}
+                        {remoteBusyAction === "use existing" ? t("settings.remote.starting", "Starting…") : t("settings.remote.useExisting", "Use Existing")}
                       </button>
                     </div>
                   ) : (
@@ -6947,9 +6951,9 @@ export function SettingsModal({
                     };
                     await updateRemoteSettings(savePayload, projectId);
                     await startRemoteTunnel(projectId);
-                    addToast("Remote tunnel started", "success");
+                    addToast(t("settings.remote.tunnelStarted", "Remote tunnel started"), "success");
                   })}>
-                    {remoteBusyAction === "start" ? "Starting…" : "Start Tunnel"}
+                    {remoteBusyAction === "start" ? t("settings.remote.starting", "Starting…") : t("settings.remote.startTunnel", "Start Tunnel")}
                   </button>
                   )}
                   {activeProvider === "cloudflare" && remoteStatus?.cloudflaredAvailable === false ? (
@@ -6982,13 +6986,13 @@ export function SettingsModal({
                 <div className="settings-button-row">
                   <button type="button" className="btn btn-sm" disabled={remoteBusyAction !== null} onClick={() => void runRemoteAction("regenerate persistent token", async () => {
                     await regenerateRemotePersistentToken(projectId);
-                    addToast("Persistent token regenerated", "success");
+                    addToast(t("settings.remote.persistentTokenRegenerated", "Persistent token regenerated"), "success");
                   })}>Regenerate persistent token</button>
                   <button type="button" className="btn btn-sm" disabled={remoteBusyAction !== null} onClick={() => void runRemoteAction("generate short-lived token", async () => {
                     const ttlMs = Number(remoteForm.remoteShortLivedTtlMs ?? 900000);
                     const generated = await generateShortLivedRemoteToken(ttlMs, projectId);
                     setRemoteShortLivedToken(generated);
-                    addToast("Short-lived token generated", "success");
+                    addToast(t("settings.remote.shortLivedTokenGenerated", "Short-lived token generated"), "success");
                   })}>Generate short-lived token</button>
                   <button type="button" className="btn btn-sm" disabled={remoteBusyAction !== null} onClick={() => void runRemoteAction("fetch remote url", async () => {
                     const ttlMs = Number(remoteForm.remoteShortLivedTtlMs ?? 900000);
@@ -7184,12 +7188,12 @@ export function SettingsModal({
           || (llamaCppProvider && !llamaCppProvider.authenticated);
         return (
           <>
-            <h4 className="settings-section-heading">Authentication</h4>
+            <h4 className="settings-section-heading">{t("settings.auth.title", "Authentication")}</h4>
             {authLoading ? (
-              <div className="settings-empty-state">Loading authentication status…</div>
+              <div className="settings-empty-state">{t("settings.auth.loadingStatus", "Loading authentication status…")}</div>
             ) : authProviders.length === 0 ? (
               <div className="settings-empty-state settings-muted">
-                No providers available
+                {t("settings.auth.noProviders", "No providers available")}
               </div>
             ) : (
               <div className="auth-panel-body">
@@ -7207,12 +7211,12 @@ export function SettingsModal({
               />
               {!showAuthenticatedGroup && (
                 <div className="auth-section-hint">
-                  Sign in to at least one provider to get started with AI models.
+                  {t("settings.auth.signInHint", "Sign in to at least one provider to get started with AI models.")}
                 </div>
               )}
               {showAuthenticatedGroup && (
                 <div className="auth-provider-group">
-                  <div className="auth-group-label">Authenticated</div>
+                  <div className="auth-group-label">{t("settings.auth.groupAuthenticated", "Authenticated")}</div>
                   {claudeCliProvider?.authenticated && claudeCliCard}
                   {cursorCliProvider?.authenticated && cursorCliCard}
                   {llamaCppProvider?.authenticated && llamaCppCard}
@@ -7233,7 +7237,7 @@ export function SettingsModal({
                             data-testid={`auth-status-${provider.id}`}
                             className={`auth-status-badge ${provider.authenticated ? "authenticated" : "not-authenticated"}`}
                           >
-                            ✓ Active
+                            {t("settings.auth.statusActive", "✓ Active")}
                           </span>
                           {provider.authenticated && provider.keyHint && (
                             <span className="auth-key-hint">Key: {provider.keyHint}</span>
@@ -7256,7 +7260,7 @@ export function SettingsModal({
                                   onClick={() => handleClearApiKey(provider.id)}
                                   disabled={authActionInProgress === provider.id}
                                 >
-                                  Clear
+                                  {t("settings.auth.clearKey", "Clear")}
                                 </button>
                               ) : (
                                 <button
@@ -7264,12 +7268,12 @@ export function SettingsModal({
                                   onClick={() => handleSaveApiKey(provider.id)}
                                   disabled={authActionInProgress === provider.id}
                                 >
-                                  Save
+                                  {t("settings.actions.save", "Save")}
                                 </button>
                               )}
                             </div>
                             {authActionInProgress === provider.id && (
-                              <small className="auth-apikey-progress">Saving…</small>
+                              <small className="auth-apikey-progress">{t("settings.auth.savingKey", "Saving…")}</small>
                             )}
                             {apiKeyErrors[provider.id] && (
                               <small className="auth-apikey-error">{apiKeyErrors[provider.id]}</small>
@@ -7284,15 +7288,15 @@ export function SettingsModal({
                           <div>
                             {authActionInProgress === provider.id ? (
                               <button className="btn btn-sm" disabled>
-                                Logging out…
+                                {t("settings.auth.loggingOut", "Logging out…")}
                               </button>
                             ) : provider.loginInProgress ? (
                               <div className="auth-provider-actions-row">
                                 <button className="btn btn-sm" disabled>
-                                  Waiting for login…
+                                  {t("settings.auth.waitingForLogin", "Waiting for login…")}
                                 </button>
                                 <button className="btn btn-sm" onClick={() => handleCancelLogin(provider.id)}>
-                                  Cancel
+                                  {t("settings.actions.cancel", "Cancel")}
                                 </button>
                               </div>
                             ) : (
@@ -7300,7 +7304,7 @@ export function SettingsModal({
                                 className="btn btn-sm"
                                 onClick={() => handleLogout(provider.id)}
                               >
-                                Logout
+                                {t("settings.auth.logout", "Logout")}
                               </button>
                             )}
                           </div>
@@ -7312,7 +7316,7 @@ export function SettingsModal({
               )}
               {showAvailableGroup && (
                 <div className="auth-provider-group">
-                  <div className="auth-group-label">Available</div>
+                  <div className="auth-group-label">{t("settings.auth.groupAvailable", "Available")}</div>
                   {claudeCliProvider && !claudeCliProvider.authenticated && claudeCliCard}
                   {cursorCliProvider && !cursorCliProvider.authenticated && cursorCliCard}
                   {llamaCppProvider && !llamaCppProvider.authenticated && llamaCppCard}
@@ -7333,7 +7337,7 @@ export function SettingsModal({
                             data-testid={`auth-status-${provider.id}`}
                             className={`auth-status-badge ${provider.authenticated ? "authenticated" : "not-authenticated"}`}
                           >
-                            ✗ Not connected
+                            {t("settings.auth.statusNotConnected", "✗ Not connected")}
                           </span>
                         </div>
                         {provider.type === "api_key" ? (
@@ -7352,11 +7356,11 @@ export function SettingsModal({
                                 onClick={() => handleSaveApiKey(provider.id)}
                                 disabled={authActionInProgress === provider.id}
                               >
-                                Save
+                                {t("settings.actions.save", "Save")}
                               </button>
                             </div>
                             {authActionInProgress === provider.id && (
-                              <small className="auth-apikey-progress">Saving…</small>
+                              <small className="auth-apikey-progress">{t("settings.auth.savingKey", "Saving…")}</small>
                             )}
                             {apiKeyErrors[provider.id] && (
                               <small className="auth-apikey-error">{apiKeyErrors[provider.id]}</small>
@@ -7371,15 +7375,15 @@ export function SettingsModal({
                           <div>
                             {authActionInProgress === provider.id ? (
                               <button className="btn btn-sm" disabled>
-                                Waiting for login…
+                                {t("settings.auth.waitingForLogin", "Waiting for login…")}
                               </button>
                             ) : provider.loginInProgress ? (
                               <div className="auth-provider-actions-row">
                                 <button className="btn btn-sm" disabled>
-                                  Waiting for login…
+                                  {t("settings.auth.waitingForLogin", "Waiting for login…")}
                                 </button>
                                 <button className="btn btn-sm" onClick={() => handleCancelLogin(provider.id)}>
-                                  Cancel
+                                  {t("settings.actions.cancel", "Cancel")}
                                 </button>
                               </div>
                             ) : (
@@ -7387,12 +7391,12 @@ export function SettingsModal({
                                 className="btn btn-primary btn-sm"
                                 onClick={() => handleLogin(provider.id)}
                               >
-                                Login
+                                {t("settings.auth.login", "Login")}
                               </button>
                             )}
                             {provider.id === "github-copilot" && deviceCodes[provider.id] && (provider.loginInProgress || authActionInProgress === provider.id) && (
                               <div className="auth-device-code-panel" data-testid={`auth-device-code-${provider.id}`}>
-                                <strong>Enter this code on GitHub</strong>
+                                <strong>{t("settings.auth.enterCodeOnGitHub", "Enter this code on GitHub")}</strong>
                                 <div className="auth-device-code-pill">{deviceCodes[provider.id].userCode}</div>
                                 <div className="auth-provider-actions-row">
                                   <button
@@ -7401,20 +7405,20 @@ export function SettingsModal({
                                       void (async () => {
                                         const copied = await copyTextToClipboard(deviceCodes[provider.id].userCode);
                                         if (copied) {
-                                          addToast("Copied code to clipboard", "success");
+                                          addToast(t("settings.auth.copiedCodeToClipboard", "Copied code to clipboard"), "success");
                                           return;
                                         }
-                                        addToast("Failed to copy code — copy it manually from the box above", "error");
+                                        addToast(t("settings.auth.failedToCopyCode", "Failed to copy code — copy it manually from the box above"), "error");
                                       })();
                                     }}
                                   >
-                                    Copy code
+                                    {t("settings.auth.copyCode", "Copy code")}
                                   </button>
                                   <button
                                     className="btn btn-sm"
                                     onClick={() => window.open(appendTokenQuery(deviceCodes[provider.id].verificationUri), "_blank")}
                                   >
-                                    Open GitHub
+                                    {t("settings.auth.openGitHub", "Open GitHub")}
                                   </button>
                                 </div>
                               </div>
@@ -7448,7 +7452,7 @@ export function SettingsModal({
               </div>
             )}
             <small className="auth-hint">
-              Authentication changes take effect immediately — no need to save.
+              {t("settings.auth.hint", "Authentication changes take effect immediately — no need to save.")}
             </small>
             {onReopenOnboarding && (
               <div className="form-group" style={{ marginTop: "var(--space-md)" }}>
@@ -7457,10 +7461,10 @@ export function SettingsModal({
                   className="btn btn-sm"
                   onClick={onReopenOnboarding}
                 >
-                  Reopen onboarding guide
+                  {t("settings.auth.reopenOnboarding", "Reopen onboarding guide")}
                 </button>
                 <small className="settings-muted">
-                  Re-run the setup wizard to review or update your AI provider and model configuration.
+                  {t("settings.auth.reopenOnboardingHint", "Re-run the setup wizard to review or update your AI provider and model configuration.")}
                 </small>
               </div>
             )}
@@ -7499,7 +7503,7 @@ export function SettingsModal({
       <div className="modal modal-lg settings-modal" ref={modalRef} style={keyboardStyle}>
         <div className="modal-header">
           <div className="settings-modal-heading">
-            <h3>Settings</h3>
+            <h3>{t("settings.title", "Settings")}</h3>
           </div>
           <div className="settings-header-actions">
             <a
@@ -7534,7 +7538,7 @@ export function SettingsModal({
               title="Join our Discord"
             >
               <DiscordIcon size={13} />
-              Discord
+              {t("settings.header.discord", "Discord")}
             </a>
           </div>
           <button className="modal-close" onClick={onClose} aria-label="Close">
@@ -7542,12 +7546,12 @@ export function SettingsModal({
           </button>
         </div>
         {loading ? (
-          <div className="settings-empty-state settings-loading">Loading…</div>
+          <div className="settings-empty-state settings-loading">{t("settings.loading", "Loading…")}</div>
         ) : (
           <div className="settings-layout">
             {showMobileSectionPicker && (
               <div className="settings-mobile-section-picker">
-                <label htmlFor="settings-mobile-section">Settings Section</label>
+                <label htmlFor="settings-mobile-section">{t("settings.mobileNav.label", "Settings Section")}</label>
                 <select
                   id="settings-mobile-section"
                   className="select touch-target"
@@ -7556,7 +7560,7 @@ export function SettingsModal({
                 >
                   {visibleSections.filter((section) => !section.isGroupHeader).map((section) => (
                     <option key={section.id} value={section.id}>
-                      {section.label}
+                      {t(section.labelKey, section.label)}
                     </option>
                   ))}
                 </select>
@@ -7568,7 +7572,7 @@ export function SettingsModal({
                 if (section.isGroupHeader) {
                   return (
                     <div key={section.id} className="settings-group-header">
-                      {section.label}
+                      {t(section.labelKey, section.label)}
                     </div>
                   );
                 }
@@ -7579,18 +7583,18 @@ export function SettingsModal({
                     onClick={() => setActiveSection(section.id)}
                     title={
                       section.scope === "global"
-                        ? "Shared across all projects"
+                        ? t("settings.nav.tooltip.global", "Shared across all projects")
                         : section.scope === "project"
-                          ? "Specific to this project"
+                          ? t("settings.nav.tooltip.project", "Specific to this project")
                           : undefined
                     }
                   >
-                    {section.scope === "global" && <Globe className="settings-scope-icon" aria-label="Global setting" size={16} />}
-                    {section.scope === "project" && <Folder className="settings-scope-icon" aria-label="Project setting" size={16} />}
+                    {section.scope === "global" && <Globe className="settings-scope-icon" aria-label={t("settings.nav.aria.global", "Global setting")} size={16} />}
+                    {section.scope === "project" && <Folder className="settings-scope-icon" aria-label={t("settings.nav.aria.project", "Project setting")} size={16} />}
                     {section.icon && !section.scope && (
-                      <section.icon className="settings-scope-icon" aria-label="Global setting" size={16} />
+                      <section.icon className="settings-scope-icon" aria-label={t("settings.nav.aria.global", "Global setting")} size={16} />
                     )}
-                    {section.label}
+                    {t(section.labelKey, section.label)}
                   </button>
                 );
               })}
@@ -7611,7 +7615,7 @@ export function SettingsModal({
               title="Help and discussions"
             >
               <HelpCircle size={13} aria-hidden="true" />
-              Help
+              {t("settings.footer.help", "Help")}
             </a>
             <div className="settings-update-check">
               {appVersion && (
@@ -7625,7 +7629,7 @@ export function SettingsModal({
                   aria-label="Check for updates"
                   title="Check for updates"
                 >
-                  <span className="settings-modal-version">Version {appVersion}</span>
+                  <span className="settings-modal-version">{t("settings.footer.version", "Version {{version}}", { version: appVersion })}</span>
                   <RefreshCw size={12} className={updateCheckLoading ? "spinning" : undefined} />
                 </button>
               )}
@@ -7650,9 +7654,9 @@ export function SettingsModal({
               type="button"
               className="btn btn-sm"
               onClick={handleExport}
-              title="Export settings to JSON file"
+              title={t("settings.importExport.exportTitle", "Export settings to JSON file")}
             >
-              Export
+              {t("settings.importExport.exportBtn", "Export")}
             </button>
             <input
               type="file"
@@ -7668,15 +7672,15 @@ export function SettingsModal({
               disabled={importLoading}
               title="Import settings from JSON file"
             >
-              {importLoading ? "Loading…" : "Import"}
+              {importLoading ? t("settings.importExport.loadingFile", "Loading…") : t("settings.importExport.importBtn", "Import")}
             </button>
           </div>
           <div className="modal-actions-right">
             <button className="btn btn-sm" onClick={onClose}>
-              Cancel
+              {t("settings.actions.cancel", "Cancel")}
             </button>
             <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={loading}>
-              Save
+              {t("settings.actions.save", "Save")}
             </button>
           </div>
         </div>
@@ -7692,7 +7696,7 @@ export function SettingsModal({
         >
           <div className="modal modal-lg settings-overlap-path-picker-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <h3>Select ignored overlap path</h3>
+              <h3>{t("settings.scheduling.selectIgnoredOverlapPath", "Select ignored overlap path")}</h3>
               <button className="modal-close" onClick={closeOverlapPathPicker} aria-label="Close">
                 &times;
               </button>
@@ -7721,14 +7725,14 @@ export function SettingsModal({
               </div>
               <div className="modal-actions-right">
                 <button className="btn btn-sm" onClick={closeOverlapPathPicker}>
-                  Cancel
+                  {t("settings.actions.cancel", "Cancel")}
                 </button>
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={handleSelectCurrentDirectoryForOverlapIgnore}
                   disabled={overlapPathPickerCurrentPath === "."}
                 >
-                  Select current directory
+                  {t("settings.scheduling.selectCurrentDir", "Select current directory")}
                 </button>
               </div>
             </div>
@@ -7746,7 +7750,7 @@ export function SettingsModal({
         >
           <div className="modal modal-lg settings-overlap-path-picker-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <h3>Select worktrees directory</h3>
+              <h3>{t("settings.worktrees.selectWorktreesDir", "Select worktrees directory")}</h3>
               <button className="modal-close" onClick={closeWorktreesDirPicker} aria-label="Close">
                 &times;
               </button>
@@ -7775,10 +7779,10 @@ export function SettingsModal({
               </div>
               <div className="modal-actions-right">
                 <button className="btn btn-sm" onClick={closeWorktreesDirPicker}>
-                  Cancel
+                  {t("settings.actions.cancel", "Cancel")}
                 </button>
                 <button className="btn btn-primary btn-sm" onClick={selectCurrentWorktreesDir}>
-                  Select current directory
+                  {t("settings.scheduling.selectCurrentDir", "Select current directory")}
                 </button>
               </div>
             </div>
@@ -7791,13 +7795,13 @@ export function SettingsModal({
         <div className="modal-overlay open" onClick={(e) => e.target === e.currentTarget && setImportDialogOpen(false)} role="dialog" aria-modal="true">
           <div className="modal modal-md">
             <div className="modal-header">
-              <h3>Import Settings</h3>
+              <h3>{t("settings.importExport.importTitle", "Import Settings")}</h3>
               <button className="modal-close" onClick={() => setImportDialogOpen(false)} aria-label="Close">
                 &times;
               </button>
             </div>
             <div className="modal-body">
-              <p>Review the settings to be imported:</p>
+              <p>{t("settings.importExport.reviewPrompt", "Review the settings to be imported:")}</p>
               
               {importPreview.global && Object.keys(importPreview.global).length > 0 && (
                 <div className="form-group">
@@ -7853,14 +7857,14 @@ export function SettingsModal({
             </div>
             <div className="modal-actions">
               <button className="btn btn-sm" onClick={() => setImportDialogOpen(false)}>
-                Cancel
+                {t("settings.actions.cancel", "Cancel")}
               </button>
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleImport}
                 disabled={importLoading}
               >
-                {importLoading ? "Importing…" : "Confirm Import"}
+                {importLoading ? t("settings.importExport.importing", "Importing…") : t("settings.importExport.confirmImport", "Confirm Import")}
               </button>
             </div>
           </div>

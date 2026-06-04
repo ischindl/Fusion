@@ -1,0 +1,23 @@
+{
+  "actions": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save"
+  },
+  "archive": "Archive",
+  "cancel": "Cancel",
+  "close": "Close",
+  "columns": {
+    "archived": "Archived",
+    "done": "Done",
+    "in-progress": "In Progress",
+    "in-review": "In Review",
+    "todo": "Todo",
+    "triage": "Planning"
+  },
+  "delete": "Delete",
+  "refresh": "Refresh",
+  "retry": "Retry",
+  "skip": "Skip",
+  "tryAgain": "Try Again"
+}

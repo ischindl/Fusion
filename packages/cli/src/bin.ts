@@ -431,6 +431,7 @@ Options:
   --interactive              Interactive mode (port selection for dashboard, issue selection for import)
   --paused                   Start with engine paused (automation disabled)
   --dev                      Start dashboard only (no AI engine)
+  --lang <locale>            Terminal-UI locale for this run (en, zh-CN, zh-TW, fr, es, ko); the browser dashboard resolves its own language
   --attach <file>            Attach file(s) on task create (repeatable)
   --depends <id>             Declare dependency on task create (repeatable)
   --no-dedup                 Bypass deterministic duplicate guard on task create
@@ -748,7 +749,18 @@ async function main() {
         const noAuth = args.includes("--no-auth");
         const dashTokenIdx = args.indexOf("--token");
         const token = dashTokenIdx !== -1 && dashTokenIdx + 1 < args.length ? args[dashTokenIdx + 1] : undefined;
-        await runDashboard(port, { paused, dev, interactive, host, noAuth, token });
+        const dashLangIdx = args.indexOf("--lang");
+        const lang = dashLangIdx !== -1 && dashLangIdx + 1 < args.length ? args[dashLangIdx + 1] : undefined;
+        if (lang !== undefined) {
+          // Fail loudly on a bad explicit flag instead of silently falling back
+          // to setting/env resolution inside the TUI.
+          const { isLocale, SUPPORTED_LOCALES } = await import("@fusion/core");
+          if (!isLocale(lang)) {
+            console.error(`Invalid --lang "${lang}". Supported: ${SUPPORTED_LOCALES.join(", ")}`);
+            process.exit(1);
+          }
+        }
+        await runDashboard(port, { paused, dev, interactive, host, noAuth, token, lang });
         break;
       }
 

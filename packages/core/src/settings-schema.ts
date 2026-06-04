@@ -19,6 +19,7 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   themeMode: "dark",
   colorTheme: "default",
   dashboardFontScalePct: 100,
+  language: undefined,
   defaultProvider: undefined,
   defaultModelId: undefined,
   testMode: undefined,

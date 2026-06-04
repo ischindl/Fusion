@@ -1,5 +1,6 @@
 import "./FileBrowser.css";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Folder, File, ChevronRight, Loader2, Copy, Move, Trash2, Pencil, Download, Archive } from "lucide-react";
 import type { FileNode } from "../api";
 import { copyFile, moveFile, deleteFile, renameFile, downloadFileUrl, downloadZipUrl } from "../api";
@@ -98,6 +99,7 @@ interface FileContextMenuProps {
 }
 
 function FileContextMenu({ x, y, entry, onAction, onClose }: FileContextMenuProps) {
+  const { t } = useTranslation("app");
   const menuRef = useRef<HTMLDivElement>(null);
   const [adjustedPos, setAdjustedPos] = useState({ x, y });
 
@@ -142,15 +144,15 @@ function FileContextMenu({ x, y, entry, onAction, onClose }: FileContextMenuProp
   const isDir = entry.type === "directory";
 
   const items: ContextMenuItem[] = [
-    { id: "copy", label: "Copy", icon: Copy, disabled: false },
-    { id: "move", label: "Move", icon: Move, disabled: false },
-    { id: "rename", label: "Rename", icon: Pencil, disabled: false },
+    { id: "copy", label: t("fileBrowser.contextCopy", "Copy"), icon: Copy, disabled: false },
+    { id: "move", label: t("fileBrowser.contextMove", "Move"), icon: Move, disabled: false },
+    { id: "rename", label: t("fileBrowser.contextRename", "Rename"), icon: Pencil, disabled: false },
     ...(isDir
-      ? [{ id: "download-zip" as string, label: "Download as ZIP", icon: Archive, disabled: false }]
-      : [{ id: "download" as string, label: "Download", icon: Download, disabled: false }]
+      ? [{ id: "download-zip" as string, label: t("fileBrowser.contextDownloadZip", "Download as ZIP"), icon: Archive, disabled: false }]
+      : [{ id: "download" as string, label: t("fileBrowser.contextDownload", "Download"), icon: Download, disabled: false }]
     ),
     { id: "divider", label: "", icon: Copy, disabled: true },
-    { id: "delete", label: "Delete", icon: Trash2, disabled: false },
+    { id: "delete", label: t("fileBrowser.contextDelete", "Delete"), icon: Trash2, disabled: false },
   ];
 
   return (
@@ -159,7 +161,7 @@ function FileContextMenu({ x, y, entry, onAction, onClose }: FileContextMenuProp
         ref={menuRef}
         className="file-browser-context-menu"
         role="menu"
-        aria-label="File operations"
+        aria-label={t("fileBrowser.contextMenuLabel", "File operations")}
         style={{ left: adjustedPos.x, top: adjustedPos.y }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -199,6 +201,7 @@ interface OperationDialogProps {
 }
 
 function OperationDialog({ type, entry, entryFullPath, onConfirm, onCancel, loading, error }: OperationDialogProps) {
+  const { t } = useTranslation("app");
   const inputRef = useRef<HTMLInputElement>(null);
   const defaultValue = type === "rename" ? entry.name : "";
   const [value, setValue] = useState(defaultValue);
@@ -233,22 +236,22 @@ function OperationDialog({ type, entry, entryFullPath, onConfirm, onCancel, load
     return (
       <div className="context-menu-overlay" onClick={onCancel}>
         <div className="file-browser-dialog" onClick={(e) => e.stopPropagation()}>
-          <div className="file-browser-dialog-title">Delete {entry.type === "directory" ? "Folder" : "File"}</div>
+          <div className="file-browser-dialog-title">{t("fileBrowser.deleteTitle", "Delete {{type}}", { type: entry.type === "directory" ? t("fileBrowser.typeFolder", "Folder") : t("fileBrowser.typeFile", "File") })}</div>
           <div className="file-browser-dialog-message">
-            Are you sure you want to delete <strong>{entry.name}</strong>?
-            {entry.type === "directory" && " This will delete all contents recursively."}
+            {t("fileBrowser.deleteConfirm", "Are you sure you want to delete {{name}}?", { name: entry.name })}
+            {entry.type === "directory" && ` ${t("fileBrowser.deleteRecursive", "This will delete all contents recursively.")}`}
           </div>
           {error && <div className="file-browser-dialog-error">{error}</div>}
           <div className="file-browser-dialog-actions">
             <button className="btn btn-sm" onClick={onCancel} disabled={loading}>
-              Cancel
+              {t("common.cancel", "Cancel")}
             </button>
             <button
               className="btn btn-danger btn-sm"
               onClick={() => onConfirm("")}
               disabled={loading}
             >
-              {loading ? "Deleting..." : "Delete"}
+              {loading ? t("fileBrowser.deleting", "Deleting...") : t("fileBrowser.delete", "Delete")}
             </button>
           </div>
         </div>
@@ -257,9 +260,9 @@ function OperationDialog({ type, entry, entryFullPath, onConfirm, onCancel, load
   }
 
   const labels: Record<string, { title: string; placeholder: string; confirm: string }> = {
-    copy: { title: "Copy", placeholder: "Destination path", confirm: "Copy" },
-    move: { title: "Move", placeholder: "Destination path", confirm: "Move" },
-    rename: { title: "Rename", placeholder: "New name", confirm: "Rename" },
+    copy: { title: t("fileBrowser.copyTitle", "Copy"), placeholder: t("fileBrowser.copyPlaceholder", "Destination path"), confirm: t("fileBrowser.copy", "Copy") },
+    move: { title: t("fileBrowser.moveTitle", "Move"), placeholder: t("fileBrowser.movePlaceholder", "Destination path"), confirm: t("fileBrowser.move", "Move") },
+    rename: { title: t("fileBrowser.renameTitle", "Rename"), placeholder: t("fileBrowser.renamePlaceholder", "New name"), confirm: t("fileBrowser.rename", "Rename") },
   };
 
   const config = labels[type!];
@@ -284,14 +287,14 @@ function OperationDialog({ type, entry, entryFullPath, onConfirm, onCancel, load
         {error && <div className="file-browser-dialog-error">{error}</div>}
         <div className="file-browser-dialog-actions">
           <button className="btn btn-sm" onClick={onCancel} disabled={loading}>
-            Cancel
+            {t("common.cancel", "Cancel")}
           </button>
           <button
             className="btn btn-primary btn-sm"
             onClick={() => onConfirm(value.trim())}
             disabled={loading || !value.trim()}
           >
-            {loading ? `${config.confirm}ing...` : config.confirm}
+            {loading ? `${config.confirm}${t("fileBrowser.operationSuffix", "ing...")}` : config.confirm}
           </button>
         </div>
       </div>
@@ -313,6 +316,7 @@ export function FileBrowser({
   onRefresh,
   projectId,
 }: FileBrowserProps) {
+  const { t } = useTranslation("app");
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(INITIAL_CONTEXT_MENU);
   const [dialog, setDialog] = useState<DialogState>(INITIAL_DIALOG);
   const [operationLoading, setOperationLoading] = useState(false);
@@ -496,7 +500,7 @@ export function FileBrowser({
       setDialog(INITIAL_DIALOG);
       onRefresh?.();
     } catch (err) {
-      setOperationError(getErrorMessage(err) || "Operation failed");
+      setOperationError(getErrorMessage(err) || t("fileBrowser.operationFailed", "Operation failed"));
     } finally {
       setOperationLoading(false);
     }
@@ -526,7 +530,7 @@ export function FileBrowser({
     return (
       <div className="file-browser-loading">
         <Loader2 className="spin" size={24} />
-        <span>Loading files...</span>
+        <span>{t("fileBrowser.loadingFiles", "Loading files...")}</span>
       </div>
     );
   }
@@ -534,10 +538,10 @@ export function FileBrowser({
   if (error) {
     return (
       <div className="file-browser-error">
-        <p>Error: {error}</p>
+        <p>{t("fileBrowser.error", "Error: {{message}}", { message: error })}</p>
         {onRetry && (
           <button className="btn btn-sm" onClick={onRetry}>
-            Retry
+            {t("common.retry", "Retry")}
           </button>
         )}
       </div>
@@ -555,15 +559,15 @@ export function FileBrowser({
             }}
           >
             <ChevronRight size={16} style={{ transform: "rotate(-90deg)" }} />
-            Up one level
+            {t("fileBrowser.upOneLevel", "Up one level")}
           </button>
         )}
-        <span className="file-browser-path">{currentPath === "." ? "Root" : normalizeDisplayPath(currentPath)}</span>
+        <span className="file-browser-path">{currentPath === "." ? t("fileBrowser.root", "Root") : normalizeDisplayPath(currentPath)}</span>
       </div>
 
       <div className="file-browser-list">
         {entries.length === 0 ? (
-          <div className="file-browser-empty">(empty directory)</div>
+          <div className="file-browser-empty">{t("fileBrowser.emptyDirectory", "(empty directory)")}</div>
         ) : (
           entries.map((entry) => {
             const fullPath = entryPath(currentPath, entry.name);

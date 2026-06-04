@@ -31,6 +31,7 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { fetchScripts } from "../api";
 import type { PluginDashboardViewEntry } from "../api";
 import { useViewportMode } from "./Header";
@@ -147,6 +148,7 @@ export function MobileNavBar({
   pluginDashboardViews = [],
   shellConnectionControl,
 }: MobileNavBarProps) {
+  const { t } = useTranslation("app");
   const mode = useViewportMode();
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [isScriptsSubmenuOpen, setIsScriptsSubmenuOpen] = useState(false);
@@ -283,7 +285,7 @@ export function MobileNavBar({
         ref={navRef}
         className={`mobile-nav-bar${footerVisible ? " mobile-nav-bar--with-footer" : ""}${keyboardOpen ? " mobile-nav-bar--keyboard-open" : ""}`}
         role="tablist"
-        aria-label="Primary navigation"
+        aria-label={t("nav.primaryNavAriaLabel", "Primary navigation")}
       >
         <button
           type="button"
@@ -301,7 +303,7 @@ export function MobileNavBar({
           }}
         >
           <LayoutGrid />
-          <span className="mobile-nav-tab-label">Tasks</span>
+          <span className="mobile-nav-tab-label">{t("nav.tasks", "Tasks")}</span>
         </button>
 
         <button
@@ -313,7 +315,7 @@ export function MobileNavBar({
           onClick={() => onChangeView("agents")}
         >
           <Bot />
-          <span className="mobile-nav-tab-label">Agents</span>
+          <span className="mobile-nav-tab-label">{t("nav.agents", "Agents")}</span>
         </button>
 
         <button
@@ -325,7 +327,7 @@ export function MobileNavBar({
           onClick={() => onChangeView("missions")}
         >
           <Target />
-          <span className="mobile-nav-tab-label">Missions</span>
+          <span className="mobile-nav-tab-label">{t("nav.missions", "Missions")}</span>
         </button>
 
         <button
@@ -339,10 +341,10 @@ export function MobileNavBar({
           <span className="mobile-nav-tab-icon-wrapper">
             <MessageSquare />
             {chatHasUnreadResponse && view !== "chat" && (
-              <span className="status-dot status-dot--pending mobile-nav-chat-unread-dot" aria-label="Unread chat response" />
+              <span className="status-dot status-dot--pending mobile-nav-chat-unread-dot" aria-label={t("nav.chatUnreadAriaLabel", "Unread chat response")} />
             )}
           </span>
-          <span className="mobile-nav-tab-label">Chat</span>
+          <span className="mobile-nav-tab-label">{t("nav.chat", "Chat")}</span>
         </button>
 
 
@@ -357,10 +359,10 @@ export function MobileNavBar({
           <span className="mobile-nav-tab-icon-wrapper">
             <Mail />
             {mailboxPendingApprovalCount > 0 && view !== "mailbox" && (
-              <span className="status-dot status-dot--pending mobile-nav-chat-unread-dot" aria-label="Pending approvals" />
+              <span className="status-dot status-dot--pending mobile-nav-chat-unread-dot" aria-label={t("nav.mailboxPendingAriaLabel", "Pending approvals")} />
             )}
           </span>
-          <span className="mobile-nav-tab-label">Mailbox</span>
+          <span className="mobile-nav-tab-label">{t("nav.mailbox", "Mailbox")}</span>
           {mailboxUnreadCount > 0 && (
             <span className="mobile-nav-tab-badge">{formatCount(mailboxUnreadCount)}</span>
           )}
@@ -376,7 +378,7 @@ export function MobileNavBar({
             onClick={() => onChangeView("skills")}
           >
             <Zap />
-            <span className="mobile-nav-tab-label">Skills</span>
+            <span className="mobile-nav-tab-label">{t("nav.skills", "Skills")}</span>
           </button>
         )}
 
@@ -409,7 +411,7 @@ export function MobileNavBar({
           onClick={() => setIsMoreOpen((prev) => !prev)}
         >
           <MoreHorizontal />
-          <span className="mobile-nav-tab-label">More</span>
+          <span className="mobile-nav-tab-label">{t("nav.more", "More")}</span>
         </button>
       </nav>
 
@@ -421,7 +423,7 @@ export function MobileNavBar({
           />
           <div className="mobile-more-sheet">
             <div className="mobile-more-sheet-handle" />
-            <div className="mobile-more-sheet-title">Navigate</div>
+            <div className="mobile-more-sheet-title">{t("nav.moreSheetTitle", "Navigate")}</div>
 
             {shellConnectionControl ? (
               <div className="mobile-more-shell-connection" data-testid="mobile-more-shell-connection">
@@ -436,7 +438,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenMailbox)}
             >
               <Mail />
-              <span>Mailbox</span>
+              <span>{t("nav.mailbox", "Mailbox")}</span>
               {mailboxUnreadCount > 0 && (
                 <span className="mobile-more-item-badge mobile-more-item-badge--unread">{formatCount(mailboxUnreadCount)}</span>
               )}
@@ -452,7 +454,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenActivityLog)}
             >
               <Activity />
-              <span>Activity Log</span>
+              <span>{t("nav.activityLog", "Activity Log")}</span>
             </button>
 
             <button
@@ -462,7 +464,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenSystemStats)}
             >
               <Monitor />
-              <span>System Stats</span>
+              <span>{t("nav.systemStats", "System Stats")}</span>
             </button>
 
             <button
@@ -472,7 +474,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenGitManager)}
             >
               <GitBranch />
-              <span>Git Manager</span>
+              <span>{t("nav.gitManager", "Git Manager")}</span>
             </button>
 
             <div className="mobile-more-split-row">
@@ -483,7 +485,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(onToggleTerminal)}
               >
                 <Terminal />
-                <span>Terminal</span>
+                <span>{t("nav.terminal", "Terminal")}</span>
               </button>
               <button
                 type="button"
@@ -492,7 +494,7 @@ export function MobileNavBar({
                 onClick={() => setIsScriptsSubmenuOpen((prev) => !prev)}
                 aria-expanded={isScriptsSubmenuOpen}
                 aria-haspopup="menu"
-                aria-label="Show scripts"
+                aria-label={t("nav.showScriptsAriaLabel", "Show scripts")}
               >
                 <ChevronRight
                   size={14}
@@ -501,11 +503,11 @@ export function MobileNavBar({
               </button>
             </div>
             {isScriptsSubmenuOpen && (
-              <div className="mobile-more-submenu" role="menu" aria-label="Scripts submenu">
+              <div className="mobile-more-submenu" role="menu" aria-label={t("nav.scriptsSubmenuAriaLabel", "Scripts submenu")}>
                 {scriptsLoading ? (
                   <div className="mobile-more-submenu-loading" data-testid="mobile-more-scripts-loading">
                     <Loader2 className="animate-spin" />
-                    <span>Loading scripts…</span>
+                    <span>{t("nav.loadingScripts", "Loading scripts…")}</span>
                   </div>
                 ) : scriptEntries.length > 0 ? (
                   <>
@@ -537,7 +539,7 @@ export function MobileNavBar({
                         }}
                       >
                         <FileCode />
-                        <span>Manage Scripts…</span>
+                        <span>{t("nav.manageScripts", "Manage Scripts…")}</span>
                       </button>
                     )}
                   </>
@@ -554,7 +556,7 @@ export function MobileNavBar({
                       }}
                     >
                       <FileCode />
-                      <span>No scripts — add one…</span>
+                      <span>{t("nav.noScriptsAddOne", "No scripts — add one…")}</span>
                     </button>
                   )
                 )}
@@ -568,7 +570,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenFiles)}
             >
               <Folder />
-              <span>Files</span>
+              <span>{t("nav.files", "Files")}</span>
             </button>
 
             <button
@@ -578,7 +580,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(planningHandler)}
             >
               <Lightbulb />
-              <span>Planning</span>
+              <span>{t("nav.planning", "Planning")}</span>
               {activePlanningSessionCount > 0 && (
                 <span className="mobile-more-item-badge">{formatCount(activePlanningSessionCount)}</span>
               )}
@@ -591,7 +593,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenWorkflowSteps)}
             >
               <Workflow />
-              <span>Workflow Steps</span>
+              <span>{t("nav.workflowSteps", "Workflow Steps")}</span>
             </button>
 
             <button
@@ -601,7 +603,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenSchedules)}
             >
               <Clock />
-              <span>Automation</span>
+              <span>{t("nav.automation", "Automation")}</span>
             </button>
 
             <button
@@ -611,7 +613,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenGitHubImport)}
             >
               <GitHubLogo />
-              <span>Import from GitHub</span>
+              <span>{t("nav.importFromGitHub", "Import from GitHub")}</span>
             </button>
 
             <button
@@ -621,7 +623,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenUsage)}
             >
               <Activity />
-              <span>Usage</span>
+              <span>{t("nav.usage", "Usage")}</span>
             </button>
 
             <button
@@ -631,7 +633,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onViewAllProjects)}
             >
               <Grid3X3 />
-              <span>Projects</span>
+              <span>{t("nav.projects", "Projects")}</span>
             </button>
 
             <button
@@ -641,7 +643,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(() => onChangeView("documents"))}
             >
               <FileText />
-              <span>Documents</span>
+              <span>{t("nav.documents", "Documents")}</span>
             </button>
 
             <button
@@ -651,7 +653,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(() => onChangeView("reliability"))}
             >
               <Activity />
-              <span>Reliability</span>
+              <span>{t("nav.reliability", "Reliability")}</span>
             </button>
             {experimentalFeatures?.evalsView && (
               <button
@@ -661,7 +663,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("evals"))}
               >
                 <Target />
-                <span>Evals</span>
+                <span>{t("nav.evals", "Evals")}</span>
               </button>
             )}
             {experimentalFeatures?.goalsView && (
@@ -672,7 +674,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("goalsView"))}
               >
                 <Target />
-                <span>Goals</span>
+                <span>{t("nav.goals", "Goals")}</span>
               </button>
             )}
 
@@ -684,7 +686,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("skills"))}
               >
                 <Zap />
-                <span>Skills</span>
+                <span>{t("nav.skills", "Skills")}</span>
               </button>
             )}
 
@@ -697,7 +699,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(() => onChangeView("stash-recovery"))}
             >
               <History />
-              <span>Stash Recovery</span>
+              <span>{t("nav.stashRecovery", "Stash Recovery")}</span>
               {stashOrphanCount > 0 ? <span className="mobile-more-item-badge">{formatCount(stashOrphanCount)}</span> : null}
             </button>
 
@@ -709,7 +711,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("research"))}
               >
                 <Search />
-                <span>Research</span>
+                <span>{t("nav.research", "Research")}</span>
               </button>
             )}
 
@@ -721,7 +723,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("insights"))}
               >
                 <Sparkles />
-                <span>Insights</span>
+                <span>{t("nav.insights", "Insights")}</span>
               </button>
             )}
 
@@ -733,7 +735,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onChangeView("memory"))}
               >
                 <Brain />
-                <span>Memory</span>
+                <span>{t("nav.memory", "Memory")}</span>
               </button>
             )}
 
@@ -744,7 +746,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(() => onChangeView("secrets"))}
             >
               <Lock />
-              <span>Secrets</span>
+              <span>{t("nav.secrets", "Secrets")}</span>
             </button>
 
             {experimentalFeatures?.devServerView && (
@@ -757,7 +759,7 @@ export function MobileNavBar({
                 }}
               >
                 <Monitor />
-                <span>Dev Server</span>
+                <span>{t("nav.devServer", "Dev Server")}</span>
               </button>
             )}
 
@@ -769,7 +771,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(onOpenNodes)}
               >
                 <Network />
-                <span>Nodes</span>
+                <span>{t("nav.nodes", "Nodes")}</span>
               </button>
             )}
 
@@ -781,7 +783,7 @@ export function MobileNavBar({
                 onClick={() => handleMoreAction(() => onOpenTodos?.())}
               >
                 <CheckSquare />
-                <span>Todos</span>
+                <span>{t("nav.todos", "Todos")}</span>
               </button>
             )}
 
@@ -811,7 +813,7 @@ export function MobileNavBar({
               onClick={() => handleMoreAction(onOpenSettings)}
             >
               <Settings />
-              <span>Settings</span>
+              <span>{t("nav.settings", "Settings")}</span>
             </button>
           </div>
         </>

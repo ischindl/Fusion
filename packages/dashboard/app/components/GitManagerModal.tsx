@@ -1,5 +1,6 @@
 import "./ScriptsModal.css";
 import { useState, useEffect, useCallback, useRef, useMemo, type CSSProperties } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import type { Task } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
@@ -140,16 +141,17 @@ function FileStatusBadge({ status }: { status: GitFileChange["status"] }) {
 
 /** Copy text to clipboard with toast feedback */
 function useCopyToClipboard(addToast: (msg: string, type?: ToastType) => void) {
+  const { t } = useTranslation("app");
   return useCallback(
     async (text: string, label?: string) => {
       try {
         await navigator.clipboard.writeText(text);
-        addToast(`Copied ${label || "to clipboard"}`, "success");
+        addToast(label ? t("git.copiedLabel", "Copied {{label}}", { label }) : t("git.copiedToClipboard", "Copied to clipboard"), "success");
       } catch {
-        addToast("Failed to copy", "error");
+        addToast(t("git.failedToCopy", "Failed to copy"), "error");
       }
     },
-    [addToast]
+    [addToast, t]
   );
 }
 
@@ -183,6 +185,7 @@ interface GitManagerModalProps {
 // ── Main Component ────────────────────────────────────────────────
 
 export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, projectId }: GitManagerModalProps) {
+  const { t } = useTranslation("app");
   const confirmContext = useConfirm();
   const viewportMode = useViewportMode();
   useMobileScrollLock(isOpen);
@@ -325,8 +328,8 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
         }
       }
     } catch (err) {
-      setSectionError(getErrorMessage(err) || "Failed to fetch git data");
-      addToast(getErrorMessage(err) || "Failed to fetch git data", "error");
+      setSectionError(getErrorMessage(err) || t("git.failedToFetchData", "Failed to fetch git data"));
+      addToast(getErrorMessage(err) || t("git.failedToFetchData", "Failed to fetch git data"), "error");
     } finally {
       setLoading(false);
     }
@@ -367,7 +370,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
   const handleStageFiles = useCallback(async (files: string[]) => {
     try {
       await stageFiles(files, projectId);
-      addToast(`Staged ${files.length} file(s)`, "success");
+      addToast(t("git.stagedFiles", "Staged {{count}} file(s)", { count: files.length }), "success");
       const changes = await fetchFileChanges(projectId);
       setFileChanges(changes);
       setSelectedFiles(new Set());
@@ -375,14 +378,14 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       setChangeDiff(null);
       setChangeDiffError(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to stage files", "error");
+      addToast(getErrorMessage(err) || t("git.failedToStageFiles", "Failed to stage files"), "error");
     }
   }, [addToast, projectId]);
 
   const handleUnstageFiles = useCallback(async (files: string[]) => {
     try {
       await unstageFiles(files, projectId);
-      addToast(`Unstaged ${files.length} file(s)`, "success");
+      addToast(t("git.unstagedFiles", "Unstaged {{count}} file(s)", { count: files.length }), "success");
       const changes = await fetchFileChanges(projectId);
       setFileChanges(changes);
       setSelectedFiles(new Set());
@@ -390,20 +393,20 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       setChangeDiff(null);
       setChangeDiffError(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to unstage files", "error");
+      addToast(getErrorMessage(err) || t("git.failedToUnstageFiles", "Failed to unstage files"), "error");
     }
   }, [addToast, projectId]);
 
   const handleDiscardChanges = useCallback(async (files: string[]) => {
     const shouldDiscard = await confirmContext.confirm({
-      title: "Discard Changes",
-      message: `Discard changes to ${files.length} file(s)? This cannot be undone.`,
+      title: t("git.discardChangesTitle", "Discard Changes"),
+      message: t("git.discardChangesMessage", "Discard changes to {{count}} file(s)? This cannot be undone.", { count: files.length }),
       danger: true,
     });
     if (!shouldDiscard) return;
     try {
       await discardChanges(files, projectId);
-      addToast(`Discarded changes to ${files.length} file(s)`, "success");
+      addToast(t("git.discardedFiles", "Discarded changes to {{count}} file(s)", { count: files.length }), "success");
       const [changes, statusData] = await Promise.all([fetchFileChanges(projectId), fetchGitStatus(projectId, { extended: true })]);
       setFileChanges(changes);
       setStatus(statusData);
@@ -412,7 +415,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       setChangeDiff(null);
       setChangeDiffError(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to discard changes", "error");
+      addToast(getErrorMessage(err) || t("git.failedToDiscardChanges", "Failed to discard changes"), "error");
     }
   }, [addToast, projectId, confirmContext]);
 
@@ -422,7 +425,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     setCommitting(true);
     try {
       const result = await createCommit(commitMessage.trim(), projectId);
-      addToast(`Committed: ${result.hash}`, "success");
+      addToast(t("git.committedHash", "Committed: {{hash}}", { hash: result.hash }), "success");
       setCommitMessage("");
       // Refresh changes and status
       const [changes, statusData] = await Promise.all([fetchFileChanges(projectId), fetchGitStatus(projectId, { extended: true })]);
@@ -432,11 +435,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       setChangeDiff(null);
       setChangeDiffError(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to commit", "error");
+      addToast(getErrorMessage(err) || t("git.failedToCommit", "Failed to commit"), "error");
     } finally {
       setCommitting(false);
     }
-  }, [commitMessage, addToast, projectId]);
+  }, [commitMessage, addToast, projectId, t]);
 
   const handleStageAllAndCommit = useCallback(async () => {
     if (!commitMessage.trim()) return;
@@ -447,7 +450,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
         await stageFiles(unstaged, projectId);
       }
       const result = await createCommit(commitMessage.trim(), projectId);
-      addToast(`Committed: ${result.hash}`, "success");
+      addToast(t("git.committedHash", "Committed: {{hash}}", { hash: result.hash }), "success");
       setCommitMessage("");
       const [changes, statusData] = await Promise.all([fetchFileChanges(projectId), fetchGitStatus(projectId, { extended: true })]);
       setFileChanges(changes);
@@ -456,11 +459,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       setChangeDiff(null);
       setChangeDiffError(null);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to commit", "error");
+      addToast(getErrorMessage(err) || t("git.failedToCommit", "Failed to commit"), "error");
     } finally {
       setCommitting(false);
     }
-  }, [commitMessage, fileChanges, addToast, projectId]);
+  }, [commitMessage, fileChanges, addToast, projectId, t]);
 
   const handleSelectDiffFile = useCallback(async (file: string, staged: boolean) => {
     setSelectedDiffTarget({ file, staged });
@@ -479,7 +482,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       if (changeDiffRequestIdRef.current !== requestId) {
         return;
       }
-      const errorMessage = getErrorMessage(err) || "Failed to load file diff";
+      const errorMessage = getErrorMessage(err) || t("git.failedToLoadFileDiff", "Failed to load file diff");
       setChangeDiff(null);
       setChangeDiffError(errorMessage);
       addToast(errorMessage, "error");
@@ -488,7 +491,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
         setLoadingChangeDiff(false);
       }
     }
-  }, [addToast, projectId]);
+  }, [addToast, projectId, t]);
 
   const toggleFileSelection = useCallback((file: string) => {
     setSelectedFiles((prev) => {
@@ -516,7 +519,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       const diff = await fetchCommitDiff(hash, projectId);
       setCommitDiff(diff);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load diff", "error");
+      addToast(getErrorMessage(err) || t("git.failedToLoadDiff", "Failed to load diff"), "error");
       setCommitDiff(null);
     } finally {
       setLoadingDiff(false);
@@ -546,13 +549,13 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     setLoading(true);
     try {
       await createBranch(newBranchName.trim(), branchBase.trim() || undefined, projectId);
-      addToast(`Created branch ${newBranchName}`, "success");
+      addToast(t("git.createdBranch", "Created branch {{name}}", { name: newBranchName }), "success");
       setNewBranchName("");
       setBranchBase("");
       const branchesData = await fetchGitBranches(projectId);
       setBranches(branchesData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to create branch", "error");
+      addToast(getErrorMessage(err) || t("git.failedToCreateBranch", "Failed to create branch"), "error");
     } finally {
       setLoading(false);
     }
@@ -562,12 +565,12 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     setLoading(true);
     try {
       await checkoutBranch(name, projectId);
-      addToast(`Switched to ${name}`, "success");
+      addToast(t("git.switchedToBranch", "Switched to {{name}}", { name }), "success");
       const [statusData, branchesData] = await Promise.all([fetchGitStatus(projectId, { extended: true }), fetchGitBranches(projectId)]);
       setStatus(statusData);
       setBranches(branchesData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to checkout branch", "error");
+      addToast(getErrorMessage(err) || t("git.failedToCheckoutBranch", "Failed to checkout branch"), "error");
     } finally {
       setLoading(false);
     }
@@ -575,36 +578,36 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
 
   const handleDeleteBranch = useCallback(async (name: string) => {
     const shouldDelete = await confirmContext.confirm({
-      title: "Delete Branch",
-      message: `Delete branch "${name}"?`,
+      title: t("git.deleteBranchTitle", "Delete Branch"),
+      message: t("git.deleteBranchMessage", "Delete branch \"{{name}}\"?", { name }),
       danger: true,
     });
     if (!shouldDelete) return;
     setLoading(true);
     try {
       await deleteBranch(name, undefined, projectId);
-      addToast(`Deleted branch ${name}`, "success");
+      addToast(t("git.deletedBranch", "Deleted branch {{name}}", { name }), "success");
       const branchesData = await fetchGitBranches(projectId);
       setBranches(branchesData);
     } catch (err) {
       if (getErrorMessage(err).includes("not fully merged")) {
         const shouldForceDelete = await confirmContext.confirm({
-          title: "Force Delete Branch",
-          message: "Branch has unmerged commits. Force delete?",
+          title: t("git.forceDeleteBranchTitle", "Force Delete Branch"),
+          message: t("git.forceDeleteBranchMessage", "Branch has unmerged commits. Force delete?"),
           danger: true,
         });
         if (shouldForceDelete) {
           try {
             await deleteBranch(name, true, projectId);
-            addToast(`Force deleted branch ${name}`, "success");
+            addToast(t("git.forceDeletedBranch", "Force deleted branch {{name}}", { name }), "success");
             const branchesData = await fetchGitBranches(projectId);
             setBranches(branchesData);
           } catch (forceErr) {
-            addToast(getErrorMessage(forceErr) || "Failed to delete branch", "error");
+            addToast(getErrorMessage(forceErr) || t("git.failedToDeleteBranch", "Failed to delete branch"), "error");
           }
         }
       } else {
-        addToast(getErrorMessage(err) || "Failed to delete branch", "error");
+        addToast(getErrorMessage(err) || t("git.failedToDeleteBranch", "Failed to delete branch"), "error");
       }
     } finally {
       setLoading(false);
@@ -688,12 +691,12 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     resetStashDiffState();
     try {
       await createStash(stashMessage.trim() || undefined, projectId);
-      addToast("Changes stashed", "success");
+      addToast(t("git.changesStashed", "Changes stashed"), "success");
       setStashMessage("");
       const stashesData = await fetchGitStashList(projectId);
       setStashes(stashesData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to stash changes", "error");
+      addToast(getErrorMessage(err) || t("git.failedToStashChanges", "Failed to stash changes"), "error");
     } finally {
       setStashLoading(null);
     }
@@ -704,11 +707,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     resetStashDiffState();
     try {
       await applyStash(index, drop, projectId);
-      addToast(drop ? "Stash popped" : "Stash applied", "success");
+      addToast(drop ? t("git.stashPopped", "Stash popped") : t("git.stashApplied", "Stash applied"), "success");
       const stashesData = await fetchGitStashList(projectId);
       setStashes(stashesData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to apply stash", "error");
+      addToast(getErrorMessage(err) || t("git.failedToApplyStash", "Failed to apply stash"), "error");
     } finally {
       setStashLoading(null);
     }
@@ -716,8 +719,8 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
 
   const handleDropStash = useCallback(async (index: number) => {
     const shouldDrop = await confirmContext.confirm({
-      title: "Drop Stash",
-      message: `Drop stash@{${index}}? This cannot be undone.`,
+      title: t("git.dropStashTitle", "Drop Stash"),
+      message: t("git.dropStashMessage", "Drop stash@{{{index}}}? This cannot be undone.", { index }),
       danger: true,
     });
     if (!shouldDrop) return;
@@ -725,11 +728,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     resetStashDiffState();
     try {
       await dropStash(index, projectId);
-      addToast("Stash dropped", "success");
+      addToast(t("git.stashDropped", "Stash dropped"), "success");
       const stashesData = await fetchGitStashList(projectId);
       setStashes(stashesData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to drop stash", "error");
+      addToast(getErrorMessage(err) || t("git.failedToDropStash", "Failed to drop stash"), "error");
     } finally {
       setStashLoading(null);
     }
@@ -758,7 +761,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
         return;
       }
       setStashDiff(null);
-      setStashDiffError(getErrorMessage(err) || "Failed to load stash diff");
+      setStashDiffError(getErrorMessage(err) || t("git.failedToLoadStashDiff", "Failed to load stash diff"));
     } finally {
       if (stashDiffRequestIdRef.current === requestId) {
         setLoadingStashDiff(false);
@@ -773,11 +776,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     try {
       const result = await fetchRemote(undefined, projectId);
       setLastRemoteResult(result);
-      addToast(result.message || "Fetch completed", result.fetched ? "success" : "info");
+      addToast(result.message || t("git.fetchCompleted", "Fetch completed"), result.fetched ? "success" : "info");
       const statusData = await fetchGitStatus(projectId, { extended: true });
       setStatus(statusData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Fetch failed", "error");
+      addToast(getErrorMessage(err) || t("git.fetchFailed", "Fetch failed"), "error");
     } finally {
       setRemoteLoading(null);
     }
@@ -789,15 +792,15 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       const result = await pullBranch(options, projectId);
       setLastRemoteResult(result);
       if (result.conflict) {
-        addToast("Merge conflict detected. Resolve manually.", "error");
+        addToast(t("git.mergeConflictDetected", "Merge conflict detected. Resolve manually."), "error");
       } else {
-        const fallbackMessage = options?.rebase ? "Pull --rebase completed" : "Pull completed";
+        const fallbackMessage = options?.rebase ? t("git.pullRebaseCompleted", "Pull --rebase completed") : t("git.pullCompleted", "Pull completed");
         addToast(result.message || fallbackMessage, "success");
       }
       const statusData = await fetchGitStatus(projectId, { extended: true });
       setStatus(statusData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Pull failed", "error");
+      addToast(getErrorMessage(err) || t("git.pullFailed", "Pull failed"), "error");
     } finally {
       setRemoteLoading(null);
     }
@@ -808,11 +811,11 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     try {
       const result = await pushBranch(projectId);
       setLastRemoteResult(result);
-      addToast(result.message || "Push completed", "success");
+      addToast(result.message || t("git.pushCompleted", "Push completed"), "success");
       const statusData = await fetchGitStatus(projectId, { extended: true });
       setStatus(statusData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Push failed", "error");
+      addToast(getErrorMessage(err) || t("git.pushFailed", "Push failed"), "error");
     } finally {
       setRemoteLoading(null);
     }
@@ -824,17 +827,17 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       const pullResult = await pullBranch({ rebase: true }, projectId);
       setLastRemoteResult(pullResult);
       if (pullResult.conflict) {
-        addToast("Merge conflict detected. Resolve manually.", "error");
+        addToast(t("git.mergeConflictDetected", "Merge conflict detected. Resolve manually."), "error");
         return;
       }
 
       const pushResult = await pushBranch(projectId);
       setLastRemoteResult(pushResult);
-      addToast("Synced with origin (pull --rebase + push)", "success");
+      addToast(t("git.syncedWithOrigin", "Synced with origin (pull --rebase + push)"), "success");
       const statusData = await fetchGitStatus(projectId, { extended: true });
       setStatus(statusData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Sync with origin failed", "error");
+      addToast(getErrorMessage(err) || t("git.syncWithOriginFailed", "Sync with origin failed"), "error");
     } finally {
       setRemoteLoading(null);
     }
@@ -850,7 +853,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     if (!status?.integrationBranch || status.isOnIntegrationBranch === false) return;
     const worktreePath = rootDir;
     if (!worktreePath) {
-      addToast("Project root path not available", "error");
+      addToast(t("git.projectRootNotAvailable", "Project root path not available"), "error");
       return;
     }
     setRemoteLoading("sync-integration");
@@ -869,15 +872,15 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
           skipOriginFetch: true,
         }),
       });
-      addToast("Synced worktree to local integration tip", "success");
+      addToast(t("git.syncedWorktreeToIntegrationTip", "Synced worktree to local integration tip"), "success");
       const statusData = await fetchGitStatus(projectId, { extended: true });
       setStatus(statusData);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Sync failed", "error");
+      addToast(getErrorMessage(err) || t("git.syncFailed", "Sync failed"), "error");
     } finally {
       setRemoteLoading(null);
     }
-  }, [addToast, projectId, rootDir, status?.integrationBranch, status?.isOnIntegrationBranch]);
+  }, [addToast, projectId, rootDir, status?.integrationBranch, status?.isOnIntegrationBranch, t]);
 
   // ── Derived state ───────────────────────────────────────────────
 
@@ -894,18 +897,18 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
         <div className="modal-header">
           <h3>
             <FolderGit2 size={18} style={{ marginRight: 8, verticalAlign: "middle" }} />
-            Git Manager
+            {t("git.modalTitle", "Git Manager")}
           </h3>
           <div className="gm-header-actions">
             <button
               className="btn btn-sm"
               onClick={fetchSectionData}
               disabled={loading}
-              title="Refresh"
+              title={t("git.refresh", "Refresh")}
             >
               <RefreshCw size={14} className={loading ? "spin" : ""} />
             </button>
-            <button className="modal-close" onClick={handleClose} aria-label="Close">
+            <button className="modal-close" onClick={handleClose} aria-label={t("git.close", "Close")}>
               <X size={18} />
             </button>
           </div>
@@ -913,9 +916,18 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
 
         <div className="gm-layout">
           {/* Sidebar Navigation */}
-          <nav className="gm-sidebar" role="tablist" aria-label="Git Manager Sections">
+          <nav className="gm-sidebar" role="tablist" aria-label={t("git.sidebarAriaLabel", "Git Manager Sections")}>
             {SECTIONS.map((section) => {
               const Icon = section.icon;
+              const sectionLabel = {
+                status: t("git.sectionStatus", "Status"),
+                changes: t("git.sectionChanges", "Changes"),
+                commits: t("git.sectionCommits", "Commits"),
+                branches: t("git.sectionBranches", "Branches"),
+                worktrees: t("git.sectionWorktrees", "Worktrees"),
+                stashes: t("git.sectionStashes", "Stashes"),
+                remotes: t("git.sectionRemotes", "Remotes"),
+              }[section.id] ?? section.label;
               return (
                 <button
                   key={section.id}
@@ -925,7 +937,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
                   onClick={() => setActiveSection(section.id)}
                 >
                   <Icon size={16} />
-                  <span className="gm-nav-label">{section.label}</span>
+                  <span className="gm-nav-label">{sectionLabel}</span>
                 </button>
               );
             })}
@@ -937,7 +949,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
             {loading && (
               <div className="gm-loading">
                 <Loader2 size={24} className="spin" />
-                <span>Loading...</span>
+                <span>{t("git.loading", "Loading...")}</span>
               </div>
             )}
 
@@ -947,7 +959,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
                 <AlertCircle size={18} />
                 <span>{sectionError}</span>
                 <button className="btn btn-sm" onClick={fetchSectionData}>
-                  Retry
+                  {t("git.retry", "Retry")}
                 </button>
               </div>
             )}
@@ -1094,6 +1106,7 @@ function StatusPanel({
   onSyncWorkingTree: () => void;
   syncing: boolean;
 }) {
+  const { t } = useTranslation("app");
   const [advancesHelpOpen, setAdvancesHelpOpen] = useState(false);
   const [dismissedAdvanceShas, setDismissedAdvanceShas] = useState<Set<string>>(new Set());
   const visibleAdvances = (status.recentMergeAdvances ?? []).filter((advance) => !dismissedAdvanceShas.has(advance.toSha));
@@ -1104,11 +1117,11 @@ function StatusPanel({
   return (
     <div className="gm-panel" data-testid="status-panel">
       <div className="gm-panel-header">
-        <h4>Repository Status</h4>
+        <h4>{t("git.repositoryStatus", "Repository Status")}</h4>
       </div>
       <div className="gm-status-grid">
         <div className="gm-status-card">
-          <span className="gm-status-label">Branch</span>
+          <span className="gm-status-label">{t("git.statusLabelBranch", "Branch")}</span>
           <span className="gm-status-value">
             <GitBranchIcon size={14} />
             <span>{status.branch}</span>
@@ -1116,77 +1129,77 @@ function StatusPanel({
                 on a branch — detached HEAD (isOnIntegrationBranch undefined)
                 is a non-branch state, not "on the wrong branch." */}
             {status.integrationBranch && status.isOnIntegrationBranch === false && (
-              <span className="gm-status-sub" title="Currently on a non-integration branch">
-                {" "}(not on {status.integrationBranch})
+              <span className="gm-status-sub" title={t("git.notOnIntegrationBranchTitle", "Currently on a non-integration branch")}>
+                {" "}{t("git.notOnIntegrationBranch", "(not on {{branch}})", { branch: status.integrationBranch })}
               </span>
             )}
           </span>
         </div>
         <div className="gm-status-card">
-          <span className="gm-status-label">Commit</span>
+          <span className="gm-status-label">{t("git.statusLabelCommit", "Commit")}</span>
           <span className="gm-status-value">
             <code className="gm-hash">{status.commit}</code>
             <button
               className="gm-icon-btn"
-              onClick={() => copyToClipboard(status.commit, "commit hash")}
-              title={`Copy short commit hash${status.headSha ? " (use the full SHA below for git operations)" : ""}`}
+              onClick={() => copyToClipboard(status.commit, t("git.copyCommitHashLabel", "commit hash"))}
+              title={status.headSha ? t("git.copyShortHashTitleWithFull", "Copy short commit hash (use the full SHA below for git operations)") : t("git.copyShortHashTitle", "Copy short commit hash")}
             >
               <Copy size={12} />
             </button>
             {status.headSha && (
               <button
                 className="gm-icon-btn"
-                onClick={() => copyToClipboard(status.headSha!, "full commit hash")}
-                title="Copy full 40-char SHA"
+                onClick={() => copyToClipboard(status.headSha!, t("git.copyFullCommitHashLabel", "full commit hash"))}
+                title={t("git.copyFullShaTitle", "Copy full 40-char SHA")}
               >
                 <Copy size={12} />
-                <span style={{ fontSize: 10, marginLeft: 2 }}>full</span>
+                <span style={{ fontSize: 10, marginLeft: 2 }}>{t("git.fullShaAbbrev", "full")}</span>
               </button>
             )}
           </span>
         </div>
         <div className="gm-status-card">
-          <span className="gm-status-label">Working Tree</span>
+          <span className="gm-status-label">{t("git.statusLabelWorkingTree", "Working Tree")}</span>
           <span className={`gm-status-badge ${status.isDirty ? "dirty" : "clean"}`}>
             {status.isDirty ? (
               <>
                 <AlertCircle size={12} />
-                Modified
+                {t("git.workingTreeModified", "Modified")}
               </>
             ) : (
               <>
                 <CheckCircle size={12} />
-                Clean
+                {t("git.workingTreeClean", "Clean")}
               </>
             )}
           </span>
           {status.dirtyDetails && (status.dirtyDetails.staged + status.dirtyDetails.modified + status.dirtyDetails.untracked + status.dirtyDetails.conflicted) > 0 && (
             <span className="gm-status-sub">
-              {status.dirtyDetails.staged > 0 && <span title="Staged">{status.dirtyDetails.staged} staged</span>}
+              {status.dirtyDetails.staged > 0 && <span title={t("git.staged", "Staged")}>{t("git.stagedCount", "{{count}} staged", { count: status.dirtyDetails.staged })}</span>}
               {status.dirtyDetails.staged > 0 && (status.dirtyDetails.modified + status.dirtyDetails.untracked + status.dirtyDetails.conflicted) > 0 && " · "}
-              {status.dirtyDetails.modified > 0 && <span title="Modified">{status.dirtyDetails.modified} modified</span>}
+              {status.dirtyDetails.modified > 0 && <span title={t("git.modified", "Modified")}>{t("git.modifiedCount", "{{count}} modified", { count: status.dirtyDetails.modified })}</span>}
               {status.dirtyDetails.modified > 0 && (status.dirtyDetails.untracked + status.dirtyDetails.conflicted) > 0 && " · "}
-              {status.dirtyDetails.untracked > 0 && <span title="Untracked">{status.dirtyDetails.untracked} untracked</span>}
+              {status.dirtyDetails.untracked > 0 && <span title={t("git.untracked", "Untracked")}>{t("git.untrackedCount", "{{count}} untracked", { count: status.dirtyDetails.untracked })}</span>}
               {status.dirtyDetails.untracked > 0 && status.dirtyDetails.conflicted > 0 && " · "}
               {status.dirtyDetails.conflicted > 0 && (
-                <span title="Unresolved merge conflicts" className="gm-status-conflict">
-                  {status.dirtyDetails.conflicted} conflicted
+                <span title={t("git.unresolvedMergeConflicts", "Unresolved merge conflicts")} className="gm-status-conflict">
+                  {t("git.conflictedCount", "{{count}} conflicted", { count: status.dirtyDetails.conflicted })}
                 </span>
               )}
             </span>
           )}
         </div>
         <div className="gm-status-card">
-          <span className="gm-status-label">vs origin</span>
+          <span className="gm-status-label">{t("git.statusLabelVsOrigin", "vs origin")}</span>
           <span className="gm-status-value">
             {status.ahead > 0 && (
-              <span className="gm-ahead" title={`${status.ahead} commit(s) ahead of upstream`}>
+              <span className="gm-ahead" title={t("git.aheadOfUpstream", "{{count}} commit(s) ahead of upstream", { count: status.ahead })}>
                 <ArrowUp size={12} />
                 {status.ahead}
               </span>
             )}
             {status.behind > 0 && (
-              <span className="gm-behind" title={`${status.behind} commit(s) behind upstream`}>
+              <span className="gm-behind" title={t("git.behindUpstream", "{{count}} commit(s) behind upstream", { count: status.behind })}>
                 <ArrowDown size={12} />
                 {status.behind}
               </span>
@@ -1194,7 +1207,7 @@ function StatusPanel({
             {status.ahead === 0 && status.behind === 0 && (
               <span className="gm-in-sync">
                 <CheckCircle size={12} />
-                Up to date
+                {t("git.upToDate", "Up to date")}
               </span>
             )}
           </span>
@@ -1203,51 +1216,51 @@ function StatusPanel({
       {status.integrationBranch && (
         <div className="gm-status-grid">
           <div className="gm-status-card" data-testid="integration-branch-card">
-            <span className="gm-status-label">Integration branch</span>
+            <span className="gm-status-label">{t("git.statusLabelIntegrationBranch", "Integration branch")}</span>
             <span className="gm-status-value">
               <GitBranchIcon size={14} />
               <span>{status.integrationBranch}</span>
               {status.integrationBranchSource && (
-                <span className="gm-status-sub" title={`Resolved from ${status.integrationBranchSource}`}>
+                <span className="gm-status-sub" title={t("git.resolvedFrom", "Resolved from {{source}}", { source: status.integrationBranchSource })}>
                   {" "}({status.integrationBranchSource})
                 </span>
               )}
             </span>
             {status.integrationTipSha && (
               <span className="gm-status-sub">
-                tip <code className="gm-hash">{status.integrationTipSha.slice(0, 8)}</code>
+                {t("git.tip", "tip")} <code className="gm-hash">{status.integrationTipSha.slice(0, 8)}</code>
                 {status.integrationTipSource === "remote-only" && (
                   <>
-                    {" "}<span title="No local refs/heads/<branch>; using refs/remotes/origin/<branch> as the integration tip.">(remote-only — run <code>git switch {status.integrationBranch}</code> to track locally)</span>
+                    {" "}<span title={t("git.remoteOnlyIntegrationTipTitle", "No local refs/heads/<branch>; using refs/remotes/origin/<branch> as the integration tip.")}>{t("git.remoteOnlyTrackLocally", "(remote-only — run git switch {{branch}} to track locally)", { branch: status.integrationBranch })}</span>
                   </>
                 )}
               </span>
             )}
             {status.integrationTipSource === "missing" && (
-              <span className="gm-status-sub gm-status-conflict" title="Neither refs/heads nor refs/remotes/origin has this branch">
-                no ref found for {status.integrationBranch}
+              <span className="gm-status-sub gm-status-conflict" title={t("git.noRefFoundTitle", "Neither refs/heads nor refs/remotes/origin has this branch")}>
+                {t("git.noRefFound", "no ref found for {{branch}}", { branch: status.integrationBranch })}
               </span>
             )}
           </div>
           {status.integrationTipSha !== undefined && (status.aheadOfIntegration !== undefined || status.behindIntegration !== undefined) && (
             <div className="gm-status-card">
-              <span className="gm-status-label">HEAD vs {status.integrationBranch}</span>
+              <span className="gm-status-label">{t("git.headVsIntegration", "HEAD vs {{branch}}", { branch: status.integrationBranch })}</span>
               <span className="gm-status-value">
                 {(status.aheadOfIntegration ?? 0) === 0 && (status.behindIntegration ?? 0) === 0 ? (
                   <span className="gm-in-sync">
                     <CheckCircle size={12} />
-                    Aligned
+                    {t("git.aligned", "Aligned")}
                   </span>
                 ) : (
                   <>
                     {(status.aheadOfIntegration ?? 0) > 0 && (
-                      <span className="gm-ahead" title={`HEAD has ${status.aheadOfIntegration} commit(s) not on ${status.integrationBranch}`}>
+                      <span className="gm-ahead" title={t("git.headAheadOfIntegration", "HEAD has {{count}} commit(s) not on {{branch}}", { count: status.aheadOfIntegration, branch: status.integrationBranch })}>
                         <ArrowUp size={12} />
                         {status.aheadOfIntegration}
                       </span>
                     )}
                     {(status.behindIntegration ?? 0) > 0 && (
-                      <span className="gm-behind" title={`${status.integrationBranch} has ${status.behindIntegration} commit(s) HEAD doesn't`}>
+                      <span className="gm-behind" title={t("git.integrationAheadOfHead", "{{branch}} has {{count}} commit(s) HEAD doesn't", { branch: status.integrationBranch, count: status.behindIntegration })}>
                         <ArrowDown size={12} />
                         {status.behindIntegration}
                       </span>
@@ -1259,33 +1272,33 @@ function StatusPanel({
           )}
           {status.originIntegrationTipSha !== undefined && (
             <div className="gm-status-card">
-              <span className="gm-status-label">Local {status.integrationBranch} vs origin</span>
+              <span className="gm-status-label">{t("git.localVsOrigin", "Local {{branch}} vs origin", { branch: status.integrationBranch })}</span>
               <span className="gm-status-value">
                 {status.originIntegrationTipSha === null ? (
-                  <span className="gm-status-sub">no origin tracking</span>
+                  <span className="gm-status-sub">{t("git.noOriginTracking", "no origin tracking")}</span>
                 ) : status.integrationTipSource === "remote-only" ? (
                   // Local branch doesn't exist — comparing "local vs origin"
                   // is undefined. Show an honest state instead of a green
                   // "Synced" badge that would imply the local ref is in
                   // sync with origin when there's no local ref at all.
-                  <span className="gm-status-sub" title="No local refs/heads/<branch> exists; nothing to compare against origin.">
-                    no local tracking
+                  <span className="gm-status-sub" title={t("git.noLocalRefTitle", "No local refs/heads/<branch> exists; nothing to compare against origin.")}>
+                    {t("git.noLocalTracking", "no local tracking")}
                   </span>
                 ) : (status.aheadOfOriginIntegration ?? 0) === 0 && (status.behindOriginIntegration ?? 0) === 0 ? (
                   <span className="gm-in-sync">
                     <CheckCircle size={12} />
-                    Synced
+                    {t("git.synced", "Synced")}
                   </span>
                 ) : (
                   <>
                     {(status.aheadOfOriginIntegration ?? 0) > 0 && (
-                      <span className="gm-ahead" title={`Local ${status.integrationBranch} is ${status.aheadOfOriginIntegration} commit(s) ahead of origin/${status.integrationBranch}`}>
+                      <span className="gm-ahead" title={t("git.localAheadOfOriginIntegration", "Local {{branch}} is {{count}} commit(s) ahead of origin/{{branch}}", { branch: status.integrationBranch, count: status.aheadOfOriginIntegration })}>
                         <ArrowUp size={12} />
                         {status.aheadOfOriginIntegration}
                       </span>
                     )}
                     {(status.behindOriginIntegration ?? 0) > 0 && (
-                      <span className="gm-behind" title={`Local ${status.integrationBranch} is ${status.behindOriginIntegration} commit(s) behind origin/${status.integrationBranch}`}>
+                      <span className="gm-behind" title={t("git.localBehindOriginIntegration", "Local {{branch}} is {{count}} commit(s) behind origin/{{branch}}", { branch: status.integrationBranch, count: status.behindOriginIntegration })}>
                         <ArrowDown size={12} />
                         {status.behindOriginIntegration}
                       </span>
@@ -1301,23 +1314,23 @@ function StatusPanel({
             // origin/<branch> card so the operator still sees a meaningful
             // distance.
             <div className="gm-status-card">
-              <span className="gm-status-label">HEAD vs origin/{status.integrationBranch}</span>
+              <span className="gm-status-label">{t("git.headVsOriginIntegration", "HEAD vs origin/{{branch}}", { branch: status.integrationBranch })}</span>
               <span className="gm-status-value">
                 {(status.aheadOfIntegrationRemote ?? 0) === 0 && (status.behindIntegrationRemote ?? 0) === 0 ? (
                   <span className="gm-in-sync">
                     <CheckCircle size={12} />
-                    Aligned
+                    {t("git.aligned", "Aligned")}
                   </span>
                 ) : (
                   <>
                     {(status.aheadOfIntegrationRemote ?? 0) > 0 && (
-                      <span className="gm-ahead" title={`HEAD has ${status.aheadOfIntegrationRemote} commit(s) not on origin/${status.integrationBranch}`}>
+                      <span className="gm-ahead" title={t("git.headAheadOfOriginIntegration", "HEAD has {{count}} commit(s) not on origin/{{branch}}", { count: status.aheadOfIntegrationRemote, branch: status.integrationBranch })}>
                         <ArrowUp size={12} />
                         {status.aheadOfIntegrationRemote}
                       </span>
                     )}
                     {(status.behindIntegrationRemote ?? 0) > 0 && (
-                      <span className="gm-behind" title={`origin/${status.integrationBranch} has ${status.behindIntegrationRemote} commit(s) HEAD doesn't`}>
+                      <span className="gm-behind" title={t("git.originIntegrationAheadOfHead", "origin/{{branch}} has {{count}} commit(s) HEAD doesn't", { branch: status.integrationBranch, count: status.behindIntegrationRemote })}>
                         <ArrowDown size={12} />
                         {status.behindIntegrationRemote}
                       </span>
@@ -1329,7 +1342,7 @@ function StatusPanel({
           )}
           {(status.stashCount ?? 0) > 0 && (
             <div className="gm-status-card">
-              <span className="gm-status-label">Stashes</span>
+              <span className="gm-status-label">{t("git.statusLabelStashes", "Stashes")}</span>
               <span className="gm-status-value">
                 <Archive size={14} />
                 <span>{status.stashCount}</span>
@@ -1342,12 +1355,11 @@ function StatusPanel({
         <div className="gm-status-warning" data-testid="index-stale-warning" role="alert">
           <AlertCircle size={14} />
           <div>
-            <strong>Stale index detected.</strong>{" "}
-            HEAD has advanced (typically because Fusion's merger updated the integration-branch ref)
-            but the index still reflects the previous tip — `git status` will report the new commits
-            inverted as &quot;staged changes.&quot; Enable <code>mergeAdvanceAutoSync</code> in Settings to
-            have the merger reconcile automatically, or run <code>git reset --hard HEAD</code> to
-            snap forward manually.
+            <Trans
+              i18nKey="app:git.staleIndexWarning"
+              defaults="<strong>Stale index detected.</strong> HEAD has advanced (typically because Fusion's merger updated the integration-branch ref) but the index still reflects the previous tip — `git status` will report the new commits inverted as &quot;staged changes.&quot; Enable <mergeCode>mergeAdvanceAutoSync</mergeCode> in Settings to have the merger reconcile automatically, or run <resetCode>git reset --hard HEAD</resetCode> to snap forward manually."
+              components={{ strong: <strong />, mergeCode: <code />, resetCode: <code /> }}
+            />
           </div>
         </div>
       )}
@@ -1355,18 +1367,18 @@ function StatusPanel({
         <div className="gm-status-advances" data-testid="recent-merge-advances">
           <div className="gm-status-advances-header">
             <span>
-              Recent integration-branch advances
+              {t("git.recentIntegrationAdvances", "Recent integration-branch advances")}
               <span className="gm-status-sub">
-                {" "}({actionableAdvances.length} need action)
+                {" "}({t("git.advancesNeedAction", "{{count}} need action", { count: actionableAdvances.length })})
               </span>
               <button
                 type="button"
                 className="gm-icon-btn"
                 style={{ marginLeft: 6 }}
                 aria-expanded={advancesHelpOpen}
-                aria-label={advancesHelpOpen ? "Hide explanation" : "What does this mean?"}
+                aria-label={advancesHelpOpen ? t("git.hideExplanation", "Hide explanation") : t("git.whatDoesThisMean", "What does this mean?")}
                 onClick={() => setAdvancesHelpOpen((open) => !open)}
-                title="What does this mean?"
+                title={t("git.whatDoesThisMean", "What does this mean?")}
               >
                 <Info size={13} />
               </button>
@@ -1378,28 +1390,58 @@ function StatusPanel({
                 onClick={onSyncWorkingTree}
                 disabled={syncing}
                 data-testid="sync-working-tree-btn"
-                title="Pull the integration branch into your working tree (auto-stashes uncommitted edits and restores them)"
+                title={t("git.syncWorkingTreeTitle", "Pull the integration branch into your working tree (auto-stashes uncommitted edits and restores them)")}
               >
-                {syncing ? "Syncing…" : "Sync working tree"}
+                {syncing ? t("git.syncing", "Syncing…") : t("git.syncWorkingTree", "Sync working tree")}
               </button>
             )}
           </div>
           {advancesHelpOpen && (
             <div className="gm-status-advances-help" data-testid="recent-merge-advances-help">
               <p>
-                Each entry is a Fusion task whose squash commit advanced the
-                integration branch ref (<code>{status.integrationBranch ?? "main"}</code>).
-                The <em>auto-sync outcome</em> says whether your working tree
-                was also fast-forwarded to that new tip.
+                <Trans
+                  i18nKey="app:git.advancesHelpIntro"
+                  defaults="Each entry is a Fusion task whose squash commit advanced the integration branch ref (<branchCode>{{integrationBranch}}</branchCode>). The <em>auto-sync outcome</em> says whether your working tree was also fast-forwarded to that new tip."
+                  values={{ integrationBranch: status.integrationBranch ?? "main" }}
+                  components={{ branchCode: <code />, em: <em /> }}
+                />
               </p>
               <ul className="gm-status-advances-help-list">
-                <li><code>clean-sync</code> / <code>synced-with-edits-restored</code> — working tree is in sync; nothing to do.</li>
-                <li><code>reachable</code> / <code>subsumed</code> / <code>orphaned</code> / <code>superseded</code> — already handled (including history rewrites where equivalent content already landed, original SHAs disappeared, or HEAD is already aligned to the rewritten integration tip).</li>
-                <li><code>pending</code> + <code>off / not run</code> — auto-sync is disabled in Settings; the branch ref moved but your worktree didn&apos;t follow.</li>
-                <li><code>pending</code> + <code>stash-failed</code> / <code>would-conflict</code> / similar — auto-sync tried but couldn&apos;t reconcile (usually local edits collide with the new commit).</li>
+                <li>
+                  <Trans
+                    i18nKey="app:git.advancesHelpItem1"
+                    defaults="<c1>clean-sync</c1> / <c2>synced-with-edits-restored</c2> — working tree is in sync; nothing to do."
+                    components={{ c1: <code />, c2: <code /> }}
+                  />
+                </li>
+                <li>
+                  <Trans
+                    i18nKey="app:git.advancesHelpItem2"
+                    defaults="<c1>reachable</c1> / <c2>subsumed</c2> / <c3>orphaned</c3> / <c4>superseded</c4> — already handled (including history rewrites where equivalent content already landed, original SHAs disappeared, or HEAD is already aligned to the rewritten integration tip)."
+                    components={{ c1: <code />, c2: <code />, c3: <code />, c4: <code /> }}
+                  />
+                </li>
+                <li>
+                  <Trans
+                    i18nKey="app:git.advancesHelpItem3"
+                    defaults="<c1>pending</c1> + <c2>off / not run</c2> — auto-sync is disabled in Settings; the branch ref moved but your worktree didn't follow."
+                    components={{ c1: <code />, c2: <code /> }}
+                  />
+                </li>
+                <li>
+                  <Trans
+                    i18nKey="app:git.advancesHelpItem4"
+                    defaults="<c1>pending</c1> + <c2>stash-failed</c2> / <c3>would-conflict</c3> / similar — auto-sync tried but couldn't reconcile (usually local edits collide with the new commit)."
+                    components={{ c1: <code />, c2: <code />, c3: <code /> }}
+                  />
+                </li>
               </ul>
               <p>
-                <strong>Fix:</strong> Fusion only shows <em>Sync working tree</em> when at least one advance is genuinely <code>pending</code> and HEAD is not aligned with the integration tip. If entries are already handled (subsumed/orphaned/reachable/superseded), no sync action is offered.
+                <Trans
+                  i18nKey="app:git.advancesHelpFix"
+                  defaults="<strong>Fix:</strong> Fusion only shows <em>Sync working tree</em> when at least one advance is genuinely <code>pending</code> and HEAD is not aligned with the integration tip. If entries are already handled (subsumed/orphaned/reachable/superseded), no sync action is offered."
+                  components={{ strong: <strong />, em: <em />, code: <code /> }}
+                />
               </p>
             </div>
           )}
@@ -1411,11 +1453,11 @@ function StatusPanel({
                 <strong>{advance.taskId}</strong>
                 {advance.autoSyncOutcome ? (
                   <span className="gm-status-sub">
-                    {" "}auto-sync: <code>{advance.autoSyncOutcome}</code>
+                    {" "}{t("git.autoSyncOutcome", "auto-sync: {{outcome}}", { outcome: advance.autoSyncOutcome })}
                   </span>
                 ) : (
                   <span className="gm-status-sub">
-                    {" "}auto-sync: <em>off / not run</em>
+                    {" "}{t("git.autoSyncOffNotRun", "auto-sync: off / not run")}
                   </span>
                 )}
                 <span className="gm-status-sub">
@@ -1434,7 +1476,7 @@ function StatusPanel({
                     }}
                     data-testid={`dismiss-advance-${advance.toSha}`}
                   >
-                    Dismiss
+                    {t("git.dismiss", "Dismiss")}
                   </button>
                 )}
               </li>
@@ -1486,6 +1528,7 @@ function ChangesPanel({
   onStageAllAndCommit: () => void;
   committing: boolean;
 }) {
+  const { t } = useTranslation("app");
   const selectedUnstaged = unstagedFiles.filter((f) => selectedFiles.has(`unstaged:${f.file}`));
   const selectedStaged = stagedFiles.filter((f) => selectedFiles.has(`staged:${f.file}`));
 
@@ -1499,7 +1542,7 @@ function ChangesPanel({
             {status.branch}
           </span>
           {status.isDirty && (
-            <span className="gm-dirty-badge">Modified</span>
+            <span className="gm-dirty-badge">{t("git.workingTreeModified", "Modified")}</span>
           )}
         </div>
       )}
@@ -1509,21 +1552,21 @@ function ChangesPanel({
       {/* Unstaged Changes */}
       <div className="gm-file-section">
         <div className="gm-file-section-header">
-          <h5>Unstaged Changes ({unstagedFiles.length})</h5>
+          <h5>{t("git.unstagedChanges", "Unstaged Changes ({{count}})", { count: unstagedFiles.length })}</h5>
           <div className="gm-file-section-actions">
             {selectedUnstaged.length > 0 && (
               <>
                 <button
                   className="btn btn-sm btn-primary"
                   onClick={() => onStageFiles(selectedUnstaged.map((f) => f.file))}
-                  title="Stage selected"
+                  title={t("git.stageSelected", "Stage selected")}
                 >
-                  <Plus size={12} /> Stage ({selectedUnstaged.length})
+                  <Plus size={12} /> {t("git.stageCount", "Stage ({{count}})", { count: selectedUnstaged.length })}
                 </button>
                 <button
                   className="btn btn-sm btn-danger"
                   onClick={() => onDiscardChanges(selectedUnstaged.map((f) => f.file))}
-                  title="Discard selected"
+                  title={t("git.discardSelected", "Discard selected")}
                 >
                   <XCircle size={12} />
                 </button>
@@ -1533,16 +1576,16 @@ function ChangesPanel({
               <button
                 className="btn btn-sm"
                 onClick={() => onStageFiles(unstagedFiles.map((f) => f.file))}
-                title="Stage all"
+                title={t("git.stageAll", "Stage all")}
               >
-                Stage All
+                {t("git.stageAll", "Stage All")}
               </button>
             )}
           </div>
         </div>
         <div className="gm-file-list gm-file-list-unstaged" data-testid="gm-file-list-unstaged">
           {unstagedFiles.length === 0 ? (
-            <div className="gm-empty">No unstaged changes</div>
+            <div className="gm-empty">{t("git.noUnstagedChanges", "No unstaged changes")}</div>
           ) : (
             unstagedFiles.map((f) => {
               const isActive = selectedDiffTarget?.file === f.file && selectedDiffTarget.staged === false;
@@ -1576,7 +1619,7 @@ function ChangesPanel({
                       e.stopPropagation();
                       onStageFiles([f.file]);
                     }}
-                    title="Stage file"
+                    title={t("git.stageFile", "Stage file")}
                   >
                     <Plus size={12} />
                   </button>
@@ -1590,31 +1633,31 @@ function ChangesPanel({
       {/* Staged Changes */}
       <div className="gm-file-section">
         <div className="gm-file-section-header">
-          <h5>Staged Changes ({stagedFiles.length})</h5>
+          <h5>{t("git.stagedChanges", "Staged Changes ({{count}})", { count: stagedFiles.length })}</h5>
           <div className="gm-file-section-actions">
             {selectedStaged.length > 0 && (
               <button
                 className="btn btn-sm"
                 onClick={() => onUnstageFiles(selectedStaged.map((f) => f.file))}
-                title="Unstage selected"
+                title={t("git.unstageSelected", "Unstage selected")}
               >
-                Unstage ({selectedStaged.length})
+                {t("git.unstageCount", "Unstage ({{count}})", { count: selectedStaged.length })}
               </button>
             )}
             {stagedFiles.length > 0 && (
               <button
                 className="btn btn-sm"
                 onClick={() => onUnstageFiles(stagedFiles.map((f) => f.file))}
-                title="Unstage all"
+                title={t("git.unstageAll", "Unstage all")}
               >
-                Unstage All
+                {t("git.unstageAll", "Unstage All")}
               </button>
             )}
           </div>
         </div>
         <div className="gm-file-list gm-file-list-staged" data-testid="gm-file-list-staged">
           {stagedFiles.length === 0 ? (
-            <div className="gm-empty">No staged changes</div>
+            <div className="gm-empty">{t("git.noStagedChanges", "No staged changes")}</div>
           ) : (
             stagedFiles.map((f) => {
               const isActive = selectedDiffTarget?.file === f.file && selectedDiffTarget.staged === true;
@@ -1648,7 +1691,7 @@ function ChangesPanel({
                       e.stopPropagation();
                       onUnstageFiles([f.file]);
                     }}
-                    title="Unstage file"
+                    title={t("git.unstageFile", "Unstage file")}
                   >
                     <X size={12} />
                   </button>
@@ -1667,14 +1710,14 @@ function ChangesPanel({
             {selectedDiffTarget && (
               <div className="gm-diff-target">
                 <FileDiff size={14} />
-                <span>{selectedDiffTarget.staged ? "Staged" : "Unstaged"} diff: </span>
+                <span>{selectedDiffTarget.staged ? t("git.staged", "Staged") : t("git.unstaged", "Unstaged")} {t("git.diffColon", "diff:")} </span>
                 <code>{selectedDiffTarget.file}</code>
               </div>
             )}
             {loadingChangeDiff && (
               <div className="gm-diff-loading">
                 <Loader2 size={16} className="spin" />
-                Loading diff...
+                {t("git.loadingDiff", "Loading diff...")}
               </div>
             )}
             {changeDiffError && !loadingChangeDiff && (
@@ -1690,7 +1733,7 @@ function ChangesPanel({
         ) : (
           <div className="gm-diff-empty">
             <FileDiff size={20} />
-            <span>Select a file to view its diff</span>
+            <span>{t("git.selectFileToViewDiff", "Select a file to view its diff")}</span>
           </div>
         )}
       </div>
@@ -1701,7 +1744,7 @@ function ChangesPanel({
       <form className="gm-commit-form" onSubmit={onCommit}>
         <textarea
           className="gm-commit-input"
-          placeholder="Commit message..."
+          placeholder={t("git.commitMessagePlaceholder", "Commit message...")}
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
           rows={3}
@@ -1712,10 +1755,10 @@ function ChangesPanel({
             type="submit"
             className="btn btn-sm btn-primary"
             disabled={committing || !commitMessage.trim() || stagedFiles.length === 0}
-            title={stagedFiles.length === 0 ? "No staged changes to commit" : "Commit staged changes"}
+            title={stagedFiles.length === 0 ? t("git.noStagedChangesToCommit", "No staged changes to commit") : t("git.commitStagedChanges", "Commit staged changes")}
           >
             {committing ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-            Commit
+            {t("git.commit", "Commit")}
           </button>
           {unstagedFiles.length > 0 && (
             <button
@@ -1723,9 +1766,9 @@ function ChangesPanel({
               className="btn btn-sm"
               onClick={onStageAllAndCommit}
               disabled={committing || !commitMessage.trim()}
-              title="Stage all and commit"
+              title={t("git.stageAllAndCommitTitle", "Stage all and commit")}
             >
-              Stage All & Commit
+              {t("git.stageAllAndCommit", "Stage All & Commit")}
             </button>
           )}
         </div>
@@ -1758,15 +1801,16 @@ function CommitsPanel({
   canLoadMore: boolean;
   copyToClipboard: (text: string, label?: string) => void;
 }) {
+  const { t } = useTranslation("app");
   return (
     <div className="gm-panel" data-testid="commits-panel">
       <div className="gm-panel-header">
-        <h4>Commits</h4>
+        <h4>{t("git.sectionCommits", "Commits")}</h4>
         <div className="gm-search-box">
           <Search size={14} />
           <input
             type="text"
-            placeholder="Search commits..."
+            placeholder={t("git.searchCommits", "Search commits...")}
             value={commitSearch}
             onChange={(e) => setCommitSearch(e.target.value)}
           />
@@ -1775,7 +1819,7 @@ function CommitsPanel({
       <div className="gm-commits-list">
         {commits.length === 0 ? (
           <div className="gm-empty">
-            {commitSearch ? "No matching commits" : "No commits found"}
+            {commitSearch ? t("git.noMatchingCommits", "No matching commits") : t("git.noCommitsFound", "No commits found")}
           </div>
         ) : (
           commits.map((commit, idx) => (
@@ -1801,15 +1845,15 @@ function CommitsPanel({
                     <span>•</span>
                     <span>{relativeDate(commit.date)}</span>
                     {commit.parents.length > 1 && (
-                      <span className="gm-merge-badge">merge</span>
+                      <span className="gm-merge-badge">{t("git.mergeBadge", "merge")}</span>
                     )}
                   </div>
                 </button>
                 <div className="gm-commit-actions-row">
                   <button
                     className="gm-icon-btn"
-                    onClick={() => copyToClipboard(commit.hash, "commit hash")}
-                    title="Copy full hash"
+                    onClick={() => copyToClipboard(commit.hash, t("git.copyCommitHashLabel", "commit hash"))}
+                    title={t("git.copyFullHash", "Copy full hash")}
                   >
                     <Copy size={12} />
                   </button>
@@ -1819,7 +1863,7 @@ function CommitsPanel({
                     {loadingDiff ? (
                       <div className="gm-diff-loading">
                         <Loader2 size={16} className="spin" />
-                        Loading diff...
+                        {t("git.loadingDiff", "Loading diff...")}
                       </div>
                     ) : commitDiff ? (
                       <>
@@ -1828,7 +1872,7 @@ function CommitsPanel({
                         <pre className="gm-diff-patch">{commitDiff.patch}</pre>
                       </>
                     ) : (
-                      <div className="gm-diff-error">Failed to load diff</div>
+                      <div className="gm-diff-error">{t("git.failedToLoadDiff", "Failed to load diff")}</div>
                     )}
                   </div>
                 )}
@@ -1839,7 +1883,7 @@ function CommitsPanel({
       </div>
       {canLoadMore && (
         <button className="gm-load-more" onClick={onLoadMore}>
-          Load more commits
+          {t("git.loadMoreCommits", "Load more commits")}
         </button>
       )}
     </div>
@@ -1892,15 +1936,16 @@ function BranchesPanel({
   onBranchCommitClick: (hash: string) => void;
   onCloseBranchDetails: () => void;
 }) {
+  const { t } = useTranslation("app");
   return (
     <div className="gm-panel" data-testid="branches-panel">
       <div className="gm-panel-header">
-        <h4>Branches</h4>
+        <h4>{t("git.sectionBranches", "Branches")}</h4>
         <div className="gm-search-box">
           <Search size={14} />
           <input
             type="text"
-            placeholder="Filter branches..."
+            placeholder={t("git.filterBranches", "Filter branches...")}
             value={branchSearch}
             onChange={(e) => setBranchSearch(e.target.value)}
           />
@@ -1911,7 +1956,7 @@ function BranchesPanel({
       <form className="gm-create-form" onSubmit={onCreateBranch}>
         <input
           type="text"
-          placeholder="New branch name"
+          placeholder={t("git.newBranchName", "New branch name")}
           value={newBranchName}
           onChange={(e) => setNewBranchName(e.target.value)}
           disabled={loading}
@@ -1922,7 +1967,7 @@ function BranchesPanel({
           disabled={loading}
           className="gm-branch-select"
         >
-          <option value="">Base: HEAD</option>
+          <option value="">{t("git.baseHead", "Base: HEAD")}</option>
           {allBranches.map((b) => (
             <option key={b.name} value={b.name}>
               {b.name}
@@ -1935,7 +1980,7 @@ function BranchesPanel({
           disabled={loading || !newBranchName.trim()}
         >
           <Plus size={14} />
-          Create
+          {t("git.create", "Create")}
         </button>
       </form>
 
@@ -1943,7 +1988,7 @@ function BranchesPanel({
       <div className="gm-branches-list">
         {branches.length === 0 ? (
           <div className="gm-empty">
-            {branchSearch ? "No matching branches" : "No branches found"}
+            {branchSearch ? t("git.noMatchingBranches", "No matching branches") : t("git.noBranchesFound", "No branches found")}
           </div>
         ) : (
           branches.map((branch) => (
@@ -1971,7 +2016,7 @@ function BranchesPanel({
                         className="btn btn-sm"
                         onClick={(e) => { e.stopPropagation(); onCheckoutBranch(branch.name); }}
                         disabled={loading}
-                        title="Checkout"
+                        title={t("git.checkout", "Checkout")}
                       >
                         <GitBranchIcon size={14} />
                       </button>
@@ -1979,7 +2024,7 @@ function BranchesPanel({
                         className="btn btn-sm btn-danger"
                         onClick={(e) => { e.stopPropagation(); onDeleteBranch(branch.name); }}
                         disabled={loading}
-                        title="Delete"
+                        title={t("git.deleteBranch", "Delete")}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -1994,12 +2039,12 @@ function BranchesPanel({
                   <div className="gm-branch-details-header">
                     <span className="gm-branch-details-title">
                       <GitCommitIcon size={14} />
-                      Commits on {branch.name}
+                      {t("git.commitsOnBranch", "Commits on {{name}}", { name: branch.name })}
                     </span>
                     <button
                       className="gm-icon-btn"
                       onClick={onCloseBranchDetails}
-                      title="Close"
+                      title={t("git.close", "Close")}
                       data-testid="close-branch-details"
                     >
                       <X size={14} />
@@ -2008,10 +2053,10 @@ function BranchesPanel({
                   {loadingBranchCommits ? (
                     <div className="gm-branch-details-loading">
                       <Loader2 size={16} className="spin" />
-                      Loading commits...
+                      {t("git.loadingCommits", "Loading commits...")}
                     </div>
                   ) : branchCommits.length === 0 ? (
-                    <div className="gm-empty">No commits found</div>
+                    <div className="gm-empty">{t("git.noCommitsFound", "No commits found")}</div>
                   ) : (
                     <div className="gm-branch-commits-list">
                       {branchCommits.map((commit) => (
@@ -2030,7 +2075,7 @@ function BranchesPanel({
                               <span>•</span>
                               <span>{relativeDate(commit.date)}</span>
                               {commit.parents.length > 1 && (
-                                <span className="gm-merge-badge">merge</span>
+                                <span className="gm-merge-badge">{t("git.mergeBadge", "merge")}</span>
                               )}
                             </div>
                           </button>
@@ -2039,7 +2084,7 @@ function BranchesPanel({
                               {loadingBranchCommitDiff ? (
                                 <div className="gm-diff-loading">
                                   <Loader2 size={16} className="spin" />
-                                  Loading diff...
+                                  {t("git.loadingDiff", "Loading diff...")}
                                 </div>
                               ) : branchCommitDiff ? (
                                 <>
@@ -2050,7 +2095,7 @@ function BranchesPanel({
                                   <pre className="gm-diff-patch">{branchCommitDiff.patch}</pre>
                                 </>
                               ) : (
-                                <div className="gm-diff-error">Failed to load diff</div>
+                                <div className="gm-diff-error">{t("git.failedToLoadDiff", "Failed to load diff")}</div>
                               )}
                             </div>
                           )}
@@ -2070,14 +2115,15 @@ function BranchesPanel({
 
 /** Worktrees panel */
 function WorktreesPanel({ worktrees }: { worktrees: GitWorktree[] }) {
+  const { t } = useTranslation("app");
   return (
     <div className="gm-panel" data-testid="worktrees-panel">
       <div className="gm-panel-header">
-        <h4>Worktrees</h4>
+        <h4>{t("git.sectionWorktrees", "Worktrees")}</h4>
         <div className="gm-worktree-stats">
-          <span>{worktrees.length} total</span>
+          <span>{t("git.worktreesTotal", "{{count}} total", { count: worktrees.length })}</span>
           <span className="gm-stat-separator">•</span>
-          <span>{worktrees.filter((w) => w.taskId).length} in use</span>
+          <span>{t("git.worktreesInUse", "{{count}} in use", { count: worktrees.filter((w) => w.taskId).length })}</span>
         </div>
       </div>
       <div className="gm-worktrees-list">
@@ -2088,8 +2134,8 @@ function WorktreesPanel({ worktrees }: { worktrees: GitWorktree[] }) {
           >
             <div className="gm-worktree-info">
               <div className="gm-worktree-path-row">
-                {worktree.isMain && <span className="gm-badge main">main</span>}
-                {worktree.isBare && <span className="gm-badge bare">bare</span>}
+                {worktree.isMain && <span className="gm-badge main">{t("git.worktreeBadgeMain", "main")}</span>}
+                {worktree.isBare && <span className="gm-badge bare">{t("git.worktreeBadgeBare", "bare")}</span>}
                 <span className="gm-worktree-path" title={worktree.path}>
                   {getPathBasename(worktree.path) || worktree.path}
                 </span>
@@ -2141,17 +2187,18 @@ function StashesPanel({
   loadingStashDiff: boolean;
   stashDiffError: string | null;
 }) {
+  const { t } = useTranslation("app");
   return (
     <div className="gm-panel" data-testid="stashes-panel">
       <div className="gm-panel-header">
-        <h4>Stashes</h4>
+        <h4>{t("git.sectionStashes", "Stashes")}</h4>
       </div>
 
       {/* Create stash form */}
       <form className="gm-create-form" onSubmit={onCreateStash}>
         <input
           type="text"
-          placeholder="Stash message (optional)"
+          placeholder={t("git.stashMessagePlaceholder", "Stash message (optional)")}
           value={stashMessage}
           onChange={(e) => setStashMessage(e.target.value)}
           disabled={stashLoading !== null}
@@ -2166,14 +2213,14 @@ function StashesPanel({
           ) : (
             <Archive size={14} />
           )}
-          Stash
+          {t("git.stash", "Stash")}
         </button>
       </form>
 
       {/* Stash list */}
       <div className="gm-stash-list">
         {stashes.length === 0 ? (
-          <div className="gm-empty">No stashes</div>
+          <div className="gm-empty">{t("git.noStashes", "No stashes")}</div>
         ) : (
           stashes.map((stash) => (
             <div key={stash.index} className="gm-stash-item">
@@ -2197,33 +2244,33 @@ function StashesPanel({
                     onClick={() => onToggleStashDiff(stash.index)}
                     disabled={stashLoading !== null}
                   >
-                    {expandedStashIndex === stash.index ? "Hide" : "View"}
+                    {expandedStashIndex === stash.index ? t("git.hide", "Hide") : t("git.view", "View")}
                   </button>
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => onApplyStash(stash.index, false)}
                     disabled={stashLoading !== null}
-                    title="Apply stash (keep)"
+                    title={t("git.applyStashKeep", "Apply stash (keep)")}
                   >
                     {stashLoading === `apply-${stash.index}` ? (
                       <Loader2 size={14} className="spin" />
                     ) : (
-                      "Apply"
+                      t("git.apply", "Apply")
                     )}
                   </button>
                   <button
                     className="btn btn-sm"
                     onClick={() => onApplyStash(stash.index, true)}
                     disabled={stashLoading !== null}
-                    title="Pop stash (apply and drop)"
+                    title={t("git.popStashTitle", "Pop stash (apply and drop)")}
                   >
-                    Pop
+                    {t("git.pop", "Pop")}
                   </button>
                   <button
                     className="btn btn-sm btn-danger"
                     onClick={() => onDropStash(stash.index)}
                     disabled={stashLoading !== null}
-                    title="Drop stash"
+                    title={t("git.dropStash", "Drop stash")}
                   >
                     {stashLoading === `drop-${stash.index}` ? (
                       <Loader2 size={14} className="spin" />
@@ -2239,7 +2286,7 @@ function StashesPanel({
                   {loadingStashDiff ? (
                     <div className="gm-diff-loading">
                       <Loader2 size={14} className="spin" />
-                      Loading stash diff…
+                      {t("git.loadingStashDiff", "Loading stash diff…")}
                     </div>
                   ) : stashDiffError ? (
                     <div className="gm-diff-error">{stashDiffError}</div>
@@ -2287,6 +2334,8 @@ function RemotesPanel({
   projectId?: string;
   copyToClipboard: (text: string, label?: string) => void;
 }) {
+  const { t } = useTranslation("app");
+
   /** Extract hostname from remote URL */
   const getHostFromUrl = (url: string): string => {
     try {
@@ -2415,7 +2464,7 @@ function RemotesPanel({
       const data = await fetchGitRemotesDetailed(projectId);
       setRemotes(data);
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to load remotes", "error");
+      addToast(getErrorMessage(err) || t("git.failedToLoadRemotes", "Failed to load remotes"), "error");
     } finally {
       setLoading(false);
     }
@@ -2449,7 +2498,7 @@ function RemotesPanel({
       if (remoteCommitsRequestIdRef.current !== requestId) {
         return;
       }
-      setRemoteCommitsError(getErrorMessage(err) || "Failed to load remote commits");
+      setRemoteCommitsError(getErrorMessage(err) || t("git.failedToLoadRemoteCommits", "Failed to load remote commits"));
       setRemoteCommits([]);
     } finally {
       if (remoteCommitsRequestIdRef.current === requestId) {
@@ -2467,13 +2516,13 @@ function RemotesPanel({
     setRemoteActionLoading("add");
     try {
       await addGitRemote(newRemoteName.trim(), newRemoteUrl.trim(), projectId);
-      addToast(`Remote '${newRemoteName}' added successfully`, "success");
+      addToast(t("git.remoteAdded", "Remote '{{name}}' added successfully", { name: newRemoteName }), "success");
       setNewRemoteName("");
       setNewRemoteUrl("");
       setShowAddForm(false);
       await loadRemotes();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to add remote", "error");
+      addToast(getErrorMessage(err) || t("git.failedToAddRemote", "Failed to add remote"), "error");
     } finally {
       setRemoteActionLoading(null);
     }
@@ -2481,8 +2530,8 @@ function RemotesPanel({
 
   const handleRemoveRemote = async (name: string) => {
     const shouldRemove = await confirmContextRemote.confirm({
-      title: "Remove Remote",
-      message: `Are you sure you want to remove remote '${name}'?`,
+      title: t("git.removeRemoteTitle", "Remove Remote"),
+      message: t("git.removeRemoteMessage", "Are you sure you want to remove remote '{{name}}'?", { name }),
       danger: true,
     });
     if (!shouldRemove) return;
@@ -2490,10 +2539,10 @@ function RemotesPanel({
     setRemoteActionLoading(`remove-${name}`);
     try {
       await removeGitRemote(name, projectId);
-      addToast(`Remote '${name}' removed`, "success");
+      addToast(t("git.remoteRemoved", "Remote '{{name}}' removed", { name }), "success");
       await loadRemotes();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to remove remote", "error");
+      addToast(getErrorMessage(err) || t("git.failedToRemoveRemote", "Failed to remove remote"), "error");
     } finally {
       setRemoteActionLoading(null);
     }
@@ -2505,12 +2554,12 @@ function RemotesPanel({
     setRemoteActionLoading(`rename-${oldName}`);
     try {
       await renameGitRemote(oldName, editNameValue.trim(), projectId);
-      addToast(`Remote renamed to '${editNameValue.trim()}'`, "success");
+      addToast(t("git.remoteRenamed", "Remote renamed to '{{name}}'", { name: editNameValue.trim() }), "success");
       setEditingRemote(null);
       setEditNameValue("");
       await loadRemotes();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to rename remote", "error");
+      addToast(getErrorMessage(err) || t("git.failedToRenameRemote", "Failed to rename remote"), "error");
     } finally {
       setRemoteActionLoading(null);
     }
@@ -2522,12 +2571,12 @@ function RemotesPanel({
     setRemoteActionLoading(`url-${name}`);
     try {
       await updateGitRemoteUrl(name, editUrlValue.trim(), projectId);
-      addToast(`Remote URL updated`, "success");
+      addToast(t("git.remoteUrlUpdated", "Remote URL updated"), "success");
       setEditingRemote(null);
       setEditUrlValue("");
       await loadRemotes();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to update remote URL", "error");
+      addToast(getErrorMessage(err) || t("git.failedToUpdateRemoteUrl", "Failed to update remote URL"), "error");
     } finally {
       setRemoteActionLoading(null);
     }
@@ -2591,12 +2640,12 @@ function RemotesPanel({
         {/* ── Left Column: Remote Selector ── */}
         <div className="gm-remote-selector" data-testid="remote-selector">
           <div className="gm-remote-selector-header">
-            <span className="gm-remote-selector-title">Remotes</span>
+            <span className="gm-remote-selector-title">{t("git.sectionRemotes", "Remotes")}</span>
             <button
               className="btn btn-sm"
               onClick={() => setShowAddForm(!showAddForm)}
               disabled={remoteActionLoading !== null}
-              title={showAddForm ? "Cancel" : "Add Remote"}
+              title={showAddForm ? t("git.cancel", "Cancel") : t("git.addRemote", "Add Remote")}
             >
               {showAddForm ? <X size={14} /> : <Plus size={14} />}
             </button>
@@ -2607,7 +2656,7 @@ function RemotesPanel({
             <form className="gm-remote-form" onSubmit={handleAddRemote}>
               <input
                 type="text"
-                placeholder="Remote name"
+                placeholder={t("git.remoteName", "Remote name")}
                 value={newRemoteName}
                 onChange={(e) => setNewRemoteName(e.target.value)}
                 disabled={remoteActionLoading === "add"}
@@ -2615,7 +2664,7 @@ function RemotesPanel({
               />
               <input
                 type="text"
-                placeholder="Repository URL"
+                placeholder={t("git.repositoryUrl", "Repository URL")}
                 value={newRemoteUrl}
                 onChange={(e) => setNewRemoteUrl(e.target.value)}
                 disabled={remoteActionLoading === "add"}
@@ -2631,7 +2680,7 @@ function RemotesPanel({
                 ) : (
                   <Plus size={12} />
                 )}
-                Add
+                {t("git.add", "Add")}
               </button>
             </form>
           )}
@@ -2640,10 +2689,10 @@ function RemotesPanel({
           {loading ? (
             <div className="gm-loading">
               <Loader2 size={16} className="spin" />
-              Loading...
+              {t("git.loading", "Loading...")}
             </div>
           ) : remotes.length === 0 ? (
-            <div className="gm-empty">No remotes</div>
+            <div className="gm-empty">{t("git.noRemotes", "No remotes")}</div>
           ) : (
             remotes.map((remote) => (
               <div
@@ -2663,7 +2712,7 @@ function RemotesPanel({
                   <span className="gm-remote-selector-name">
                     <span className="gm-remote-selector-name-text">{remote.name}</span>
                     {remote.name === "origin" && (
-                      <span className="gm-remote-default-badge">default</span>
+                      <span className="gm-remote-default-badge">{t("git.defaultBadge", "default")}</span>
                     )}
                   </span>
                   <span className="gm-remote-selector-host" title={remote.fetchUrl}>
@@ -2674,7 +2723,7 @@ function RemotesPanel({
                   className="btn btn-icon btn-sm gm-remote-remove-btn"
                   onClick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }}
                   disabled={remoteActionLoading !== null}
-                  title="Remove remote"
+                  title={t("git.removeRemote", "Remove remote")}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -2697,14 +2746,14 @@ function RemotesPanel({
                         <div className="gm-remote-indicator ahead">
                           <span className="status-dot status-dot--online" aria-hidden="true" />
                           <ArrowUp size={14} />
-                          {status.ahead} to push
+                          {t("git.commitsToPush", "{{count}} to push", { count: status.ahead })}
                         </div>
                       )}
                       {status.behind > 0 && (
                         <div className="gm-remote-indicator behind">
                           <span className="status-dot status-dot--pending" aria-hidden="true" />
                           <ArrowDown size={14} />
-                          {status.behind} to pull
+                          {t("git.commitsToPull", "{{count}} to pull", { count: status.behind })}
                         </div>
                       )}
                     </div>
@@ -2721,7 +2770,7 @@ function RemotesPanel({
                     ) : (
                       <RefreshCw size={14} />
                     )}
-                    Fetch
+                    {t("git.fetch", "Fetch")}
                   </button>
                   <div className="gm-pull-split" ref={pullSplitRef}>
                     <button
@@ -2737,20 +2786,20 @@ function RemotesPanel({
                       ) : (
                         <GitPullRequest size={14} />
                       )}
-                      Pull
+                      {t("git.pull", "Pull")}
                     </button>
                     <button
                       className="btn btn-primary btn-icon gm-pull-split-toggle"
                       onClick={() => setPullMenuOpen((open) => !open)}
                       disabled={remoteLoading !== null || loading}
-                      aria-label="Pull options"
+                      aria-label={t("git.pullOptions", "Pull options")}
                       aria-haspopup="menu"
                       aria-expanded={pullMenuOpen}
                     >
                       <ChevronDown size={14} />
                     </button>
                     {pullMenuOpen ? (
-                      <div className="gm-pull-menu" role="menu" aria-label="Pull options menu">
+                      <div className="gm-pull-menu" role="menu" aria-label={t("git.pullOptionsMenu", "Pull options menu")}>
                         <button
                           className="gm-pull-menu-item"
                           role="menuitem"
@@ -2759,7 +2808,7 @@ function RemotesPanel({
                             onPull({ rebase: false });
                           }}
                         >
-                          Pull
+                          {t("git.pull", "Pull")}
                         </button>
                         <button
                           className="gm-pull-menu-item"
@@ -2769,7 +2818,7 @@ function RemotesPanel({
                             onPull({ rebase: true });
                           }}
                         >
-                          Pull --rebase
+                          {t("git.pullRebase", "Pull --rebase")}
                         </button>
                       </div>
                     ) : null}
@@ -2784,13 +2833,13 @@ function RemotesPanel({
                     ) : (
                       <ArrowUp size={14} />
                     )}
-                    Push
+                    {t("git.push", "Push")}
                   </button>
                   <button
                     className="btn btn-primary"
                     onClick={onSync}
                     disabled={remoteLoading !== null || loading}
-                    title="Pull --rebase from origin, then push current branch"
+                    title={t("git.syncOriginTitle", "Pull --rebase from origin, then push current branch")}
                     data-testid="remotes-sync-origin-btn"
                   >
                     {remoteLoading === "sync" ? (
@@ -2798,7 +2847,7 @@ function RemotesPanel({
                     ) : (
                       <GitMerge size={14} />
                     )}
-                    Sync
+                    {t("git.sync", "Sync")}
                   </button>
                   {status?.integrationBranch && (
                     <button
@@ -2807,8 +2856,8 @@ function RemotesPanel({
                       disabled={syncIntegrationDisabled}
                       title={
                         status.isOnIntegrationBranch === false
-                          ? `Not on integration branch (${status.integrationBranch})`
-                          : "Sync working tree to local integration tip (same as banner Pull)"
+                          ? t("git.notOnIntegrationBranchBtn", "Not on integration branch ({{branch}})", { branch: status.integrationBranch })
+                          : t("git.syncLocalTipTitle", "Sync working tree to local integration tip (same as banner Pull)")
                       }
                       data-testid="remotes-sync-integration-tip-btn"
                     >
@@ -2817,7 +2866,7 @@ function RemotesPanel({
                       ) : (
                         <GitMerge size={14} />
                       )}
-                      Sync local tip
+                      {t("git.syncLocalTip", "Sync local tip")}
                     </button>
                   )}
                 </div>
@@ -2828,7 +2877,7 @@ function RemotesPanel({
                 <div className="gm-remote-detail-urls">
                   {/* Fetch URL */}
                   <div className="gm-remote-detail-url-row">
-                    <span className="gm-url-label">Fetch:</span>
+                    <span className="gm-url-label">{t("git.fetchLabel", "Fetch:")}</span>
                     {editingRemote === `url-${selectedRemote}` ? (
                       <div className="gm-remote-edit">
                         <input
@@ -2852,7 +2901,7 @@ function RemotesPanel({
                         <button
                           className="btn btn-sm"
                           onClick={() => { setEditingRemote(null); setEditUrlValue(""); }}
-                          title="Cancel"
+                          title={t("git.cancel", "Cancel")}
                         >
                           <X size={12} />
                         </button>
@@ -2865,8 +2914,8 @@ function RemotesPanel({
                         <div className="gm-remote-inline-actions">
                           <button
                             className="btn btn-icon btn-sm"
-                            onClick={() => copyToClipboard(selectedRemoteData.fetchUrl, "fetch URL")}
-                            title="Copy fetch URL"
+                            onClick={() => copyToClipboard(selectedRemoteData.fetchUrl, t("git.fetchUrlLabel", "fetch URL"))}
+                            title={t("git.copyFetchUrl", "Copy fetch URL")}
                           >
                             <Copy size={14} />
                           </button>
@@ -2874,7 +2923,7 @@ function RemotesPanel({
                             className="btn btn-icon btn-sm"
                             onClick={() => startEditingUrl(selectedRemoteData)}
                             disabled={remoteActionLoading !== null}
-                            title="Edit remote URL"
+                            title={t("git.editRemoteUrl", "Edit remote URL")}
                           >
                             <Pencil size={14} />
                           </button>
@@ -2886,15 +2935,15 @@ function RemotesPanel({
                   {/* Push URL */}
                   {selectedRemoteData.pushUrl && selectedRemoteData.pushUrl !== selectedRemoteData.fetchUrl && (
                     <div className="gm-remote-detail-url-row">
-                      <span className="gm-url-label">Push:</span>
+                      <span className="gm-url-label">{t("git.pushLabel", "Push:")}</span>
                       <span className="gm-url-value" title={selectedRemoteData.pushUrl}>
                         <bdo dir="ltr">{selectedRemoteData.pushUrl}</bdo>
                       </span>
                       <div className="gm-remote-inline-actions">
                         <button
                           className="btn btn-icon btn-sm"
-                          onClick={() => copyToClipboard(selectedRemoteData.pushUrl!, "push URL")}
-                          title="Copy push URL"
+                          onClick={() => copyToClipboard(selectedRemoteData.pushUrl!, t("git.pushUrlLabel", "push URL"))}
+                          title={t("git.copyPushUrl", "Copy push URL")}
                         >
                           <Copy size={14} />
                         </button>
@@ -2928,7 +2977,7 @@ function RemotesPanel({
                       <button
                         className="btn btn-sm"
                         onClick={() => { setEditingRemote(null); setEditNameValue(""); }}
-                        title="Cancel"
+                        title={t("git.cancel", "Cancel")}
                       >
                         <X size={12} />
                       </button>
@@ -2938,7 +2987,7 @@ function RemotesPanel({
                       className="btn btn-icon btn-sm"
                       onClick={() => startEditingName(selectedRemoteData)}
                       disabled={remoteActionLoading !== null}
-                      title="Edit remote name"
+                      title={t("git.editRemoteName", "Edit remote name")}
                     >
                       <Pencil size={14} />
                     </button>
@@ -2952,13 +3001,13 @@ function RemotesPanel({
                   <div className="gm-section-subheader">
                     <h5>
                       <ArrowUp size={14} />
-                      Commits to Push ({status.ahead})
+                      {t("git.commitsToPushHeader", "Commits to Push ({{count}})", { count: status.ahead })}
                     </h5>
                   </div>
                   {loadingAhead ? (
                     <div className="gm-loading">
                       <Loader2 size={14} className="spin" />
-                      Loading...
+                      {t("git.loading", "Loading...")}
                     </div>
                   ) : aheadCommits.length > 0 ? (
                     <div className="gm-ahead-commits-list" data-testid="ahead-commits-list">
@@ -2975,7 +3024,7 @@ function RemotesPanel({
                                 handleCompactCommitClick(commit.hash, "ahead");
                               }
                             }}
-                            title="Click to view diff"
+                            title={t("git.clickToViewDiff", "Click to view diff")}
                           >
                             <div className="gm-commit-compact-hash">
                               <code className="gm-hash">{commit.shortHash}</code>
@@ -2999,7 +3048,7 @@ function RemotesPanel({
                               {loadingAheadCommitDiff ? (
                                 <div className="gm-diff-loading">
                                   <Loader2 size={16} className="spin" />
-                                  Loading diff...
+                                  {t("git.loadingDiff", "Loading diff...")}
                                 </div>
                               ) : aheadCommitDiff ? (
                                 <>
@@ -3010,7 +3059,7 @@ function RemotesPanel({
                                   <pre className="gm-diff-patch">{aheadCommitDiff.patch}</pre>
                                 </>
                               ) : (
-                                <div className="gm-diff-error">Failed to load diff</div>
+                                <div className="gm-diff-error">{t("git.failedToLoadDiff", "Failed to load diff")}</div>
                               )}
                             </div>
                           )}
@@ -3019,7 +3068,7 @@ function RemotesPanel({
                     </div>
                   ) : (
                     <div className="gm-empty">
-                      No ahead commits found (may need to fetch first)
+                      {t("git.noAheadCommitsFound", "No ahead commits found (may need to fetch first)")}
                     </div>
                   )}
                 </div>
@@ -3030,13 +3079,13 @@ function RemotesPanel({
                 <div className="gm-section-subheader">
                   <h5>
                     <Radio size={14} />
-                    Recent commits on {selectedRemote}
+                    {t("git.recentCommitsOnRemote", "Recent commits on {{remote}}", { remote: selectedRemote })}
                   </h5>
                 </div>
                 {loadingRemoteCommits ? (
                   <div className="gm-loading">
                     <Loader2 size={14} className="spin" />
-                    Loading commits...
+                    {t("git.loadingCommits", "Loading commits...")}
                   </div>
                 ) : remoteCommitsError ? (
                   <div className="gm-error">
@@ -3045,7 +3094,7 @@ function RemotesPanel({
                   </div>
                 ) : remoteCommits.length === 0 ? (
                   <div className="gm-empty">
-                    No commits found on {selectedRemote}. Try fetching first.
+                    {t("git.noCommitsOnRemote", "No commits found on {{remote}}. Try fetching first.", { remote: selectedRemote })}
                   </div>
                 ) : (
                   <div className="gm-remote-commits-list" data-testid="remote-commits-list">
@@ -3062,7 +3111,7 @@ function RemotesPanel({
                               handleCompactCommitClick(commit.hash, "remote");
                             }
                           }}
-                          title="Click to view diff"
+                          title={t("git.clickToViewDiff", "Click to view diff")}
                         >
                           <div className="gm-commit-compact-hash">
                             <code className="gm-hash">{commit.shortHash}</code>
@@ -3086,7 +3135,7 @@ function RemotesPanel({
                             {loadingRemoteCommitDiff ? (
                               <div className="gm-diff-loading">
                                 <Loader2 size={16} className="spin" />
-                                Loading diff...
+                                {t("git.loadingDiff", "Loading diff...")}
                               </div>
                             ) : remoteCommitDiff ? (
                               <>
@@ -3097,7 +3146,7 @@ function RemotesPanel({
                                 <pre className="gm-diff-patch">{remoteCommitDiff.patch}</pre>
                               </>
                             ) : (
-                              <div className="gm-diff-error">Failed to load diff</div>
+                              <div className="gm-diff-error">{t("git.failedToLoadDiff", "Failed to load diff")}</div>
                             )}
                           </div>
                         )}
@@ -3109,7 +3158,7 @@ function RemotesPanel({
             </>
           ) : (
             <div className="gm-empty">
-              Select a remote to view details
+              {t("git.selectRemoteToViewDetails", "Select a remote to view details")}
             </div>
           )}
 

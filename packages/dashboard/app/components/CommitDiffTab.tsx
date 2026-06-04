@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { FileCode, ChevronDown, ChevronRight, AlertCircle, GitCommit } from "lucide-react";
 import type { MergeDetails } from "@fusion/core";
 import { fetchCommitDiff } from "../api";
@@ -73,6 +74,7 @@ export function parsePatch(rawPatch: string): ParsedFile[] {
  * the in-progress `TaskChangesTab` but sourced from git history.
  */
 export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
+  const { t } = useTranslation("app");
   const [files, setFiles] = useState<ParsedFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
         setExpandedFiles(new Set([parsed[0].path]));
       }
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to load commit diff");
+      setError(getErrorMessage(err) || t("commitDiff.loadError", "Failed to load commit diff"));
     } finally {
       setLoading(false);
     }
@@ -122,9 +124,9 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--empty">
           <GitCommit size={24} />
-          <p>No commit SHA available.</p>
+          <p>{t("commitDiff.noSha", "No commit SHA available.")}</p>
           <span className="task-changes-state-hint">
-            Commit diff is only available for tasks that were merged.
+            {t("commitDiff.mergedOnly", "Commit diff is only available for tasks that were merged.")}
           </span>
         </div>
       </div>
@@ -136,7 +138,7 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--loading">
           <div className="loading-spinner" />
-          <span>Loading commit diff...</span>
+          <span>{t("commitDiff.loading", "Loading commit diff...")}</span>
         </div>
       </div>
     );
@@ -147,7 +149,7 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--error">
           <AlertCircle size={16} />
-          <span>Error loading commit diff: {error}</span>
+          <span>{t("commitDiff.error", "Error loading commit diff: {{error}}", { error })}</span>
         </div>
       </div>
     );
@@ -158,7 +160,7 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
       <div className="detail-section">
         <div className="task-changes-state task-changes-state--empty">
           <FileCode size={24} />
-          <p>No files changed in this commit.</p>
+          <p>{t("commitDiff.noFiles", "No files changed in this commit.")}</p>
         </div>
       </div>
     );
@@ -186,14 +188,14 @@ export function CommitDiffTab({ commitSha, mergeDetails }: CommitDiffTabProps) {
       <div className="changes-header">
         <h4>
           <FileCode size={16} />
-          Files Changed ({totalFiles})
+          {t("commit.filesChanged", "Files Changed ({{count}})", { count: totalFiles })}
           <span className="changes-stat-summary">
             <span className="diff-add">+{totalAdditions}</span>{" "}
             <span className="diff-del">-{totalDeletions}</span>
           </span>
         </h4>
         <button className="btn btn-sm" onClick={loadDiff} disabled={loading}>
-          Refresh
+          {t("actions.refresh", "Refresh")}
         </button>
       </div>
 

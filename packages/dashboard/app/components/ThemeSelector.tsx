@@ -1,5 +1,6 @@
 import "./ThemeSelector.css";
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Sun, Moon, Monitor } from "lucide-react";
 import type { ThemeMode, ColorTheme } from "@fusion/core";
 
@@ -93,6 +94,7 @@ export function ThemeSelector({
   onColorThemeChange,
   onDashboardFontScaleChange = () => {},
 }: ThemeSelectorProps) {
+  const { t } = useTranslation("app");
   const handleReset = useCallback(() => {
     onThemeModeChange("dark");
     onColorThemeChange("default");
@@ -102,18 +104,18 @@ export function ThemeSelector({
   return (
     <div className="theme-selector">
       {/* Theme Mode Toggle */}
-      <div className="theme-mode-toggle" role="radiogroup" aria-label="Theme mode">
+      <div className="theme-mode-toggle" role="radiogroup" aria-label={t("theme.modeLabel", "Theme mode")}>
         {THEME_MODES.map(({ value, label, icon: Icon }) => (
           <button
             key={value}
             className={`theme-mode-btn${themeMode === value ? " active" : ""}`}
             onClick={() => onThemeModeChange(value)}
             aria-pressed={themeMode === value}
-            aria-label={`${label} mode`}
-            title={`${label} mode`}
+            aria-label={t(`theme.${value}Mode`, `${label} mode`)}
+            title={t(`theme.${value}Mode`, `${label} mode`)}
           >
             <Icon size={16} />
-            <span>{label}</span>
+            <span>{t(`theme.${value}`, label)}</span>
           </button>
         ))}
       </div>
@@ -130,7 +132,7 @@ export function ThemeSelector({
           )}
         </div>
         <div className="theme-preview-info">
-          <div className="theme-preview-label">Current theme</div>
+          <div className="theme-preview-label">{t("theme.currentTheme", "Current theme")}</div>
           <div className="theme-preview-value">
             {themeMode === "system" ? "System" : `${themeMode.charAt(0).toUpperCase() + themeMode.slice(1)}`}
             {" / "}
@@ -139,8 +141,8 @@ export function ThemeSelector({
         </div>
       </div>
 
-      <div className="theme-section-title">Font Size</div>
-      <div className="theme-font-size-toggle" role="radiogroup" aria-label="Dashboard font size">
+      <div className="theme-section-title">{t("theme.fontSize", "Font Size")}</div>
+      <div className="theme-font-size-toggle" role="radiogroup" aria-label={t("theme.fontSizeLabel", "Dashboard font size")}>
         {FONT_SCALE_OPTIONS.map(({ value, label }) => (
           <button
             key={value}
@@ -148,22 +150,22 @@ export function ThemeSelector({
             onClick={() => onDashboardFontScaleChange(value)}
             aria-pressed={dashboardFontScalePct === value}
           >
-            <span>{label}</span>
+            <span>{t(`theme.fontSize.${label}`, label)}</span>
           </button>
         ))}
       </div>
 
       {/* Color Theme Grid */}
-      <div className="theme-section-title">Color Theme</div>
-      <div className="theme-grid" role="radiogroup" aria-label="Color theme">
+      <div className="theme-section-title">{t("theme.colorTheme", "Color Theme")}</div>
+      <div className="theme-grid" role="radiogroup" aria-label={t("theme.colorThemeLabel", "Color theme")}>
         {COLOR_THEMES.map(({ value, label, className }) => (
           <button
             key={value}
             className={`theme-option${colorTheme === value ? " active" : ""}`}
             onClick={() => onColorThemeChange(value)}
             aria-pressed={colorTheme === value}
-            aria-label={`${label} theme`}
-            title={label}
+            aria-label={t(`theme.colorTheme.${value}`, `${label} theme`)}
+            title={t(`theme.colorTheme.${value}`, label)}
           >
             <div className={`theme-option-swatch ${className}`} aria-hidden="true">
               <span className="theme-option-swatch-sample theme-option-swatch-sample-1" />
@@ -171,7 +173,7 @@ export function ThemeSelector({
               <span className="theme-option-swatch-sample theme-option-swatch-sample-3" />
               <span className="theme-option-swatch-sample theme-option-swatch-sample-4" />
             </div>
-            <span className="theme-option-label">{label}</span>
+            <span className="theme-option-label">{t(`theme.colorTheme.${value}`, label)}</span>
           </button>
         ))}
       </div>
@@ -180,9 +182,9 @@ export function ThemeSelector({
       <button
         className="theme-reset-btn"
         onClick={handleReset}
-        aria-label="Reset to default theme"
+        aria-label={t("theme.resetLabel", "Reset to default theme")}
       >
-        <span>Reset to defaults</span>
+        <span>{t("theme.resetButton", "Reset to defaults")}</span>
       </button>
     </div>
   );

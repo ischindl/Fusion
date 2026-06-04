@@ -237,6 +237,15 @@ Fusion can automatically extract insights from memory and prune transient conten
 
 See [Settings Reference](./settings-reference.md#background-memory-summarization--audit) for configuration details.
 
+## Localization (i18n)
+
+User-facing strings are localized with react-i18next across both the dashboard
+and the terminal UI. English is the source-of-truth; catalogs and shared config
+live in the `@fusion/i18n` package. To translate, add a language, or wire new
+strings, see the [Localization contributor guide](./i18n-contributing.md). When
+adding user-facing copy, prefer `t("namespace:key", "English default")` over a
+hardcoded string and run `pnpm i18n:extract` to register the key.
+
 ## Dashboard CSS Organization
 
 The dashboard's CSS has been modularized:

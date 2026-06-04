@@ -8,6 +8,7 @@ export function applyPrepackTransform(pkg) {
   delete devDependencies["@fusion/core"];
   delete devDependencies["@fusion/dashboard"];
   delete devDependencies["@fusion/engine"];
+  delete devDependencies["@fusion/i18n"];
   delete devDependencies["@fusion/pi-claude-cli"];
   delete devDependencies["@fusion/pi-llama-cpp"];
   delete devDependencies["@fusion-plugin-examples/roadmap"];

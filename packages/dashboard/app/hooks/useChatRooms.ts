@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { ChatAttachment, ChatRoom, ChatRoomMember, ChatRoomMessage } from "@fusion/core";
 import {
   clearChatRoomMessages,
@@ -123,6 +124,7 @@ export function useChatRooms(
   projectId?: string,
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
 ): UseChatRoomsResult {
+  const { t } = useTranslation("app");
   const roomsCacheKey = `${SWR_CACHE_KEYS.CHAT_ROOMS}:${projectId ?? "global"}`;
   const activeRoomCacheKey = `${SWR_CACHE_KEYS.ACTIVE_CHAT_ROOM_ID}:${projectId ?? "global"}`;
   const messagesCacheKey = useCallback(
@@ -243,7 +245,7 @@ export function useChatRooms(
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load chat rooms";
+      const message = error instanceof Error ? error.message : t("chatRooms.error.failedToLoad", "Failed to load chat rooms");
       setRoomsError(message);
       addToast?.(message, "error");
     } finally {
@@ -313,7 +315,7 @@ export function useChatRooms(
     const activeRoomSnapshot = activeRoomRef.current;
     const roomId = activeRoomSnapshot?.id;
     if (!roomId) {
-      throw new Error("Select a room before sending a message");
+      throw new Error(t("chatRooms.error.selectRoomFirst", "Select a room before sending a message"));
     }
 
     const timer = startRoomOpenTimer(roomId, { warm: false });
@@ -346,7 +348,7 @@ export function useChatRooms(
             const uploaded = await uploadChatRoomAttachment(roomId, file, projectId);
             uploadedAttachments.push(uploaded.attachment);
           } catch {
-            throw new Error(`Failed to upload attachment: ${file.name}`);
+            throw new Error(t("chatRooms.error.failedToUpload", "Failed to upload attachment: {{filename}}", { filename: file.name }));
           }
         }
       }
@@ -408,7 +410,7 @@ export function useChatRooms(
       if (userMessageDelivered || messageDeliveredAfterRecovery) {
         const message = error instanceof Error && error.message.trim()
           ? error.message
-          : "Message delivered, but failed to refresh room replies";
+          : t("chatRooms.error.deliveredButRefreshFailed", "Message delivered, but failed to refresh room replies");
         throw new RoomMessageDeliveredButReplyFailedError(message, roomId);
       }
 

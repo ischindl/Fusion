@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { Task, TaskTokenUsage, WorkflowStepResult } from "@fusion/core";
 import { extractTimingEvents, getActiveRuntimeMs, getEndToEndDurationMs, getTimedDurationMs, getWallClockSinceFirstExecutionMs, getWorkflowRuntimeMs, type TimingEvent } from "../utils/taskTiming";
 import "./TaskTokenStatsPanel.css";
@@ -114,6 +115,7 @@ function summarizeWorkflowTiming(results: WorkflowStepResult[]): WorkflowTimingS
 }
 
 export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStatsPanelProps) {
+  const { t } = useTranslation("app");
   const nowMs = Date.now();
   const timingEvents = extractTimingEvents(task?.log ?? []);
   const timedTimingEvents = timingEvents.filter((event) => typeof event.durationMs === "number");
@@ -154,35 +156,35 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
   const taskStepCount = task?.steps?.length ?? 0;
 
   return (
-    <section className="task-token-stats-panel" aria-label="Task execution statistics">
-      <h4>Execution &amp; Token Stats</h4>
+    <section className="task-token-stats-panel" aria-label={t("taskDetail.executionStatsAria", "Task execution statistics")}>
+      <h4>{t("taskDetail.executionAndTokenStats", "Execution & Token Stats")}</h4>
 
       <div className="task-token-stats-panel__section">
-        <h5>Execution Timing</h5>
-        <div className="task-token-stats-panel__grid" role="list" aria-label="Execution timing metrics">
+        <h5>{t("taskDetail.executionTiming", "Execution Timing")}</h5>
+        <div className="task-token-stats-panel__grid" role="list" aria-label={t("taskDetail.executionTimingMetricsAria", "Execution timing metrics")}>
           <div className="task-token-stats-panel__metric" role="listitem">
-            <span className="task-token-stats-panel__label">Timing events</span>
+            <span className="task-token-stats-panel__label">{t("taskDetail.timingEvents", "Timing events")}</span>
             <span className="task-token-stats-panel__value">{timingEvents.length.toLocaleString()}</span>
           </div>
           <div className="task-token-stats-panel__metric" role="listitem">
-            <span className="task-token-stats-panel__label">Timed duration</span>
+            <span className="task-token-stats-panel__label">{t("taskDetail.timedDuration", "Timed duration")}</span>
             <span className="task-token-stats-panel__value">{formatDuration(totalTimingDurationMs)}</span>
           </div>
           <div className="task-token-stats-panel__metric" role="listitem">
-            <span className="task-token-stats-panel__label">Workflow timed steps</span>
+            <span className="task-token-stats-panel__label">{t("taskDetail.workflowTimedSteps", "Workflow timed steps")}</span>
             <span className="task-token-stats-panel__value">{workflowTiming.timedStepCount.toLocaleString()}</span>
           </div>
           <div className="task-token-stats-panel__metric" role="listitem">
-            <span className="task-token-stats-panel__label">Workflow runtime</span>
+            <span className="task-token-stats-panel__label">{t("taskDetail.workflowRuntime", "Workflow runtime")}</span>
             <span className="task-token-stats-panel__value">{formatDuration(workflowTiming.totalDurationMs)}</span>
           </div>
           <div className="task-token-stats-panel__metric" role="listitem">
-            <span className="task-token-stats-panel__label">Total execution time</span>
+            <span className="task-token-stats-panel__label">{t("taskDetail.totalExecutionTime", "Total execution time")}</span>
             <span className="task-token-stats-panel__value">{formatDuration(totalExecutionMs)}</span>
           </div>
           {showWallClockSinceFirstExecution ? (
             <div className="task-token-stats-panel__metric" role="listitem">
-              <span className="task-token-stats-panel__label">Wall-clock since first execution</span>
+              <span className="task-token-stats-panel__label">{t("taskDetail.wallClockSinceFirst", "Wall-clock since first execution")}</span>
               <span className="task-token-stats-panel__value">{formatDuration(wallClockSinceFirstExecutionMs)}</span>
             </div>
           ) : null}
@@ -190,109 +192,109 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
 
         <dl className="task-token-stats-panel__timestamps">
           <div className="task-token-stats-panel__timestamp-row">
-            <dt>Longest timing event</dt>
+            <dt>{t("taskDetail.longestTimingEvent", "Longest timing event")}</dt>
             <dd>
               {longestTimingEvent?.durationMs
                 ? `${longestTimingEvent.summary} (${formatDuration(longestTimingEvent.durationMs)})`
-                : "No timed events recorded yet."}
+                : t("taskDetail.noTimedEvents", "No timed events recorded yet.")}
             </dd>
           </div>
           <div className="task-token-stats-panel__timestamp-row">
-            <dt>Longest workflow step</dt>
+            <dt>{t("taskDetail.longestWorkflowStep", "Longest workflow step")}</dt>
             <dd>
               {workflowTiming.longestStep
                 ? `${workflowTiming.longestStep.name} (${formatDuration(workflowTiming.longestStep.durationMs)})`
-                : "No completed workflow step timings yet."}
+                : t("taskDetail.noWorkflowStepTimings", "No completed workflow step timings yet.")}
             </dd>
           </div>
         </dl>
       </div>
 
       <div className="task-token-stats-panel__section">
-        <h5>Execution Details</h5>
+        <h5>{t("taskDetail.executionDetails", "Execution Details")}</h5>
         <dl className="task-token-stats-panel__details">
           <div className="task-token-stats-panel__detail-row">
-            <dt>Execution mode</dt>
-            <dd>{task?.executionMode === "fast" ? "Fast" : "Standard"}</dd>
+            <dt>{t("taskDetail.executionMode", "Execution mode")}</dt>
+            <dd>{task?.executionMode === "fast" ? t("taskDetail.executionModeFast", "Fast") : t("taskDetail.executionModeStandard", "Standard")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Runtime status</dt>
-            <dd>{task?.status ?? "Not set"}</dd>
+            <dt>{t("taskDetail.runtimeStatus", "Runtime status")}</dt>
+            <dd>{task?.status ?? t("taskDetail.notSet", "Not set")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Paused</dt>
-            <dd>{task?.paused ? "Yes" : "No"}</dd>
+            <dt>{t("taskDetail.paused", "Paused")}</dt>
+            <dd>{task?.paused ? t("taskDetail.yes", "Yes") : t("taskDetail.no", "No")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Step progress</dt>
-            <dd>{taskStepCount > 0 ? `${Math.min((task?.currentStep ?? 0) + 1, taskStepCount)} / ${taskStepCount}` : "No steps"}</dd>
+            <dt>{t("taskDetail.stepProgress", "Step progress")}</dt>
+            <dd>{taskStepCount > 0 ? `${Math.min((task?.currentStep ?? 0) + 1, taskStepCount)} / ${taskStepCount}` : t("taskDetail.noSteps", "No steps")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Retries (recovery / workflow / merge / task_done)</dt>
+            <dt>{t("taskDetail.retriesLabel", "Retries (recovery / workflow / merge / task_done)")}</dt>
             <dd>{`${task?.recoveryRetryCount ?? 0} / ${task?.workflowStepRetries ?? 0} / ${task?.mergeRetries ?? 0} / ${task?.taskDoneRetryCount ?? 0}`}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Recovery state</dt>
+            <dt>{t("taskDetail.recoveryState", "Recovery state")}</dt>
             <dd>
               {task?.nextRecoveryAt
-                ? `Next recovery at ${formatTimestamp(task.nextRecoveryAt)}`
-                : "No scheduled recovery"}
+                ? t("taskDetail.nextRecoveryAt", "Next recovery at {{time}}", { time: formatTimestamp(task.nextRecoveryAt) })
+                : t("taskDetail.noScheduledRecovery", "No scheduled recovery")}
             </dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Self-heal counters</dt>
-            <dd>{`stuck kills: ${task?.stuckKillCount ?? 0}, post-review fixes: ${task?.postReviewFixCount ?? 0}`}</dd>
+            <dt>{t("taskDetail.selfHealCounters", "Self-heal counters")}</dt>
+            <dd>{t("taskDetail.selfHealValues", "stuck kills: {{stuckKills}}, post-review fixes: {{postReviewFixes}}", { stuckKills: task?.stuckKillCount ?? 0, postReviewFixes: task?.postReviewFixCount ?? 0 })}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">
-            <dt>Runtime links</dt>
+            <dt>{t("taskDetail.runtimeLinks", "Runtime links")}</dt>
             <dd>
               {[
-                task?.assignedAgentId ? `agent ${task.assignedAgentId}` : null,
-                task?.checkedOutBy ? `checkout ${task.checkedOutBy}` : null,
-                task?.blockedBy ? `blocked by ${task.blockedBy}` : null,
-                task?.sessionFile ? "has session" : null,
-              ].filter(Boolean).join(", ") || "No runtime links"}
+                task?.assignedAgentId ? t("taskDetail.agentLink", "agent {{id}}", { id: task.assignedAgentId }) : null,
+                task?.checkedOutBy ? t("taskDetail.checkoutLink", "checkout {{id}}", { id: task.checkedOutBy }) : null,
+                task?.blockedBy ? t("taskDetail.blockedByLink", "blocked by {{id}}", { id: task.blockedBy }) : null,
+                task?.sessionFile ? t("taskDetail.hasSession", "has session") : null,
+              ].filter(Boolean).join(", ") || t("taskDetail.noRuntimeLinks", "No runtime links")}
             </dd>
           </div>
         </dl>
       </div>
 
       <div className="task-token-stats-panel__section">
-        <h5>Token Usage</h5>
+        <h5>{t("taskDetail.tokenUsage", "Token Usage")}</h5>
         {!tokenUsage && loading ? (
           <div className="task-token-stats-panel__loading" role="status" aria-live="polite">
-            Loading token statistics…
+            {t("taskDetail.loadingTokenStats", "Loading token statistics…")}
           </div>
         ) : !tokenUsage ? (
           <div className="task-token-stats-panel__empty" role="status">
-            No token usage recorded for this task yet.
+            {t("taskDetail.noTokenUsage", "No token usage recorded for this task yet.")}
           </div>
         ) : (
           <>
-            <div className="task-token-stats-panel__grid" role="list" aria-label="Task token totals">
+            <div className="task-token-stats-panel__grid" role="list" aria-label={t("taskDetail.tokenTotalsAria", "Task token totals")}>
               <div className="task-token-stats-panel__metric" role="listitem">
-                <span className="task-token-stats-panel__label">Input</span>
+                <span className="task-token-stats-panel__label">{t("taskDetail.inputTokens", "Input")}</span>
                 <span className="task-token-stats-panel__value">{formatTokenCount(tokenUsage.inputTokens)}</span>
               </div>
               <div className="task-token-stats-panel__metric" role="listitem">
-                <span className="task-token-stats-panel__label">Output</span>
+                <span className="task-token-stats-panel__label">{t("taskDetail.outputTokens", "Output")}</span>
                 <span className="task-token-stats-panel__value">{formatTokenCount(tokenUsage.outputTokens)}</span>
               </div>
               <div className="task-token-stats-panel__metric" role="listitem">
-                <span className="task-token-stats-panel__label">Cache read</span>
+                <span className="task-token-stats-panel__label">{t("taskDetail.cacheRead", "Cache read")}</span>
                 <span className="task-token-stats-panel__value">{formatTokenCount(tokenUsage.cachedTokens)}</span>
               </div>
               <div className="task-token-stats-panel__metric" role="listitem">
-                <span className="task-token-stats-panel__label">Cache write</span>
+                <span className="task-token-stats-panel__label">{t("taskDetail.cacheWrite", "Cache write")}</span>
                 <span className="task-token-stats-panel__value">{formatTokenCount(tokenUsage.cacheWriteTokens ?? 0)}</span>
               </div>
               <div className="task-token-stats-panel__metric" role="listitem">
-                <span className="task-token-stats-panel__label">Total</span>
+                <span className="task-token-stats-panel__label">{t("taskDetail.totalTokens", "Total")}</span>
                 <span className="task-token-stats-panel__value">{formatTokenCount(tokenUsage.totalTokens)}</span>
               </div>
             </div>
             <div className="task-token-stats-panel__cache-ratio">
-              <span className="task-token-stats-panel__cache-ratio-label">Cache hit ratio:</span>{" "}
+              <span className="task-token-stats-panel__cache-ratio-label">{t("taskDetail.cacheHitRatio", "Cache hit ratio:")}</span>{" "}
               <span className="task-token-stats-panel__cache-ratio-value">
                 {(tokenUsage.inputTokens + tokenUsage.cachedTokens) > 0
                   ? formatHitRatio(tokenUsage.cachedTokens / (tokenUsage.inputTokens + tokenUsage.cachedTokens))
@@ -300,17 +302,17 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
               </span>
             </div>
             <div className="task-token-stats-panel__cache-breakdown">
-              (read {formatTokenCount(tokenUsage.cachedTokens)} / write {formatTokenCount(tokenUsage.cacheWriteTokens ?? 0)} / input {formatTokenCount(tokenUsage.inputTokens)})
+              {t("taskDetail.cacheBreakdown", "(read {{read}} / write {{write}} / input {{input}})", { read: formatTokenCount(tokenUsage.cachedTokens), write: formatTokenCount(tokenUsage.cacheWriteTokens ?? 0), input: formatTokenCount(tokenUsage.inputTokens) })}
             </div>
             <dl className="task-token-stats-panel__timestamps">
               <div className="task-token-stats-panel__timestamp-row">
-                <dt>First used</dt>
+                <dt>{t("taskDetail.firstUsed", "First used")}</dt>
                 <dd>
                   <time dateTime={tokenUsage.firstUsedAt}>{formatTimestamp(tokenUsage.firstUsedAt)}</time>
                 </dd>
               </div>
               <div className="task-token-stats-panel__timestamp-row">
-                <dt>Last used</dt>
+                <dt>{t("taskDetail.lastUsed", "Last used")}</dt>
                 <dd>
                   <time dateTime={tokenUsage.lastUsedAt}>{formatTimestamp(tokenUsage.lastUsedAt)}</time>
                 </dd>

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AgentAvatar } from "./AgentAvatar";
 import "./AgentMentionPopup.css";
 import type { Agent } from "@fusion/core";
@@ -33,6 +34,7 @@ export function AgentMentionPopup({
   roomMemberIds,
   roomName,
 }: AgentMentionPopupProps) {
+  const { t } = useTranslation("app");
   const filteredAgents = useMemo(() => agents.filter((agent) => matchesAgentMentionFilter(agent.name, filter)), [agents, filter]);
 
   const roomMode = Boolean(roomMemberIds);
@@ -57,15 +59,15 @@ export function AgentMentionPopup({
       className={`agent-mention-popup agent-mention-popup--${position}`}
       data-testid="agent-mention-popup"
       role="listbox"
-      aria-label="Agent mention suggestions"
+      aria-label={t("agentMention.suggestionsLabel", "Agent mention suggestions")}
     >
       {visibleAgents.length === 0 ? (
-        <div className="agent-mention-empty">No agents found</div>
+        <div className="agent-mention-empty">{t("agentMention.noAgentsFound", "No agents found")}</div>
       ) : (
         <>
           {roomMode && (
             <div className="agent-mention-section-header" data-testid="agent-mention-members-header">
-              {roomName ? `Members of #${roomName}` : "Room members"}
+              {roomName ? t("agentMention.membersOf", "Members of #{{roomName}}", { roomName }) : t("agentMention.roomMembers", "Room members")}
             </div>
           )}
           {memberAgents.map((agent, index) => (
@@ -80,17 +82,17 @@ export function AgentMentionPopup({
               aria-selected={index === highlightedIndex}
             >
               <AgentAvatar agent={agent} size={20} />
-              {roomMode && <span className="status-dot agent-mention-member-dot" aria-label="Room member" />}
+              {roomMode && <span className="status-dot agent-mention-member-dot" aria-label={t("agentMention.roomMemberBadge", "Room member")} />}
               <span className="agent-mention-name">{agent.name}</span>
               <span className="agent-mention-role">{agent.role}</span>
             </button>
           ))}
           {roomMode && !showOtherSection && otherAgents.length > 0 && (
-            <div className="agent-mention-hint" data-testid="agent-mention-other-hint">Type to search other agents</div>
+            <div className="agent-mention-hint" data-testid="agent-mention-other-hint">{t("agentMention.typeToSearch", "Type to search other agents")}</div>
           )}
           {roomMode && showOtherSection && otherAgents.length > 0 && (
             <>
-              <div className="agent-mention-section-header" data-testid="agent-mention-others-header">Other agents</div>
+              <div className="agent-mention-section-header" data-testid="agent-mention-others-header">{t("agentMention.otherAgents", "Other agents")}</div>
               {otherAgents.map((agent, index) => {
                 const globalIndex = memberAgents.length + index;
                 return (

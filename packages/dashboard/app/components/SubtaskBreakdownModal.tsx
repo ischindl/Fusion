@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import type { Task } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
@@ -76,6 +77,7 @@ function hasDependencyCycle(subtasks: SubtaskItem[]): boolean {
 }
 
 export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onTasksCreated, parentTaskId, projectId, resumeSessionId, onOpenGroupModal }: SubtaskBreakdownModalProps) {
+  const { t } = useTranslation("app");
   const viewportMode = useViewportMode();
   useMobileScrollLock(isOpen);
   const { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen } = useMobileKeyboard({
@@ -179,8 +181,8 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
     const hasUnsavedChanges = dirty || view.type === "editing" || view.type === "creating";
     if (hasUnsavedChanges) {
       const shouldClose = await confirm({
-        title: "Discard Changes",
-        message: "Close subtask breakdown? Unsaved changes will be lost.",
+        title: t("subtasks.discardChangesTitle", "Discard Changes"),
+        message: t("subtasks.discardChangesMessage", "Close subtask breakdown? Unsaved changes will be lost."),
         danger: true,
       });
       if (!shouldClose) {
@@ -233,7 +235,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
           });
         },
         onError: (message) => {
-          const errorMessage = message || "Session failed while contacting the AI.";
+          const errorMessage = message || t("subtasks.errorSessionFailed", "Session failed while contacting the AI.");
           setIsReconnecting(false);
           setIsRetrying(false);
           setError(null);
@@ -279,7 +281,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
       setView({ type: "generating", sessionId });
       connectToSubtaskStream(sessionId);
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to start subtask breakdown");
+      setError(getErrorMessage(err) || t("subtasks.errorStartBreakdown", "Failed to start subtask breakdown"));
       setView({ type: "initial" });
     }
   }, [connectToSubtaskStream, localDescription, projectId]);
@@ -328,11 +330,11 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
           setView({
             type: "error",
             sessionId: resumeSessionId,
-            errorMessage: session.error ?? "Session encountered an error",
+            errorMessage: session.error ?? t("subtasks.errorSessionEncountered", "Session encountered an error"),
           });
         }
       } catch (err) {
-        setError(getErrorMessage(err) || "Failed to resume session");
+        setError(getErrorMessage(err) || t("subtasks.errorResumeSession", "Failed to resume session"));
       }
     })();
   }, [connectToSubtaskStream, isOpen, resumeSessionId, view.type, projectId]);
@@ -522,7 +524,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
       resetState();
       onClose();
     } catch (err) {
-      setError(getErrorMessage(err) || "Failed to create tasks");
+      setError(getErrorMessage(err) || t("subtasks.errorCreateTasks", "Failed to create tasks"));
       setView({ type: "editing", sessionId });
     }
   }, [baseBranch, branchAssignmentMode, branchMode, branchName, isInvalid, onClose, onTasksCreated, parentTaskId, projectId, resetState, sessionId, subtasks]);
@@ -549,7 +551,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
         try {
           const session = await fetchAiSession(retrySessionId);
           if (!session) {
-            throw new Error("Failed to refresh subtask session.");
+            throw new Error(t("subtasks.errorRefreshSession", "Failed to refresh subtask session."));
           }
 
           setConversationHistory(parseConversationHistory(session.conversationHistory));
@@ -562,7 +564,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
             }
           } else if (session.status === "complete") {
             if (!session.result) {
-              throw new Error("Subtask session is complete but has no result.");
+              throw new Error(t("subtasks.errorSessionNoResult", "Subtask session is complete but has no result."));
             }
             clearSubtaskDescription(projectId);
             const items = JSON.parse(session.result) as SubtaskItem[];
@@ -573,7 +575,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
             setView({
               type: "error",
               sessionId: session.id,
-              errorMessage: session.error ?? "Retry failed. Please try again.",
+              errorMessage: session.error ?? t("subtasks.errorRetryFailed", "Retry failed. Please try again."),
             });
           }
 
@@ -589,7 +591,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
       setView({
         type: "error",
         sessionId: retrySessionId,
-        errorMessage: getErrorMessage(retryError) || "Retry failed. Please try again.",
+        errorMessage: getErrorMessage(retryError) || t("subtasks.errorRetryFailed", "Retry failed. Please try again."),
       });
       setIsReconnecting(false);
     } finally {
@@ -605,20 +607,20 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
         <div className="modal-header">
           <div className="detail-title-row">
             <ListTree size={20} className="icon-triage" />
-            <h3>Subtask Breakdown</h3>
+            <h3>{t("subtasks.modalTitle", "Subtask Breakdown")}</h3>
           </div>
           <div className="modal-header-actions">
             {showSendToBackgroundButton && (
               <button
                 className="modal-send-to-background"
                 onClick={handleSendToBackground}
-                title="Send to background"
-                aria-label="Send to background"
+                title={t("subtasks.sendToBackgroundTitle", "Send to background")}
+                aria-label={t("subtasks.sendToBackgroundAriaLabel", "Send to background")}
               >
                 <Minimize2 size={16} />
               </button>
             )}
-            <button className="modal-close" onClick={() => void handleClose()} aria-label="Close">
+            <button className="modal-close" onClick={() => void handleClose()} aria-label={t("common.close", "Close")}>
               <X size={20} />
             </button>
           </div>
@@ -626,17 +628,17 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
 
         <div className="planning-modal-body">
           {error && <div className="form-error planning-error">{error}</div>}
-          {isReconnecting && <div className="form-hint text-muted">Reconnecting…</div>}
+          {isReconnecting && <div className="form-hint text-muted">{t("subtasks.reconnecting", "Reconnecting…")}</div>}
           {activeInAnotherTab && (
             <div className="form-hint text-muted" data-testid="session-active-another-tab-banner">
-              Session is active in another tab.
+              {t("subtasks.sessionActiveAnotherTab", "Session is active in another tab.")}
             </div>
           )}
 
           {view.type === "initial" && (
             <div className="planning-initial">
               <div className="planning-view-scroll">
-                <p className="text-muted">Preparing to break this task into subtasks.</p>
+                <p className="text-muted">{t("subtasks.preparingBreakdown", "Preparing to break this task into subtasks.")}</p>
                 <pre className="planning-thinking-output">{localDescription}</pre>
               </div>
             </div>
@@ -651,10 +653,10 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                 </>
               )}
               <Loader2 size={40} className="spin icon-todo" />
-              <p>AI is generating subtasks...</p>
+              <p>{t("subtasks.generatingSubtasks", "AI is generating subtasks...")}</p>
               <div className="planning-thinking-container">
                 <button className="planning-thinking-toggle" onClick={() => setShowThinking(!showThinking)} type="button">
-                  {showThinking ? "Hide thinking" : "Show thinking"}
+                  {showThinking ? t("subtasks.hideThinking", "Hide thinking") : t("subtasks.showThinking", "Show thinking")}
                 </button>
                 {showThinking && thinkingOutput && (
                   <div className="planning-thinking-output">
@@ -683,9 +685,9 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                   <div className="ai-error-actions">
                     <button className="btn btn-primary" onClick={() => void handleRetry()} disabled={isRetrying}>
                       {isRetrying ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-                      <span className="icon-ml-6">{isRetrying ? "Retrying..." : "Retry"}</span>
+                      <span className="icon-ml-6">{isRetrying ? t("subtasks.retrying", "Retrying...") : t("subtasks.retry", "Retry")}</span>
                     </button>
-                    <button className="btn" onClick={() => void handleClose()} disabled={isRetrying}>Cancel</button>
+                    <button className="btn" onClick={() => void handleClose()} disabled={isRetrying}>{t("common.cancel", "Cancel")}</button>
                   </div>
                 </div>
               </div>
@@ -704,47 +706,47 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
 
                 <div className="planning-summary-header">
                   <CheckCircle size={24} className="icon-success" />
-                  <h4>Review your subtasks</h4>
-                  <p className="text-muted">Edit titles, descriptions, sizes, and dependencies before creating all tasks at once.</p>
+                  <h4>{t("subtasks.reviewSubtasksHeading", "Review your subtasks")}</h4>
+                  <p className="text-muted">{t("subtasks.reviewSubtasksHint", "Edit titles, descriptions, sizes, and dependencies before creating all tasks at once.")}</p>
                 </div>
 
                 <div className="planning-summary-form">
                   <div className="task-detail-section">
                     <div className="form-group">
-                      <label>Branch strategy</label>
+                      <label>{t("subtasks.branchStrategyLabel", "Branch strategy")}</label>
                       <select value={branchMode} onChange={(event) => setBranchMode(event.target.value as typeof branchMode)} disabled={view.type === "creating"}>
-                        <option value="project-default">Use project/default branch</option>
-                        <option value="auto-new">Create auto-named branch per task</option>
-                        <option value="existing">Use existing branch</option>
-                        <option value="custom-new">Create custom new branch</option>
+                        <option value="project-default">{t("subtasks.branchModeProjectDefault", "Use project/default branch")}</option>
+                        <option value="auto-new">{t("subtasks.branchModeAutoNew", "Create auto-named branch per task")}</option>
+                        <option value="existing">{t("subtasks.branchModeExisting", "Use existing branch")}</option>
+                        <option value="custom-new">{t("subtasks.branchModeCustomNew", "Create custom new branch")}</option>
                       </select>
                     </div>
                     {(branchMode === "existing" || branchMode === "custom-new") && (
                       <div className="form-group">
-                        <label>Branch name</label>
+                        <label>{t("subtasks.branchNameLabel", "Branch name")}</label>
                         <input value={branchName} onChange={(event) => setBranchName(event.target.value)} disabled={view.type === "creating"} />
                       </div>
                     )}
                     <div className="form-group">
-                      <label>Merge target / base branch (optional)</label>
-                      <input value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} disabled={view.type === "creating"} placeholder="main" />
+                      <label>{t("subtasks.baseBranchLabel", "Merge target / base branch (optional)")}</label>
+                      <input value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} disabled={view.type === "creating"} placeholder={t("subtasks.baseBranchPlaceholder", "main")} />
                     </div>
                     <div className="form-group">
-                      <label>Planning branch mode</label>
+                      <label>{t("subtasks.planningBranchModeLabel", "Planning branch mode")}</label>
                       <select value={branchAssignmentMode} onChange={(event) => setBranchAssignmentMode(event.target.value as typeof branchAssignmentMode)} disabled={view.type === "creating"}>
-                        <option value="shared">Shared merge target — subtasks run on their own branches</option>
-                        <option value="per-task-derived">Per-task branches derived from planning branch</option>
+                        <option value="shared">{t("subtasks.branchAssignmentShared", "Shared merge target — subtasks run on their own branches")}</option>
+                        <option value="per-task-derived">{t("subtasks.branchAssignmentPerTask", "Per-task branches derived from planning branch")}</option>
                       </select>
                       {branchAssignmentMode === "shared" && branchName.trim() && (
                         <p className="text-muted">
-                          Grouped on shared branch <strong>{branchName.trim()}</strong>
+                          {t("subtasks.groupedOnSharedBranch", "Grouped on shared branch")} <strong>{branchName.trim()}</strong>
                           {onOpenGroupModal && (
                             <button
                               type="button"
                               className="btn btn-sm"
                               onClick={() => onOpenGroupModal(`BG-${branchName.trim()}`)}
                             >
-                              Open group modal
+                              {t("subtasks.openGroupModal", "Open group modal")}
                             </button>
                           )}
                         </p>
@@ -776,7 +778,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                         onDragLeave={handleDragLeave}
                       >
                         <div className="detail-title-row subtask-item-header subtask-item-header--between">
-                          <div className="subtask-drag-handle" title="Drag to reorder">
+                          <div className="subtask-drag-handle" title={t("subtasks.dragToReorder", "Drag to reorder")}>
                             <GripVertical size={16} />
                             <strong>{subtask.id}</strong>
                           </div>
@@ -786,8 +788,8 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                               className="btn btn-icon btn-sm"
                               onClick={() => moveSubtask(index, index - 1)}
                               disabled={view.type === "creating" || index === 0}
-                              title="Move up"
-                              aria-label="Move subtask up"
+                              title={t("subtasks.moveUp", "Move up")}
+                              aria-label={t("subtasks.moveSubtaskUpAriaLabel", "Move subtask up")}
                             >
                               <ArrowUp />
                             </button>
@@ -796,19 +798,19 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                               className="btn btn-icon btn-sm"
                               onClick={() => moveSubtask(index, index + 1)}
                               disabled={view.type === "creating" || index === subtasks.length - 1}
-                              title="Move down"
-                              aria-label="Move subtask down"
+                              title={t("subtasks.moveDown", "Move down")}
+                              aria-label={t("subtasks.moveSubtaskDownAriaLabel", "Move subtask down")}
                             >
                               <ArrowDown />
                             </button>
                             <button type="button" className="btn btn-sm" onClick={() => removeSubtask(subtask.id)} disabled={view.type === "creating"}>
-                              <Trash2 size={14} /> Remove
+                              <Trash2 size={14} /> {t("subtasks.remove", "Remove")}
                             </button>
                           </div>
                         </div>
 
                       <div className="form-group">
-                        <label>Title</label>
+                        <label>{t("subtasks.titleLabel", "Title")}</label>
                         <input
                           ref={(element) => { titleRefs.current[index] = element; }}
                           value={subtask.title}
@@ -824,7 +826,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                       </div>
 
                       <div className="form-group">
-                        <label>Description</label>
+                        <label>{t("subtasks.descriptionLabel", "Description")}</label>
                         <textarea
                           rows={8}
                           value={subtask.description}
@@ -834,7 +836,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                       </div>
 
                       <div className="form-group">
-                        <label>Size</label>
+                        <label>{t("subtasks.sizeLabel", "Size")}</label>
                         <select
                           className="planning-size-select"
                           value={subtask.suggestedSize}
@@ -848,7 +850,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                       </div>
 
                       <div className="form-group">
-                        <label>Dependencies</label>
+                        <label>{t("subtasks.dependenciesLabel", "Dependencies")}</label>
                         <div className="planning-deps-list">
                           {/* Only show subtasks that come BEFORE this one in the list (prevents cycles) */}
                           {subtasks.slice(0, index).filter((item) => item.id !== subtask.id).map((candidate) => {
@@ -867,15 +869,15 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                                   disabled={view.type === "creating"}
                                 />
                                 <span className="planning-dep-id">{candidate.id}</span>
-                                <span className="planning-dep-title">{candidate.title || "Untitled"}</span>
+                                <span className="planning-dep-title">{candidate.title || t("subtasks.untitled", "Untitled")}</span>
                               </label>
                             );
                           })}
                           {index === 0 && (
-                            <div className="text-muted">First subtask cannot have dependencies.</div>
+                            <div className="text-muted">{t("subtasks.noDepsFirstSubtask", "First subtask cannot have dependencies.")}</div>
                           )}
                           {index > 0 && subtasks.slice(0, index).filter((item) => item.id !== subtask.id).length === 0 && (
-                            <div className="text-muted">No previous subtasks available.</div>
+                            <div className="text-muted">{t("subtasks.noPreviousSubtasks", "No previous subtasks available.")}</div>
                           )}
                         </div>
                       </div>
@@ -884,27 +886,27 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                   })}
 
                   <button type="button" className="btn" onClick={addSubtask} disabled={view.type === "creating"}>
-                    <Plus size={16} className="icon-mr-6" /> Add subtask
+                    <Plus size={16} className="icon-mr-6" /> {t("subtasks.addSubtask", "Add subtask")}
                   </button>
 
                   {hasDependencyCycle(subtasks) && (
-                    <div className="form-error planning-error">Dependencies contain a cycle. Remove circular references before creating tasks.</div>
+                    <div className="form-error planning-error">{t("subtasks.dependencyCycleError", "Dependencies contain a cycle. Remove circular references before creating tasks.")}</div>
                   )}
                 </div>
               </div>
 
               <div className="planning-actions planning-summary-actions">
                 <button className="btn" onClick={() => void handleClose()} disabled={view.type === "creating"}>
-                  Cancel
+                  {t("common.cancel", "Cancel")}
                 </button>
                 <button className="btn btn-primary" onClick={() => void handleCreateTasks()} disabled={view.type === "creating" || isInvalid}>
                   {view.type === "creating" ? (
                     <>
                       <Loader2 size={16} className="spin icon-mr-6" />
-                      Creating...
+                      {t("subtasks.creating", "Creating...")}
                     </>
                   ) : (
-                    <>Create Tasks</>
+                    <>{t("subtasks.createTasks", "Create Tasks")}</>
                   )}
                 </button>
               </div>
@@ -917,8 +919,8 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                 <Lock size={16} />
                 <span>
                   {allowTakeover
-                    ? "This session is active in another tab"
-                    : "This session is active in another tab (live heartbeat)"}
+                    ? t("subtasks.sessionActiveAnotherTabTakeover", "This session is active in another tab")
+                    : t("subtasks.sessionActiveAnotherTabLive", "This session is active in another tab (live heartbeat)")}
                 </span>
                 {allowTakeover && (
                   <button
@@ -929,7 +931,7 @@ export function SubtaskBreakdownModal({ isOpen, onClose, initialDescription, onT
                     disabled={isLockLoading}
                     className="btn btn-primary session-lock-take-control"
                   >
-                    {isLockLoading ? "Taking control..." : "Take Control"}
+                    {isLockLoading ? t("subtasks.takingControl", "Taking control...") : t("subtasks.takeControl", "Take Control")}
                   </button>
                 )}
               </div>

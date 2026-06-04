@@ -1,4 +1,5 @@
 import { memo, useMemo, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import type { NodeMeshState } from "@fusion/core";
 
 export interface MeshTopologyProps {
@@ -19,6 +20,7 @@ const MIN_VIEWBOX_SIZE = 300;
 const MAX_REMOTE_DISTANCE = 120;
 
 function MeshTopologyInner({ nodes, className }: MeshTopologyProps): ReactElement {
+  const { t } = useTranslation("app");
   const localNode = useMemo(() => nodes.find((n) => n.nodeType === "local") ?? nodes[0], [nodes]);
   const remoteNodes = useMemo(() => nodes.filter((n) => n.nodeId !== localNode?.nodeId), [nodes, localNode?.nodeId]);
 
@@ -66,12 +68,12 @@ function MeshTopologyInner({ nodes, className }: MeshTopologyProps): ReactElemen
   }, [nodePositions, nodes]);
 
   if (nodes.length === 0) {
-    return <div className={`mesh-topology mesh-topology--empty ${className ?? ""}`}><div className="mesh-topology__empty-state"><p>No nodes to display</p></div></div>;
+    return <div className={`mesh-topology mesh-topology--empty ${className ?? ""}`}><div className="mesh-topology__empty-state"><p>{t("mesh.noNodes", "No nodes to display")}</p></div></div>;
   }
 
   return (
     <div className={`mesh-topology ${className ?? ""}`}>
-      <svg className="mesh-topology__svg" viewBox={`0 0 ${viewBoxSize} ${viewBoxSize}`} preserveAspectRatio="xMidYMid meet" aria-label="Node mesh topology visualization">
+      <svg className="mesh-topology__svg" viewBox={`0 0 ${viewBoxSize} ${viewBoxSize}`} preserveAspectRatio="xMidYMid meet" aria-label={t("mesh.ariaLabel", "Node mesh topology visualization")}>
         {links.map((link) => (
           <line key={link.key} className="mesh-topology__link mesh-topology__peer-line" x1={link.from.x} y1={link.from.y} x2={link.to.x} y2={link.to.y} />
         ))}
@@ -93,12 +95,12 @@ function MeshTopologyInner({ nodes, className }: MeshTopologyProps): ReactElemen
       </svg>
 
       <div className="mesh-topology__legend">
-        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.online }} /><span>Online</span></div>
-        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.offline }} /><span>Offline</span></div>
-        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.connecting }} /><span>Connecting</span></div>
-        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.error }} /><span>Error</span></div>
+        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.online }} /><span>{t("mesh.online", "Online")}</span></div>
+        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.offline }} /><span>{t("mesh.offline", "Offline")}</span></div>
+        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.connecting }} /><span>{t("mesh.connecting", "Connecting")}</span></div>
+        <div className="mesh-topology__legend-item"><span className="mesh-topology__legend-dot" style={{ background: STATUS_COLORS.error }} /><span>{t("mesh.error", "Error")}</span></div>
       </div>
-      {links.length === 0 && <p className="mesh-topology__notice">Peer-to-peer discovery data unavailable.</p>}
+      {links.length === 0 && <p className="mesh-topology__notice">{t("mesh.noPeers", "Peer-to-peer discovery data unavailable.")}</p>}
     </div>
   );
 }

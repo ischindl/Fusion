@@ -1,0 +1,23 @@
+{
+  "actions": {
+    "cancel": "取消",
+    "close": "關閉",
+    "save": "儲存"
+  },
+  "archive": "封存",
+  "cancel": "取消",
+  "close": "關閉",
+  "columns": {
+    "archived": "已封存",
+    "done": "已完成",
+    "in-progress": "進行中",
+    "in-review": "審查中",
+    "todo": "待辦",
+    "triage": "規劃"
+  },
+  "delete": "刪除",
+  "refresh": "重新整理",
+  "retry": "重試",
+  "skip": "略過",
+  "tryAgain": "重試"
+}

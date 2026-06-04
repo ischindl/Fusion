@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { CheckCircle, XCircle, Loader2, Square, Clock } from "lucide-react";
 import type { AgentHeartbeatRun } from "../api";
 import { fetchAgentRuns, stopAgentRun } from "../api";
@@ -19,6 +20,7 @@ const STATUS_ICONS: Record<string, { icon: typeof CheckCircle; color: string }> 
 };
 
 export function AgentRunHistory({ agentId, projectId, onRunClick }: AgentRunHistoryProps) {
+  const { t } = useTranslation("app");
   const [runs, setRuns] = useState<AgentHeartbeatRun[]>([]);
   const { confirm } = useConfirm();
   const [isLoading, setIsLoading] = useState(true);
@@ -41,8 +43,8 @@ export function AgentRunHistory({ agentId, projectId, onRunClick }: AgentRunHist
 
   const handleStop = useCallback(async () => {
     const shouldStop = await confirm({
-      title: "Stop Run",
-      message: "Stop this run?",
+      title: t("agents.runs.stopTitle", "Stop Run"),
+      message: t("agents.runs.stopMessage", "Stop this run?"),
       danger: true,
     });
     if (!shouldStop) {
@@ -58,11 +60,11 @@ export function AgentRunHistory({ agentId, projectId, onRunClick }: AgentRunHist
   }, [agentId, projectId, loadRuns, confirm]);
 
   if (isLoading) {
-    return <div className="agent-run-loading"><Loader2 className="animate-spin" size={20} /> Loading runs...</div>;
+    return <div className="agent-run-loading"><Loader2 className="animate-spin" size={20} /> {t("agents.runs.loading", "Loading runs...")}</div>;
   }
 
   if (runs.length === 0) {
-    return <div className="agent-run-empty">No runs yet</div>;
+    return <div className="agent-run-empty">{t("agents.runs.empty", "No runs yet")}</div>;
   }
 
   return (
@@ -116,10 +118,10 @@ export function AgentRunHistory({ agentId, projectId, onRunClick }: AgentRunHist
                   e.stopPropagation();
                   void handleStop();
                 }}
-                aria-label="Stop run"
+                aria-label={t("agents.runs.stopAriaLabel", "Stop run")}
                 style={{ marginLeft: "8px" }}
               >
-                <Square size={12} /> Stop
+                <Square size={12} /> {t("agents.runs.stop", "Stop")}
               </button>
             )}
           </div>

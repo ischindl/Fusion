@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePluginUiSlots } from "../hooks/usePluginUiSlots";
 import { resolvePluginSlotComponent, type PluginSlotHostActions } from "../plugins/pluginSlotRegistry";
@@ -18,6 +19,7 @@ interface PluginSlotProps {
 }
 
 function PluginSlotMissingComponent({ slotId, pluginId }: { slotId: string; pluginId: string }): ReactNode {
+  const { t } = useTranslation("app");
   return (
     <section
       className="plugin-slot-shell"
@@ -28,9 +30,9 @@ function PluginSlotMissingComponent({ slotId, pluginId }: { slotId: string; plug
       role="status"
       aria-live="polite"
     >
-      <p className="plugin-slot-shell__title">Plugin component unavailable</p>
+      <p className="plugin-slot-shell__title">{t("plugins.componentUnavailable", "Plugin component unavailable")}</p>
       <p className="plugin-slot-shell__message">
-        The dashboard could not resolve this plugin surface from the static host registry.
+        {t("plugins.couldNotResolve", "The dashboard could not resolve this plugin surface from the static host registry.")}
       </p>
     </section>
   );

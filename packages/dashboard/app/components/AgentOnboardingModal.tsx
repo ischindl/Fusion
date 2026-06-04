@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { AgentCapability, ConversationHistoryEntry } from "../api";
 import {
   startAgentOnboardingStreaming,
@@ -31,6 +32,7 @@ interface AgentOnboardingModalProps {
 }
 
 export function AgentOnboardingModal({ isOpen, onClose, onCreated, addToast, projectId, existingAgents }: AgentOnboardingModalProps) {
+  const { t } = useTranslation("app");
   const [viewState, setViewState] = useState<ViewState>("initial");
   const [intent, setIntent] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export function AgentOnboardingModal({ isOpen, onClose, onCreated, addToast, pro
       },
       onConnectionStateChange: (state) => {
         if (state === "reconnecting") {
-          setError("Connection lost. Retrying...");
+          setError(t("agents.connectionLost", "Connection lost. Retrying..."));
         }
       },
     });
@@ -179,7 +181,7 @@ export function AgentOnboardingModal({ isOpen, onClose, onCreated, addToast, pro
         },
         projectId,
       );
-      addToast(`Agent "${summary.name}" created`, "success");
+      addToast(t("agents.created", "Agent \"{{name}}\" created", { name: summary.name }), "success");
       onCreated();
     } catch (err) {
       setError((err as Error).message);
@@ -191,79 +193,79 @@ export function AgentOnboardingModal({ isOpen, onClose, onCreated, addToast, pro
     <div className="modal-overlay open" role="presentation">
       <div className="modal modal-lg agent-onboarding-modal" role="dialog" aria-modal="true" aria-label="Agent onboarding">
         <div className="modal-header">
-          <h3>Agent Onboarding</h3>
-          <button className="modal-close" onClick={() => void handleClose()} aria-label="Close">×</button>
+          <h3>{t("agents.onboarding", "Agent Onboarding")}</h3>
+          <button className="modal-close" onClick={() => void handleClose()} aria-label={t("common.close", "Close")}>×</button>
         </div>
 
         {history.length > 0 && <ConversationHistory entries={history} />}
 
         {viewState === "initial" && (
           <div className="form-group">
-            <label htmlFor="agent-onboarding-intent">What do you want this agent to do?</label>
+            <label htmlFor="agent-onboarding-intent">{t("agents.intentPrompt", "What do you want this agent to do?")}</label>
             <textarea ref={setIntentRef} id="agent-onboarding-intent" className="input" value={intent} onChange={(e) => setIntent(e.target.value)} />
             <div className="modal-actions">
-              <button className="btn" onClick={() => void handleClose()}>Cancel</button>
-              <button className="btn btn-primary" disabled={!intent.trim()} onClick={() => void start()}>Start onboarding</button>
+              <button className="btn" onClick={() => void handleClose()}>{t("common.cancel", "Cancel")}</button>
+              <button className="btn btn-primary" disabled={!intent.trim()} onClick={() => void start()}>{t("agents.startOnboarding", "Start onboarding")}</button>
             </div>
           </div>
         )}
 
         {(viewState === "loading" || viewState === "question") && (
           <div className="form-group">
-            <label htmlFor="agent-onboarding-answer">{currentQuestion || "Waiting for AI question..."}</label>
+            <label htmlFor="agent-onboarding-answer">{currentQuestion || t("agents.waitingForQuestion", "Waiting for AI question...")}</label>
             <textarea ref={setAnswerRef} id="agent-onboarding-answer" className="input" value={answer} onChange={(e) => setAnswer(e.target.value)} />
             <div className="modal-actions">
-              <button className="btn" onClick={() => sessionId && void stopAgentOnboardingGeneration(sessionId, projectId)}>Stop</button>
-              <button className="btn btn-primary" disabled={viewState === "loading" || !answer.trim()} onClick={() => void submitAnswer()}>Continue</button>
+              <button className="btn" onClick={() => sessionId && void stopAgentOnboardingGeneration(sessionId, projectId)}>{t("common.stop", "Stop")}</button>
+              <button className="btn btn-primary" disabled={viewState === "loading" || !answer.trim()} onClick={() => void submitAnswer()}>{t("common.continue", "Continue")}</button>
             </div>
           </div>
         )}
 
         {viewState === "summary" && summary && (
           <div className="form-group">
-            <label>Review generated configuration</label>
+            <label>{t("agents.reviewConfiguration", "Review generated configuration")}</label>
             <div className="agent-onboarding-summary">
-              <p><strong>Name:</strong> {summary.name}</p>
-              <p><strong>Role:</strong> {summary.role}</p>
-              <label htmlFor="thinking-level">Thinking level</label>
+              <p><strong>{t("agents.name", "Name")}:</strong> {summary.name}</p>
+              <p><strong>{t("agents.role", "Role")}:</strong> {summary.role}</p>
+              <label htmlFor="thinking-level">{t("agents.thinkingLevel", "Thinking level")}</label>
               <input id="thinking-level" className="input" value={summary.thinkingLevel} onChange={() => {}} readOnly />
-              <label htmlFor="max-turns">Max turns</label>
+              <label htmlFor="max-turns">{t("agents.maxTurns", "Max turns")}</label>
               <input id="max-turns" className="input" type="number" value={summary.maxTurns} onChange={() => {}} readOnly />
-              <label htmlFor="runtime-mode">Runtime mode</label>
-              <select id="runtime-mode" className="select" value={runtimeMode} onChange={(e) => setRuntimeMode(e.target.value as "model" | "runtime")}> 
-                <option value="model">Model</option>
-                <option value="runtime">Runtime</option>
+              <label htmlFor="runtime-mode">{t("agents.runtimeMode", "Runtime mode")}</label>
+              <select id="runtime-mode" className="select" value={runtimeMode} onChange={(e) => setRuntimeMode(e.target.value as "model" | "runtime")}>
+                <option value="model">{t("agents.model", "Model")}</option>
+                <option value="runtime">{t("agents.runtime", "Runtime")}</option>
               </select>
               {runtimeMode === "model" && (
                 <>
-                  <label>Model</label>
+                  <label>{t("agents.selectModel", "Model")}</label>
                   <CustomModelDropdown
                     id="agent-onboarding-model"
-                    label="Model"
+                    label={t("agents.selectModel", "Model")}
                     value={model}
                     onChange={setModel}
                     models={availableModels}
-                    placeholder="Select a model…"
+                    placeholder={t("agents.selectModelPlaceholder", "Select a model…")}
                   />
                 </>
               )}
             </div>
             <div className="modal-actions">
-              <button className="btn" onClick={() => void handleClose()}>Cancel</button>
-              <button className="btn btn-primary" onClick={() => void createFromSummary()}>Create agent</button>
+              <button className="btn" onClick={() => void handleClose()}>{t("common.cancel", "Cancel")}</button>
+              <button className="btn btn-primary" onClick={() => void createFromSummary()}>{t("agents.createAgent", "Create agent")}</button>
             </div>
           </div>
         )}
 
         {viewState === "creating" && (
-          <div className="form-group agent-onboarding-creating">Creating agent...</div>
+          <div className="form-group agent-onboarding-creating">{t("agents.creatingAgent", "Creating agent...")}</div>
         )}
 
         {viewState === "error" && error && (
           <div className="form-group">
             <div className="form-error">{error}</div>
             <div className="modal-actions">
-              <button className="btn" onClick={() => sessionId && void retryAgentOnboardingSession(sessionId, projectId)}>Retry</button>
+              <button className="btn" onClick={() => sessionId && void retryAgentOnboardingSession(sessionId, projectId)}>{t("common.retry", "Retry")}</button>
             </div>
           </div>
         )}

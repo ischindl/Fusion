@@ -1,6 +1,7 @@
 import "./NewAgentDialog.css";
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { Agent, AgentCapability, ModelInfo, AgentGenerationSpec, PluginRuntimeInfo, AgentOnboardingSummary } from "../api";
 import { createAgent, fetchAgents, fetchModels } from "../api";
 import * as apiModule from "../api";
@@ -24,14 +25,14 @@ export interface NewAgentDialogProps {
   onPrefillDraft?: (draft: AgentOnboardingSummary | null) => void;
 }
 
-const AGENT_ROLES: { value: AgentCapability; label: string; icon: string }[] = [
-  { value: "triage", label: "Triage", icon: "⊕" },
-  { value: "executor", label: "Executor", icon: "▶" },
-  { value: "reviewer", label: "Reviewer", icon: "⊙" },
-  { value: "merger", label: "Merger", icon: "⊞" },
-  { value: "scheduler", label: "Scheduler", icon: "◷" },
-  { value: "engineer", label: "Engineer", icon: "⎔" },
-  { value: "custom", label: "Custom", icon: "✦" },
+const AGENT_ROLES: { value: AgentCapability; icon: string }[] = [
+  { value: "triage", icon: "⊕" },
+  { value: "executor", icon: "▶" },
+  { value: "reviewer", icon: "⊙" },
+  { value: "merger", icon: "⊞" },
+  { value: "scheduler", icon: "◷" },
+  { value: "engineer", icon: "⎔" },
+  { value: "custom", icon: "✦" },
 ];
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -57,6 +58,21 @@ export function NewAgentDialog({
   existingAgents = [],
   onPrefillDraft,
 }: NewAgentDialogProps) {
+  const { t } = useTranslation("app");
+
+  const getRoleLabel = (value: AgentCapability): string => {
+    const labels: Record<AgentCapability, string> = {
+      triage: t("agents.roleTriage", "Triage"),
+      executor: t("agents.roleExecutor", "Executor"),
+      reviewer: t("agents.roleReviewer", "Reviewer"),
+      merger: t("agents.roleMerger", "Merger"),
+      scheduler: t("agents.roleScheduler", "Scheduler"),
+      engineer: t("agents.roleEngineer", "Engineer"),
+      custom: t("agents.roleCustom", "Custom"),
+    };
+    return labels[value] ?? value;
+  };
+
   const [step, setStep] = useState(0);
   const [stepZeroTab, setStepZeroTab] = useState<StepZeroTab>("presets");
   const [name, setName] = useState("");
@@ -291,7 +307,7 @@ export function NewAgentDialog({
       handleClose();
       onCreated();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(err instanceof Error ? err.message : t("agents.createError", "Failed to create agent"));
     } finally {
       setIsSubmitting(false);
     }
@@ -309,7 +325,7 @@ export function NewAgentDialog({
   const renderRuntimeSourceSection = (sourceLabelId: string) => (
     <>
       <div className="agent-dialog-field">
-        <label id={sourceLabelId}>Runtime Source</label>
+        <label id={sourceLabelId}>{t("agents.runtimeSource", "Runtime Source")}</label>
         <div className="agent-runtime-mode-toggle" role="radiogroup" aria-labelledby={sourceLabelId}>
           <label className={`agent-runtime-mode-option${runtimeMode === "model" ? " agent-runtime-mode-option--active" : ""}`}>
             <input
@@ -319,7 +335,7 @@ export function NewAgentDialog({
               checked={runtimeMode === "model"}
               onChange={() => handleRuntimeModeChange("model")}
             />
-            <span>Built-in Model</span>
+            <span>{t("agents.runtimeSourceBuiltIn", "Built-in Model")}</span>
           </label>
           <label className={`agent-runtime-mode-option${runtimeMode === "runtime" ? " agent-runtime-mode-option--active" : ""}`}>
             <input
@@ -329,23 +345,23 @@ export function NewAgentDialog({
               checked={runtimeMode === "runtime"}
               onChange={() => handleRuntimeModeChange("runtime")}
             />
-            <span>Plugin Runtime</span>
+            <span>{t("agents.runtimeSourcePlugin", "Plugin Runtime")}</span>
           </label>
         </div>
       </div>
       {runtimeMode === "model" ? (
         <div className="agent-dialog-field">
-          <label>Model</label>
+          <label>{t("agents.model", "Model")}</label>
           {modelsLoading ? (
-            <div className="agent-dialog-loading">Loading models…</div>
+            <div className="agent-dialog-loading">{t("agents.loadingModels", "Loading models…")}</div>
           ) : (
             <CustomModelDropdown
               id="agent-model"
-              label="Model"
+              label={t("agents.model", "Model")}
               value={selectedModel}
               onChange={handleModelChange}
               models={availableModels}
-              placeholder="Select a model…"
+              placeholder={t("agents.modelPlaceholder", "Select a model…")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={toggleFavoriteProvider}
               favoriteModels={favoriteModels}
@@ -355,9 +371,9 @@ export function NewAgentDialog({
         </div>
       ) : (
         <div className="agent-dialog-field">
-          <label htmlFor="agent-runtime-hint">Runtime</label>
+          <label htmlFor="agent-runtime-hint">{t("agents.runtime", "Runtime")}</label>
           {runtimesLoading ? (
-            <div className="agent-dialog-loading">Loading runtimes…</div>
+            <div className="agent-dialog-loading">{t("agents.loadingRuntimes", "Loading runtimes…")}</div>
           ) : (
             <select
               id="agent-runtime-hint"
@@ -366,7 +382,7 @@ export function NewAgentDialog({
               onChange={e => setSelectedRuntimeId(e.target.value)}
             >
               <option value="">
-                {availableRuntimes.length > 0 ? "Select a plugin runtime…" : "No plugin runtimes available"}
+                {availableRuntimes.length > 0 ? t("agents.runtimePlaceholder", "Select a plugin runtime…") : t("agents.runtimeEmpty", "No plugin runtimes available")}
               </option>
               {availableRuntimes.map((runtime) => (
                 <option key={`${runtime.pluginId}:${runtime.runtimeId}`} value={runtime.runtimeId}>
@@ -388,14 +404,14 @@ export function NewAgentDialog({
   // above it because the dialog couldn't escape its container).
   return createPortal(
     <div className="agent-dialog-overlay" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
-      <div className="agent-dialog" role="dialog" aria-modal="true" aria-label="Create new agent">
+      <div className="agent-dialog" role="dialog" aria-modal="true" aria-label={t("agents.dialogAriaLabel", "Create new agent")}>
         {/* Header */}
         <div className="agent-dialog-header">
-          <span className="agent-dialog-header-title">New Agent</span>
+          <span className="agent-dialog-header-title">{t("agents.dialogTitle", "New Agent")}</span>
           <button
             className="btn-icon"
             onClick={handleClose}
-            aria-label="Close"
+            aria-label={t("agents.closeAriaLabel", "Close")}
           >
             ×
           </button>
@@ -407,7 +423,7 @@ export function NewAgentDialog({
             <div
               key={i}
               className={`agent-dialog-step${i === step ? " active" : i < step ? " completed" : ""}`}
-              aria-label={`Step ${i + 1}`}
+              aria-label={t("agents.stepAriaLabel", "Step {{step}}", { step: i + 1 })}
             />
           ))}
         </div>
@@ -423,11 +439,11 @@ export function NewAgentDialog({
                     className="btn agent-dialog-interview-btn"
                     onClick={() => setIsInterviewOpen(true)}
                   >
-                    AI Interview
+                    {t("agents.aiInterview", "AI Interview")}
                   </button>
                 </div>
               )}
-              <div className="agent-dialog-tabs" role="tablist" aria-label="Agent setup mode">
+              <div className="agent-dialog-tabs" role="tablist" aria-label={t("agents.setupModeAriaLabel", "Agent setup mode")}>
                 <button
                   id="agent-dialog-tab-presets"
                   type="button"
@@ -439,7 +455,7 @@ export function NewAgentDialog({
                   onClick={() => setStepZeroTab("presets")}
                   data-testid="agent-dialog-tab-presets"
                 >
-                  Preset personas
+                  {t("agents.tabPresets", "Preset personas")}
                 </button>
                 <button
                   id="agent-dialog-tab-custom"
@@ -452,7 +468,7 @@ export function NewAgentDialog({
                   onClick={() => setStepZeroTab("custom")}
                   data-testid="agent-dialog-tab-custom"
                 >
-                  Custom agent
+                  {t("agents.tabCustom", "Custom agent")}
                 </button>
               </div>
 
@@ -465,7 +481,7 @@ export function NewAgentDialog({
                 >
                   <div className="agent-presets">
                     <div className="agent-presets-header">
-                      Choose a preset persona to prefill role, identity, soul, and instructions
+                      {t("agents.presetsHeader", "Choose a preset persona to prefill role, identity, soul, and instructions")}
                     </div>
                     <div className="agent-presets-grid">
                       {AGENT_PRESETS.map(preset => (
@@ -498,42 +514,42 @@ export function NewAgentDialog({
                   aria-labelledby="agent-dialog-tab-custom"
                 >
                   <div className="agent-dialog-section">
-                    <div className="agent-dialog-section-header">Identity</div>
+                    <div className="agent-dialog-section-header">{t("agents.sectionIdentity", "Identity")}</div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-name">Name {!selectedPresetId && <span className="agent-dialog-required">*</span>}</label>
+                      <label htmlFor="agent-name">{t("agents.fieldName", "Name")} {!selectedPresetId && <span className="agent-dialog-required">*</span>}</label>
                       <input
                         id="agent-name"
                         type="text"
                         className="input"
-                        placeholder="e.g. Frontend Reviewer"
+                        placeholder={t("agents.namePlaceholder", "e.g. Frontend Reviewer")}
                         value={name}
                         onChange={e => setName(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field agent-dialog-field--title">
-                      <label htmlFor="agent-title">Title <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-title">{t("agents.fieldTitle", "Title")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <input
                         id="agent-title"
                         type="text"
                         className="input"
-                        placeholder="e.g. Senior Code Reviewer"
+                        placeholder={t("agents.titlePlaceholder", "e.g. Senior Code Reviewer")}
                         value={title}
                         onChange={e => setTitle(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-icon">Icon <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-icon">{t("agents.fieldIcon", "Icon")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <input
                         id="agent-icon"
                         type="text"
                         className="input"
-                        placeholder="e.g. 🤖"
+                        placeholder={t("agents.iconPlaceholder", "e.g. 🤖")}
                         value={icon}
                         onChange={e => setIcon(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field">
-                      <label>Role</label>
+                      <label>{t("agents.fieldRole", "Role")}</label>
                       <div className="agent-role-grid">
                         {AGENT_ROLES.map(r => (
                           <button
@@ -543,16 +559,16 @@ export function NewAgentDialog({
                             onClick={() => setRole(r.value)}
                           >
                             <span className="agent-role-option-icon">{r.icon}</span>
-                            <span className="agent-role-option-label">{r.label}</span>
+                            <span className="agent-role-option-label">{getRoleLabel(r.value)}</span>
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
                   <div className="agent-dialog-section">
-                    <div className="agent-dialog-section-header">Configuration</div>
+                    <div className="agent-dialog-section-header">{t("agents.sectionConfiguration", "Configuration")}</div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-reports-to">Reports To <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-reports-to">{t("agents.fieldReportsTo", "Reports To")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <select
                         id="agent-reports-to"
                         className="select"
@@ -560,7 +576,7 @@ export function NewAgentDialog({
                         onChange={e => setReportsTo(e.target.value)}
                         disabled={managersLoading}
                       >
-                        <option value="">No manager</option>
+                        <option value="">{t("agents.noManager", "No manager")}</option>
                         {availableManagers.map((manager) => (
                           <option key={manager.id} value={manager.id}>
                             {manager.name} ({manager.id})
@@ -569,66 +585,66 @@ export function NewAgentDialog({
                       </select>
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-soul">Soul <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-soul">{t("agents.fieldSoul", "Soul")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <textarea
                         id="agent-soul"
                         className="input"
                         rows={2}
-                        placeholder="Describe the agent's personality and communication style..."
+                        placeholder={t("agents.soulPlaceholder", "Describe the agent's personality and communication style...")}
                         value={soul}
                         onChange={e => setSoul(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-memory">Agent Memory <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-memory">{t("agents.fieldMemory", "Agent Memory")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <textarea
                         id="agent-memory"
                         className="input"
                         rows={2}
-                        placeholder="Private to this agent — durable preferences, operating habits, and context it should carry across tasks..."
+                        placeholder={t("agents.memoryPlaceholder", "Private to this agent — durable preferences, operating habits, and context it should carry across tasks...")}
                         value={memory}
                         onChange={e => setMemory(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-instructions-path">Instructions Path <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-instructions-path">{t("agents.fieldInstructionsPath", "Instructions Path")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <input
                         id="agent-instructions-path"
                         type="text"
                         className="input"
-                        placeholder="e.g. .fusion/agents/reviewer.md"
+                        placeholder={t("agents.instructionsPathPlaceholder", "e.g. .fusion/agents/reviewer.md")}
                         value={instructionsPath}
                         onChange={e => setInstructionsPath(e.target.value)}
                       />
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-heartbeat-procedure-path">Heartbeat Procedure Path <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-heartbeat-procedure-path">{t("agents.fieldHeartbeatPath", "Heartbeat Procedure Path")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <input
                         id="agent-heartbeat-procedure-path"
                         type="text"
                         className="input"
-                        placeholder="e.g. .fusion/agents/ceo-agent2736/HEARTBEAT.md"
+                        placeholder={t("agents.heartbeatPathPlaceholder", "e.g. .fusion/agents/ceo-agent2736/HEARTBEAT.md")}
                         value={heartbeatProcedurePath}
                         onChange={e => setHeartbeatProcedurePath(e.target.value)}
                       />
                       <p className="agent-dialog-optional agent-dialog-field-hint">
-                        Path to the agent&apos;s heartbeat procedure path, typically .fusion/agents/ceo-agent2736/HEARTBEAT.md. Legacy id-only default paths still work.
+                        {t("agents.heartbeatPathHint", "Path to the agent's heartbeat procedure path, typically .fusion/agents/ceo-agent2736/HEARTBEAT.md. Legacy id-only default paths still work.")}
                       </p>
                     </div>
                     <div className="agent-dialog-field">
-                      <label htmlFor="agent-instructions-text">Inline Instructions <span className="agent-dialog-optional">(optional)</span></label>
+                      <label htmlFor="agent-instructions-text">{t("agents.fieldInstructionsText", "Inline Instructions")} <span className="agent-dialog-optional">{t("agents.optional", "(optional)")}</span></label>
                       <textarea
                         id="agent-instructions-text"
                         className="input"
                         rows={4}
-                        placeholder="Add custom behavior instructions..."
+                        placeholder={t("agents.instructionsTextPlaceholder", "Add custom behavior instructions...")}
                         value={instructionsText}
                         onChange={e => setInstructionsText(e.target.value)}
                       />
                     </div>
                   </div>
                   <div className="agent-dialog-section">
-                    <div className="agent-dialog-section-header">Runtime</div>
+                    <div className="agent-dialog-section-header">{t("agents.sectionRuntime", "Runtime")}</div>
                     {renderRuntimeSourceSection("agent-runtime-source-step-0")}
                   </div>
                   {/* AI-assisted generation */}
@@ -639,10 +655,10 @@ export function NewAgentDialog({
                       onClick={() => setIsGenerationModalOpen(true)}
                     >
                       <span>✨</span>
-                      Generate with AI
+                      {t("agents.generateWithAI", "Generate with AI")}
                     </button>
                     <p className="agent-dialog-ai-hint">
-                      Describe your agent&apos;s role and let AI generate a specification
+                      {t("agents.generateHint", "Describe your agent's role and let AI generate a specification")}
                     </p>
                   </div>
                 </div>
@@ -654,22 +670,22 @@ export function NewAgentDialog({
             <div>
               {renderRuntimeSourceSection("agent-runtime-source-step-1")}
               <div className="agent-dialog-field">
-                <label htmlFor="agent-thinking">Thinking Level</label>
+                <label htmlFor="agent-thinking">{t("agents.fieldThinkingLevel", "Thinking Level")}</label>
                 <select
                   id="agent-thinking"
                   className="select"
                   value={runtimeConfig.thinkingLevel}
                   onChange={e => setRuntimeConfig(c => ({ ...c, thinkingLevel: e.target.value as ThinkingLevel }))}
                 >
-                  <option value="off">Off</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  <option value="off">{t("agents.thinkingOff", "Off")}</option>
+                  <option value="minimal">{t("agents.thinkingMinimal", "Minimal")}</option>
+                  <option value="low">{t("agents.thinkingLow", "Low")}</option>
+                  <option value="medium">{t("agents.thinkingMedium", "Medium")}</option>
+                  <option value="high">{t("agents.thinkingHigh", "High")}</option>
                 </select>
               </div>
               <div className="agent-dialog-field">
-                <label htmlFor="agent-max-turns">Max Turns</label>
+                <label htmlFor="agent-max-turns">{t("agents.fieldMaxTurns", "Max Turns")}</label>
                 <input
                   id="agent-max-turns"
                   type="number"
@@ -683,13 +699,13 @@ export function NewAgentDialog({
               <div className="agent-dialog-field">
                 <SkillMultiselect
                   id="agent-skills"
-                  label="Skills"
+                  label={t("agents.fieldSkills", "Skills")}
                   value={selectedSkills}
                   onChange={setSelectedSkills}
                   projectId={projectId}
                 />
                 <p className="agent-dialog-optional agent-dialog-skills-hint">
-                  Optional skills to assign to this agent
+                  {t("agents.skillsHint", "Optional skills to assign to this agent")}
                 </p>
               </div>
             </div>
@@ -698,38 +714,38 @@ export function NewAgentDialog({
           {step === 2 && (
             <div>
               <p className="agent-dialog-info">
-                Review your agent configuration before creating.
+                {t("agents.reviewHint", "Review your agent configuration before creating.")}
               </p>
               <div className="agent-dialog-summary">
                   <div className="agent-dialog-summary-row agent-dialog-summary-row--editable">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-name">Name</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-name">{t("agents.fieldName", "Name")}</label>
                   <input
                     id="agent-review-name"
                     type="text"
                     className="input"
-                    placeholder="e.g. Frontend Reviewer"
+                    placeholder={t("agents.namePlaceholder", "e.g. Frontend Reviewer")}
                     value={name}
                     onChange={e => setName(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row agent-dialog-summary-row--editable agent-dialog-summary-row--title">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-title">Title</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-title">{t("agents.fieldTitle", "Title")}</label>
                   <input
                     id="agent-review-title"
                     type="text"
                     className="input"
-                    placeholder="e.g. Senior Code Reviewer"
+                    placeholder={t("agents.titlePlaceholder", "e.g. Senior Code Reviewer")}
                     value={title}
                     onChange={e => setTitle(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row">
-                  <span className="agent-dialog-summary-row-label">Role</span>
-                  <span>{selectedRole?.icon} {selectedRole?.label}</span>
+                  <span className="agent-dialog-summary-row-label">{t("agents.fieldRole", "Role")}</span>
+                  <span>{selectedRole?.icon} {selectedRole ? getRoleLabel(selectedRole.value) : ""}</span>
                 </div>
                 {selectedReportsToId && (
                   <div className="agent-dialog-summary-row">
-                    <span className="agent-dialog-summary-row-label">Reports To</span>
+                    <span className="agent-dialog-summary-row-label">{t("agents.fieldReportsTo", "Reports To")}</span>
                     <span>
                       {selectedManager
                         ? `${selectedManager.name} (${selectedManager.id})`
@@ -738,57 +754,57 @@ export function NewAgentDialog({
                   </div>
                 )}
                 <div className="agent-dialog-summary-row agent-dialog-summary-row--editable">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-soul">Soul</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-soul">{t("agents.fieldSoul", "Soul")}</label>
                   <textarea
                     id="agent-review-soul"
                     className="input"
                     rows={2}
-                    placeholder="Describe the agent's personality and communication style..."
+                    placeholder={t("agents.soulPlaceholder", "Describe the agent's personality and communication style...")}
                     value={soul}
                     onChange={e => setSoul(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row agent-dialog-summary-row--editable">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-heartbeat-procedure-path">Heartbeat Procedure Path</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-heartbeat-procedure-path">{t("agents.fieldHeartbeatPath", "Heartbeat Procedure Path")}</label>
                   <input
                     id="agent-review-heartbeat-procedure-path"
                     type="text"
                     className="input"
-                    placeholder="e.g. .fusion/agents/ceo-agent2736/HEARTBEAT.md"
+                    placeholder={t("agents.heartbeatPathPlaceholder", "e.g. .fusion/agents/ceo-agent2736/HEARTBEAT.md")}
                     value={heartbeatProcedurePath}
                     onChange={e => setHeartbeatProcedurePath(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row agent-dialog-summary-row--editable">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-instructions-path">Instructions Path</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-instructions-path">{t("agents.fieldInstructionsPath", "Instructions Path")}</label>
                   <input
                     id="agent-review-instructions-path"
                     type="text"
                     className="input"
-                    placeholder="e.g. .fusion/agents/reviewer.md"
+                    placeholder={t("agents.instructionsPathPlaceholder", "e.g. .fusion/agents/reviewer.md")}
                     value={instructionsPath}
                     onChange={e => setInstructionsPath(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row agent-dialog-summary-row--editable">
-                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-instructions-text">Inline Instructions</label>
+                  <label className="agent-dialog-summary-row-label" htmlFor="agent-review-instructions-text">{t("agents.fieldInstructionsText", "Inline Instructions")}</label>
                   <textarea
                     id="agent-review-instructions-text"
                     className="input"
                     rows={4}
-                    placeholder="Add custom behavior instructions..."
+                    placeholder={t("agents.instructionsTextPlaceholder", "Add custom behavior instructions...")}
                     value={instructionsText}
                     onChange={e => setInstructionsText(e.target.value)}
                   />
                 </div>
                 <div className="agent-dialog-summary-row">
-                  <span className="agent-dialog-summary-row-label">{runtimeMode === "runtime" ? "Runtime" : "Model"}</span>
+                  <span className="agent-dialog-summary-row-label">{runtimeMode === "runtime" ? t("agents.runtime", "Runtime") : t("agents.model", "Model")}</span>
                   <span>
                     {runtimeMode === "runtime" ? (
                       selectedRuntime ? (
                         selectedRuntime.name
                       ) : (
-                        <em className="agent-dialog-summary-row-value--muted">Not selected</em>
+                        <em className="agent-dialog-summary-row-value--muted">{t("agents.notSelected", "Not selected")}</em>
                       )
                     ) : selectedModel ? (
                       <>
@@ -803,22 +819,22 @@ export function NewAgentDialog({
                         })()}
                       </>
                     ) : (
-                      <em className="agent-dialog-summary-row-value--muted">default</em>
+                      <em className="agent-dialog-summary-row-value--muted">{t("agents.modelDefault", "default")}</em>
                     )}
                   </span>
                 </div>
                 <div className="agent-dialog-summary-row">
-                  <span className="agent-dialog-summary-row-label">Thinking</span>
+                  <span className="agent-dialog-summary-row-label">{t("agents.fieldThinking", "Thinking")}</span>
                   <span className="agent-dialog-summary-row-value--capitalize">{runtimeConfig.thinkingLevel}</span>
                 </div>
                 <div className="agent-dialog-summary-row">
-                  <span className="agent-dialog-summary-row-label">Max Turns</span>
+                  <span className="agent-dialog-summary-row-label">{t("agents.fieldMaxTurns", "Max Turns")}</span>
                   <span>{runtimeConfig.maxTurns}</span>
                 </div>
                 {selectedSkills.length > 0 && (
                   <div className="agent-dialog-summary-row">
-                    <span className="agent-dialog-summary-row-label">Skills</span>
-                    <span>{selectedSkills.length} skill{selectedSkills.length !== 1 ? "s" : ""} selected</span>
+                    <span className="agent-dialog-summary-row-label">{t("agents.fieldSkills", "Skills")}</span>
+                    <span>{t("agents.skillsSelected", "{{count}} skill selected", { count: selectedSkills.length, defaultValue_one: "{{count}} skill selected", defaultValue_other: "{{count}} skills selected" })}</span>
                   </div>
                 )}
               </div>
@@ -833,11 +849,11 @@ export function NewAgentDialog({
         <div className="agent-dialog-footer">
           {step > 0 && (
             <button className="btn" onClick={() => setStep(s => s - 1)} disabled={isSubmitting}>
-              Back
+              {t("agents.back", "Back")}
             </button>
           )}
           <button className="btn" onClick={handleClose} disabled={isSubmitting}>
-            Cancel
+            {t("agents.cancel", "Cancel")}
           </button>
           {step < 2 ? (
             <button
@@ -845,7 +861,7 @@ export function NewAgentDialog({
               onClick={() => setStep(s => s + 1)}
               disabled={step === 0 && !name.trim() && !selectedPresetId}
             >
-              Next
+              {t("agents.next", "Next")}
             </button>
           ) : (
             <button
@@ -853,7 +869,7 @@ export function NewAgentDialog({
               onClick={() => void handleCreate()}
               disabled={isSubmitting || !name.trim()}
             >
-              {isSubmitting ? "Creating..." : "Create"}
+              {isSubmitting ? t("agents.creating", "Creating...") : t("agents.create", "Create")}
             </button>
           )}
         </div>

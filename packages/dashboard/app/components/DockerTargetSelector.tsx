@@ -1,5 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { DockerHostConfig } from "@fusion/core";
 import { useDockerTargets } from "../hooks/useDockerTargets";
 import { DockerTlsConfig } from "./DockerTlsConfig";
@@ -14,6 +15,7 @@ interface DockerTargetSelectorProps {
 }
 
 export function DockerTargetSelector({ value, onChange, onError }: DockerTargetSelectorProps) {
+  const { t } = useTranslation("app");
   const initialMode: TargetMode = value?.context ? "context" : value?.host ? "host" : "local";
   const [mode, setMode] = useState<TargetMode>(initialMode);
   const [selectedContext, setSelectedContext] = useState(value?.context ?? "");
@@ -56,19 +58,27 @@ export function DockerTargetSelector({ value, onChange, onError }: DockerTargetS
 
   return (
     <div className="docker-target-selector">
-      <div className="docker-target-selector__modes" role="group" aria-label="Docker target mode">
+      <div className="docker-target-selector__modes" role="group" aria-label={t("docker.targetMode", "Docker target mode")}>
         <button type="button" className={`btn btn-sm ${mode === "local" ? "docker-target-selector__mode-active" : ""}`} onClick={() => {
           setMode("local");
           void checkLocalDocker()
-            .then((result) => setLocalStatus(result.available ? `Docker is available${result.version ? ` (${result.version})` : ""}` : `Docker not found${result.error ? `: ${result.error}` : ""}`))
+            .then((result) => {
+              if (result.available) {
+                const version = result.version ? ` (${result.version})` : "";
+                setLocalStatus(t("docker.available", "Docker is available{{version}}", { version }));
+              } else {
+                const error = result.error ? `: ${result.error}` : "";
+                setLocalStatus(t("docker.notFound", "Docker not found{{error}}", { error }));
+              }
+            })
             .catch((error) => {
               const message = error instanceof Error ? error.message : String(error);
-              setLocalStatus(`Docker not found: ${message}`);
+              setLocalStatus(t("docker.notFoundError", "Docker not found: {{message}}", { message }));
               onError?.(message);
             });
-        }}>Local Docker</button>
-        <button type="button" className={`btn btn-sm ${mode === "context" ? "docker-target-selector__mode-active" : ""}`} onClick={() => setMode("context")}>Docker Context</button>
-        <button type="button" className={`btn btn-sm ${mode === "host" ? "docker-target-selector__mode-active" : ""}`} onClick={() => setMode("host")}>Remote Host</button>
+        }}>{t("docker.local", "Local Docker")}</button>
+        <button type="button" className={`btn btn-sm ${mode === "context" ? "docker-target-selector__mode-active" : ""}`} onClick={() => setMode("context")}>{t("docker.context", "Docker Context")}</button>
+        <button type="button" className={`btn btn-sm ${mode === "host" ? "docker-target-selector__mode-active" : ""}`} onClick={() => setMode("host")}>{t("docker.remote", "Remote Host")}</button>
       </div>
 
       {mode === "local" && localStatus && <div className="docker-target-selector__status">{localStatus}</div>}
@@ -81,12 +91,12 @@ export function DockerTargetSelector({ value, onChange, onError }: DockerTargetS
               setSelectedContext(next);
               onChange(next ? { context: next } : {});
             }}>
-              <option value="">Select context</option>
+              <option value="">{t("docker.selectContext", "Select context")}</option>
               {contexts.map((context) => (
                 <option key={context.name} value={context.name}>{context.name}{context.isCurrentContext ? " (current)" : ""}{context.dockerHost ? ` — ${context.dockerHost}` : ""}</option>
               ))}
             </select>
-            <button type="button" className="btn btn-sm btn-icon" onClick={() => void loadContexts()} disabled={isLoadingContexts} aria-label="Refresh contexts"><RefreshCw size={14} /></button>
+            <button type="button" className="btn btn-sm btn-icon" onClick={() => void loadContexts()} disabled={isLoadingContexts} aria-label={t("docker.refreshContexts", "Refresh contexts")}><RefreshCw size={14} /></button>
           </div>
           {contextsError && <div className="docker-target-selector__error">{contextsError}</div>}
         </div>
@@ -95,11 +105,11 @@ export function DockerTargetSelector({ value, onChange, onError }: DockerTargetS
       {mode === "host" && (
         <div className="docker-target-selector__panel">
           <div className="docker-target-selector__field">
-            <label htmlFor="docker-target-selector-host">Docker Host</label>
+            <label htmlFor="docker-target-selector-host">{t("docker.host", "Docker Host")}</label>
             <input
               id="docker-target-selector-host"
               className="input"
-              placeholder="tcp://host:2376"
+              placeholder={t("docker.hostPlaceholder", "tcp://host:2376")}
               value={host}
               onChange={(event) => {
                 const next = event.target.value;
@@ -113,14 +123,14 @@ export function DockerTargetSelector({ value, onChange, onError }: DockerTargetS
       )}
 
       <button type="button" className="btn btn-sm" onClick={() => void testConnection(mode === "local" ? undefined : mode === "context" ? { context: selectedContext } : { host, ...tlsValue })} disabled={isTestingConnection || isCheckingLocal}>
-        {isTestingConnection ? "Testing..." : "Test Connection"}
+        {isTestingConnection ? t("docker.testing", "Testing...") : t("docker.testConnection", "Test Connection")}
       </button>
 
       {lastTestResult && (
         <div className={lastTestResult.success ? "docker-target-selector__success" : "docker-target-selector__error"}>
           {lastTestResult.success
-            ? `Connected${lastTestResult.dockerVersion ? ` (Docker ${lastTestResult.dockerVersion})` : ""}`
-            : lastTestResult.error ?? "Connection failed"}
+            ? t("docker.connected", "Connected{{version}}", { version: lastTestResult.dockerVersion ? ` (Docker ${lastTestResult.dockerVersion})` : "" })
+            : lastTestResult.error ?? t("docker.connectionFailed", "Connection failed")}
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
 import "./WorktrunkInstallApprovalDetails.css";
+import { useTranslation } from "react-i18next";
 import type { ApprovalRequestDetail } from "../api";
 
 interface WorktrunkInstallApprovalDetailsProps {
@@ -23,6 +24,7 @@ function readAsset(context: Record<string, unknown> | undefined): { url: string 
 }
 
 export function WorktrunkInstallApprovalDetails({ targetAction }: WorktrunkInstallApprovalDetailsProps) {
+  const { t } = useTranslation("app");
   const context = targetAction.context as Record<string, unknown> | undefined;
   const version = readString(context?.version);
   const installPath = readString(context?.installPath) ?? targetAction.resourceId;
@@ -30,23 +32,23 @@ export function WorktrunkInstallApprovalDetails({ targetAction }: WorktrunkInsta
 
   return (
     <section className="card worktrunk-install-approval-details" data-testid="worktrunk-install-approval-details">
-      <h4 className="worktrunk-install-approval-details__title">Worktrunk install request</h4>
+      <h4 className="worktrunk-install-approval-details__title">{t("worktrunk.installRequestTitle", "Worktrunk install request")}</h4>
       <dl className="worktrunk-install-approval-details__list">
         <div className="worktrunk-install-approval-details__row">
-          <dt>Version</dt>
-          <dd>{version ?? "Unknown"}</dd>
+          <dt>{t("worktrunk.version", "Version")}</dt>
+          <dd>{version ?? t("common.unknown", "Unknown")}</dd>
         </div>
         <div className="worktrunk-install-approval-details__row">
-          <dt>Asset URL</dt>
-          <dd>{url ?? "Unknown"}</dd>
+          <dt>{t("worktrunk.assetUrl", "Asset URL")}</dt>
+          <dd>{url ?? t("common.unknown", "Unknown")}</dd>
         </div>
         <div className="worktrunk-install-approval-details__row">
-          <dt>SHA-256</dt>
-          <dd>{sha256 ?? "Unknown"}</dd>
+          <dt>{t("worktrunk.sha256", "SHA-256")}</dt>
+          <dd>{sha256 ?? t("common.unknown", "Unknown")}</dd>
         </div>
         <div className="worktrunk-install-approval-details__row">
-          <dt>Install path</dt>
-          <dd>{installPath ?? "Unknown"}</dd>
+          <dt>{t("worktrunk.installPath", "Install path")}</dt>
+          <dd>{installPath ?? t("common.unknown", "Unknown")}</dd>
         </div>
       </dl>
     </section>

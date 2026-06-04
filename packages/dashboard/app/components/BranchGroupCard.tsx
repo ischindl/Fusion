@@ -1,5 +1,6 @@
 import "./BranchGroupCard.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, GitBranch, GitPullRequest, Loader2 } from "lucide-react";
 import type { BranchGroupSummary } from "../api";
 import { apiAbandonBranchGroup, apiGetBranchGroup, apiPromoteBranchGroup } from "../api";
@@ -11,6 +12,7 @@ interface BranchGroupCardProps {
 }
 
 export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
+  const { t } = useTranslation("app");
   const [group, setGroup] = useState<BranchGroupSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,12 +26,12 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
       setGroup(response.group);
       setError(null);
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "Failed to load branch group";
+      const message = loadError instanceof Error ? loadError.message : t("branchGroup.loadError", "Failed to load branch group");
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [groupId, projectId]);
+  }, [groupId, projectId, t]);
 
   useEffect(() => {
     setLoading(true);
@@ -75,8 +77,11 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
 
   const completionText = useMemo(() => {
     if (!group) return "";
-    return `${group.completion.landed} of ${group.completion.total} members finished`;
-  }, [group]);
+    return t("branchGroup.completionText", "{{landed}} of {{total}} members finished", {
+      landed: group.completion.landed,
+      total: group.completion.total,
+    });
+  }, [group, t]);
 
   const onPromote = useCallback(async () => {
     setPromoting(true);
@@ -99,11 +104,11 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
   }, [groupId, loadGroup, projectId]);
 
   if (loading) {
-    return <div className="card branch-group-card"><Loader2 className="spin" size={14} /> Loading branch group…</div>;
+    return <div className="card branch-group-card"><Loader2 className="spin" size={14} /> {t("branchGroup.loading", "Loading branch group…")}</div>;
   }
 
   if (error || !group) {
-    return <div className="card branch-group-card branch-group-card-error">{error ?? "Branch group unavailable"}</div>;
+    return <div className="card branch-group-card branch-group-card-error">{error ?? t("branchGroup.unavailable", "Branch group unavailable")}</div>;
   }
 
   const completionPercent = group.completion.total > 0
@@ -119,13 +124,13 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
           <strong>{group.branchName}</strong>
         </div>
         <div className="branch-group-card-header-meta">
-          <span className="badge branch-group-card-badge">Group {group.id}</span>
+          <span className="badge branch-group-card-badge">{t("branchGroup.groupLabel", "Group {{id}}", { id: group.id })}</span>
           <button
             type="button"
             className="btn btn-icon"
             onClick={() => setCollapsed((value) => !value)}
             aria-expanded={!collapsed}
-            aria-label={collapsed ? "Expand branch group" : "Collapse branch group"}
+            aria-label={collapsed ? t("branchGroup.expandLabel", "Expand branch group") : t("branchGroup.collapseLabel", "Collapse branch group")}
           >
             {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -172,22 +177,22 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
               can only be promoted once every member has landed. Abandon below is
               reachable whenever the PR is open, even if completion later reverts. */}
           {complete && (group.autoMerge ? (
-            <span className="badge">Auto-merge enabled</span>
+            <span className="badge">{t("branchGroup.autoMergeEnabled", "Auto-merge enabled")}</span>
           ) : group.prState === "none" ? (
             <button type="button" className="btn" onClick={() => void onPromote()} disabled={promoting}>
               {promoting ? <Loader2 size={14} className="spin" /> : <GitPullRequest size={14} />}
-              Open PR
+              {t("branchGroup.openPr", "Open PR")}
             </button>
           ) : (
             <button type="button" className="btn" onClick={() => void onPromote()} disabled={promoting}>
               {promoting ? <Loader2 size={14} className="spin" /> : <GitPullRequest size={14} />}
-              Merge group into main
+              {t("branchGroup.mergeIntoMain", "Merge group into main")}
             </button>
           ))}
           {group.prState === "open" && (
             <button type="button" className="btn btn-danger" onClick={() => void onAbandon()} disabled={abandoning}>
               {abandoning ? <Loader2 size={14} className="spin" /> : null}
-              Abandon group
+              {t("branchGroup.abandonGroup", "Abandon group")}
             </button>
           )}
         </div>

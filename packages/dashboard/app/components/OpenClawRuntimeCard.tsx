@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import {
   fetchOpenClawStatus,
   fetchPluginSettings,
@@ -77,6 +78,7 @@ function settingsFromRecord(raw: Record<string, unknown>): OpenClawSettings {
 }
 
 export function OpenClawRuntimeCard() {
+  const { t } = useTranslation("app");
   const [settings, setSettings] = useState<OpenClawSettings>(DEFAULT_SETTINGS);
   const [status, setStatus] = useState<OpenClawProviderStatus | null>(null);
   const [busy, setBusy] = useState<"loading" | "saving" | "testing" | "save-test" | null>(null);
@@ -142,33 +144,33 @@ export function OpenClawRuntimeCard() {
     if (!mountedRef.current) return;
     setBusy(null);
     if (!next) {
-      setToast({ kind: "err", message: "Test failed — see status above." });
+      setToast({ kind: "err", message: t("openclaw.testFailed", "Test failed — see status above.") });
     } else if (next.binary.available) {
       setToast({
         kind: "ok",
-        message: `✓ openclaw detected${next.binary.version ? ` (${next.binary.version})` : ""}${next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : ""}.`,
+        message: t("openclaw.detected", `✓ openclaw detected{{version}}{{path}}.`, { version: next.binary.version ? ` (${next.binary.version})` : "", path: next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : "" }),
       });
     } else {
       setToast({
         kind: "err",
-        message: `✗ ${next.binary.reason ?? "openclaw not found"}`,
+        message: t("openclaw.notFound", `✗ ${next.binary.reason ?? "openclaw not found"}`),
       });
     }
-  }, [probe]);
+  }, [probe, t]);
 
   const handleSave = useCallback(async () => {
     setBusy("saving");
     setToast(null);
     try {
       await updatePluginSettings(PLUGIN_ID, buildPayload());
-      if (mountedRef.current) setToast({ kind: "ok", message: "Settings saved." });
+      if (mountedRef.current) setToast({ kind: "ok", message: t("openclaw.saved", "Settings saved.") });
     } catch (err) {
       if (mountedRef.current)
         setToast({ kind: "err", message: err instanceof Error ? err.message : String(err) });
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload]);
+  }, [buildPayload, t]);
 
   const handleSaveAndTest = useCallback(async () => {
     setBusy("save-test");
@@ -178,16 +180,16 @@ export function OpenClawRuntimeCard() {
       const next = await probe();
       if (!mountedRef.current) return;
       if (!next) {
-        setToast({ kind: "err", message: "Saved, but probe failed." });
+        setToast({ kind: "err", message: t("openclaw.savedProbeFailed", "Saved, but probe failed.") });
       } else if (next.binary.available) {
         setToast({
           kind: "ok",
-          message: `Saved · ✓ openclaw detected${next.binary.version ? ` (${next.binary.version})` : ""}${next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : ""}.`,
+          message: t("openclaw.savedDetected", `Saved · ✓ openclaw detected{{version}}{{path}}.`, { version: next.binary.version ? ` (${next.binary.version})` : "", path: next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : "" }),
         });
       } else {
         setToast({
           kind: "err",
-          message: `Saved · ✗ ${next.binary.reason ?? "openclaw not found"}`,
+          message: t("openclaw.savedNotFound", `Saved · ✗ ${next.binary.reason ?? "openclaw not found"}`),
         });
       }
     } catch (err) {
@@ -196,17 +198,17 @@ export function OpenClawRuntimeCard() {
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload, probe]);
+  }, [buildPayload, probe, t]);
 
   const binary = status?.binary;
   const statusKind =
     status === null ? "loading" : binary?.available ? "ok" : "err";
   const statusText =
     status === null
-      ? "Probing local openclaw binary…"
+      ? t("openclaw.probing", "Probing local openclaw binary…")
       : binary?.available
-        ? `✓ Detected${binary.version ? ` ${binary.version}` : ""}${binary.binaryPath ? ` · ${binary.binaryPath}` : ""}`
-        : `✗ ${binary?.reason ?? "not detected on PATH"}`;
+        ? t("openclaw.statusDetected", `✓ Detected{{version}}{{path}}`, { version: binary.version ? ` ${binary.version}` : "", path: binary.binaryPath ? ` · ${binary.binaryPath}` : "" })
+        : t("openclaw.statusNotFound", `✗ ${binary?.reason ?? "not detected on PATH"}`);
 
   return (
     <RuntimeCardShell
@@ -217,13 +219,11 @@ export function OpenClawRuntimeCard() {
       statusKind={statusKind}
       statusText={statusText}
       description={
-        <>
-          Drives the local <code>openclaw</code> CLI as a subprocess. Each
-          Fusion prompt is dispatched via{" "}
-          <code>openclaw agent --local --json</code>; the agent definition,
-          model, and thinking level are resolved by OpenClaw. This card only
-          sets overrides and the binary path.
-        </>
+        <Trans
+          i18nKey="app:openclaw.description"
+          defaults="Drives the local <code1>openclaw</code1> CLI as a subprocess. Each Fusion prompt is dispatched via <code2>openclaw agent --local --json</code2>; the agent definition, model, and thinking level are resolved by OpenClaw. This card only sets overrides and the binary path."
+          components={{ code1: <code />, code2: <code /> }}
+        />
       }
       busy={busy}
       toast={toast}
@@ -234,14 +234,18 @@ export function OpenClawRuntimeCard() {
         binary?.available === false ? (
           <div className="onboarding-helper-text">
             <p>
-              <code>openclaw</code> not detected. Install the upstream agent:
+              <Trans
+                i18nKey="app:openclaw.notDetectedInstall"
+                defaults="<code>openclaw</code> not detected. Install the upstream agent:"
+                components={{ code: <code /> }}
+              />
             </p>
             <pre>
               <code>npm install -g openclaw</code>
             </pre>
             <p>
               <a href={OPENCLAW_GITHUB} target="_blank" rel="noreferrer">
-                openclaw on GitHub
+                {t("openclaw.githubLink", "openclaw on GitHub")}
               </a>
             </p>
           </div>
@@ -249,43 +253,43 @@ export function OpenClawRuntimeCard() {
       }
     >
       <div className="form-group">
-        <label htmlFor="openclaw-binaryPath">Binary path</label>
+        <label htmlFor="openclaw-binaryPath">{t("openclaw.binaryPath", "Binary path")}</label>
         <input
           id="openclaw-binaryPath"
           type="text"
-          placeholder="openclaw (defaults to PATH)"
+          placeholder={t("openclaw.binaryPathPlaceholder", "openclaw (defaults to PATH)")}
           value={settings.binaryPath}
           onChange={(e) => setSettings((s) => ({ ...s, binaryPath: e.target.value }))}
         />
-        <small>Leave blank to resolve <code>openclaw</code> from your PATH.</small>
+        <small>{t("openclaw.binaryPathHint", "Leave blank to resolve openclaw from your PATH.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="openclaw-agentId">Agent ID</label>
+        <label htmlFor="openclaw-agentId">{t("openclaw.agentId", "Agent ID")}</label>
         <input
           id="openclaw-agentId"
           type="text"
-          placeholder="main"
+          placeholder={t("openclaw.agentIdPlaceholder", "main")}
           value={settings.agentId}
           onChange={(e) => setSettings((s) => ({ ...s, agentId: e.target.value }))}
         />
-        <small>OpenClaw agent definition to run (default: <code>main</code>).</small>
+        <small>{t("openclaw.agentIdHint", "OpenClaw agent definition to run (default: main).")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="openclaw-model">Model override</label>
+        <label htmlFor="openclaw-model">{t("openclaw.model", "Model override")}</label>
         <input
           id="openclaw-model"
           type="text"
-          placeholder="e.g. anthropic/claude-haiku-4-5, minimax/MiniMax-M3"
+          placeholder={t("openclaw.modelPlaceholder", "e.g. anthropic/claude-haiku-4-5, minimax/MiniMax-M3")}
           value={settings.model}
           onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
         />
-        <small>Optional — overrides the OpenClaw default model.</small>
+        <small>{t("openclaw.modelHint", "Optional — overrides the OpenClaw default model.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="openclaw-thinking">Thinking level</label>
+        <label htmlFor="openclaw-thinking">{t("openclaw.thinking", "Thinking level")}</label>
         <select
           id="openclaw-thinking"
           value={settings.thinking}
@@ -299,7 +303,7 @@ export function OpenClawRuntimeCard() {
             </option>
           ))}
         </select>
-        <small>Controls how much extended thinking the model uses.</small>
+        <small>{t("openclaw.thinkingHint", "Controls how much extended thinking the model uses.")}</small>
       </div>
 
       <div className="form-group">
@@ -313,13 +317,13 @@ export function OpenClawRuntimeCard() {
             checked={settings.useGateway}
             onChange={(e) => setSettings((s) => ({ ...s, useGateway: e.target.checked }))}
           />
-          Route through OpenClaw gateway (otherwise embedded)
+          {t("openclaw.gateway", "Route through OpenClaw gateway (otherwise embedded)")}
         </label>
-        <small>When enabled, calls pass through the OpenClaw gateway service.</small>
+        <small>{t("openclaw.gatewayHint", "When enabled, calls pass through the OpenClaw gateway service.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="openclaw-cliTimeoutSec">OpenClaw timeout (sec)</label>
+        <label htmlFor="openclaw-cliTimeoutSec">{t("openclaw.cliTimeout", "OpenClaw timeout (sec)")}</label>
         <input
           id="openclaw-cliTimeoutSec"
           type="number"
@@ -333,11 +337,11 @@ export function OpenClawRuntimeCard() {
             }))
           }
         />
-        <small>OpenClaw-side run timeout in seconds (0 = no timeout).</small>
+        <small>{t("openclaw.cliTimeoutHint", "OpenClaw-side run timeout in seconds (0 = no timeout).")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="openclaw-cliTimeoutMs">CLI subprocess timeout (ms)</label>
+        <label htmlFor="openclaw-cliTimeoutMs">{t("openclaw.subprocess", "CLI subprocess timeout (ms)")}</label>
         <input
           id="openclaw-cliTimeoutMs"
           type="number"
@@ -353,8 +357,7 @@ export function OpenClawRuntimeCard() {
           }
         />
         <small>
-          Fusion-side hard cap before the CLI subprocess is killed (default:{" "}
-          {DEFAULT_SETTINGS.cliTimeoutMs / 1000}s).
+          {t("openclaw.subprocessHint", "Fusion-side hard cap before the CLI subprocess is killed (default: {{default}}s).", { default: DEFAULT_SETTINGS.cliTimeoutMs / 1000 })}
         </small>
       </div>
     </RuntimeCardShell>

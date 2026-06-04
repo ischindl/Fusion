@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { Globe, Folder } from "lucide-react";
 import type { ScheduledTask, ScheduledTaskCreateInput, ScheduleType, AutomationStep } from "@fusion/core";
 import { ScheduleStepsEditor } from "./ScheduleStepsEditor";
@@ -21,19 +23,21 @@ const PRESET_CRON: Record<Exclude<ScheduleType, "custom">, string> = {
   weekdays: "0 9 * * 1-5",
 };
 
-const SCHEDULE_TYPE_LABELS: Record<ScheduleType, string> = {
-  hourly: "Every hour",
-  daily: "Every day (midnight)",
-  weekly: "Every week (Monday)",
-  monthly: "Every month (1st)",
-  custom: "Custom cron expression",
-  every15Minutes: "Every 15 minutes",
-  every30Minutes: "Every 30 minutes",
-  every2Hours: "Every 2 hours",
-  every6Hours: "Every 6 hours",
-  every12Hours: "Every 12 hours",
-  weekdays: "Weekdays at 9 AM (Mon-Fri)",
-};
+function getScheduleTypeLabels(t: TFunction<"app">): Record<ScheduleType, string> {
+  return {
+    hourly: t("schedule.typeHourly", "Every hour"),
+    daily: t("schedule.typeDaily", "Every day (midnight)"),
+    weekly: t("schedule.typeWeekly", "Every week (Monday)"),
+    monthly: t("schedule.typeMonthly", "Every month (1st)"),
+    custom: t("schedule.typeCustom", "Custom cron expression"),
+    every15Minutes: t("schedule.typeEvery15Min", "Every 15 minutes"),
+    every30Minutes: t("schedule.typeEvery30Min", "Every 30 minutes"),
+    every2Hours: t("schedule.typeEvery2Hours", "Every 2 hours"),
+    every6Hours: t("schedule.typeEvery6Hours", "Every 6 hours"),
+    every12Hours: t("schedule.typeEvery12Hours", "Every 12 hours"),
+    weekdays: t("schedule.typeWeekdays", "Weekdays at 9 AM (Mon-Fri)"),
+  };
+}
 
 /**
  * Simple cron expression validator (5-field format).
@@ -76,6 +80,7 @@ interface ScheduleFormProps {
 }
 
 export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, projectId, onScopeChange }: ScheduleFormProps) {
+  const { t } = useTranslation("app");
   const isEditing = !!schedule;
 
   // Determine initial mode based on whether the schedule has steps
@@ -223,42 +228,42 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
 
   const validate = useCallback((): boolean => {
     const e: Record<string, string> = {};
-    if (!name.trim()) e.name = "Name is required";
+    if (!name.trim()) e.name = t("schedule.nameRequired", "Name is required");
     
     // Scope validation: project scope requires projectId
     if (localScope === "project" && !projectId) {
-      e.scope = "Project-specific entries require an active project.";
+      e.scope = t("schedule.projectRequired", "Project-specific entries require an active project.");
     }
     
     // Simple mode validation
     if (mode === "simple") {
       if (simpleType === "command") {
-        if (!command.trim()) e.command = "Command is required";
+        if (!command.trim()) e.command = t("schedule.commandRequired", "Command is required");
       } else if (simpleType === "ai-prompt") {
         // AI Prompt mode
-        if (!prompt.trim()) e.prompt = "Prompt is required";
-        
+        if (!prompt.trim()) e.prompt = t("schedule.promptRequired", "Prompt is required");
+
         // Model consistency check: both must be set or both must be empty
         const hasProvider = !!modelProvider.trim();
         const hasModelId = !!modelId.trim();
         if (hasProvider !== hasModelId) {
-          e.model = "Both model provider and model ID must be set, or both must be empty";
+          e.model = t("schedule.modelConsistency", "Both model provider and model ID must be set, or both must be empty");
         }
       } else if (simpleType === "create-task") {
         // Create Task mode
-        if (!taskDescription.trim()) e.taskDescription = "Task description is required";
-        
+        if (!taskDescription.trim()) e.taskDescription = t("schedule.taskDescriptionRequired", "Task description is required");
+
         // Model consistency check: both must be set or both must be empty
         const hasProvider = !!modelProvider.trim();
         const hasModelId = !!modelId.trim();
         if (hasProvider !== hasModelId) {
-          e.model = "Both model provider and model ID must be set, or both must be empty";
+          e.model = t("schedule.modelConsistency", "Both model provider and model ID must be set, or both must be empty");
         }
       }
     }
     
     // Advanced mode validation
-    if (mode === "advanced" && steps.length === 0) e.steps = "At least one step is required";
+    if (mode === "advanced" && steps.length === 0) e.steps = t("schedule.stepsRequired", "At least one step is required");
     
     // Validate step content in multi-step mode
     if (mode === "advanced" && steps.length > 0) {
@@ -267,13 +272,13 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
       for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
         if (!step.name?.trim()) {
-          incompleteSteps.push(`Step ${i + 1}: Name is required`);
+          incompleteSteps.push(t("schedule.stepNameRequired", "Step {{index}}: Name is required", { index: i + 1 }));
         }
         if (step.type === "command" && !step.command?.trim()) {
-          incompleteSteps.push(`Step ${i + 1}: Command is required`);
+          incompleteSteps.push(t("schedule.stepCommandRequired", "Step {{index}}: Command is required", { index: i + 1 }));
         }
         if (step.type === "ai-prompt" && !step.prompt?.trim()) {
-          incompleteSteps.push(`Step ${i + 1}: Prompt is required`);
+          incompleteSteps.push(t("schedule.stepPromptRequired", "Step {{index}}: Prompt is required", { index: i + 1 }));
         }
       }
       
@@ -283,19 +288,19 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
       
       // Check if any steps are currently being edited
       if (hasEditingSteps) {
-        e.stepsEditing = "Please save or cancel all step edits before saving the schedule";
+        e.stepsEditing = t("schedule.stepsEditing", "Please save or cancel all step edits before saving the schedule");
       }
     }
     
     if (scheduleType === "custom") {
       if (!cronExpression.trim()) {
-        e.cronExpression = "Cron expression is required for custom schedules";
+        e.cronExpression = t("schedule.cronRequired", "Cron expression is required for custom schedules");
       } else if (!isLikelyCron(cronExpression)) {
-        e.cronExpression = "Invalid cron format — expected 5 fields (e.g. '0 */6 * * *')";
+        e.cronExpression = t("schedule.cronInvalid", "Invalid cron format — expected 5 fields (e.g. '0 */6 * * *')");
       }
     }
     if (timeoutMs < 1000) {
-      e.timeoutMs = "Timeout must be at least 1 second (1000ms)";
+      e.timeoutMs = t("schedule.timeoutMinimum", "Timeout must be at least 1 second (1000ms)");
     }
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -406,18 +411,20 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
   const taskModelErrorId = "schedule-task-model-error";
   const timeoutErrorId = "schedule-timeout-error";
 
+  const scheduleTypeLabels = getScheduleTypeLabels(t);
+
   return (
     <form className="schedule-form" onSubmit={handleSubmit} noValidate>
       <h4 className="settings-section-heading">
-        {isEditing ? "Edit Schedule" : "New Schedule"}
+        {isEditing ? t("schedule.editTitle", "Edit Schedule") : t("schedule.newTitle", "New Schedule")}
       </h4>
 
       <div className="form-group">
-        <label htmlFor="schedule-name">Name</label>
+        <label htmlFor="schedule-name">{t("schedule.nameLabel", "Name")}</label>
         <input
           id="schedule-name"
           type="text"
-          placeholder="e.g. Update dependencies"
+          placeholder={t("schedule.namePlaceholder", "e.g. Update dependencies")}
           value={name}
           onChange={(e) => setName(e.target.value)}
           aria-invalid={!!errors.name}
@@ -429,10 +436,10 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
       </div>
 
       <div className="form-group">
-        <label htmlFor="schedule-description">Description (optional)</label>
+        <label htmlFor="schedule-description">{t("schedule.descriptionLabel", "Description (optional)")}</label>
         <textarea
           id="schedule-description"
-          placeholder="What does this schedule do?"
+          placeholder={t("schedule.descriptionPlaceholder", "What does this schedule do?")}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
@@ -441,8 +448,8 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
 
       {/* Scope selector */}
       <div className="form-group">
-        <label>Scope</label>
-        <div className="schedule-scope-toggle" role="radiogroup" aria-label="Schedule scope">
+        <label>{t("schedule.scopeLabel", "Scope")}</label>
+        <div className="schedule-scope-toggle" role="radiogroup" aria-label={t("schedule.scopeAriaLabel", "Schedule scope")}>
           <button
             type="button"
             className={`schedule-scope-btn${localScope === 'global' ? " active" : ""}`}
@@ -450,10 +457,10 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={localScope === 'global' ? "true" : "false"}
             disabled={!!schedule?.scope}
-            title={schedule?.scope ? `Scope is locked to ${schedule.scope} for existing schedules` : "Global scope"}
+            title={schedule?.scope ? t("schedule.scopeLocked", "Scope is locked to {{scope}} for existing schedules", { scope: schedule.scope }) : t("schedule.globalScopeTitle", "Global scope")}
           >
             <Globe size={12} />
-            Global
+            {t("schedule.globalScope", "Global")}
           </button>
           <button
             type="button"
@@ -462,18 +469,18 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={localScope === 'project' ? "true" : "false"}
             disabled={!!schedule?.scope || !projectId}
-            title={schedule?.scope ? `Scope is locked to ${schedule.scope} for existing schedules` : !projectId ? "Select a project to enable project scope" : "Project scope"}
+            title={schedule?.scope ? t("schedule.scopeLocked", "Scope is locked to {{scope}} for existing schedules", { scope: schedule.scope }) : !projectId ? t("schedule.projectScopeDisabled", "Select a project to enable project scope") : t("schedule.projectScopeTitle", "Project scope")}
           >
             <Folder size={12} />
-            Project
+            {t("schedule.projectScope", "Project")}
           </button>
         </div>
         <small>
           {!projectId && !schedule?.scope
-            ? "No active project. Schedules will be created at global scope."
+            ? t("schedule.noActiveProject", "No active project. Schedules will be created at global scope.")
             : localScope === "project" && projectId
-              ? `This schedule will be scoped to the current project.`
-              : "This schedule will be created at global scope."}
+              ? t("schedule.projectScoped", "This schedule will be scoped to the current project.")
+              : t("schedule.globalScoped", "This schedule will be created at global scope.")}
         </small>
         {errors.scope && (
           <small className="field-error">{errors.scope}</small>
@@ -481,13 +488,13 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
       </div>
 
       <div className="form-group">
-        <label htmlFor="schedule-type">Schedule</label>
+        <label htmlFor="schedule-type">{t("schedule.scheduleLabel", "Schedule")}</label>
         <select
           id="schedule-type"
           value={scheduleType}
           onChange={(e) => setScheduleType(e.target.value as ScheduleType)}
         >
-          {Object.entries(SCHEDULE_TYPE_LABELS).map(([value, label]) => (
+          {Object.entries(scheduleTypeLabels).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
@@ -495,7 +502,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
 
       <div className="form-group">
         <label htmlFor={cronFieldId}>
-          Cron Expression
+          {t("schedule.cronLabel", "Cron Expression")}
         </label>
         <input
           id={cronFieldId}
@@ -512,9 +519,9 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
         ) : (
           <small>
             {scheduleType === "custom" ? (
-              <>min hour day month weekday — <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer">crontab.guru</a></>
+              <>{t("schedule.cronHelp", "min hour day month weekday — ")} <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer">crontab.guru</a></>
             ) : (
-              `Auto-filled from preset: ${cronExpression}`
+              t("schedule.cronAutoFilled", "Auto-filled from preset: {{cron}}", { cron: cronExpression })
             )}
           </small>
         )}
@@ -522,8 +529,8 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
 
       {/* Mode switcher */}
       <div className="form-group">
-        <label>Execution Mode</label>
-        <div className="schedule-mode-toggle" role="radiogroup" aria-label="Execution mode">
+        <label>{t("schedule.modeLabel", "Execution Mode")}</label>
+        <div className="schedule-mode-toggle" role="radiogroup" aria-label={t("schedule.modeAriaLabel", "Execution mode")}>
           <button
             type="button"
             className={`schedule-mode-btn${mode === "simple" ? " active" : ""}`}
@@ -531,7 +538,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={mode === "simple"}
           >
-            Simple
+            {t("schedule.simpleMode", "Simple")}
           </button>
           <button
             type="button"
@@ -540,13 +547,13 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={mode === "advanced"}
           >
-            Multi-Step
+            {t("schedule.advancedMode", "Multi-Step")}
           </button>
         </div>
         <small>
           {mode === "simple"
-            ? "Run a single shell command or AI prompt"
-            : "Run multiple steps sequentially (commands and AI prompts)"}
+            ? t("schedule.simpleModeHelp", "Run a single shell command or AI prompt")
+            : t("schedule.advancedModeHelp", "Run multiple steps sequentially (commands and AI prompts)")}
         </small>
       </div>
 
@@ -554,8 +561,8 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
         <>
           {/* Simple mode type toggle */}
           <div className="form-group">
-            <label>Action Type</label>
-            <div className="schedule-mode-toggle" role="radiogroup" aria-label="Action type">
+            <label>{t("schedule.actionTypeLabel", "Action Type")}</label>
+            <div className="schedule-mode-toggle" role="radiogroup" aria-label={t("schedule.actionTypeAriaLabel", "Action type")}>
               <button
                 type="button"
                 className={`schedule-mode-btn${simpleType === "command" ? " active" : ""}`}
@@ -563,7 +570,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
                 role="radio"
                 aria-checked={simpleType === "command"}
               >
-                Command
+                {t("schedule.actionCommand", "Command")}
               </button>
               <button
                 type="button"
@@ -572,7 +579,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
                 role="radio"
                 aria-checked={simpleType === "ai-prompt"}
               >
-                AI Prompt
+                {t("schedule.actionAiPrompt", "AI Prompt")}
               </button>
               <button
                 type="button"
@@ -581,18 +588,18 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
                 role="radio"
                 aria-checked={simpleType === "create-task"}
               >
-                Create Task
+                {t("schedule.actionCreateTask", "Create Task")}
               </button>
             </div>
           </div>
 
           {simpleType === "command" ? (
             <div className="form-group">
-              <label htmlFor="schedule-command">Command</label>
+              <label htmlFor="schedule-command">{t("schedule.commandLabel", "Command")}</label>
               <input
                 id="schedule-command"
                 type="text"
-                placeholder="e.g. npm run update-deps"
+                placeholder={t("schedule.commandPlaceholder", "e.g. npm run update-deps")}
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
                 aria-invalid={!!errors.command}
@@ -601,16 +608,16 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
               {errors.command ? (
                 <small id={commandErrorId} className="field-error">{errors.command}</small>
               ) : (
-                <small>Shell command to execute. Runs with your user permissions.</small>
+                <small>{t("schedule.commandHelp", "Shell command to execute. Runs with your user permissions.")}</small>
               )}
             </div>
           ) : simpleType === "ai-prompt" ? (
             <>
               <div className="form-group">
-                <label htmlFor="schedule-prompt">Prompt</label>
+                <label htmlFor="schedule-prompt">{t("schedule.promptLabel", "Prompt")}</label>
                 <textarea
                   id="schedule-prompt"
-                  placeholder="e.g. Summarize recent git commits and identify action items"
+                  placeholder={t("schedule.promptPlaceholder", "e.g. Summarize recent git commits and identify action items")}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   rows={3}
@@ -620,47 +627,47 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
                 {errors.prompt ? (
                   <small id={promptErrorId} className="field-error">{errors.prompt}</small>
                 ) : (
-                  <small>AI prompt to execute. Provide clear instructions for the task.</small>
+                  <small>{t("schedule.promptHelp", "AI prompt to execute. Provide clear instructions for the task.")}</small>
                 )}
               </div>
 
               <div className="form-group">
-                <label htmlFor="schedule-model">Model (optional)</label>
+                <label htmlFor="schedule-model">{t("schedule.modelLabel", "Model (optional)")}</label>
                 <CustomModelDropdown
                   id="schedule-model"
-                  label="Model"
+                  label={t("schedule.modelDropdownLabel", "Model")}
                   models={models}
                   value={modelValue}
                   onChange={handleModelChange}
-                  placeholder="Use default"
+                  placeholder={t("schedule.modelPlaceholder", "Use default")}
                   disabled={modelsLoading}
                 />
                 {modelsError && <small className="field-error">{modelsError}</small>}
                 {errors.model ? (
                   <small id={modelErrorId} className="field-error">{errors.model}</small>
                 ) : (
-                  <small>AI model for this prompt. Uses default if not selected.</small>
+                  <small>{t("schedule.modelHelp", "AI model for this prompt. Uses default if not selected.")}</small>
                 )}
               </div>
             </>
           ) : (
             <>
               <div className="form-group">
-                <label htmlFor="schedule-task-title">Task Title (optional)</label>
+                <label htmlFor="schedule-task-title">{t("schedule.taskTitleLabel", "Task Title (optional)")}</label>
                 <input
                   id="schedule-task-title"
                   type="text"
-                  placeholder="e.g. Review weekly dependencies"
+                  placeholder={t("schedule.taskTitlePlaceholder", "e.g. Review weekly dependencies")}
                   value={taskTitle}
                   onChange={(e) => setTaskTitle(e.target.value)}
                 />
               </div>
 
               <div className="form-group">
-                <label htmlFor="schedule-task-description">Task Description (required)</label>
+                <label htmlFor="schedule-task-description">{t("schedule.taskDescriptionLabel", "Task Description (required)")}</label>
                 <textarea
                   id="schedule-task-description"
-                  placeholder="e.g. Check all npm dependencies for security vulnerabilities"
+                  placeholder={t("schedule.taskDescriptionPlaceholder", "e.g. Check all npm dependencies for security vulnerabilities")}
                   value={taskDescription}
                   onChange={(e) => setTaskDescription(e.target.value)}
                   rows={4}
@@ -670,38 +677,38 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
                 {errors.taskDescription ? (
                   <small id={taskDescriptionErrorId} className="field-error">{errors.taskDescription}</small>
                 ) : (
-                  <small>Describes the task that will be created.</small>
+                  <small>{t("schedule.taskDescriptionHelp", "Describes the task that will be created.")}</small>
                 )}
               </div>
 
               <div className="form-group">
-                <label htmlFor="schedule-task-column">Target Column</label>
+                <label htmlFor="schedule-task-column">{t("schedule.targetColumnLabel", "Target Column")}</label>
                 <select
                   id="schedule-task-column"
                   value={taskColumn}
                   onChange={(e) => setTaskColumn(e.target.value)}
                 >
-                  <option value="triage">Triage</option>
-                  <option value="todo">To Do</option>
+                  <option value="triage">{t("schedule.columnTriage", "Triage")}</option>
+                  <option value="todo">{t("schedule.columnTodo", "To Do")}</option>
                 </select>
               </div>
 
               <div className="form-group">
-                <label htmlFor="schedule-task-model">Executor Model (optional)</label>
+                <label htmlFor="schedule-task-model">{t("schedule.executorModelLabel", "Executor Model (optional)")}</label>
                 <CustomModelDropdown
                   id="schedule-task-model"
-                  label="Executor Model"
+                  label={t("schedule.executorModelDropdownLabel", "Executor Model")}
                   models={models}
                   value={modelValue}
                   onChange={handleModelChange}
-                  placeholder="Use default"
+                  placeholder={t("schedule.executorModelPlaceholder", "Use default")}
                   disabled={modelsLoading}
                 />
                 {modelsError && <small className="field-error">{modelsError}</small>}
                 {errors.model ? (
                   <small id={taskModelErrorId} className="field-error">{errors.model}</small>
                 ) : (
-                  <small>AI model used to execute the created task. Uses default if not selected.</small>
+                  <small>{t("schedule.executorModelHelp", "AI model used to execute the created task. Uses default if not selected.")}</small>
                 )}
               </div>
             </>
@@ -724,7 +731,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
       )}
 
       <div className="form-group">
-        <label htmlFor="schedule-timeout">Timeout (ms)</label>
+        <label htmlFor="schedule-timeout">{t("schedule.timeoutLabel", "Timeout (ms)")}</label>
         <input
           id="schedule-timeout"
           type="number"
@@ -738,7 +745,7 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
         {errors.timeoutMs ? (
           <small id={timeoutErrorId} className="field-error">{errors.timeoutMs}</small>
         ) : (
-          <small>Maximum execution time in milliseconds (default 300000 = 5 min)</small>
+          <small>{t("schedule.timeoutHelp", "Maximum execution time in milliseconds (default 300000 = 5 min)")}</small>
         )}
       </div>
 
@@ -750,9 +757,9 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
             checked={enabled}
             onChange={(e) => setEnabled(e.target.checked)}
           />
-          Enabled
+          {t("schedule.enabledLabel", "Enabled")}
         </label>
-        <small>When disabled, the schedule will not run automatically</small>
+        <small>{t("schedule.enabledHelp", "When disabled, the schedule will not run automatically")}</small>
       </div>
 
       <div className="modal-actions">
@@ -762,14 +769,14 @@ export function ScheduleForm({ schedule, onSubmit, onCancel, scope: formScope, p
           onClick={onCancel}
           disabled={submitting}
         >
-          Cancel
+          {t("schedule.cancelButton", "Cancel")}
         </button>
         <button
           type="submit"
           className="btn btn-primary btn-sm"
           disabled={submitting}
         >
-          {submitting ? "Saving…" : isEditing ? "Save Changes" : "Create Schedule"}
+          {submitting ? t("schedule.saving", "Saving…") : isEditing ? t("schedule.saveChanges", "Save Changes") : t("schedule.createButton", "Create Schedule")}
         </button>
       </div>
     </form>

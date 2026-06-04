@@ -1,5 +1,6 @@
 import "./AgentPromptsManager.css";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { BUILTIN_AGENT_PROMPTS, PROMPT_KEY_CATALOG } from "../utils/builtinPrompts";
 import type { AgentPromptTemplate, AgentPromptsConfig, AgentCapability } from "@fusion/core";
 import type { PromptKey } from "@fusion/core";
@@ -30,15 +31,15 @@ type TabId = "templates" | "assignments" | "overrides";
 /** Core agent roles that have built-in templates */
 const CORE_ROLES: AgentCapability[] = ["executor", "triage", "reviewer", "merger"];
 
-/** Role display labels */
-const ROLE_LABELS: Record<AgentCapability, string> = {
-  executor: "Executor Agent",
-  triage: "Triage Agent",
-  reviewer: "Reviewer Agent",
-  merger: "Merger Agent",
-  scheduler: "Scheduler Agent",
-  engineer: "Engineer Agent",
-  custom: "Custom Agent",
+/** Role display label keys for i18n */
+const ROLE_LABEL_KEYS: Record<AgentCapability, { key: string; defaultValue: string }> = {
+  executor: { key: "agentPrompts.roles.executor", defaultValue: "Executor Agent" },
+  triage: { key: "agentPrompts.roles.triage", defaultValue: "Triage Agent" },
+  reviewer: { key: "agentPrompts.roles.reviewer", defaultValue: "Reviewer Agent" },
+  merger: { key: "agentPrompts.roles.merger", defaultValue: "Merger Agent" },
+  scheduler: { key: "agentPrompts.roles.scheduler", defaultValue: "Scheduler Agent" },
+  engineer: { key: "agentPrompts.roles.engineer", defaultValue: "Engineer Agent" },
+  custom: { key: "agentPrompts.roles.custom", defaultValue: "Custom Agent" },
 };
 
 const getRoleToneClassName = (role: AgentCapability): string => {
@@ -113,6 +114,13 @@ export function AgentPromptsManager({
   promptOverrides,
   onPromptOverridesChange,
 }: AgentPromptsManagerProps) {
+  const { t } = useTranslation("app");
+
+  const getRoleLabel = (role: AgentCapability): string => {
+    const entry = ROLE_LABEL_KEYS[role];
+    return t(entry.key, entry.defaultValue);
+  };
+
   // Tab state
   const [activeTab, setActiveTab] = useState<TabId>("templates");
 
@@ -200,7 +208,7 @@ export function AgentPromptsManager({
   const handleSaveTemplate = useCallback(() => {
     const trimmedName = templateForm.name.trim();
     if (!trimmedName) {
-      setTemplateIdError("Template name is required");
+      setTemplateIdError(t("agentPrompts.errors.nameRequired", "Template name is required"));
       return;
     }
 
@@ -212,7 +220,7 @@ export function AgentPromptsManager({
       // Check for collision with built-in IDs (shouldn't happen with generateTemplateId, but be defensive)
       const builtinIds = new Set(BUILTIN_AGENT_PROMPTS.map((t) => t.id));
       if (builtinIds.has(templateId)) {
-        setTemplateIdError(`Template ID "${templateId}" conflicts with a built-in template. Please use a different name.`);
+        setTemplateIdError(t("agentPrompts.errors.idConflict", "Template ID \"{{templateId}}\" conflicts with a built-in template. Please use a different name.", { templateId }));
         return;
       }
     } else {
@@ -384,7 +392,7 @@ export function AgentPromptsManager({
           data-testid="tab-templates"
         >
           <BookOpen size={14} />
-          Templates
+          {t("agentPrompts.tabs.templates", "Templates")}
         </button>
         <button
           type="button"
@@ -393,7 +401,7 @@ export function AgentPromptsManager({
           data-testid="tab-assignments"
         >
           <Users size={14} />
-          Assignments
+          {t("agentPrompts.tabs.assignments", "Assignments")}
         </button>
         <button
           type="button"
@@ -402,7 +410,7 @@ export function AgentPromptsManager({
           data-testid="tab-overrides"
         >
           <Settings2 size={14} />
-          Overrides
+          {t("agentPrompts.tabs.overrides", "Overrides")}
         </button>
       </div>
 
@@ -415,12 +423,12 @@ export function AgentPromptsManager({
             {(isCreating || editingTemplateId !== null) && (
               <div className="prompt-template-editor" data-testid="template-editor">
                 <h4 className="prompt-template-editor-title">
-                  {isCreating ? "New Custom Template" : "Edit Custom Template"}
+                  {isCreating ? t("agentPrompts.editor.newTemplate", "New Custom Template") : t("agentPrompts.editor.editTemplate", "Edit Custom Template")}
                 </h4>
 
                 <div className="prompt-template-editor-fields">
                   <div className="prompt-template-field">
-                    <label htmlFor="template-name">Name</label>
+                    <label htmlFor="template-name">{t("agentPrompts.labels.name", "Name")}</label>
                     <input
                       id="template-name"
                       type="text"
@@ -428,13 +436,13 @@ export function AgentPromptsManager({
                       onChange={(e) =>
                         setTemplateForm((f) => ({ ...f, name: e.target.value }))
                       }
-                      placeholder="e.g. My Custom Executor"
+                      placeholder={t("agentPrompts.placeholders.templateName", "e.g. My Custom Executor")}
                       data-testid="template-name-input"
                     />
                   </div>
 
                   <div className="prompt-template-field">
-                    <label htmlFor="template-description">Description</label>
+                    <label htmlFor="template-description">{t("agentPrompts.labels.description", "Description")}</label>
                     <input
                       id="template-description"
                       type="text"
@@ -442,13 +450,13 @@ export function AgentPromptsManager({
                       onChange={(e) =>
                         setTemplateForm((f) => ({ ...f, description: e.target.value }))
                       }
-                      placeholder="Brief description of this template"
+                      placeholder={t("agentPrompts.placeholders.description", "Brief description of this template")}
                       data-testid="template-description-input"
                     />
                   </div>
 
                   <div className="prompt-template-field">
-                    <label htmlFor="template-role">Role</label>
+                    <label htmlFor="template-role">{t("agentPrompts.labels.role", "Role")}</label>
                     <select
                       id="template-role"
                       value={templateForm.role}
@@ -462,7 +470,7 @@ export function AgentPromptsManager({
                     >
                       {CORE_ROLES.map((role) => (
                         <option key={role} value={role}>
-                          {ROLE_LABELS[role]}
+                          {getRoleLabel(role)}
                         </option>
                       ))}
                     </select>
@@ -470,12 +478,12 @@ export function AgentPromptsManager({
 
                   <div className="prompt-template-field">
                     <div className="prompt-template-prompt-label-row">
-                      <label htmlFor="template-prompt">Prompt</label>
+                      <label htmlFor="template-prompt">{t("agentPrompts.labels.prompt", "Prompt")}</label>
                       <button
                         type="button"
                         className="btn-icon prompt-template-fullscreen-btn"
                         onClick={toggleTemplatePromptFullscreen}
-                        aria-label="Expand prompt to fullscreen"
+                        aria-label={t("agentPrompts.ariaLabels.expandPrompt", "Expand prompt to fullscreen")}
                         data-testid="template-prompt-fullscreen"
                       >
                         <Maximize2 size={14} />
@@ -492,7 +500,7 @@ export function AgentPromptsManager({
                         }}
                       >
                         <div className="prompt-override-fullscreen-header">
-                          <div className="prompt-override-fullscreen-title">Edit Prompt</div>
+                          <div className="prompt-override-fullscreen-title">{t("agentPrompts.titles.editPrompt", "Edit Prompt")}</div>
                           <button
                             type="button"
                             className="prompt-override-fullscreen-close"
@@ -500,18 +508,18 @@ export function AgentPromptsManager({
                             data-testid="template-prompt-collapse"
                           >
                             <Minimize2 size={14} />
-                            Collapse
+                            {t("agentPrompts.actions.collapse", "Collapse")}
                           </button>
                         </div>
                         <textarea
                           id="template-prompt-fullscreen"
-                          aria-label="Template prompt - fullscreen"
+                          aria-label={t("agentPrompts.ariaLabels.templatePromptFullscreen", "Template prompt - fullscreen")}
                           className="prompt-template-prompt-textarea"
                           value={templateForm.prompt}
                           onChange={(e) =>
                             setTemplateForm((f) => ({ ...f, prompt: e.target.value }))
                           }
-                          placeholder="Enter the system prompt for this template..."
+                          placeholder={t("agentPrompts.placeholders.prompt", "Enter the system prompt for this template...")}
                           rows={30}
                           autoFocus
                           data-testid="template-prompt-input-fullscreen"
@@ -529,7 +537,7 @@ export function AgentPromptsManager({
                         onChange={(e) =>
                           setTemplateForm((f) => ({ ...f, prompt: e.target.value }))
                         }
-                        placeholder="Enter the system prompt for this template..."
+                        placeholder={t("agentPrompts.placeholders.prompt", "Enter the system prompt for this template...")}
                         rows={8}
                         className="prompt-template-prompt-textarea"
                         data-testid="template-prompt-input"
@@ -550,7 +558,7 @@ export function AgentPromptsManager({
                       onClick={handleCancelEdit}
                       data-testid="cancel-template-btn"
                     >
-                      Cancel
+                      {t("agentPrompts.actions.cancel", "Cancel")}
                     </button>
                     <button
                       type="button"
@@ -558,7 +566,7 @@ export function AgentPromptsManager({
                       onClick={handleSaveTemplate}
                       data-testid="save-template-btn"
                     >
-                      {isCreating ? "Create" : "Save"}
+                      {isCreating ? t("agentPrompts.actions.create", "Create") : t("agentPrompts.actions.save", "Save")}
                     </button>
                   </div>
                 </div>
@@ -567,9 +575,9 @@ export function AgentPromptsManager({
 
             {/* Built-in Templates Section */}
             <div className="prompt-template-section" data-testid="builtin-templates">
-              <h4 className="prompt-template-section-title">Built-in Templates</h4>
+              <h4 className="prompt-template-section-title">{t("agentPrompts.sections.builtinTemplates", "Built-in Templates")}</h4>
               <p className="prompt-template-section-desc">
-                These templates are provided by Fusion and cannot be modified.
+                {t("agentPrompts.descriptions.builtinTemplates", "These templates are provided by Fusion and cannot be modified.")}
               </p>
               <div className="prompt-template-list">
                 {BUILTIN_AGENT_PROMPTS.map((template) => (
@@ -586,12 +594,12 @@ export function AgentPromptsManager({
                         <span
                           className={`prompt-template-badge-built-in ${getRoleToneClassName(template.role)}`}
                         >
-                          Built-in
+                          {t("agentPrompts.badges.builtin", "Built-in")}
                         </span>
                         <span
                           className={`prompt-template-badge-role ${getRoleToneClassName(template.role)}`}
                         >
-                          {ROLE_LABELS[template.role]}
+                          {getRoleLabel(template.role)}
                         </span>
                       </div>
                       <div className="prompt-template-card-actions">
@@ -599,8 +607,8 @@ export function AgentPromptsManager({
                           type="button"
                           className="btn-icon prompt-template-fullscreen-btn"
                           onClick={() => openTemplateViewFullscreen("builtin", template.id)}
-                          title="View full prompt"
-                          aria-label={`View full prompt for ${template.name}`}
+                          title={t("agentPrompts.titles.viewFullPrompt", "View full prompt")}
+                          aria-label={t("agentPrompts.ariaLabels.viewFullPromptFor", "View full prompt for {{name}}", { name: template.name })}
                           data-testid={`expand-view-${template.id}`}
                         >
                           <Maximize2 size={14} />
@@ -620,14 +628,14 @@ export function AgentPromptsManager({
 
             {/* Custom Templates Section */}
             <div className="prompt-template-section" data-testid="custom-templates">
-              <h4 className="prompt-template-section-title">Custom Templates</h4>
+              <h4 className="prompt-template-section-title">{t("agentPrompts.sections.customTemplates", "Custom Templates")}</h4>
               <p className="prompt-template-section-desc">
-                Create custom templates to override built-in prompts for specific roles.
+                {t("agentPrompts.descriptions.customTemplates", "Create custom templates to override built-in prompts for specific roles.")}
               </p>
 
               {customTemplates.length === 0 && !isCreating && (
                 <div className="prompt-template-empty">
-                  No custom templates yet. Create one to get started.
+                  {t("agentPrompts.emptyStates.noCustomTemplates", "No custom templates yet. Create one to get started.")}
                 </div>
               )}
 
@@ -641,7 +649,7 @@ export function AgentPromptsManager({
                     >
                       {deleteConfirmId === template.id ? (
                         <div className="prompt-template-delete-confirm">
-                          <p>Delete "{template.name}"?</p>
+                          <p>{t("agentPrompts.confirmations.deleteTemplate", "Delete \"{{name}}\"?", { name: template.name })}</p>
                           <div className="prompt-template-delete-actions">
                             <button
                               type="button"
@@ -649,7 +657,7 @@ export function AgentPromptsManager({
                               onClick={() => handleDeleteTemplate(template.id)}
                               data-testid={`confirm-delete-${template.id}`}
                             >
-                              Delete
+                              {t("agentPrompts.actions.delete", "Delete")}
                             </button>
                             <button
                               type="button"
@@ -657,7 +665,7 @@ export function AgentPromptsManager({
                               onClick={() => setDeleteConfirmId(null)}
                               data-testid={`cancel-delete-${template.id}`}
                             >
-                              Cancel
+                              {t("agentPrompts.actions.cancel", "Cancel")}
                             </button>
                           </div>
                         </div>
@@ -669,17 +677,17 @@ export function AgentPromptsManager({
                                 {template.name}
                               </span>
                               <span className="prompt-template-badge-custom">
-                                Custom
+                                {t("agentPrompts.badges.custom", "Custom")}
                               </span>
                               <span
                                 className={`prompt-template-badge-role ${getRoleToneClassName(template.role)}`}
                               >
-                                {ROLE_LABELS[template.role]}
+                                {getRoleLabel(template.role)}
                               </span>
                               {/* Show override indicator if this custom template overrides a built-in */}
                               {isBuiltinId(template.id) && (
                                 <span className="prompt-template-badge-override">
-                                  Overrides built-in
+                                  {t("agentPrompts.badges.overridesBuiltin", "Overrides built-in")}
                                 </span>
                               )}
                             </div>
@@ -688,8 +696,8 @@ export function AgentPromptsManager({
                                 type="button"
                                 className="btn-icon prompt-template-fullscreen-btn"
                                 onClick={() => openTemplateViewFullscreen("custom", template.id)}
-                                title="View full prompt"
-                                aria-label={`View full prompt for ${template.name}`}
+                                title={t("agentPrompts.titles.viewFullPrompt", "View full prompt")}
+                                aria-label={t("agentPrompts.ariaLabels.viewFullPromptFor", "View full prompt for {{name}}", { name: template.name })}
                                 data-testid={`expand-view-${template.id}`}
                               >
                                 <Maximize2 size={14} />
@@ -698,8 +706,8 @@ export function AgentPromptsManager({
                                 type="button"
                                 className="btn-icon"
                                 onClick={() => handleStartEdit(template)}
-                                title="Edit"
-                                aria-label={`Edit ${template.name}`}
+                                title={t("agentPrompts.titles.edit", "Edit")}
+                                aria-label={t("agentPrompts.ariaLabels.editTemplate", "Edit {{name}}", { name: template.name })}
                                 data-testid={`edit-${template.id}`}
                               >
                                 <Pencil size={14} />
@@ -708,8 +716,8 @@ export function AgentPromptsManager({
                                 type="button"
                                 className="btn-icon"
                                 onClick={() => setDeleteConfirmId(template.id)}
-                                title="Delete"
-                                aria-label={`Delete ${template.name}`}
+                                title={t("agentPrompts.titles.delete", "Delete")}
+                                aria-label={t("agentPrompts.ariaLabels.deleteTemplate", "Delete {{name}}", { name: template.name })}
                                 data-testid={`delete-${template.id}`}
                               >
                                 <Trash2 size={14} />
@@ -738,7 +746,7 @@ export function AgentPromptsManager({
                   data-testid="add-template-btn"
                 >
                   <Plus size={14} />
-                  Add Custom Template
+                  {t("agentPrompts.actions.addCustomTemplate", "Add Custom Template")}
                 </button>
               )}
             </div>
@@ -763,7 +771,7 @@ export function AgentPromptsManager({
                     <span
                       className={`prompt-template-badge-role ${getRoleToneClassName(fullscreenTemplate.role)}`}
                     >
-                      {ROLE_LABELS[fullscreenTemplate.role]}
+                      {getRoleLabel(fullscreenTemplate.role)}
                     </span>
                   </div>
                   <button
@@ -773,7 +781,7 @@ export function AgentPromptsManager({
                     data-testid={`collapse-view-${fullscreenTemplate.id}`}
                   >
                     <Minimize2 size={14} />
-                    Collapse
+                    {t("agentPrompts.actions.collapse", "Collapse")}
                   </button>
                 </div>
                 <pre className="prompt-template-fullscreen-pre">{fullscreenTemplate.prompt}</pre>
@@ -786,8 +794,7 @@ export function AgentPromptsManager({
         {activeTab === "assignments" && (
           <div className="prompt-manager-assignments-tab" data-testid="assignments-tab">
             <p className="prompt-assignments-desc">
-              Assign specific templates to agent roles. When a role has an assignment, that
-              template will be used instead of the default built-in.
+              {t("agentPrompts.descriptions.assignments", "Assign specific templates to agent roles. When a role has an assignment, that template will be used instead of the default built-in.")}
             </p>
 
             <div className="prompt-role-assignment-list">
@@ -809,11 +816,11 @@ export function AgentPromptsManager({
                       <span
                         className={`prompt-role-badge ${getRoleToneClassName(role)}`}
                       >
-                        {ROLE_LABELS[role]}
+                        {getRoleLabel(role)}
                       </span>
                       {isOverriding && (
                         <span className="prompt-role-assignment-status">
-                          {selectedTemplate?.name ?? "Custom"} (overrides default)
+                          {selectedTemplate?.name ?? t("agentPrompts.labels.custom", "Custom")} ({t("agentPrompts.labels.overridesDefault", "overrides default")})
                         </span>
                       )}
                     </div>
@@ -825,11 +832,11 @@ export function AgentPromptsManager({
                       }
                       data-testid={`select-${role}`}
                     >
-                      <option value="">Use default</option>
+                      <option value="">{t("agentPrompts.options.useDefault", "Use default")}</option>
                       {availableTemplates.map((template) => (
                         <option key={template.id} value={template.id}>
                           {template.name}
-                          {isBuiltinId(template.id) ? " (built-in)" : " (custom)"}
+                          {isBuiltinId(template.id) ? ` (${t("agentPrompts.labels.builtIn", "built-in")})` : ` (${t("agentPrompts.labels.custom", "custom")})`}
                         </option>
                       ))}
                     </select>
@@ -840,8 +847,7 @@ export function AgentPromptsManager({
 
             {Object.keys(roleAssignments).length > 0 && (
               <div className="prompt-assignments-note">
-                <strong>Note:</strong> Role assignments are stored in the agentPrompts
-                configuration. Custom templates override built-ins by ID.
+                <strong>{t("agentPrompts.labels.note", "Note")}:</strong> {t("agentPrompts.descriptions.assignmentNote", "Role assignments are stored in the agentPrompts configuration. Custom templates override built-ins by ID.")}
               </div>
             )}
           </div>
@@ -851,9 +857,7 @@ export function AgentPromptsManager({
         {activeTab === "overrides" && (
           <div className="prompt-manager-overrides-tab" data-testid="overrides-tab">
             <p className="prompt-overrides-desc">
-              Customize specific segments of AI agent prompts. Edits override built-in
-              defaults. Use the Reset button to restore the original default for any
-              prompt.
+              {t("agentPrompts.descriptions.overrides", "Customize specific segments of AI agent prompts. Edits override built-in defaults. Use the Reset button to restore the original default for any prompt.")}
             </p>
 
             <div className="prompt-overrides-list">
@@ -880,7 +884,7 @@ export function AgentPromptsManager({
                         </span>
                         <code className="prompt-override-key">{key}</code>
                         {hasOverride && (
-                          <span className="prompt-override-badge">customized</span>
+                          <span className="prompt-override-badge">{t("agentPrompts.badges.customized", "customized")}</span>
                         )}
                       </button>
                       <div className="prompt-override-header-actions">
@@ -892,7 +896,7 @@ export function AgentPromptsManager({
                               e.stopPropagation();
                               toggleFullscreenOverride(key);
                             }}
-                            aria-label="Expand to fullscreen"
+                            aria-label={t("agentPrompts.ariaLabels.expandToFullscreen", "Expand to fullscreen")}
                             data-testid={`fullscreen-${key}`}
                           >
                             <Maximize2 size={14} />
@@ -901,7 +905,7 @@ export function AgentPromptsManager({
                         <button
                           type="button"
                           className="prompt-override-expand-btn"
-                          aria-label={isExpanded ? "Collapse" : "Expand"}
+                          aria-label={isExpanded ? t("agentPrompts.ariaLabels.collapse", "Collapse") : t("agentPrompts.ariaLabels.expand", "Expand")}
                           data-testid={`expand-${key}`}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -939,12 +943,12 @@ export function AgentPromptsManager({
                               data-testid={`collapse-fullscreen-${key}`}
                             >
                               <Minimize2 size={14} />
-                              Collapse
+                              {t("agentPrompts.actions.collapse", "Collapse")}
                             </button>
                           </div>
                           <textarea
                             id={`prompt-${key}-fullscreen`}
-                            aria-label={`${promptMeta.name} prompt override (${key}) - fullscreen`}
+                            aria-label={t("agentPrompts.ariaLabels.promptOverrideFullscreen", "{{name}} prompt override ({{key}}) - fullscreen", { name: promptMeta.name, key })}
                             className="prompt-override-textarea"
                             value={currentOverride}
                             onChange={(e) => {
@@ -963,13 +967,13 @@ export function AgentPromptsManager({
                                 onClick={() => handleResetOverride(key)}
                                 data-testid={`reset-fullscreen-${key}`}
                               >
-                                Reset
+                                {t("agentPrompts.actions.reset", "Reset")}
                               </button>
                             )}
                             <small className="prompt-override-hint">
                               {hasOverride
-                                ? "Custom override active. Click Reset to restore default."
-                                : `No override set. Using built-in default (${promptMeta.defaultContent.length} chars).`}
+                                ? t("agentPrompts.hints.customOverrideActive", "Custom override active. Click Reset to restore default.")
+                                : t("agentPrompts.hints.noOverrideSet", "No override set. Using built-in default ({{chars}} chars).", { chars: promptMeta.defaultContent.length })}
                             </small>
                           </div>
                         </div>
@@ -977,13 +981,13 @@ export function AgentPromptsManager({
                         <div className="prompt-override-editor">
                           <textarea
                             id={`prompt-${key}`}
-                            aria-label={`${promptMeta.name} prompt override (${key})`}
+                            aria-label={t("agentPrompts.ariaLabels.promptOverride", "{{name}} prompt override ({{key}})", { name: promptMeta.name, key })}
                             className="prompt-override-textarea"
                             value={currentOverride}
                             onChange={(e) => {
                               handlePromptOverrideChange(key, e.target.value);
                             }}
-                            placeholder={`Default: ${promptMeta.defaultContent.slice(0, 100)}${promptMeta.defaultContent.length > 100 ? "..." : ""}`}
+                            placeholder={t("agentPrompts.placeholders.promptDefault", "Default: {{preview}}", { preview: promptMeta.defaultContent.slice(0, 100) + (promptMeta.defaultContent.length > 100 ? "..." : "") })}
                             rows={4}
                             data-testid={`override-input-${key}`}
                           />
@@ -998,13 +1002,13 @@ export function AgentPromptsManager({
                                 }}
                                 data-testid={`reset-${key}`}
                               >
-                                Reset
+                                {t("agentPrompts.actions.reset", "Reset")}
                               </button>
                             )}
                             <small className="prompt-override-hint">
                               {hasOverride
-                                ? "Custom override active. Click Reset to restore default."
-                                : `No override set. Using built-in default (${promptMeta.defaultContent.length} chars).`}
+                                ? t("agentPrompts.hints.customOverrideActive", "Custom override active. Click Reset to restore default.")
+                                : t("agentPrompts.hints.noOverrideSet", "No override set. Using built-in default ({{chars}} chars).", { chars: promptMeta.defaultContent.length })}
                             </small>
                           </div>
                         </div>

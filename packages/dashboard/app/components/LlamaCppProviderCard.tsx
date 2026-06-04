@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { fetchLlamaCppStatus, setLlamaCppEnabled, type LlamaCppStatus } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
 import "./LlamaCppProviderCard.css";
@@ -11,6 +12,7 @@ interface LlamaCppProviderCardProps {
 }
 
 export function LlamaCppProviderCard({ authenticated, onToggled, compact = false }: LlamaCppProviderCardProps) {
+  const { t } = useTranslation("app");
   const [status, setStatus] = useState<LlamaCppStatus | null>(null);
   const [busy, setBusy] = useState<"enabling" | "disabling" | "testing" | null>(null);
   const mountedRef = useRef(true);
@@ -56,19 +58,19 @@ export function LlamaCppProviderCard({ authenticated, onToggled, compact = false
   const serverAvailable = status?.server.available ?? false;
 
   const statusText = !status
-    ? "Probing llama.cpp server…"
+    ? t("providers.llamaCpp.probing", "Probing llama.cpp server…")
     : status.server.available
-      ? `Server reachable at ${status.server.url}`
-      : `Server unavailable: ${status.server.reason ?? "not reachable"}`;
+      ? t("providers.llamaCpp.reachable", "Server reachable at {{url}}", { url: status.server.url })
+      : t("providers.llamaCpp.unavailable", "Server unavailable: {{reason}}", { reason: status.server.reason ?? "not reachable" });
 
   const actions = (
     <div className="auth-provider-cli-actions">
       <button type="button" className="btn btn-sm" onClick={() => void handleTest()} disabled={busy !== null}>
-        {busy === "testing" ? <><Loader2 size={12} className="animate-spin" />Testing…</> : "Test"}
+        {busy === "testing" ? <><Loader2 size={12} className="animate-spin" />{t("providers.llamaCpp.testing", "Testing…")}</> : t("providers.llamaCpp.test", "Test")}
       </button>
       {enabled ? (
         <button type="button" className="btn btn-sm" onClick={() => void handleToggle(false)} disabled={busy !== null}>
-          {busy === "disabling" ? "Disabling…" : "Disable"}
+          {busy === "disabling" ? t("providers.llamaCpp.disabling", "Disabling…") : t("providers.llamaCpp.disable", "Disable")}
         </button>
       ) : (
         <button
@@ -77,7 +79,7 @@ export function LlamaCppProviderCard({ authenticated, onToggled, compact = false
           onClick={() => void handleToggle(true)}
           disabled={busy !== null || !serverAvailable}
         >
-          {busy === "enabling" ? "Enabling…" : "Enable"}
+          {busy === "enabling" ? t("providers.llamaCpp.enabling", "Enabling…") : t("providers.llamaCpp.enable", "Enable")}
         </button>
       )}
     </div>
@@ -92,7 +94,7 @@ export function LlamaCppProviderCard({ authenticated, onToggled, compact = false
         <div className="auth-provider-header">
           <div className="auth-provider-info">
             <ProviderIcon provider="llama-cpp" size="sm" />
-            <strong>llama.cpp — via HTTP server</strong>
+            <strong>{t("providers.llamaCpp.title", "llama.cpp — via HTTP server")}</strong>
           </div>
           {actions}
         </div>
@@ -105,7 +107,7 @@ export function LlamaCppProviderCard({ authenticated, onToggled, compact = false
     <div className="onboarding-provider-card llama-cpp-provider-card llama-cpp-provider-card--full" data-testid="llama-cpp-provider-card">
       <div className="auth-provider-info">
         <ProviderIcon provider="llama-cpp" size="md" />
-        <strong>llama.cpp — via HTTP server</strong>
+        <strong>{t("providers.llamaCpp.title", "llama.cpp — via HTTP server")}</strong>
       </div>
       <small className={`llama-cpp-status${status?.ready ? " llama-cpp-status--ok" : ""}`}>{statusText}</small>
       {actions}

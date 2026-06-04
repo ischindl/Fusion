@@ -207,6 +207,24 @@ export const COLOR_THEMES = [
 ] as const;
 export type ColorTheme = (typeof COLOR_THEMES)[number];
 
+/** UI locales supported across the dashboard and terminal UI. `en` is the
+ *  source-of-truth language and the fallback for all others. Adding a locale
+ *  here (plus translated catalogs) is the only code change a new language
+ *  needs — see `@fusion/i18n`. zh-CN and zh-TW are independent catalogs and
+ *  are never auto-converted between scripts. */
+export const SUPPORTED_LOCALES = ["en", "zh-CN", "zh-TW", "fr", "es", "ko"] as const;
+export type Locale = (typeof SUPPORTED_LOCALES)[number];
+/** Source-of-truth language and the fallback for all locales. */
+export const DEFAULT_LOCALE: Locale = "en";
+
+/** Narrow an arbitrary value to a supported `Locale`. */
+export function isLocale(value: unknown): value is Locale {
+  return (
+    typeof value === "string" &&
+    (SUPPORTED_LOCALES as readonly string[]).includes(value)
+  );
+}
+
 export type PrStatus = "open" | "closed" | "merged" | "draft";
 export type MergeStrategy = "direct" | "pull-request";
 export type MergeIntegrationWorktreeMode =
@@ -2444,6 +2462,10 @@ export interface GlobalSettings {
   colorTheme?: ColorTheme;
   /** Dashboard font size scale percentage. Bounded to 85-125. Default: 100. */
   dashboardFontScalePct?: number;
+  /** Active UI locale (e.g. `"en"`, `"zh-CN"`, `"fr"`). One of `SUPPORTED_LOCALES`.
+   *  When unset, each surface resolves the locale at runtime (browser/env
+   *  detection) and falls back to `DEFAULT_LOCALE` ("en"). */
+  language?: Locale;
   /** Default AI model provider name (e.g. `"anthropic"`, `"openai"`).
    *  Must be set together with `defaultModelId`. When both are undefined,
    *  the engine uses pi's automatic model resolution. */

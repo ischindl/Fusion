@@ -3,12 +3,14 @@ import type {
   GithubAuthMode,
   HeartbeatPromptTemplate,
   HeartbeatScopeDisciplineMode,
+  Locale,
   SandboxBackendName,
   SandboxFailureMode,
   SandboxPolicy,
   SandboxProjectSettings,
   UnavailableNodePolicy,
 } from "./types.js";
+import { isLocale } from "./types.js";
 
 const UNAVAILABLE_NODE_POLICIES: readonly UnavailableNodePolicy[] = ["block", "fallback-local"] as const;
 const DIRECT_MERGE_COMMIT_STRATEGIES: readonly DirectMergeCommitStrategy[] = ["auto", "always-squash", "always-rebase"] as const;
@@ -50,6 +52,14 @@ export function validateUnavailableNodePolicy(value: unknown): UnavailableNodePo
   return (UNAVAILABLE_NODE_POLICIES as readonly string[]).includes(value)
     ? (value as UnavailableNodePolicy)
     : undefined;
+}
+
+/** Returns a validated UI locale for global settings, otherwise undefined. */
+export function validateLocale(value: unknown): Locale | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return isLocale(value) ? value : undefined;
 }
 
 /** Returns a validated direct-merge commit strategy for project settings, otherwise undefined. */

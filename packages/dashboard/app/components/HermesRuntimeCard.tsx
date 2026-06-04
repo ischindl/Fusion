@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   fetchHermesProfiles,
   fetchHermesStatus,
@@ -65,6 +66,7 @@ function settingsFromRecord(raw: Record<string, unknown>): HermesSettings {
 }
 
 export function HermesRuntimeCard() {
+  const { t } = useTranslation("app");
   const [settings, setSettings] = useState<HermesSettings>(DEFAULT_SETTINGS);
   const [status, setStatus] = useState<HermesProviderStatus | null>(null);
   const [profiles, setProfiles] = useState<HermesProfileSummary[]>([]);
@@ -139,33 +141,33 @@ export function HermesRuntimeCard() {
     if (!mountedRef.current) return;
     setBusy(null);
     if (!next) {
-      setToast({ kind: "err", message: "Test failed — see status above." });
+      setToast({ kind: "err", message: t("hermes.testFailed", "Test failed — see status above.") });
     } else if (next.binary.available) {
       setToast({
         kind: "ok",
-        message: `✓ hermes detected${next.binary.version ? ` (${next.binary.version})` : ""}${next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : ""}.`,
+        message: t("hermes.detected", "✓ hermes detected{{version}}{{path}}.", { version: next.binary.version ? ` (${next.binary.version})` : "", path: next.binary.binaryPath ? ` at ${next.binary.binaryPath}` : "" }),
       });
     } else {
       setToast({
         kind: "err",
-        message: `✗ ${next.binary.reason ?? "hermes not found"}`,
+        message: t("hermes.notFound", "✗ {{reason}}", { reason: next.binary.reason ?? "hermes not found" }),
       });
     }
-  }, [probe]);
+  }, [probe, t]);
 
   const handleSave = useCallback(async () => {
     setBusy("saving");
     setToast(null);
     try {
       await updatePluginSettings(PLUGIN_ID, buildPayload());
-      if (mountedRef.current) setToast({ kind: "ok", message: "Settings saved." });
+      if (mountedRef.current) setToast({ kind: "ok", message: t("hermes.settingsSaved", "Settings saved.") });
     } catch (err) {
       if (mountedRef.current)
         setToast({ kind: "err", message: err instanceof Error ? err.message : String(err) });
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload]);
+  }, [buildPayload, t]);
 
   const handleSaveAndTest = useCallback(async () => {
     setBusy("save-test");
@@ -175,16 +177,16 @@ export function HermesRuntimeCard() {
       const next = await probe();
       if (!mountedRef.current) return;
       if (!next) {
-        setToast({ kind: "err", message: "Saved, but probe failed." });
+        setToast({ kind: "err", message: t("hermes.savedProbeFailed", "Saved, but probe failed.") });
       } else if (next.binary.available) {
         setToast({
           kind: "ok",
-          message: `Saved · ✓ hermes detected${next.binary.version ? ` (${next.binary.version})` : ""}.`,
+          message: t("hermes.savedDetected", "Saved · ✓ hermes detected{{version}}.", { version: next.binary.version ? ` (${next.binary.version})` : "" }),
         });
       } else {
         setToast({
           kind: "err",
-          message: `Saved · ✗ ${next.binary.reason ?? "hermes not found"}`,
+          message: t("hermes.savedNotFound", "Saved · ✗ {{reason}}", { reason: next.binary.reason ?? "hermes not found" }),
         });
       }
     } catch (err) {
@@ -193,7 +195,7 @@ export function HermesRuntimeCard() {
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload, probe]);
+  }, [buildPayload, probe, t]);
 
   const binary = status?.binary;
   const statusKind = status === null
@@ -203,10 +205,10 @@ export function HermesRuntimeCard() {
       : "err";
   const statusText =
     status === null
-      ? "Probing local hermes binary…"
+      ? t("hermes.probing", "Probing local hermes binary…")
       : binary?.available
-        ? `✓ Detected${binary.version ? ` ${binary.version}` : ""}${binary.binaryPath ? ` · ${binary.binaryPath}` : ""}`
-        : `✗ ${binary?.reason ?? "not detected on PATH"}`;
+        ? t("hermes.statusDetected", "✓ Detected{{version}}{{path}}", { version: binary.version ? ` ${binary.version}` : "", path: binary.binaryPath ? ` · ${binary.binaryPath}` : "" })
+        : t("hermes.statusNotDetected", "✗ {{reason}}", { reason: binary?.reason ?? "not detected on PATH" });
 
   return (
     <RuntimeCardShell
@@ -236,17 +238,13 @@ export function HermesRuntimeCard() {
         </span>
       }
       name="Hermes"
-      subname="by Nous Research"
+      subname={t("hermes.subname", "by Nous Research")}
       learnMoreHref={HERMES_LEARN_MORE}
       statusKind={statusKind}
       statusText={statusText}
       description={
         <>
-          Drives the local <code>hermes</code> CLI as a subprocess. Each Fusion
-          prompt is sent as <code>hermes chat -q …</code>; subsequent prompts
-          resume the same hermes session via <code>--resume</code>. Provider,
-          model, and skills are configured inside hermes itself; this card
-          only chooses overrides.
+          {t("hermes.description", "Drives the local {{cmd}} CLI as a subprocess. Each Fusion prompt is sent as {{chatCmd}}; subsequent prompts resume the same hermes session via {{resumeFlag}}. Provider, model, and skills are configured inside hermes itself; this card only chooses overrides.", { cmd: "hermes", chatCmd: "hermes chat -q …", resumeFlag: "--resume" })}
         </>
       }
       busy={busy}
@@ -258,14 +256,14 @@ export function HermesRuntimeCard() {
         binary?.available === false ? (
           <div className="onboarding-helper-text">
             <p>
-              <code>hermes</code> not detected. Install the upstream agent:
+              {t("hermes.notDetected", "{{cmd}} not detected. Install the upstream agent:", { cmd: "hermes" })}
             </p>
             <pre>
               <code>pipx install hermes-agent</code>
             </pre>
             <p>
               <a href={HERMES_LEARN_MORE} target="_blank" rel="noreferrer">
-                Hermes on GitHub
+                {t("hermes.gitHubLink", "Hermes on GitHub")}
               </a>
             </p>
           </div>
@@ -273,61 +271,59 @@ export function HermesRuntimeCard() {
       }
     >
       <div className="form-group">
-        <label htmlFor="hermes-profile">Profile (optional)</label>
+        <label htmlFor="hermes-profile">{t("hermes.profileLabel", "Profile (optional)")}</label>
         <select
           id="hermes-profile"
           value={settings.profile}
           onChange={(e) => setSettings((s) => ({ ...s, profile: e.target.value }))}
         >
-          <option value="">Auto / use Hermes default</option>
+          <option value="">{t("hermes.autoProfile", "Auto / use Hermes default")}</option>
           {profiles.map((p) => (
             <option key={p.name} value={p.name}>
               {p.name}
-              {p.model ? ` — ${p.model}` : ""}
-              {p.isDefault ? " (default)" : ""}
+              {p.model ? t("hermes.profileModelSeparator", " — {{model}}", { model: p.model }) : ""}
+              {p.isDefault ? t("hermes.defaultProfile", " (default)") : ""}
             </option>
           ))}
         </select>
         <small>
-          Select a Hermes profile to use. Activates the profile by setting{" "}
-          <code>HERMES_HOME</code> to the profile directory when invoking{" "}
-          <code>hermes chat</code>.
+          {t("hermes.profileHelp", "Select a Hermes profile to use. Activates the profile by setting {{env}} to the profile directory when invoking {{cmd}}.", { env: "HERMES_HOME", cmd: "hermes chat" })}
         </small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="hermes-binary">Binary path</label>
+        <label htmlFor="hermes-binary">{t("hermes.binaryPathLabel", "Binary path")}</label>
         <input
           id="hermes-binary"
           type="text"
-          placeholder="hermes (defaults to PATH)"
+          placeholder={t("hermes.binaryPathPlaceholder", "hermes (defaults to PATH)")}
           value={settings.binaryPath}
           onChange={(e) => setSettings((s) => ({ ...s, binaryPath: e.target.value }))}
         />
         <small>
-          Leave blank to resolve <code>hermes</code> from your PATH.
+          {t("hermes.binaryPathHelp", "Leave blank to resolve {{cmd}} from your PATH.", { cmd: "hermes" })}
         </small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="hermes-model">Model override</label>
+        <label htmlFor="hermes-model">{t("hermes.modelLabel", "Model override")}</label>
         <input
           id="hermes-model"
           type="text"
-          placeholder="e.g. claude-sonnet-4-5, MiniMax-M3"
+          placeholder={t("hermes.modelPlaceholder", "e.g. claude-sonnet-4-5, MiniMax-M3")}
           value={settings.model}
           disabled={!!settings.profile}
           onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
         />
         {settings.profile ? (
-          <small>Controlled by profile: <strong>{settings.profile}</strong></small>
+          <small>{t("hermes.modelControlled", "Controlled by profile: {{profile}}", { profile: settings.profile })}</small>
         ) : (
-          <small>Optional — overrides Hermes's configured default model.</small>
+          <small>{t("hermes.modelHelp", "Optional — overrides Hermes's configured default model.")}</small>
         )}
       </div>
 
       <div className="form-group">
-        <label htmlFor="hermes-provider">Provider</label>
+        <label htmlFor="hermes-provider">{t("hermes.providerLabel", "Provider")}</label>
         <select
           id="hermes-provider"
           value={settings.provider}
@@ -341,14 +337,14 @@ export function HermesRuntimeCard() {
           ))}
         </select>
         {settings.profile ? (
-          <small>Controlled by profile: <strong>{settings.profile}</strong></small>
+          <small>{t("hermes.providerControlled", "Controlled by profile: {{profile}}", { profile: settings.profile })}</small>
         ) : (
-          <small>Inference provider Hermes routes calls through (default: <code>auto</code>)).</small>
+          <small>{t("hermes.providerHelp", "Inference provider Hermes routes calls through (default: {{default}}).", { default: "auto" })}</small>
         )}
       </div>
 
       <div className="form-group">
-        <label htmlFor="hermes-maxTurns">Max turns</label>
+        <label htmlFor="hermes-maxTurns">{t("hermes.maxTurnsLabel", "Max turns")}</label>
         <input
           id="hermes-maxTurns"
           type="number"
@@ -362,7 +358,7 @@ export function HermesRuntimeCard() {
             }))
           }
         />
-        <small>Cap per Hermes turn. Hermes's own default is 90; we cap lower.</small>
+        <small>{t("hermes.maxTurnsHelp", "Cap per Hermes turn. Hermes's own default is 90; we cap lower.")}</small>
       </div>
 
       <div className="form-group">
@@ -376,13 +372,13 @@ export function HermesRuntimeCard() {
             checked={settings.yolo}
             onChange={(e) => setSettings((s) => ({ ...s, yolo: e.target.checked }))}
           />
-          Auto-approve dangerous tool calls (<code>--yolo</code>)
+          {t("hermes.yoloLabel", "Auto-approve dangerous tool calls ({{flag}})", { flag: "--yolo" })}
         </label>
-        <small>Required for non-interactive sessions that trigger shell-style tools.</small>
+        <small>{t("hermes.yoloHelp", "Required for non-interactive sessions that trigger shell-style tools.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="hermes-timeoutMs">CLI hard-kill timeout (ms)</label>
+        <label htmlFor="hermes-timeoutMs">{t("hermes.timeoutLabel", "CLI hard-kill timeout (ms)")}</label>
         <input
           id="hermes-timeoutMs"
           type="number"
@@ -396,7 +392,7 @@ export function HermesRuntimeCard() {
             }))
           }
         />
-        <small>Fusion-side hard cap. Default 5 min.</small>
+        <small>{t("hermes.timeoutHelp", "Fusion-side hard cap. Default 5 min.")}</small>
       </div>
     </RuntimeCardShell>
   );

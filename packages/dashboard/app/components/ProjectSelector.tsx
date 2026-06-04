@@ -1,5 +1,6 @@
 import "./ProjectSelector.css";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
   Check,
@@ -39,6 +40,7 @@ export function ProjectSelector({
   onViewAll,
   recentProjectIds = [],
 }: ProjectSelectorProps) {
+  const { t } = useTranslation("app");
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
@@ -238,12 +240,12 @@ export function ProjectSelector({
         onClick={toggleDropdown}
         aria-expanded={isOpen}
         aria-haspopup="listbox"
-        aria-label="Select project"
+        aria-label={t("projectSelector.ariaLabel", "Select project")}
         data-testid="project-selector-trigger"
       >
         <Folder size={16} className="project-selector__trigger-icon" />
         <span className="project-selector__trigger-text">
-          {currentProject?.name || "Select Project"}
+          {currentProject?.name || t("projectSelector.selectProject", "Select Project")}
         </span>
         <ChevronDown
           size={14}
@@ -267,7 +269,7 @@ export function ProjectSelector({
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="Search projects..."
+                placeholder={t("projectSelector.searchPlaceholder", "Search projects...")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="project-selector__search-input"
@@ -276,7 +278,7 @@ export function ProjectSelector({
                 <button
                   className="project-selector__search-clear"
                   onClick={() => setSearchQuery("")}
-                  aria-label="Clear search"
+                  aria-label={t("projectSelector.clearSearch", "Clear search")}
                 >
                   <X size={12} />
                 </button>
@@ -289,7 +291,7 @@ export function ProjectSelector({
             <div className="project-selector__section">
               <div className="project-selector__section-header">
                 <Clock size={12} />
-                <span>Recent</span>
+                <span>{t("projectSelector.recent", "Recent")}</span>
               </div>
               {displayProjects.recent.map((project, index) => (
                 <button
@@ -318,13 +320,13 @@ export function ProjectSelector({
             {displayProjects.recent.length > 0 && (
               <div className="project-selector__section-header">
                 <Folder size={12} />
-                <span>All Projects</span>
+                <span>{t("projectSelector.allProjects", "All Projects")}</span>
               </div>
             )}
 
             {displayProjects.others.length === 0 && searchQuery ? (
               <div className="project-selector__no-results">
-                No projects match your search
+                {t("projectSelector.noResults", "No projects match your search")}
               </div>
             ) : (
               displayProjects.others.map((project, index) => {
@@ -366,7 +368,7 @@ export function ProjectSelector({
               onClick={handleViewAll}
             >
               <Grid3X3 size={14} />
-              <span>View All Projects</span>
+              <span>{t("projectSelector.viewAll", "View All Projects")}</span>
             </button>
           </div>
         </div>

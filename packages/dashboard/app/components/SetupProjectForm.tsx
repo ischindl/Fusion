@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Loader2 } from "lucide-react";
 import { validateProjectPath, validateProjectName, suggestProjectName } from "../utils/projectDetection";
 import type { ProjectCreateInput, NodeInfo } from "../api";
@@ -40,6 +41,7 @@ export function SetupProjectForm({
   nodes = [],
   selectedNodeId,
 }: SetupProjectFormProps) {
+  const { t } = useTranslation("app");
   const [path, setPath] = useState(defaultPath);
   const [name, setName] = useState("");
   const [isolationMode, setIsolationMode] = useState<"in-process" | "child-process">("in-process");
@@ -120,13 +122,13 @@ export function SetupProjectForm({
       {/* Node selector */}
       <div className="form-group">
         <div className="project-node-selector">
-          <span className="project-node-selector__label">Runtime Node</span>
+          <span className="project-node-selector__label">{t("setup.runtimeNode", "Runtime Node")}</span>
           <select
             value={nodeId}
             onChange={(e) => setNodeId(e.target.value)}
             disabled={isSubmitting}
           >
-            <option value="">Local node</option>
+            <option value="">{t("setup.localNode", "Local node")}</option>
             {nodes.map((node) => (
               <option key={node.id} value={node.id}>
                 {node.name} ({node.type})
@@ -139,14 +141,14 @@ export function SetupProjectForm({
       {/* Path input */}
       <div className="form-group">
         <label htmlFor="project-path">
-          Directory Path <span className="required">*</span>
+          {t("setup.directoryPath", "Directory Path")} <span className="required">*</span>
         </label>
         <DirectoryPicker
           value={path}
           onChange={handlePathChange}
           nodeId={nodeId || undefined}
           localNodeId={localNodeId}
-          placeholder="/path/to/your/project"
+          placeholder={t("setup.pathPlaceholder", "/path/to/your/project")}
         />
         {pathError && touched.path && (
           <div className="field-error">
@@ -154,14 +156,14 @@ export function SetupProjectForm({
           </div>
         )}
         <div className="field-hint">
-          Enter the absolute path to your project directory
+          {t("setup.pathHint", "Enter the absolute path to your project directory")}
         </div>
       </div>
 
       {/* Name input */}
       <div className="form-group">
         <label htmlFor="project-name">
-          Project Name <span className="required">*</span>
+          {t("setup.projectName", "Project Name")} <span className="required">*</span>
         </label>
         <div className={`input-wrapper ${nameError && touched.name ? "error" : ""}`}>
           <input
@@ -173,7 +175,7 @@ export function SetupProjectForm({
               setTouched((prev) => ({ ...prev, name: true }));
               validateNameField(name);
             }}
-            placeholder="my-project"
+            placeholder={t("setup.namePlaceholder", "my-project")}
             disabled={isSubmitting}
           />
           {name && !nameError && touched.name && (
@@ -186,13 +188,13 @@ export function SetupProjectForm({
           </div>
         )}
         <div className="field-hint">
-          Use letters, numbers, hyphens, and underscores only
+          {t("setup.nameHint", "Use letters, numbers, hyphens, and underscores only")}
         </div>
       </div>
 
       {/* Isolation mode */}
       <div className="form-group">
-        <label>Execution Mode</label>
+        <label>{t("setup.executionMode", "Execution Mode")}</label>
         <div className="radio-group">
           <label className={`radio-option ${isolationMode === "in-process" ? "selected" : ""}`}>
             <input
@@ -204,8 +206,8 @@ export function SetupProjectForm({
               disabled={isSubmitting}
             />
             <div className="radio-content">
-              <strong>In-Process (Default)</strong>
-              <span>Fast, low overhead. Tasks run in the main process.</span>
+              <strong>{t("setup.inProcessLabel", "In-Process (Default)")}</strong>
+              <span>{t("setup.inProcessDesc", "Fast, low overhead. Tasks run in the main process.")}</span>
             </div>
           </label>
           <label className={`radio-option ${isolationMode === "child-process" ? "selected" : ""}`}>
@@ -218,8 +220,8 @@ export function SetupProjectForm({
               disabled={isSubmitting}
             />
             <div className="radio-content">
-              <strong>Child Process (Isolated)</strong>
-              <span>Strong isolation. Tasks run in separate processes.</span>
+              <strong>{t("setup.childProcessLabel", "Child Process (Isolated)")}</strong>
+              <span>{t("setup.childProcessDesc", "Strong isolation. Tasks run in separate processes.")}</span>
             </div>
           </label>
         </div>
@@ -235,10 +237,10 @@ export function SetupProjectForm({
           {isSubmitting ? (
             <>
               <Loader2 size={16} className="spin" />
-              Creating...
+              {t("setup.creating", "Creating...")}
             </>
           ) : (
-            "Create Project"
+            t("setup.createProject", "Create Project")
           )}
         </button>
       </div>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { FusionShellApi, ShellConnectionState } from "../types/native-shell";
 import "./NativeShellOnboardingModal.css";
 
@@ -18,8 +19,9 @@ interface NativeShellOnboardingModalProps {
 }
 
 export function NativeShellOnboardingModal({ open, shellApi, shellState, onComplete }: NativeShellOnboardingModalProps) {
+  const { t } = useTranslation("app");
   const [mode, setMode] = useState<"local" | "remote">(shellState.desktopMode ?? "remote");
-  const [name, setName] = useState("Remote Server");
+  const [name, setName] = useState(t("onboarding.defaultName", "Remote Server"));
   const [serverUrl, setServerUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -46,14 +48,14 @@ export function NativeShellOnboardingModal({ open, shellApi, shellState, onCompl
     <div className="modal-overlay open">
       <div className="modal native-shell-onboarding-modal">
         <div className="modal-header">
-          <h2>Welcome to Fusion</h2>
+          <h2>{t("onboarding.welcome", "Welcome to Fusion")}</h2>
         </div>
         <div className="native-shell-onboarding-body">
-          <p>Fusion helps you plan, run, and review AI-assisted engineering work.</p>
+          <p>{t("onboarding.description", "Fusion helps you plan, run, and review AI-assisted engineering work.")}</p>
           {isDesktop && (
             <div className="native-shell-onboarding-mode-row">
-              <button type="button" className={`btn ${mode === "local" ? "btn-primary" : ""}`} onClick={() => setMode("local")}>Local Fusion</button>
-              <button type="button" className={`btn ${mode === "remote" ? "btn-primary" : ""}`} onClick={() => setMode("remote")}>Remote Server</button>
+              <button type="button" className={`btn ${mode === "local" ? "btn-primary" : ""}`} onClick={() => setMode("local")}>{t("onboarding.localFusion", "Local Fusion")}</button>
+              <button type="button" className={`btn ${mode === "remote" ? "btn-primary" : ""}`} onClick={() => setMode("remote")}>{t("onboarding.remoteServer", "Remote Server")}</button>
             </div>
           )}
           {(!isDesktop || mode === "remote") && (
@@ -76,13 +78,13 @@ export function NativeShellOnboardingModal({ open, shellApi, shellState, onCompl
                 }}
                 disabled={scanning}
               >
-                {scanning ? "Scanning…" : "Scan QR"}
+                {scanning ? t("onboarding.scanning", "Scanning…") : t("onboarding.scanQr", "Scan QR")}
               </button>
-              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-profile-name">Profile name</label>
+              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-profile-name">{t("onboarding.profileName", "Profile name")}</label>
               <input id="native-shell-onboarding-profile-name" className="input" value={name} onChange={(event) => setName(event.target.value)} />
-              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-server-url">Server URL</label>
-              <input id="native-shell-onboarding-server-url" className="input" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://your-fusion-host" />
-              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-auth-token">Auth token (optional)</label>
+              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-server-url">{t("onboarding.serverUrl", "Server URL")}</label>
+              <input id="native-shell-onboarding-server-url" className="input" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder={t("onboarding.serverUrlPlaceholder", "https://your-fusion-host")} />
+              <label className="native-shell-onboarding-label" htmlFor="native-shell-onboarding-auth-token">{t("onboarding.authToken", "Auth token (optional)")}</label>
               <input id="native-shell-onboarding-auth-token" className="input" type="password" value={authToken} onChange={(event) => setAuthToken(event.target.value)} />
             </>
           )}
@@ -104,7 +106,7 @@ export function NativeShellOnboardingModal({ open, shellApi, shellState, onCompl
                 }
 
                 const saved = await shellApi.saveProfile({
-                  name: name.trim() || "Remote Server",
+                  name: name.trim() || t("onboarding.defaultName", "Remote Server"),
                   serverUrl,
                   authToken: authToken || null,
                 });
@@ -127,7 +129,7 @@ export function NativeShellOnboardingModal({ open, shellApi, shellState, onCompl
               }
             }}
           >
-            {submitting ? "Saving…" : "Continue"}
+            {submitting ? t("onboarding.saving", "Saving…") : t("onboarding.continue", "Continue")}
           </button>
         </div>
       </div>

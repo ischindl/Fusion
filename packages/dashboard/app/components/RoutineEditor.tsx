@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Calendar, Webhook, Code, Zap, Globe, Folder } from "lucide-react";
 import type {
   Routine,
@@ -26,13 +27,7 @@ const CRON_PRESETS: Record<Exclude<CronPresetType, "custom">, string> = {
   monthly: "0 0 1 * *",
 };
 
-const CRON_PRESET_LABELS: Record<CronPresetType, string> = {
-  hourly: "Every hour",
-  daily: "Every day (midnight)",
-  weekly: "Every week (Monday)",
-  monthly: "Every month (1st)",
-  custom: "Custom cron expression",
-};
+// CRON_PRESET_LABELS are now built inside the component with t() — see useCronPresetLabels below
 
 function resolveCronPreset(cronExpression: string): CronPresetType {
   const normalizedCron = cronExpression.trim();
@@ -125,17 +120,7 @@ function extractTriggerFields(routine: Routine) {
   }
 }
 
-const EXECUTION_POLICY_OPTIONS: { value: RoutineExecutionPolicy; label: string }[] = [
-  { value: "parallel", label: "Allow concurrent runs" },
-  { value: "queue", label: "Queue after current (one at a time)" },
-  { value: "reject", label: "Reject new runs while running" },
-];
-
-const CATCH_UP_POLICY_OPTIONS: { value: RoutineCatchUpPolicy; label: string }[] = [
-  { value: "skip", label: "Skip missed runs" },
-  { value: "run_one", label: "Run the most recent missed run" },
-  { value: "run", label: "Run all missed runs" },
-];
+// EXECUTION_POLICY_OPTIONS and CATCH_UP_POLICY_OPTIONS labels are now built inside the component with t()
 
 function generateStepId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -163,7 +148,28 @@ interface RoutineEditorProps {
 }
 
 export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, projectId, onScopeChange }: RoutineEditorProps) {
+  const { t } = useTranslation("app");
   const isEditing = !!routine;
+
+  const CRON_PRESET_LABELS: Record<CronPresetType, string> = {
+    hourly: t("schedule.cronPresetHourly", "Every hour"),
+    daily: t("schedule.cronPresetDaily", "Every day (midnight)"),
+    weekly: t("schedule.cronPresetWeekly", "Every week (Monday)"),
+    monthly: t("schedule.cronPresetMonthly", "Every month (1st)"),
+    custom: t("schedule.cronPresetCustom", "Custom cron expression"),
+  };
+
+  const EXECUTION_POLICY_OPTIONS: { value: RoutineExecutionPolicy; label: string }[] = [
+    { value: "parallel", label: t("schedule.executionPolicyParallel", "Allow concurrent runs") },
+    { value: "queue", label: t("schedule.executionPolicyQueue", "Queue after current (one at a time)") },
+    { value: "reject", label: t("schedule.executionPolicyReject", "Reject new runs while running") },
+  ];
+
+  const CATCH_UP_POLICY_OPTIONS: { value: RoutineCatchUpPolicy; label: string }[] = [
+    { value: "skip", label: t("schedule.catchUpPolicySkip", "Skip missed runs") },
+    { value: "run_one", label: t("schedule.catchUpPolicyRunOne", "Run the most recent missed run") },
+    { value: "run", label: t("schedule.catchUpPolicyRunAll", "Run all missed runs") },
+  ];
 
   // Extract trigger fields if editing
   const initialTriggerFields = routine ? extractTriggerFields(routine) : {
@@ -249,7 +255,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
         if (!cancelled) setModels(response.models);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setModelsError(err instanceof Error ? err.message : "Failed to load models");
+        if (!cancelled) setModelsError(err instanceof Error ? err.message : t("schedule.errorLoadModels", "Failed to load models"));
       })
       .finally(() => {
         if (!cancelled) setModelsLoading(false);
@@ -275,46 +281,46 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
 
   const validate = useCallback((): boolean => {
     const e: Record<string, string> = {};
-    if (!name.trim()) e.name = "Name is required";
-    
+    if (!name.trim()) e.name = t("schedule.errorNameRequired", "Name is required");
+
     // Scope validation: project scope requires projectId
     if (localScope === "project" && !projectId) {
-      e.scope = "Project-specific entries require an active project.";
+      e.scope = t("schedule.errorScopeNoProject", "Project-specific entries require an active project.");
     }
-    
+
     if (triggerType === "cron" && cronPreset === "custom") {
       if (!cronExpression.trim()) {
-        e.cronExpression = "Cron expression is required";
+        e.cronExpression = t("schedule.errorCronRequired", "Cron expression is required");
       } else if (!isLikelyCron(cronExpression)) {
-        e.cronExpression = "Invalid cron format — expected 5 fields (e.g. '0 */6 * * *')";
+        e.cronExpression = t("schedule.errorCronInvalid", "Invalid cron format — expected 5 fields (e.g. '0 */6 * * *')");
       }
     }
     if (triggerType === "webhook" && !webhookPath.trim()) {
-      e.webhookPath = "Webhook path is required";
+      e.webhookPath = t("schedule.errorWebhookPathRequired", "Webhook path is required");
     }
     if (triggerType === "api" && !endpoint.trim()) {
-      e.endpoint = "API endpoint is required";
+      e.endpoint = t("schedule.errorApiEndpointRequired", "API endpoint is required");
     }
     if (actionMode === "simple") {
-      if (simpleActionType === "command" && !command.trim()) e.command = "Command is required";
-      if (simpleActionType === "ai-prompt" && !prompt.trim()) e.prompt = "Prompt is required";
-      if (simpleActionType === "create-task" && !taskDescription.trim()) e.taskDescription = "Task description is required";
+      if (simpleActionType === "command" && !command.trim()) e.command = t("schedule.errorCommandRequired", "Command is required");
+      if (simpleActionType === "ai-prompt" && !prompt.trim()) e.prompt = t("schedule.errorPromptRequired", "Prompt is required");
+      if (simpleActionType === "create-task" && !taskDescription.trim()) e.taskDescription = t("schedule.errorTaskDescriptionRequired", "Task description is required");
       if ((modelProvider.trim() && !modelId.trim()) || (!modelProvider.trim() && modelId.trim())) {
-        e.model = "Both model provider and model ID must be set, or both must be empty";
+        e.model = t("schedule.errorModelIncomplete", "Both model provider and model ID must be set, or both must be empty");
       }
     } else {
-      if (steps.length === 0) e.steps = "At least one step is required";
-      if (hasEditingSteps) e.stepsEditing = "Please save or cancel all step edits before saving the routine";
+      if (steps.length === 0) e.steps = t("schedule.errorStepsRequired", "At least one step is required");
+      if (hasEditingSteps) e.stepsEditing = t("schedule.errorStepsEditing", "Please save or cancel all step edits before saving the routine");
       const incompleteSteps: string[] = [];
       steps.forEach((step, index) => {
-        if (!step.name?.trim()) incompleteSteps.push(`Step ${index + 1}: Name is required`);
-        if (step.type === "command" && !step.command?.trim()) incompleteSteps.push(`Step ${index + 1}: Command is required`);
-        if (step.type === "ai-prompt" && !step.prompt?.trim()) incompleteSteps.push(`Step ${index + 1}: Prompt is required`);
-        if (step.type === "create-task" && !step.taskDescription?.trim()) incompleteSteps.push(`Step ${index + 1}: Task description is required`);
+        if (!step.name?.trim()) incompleteSteps.push(t("schedule.errorStepNameRequired", "Step {{n}}: Name is required", { n: index + 1 }));
+        if (step.type === "command" && !step.command?.trim()) incompleteSteps.push(t("schedule.errorStepCommandRequired", "Step {{n}}: Command is required", { n: index + 1 }));
+        if (step.type === "ai-prompt" && !step.prompt?.trim()) incompleteSteps.push(t("schedule.errorStepPromptRequired", "Step {{n}}: Prompt is required", { n: index + 1 }));
+        if (step.type === "create-task" && !step.taskDescription?.trim()) incompleteSteps.push(t("schedule.errorStepTaskDescRequired", "Step {{n}}: Task description is required", { n: index + 1 }));
       });
       if (incompleteSteps.length > 0) e.steps = incompleteSteps.join("; ");
     }
-    if (timeoutMs < 1000) e.timeoutMs = "Timeout must be at least 1 second (1000ms)";
+    if (timeoutMs < 1000) e.timeoutMs = t("schedule.errorTimeoutMin", "Timeout must be at least 1 second (1000ms)");
     setErrors(e);
     return Object.keys(e).length === 0;
   }, [name, triggerType, cronExpression, cronPreset, webhookPath, endpoint, localScope, projectId, actionMode, simpleActionType, command, prompt, taskDescription, modelProvider, modelId, steps, hasEditingSteps, timeoutMs]);
@@ -405,16 +411,16 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
   return (
     <form className="routine-form" onSubmit={handleSubmit} noValidate>
       <h4 className="settings-section-heading">
-        {isEditing ? "Edit Routine" : "New Routine"}
+        {isEditing ? t("schedule.editRoutineHeading", "Edit Routine") : t("schedule.newRoutineHeading", "New Routine")}
       </h4>
 
       {/* Basic Info */}
       <div className="form-group">
-        <label htmlFor="routine-name">Name</label>
+        <label htmlFor="routine-name">{t("schedule.nameLabel", "Name")}</label>
         <input
           id="routine-name"
           type="text"
-          placeholder="e.g. Daily standup reminder"
+          placeholder={t("schedule.namePlaceholder", "e.g. Daily standup reminder")}
           value={name}
           onChange={(e) => setName(e.target.value)}
           aria-invalid={!!errors.name}
@@ -426,10 +432,10 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       </div>
 
       <div className="form-group">
-        <label htmlFor="routine-description">Description (optional)</label>
+        <label htmlFor="routine-description">{t("schedule.descriptionLabel", "Description (optional)")}</label>
         <textarea
           id="routine-description"
-          placeholder="What does this routine do?"
+          placeholder={t("schedule.descriptionPlaceholder", "What does this routine do?")}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
@@ -438,8 +444,8 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
 
       {/* Scope selector */}
       <div className="form-group">
-        <label>Scope</label>
-        <div className="routine-scope-toggle" role="radiogroup" aria-label="Routine scope">
+        <label>{t("schedule.scopeLabel", "Scope")}</label>
+        <div className="routine-scope-toggle" role="radiogroup" aria-label={t("schedule.scopeAriaLabel", "Routine scope")}>
           <button
             type="button"
             className={`routine-scope-btn${localScope === "global" ? " active" : ""}`}
@@ -447,10 +453,10 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={localScope === "global" ? "true" : "false"}
             disabled={!!routine?.scope}
-            title={routine?.scope ? `Scope is locked to ${routine.scope} for existing routines` : "Global scope"}
+            title={routine?.scope ? t("schedule.scopeLockedTitle", "Scope is locked to {{scope}} for existing routines", { scope: routine.scope }) : t("schedule.globalScopeTitle", "Global scope")}
           >
             <Globe size={12} />
-            Global
+            {t("schedule.globalScope", "Global")}
           </button>
           <button
             type="button"
@@ -459,18 +465,18 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={localScope === "project" ? "true" : "false"}
             disabled={!!routine?.scope || !projectId}
-            title={routine?.scope ? `Scope is locked to ${routine.scope} for existing routines` : !projectId ? "Select a project to enable project scope" : "Project scope"}
+            title={routine?.scope ? t("schedule.scopeLockedTitle", "Scope is locked to {{scope}} for existing routines", { scope: routine.scope }) : !projectId ? t("schedule.selectProjectTitle", "Select a project to enable project scope") : t("schedule.projectScopeTitle", "Project scope")}
           >
             <Folder size={12} />
-            Project
+            {t("schedule.projectScope", "Project")}
           </button>
         </div>
         <small>
           {!projectId && !routine?.scope
-            ? "No active project. Routines will be created at global scope."
+            ? t("schedule.scopeHintNoProject", "No active project. Routines will be created at global scope.")
             : localScope === "project" && projectId
-              ? `This routine will be scoped to the current project.`
-              : "This routine will be created at global scope."}
+              ? t("schedule.scopeHintProject", "This routine will be scoped to the current project.")
+              : t("schedule.scopeHintGlobal", "This routine will be created at global scope.")}
         </small>
         {errors.scope && (
           <small className="field-error">{errors.scope}</small>
@@ -479,8 +485,8 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
 
       {/* Trigger Type */}
       <div className="form-group">
-        <label>Trigger Type</label>
-        <div className="routine-trigger-type-selector" role="radiogroup" aria-label="Trigger type">
+        <label>{t("schedule.triggerTypeLabel", "Trigger Type")}</label>
+        <div className="routine-trigger-type-selector" role="radiogroup" aria-label={t("schedule.triggerTypeAriaLabel", "Trigger type")}>
           <button
             type="button"
             className={`routine-trigger-btn${triggerType === "cron" ? " active" : ""}`}
@@ -489,7 +495,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             aria-checked={triggerType === "cron"}
           >
             <Calendar size={14} />
-            Cron
+            {t("schedule.triggerCron", "Cron")}
           </button>
           <button
             type="button"
@@ -499,7 +505,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             aria-checked={triggerType === "webhook"}
           >
             <Webhook size={14} />
-            Webhook
+            {t("schedule.triggerWebhook", "Webhook")}
           </button>
           <button
             type="button"
@@ -509,7 +515,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             aria-checked={triggerType === "api"}
           >
             <Code size={14} />
-            API
+            {t("schedule.triggerApi", "API")}
           </button>
           <button
             type="button"
@@ -519,7 +525,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             aria-checked={triggerType === "manual"}
           >
             <Zap size={14} />
-            Manual
+            {t("schedule.triggerManual", "Manual")}
           </button>
         </div>
       </div>
@@ -527,7 +533,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       {/* Cron Expression */}
       {triggerType === "cron" && (
         <div className="form-group">
-          <label htmlFor="routine-frequency">Frequency</label>
+          <label htmlFor="routine-frequency">{t("schedule.frequencyLabel", "Frequency")}</label>
           <select
             id="routine-frequency"
             value={cronPreset}
@@ -538,7 +544,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             ))}
           </select>
 
-          <label htmlFor="routine-cron">Cron Expression</label>
+          <label htmlFor="routine-cron">{t("schedule.cronExpressionLabel", "Cron Expression")}</label>
           <input
             id="routine-cron"
             type="text"
@@ -554,9 +560,9 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
           ) : (
             <small>
               {cronPreset === "custom" ? (
-                <>min hour day month weekday — <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer">crontab.guru</a></>
+                <>{t("schedule.cronCustomHint", "min hour day month weekday")} — <a href="https://crontab.guru" target="_blank" rel="noopener noreferrer">crontab.guru</a></>
               ) : (
-                `Auto-filled from preset: ${cronExpression}`
+                t("schedule.cronAutoFilledHint", "Auto-filled from preset: {{expression}}", { expression: cronExpression })
               )}
             </small>
           )}
@@ -567,11 +573,11 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       {triggerType === "webhook" && (
         <>
           <div className="form-group">
-            <label htmlFor="routine-webhook-path">Webhook Path</label>
+            <label htmlFor="routine-webhook-path">{t("schedule.webhookPathLabel", "Webhook Path")}</label>
             <input
               id="routine-webhook-path"
               type="text"
-              placeholder="/trigger/my-routine"
+              placeholder={t("schedule.webhookPathPlaceholder", "/trigger/my-routine")}
               value={webhookPath}
               onChange={(e) => setWebhookPath(e.target.value)}
               aria-invalid={!!errors.webhookPath}
@@ -580,19 +586,19 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             {errors.webhookPath ? (
               <small id={webhookErrorId} className="field-error">{errors.webhookPath}</small>
             ) : (
-              <small>URL path for the webhook endpoint</small>
+              <small>{t("schedule.webhookPathHint", "URL path for the webhook endpoint")}</small>
             )}
           </div>
           <div className="form-group">
-            <label htmlFor="routine-webhook-secret">Webhook Secret (optional)</label>
+            <label htmlFor="routine-webhook-secret">{t("schedule.webhookSecretLabel", "Webhook Secret (optional)")}</label>
             <input
               id="routine-webhook-secret"
               type="password"
-              placeholder="Optional — leave empty for unauthenticated webhooks"
+              placeholder={t("schedule.webhookSecretPlaceholder", "Optional — leave empty for unauthenticated webhooks")}
               value={webhookSecret}
               onChange={(e) => setWebhookSecret(e.target.value)}
             />
-            <small>HMAC secret for signature verification. Leave empty for unauthenticated webhooks.</small>
+            <small>{t("schedule.webhookSecretHint", "HMAC secret for signature verification. Leave empty for unauthenticated webhooks.")}</small>
           </div>
         </>
       )}
@@ -600,11 +606,11 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       {/* API Configuration */}
       {triggerType === "api" && (
         <div className="form-group">
-          <label htmlFor="routine-endpoint">API Endpoint</label>
+          <label htmlFor="routine-endpoint">{t("schedule.apiEndpointLabel", "API Endpoint")}</label>
           <input
             id="routine-endpoint"
             type="text"
-            placeholder="/api/routine/my-routine"
+            placeholder={t("schedule.apiEndpointPlaceholder", "/api/routine/my-routine")}
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
             aria-invalid={!!errors.endpoint}
@@ -613,7 +619,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
           {errors.endpoint ? (
             <small id={endpointErrorId} className="field-error">{errors.endpoint}</small>
           ) : (
-            <small>API endpoint path that triggers this routine</small>
+            <small>{t("schedule.apiEndpointHint", "API endpoint path that triggers this routine")}</small>
           )}
         </div>
       )}
@@ -622,14 +628,14 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       {triggerType === "manual" && (
         <div className="form-group">
           <small className="routine-trigger-info">
-            This routine will be triggered manually via the dashboard or API.
+            {t("schedule.manualTriggerInfo", "This routine will be triggered manually via the dashboard or API.")}
           </small>
         </div>
       )}
 
       <div className="form-group">
-        <label>Action Mode</label>
-        <div className="schedule-mode-toggle" role="radiogroup" aria-label="Action mode">
+        <label>{t("schedule.actionModeLabel", "Action Mode")}</label>
+        <div className="schedule-mode-toggle" role="radiogroup" aria-label={t("schedule.actionModeAriaLabel", "Action mode")}>
           <button
             type="button"
             className={`schedule-mode-btn${actionMode === "simple" ? " active" : ""}`}
@@ -637,7 +643,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={actionMode === "simple"}
           >
-            Simple
+            {t("schedule.actionModeSimple", "Simple")}
           </button>
           <button
             type="button"
@@ -646,39 +652,39 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             role="radio"
             aria-checked={actionMode === "advanced"}
           >
-            Multi-Step
+            {t("schedule.actionModeAdvanced", "Multi-Step")}
           </button>
         </div>
-        <small>{actionMode === "simple" ? "Run one command, prompt, or task creation action" : "Run multiple actions sequentially"}</small>
+        <small>{actionMode === "simple" ? t("schedule.actionModeSimpleHint", "Run one command, prompt, or task creation action") : t("schedule.actionModeAdvancedHint", "Run multiple actions sequentially")}</small>
       </div>
 
       {actionMode === "simple" ? (
         <>
           <div className="form-group">
-            <label>Action Type</label>
-            <div className="schedule-mode-toggle" role="radiogroup" aria-label="Action type">
-              <button type="button" className={`schedule-mode-btn${simpleActionType === "command" ? " active" : ""}`} onClick={() => setSimpleActionType("command")} role="radio" aria-checked={simpleActionType === "command"}>Command</button>
-              <button type="button" className={`schedule-mode-btn${simpleActionType === "ai-prompt" ? " active" : ""}`} onClick={() => setSimpleActionType("ai-prompt")} role="radio" aria-checked={simpleActionType === "ai-prompt"}>AI Prompt</button>
-              <button type="button" className={`schedule-mode-btn${simpleActionType === "create-task" ? " active" : ""}`} onClick={() => setSimpleActionType("create-task")} role="radio" aria-checked={simpleActionType === "create-task"}>Create Task</button>
+            <label>{t("schedule.actionTypeLabel", "Action Type")}</label>
+            <div className="schedule-mode-toggle" role="radiogroup" aria-label={t("schedule.actionTypeAriaLabel", "Action type")}>
+              <button type="button" className={`schedule-mode-btn${simpleActionType === "command" ? " active" : ""}`} onClick={() => setSimpleActionType("command")} role="radio" aria-checked={simpleActionType === "command"}>{t("schedule.actionTypeCommand", "Command")}</button>
+              <button type="button" className={`schedule-mode-btn${simpleActionType === "ai-prompt" ? " active" : ""}`} onClick={() => setSimpleActionType("ai-prompt")} role="radio" aria-checked={simpleActionType === "ai-prompt"}>{t("schedule.actionTypeAiPrompt", "AI Prompt")}</button>
+              <button type="button" className={`schedule-mode-btn${simpleActionType === "create-task" ? " active" : ""}`} onClick={() => setSimpleActionType("create-task")} role="radio" aria-checked={simpleActionType === "create-task"}>{t("schedule.actionTypeCreateTask", "Create Task")}</button>
             </div>
           </div>
 
           {simpleActionType === "command" ? (
             <div className="form-group">
-              <label htmlFor="routine-command">Command</label>
-              <input id="routine-command" type="text" placeholder="e.g. npx runfusion.ai backup --create" value={command} onChange={(e) => setCommand(e.target.value)} aria-invalid={!!errors.command} aria-describedby={errors.command ? commandErrorId : undefined} />
-              {errors.command ? <small id={commandErrorId} className="field-error">{errors.command}</small> : <small>Shell command to execute.</small>}
+              <label htmlFor="routine-command">{t("schedule.commandLabel", "Command")}</label>
+              <input id="routine-command" type="text" placeholder={t("schedule.commandPlaceholder", "e.g. npx runfusion.ai backup --create")} value={command} onChange={(e) => setCommand(e.target.value)} aria-invalid={!!errors.command} aria-describedby={errors.command ? commandErrorId : undefined} />
+              {errors.command ? <small id={commandErrorId} className="field-error">{errors.command}</small> : <small>{t("schedule.commandHint", "Shell command to execute.")}</small>}
             </div>
           ) : simpleActionType === "ai-prompt" ? (
             <>
               <div className="form-group">
-                <label htmlFor="routine-prompt">Prompt</label>
-                <textarea id="routine-prompt" placeholder="e.g. Summarize recent activity and create action items" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} aria-invalid={!!errors.prompt} aria-describedby={errors.prompt ? promptErrorId : undefined} />
-                {errors.prompt ? <small id={promptErrorId} className="field-error">{errors.prompt}</small> : <small>AI prompt to execute.</small>}
+                <label htmlFor="routine-prompt">{t("schedule.promptLabel", "Prompt")}</label>
+                <textarea id="routine-prompt" placeholder={t("schedule.promptPlaceholder", "e.g. Summarize recent activity and create action items")} value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} aria-invalid={!!errors.prompt} aria-describedby={errors.prompt ? promptErrorId : undefined} />
+                {errors.prompt ? <small id={promptErrorId} className="field-error">{errors.prompt}</small> : <small>{t("schedule.promptHint", "AI prompt to execute.")}</small>}
               </div>
               <div className="form-group">
-                <label htmlFor="routine-model">Model (optional)</label>
-                <CustomModelDropdown id="routine-model" label="Model" models={models} value={modelValue} onChange={handleModelChange} placeholder="Use default" disabled={modelsLoading} />
+                <label htmlFor="routine-model">{t("schedule.modelLabel", "Model (optional)")}</label>
+                <CustomModelDropdown id="routine-model" label={t("schedule.modelDropdownLabel", "Model")} models={models} value={modelValue} onChange={handleModelChange} placeholder={t("schedule.modelPlaceholder", "Use default")} disabled={modelsLoading} />
                 {modelsError && <small className="field-error">{modelsError}</small>}
                 {errors.model && <small id={modelErrorId} className="field-error">{errors.model}</small>}
               </div>
@@ -686,24 +692,24 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
           ) : (
             <>
               <div className="form-group">
-                <label htmlFor="routine-task-title">Task Title (optional)</label>
-                <input id="routine-task-title" type="text" placeholder="e.g. Review weekly dependencies" value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} />
+                <label htmlFor="routine-task-title">{t("schedule.taskTitleLabel", "Task Title (optional)")}</label>
+                <input id="routine-task-title" type="text" placeholder={t("schedule.taskTitlePlaceholder", "e.g. Review weekly dependencies")} value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} />
               </div>
               <div className="form-group">
-                <label htmlFor="routine-task-description">Task Description</label>
-                <textarea id="routine-task-description" placeholder="e.g. Check npm dependencies for security vulnerabilities" value={taskDescription} onChange={(e) => setTaskDescription(e.target.value)} rows={4} aria-invalid={!!errors.taskDescription} aria-describedby={errors.taskDescription ? taskDescriptionErrorId : undefined} />
-                {errors.taskDescription ? <small id={taskDescriptionErrorId} className="field-error">{errors.taskDescription}</small> : <small>Describes the task that will be created.</small>}
+                <label htmlFor="routine-task-description">{t("schedule.taskDescriptionLabel", "Task Description")}</label>
+                <textarea id="routine-task-description" placeholder={t("schedule.taskDescriptionPlaceholder", "e.g. Check npm dependencies for security vulnerabilities")} value={taskDescription} onChange={(e) => setTaskDescription(e.target.value)} rows={4} aria-invalid={!!errors.taskDescription} aria-describedby={errors.taskDescription ? taskDescriptionErrorId : undefined} />
+                {errors.taskDescription ? <small id={taskDescriptionErrorId} className="field-error">{errors.taskDescription}</small> : <small>{t("schedule.taskDescriptionHint", "Describes the task that will be created.")}</small>}
               </div>
               <div className="form-group">
-                <label htmlFor="routine-task-column">Target Column</label>
+                <label htmlFor="routine-task-column">{t("schedule.taskColumnLabel", "Target Column")}</label>
                 <select id="routine-task-column" value={taskColumn} onChange={(e) => setTaskColumn(e.target.value)}>
-                  <option value="triage">Triage</option>
-                  <option value="todo">To Do</option>
+                  <option value="triage">{t("schedule.taskColumnTriage", "Triage")}</option>
+                  <option value="todo">{t("schedule.taskColumnTodo", "To Do")}</option>
                 </select>
               </div>
               <div className="form-group">
-                <label htmlFor="routine-task-model">Executor Model (optional)</label>
-                <CustomModelDropdown id="routine-task-model" label="Executor Model" models={models} value={modelValue} onChange={handleModelChange} placeholder="Use default" disabled={modelsLoading} />
+                <label htmlFor="routine-task-model">{t("schedule.executorModelLabel", "Executor Model (optional)")}</label>
+                <CustomModelDropdown id="routine-task-model" label={t("schedule.executorModelDropdownLabel", "Executor Model")} models={models} value={modelValue} onChange={handleModelChange} placeholder={t("schedule.modelPlaceholder", "Use default")} disabled={modelsLoading} />
                 {modelsError && <small className="field-error">{modelsError}</small>}
                 {errors.model && <small id={modelErrorId} className="field-error">{errors.model}</small>}
               </div>
@@ -719,14 +725,14 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
       )}
 
       <div className="form-group">
-        <label htmlFor="routine-timeout">Timeout (ms)</label>
+        <label htmlFor="routine-timeout">{t("schedule.timeoutLabel", "Timeout (ms)")}</label>
         <input id="routine-timeout" type="number" min={1000} step={1000} value={timeoutMs} onChange={(e) => setTimeoutMs(Number(e.target.value))} aria-invalid={!!errors.timeoutMs} aria-describedby={errors.timeoutMs ? timeoutErrorId : undefined} />
-        {errors.timeoutMs ? <small id={timeoutErrorId} className="field-error">{errors.timeoutMs}</small> : <small>Maximum execution time in milliseconds.</small>}
+        {errors.timeoutMs ? <small id={timeoutErrorId} className="field-error">{errors.timeoutMs}</small> : <small>{t("schedule.timeoutHint", "Maximum execution time in milliseconds.")}</small>}
       </div>
 
       {/* Execution Policy */}
       <div className="form-group">
-        <label htmlFor="routine-execution-policy">Execution Policy</label>
+        <label htmlFor="routine-execution-policy">{t("schedule.executionPolicyLabel", "Execution Policy")}</label>
         <select
           id="routine-execution-policy"
           value={executionPolicy}
@@ -736,12 +742,12 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
-        <small>How to handle concurrent executions of this routine</small>
+        <small>{t("schedule.executionPolicyHint", "How to handle concurrent executions of this routine")}</small>
       </div>
 
       {/* Catch-up Policy */}
       <div className="form-group">
-        <label htmlFor="routine-catchup-policy">Catch-up Policy</label>
+        <label htmlFor="routine-catchup-policy">{t("schedule.catchUpPolicyLabel", "Catch-up Policy")}</label>
         <select
           id="routine-catchup-policy"
           value={catchUpPolicy}
@@ -751,7 +757,7 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
-        <small>What to do when a scheduled run is missed</small>
+        <small>{t("schedule.catchUpPolicyHint", "What to do when a scheduled run is missed")}</small>
       </div>
 
       {/* Enabled */}
@@ -763,9 +769,9 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
             checked={enabled}
             onChange={(e) => setEnabled(e.target.checked)}
           />
-          Enabled
+          {t("schedule.enabledLabel", "Enabled")}
         </label>
-        <small>When disabled, the routine will not run automatically</small>
+        <small>{t("schedule.enabledHint", "When disabled, the routine will not run automatically")}</small>
       </div>
 
       <div className="modal-actions">
@@ -775,14 +781,14 @@ export function RoutineEditor({ routine, onSubmit, onCancel, scope: formScope, p
           onClick={onCancel}
           disabled={submitting}
         >
-          Cancel
+          {t("common.cancel", "Cancel")}
         </button>
         <button
           type="submit"
           className="btn btn-primary btn-sm"
           disabled={submitting}
         >
-          {submitting ? "Saving…" : isEditing ? "Save Changes" : "Create Routine"}
+          {submitting ? t("common.saving", "Saving…") : isEditing ? t("schedule.saveChanges", "Save Changes") : t("schedule.createRoutine", "Create Routine")}
         </button>
       </div>
     </form>

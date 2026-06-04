@@ -1,5 +1,7 @@
 import "./MailboxModal.css";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
   Mail,
   Send,
@@ -87,7 +89,7 @@ function readMailboxSidebarWidth(projectId?: string): number {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-function formatTimestamp(ts: string): string {
+function formatTimestamp(ts: string, t?: TFunction<"app">): string {
   const date = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -95,10 +97,10 @@ function formatTimestamp(ts: string): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t ? t("mailbox.justNow", "Just now") : "Just now";
+  if (diffMins < 60) return `${diffMins}m ${t ? t("mailbox.ago", "ago") : "ago"}`;
+  if (diffHours < 24) return `${diffHours}h ${t ? t("mailbox.ago", "ago") : "ago"}`;
+  if (diffDays < 7) return `${diffDays}d ${t ? t("mailbox.ago", "ago") : "ago"}`;
 
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
@@ -107,15 +109,16 @@ function participantLabel(
   id: string,
   type: ParticipantType,
   agentNamesById?: ReadonlyMap<string, string>,
+  t?: TFunction<"app">,
 ): string {
-  if (type === "user") return id === "dashboard" ? "You" : `User: ${id}`;
+  if (type === "user") return id === "dashboard" ? (t ? t("mailbox.you", "You") : "You") : `${t ? t("mailbox.user", "User") : "User"}: ${id}`;
   if (type === "agent") {
     const name = agentNamesById?.get(id)?.trim();
-    if (!name) return `Agent: ${id}`;
-    if (name === id) return `Agent: ${id}`;
-    return `Agent: ${name} (${id})`;
+    if (!name) return `${t ? t("mailbox.agent", "Agent") : "Agent"}: ${id}`;
+    if (name === id) return `${t ? t("mailbox.agent", "Agent") : "Agent"}: ${id}`;
+    return `${t ? t("mailbox.agent", "Agent") : "Agent"}: ${name} (${id})`;
   }
-  return "System";
+  return t ? t("mailbox.system", "System") : "System";
 }
 
 function messageTypeLabel(type: MessageType): string {
@@ -193,6 +196,7 @@ export function MailboxView({
   addToast,
   onUnreadCountChange,
 }: MailboxViewProps) {
+  const { t } = useTranslation("app");
   const [activeTab, setActiveTab] = useState<MailboxTab>("inbox");
   const [inbox, setInbox] = useState<InboxResponse | null>(null);
   const [outbox, setOutbox] = useState<OutboxResponse | null>(null);
@@ -220,8 +224,8 @@ export function MailboxView({
     [agents],
   );
   const getParticipantLabel = useCallback(
-    (id: string, type: ParticipantType) => participantLabel(id, type, agentNamesById),
-    [agentNamesById],
+    (id: string, type: ParticipantType) => participantLabel(id, type, agentNamesById, t),
+    [agentNamesById, t],
   );
   const viewportMode = useViewportMode();
   const isMobile = viewportMode === "mobile";
@@ -675,12 +679,12 @@ export function MailboxView({
               onClick={handleCloseMessage}
               data-testid="mailbox-back-to-list"
             >
-              ← Back
+              ← {t("mailbox.back", "Back")}
             </button>
           )}
           <div className="mailbox-message-detail-meta">
             <span className="mailbox-message-type">{messageTypeLabel(selectedMessage.type)}</span>
-            <span className="mailbox-message-time">{formatTimestamp(selectedMessage.createdAt)}</span>
+            <span className="mailbox-message-time">{formatTimestamp(selectedMessage.createdAt, t)}</span>
           </div>
           <div className="mailbox-message-detail-actions">
             {selectedMessage.fromType === "agent" && (
@@ -690,7 +694,7 @@ export function MailboxView({
                 data-testid="mailbox-reply"
               >
                 <MessageSquare size={14} />
-                <span>Reply</span>
+                <span>{t("mailbox.reply", "Reply")}</span>
               </button>
             )}
             <button
@@ -699,20 +703,20 @@ export function MailboxView({
               data-testid="mailbox-delete"
             >
               <Trash2 size={14} />
-              <span>Delete</span>
+              <span>{t("mailbox.delete", "Delete")}</span>
             </button>
           </div>
         </div>
         <div className="mailbox-message-participants">
           <div className="mailbox-participant">
-            <span className="mailbox-participant-label">From:</span>
+            <span className="mailbox-participant-label">{t("mailbox.from", "From")}:</span>
             <span className="mailbox-participant-value">
               {selectedMessage.fromType === "agent" ? <Bot size={14} /> : <User size={14} />}
               {getParticipantLabel(selectedMessage.fromId, selectedMessage.fromType)}
             </span>
           </div>
           <div className="mailbox-participant">
-            <span className="mailbox-participant-label">To:</span>
+            <span className="mailbox-participant-label">{t("mailbox.to", "To")}:</span>
             <span className="mailbox-participant-value">
               {selectedMessage.toType === "agent" ? <Bot size={14} /> : <User size={14} />}
               {getParticipantLabel(selectedMessage.toId, selectedMessage.toType)}
@@ -721,7 +725,7 @@ export function MailboxView({
         </div>
         {threadMessages.length > 1 && (
           <div className="mailbox-conversation" data-testid="mailbox-conversation">
-            <div className="mailbox-conversation-label">Conversation</div>
+            <div className="mailbox-conversation-label">{t("mailbox.conversation", "Conversation")}</div>
             {threadMessages.map((msg) => {
               const replyToId = msg.metadata?.replyTo?.messageId;
               const replyToMessage = replyToId
@@ -736,11 +740,11 @@ export function MailboxView({
                 >
                   <div className="mailbox-conversation-msg-header">
                     <span>{getParticipantLabel(msg.fromId, msg.fromType)}</span>
-                    <span className="mailbox-message-time">{formatTimestamp(msg.createdAt)}</span>
+                    <span className="mailbox-message-time">{formatTimestamp(msg.createdAt, t)}</span>
                   </div>
                   {replyToId && (
                     <div className="mailbox-reply-context-static" data-testid={`mailbox-reply-context-${msg.id}`}>
-                      ↪ Replying to {replyToMessage ? messagePreview(replyToMessage.content, 60) : `message ${replyToId}`}
+                      ↪ {t("mailbox.replyingTo", "Replying to")} {replyToMessage ? messagePreview(replyToMessage.content, 60) : `message ${replyToId}`}
                     </div>
                   )}
                   <MailboxMessageContent
@@ -756,7 +760,7 @@ export function MailboxView({
           <>
             {selectedMessage.metadata?.replyTo?.messageId && (
               <div className="mailbox-reply-context-static" data-testid="mailbox-selected-reply-context">
-                ↪ Replying to message {selectedMessage.metadata.replyTo.messageId}
+                ↪ {t("mailbox.replyingToMessage", "Replying to message")} {selectedMessage.metadata.replyTo.messageId}
               </div>
             )}
             <MailboxMessageContent
@@ -778,7 +782,7 @@ export function MailboxView({
           {inbox && inbox.messages.length === 0 && (
             <div className="mailbox-empty" data-testid="mailbox-inbox-empty">
               <InboxIcon size={32} />
-              <p>No messages in your inbox</p>
+              <p>{t("mailbox.noMessagesInbox", "No messages in your inbox")}</p>
             </div>
           )}
           {inbox?.messages.map((msg) => (
@@ -797,7 +801,7 @@ export function MailboxView({
                   <span className="mailbox-item-from">
                     {getParticipantLabel(msg.fromId, msg.fromType)}
                   </span>
-                  <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                  <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                 </div>
                 <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
               </div>
@@ -813,7 +817,7 @@ export function MailboxView({
           {outbox && outbox.messages.length === 0 && (
             <div className="mailbox-empty" data-testid="mailbox-outbox-empty">
               <Send size={32} />
-              <p>No sent messages</p>
+              <p>{t("mailbox.noSentMessages", "No sent messages")}</p>
             </div>
           )}
           {outbox?.messages.map((msg) => (
@@ -832,7 +836,7 @@ export function MailboxView({
                   <span className="mailbox-item-to">
                     To: {getParticipantLabel(msg.toId, msg.toType)}
                   </span>
-                  <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                  <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                 </div>
                 <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
               </div>
@@ -849,21 +853,21 @@ export function MailboxView({
               onClick={() => { setApprovalSubTab("pending"); setSelectedApproval(null); }}
               data-testid="mailbox-approval-filter-pending"
             >
-              Pending
+              {t("mailbox.pending", "Pending")}
             </button>
             <button
               className={`btn btn-sm btn-secondary mailbox-agent-subtab ${approvalSubTab === "history" ? "active" : ""}`}
               onClick={() => { setApprovalSubTab("history"); setSelectedApproval(null); }}
               data-testid="mailbox-approval-filter-history"
             >
-              History
+              {t("mailbox.history", "History")}
             </button>
           </div>
           <div className="mailbox-list" data-testid="mailbox-approval-list">
             {approvals.length === 0 && !isLoading && (
               <div className="mailbox-empty" data-testid="mailbox-approval-empty">
                 <InboxIcon size={32} />
-                <p>{approvalSubTab === "pending" ? "No pending approvals" : "No historical approvals"}</p>
+                <p>{approvalSubTab === "pending" ? t("mailbox.noPendingApprovals", "No pending approvals") : t("mailbox.noHistoricalApprovals", "No historical approvals")}</p>
               </div>
             )}
             {approvals.map((request) => (
@@ -893,7 +897,7 @@ export function MailboxView({
           {agents.length === 0 ? (
             <div className="mailbox-empty">
               <Bot size={32} />
-              <p>No agents found</p>
+              <p>{t("mailbox.noAgentsFound", "No agents found")}</p>
             </div>
           ) : (
             <>
@@ -905,7 +909,7 @@ export function MailboxView({
                     onChange={(e) => { setSelectedAgentId(e.target.value); setAgentSubTab("inbox"); }}
                     data-testid="mailbox-agent-select"
                   >
-                    <option value={ALL_AGENTS_MAILBOX_ID}>All agents</option>
+                    <option value={ALL_AGENTS_MAILBOX_ID}>{t("mailbox.allAgents", "All agents")}</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
                         {agent.name || agent.id}
@@ -919,7 +923,7 @@ export function MailboxView({
                   data-testid="mailbox-compose-btn"
                 >
                   <MessageSquare size={14} />
-                  <span>Compose</span>
+                  <span>{t("mailbox.compose", "Compose")}</span>
                 </button>
               </div>
 
@@ -931,7 +935,7 @@ export function MailboxView({
                     data-testid="mailbox-agent-subtab-inbox"
                   >
                     <InboxIcon size={12} />
-                    <span>Inbox</span>
+                    <span>{t("mailbox.inbox", "Inbox")}</span>
                     {agentMailbox && agentMailbox.unreadCount > 0 && (
                       <span className="mailbox-tab-badge">{agentMailbox.unreadCount}</span>
                     )}
@@ -942,7 +946,7 @@ export function MailboxView({
                     data-testid="mailbox-agent-subtab-outbox"
                   >
                     <Send size={12} />
-                    <span>Outbox</span>
+                    <span>{t("mailbox.outbox", "Outbox")}</span>
                   </button>
                 </div>
               )}
@@ -951,7 +955,7 @@ export function MailboxView({
                 {selectedAgentId === ALL_AGENTS_MAILBOX_ID && allAgentsMailbox && allAgentsMailbox.messages.length === 0 && (
                   <div className="mailbox-empty">
                     <InboxIcon size={32} />
-                    <p>No agent-to-agent messages</p>
+                    <p>{t("mailbox.noAgentMessages", "No agent-to-agent messages")}</p>
                   </div>
                 )}
                 {selectedAgentId === ALL_AGENTS_MAILBOX_ID && allAgentsMailbox && allAgentsMailbox.messages.map((msg) => (
@@ -968,11 +972,11 @@ export function MailboxView({
                     <div className="mailbox-item-content">
                       <div className="mailbox-item-header">
                         <span className="mailbox-item-from">{getParticipantLabel(msg.fromId, msg.fromType)}</span>
-                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                       </div>
                       <div className="mailbox-item-participants" data-testid={`mailbox-item-participants-${msg.id}`}>
-                        <span>From: {getParticipantLabel(msg.fromId, msg.fromType)}</span>
-                        <span>To: {getParticipantLabel(msg.toId, msg.toType)}</span>
+                        <span>{t("mailbox.from", "From")}: {getParticipantLabel(msg.fromId, msg.fromType)}</span>
+                        <span>{t("mailbox.to", "To")}: {getParticipantLabel(msg.toId, msg.toType)}</span>
                       </div>
                       <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                     </div>
@@ -982,13 +986,13 @@ export function MailboxView({
                 {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "inbox" && agentMailbox.inbox.length === 0 && (
                   <div className="mailbox-empty">
                     <InboxIcon size={32} />
-                    <p>No received messages for this agent</p>
+                    <p>{t("mailbox.noReceivedMessages", "No received messages for this agent")}</p>
                   </div>
                 )}
                 {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "outbox" && agentMailbox.outbox.length === 0 && (
                   <div className="mailbox-empty">
                     <Send size={32} />
-                    <p>No sent messages for this agent</p>
+                    <p>{t("mailbox.noSentMessagesAgent", "No sent messages for this agent")}</p>
                   </div>
                 )}
                 {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "inbox" && agentMailbox.inbox.map((msg) => (
@@ -1007,7 +1011,7 @@ export function MailboxView({
                         <span className="mailbox-item-from">
                           {getParticipantLabel(msg.fromId, msg.fromType)}
                         </span>
-                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                       </div>
                       <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                     </div>
@@ -1029,7 +1033,7 @@ export function MailboxView({
                         <span className="mailbox-item-to">
                           To: {getParticipantLabel(msg.toId, msg.toType)}
                         </span>
-                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                        <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                       </div>
                       <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                     </div>
@@ -1066,7 +1070,7 @@ export function MailboxView({
       return (
         <div className="mailbox-message-detail mailbox-approval-detail" data-testid="mailbox-approval-detail">
           {isMobile && (
-            <button className="btn btn-sm btn-secondary" onClick={() => setSelectedApproval(null)} data-testid="mailbox-approval-back-to-list">← Back</button>
+            <button className="btn btn-sm btn-secondary" onClick={() => setSelectedApproval(null)} data-testid="mailbox-approval-back-to-list">← {t("mailbox.back", "Back")}</button>
           )}
           <div className="mailbox-message-detail-header">
             <div className="mailbox-message-detail-meta">
@@ -1076,9 +1080,9 @@ export function MailboxView({
           </div>
           <div className="mailbox-message-body">
             <strong>{selectedApproval.actionSummary}</strong>
-            <p>Requester: {selectedApproval.requester.actorName} ({selectedApproval.agentId})</p>
-            {selectedApproval.taskId && <p>Task: {selectedApproval.taskId}</p>}
-            <p>Requested: {formatTimestamp(selectedApproval.createdAt)}</p>
+            <p>{t("mailbox.approvalRequester", "Requester")}: {selectedApproval.requester.actorName} ({selectedApproval.agentId})</p>
+            {selectedApproval.taskId && <p>{t("mailbox.approvalTask", "Task")}: {selectedApproval.taskId}</p>}
+            <p>{t("mailbox.approvalRequested", "Requested")}: {formatTimestamp(selectedApproval.createdAt)}</p>
           </div>
           {selectedApproval.targetAction.category === "network_api" && selectedApproval.targetAction.action === "worktrunk_install" && (
             <WorktrunkInstallApprovalDetails targetAction={selectedApproval.targetAction} />
@@ -1100,15 +1104,15 @@ export function MailboxView({
                 className="message-composer-textarea mailbox-approval-comment"
                 value={approvalComment}
                 onChange={(event) => setApprovalComment(event.target.value)}
-                placeholder="Optional comment"
+                placeholder={t("mailbox.approvalCommentPlaceholder", "Optional comment")}
                 data-testid="mailbox-approval-comment"
               />
               <div className="mailbox-header-actions">
                 <button className="btn btn-sm btn-secondary" onClick={() => void handleApprovalDecision("deny")} disabled={approvalDecisionLoading !== false} data-testid="mailbox-approval-deny">
-                  Deny
+                  {t("mailbox.approvalDeny", "Deny")}
                 </button>
                 <button className="btn btn-sm btn-primary" onClick={() => void handleApprovalDecision("approve")} disabled={approvalDecisionLoading !== false} data-testid="mailbox-approval-approve">
-                  Approve
+                  {t("mailbox.approvalApprove", "Approve")}
                 </button>
               </div>
             </div>
@@ -1120,7 +1124,7 @@ export function MailboxView({
     return (
       <div className="mailbox-split-empty" data-testid="mailbox-split-empty">
         <Mail size={24} />
-        <p>Select a message to read</p>
+        <p>{t("mailbox.selectMessageToRead", "Select a message to read")}</p>
       </div>
     );
   };
@@ -1131,7 +1135,7 @@ export function MailboxView({
       <div className="mailbox-header">
         <div className="mailbox-title">
           <Mail size={18} />
-          <span>Mailbox</span>
+          <span>{t("mailbox.title", "Mailbox")}</span>
           {unreadCount > 0 && (
             <span className="mailbox-unread-badge" data-testid="mailbox-unread-badge">
               {unreadCount}
@@ -1142,21 +1146,21 @@ export function MailboxView({
           <button
             className="btn btn-sm btn-primary"
             onClick={handleOpenCompose}
-            title="Compose message"
+            title={t("mailbox.composeMessageTitle", "Compose message")}
             data-testid="mailbox-header-compose"
           >
             <MessageSquare size={14} />
-            <span>Compose</span>
+            <span>{t("mailbox.compose", "Compose")}</span>
           </button>
           {activeTab === "inbox" && unreadCount > 0 && (
             <button
               className="btn btn-sm btn-secondary"
               onClick={handleMarkAllRead}
-              title="Mark all as read"
+              title={t("mailbox.markAllReadTitle", "Mark all as read")}
               data-testid="mailbox-mark-all-read"
             >
               <CheckCheck size={14} />
-              <span>Mark all read</span>
+              <span>{t("mailbox.markAllRead", "Mark all read")}</span>
             </button>
           )}
           <button
@@ -1169,7 +1173,7 @@ export function MailboxView({
               else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
             }}
             disabled={isLoading}
-            title="Refresh"
+            title={t("mailbox.refreshTitle", "Refresh")}
             data-testid="mailbox-refresh"
           >
             {isLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
@@ -1185,7 +1189,7 @@ export function MailboxView({
           data-testid="mailbox-tab-inbox"
         >
           <InboxIcon size={14} />
-          <span>Inbox</span>
+          <span>{t("mailbox.inbox", "Inbox")}</span>
           {unreadCount > 0 && <span className="mailbox-tab-badge">{unreadCount}</span>}
         </button>
         <button
@@ -1194,7 +1198,7 @@ export function MailboxView({
           data-testid="mailbox-tab-outbox"
         >
           <Send size={14} />
-          <span>Outbox</span>
+          <span>{t("mailbox.outbox", "Outbox")}</span>
         </button>
         <button
           className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "agents" ? "active" : ""}`}
@@ -1202,7 +1206,7 @@ export function MailboxView({
           data-testid="mailbox-tab-agents"
         >
           <Bot size={14} />
-          <span>Agents</span>
+          <span>{t("mailbox.agents", "Agents")}</span>
         </button>
         <button
           className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "approvals" ? "active" : ""}`}
@@ -1210,7 +1214,7 @@ export function MailboxView({
           data-testid="mailbox-tab-approvals"
         >
           <CheckCheck size={14} />
-          <span>Approvals</span>
+          <span>{t("mailbox.approvals", "Approvals")}</span>
           {approvalPendingCount > 0 && <span className="mailbox-tab-badge" data-testid="mailbox-approvals-pending-badge">{approvalPendingCount}</span>}
         </button>
       </div>

@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useAutosizeTextarea } from "../hooks/useAutosizeTextarea";
 import { X, Send, Loader2, Bot, AlertCircle } from "lucide-react";
 import type { ParticipantType, MessageType } from "@fusion/core";
@@ -41,6 +42,7 @@ export function MessageComposer({
   addToast,
   isLoadingAgents = false,
 }: MessageComposerProps) {
+  const { t } = useTranslation("app");
   const [toId, setToId] = useState(recipient?.id ?? "");
   const [toType, setToType] = useState<ParticipantType>(recipient?.type ?? "agent");
   const [content, setContent] = useState("");
@@ -140,11 +142,11 @@ export function MessageComposer({
   return (
     <div className="message-composer" data-testid="message-composer">
       <div className="message-composer-header">
-        <span>{replyContext ? "Reply" : "New Message"}</span>
+        <span>{replyContext ? t("composer.replyTitle", "Reply") : t("composer.newMessageTitle", "New Message")}</span>
         <button
           className="btn-icon"
           onClick={onCancel}
-          aria-label="Cancel"
+          aria-label={t("actions.cancel", "Cancel")}
           data-testid="message-composer-cancel"
         >
           <X size={16} />
@@ -156,7 +158,7 @@ export function MessageComposer({
         {!recipient && (
           <div className="message-composer-field">
             <label className="message-composer-label" htmlFor="message-recipient">
-              To:
+              {t("composer.toLabel", "To:")}
             </label>
             <select
               id="message-recipient"
@@ -167,7 +169,7 @@ export function MessageComposer({
               data-testid="message-composer-recipient"
             >
               <option value="">
-                {isLoadingAgents ? "Loading agents…" : agents.length === 0 ? "No agents available" : "Select agent…"}
+                {isLoadingAgents ? t("composer.loadingAgents", "Loading agents…") : agents.length === 0 ? t("composer.noAgentsAvailable", "No agents available") : t("composer.selectAgent", "Select agent…")}
               </option>
               {agents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
@@ -181,7 +183,7 @@ export function MessageComposer({
         {/* Recipient display (when pre-filled from reply) */}
         {recipient && (
           <div className="message-composer-field">
-            <span className="message-composer-label">To:</span>
+            <span className="message-composer-label">{t("composer.toLabel", "To:")}</span>
             <span className="message-composer-recipient-fixed">
               <Bot size={14} />
               {prefilledRecipientAgent?.name || recipient.id}
@@ -191,9 +193,9 @@ export function MessageComposer({
 
         {replyContext && (
           <div className="message-composer-field" data-testid="message-composer-reply-context">
-            <span className="message-composer-label">Replying to:</span>
+            <span className="message-composer-label">{t("composer.replyingToLabel", "Replying to:")}</span>
             <span className="message-composer-recipient-fixed">
-              {replyContext.preview?.trim() ? replyContext.preview : `Message ${replyContext.messageId}`}
+              {replyContext.preview?.trim() ? replyContext.preview : t("composer.messageId", "Message {{id}}", { id: replyContext.messageId })}
             </span>
           </div>
         )}
@@ -201,13 +203,13 @@ export function MessageComposer({
         {/* Content */}
         <div className="message-composer-field message-composer-field--content">
           <label className="message-composer-label" htmlFor="message-content">
-            Message:
+            {t("composer.messageLabel", "Message:")}
           </label>
           <textarea
             id="message-content"
             ref={setTextareaRef}
             className="message-composer-textarea"
-            placeholder="Type your message…"
+            placeholder={t("composer.messagePlaceholder", "Type your message…")}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onFocus={scrollTextareaIntoView}
@@ -233,11 +235,11 @@ export function MessageComposer({
                 data-testid="message-composer-wake"
               />
               <span>
-                Wake agent immediately
+                {t("composer.wakeAgentCheckbox", "Wake agent immediately")}
                 <span className="message-composer-wake-hint" data-testid="message-composer-wake-hint">
                   {recipientAlwaysImmediate
-                    ? "(agent is already set to immediate response mode)"
-                    : "(one-off override for this message only)"}
+                    ? t("composer.wakeAlwaysImmediate", "(agent is already set to immediate response mode)")
+                    : t("composer.wakeOneOff", "(one-off override for this message only)")}
                 </span>
               </span>
             </label>
@@ -259,7 +261,7 @@ export function MessageComposer({
           onClick={onCancel}
           data-testid="message-composer-cancel-btn"
         >
-          Cancel
+          {t("actions.cancel", "Cancel")}
         </button>
         <button
           className="btn btn-sm btn-primary"
@@ -270,12 +272,12 @@ export function MessageComposer({
           {isSending ? (
             <>
               <Loader2 size={14} className="spin" />
-              <span>Sending…</span>
+              <span>{t("composer.sendingButton", "Sending…")}</span>
             </>
           ) : (
             <>
               <Send size={14} />
-              <span>Send</span>
+              <span>{t("actions.send", "Send")}</span>
             </>
           )}
         </button>

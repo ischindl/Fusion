@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, ExternalLink, Eye, Loader2, Monitor, Play, RefreshCw, RotateCw, ShieldAlert, Square } from "lucide-react";
 import "./DevServerView.css";
 import type { DetectedDevServerCommand } from "../api";
@@ -22,13 +24,15 @@ interface StatusBadgeConfig {
   label: string;
 }
 
-const STATUS_BADGE_CONFIG: Record<"stopped" | "starting" | "running" | "failed" | "stopping", StatusBadgeConfig> = {
-  stopped: { className: "dev-server-status-badge--stopped", label: "Stopped" },
-  starting: { className: "dev-server-status-badge--starting", label: "Starting..." },
-  running: { className: "dev-server-status-badge--running", label: "Running" },
-  stopping: { className: "dev-server-status-badge--starting", label: "Stopping..." },
-  failed: { className: "dev-server-status-badge--failed", label: "Failed" },
-};
+function getStatusBadgeConfig(t: TFunction<"app">): Record<"stopped" | "starting" | "running" | "failed" | "stopping", StatusBadgeConfig> {
+  return {
+    stopped: { className: "dev-server-status-badge--stopped", label: t("devserver.status.stopped", "Stopped") },
+    starting: { className: "dev-server-status-badge--starting", label: t("devserver.status.starting", "Starting...") },
+    running: { className: "dev-server-status-badge--running", label: t("devserver.status.running", "Running") },
+    stopping: { className: "dev-server-status-badge--starting", label: t("devserver.status.stopping", "Stopping...") },
+    failed: { className: "dev-server-status-badge--failed", label: t("devserver.status.failed", "Failed") },
+  };
+}
 
 let devServerViewWasPreviouslyInactive = false;
 
@@ -82,6 +86,8 @@ function truncateCommand(command: string): string {
 }
 
 export function DevServerView({ addToast, projectId }: DevServerViewProps) {
+  const { t } = useTranslation("app");
+
   useEffect(() => {
     recordResumeEvent({
       view: "DevServerView",
@@ -118,7 +124,8 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
 
   const status = session?.status ?? "stopped";
   const isRunning = status === "running" || status === "starting";
-  const statusBadge = STATUS_BADGE_CONFIG[status] ?? STATUS_BADGE_CONFIG.stopped;
+  const statusBadgeConfig = getStatusBadgeConfig(t);
+  const statusBadge = statusBadgeConfig[status] ?? statusBadgeConfig.stopped;
 
   const {
     entries: logEntries,
@@ -299,19 +306,19 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
     setSelectedScript(candidate.scriptName);
     setShowCandidates(false);
     setCommandInput(candidate.command);
-    addToast(`Selected ${candidate.scriptName} script.`, "success");
+    addToast(t("devserver.toast.selectedScript", "Selected {{name}} script.", { name: candidate.scriptName }), "success");
   }, [addToast]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedScript(null);
     setShowCandidates(true);
-    addToast("Cleared selected dev server script.", "success");
+    addToast(t("devserver.toast.clearedScript", "Cleared selected dev server script."), "success");
   }, [addToast]);
 
   const handleStart = () => {
     const trimmedCommand = commandInput.trim();
     if (trimmedCommand.length === 0) {
-      addToast("Enter a command before starting the dev server.", "warning");
+      addToast(t("devserver.toast.enterCommand", "Enter a command before starting the dev server."), "warning");
       return;
     }
 
@@ -321,16 +328,16 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
     void runAction(
       "start",
       () => startServer(trimmedCommand, cwd),
-      "Dev server started.",
+      t("devserver.toast.started", "Dev server started."),
     );
   };
 
   const handleStop = () => {
-    void runAction("stop", stopServer, "Dev server stopped.");
+    void runAction("stop", stopServer, t("devserver.toast.stopped", "Dev server stopped."));
   };
 
   const handleRestart = () => {
-    void runAction("restart", restartServer, "Dev server restarted.");
+    void runAction("restart", restartServer, t("devserver.toast.restarted", "Dev server restarted."));
   };
 
   const handleSetPreview = () => {
@@ -340,7 +347,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
     void runAction(
       "preview",
       () => setPreviewUrl(nextUrl),
-      nextUrl ? "Preview URL updated." : "Preview URL override cleared.",
+      nextUrl ? t("devserver.toast.previewUpdated", "Preview URL updated.") : t("devserver.toast.previewCleared", "Preview URL override cleared."),
     );
   };
 
@@ -361,7 +368,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
       <section className="dev-server-header" aria-label="Dev server controls header">
         <div className="dev-server-header-title">
           <Monitor size={16} />
-          <h2>Dev Server</h2>
+          <h2>{t("devserver.title", "Dev Server")}</h2>
           <span
             className={`dev-server-status-badge ${statusBadge.className}`}
             data-testid="dev-server-status-badge"
@@ -378,7 +385,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             data-testid="dev-server-start-button"
           >
             <Play size={14} />
-            <span>{actionInFlight === "start" ? "Starting..." : "Start"}</span>
+            <span>{actionInFlight === "start" ? t("devserver.starting", "Starting...") : t("devserver.start", "Start")}</span>
           </button>
           <button
             type="button"
@@ -388,7 +395,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             data-testid="dev-server-stop-button"
           >
             <Square size={14} />
-            <span>{actionInFlight === "stop" ? "Stopping..." : "Stop"}</span>
+            <span>{actionInFlight === "stop" ? t("devserver.stopping", "Stopping...") : t("devserver.stop", "Stop")}</span>
           </button>
           <button
             type="button"
@@ -398,33 +405,33 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             data-testid="dev-server-restart-button"
           >
             <RotateCw size={14} />
-            <span>{actionInFlight === "restart" ? "Restarting..." : "Restart"}</span>
+            <span>{actionInFlight === "restart" ? t("devserver.restarting", "Restarting...") : t("devserver.restart", "Restart")}</span>
           </button>
         </div>
       </section>
 
       <section className="dev-server-panel dev-server-config" aria-label="Dev server configuration">
         <div className="dev-server-section-header">
-          <h3>Configuration</h3>
-          {isLoading && <span className="dev-server-muted">Loading...</span>}
+          <h3>{t("devserver.configuration", "Configuration")}</h3>
+          {isLoading && <span className="dev-server-muted">{t("devserver.loading", "Loading...")}</span>}
         </div>
 
         {isLoading && !session && detectedCommands.length === 0 && (
           <div className="dev-server-loading-state" data-testid="dev-server-loading-state">
             <Loader2 size={16} className="dev-server-spin" />
-            <span>Loading dev server configuration...</span>
+            <span>{t("devserver.loadingConfig", "Loading dev server configuration...")}</span>
           </div>
         )}
 
         {error && (
           <div className="dev-server-error-box" role="alert" data-testid="dev-server-error-box">
             <p>{error}</p>
-            <button type="button" className="btn btn-sm" onClick={handleRetry}>Retry</button>
+            <button type="button" className="btn btn-sm" onClick={handleRetry}>{t("devserver.retry", "Retry")}</button>
           </div>
         )}
 
         <div className="dev-server-section">
-          <h3>Script Selection</h3>
+          <h3>{t("devserver.scriptSelection", "Script Selection")}</h3>
 
           {selectedScript && (
             <div className="dev-server-selected" data-testid="dev-server-selected-summary">
@@ -436,7 +443,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
                 onClick={() => setShowCandidates(true)}
                 data-testid="dev-server-change-selection"
               >
-                Change
+                {t("devserver.change", "Change")}
               </button>
               <button
                 type="button"
@@ -444,14 +451,14 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
                 onClick={handleClearSelection}
                 data-testid="dev-server-clear-selection"
               >
-                Clear
+                {t("devserver.clear", "Clear")}
               </button>
             </div>
           )}
 
           {showCandidates && detectedCommands.length === 0 && (
             <p className="dev-server-empty-state" data-testid="dev-server-empty-candidates">
-              No dev server scripts detected. Check that your project has a <code>package.json</code> with a <code>dev</code>, <code>start</code>, or similar script.
+              {t("devserver.noScriptsDetected", "No dev server scripts detected. Check that your project has a package.json with a dev, start, or similar script.")}
             </p>
           )}
 
@@ -478,7 +485,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
         </div>
 
         <div className="dev-server-field-group">
-          <label htmlFor="dev-server-command" className="dev-server-label">Command</label>
+          <label htmlFor="dev-server-command" className="dev-server-label">{t("devserver.command", "Command")}</label>
           <input
             id="dev-server-command"
             className="input"
@@ -492,13 +499,13 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
 
         {(status === "running" || status === "starting") && session && (
           <div className="dev-server-current-command" data-testid="dev-server-current-command">
-            <span className="dev-server-label">Running command</span>
+            <span className="dev-server-label">{t("devserver.runningCommand", "Running command")}</span>
             <code>{session.config?.command ?? commandInput}</code>
           </div>
         )}
 
         <div className="dev-server-preview-override">
-          <label htmlFor="dev-server-preview-input" className="dev-server-label">Preview URL Override</label>
+          <label htmlFor="dev-server-preview-input" className="dev-server-label">{t("devserver.previewUrlOverride", "Preview URL Override")}</label>
           <input
             id="dev-server-preview-input"
             className="input"
@@ -515,20 +522,20 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             disabled={actionInFlight === "preview"}
             data-testid="dev-server-set-preview"
           >
-            Save
+            {t("devserver.save", "Save")}
           </button>
         </div>
 
         {effectivePreviewUrl && (
-          <p className="dev-server-preview-hint">Auto-detected: {effectivePreviewUrl}</p>
+          <p className="dev-server-preview-hint">{t("devserver.autoDetected", "Auto-detected: {{url}}", { url: effectivePreviewUrl })}</p>
         )}
       </section>
 
       <div className="dev-server-content">
         <section className="dev-server-panel dev-server-logs-panel" data-testid="dev-server-logs-panel" aria-label="Dev server logs">
           <div className="dev-server-section-header">
-            <h3>Logs</h3>
-            <span className="dev-server-muted">{logsTotal ?? logEntries.length} lines</span>
+            <h3>{t("devserver.logs", "Logs")}</h3>
+            <span className="dev-server-muted">{t("devserver.lines", "{{count}} lines", { count: logsTotal ?? logEntries.length })}</span>
           </div>
           <div className="dev-server-logs-viewer" data-testid="dev-server-log-viewer">
             <DevServerLogViewer
@@ -548,15 +555,15 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
         <div className="devserver-preview-header">
           <div className="devserver-preview-title">
             <Eye size={14} />
-            <span>Preview</span>
+            <span>{t("devserver.preview", "Preview")}</span>
           </div>
           <span
             className={`devserver-preview-url-badge ${isManualPreviewOverride ? "devserver-preview-url-badge--manual" : "devserver-preview-url-badge--auto"}`}
-            title={effectivePreviewUrl ?? "No preview URL"}
+            title={effectivePreviewUrl ?? t("devserver.noPreviewUrl", "No preview URL")}
             data-testid="devserver-preview-url-badge"
           >
-            {isManualPreviewOverride ? "Manual" : "Auto"}
-            {effectivePreviewUrl ? ` · ${effectivePreviewUrl}` : " · Not available"}
+            {isManualPreviewOverride ? t("devserver.manual", "Manual") : t("devserver.auto", "Auto")}
+            {effectivePreviewUrl ? ` · ${effectivePreviewUrl}` : t("devserver.notAvailable", " · Not available")}
           </span>
           <div className="devserver-preview-actions">
             <button
@@ -565,12 +572,12 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
               onClick={() => setPreviewMode((current) => (current === "embedded" ? "external" : "embedded"))}
               data-testid="devserver-preview-mode-toggle"
             >
-              {previewMode === "embedded" ? "External only" : "Embedded"}
+              {previewMode === "embedded" ? t("devserver.externalOnly", "External only") : t("devserver.embedded", "Embedded")}
             </button>
             <button
               type="button"
               className="btn btn-sm btn-icon"
-              title="Open in new tab"
+              title={t("devserver.openInNewTab", "Open in new tab")}
               onClick={handleOpenInNewTab}
               disabled={!effectivePreviewUrl}
               data-testid="devserver-preview-open-tab"
@@ -580,7 +587,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
             <button
               type="button"
               className="btn btn-sm btn-icon"
-              title="Refresh preview"
+              title={t("devserver.refreshPreview", "Refresh preview")}
               onClick={handleRefreshPreview}
               disabled={!effectivePreviewUrl}
               data-testid="devserver-preview-refresh"
@@ -592,23 +599,23 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
 
         <div className="devserver-preview-container" data-embed-status={embedStatus} data-embedded={isEmbedded ? "true" : "false"}>
           {!effectivePreviewUrl && !isRunning && (
-            <p className="devserver-preview-empty">Start a dev server to see a live preview here.</p>
+            <p className="devserver-preview-empty">{t("devserver.startDevServer", "Start a dev server to see a live preview here.")}</p>
           )}
 
           {!effectivePreviewUrl && isRunning && (
-            <p className="devserver-preview-empty">No preview URL detected. Start the dev server or set a manual URL to preview your app.</p>
+            <p className="devserver-preview-empty">{t("devserver.noPreviewDetected", "No preview URL detected. Start the dev server or set a manual URL to preview your app.")}</p>
           )}
 
           {effectivePreviewUrl && previewMode === "external" && (
             <div className="devserver-preview-external-only" data-testid="devserver-preview-external-only">
-              <p>Embedded preview is disabled. Open your app in a separate browser tab.</p>
+              <p>{t("devserver.embeddedPreviewDisabled", "Embedded preview is disabled. Open your app in a separate browser tab.")}</p>
               <button
                 type="button"
                 className="btn btn-primary btn-sm touch-target"
                 onClick={handleOpenInNewTab}
                 data-testid="devserver-preview-external-open-tab"
               >
-                Open in new tab
+                {t("devserver.openInNewTab", "Open in new tab")}
               </button>
             </div>
           )}
@@ -624,12 +631,12 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
                 : <ShieldAlert className="devserver-preview-blocked-icon" aria-hidden="true" />}
               <div>
                 <p className="devserver-preview-blocked-title">
-                  {embedStatus === "error" ? "Preview failed" : "Preview blocked"}
+                  {embedStatus === "error" ? t("devserver.previewFailed", "Preview failed") : t("devserver.previewBlocked", "Preview blocked")}
                 </p>
                 {blockReason && <p className="devserver-preview-blocked-context">{blockReason}</p>}
               </div>
               <p className="devserver-preview-blocked-description">
-                Open the preview in a new tab, or retry embedded mode after checking your server settings.
+                {t("devserver.openPreviewOrRetry", "Open the preview in a new tab, or retry embedded mode after checking your server settings.")}
               </p>
               <div className="devserver-preview-blocked-actions">
                 <button
@@ -638,7 +645,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
                   onClick={handleOpenInNewTab}
                   data-testid="devserver-preview-fallback-open-tab"
                 >
-                  Open preview in new tab
+                  {t("devserver.openPreviewInNewTab", "Open preview in new tab")}
                 </button>
                 <button
                   type="button"
@@ -646,7 +653,7 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
                   onClick={handleRetryEmbeddedPreview}
                   data-testid="devserver-preview-fallback-retry"
                 >
-                  Retry embedded preview
+                  {t("devserver.retryEmbeddedPreview", "Retry embedded preview")}
                 </button>
               </div>
             </div>

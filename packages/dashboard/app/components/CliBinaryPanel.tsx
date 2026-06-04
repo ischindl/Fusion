@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   fetchFnBinaryStatus,
   installFnBinary,
@@ -16,12 +17,8 @@ interface Props {
   defer?: boolean;
 }
 
-const STATE_LABELS: Record<FnBinaryStatus["state"], { text: string; tone: "ok" | "warn" | "err" }> = {
-  installed: { text: "Installed", tone: "ok" },
-  missing: { text: "Not installed", tone: "err" },
-  "version-mismatch": { text: "Version mismatch", tone: "warn" },
-  skipped: { text: "Check disabled", tone: "warn" },
-};
+// Note: These labels are fetched dynamically in the component via useTranslation
+// to support i18n. See below for the actual label rendering.
 
 /**
  * Settings panel for the `fn` / `fusion` global CLI binary.
@@ -31,12 +28,26 @@ const STATE_LABELS: Record<FnBinaryStatus["state"], { text: string; tone: "ok" |
  * commands so users with non-default npm setups can install themselves.
  */
 export function CliBinaryPanel({ defer = false }: Props) {
+  const { t } = useTranslation("app");
   const [status, setStatus] = useState<FnBinaryStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState<FnBinaryInstallResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+
+  const getStateLabel = (state: FnBinaryStatus["state"]): { text: string; tone: "ok" | "warn" | "err" } => {
+    switch (state) {
+      case "installed":
+        return { text: t("cliBinary.stateInstalled", "Installed"), tone: "ok" };
+      case "missing":
+        return { text: t("cliBinary.stateMissing", "Not installed"), tone: "err" };
+      case "version-mismatch":
+        return { text: t("cliBinary.stateVersionMismatch", "Version mismatch"), tone: "warn" };
+      case "skipped":
+        return { text: t("cliBinary.stateCheckDisabled", "Check disabled"), tone: "warn" };
+    }
+  };
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -86,12 +97,12 @@ export function CliBinaryPanel({ defer = false }: Props) {
     }
   }, []);
 
-  const stateMeta = status ? STATE_LABELS[status.state] : null;
+  const stateMeta = status ? getStateLabel(status.state) : null;
 
   return (
     <div className="cli-binary-panel">
       <div className="cli-binary-header">
-        <h4 className="settings-section-heading">CLI Binary</h4>
+        <h4 className="settings-section-heading">{t("cliBinary.heading", "CLI Binary")}</h4>
         {stateMeta && (
           <span className={`cli-binary-pill cli-binary-pill--${stateMeta.tone}`}>
             {stateMeta.text}
@@ -99,12 +110,10 @@ export function CliBinaryPanel({ defer = false }: Props) {
         )}
       </div>
       <small className="cli-binary-help">
-        Installing the global CLI lets you run <code>fn</code> and <code>fusion</code> from any
-        terminal. Automations and scripts work without it via <code>npx</code>, but a global
-        install is faster and more convenient.
+        {t("cliBinary.help", "Installing the global CLI lets you run fn and fusion from any terminal. Automations and scripts work without it via npx, but a global install is faster and more convenient.")}
       </small>
 
-      {loading && !status && <p className="cli-binary-status-line">Checking…</p>}
+      {loading && !status && <p className="cli-binary-status-line">{t("cliBinary.checking", "Checking…")}</p>}
 
       {status && (
         <div className="cli-binary-detail">
@@ -130,7 +139,7 @@ export function CliBinaryPanel({ defer = false }: Props) {
             </ul>
           ) : (
             <p className="cli-binary-status-line">
-              Neither <code>fn</code> nor <code>fusion</code> was found on PATH.
+              {t("cliBinary.notOnPath", "Neither fn nor fusion was found on PATH.")}
             </p>
           )}
 
@@ -142,10 +151,10 @@ export function CliBinaryPanel({ defer = false }: Props) {
               disabled={installing}
             >
               {installing
-                ? "Installing…"
+                ? t("cliBinary.installing", "Installing…")
                 : status.binary.installed
-                  ? "Reinstall"
-                  : "Install with npm"}
+                  ? t("cliBinary.reinstall", "Reinstall")
+                  : t("cliBinary.installWithNpm", "Install with npm")}
             </button>
             <button
               type="button"
@@ -153,12 +162,12 @@ export function CliBinaryPanel({ defer = false }: Props) {
               onClick={() => void refresh()}
               disabled={loading || installing}
             >
-              Refresh
+              {t("cliBinary.refresh", "Refresh")}
             </button>
           </div>
 
           <div className="cli-binary-commands">
-            <label>Or copy and run yourself:</label>
+            <label>{t("cliBinary.orCopyLabel", "Or copy and run yourself:")}</label>
             {[
               { label: "npm", command: status.install.npm },
               { label: "curl", command: status.install.curl },
@@ -170,7 +179,7 @@ export function CliBinaryPanel({ defer = false }: Props) {
                   onClick={() => void copy(label, command)}
                   className="cli-binary-copy-btn"
                 >
-                  {copied === label ? "Copied" : "Copy"}
+                  {copied === label ? t("cliBinary.copied", "Copied") : t("cliBinary.copy", "Copy")}
                 </button>
               </div>
             ))}
@@ -182,8 +191,8 @@ export function CliBinaryPanel({ defer = false }: Props) {
         <details className="cli-binary-install-log" open={!installResult.success}>
           <summary>
             {installResult.success
-              ? `Install succeeded in ${(installResult.durationMs / 1000).toFixed(1)}s`
-              : `Install failed (exit ${installResult.exitCode ?? "n/a"})`}
+              ? t("cliBinary.succeededDuration", "Install succeeded in {{duration}}s", { duration: (installResult.durationMs / 1000).toFixed(1) })
+              : t("cliBinary.failedExit", "Install failed (exit {{code}})", { code: installResult.exitCode ?? "n/a" })}
           </summary>
           {installResult.permissionsHint && (
             <p className="cli-binary-permissions-hint">{installResult.permissionsHint}</p>

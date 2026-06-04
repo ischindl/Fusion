@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { consumeVersionUpdateFlag } from "../versionCheck";
 import { SWR_CACHE_KEYS, clearCache } from "../utils/swrCache";
 import "./DashboardLoader.css";
@@ -16,9 +17,9 @@ interface LoaderStep {
 }
 
 const LOADER_STEPS: LoaderStep[] = [
-  { id: "projects", label: "Loading projects" },
-  { id: "project", label: "Selecting project" },
-  { id: "tasks", label: "Fetching tasks" },
+  { id: "projects", label: "dashboard.loaderSteps.projects" },
+  { id: "project", label: "dashboard.loaderSteps.project" },
+  { id: "tasks", label: "dashboard.loaderSteps.tasks" },
 ];
 
 function getStepState(stepId: LoaderStep["id"], stage: DashboardLoaderStage): "done" | "active" | "pending" {
@@ -41,6 +42,7 @@ function getStepState(stepId: LoaderStep["id"], stage: DashboardLoaderStage): "d
 }
 
 export function DashboardLoader({ stage }: DashboardLoaderProps) {
+  const { t } = useTranslation("app");
   const [isVersionUpdate] = useState(() => {
     const versionUpdated = consumeVersionUpdateFlag();
     if (versionUpdated) {
@@ -78,7 +80,7 @@ export function DashboardLoader({ stage }: DashboardLoaderProps) {
       className="dashboard-loader"
       role="status"
       aria-live="polite"
-      aria-label={isVersionUpdate ? "Updating Fusion dashboard" : "Loading Fusion dashboard"}
+      aria-label={isVersionUpdate ? t("dashboard.updatingMessage", "Updating Fusion dashboard") : t("dashboard.loadingMessage", "Loading Fusion dashboard")}
       data-stage={stage}
       data-version-update={isVersionUpdate ? "true" : undefined}
     >
@@ -86,13 +88,13 @@ export function DashboardLoader({ stage }: DashboardLoaderProps) {
         <h1 className="dashboard-loader__logo">Fusion</h1>
         {isVersionUpdate ? (
           <p className="dashboard-loader__message dashboard-loader__message--update">
-            Updating to a new frontend version...
+            {t("dashboard.updatingVersion", "Updating to a new frontend version...")}
           </p>
         ) : (
-          <p className="dashboard-loader__message">Initializing dashboard...</p>
+          <p className="dashboard-loader__message">{t("dashboard.initializingDashboard", "Initializing dashboard...")}</p>
         )}
 
-        <ol className="dashboard-loader__steps" aria-label="Dashboard loading progress">
+        <ol className="dashboard-loader__steps" aria-label={t("dashboard.loadingProgress", "Dashboard loading progress")}>
           {LOADER_STEPS.map((step) => {
             const stepState = getStepState(step.id, stage);
 
@@ -111,7 +113,7 @@ export function DashboardLoader({ stage }: DashboardLoaderProps) {
                     "•"
                   )}
                 </span>
-                <span className="dashboard-loader__step-label">{step.label}</span>
+                <span className="dashboard-loader__step-label">{t(step.label, step.label === "dashboard.loaderSteps.projects" ? "Loading projects" : step.label === "dashboard.loaderSteps.project" ? "Selecting project" : "Fetching tasks")}</span>
               </li>
             );
           })}

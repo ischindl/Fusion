@@ -3,6 +3,7 @@ import { getErrorMessage, type Task, type TaskDetail } from "@fusion/core";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { GitPullRequest } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -21,8 +22,6 @@ interface Props {
   addToast: (message: string, type?: ToastType) => void;
 }
 
-const REVIEW_LOAD_ERROR_MESSAGE = "Failed to load review data.";
-const DIRECT_MODE_EMPTY_MESSAGE = "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.";
 const REVIEW_MARKDOWN_TOGGLE_STORAGE_KEY = "fn-task-review-markdown";
 
 type ReviewState = NonNullable<TaskDetail["reviewState"]>;
@@ -91,15 +90,15 @@ const markdownComponents: Components = {
   ),
 };
 
-function formatTimestamp(value?: string): string {
-  if (!value) return "Never";
+function formatTimestamp(value?: string, t?: (key: string, defaultValue: string) => string): string {
+  if (!value) return t?.("taskReview.never", "Never") ?? "Never";
   return new Date(value).toLocaleString();
 }
 
-function formatRefreshSource(source?: "manual" | "auto" | "initial-load"): string {
-  if (source === "manual") return "Manual";
-  if (source === "auto") return "Background";
-  return "Initial load";
+function formatRefreshSource(source?: "manual" | "auto" | "initial-load", t?: (key: string, defaultValue: string) => string): string {
+  if (source === "manual") return t?.("taskReview.refreshSourceManual", "Manual") ?? "Manual";
+  if (source === "auto") return t?.("taskReview.refreshSourceBackground", "Background") ?? "Background";
+  return t?.("taskReview.refreshSourceInitialLoad", "Initial load") ?? "Initial load";
 }
 
 function getDisplayReviewItems(review: ReviewState): DisplayReviewItem[] {
@@ -143,6 +142,7 @@ export function TaskReviewTab({
   autoMergeEnabled = false,
   addToast,
 }: Props) {
+  const { t } = useTranslation("app");
   const [selected, setSelected] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [revising, setRevising] = useState(false);
@@ -180,7 +180,7 @@ export function TaskReviewTab({
       })
       .catch(() => {
         if (cancelled) return;
-        setError(REVIEW_LOAD_ERROR_MESSAGE);
+        setError(t("taskReview.loadError", "Failed to load review data."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -188,17 +188,23 @@ export function TaskReviewTab({
     return () => {
       cancelled = true;
     };
-  }, [task.id, projectId]);
+  }, [task.id, projectId, t]);
 
   const summaryText = useMemo(() => {
-    if (!review) return "No review feedback captured yet.";
+    if (!review) return t("taskReview.noCapturedFeedback", "No review feedback captured yet.");
     if (review.source === "pull-request") {
       const prSummary = review.summary as { reviewDecision?: string } | undefined;
-      return `${prSummary?.reviewDecision ?? "REVIEW_REQUIRED"} · ${displayItems.length} review item(s)`;
+      return t("taskReview.prSummaryLine", "{{decision}} · {{count}} review item(s)", {
+        decision: prSummary?.reviewDecision ?? "REVIEW_REQUIRED",
+        count: displayItems.length,
+      });
     }
     const reviewerSummary = review.summary as { summary?: string } | undefined;
-    return `${reviewerSummary?.summary ?? "reviewer-agent"} · ${displayItems.length} review item(s)`;
-  }, [review, displayItems.length]);
+    return t("taskReview.reviewerSummaryLine", "{{reviewer}} · {{count}} review item(s)", {
+      reviewer: reviewerSummary?.summary ?? "reviewer-agent",
+      count: displayItems.length,
+    });
+  }, [review, displayItems.length, t]);
 
   const decisionLabel = !review
     ? undefined
@@ -223,14 +229,14 @@ export function TaskReviewTab({
       setReview(result.reviewState);
       onTaskUpdated?.({ ...task, reviewState: result.reviewState, prInfo: result.prInfo ?? task.prInfo } as Task);
       if (result.reviewState.refreshStatus === "error") {
-        const refreshMessage = result.reviewState.refreshError ?? "Failed to refresh review data.";
+        const refreshMessage = result.reviewState.refreshError ?? t("taskReview.refreshDataFailed", "Failed to refresh review data.");
         setError(refreshMessage);
         addToast(refreshMessage, "error");
         return;
       }
-      addToast("Review refreshed", "success");
+      addToast(t("taskReview.refreshed", "Review refreshed"), "success");
     } catch (refreshError) {
-      const message = refreshError instanceof Error ? refreshError.message : REVIEW_LOAD_ERROR_MESSAGE;
+      const message = refreshError instanceof Error ? refreshError.message : t("taskReview.loadError", "Failed to load review data.");
       setError(message);
       addToast(message, "error");
     } finally {
@@ -248,10 +254,10 @@ export function TaskReviewTab({
       const updatedTask = await updateTask(task.id, { autoMerge }, projectId);
       setAutoMergePreference(updatedTask.autoMerge === true ? "on" : updatedTask.autoMerge === false ? "off" : "follow-default");
       onTaskUpdated?.(updatedTask);
-      addToast("Per-task auto-merge preference updated", "success");
+      addToast(t("taskReview.autoMergePreferenceUpdated", "Per-task auto-merge preference updated"), "success");
     } catch (updateError) {
       setAutoMergePreference(previousPreference);
-      addToast(`Failed to update ${task.id}: ${getErrorMessage(updateError)}`, "error");
+      addToast(t("taskReview.updateFailed", "Failed to update {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(updateError) }), "error");
     } finally {
       setIsSavingAutoMergePreference(false);
     }
@@ -297,9 +303,9 @@ export function TaskReviewTab({
       setReview(result.reviewState);
       onTaskUpdated?.({ ...result.task, reviewState: result.reviewState } as Task);
       setSelected([]);
-      addToast("Same-task AI revision started from selected review feedback", "success");
+      addToast(t("taskReview.revisionStarted", "Same-task AI revision started from selected review feedback"), "success");
     } catch (reviseError) {
-      const message = reviseError instanceof Error ? reviseError.message : "Failed to queue revision";
+      const message = reviseError instanceof Error ? reviseError.message : t("taskReview.revisionQueueFailed", "Failed to queue revision");
       setError(message);
       addToast(message, "error");
     } finally {
@@ -308,7 +314,7 @@ export function TaskReviewTab({
   };
 
   const effectiveAutoMerge = resolveEffectiveAutoMerge({ autoMerge: task.autoMerge }, { autoMerge: autoMergeEnabled });
-  const effectiveAutoMergeLabel = effectiveAutoMerge ? "Auto-merge on" : "Auto-merge off";
+  const effectiveAutoMergeLabel = effectiveAutoMerge ? t("taskReview.autoMergeOn", "Auto-merge on") : t("taskReview.autoMergeOff", "Auto-merge off");
 
   return (
     <div className="task-review-tab">
@@ -321,7 +327,7 @@ export function TaskReviewTab({
         </div>
         <div className="task-review-tab__actions">
           <div className="task-review-tab__auto-merge-control">
-            <label htmlFor="task-review-auto-merge-select" className="form-label">Per-task auto-merge</label>
+            <label htmlFor="task-review-auto-merge-select" className="form-label">{t("taskReview.perTaskAutoMerge", "Per-task auto-merge")}</label>
             <select
               id="task-review-auto-merge-select"
               className="select"
@@ -330,20 +336,20 @@ export function TaskReviewTab({
               disabled={isSavingAutoMergePreference}
               data-testid="task-review-auto-merge-select"
             >
-              <option value="follow-default">Follow default</option>
-              <option value="on">Auto-merge on</option>
-              <option value="off">Auto-merge off</option>
+              <option value="follow-default">{t("taskReview.followDefault", "Follow default")}</option>
+              <option value="on">{t("taskReview.autoMergeOn", "Auto-merge on")}</option>
+              <option value="off">{t("taskReview.autoMergeOff", "Auto-merge off")}</option>
             </select>
             <div className="task-review-tab__meta" data-testid="task-review-auto-merge-effective-hint">
               {task.column === "in-review"
-                ? `Effective: ${effectiveAutoMergeLabel} — frozen on entry to review`
-                : `Effective: ${effectiveAutoMergeLabel}`}
+                ? t("taskReview.effectiveFrozen", "Effective: {{label}} — frozen on entry to review", { label: effectiveAutoMergeLabel })
+                : t("taskReview.effective", "Effective: {{label}}", { label: effectiveAutoMergeLabel })}
             </div>
           </div>
           {task.column === "in-review" && !task.prInfo && prAuthAvailable === true && autoMergeEnabled !== true && typeof onRequestCreatePr === "function" ? (
             <button className="btn btn-sm" onClick={() => onRequestCreatePr?.()} data-testid="task-review-create-pr">
               <GitPullRequest />
-              Create PR
+              {t("taskReview.createPr", "Create PR")}
             </button>
           ) : null}
           <button
@@ -351,21 +357,25 @@ export function TaskReviewTab({
             onClick={() => setRenderMarkdown((prev) => !prev)}
             aria-pressed={renderMarkdown}
             data-testid="task-review-markdown-toggle"
-            title={renderMarkdown ? "Show raw text" : "Show formatted markdown"}
+            title={renderMarkdown ? t("taskReview.showRawText", "Show raw text") : t("taskReview.showMarkdown", "Show formatted markdown")}
           >
-            {renderMarkdown ? "Markdown" : "Plain"}
+            {renderMarkdown ? t("taskReview.markdown", "Markdown") : t("taskReview.plain", "Plain")}
           </button>
-          <button className="btn btn-sm" onClick={onRefresh} disabled={refreshing || loading}>{refreshing ? "Refreshing…" : "Refresh"}</button>
-          <button className="btn btn-primary btn-sm" disabled={!canRevise} onClick={onRevise}>{revising ? "Queueing…" : "Request revision"}</button>
+          <button className="btn btn-sm" onClick={onRefresh} disabled={refreshing || loading}>{refreshing ? t("taskReview.refreshing", "Refreshing…") : t("taskReview.refresh", "Refresh")}</button>
+          <button className="btn btn-primary btn-sm" disabled={!canRevise} onClick={onRevise}>{revising ? t("taskReview.queueing", "Queueing…") : t("taskReview.requestRevision", "Request revision")}</button>
         </div>
       </div>
       <div className="task-review-tab__meta task-review-tab__refresh-meta" aria-live="polite">
         <span className={refreshToneClass} aria-hidden="true" />
-        <span>{refreshStatus === "error" ? "Refresh failed" : refreshStatus === "refreshing" ? "Refreshing" : "Up to date"} · Last refreshed: {formatTimestamp(review?.lastRefreshedAt)} · {formatRefreshSource(review?.refreshSource)}</span>
+        <span>{t("taskReview.refreshStatusLine", "{{status}} · Last refreshed: {{timestamp}} · {{source}}", {
+          status: refreshStatus === "error" ? t("taskReview.refreshFailed", "Refresh failed") : refreshStatus === "refreshing" ? t("taskReview.refreshing", "Refreshing") : t("taskReview.upToDate", "Up to date"),
+          timestamp: formatTimestamp(review?.lastRefreshedAt, t),
+          source: formatRefreshSource(review?.refreshSource, t),
+        })}</span>
       </div>
-      {loading ? <div className="task-review-tab__meta">Loading review data…</div> : null}
+      {loading ? <div className="task-review-tab__meta">{t("taskReview.loadingData", "Loading review data…")}</div> : null}
       {!loading && error ? <div className="task-review-tab__error">{error}</div> : null}
-      {!loading && !error && !isPrMode && displayItems.length === 0 ? <div className="task-review-tab__empty">{emptyMessage ?? DIRECT_MODE_EMPTY_MESSAGE}</div> : null}
+      {!loading && !error && !isPrMode && displayItems.length === 0 ? <div className="task-review-tab__empty">{emptyMessage ?? t("taskReview.noFeedbackDirect", "No reviewer feedback yet — this task has not produced reviewer-agent feedback in direct mode.")}</div> : null}
       {!loading && !error && displayItems.length > 0 ? (
         <ul className="task-review-tab__list">
           {displayItems.map((item) => {
@@ -384,9 +394,14 @@ export function TaskReviewTab({
                     </div>
                   </label>
                   <div className="task-review-tab__item-meta-list">
-                    <div className="task-review-tab__meta">{formatTimestamp(item.createdAt)}</div>
+                    <div className="task-review-tab__meta">{formatTimestamp(item.createdAt, t)}</div>
                     {item.addressing ? (
-                      <div className="task-review-tab__meta">Selected: {formatTimestamp(item.addressing.selectedAt)}{item.addressing.startedAt ? ` · Started: ${formatTimestamp(item.addressing.startedAt)}` : ""}{item.addressing.completedAt ? ` · Completed: ${formatTimestamp(item.addressing.completedAt)}` : ""}{item.addressing.error ? ` · Error: ${item.addressing.error}` : ""}</div>
+                      <div className="task-review-tab__meta">
+                        {t("taskReview.selectedAt", "Selected: {{timestamp}}", { timestamp: formatTimestamp(item.addressing.selectedAt, t) })}
+                        {item.addressing.startedAt ? t("taskReview.startedAtSep", " · Started: {{timestamp}}", { timestamp: formatTimestamp(item.addressing.startedAt, t) }) : ""}
+                        {item.addressing.completedAt ? t("taskReview.completedAtSep", " · Completed: {{timestamp}}", { timestamp: formatTimestamp(item.addressing.completedAt, t) }) : ""}
+                        {item.addressing.error ? t("taskReview.errorSep", " · Error: {{message}}", { message: item.addressing.error }) : ""}
+                      </div>
                     ) : null}
                   </div>
                   {renderMarkdown ? (
@@ -404,7 +419,7 @@ export function TaskReviewTab({
           })}
         </ul>
       ) : null}
-      {isPrMode && !loading && !error && displayItems.length === 0 ? <div className="task-review-tab__empty">No review items yet.</div> : null}
+      {isPrMode && !loading && !error && displayItems.length === 0 ? <div className="task-review-tab__empty">{t("taskReview.noReviewItems", "No review items yet.")}</div> : null}
     </div>
   );
 }

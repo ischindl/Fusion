@@ -1,4 +1,5 @@
 import { AlertTriangle, Inbox, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import "./ApprovalNotificationBanner.css";
 
 interface ApprovalNotificationBannerProps {
@@ -12,22 +13,23 @@ export function ApprovalNotificationBanner({
   onOpenMailbox,
   onDismiss,
 }: ApprovalNotificationBannerProps) {
-  const noun = pendingCount === 1 ? "request" : "requests";
+  const { t } = useTranslation("app");
+  const noun = pendingCount === 1 ? t("approval.requestSingular", "request") : t("approval.requestPlural", "requests");
 
   return (
-    <section className="approval-notification-banner" role="region" aria-live="polite" aria-label="Approval requests">
+    <section className="approval-notification-banner" role="region" aria-live="polite" aria-label={t("approval.requests", "Approval requests")}>
       <div className="approval-notification-banner__content">
         <div className="approval-notification-banner__headline">
           <span className="status-dot" aria-hidden="true" />
           <AlertTriangle aria-hidden="true" />
-          <span>{pendingCount} approval {noun} need your attention</span>
+          <span>{t("approval.needAttention", "{{count}} approval {{noun}} need your attention", { count: pendingCount, noun })}</span>
         </div>
         <div className="approval-notification-banner__actions">
           <button type="button" className="btn btn-sm" onClick={onOpenMailbox}>
             <Inbox aria-hidden="true" />
-            <span>Open Mailbox</span>
+            <span>{t("approval.openMailbox", "Open Mailbox")}</span>
           </button>
-          <button type="button" className="btn-icon approval-notification-banner__dismiss" onClick={onDismiss} aria-label="Dismiss approval notification banner">
+          <button type="button" className="btn-icon approval-notification-banner__dismiss" onClick={onDismiss} aria-label={t("approval.dismissBanner", "Dismiss approval notification banner")}>
             <X aria-hidden="true" />
           </button>
         </div>

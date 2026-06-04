@@ -1,8 +1,11 @@
 import "./ListView.css";
 import { useState, useCallback, useMemo, Fragment, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRight, Zap, Trash2, Pause, Play, Archive } from "lucide-react";
 import type { Task, TaskDetail, Column, TaskCreateInput, MergeResult, GithubIssueAction } from "@fusion/core";
-import { COLUMN_LABELS, COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
+import { COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
+import { useColumnLabel } from "../i18n/labels";
 import { sortTasksForDisplayColumn } from "./taskSorting";
 import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
@@ -31,8 +34,8 @@ const ACTIVE_STATUSES = new Set(["planning", "researching", "executing", "finali
 
 type SortField = "title" | "status" | "column" | "retries";
 
-function getTaskStatusLabel(status: string): string {
-  if (status === "merging-fix") return "Merging fixes…";
+function getTaskStatusLabel(status: string, t: TFunction<"app">): string {
+  if (status === "merging-fix") return t("listView.statusMergingFix", "Merging fixes…");
   return status;
 }
 type SortDirection = "asc" | "desc";
@@ -42,11 +45,11 @@ const ALL_LIST_COLUMNS = ["title", "status", "column", "retries", "dependencies"
 const DEFAULT_LIST_COLUMNS = ["title", "status", "column", "retries"] as const;
 type ListColumn = typeof ALL_LIST_COLUMNS[number];
 
-function getNodeStatusLabel(status: NodeInfo["status"]): string {
-  if (status === "online") return "Online";
-  if (status === "connecting") return "Connecting";
-  if (status === "error") return "Error";
-  return "Offline";
+function getNodeStatusLabel(status: NodeInfo["status"], t: TFunction<"app">): string {
+  if (status === "online") return t("listView.nodeStatusOnline", "Online");
+  if (status === "connecting") return t("listView.nodeStatusConnecting", "Connecting");
+  if (status === "error") return t("listView.nodeStatusError", "Error");
+  return t("listView.nodeStatusOffline", "Offline");
 }
 
 function getNodeStatusSymbol(status: NodeInfo["status"]): string {
@@ -275,6 +278,8 @@ export function ListView({
   lastFetchTimeMs,
   prAuthAvailable,
 }: ListViewProps) {
+  const { t } = useTranslation("app");
+  const columnLabel = useColumnLabel();
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -480,12 +485,12 @@ export function ListView({
 
   // Column display labels
   const COLUMN_LABELS_MAP: Record<ListColumn, string> = {
-    title: "Title",
-    status: "Status",
-    column: "Column",
-    dependencies: "Dependencies",
-    progress: "Progress",
-    retries: "Retries",
+    title: t("listView.colTitle", "Title"),
+    status: t("listView.colStatus", "Status"),
+    column: t("listView.colColumn", "Column"),
+    dependencies: t("listView.colDependencies", "Dependencies"),
+    progress: t("listView.colProgress", "Progress"),
+    retries: t("listView.colRetries", "Retries"),
   };
 
   const handleSort = useCallback((field: SortField) => {
@@ -700,7 +705,7 @@ export function ListView({
     const deletableTasks = selectedTasks.filter((task) => task.column !== "archived");
 
     if (deletableTasks.length === 0) {
-      addToast("No selected tasks can be deleted (archived tasks are excluded)", "error");
+      addToast(t("listView.bulkDeleteNoTasks", "No selected tasks can be deleted (archived tasks are excluded)"), "error");
       return;
     }
 
@@ -712,11 +717,11 @@ export function ListView({
 
     if (doneTasks.length > 0 && onArchiveTask) {
       const choice = await confirmWithChoice({
-        title: "Delete Selected Tasks",
-        message: `Delete ${deletableTasks.length} task${deletableTasks.length === 1 ? "" : "s"}, or archive the ${doneTasks.length} done task${doneTasks.length === 1 ? "" : "s"} and delete the rest?`,
-        confirmLabel: "Delete All",
-        cancelLabel: "Cancel",
-        tertiaryLabel: `Archive ${doneTasks.length} Done`,
+        title: t("listView.bulkDeleteTitle", "Delete Selected Tasks"),
+        message: t("listView.bulkDeleteWithDoneMessage", "Delete {{deletable}} task(s), or archive the {{done}} done task(s) and delete the rest?", { deletable: deletableTasks.length, done: doneTasks.length }),
+        confirmLabel: t("listView.bulkDeleteAll", "Delete All"),
+        cancelLabel: t("common.cancel", "Cancel"),
+        tertiaryLabel: t("listView.bulkArchiveDone", "Archive {{count}} Done", { count: doneTasks.length }),
         danger: true,
       });
       if (choice === "cancel") return;
@@ -724,10 +729,10 @@ export function ListView({
       shouldArchiveDoneInstead = choice === "tertiary";
     } else {
       const confirmed = await confirm({
-        title: "Delete Selected Tasks",
-        message: `Delete ${deletableTasks.length} selected task${deletableTasks.length === 1 ? "" : "s"}?`,
-        confirmLabel: "Delete",
-        cancelLabel: "Cancel",
+        title: t("listView.bulkDeleteTitle", "Delete Selected Tasks"),
+        message: t("listView.bulkDeleteMessage", "Delete {{count}} selected task(s)?", { count: deletableTasks.length }),
+        confirmLabel: t("common.delete", "Delete"),
+        cancelLabel: t("common.cancel", "Cancel"),
         danger: true,
       });
 
@@ -757,12 +762,11 @@ export function ListView({
             }
 
             const confirmedArchive = await confirm({
-              title: "Force Delete Task",
+              title: t("listView.forceDeleteTitle", "Force Delete Task"),
               message:
-                `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-                "Archive anyway by unlinking these references first?",
-              confirmLabel: "Archive",
-              cancelLabel: "Skip",
+                t("listView.lineageArchiveMessage", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
+              confirmLabel: t("common.archive", "Archive"),
+              cancelLabel: t("common.skip", "Skip"),
               danger: true,
             });
 
@@ -789,10 +793,10 @@ export function ListView({
           const dependencyConflict = extractDependencyDeleteConflict(err);
           if (dependencyConflict) {
             const forceDelete = await confirm({
-              title: "Force Delete Task",
-              message: `Task ${task.id} has dependents: ${dependencyConflict.dependentIds.join(", ")}. Remove dependency references and force delete?`,
-              confirmLabel: "Force Delete",
-              cancelLabel: "Skip",
+              title: t("listView.forceDeleteTitle", "Force Delete Task"),
+              message: t("listView.dependentsDeleteMessage", "Task {{taskId}} has dependents: {{dependents}}. Remove dependency references and force delete?", { taskId: task.id, dependents: dependencyConflict.dependentIds.join(", ") }),
+              confirmLabel: t("listView.forceDelete", "Force Delete"),
+              cancelLabel: t("common.skip", "Skip"),
               danger: true,
             });
 
@@ -815,12 +819,11 @@ export function ListView({
               }
 
               const forceLineageDelete = await confirm({
-                title: "Force Delete Task",
+                title: t("listView.forceDeleteTitle", "Force Delete Task"),
                 message:
-                  `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-                  "Delete anyway by unlinking these references first?",
-                confirmLabel: "Force Delete",
-                cancelLabel: "Skip",
+                  t("listView.lineageDeleteMessage", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nDelete anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
+                confirmLabel: t("listView.forceDelete", "Force Delete"),
+                cancelLabel: t("common.skip", "Skip"),
                 danger: true,
               });
 
@@ -849,12 +852,11 @@ export function ListView({
           }
 
           const forceDelete = await confirm({
-            title: "Force Delete Task",
+            title: t("listView.forceDeleteTitle", "Force Delete Task"),
             message:
-              `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-              "Delete anyway by unlinking these references first?",
-            confirmLabel: "Force Delete",
-            cancelLabel: "Skip",
+              t("listView.lineageDeleteMessage", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nDelete anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
+            confirmLabel: t("listView.forceDelete", "Force Delete"),
+            cancelLabel: t("common.skip", "Skip"),
             danger: true,
           });
 
@@ -892,8 +894,8 @@ export function ListView({
     }
 
     const summaryMessage = shouldArchiveDoneInstead
-      ? `Archived ${archivedIds.length}, deleted ${deletedIds.length}, failed ${failedIds.length}`
-      : `Deleted ${deletedIds.length} task${deletedIds.length === 1 ? "" : "s"} · ${skippedIds.length} archived skipped · ${failedIds.length} failed`;
+      ? t("listView.bulkDeleteArchiveSummary", "Archived {{archived}}, deleted {{deleted}}, failed {{failed}}", { archived: archivedIds.length, deleted: deletedIds.length, failed: failedIds.length })
+      : t("listView.bulkDeleteSummary", { count: deletedIds.length, skipped: skippedIds.length, failed: failedIds.length, defaultValue_one: "Deleted {{count}} task · {{skipped}} archived skipped · {{failed}} failed", defaultValue_other: "Deleted {{count}} tasks · {{skipped}} archived skipped · {{failed}} failed" });
 
     addToast(summaryMessage, failedIds.length > 0 ? "error" : "success");
   }, [addToast, confirm, confirmWithChoice, onArchiveTask, onDeleteTask, selectedTaskIds, tasks]);
@@ -901,7 +903,7 @@ export function ListView({
   const handleBulkPause = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
     if (!onPauseTask) {
-      addToast("Pause action is unavailable", "error");
+      addToast(t("listView.pauseUnavailable", "Pause action is unavailable"), "error");
       return;
     }
 
@@ -912,7 +914,7 @@ export function ListView({
     const skippedCount = selectedTasks.length - actionableTasks.length;
 
     if (actionableTasks.length === 0) {
-      addToast("No selected tasks can be paused", "error");
+      addToast(t("listView.bulkPauseNoTasks", "No selected tasks can be paused"), "error");
       return;
     }
 
@@ -944,7 +946,7 @@ export function ListView({
     }
 
     addToast(
-      `Paused ${pausedIds.length} · ${skippedCount} skipped · ${failedIds.length} failed`,
+      t("listView.bulkPauseSummary", "Paused {{paused}} · {{skipped}} skipped · {{failed}} failed", { paused: pausedIds.length, skipped: skippedCount, failed: failedIds.length }),
       failedIds.length > 0 ? "error" : "success",
     );
   }, [addToast, onPauseTask, selectedTaskIds, tasks]);
@@ -952,7 +954,7 @@ export function ListView({
   const handleBulkUnpause = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
     if (!onUnpauseTask) {
-      addToast("Unpause action is unavailable", "error");
+      addToast(t("listView.unpauseUnavailable", "Unpause action is unavailable"), "error");
       return;
     }
 
@@ -963,7 +965,7 @@ export function ListView({
     const skippedCount = selectedTasks.length - actionableTasks.length;
 
     if (actionableTasks.length === 0) {
-      addToast("No selected tasks can be unpaused", "error");
+      addToast(t("listView.bulkUnpauseNoTasks", "No selected tasks can be unpaused"), "error");
       return;
     }
 
@@ -995,7 +997,7 @@ export function ListView({
     }
 
     addToast(
-      `Unpaused ${unpausedIds.length} · ${skippedCount} skipped · ${failedIds.length} failed`,
+      t("listView.bulkUnpauseSummary", "Unpaused {{unpaused}} · {{skipped}} skipped · {{failed}} failed", { unpaused: unpausedIds.length, skipped: skippedCount, failed: failedIds.length }),
       failedIds.length > 0 ? "error" : "success",
     );
   }, [addToast, onUnpauseTask, selectedTaskIds, tasks]);
@@ -1003,7 +1005,7 @@ export function ListView({
   const handleBulkArchive = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
     if (!onArchiveTask) {
-      addToast("Archive action is unavailable", "error");
+      addToast(t("listView.archiveUnavailable", "Archive action is unavailable"), "error");
       return;
     }
 
@@ -1014,15 +1016,15 @@ export function ListView({
     const skippedCount = selectedTasks.length - actionableTasks.length;
 
     if (actionableTasks.length === 0) {
-      addToast("No selected tasks can be archived (only done tasks)", "error");
+      addToast(t("listView.bulkArchiveNoTasks", "No selected tasks can be archived (only done tasks)"), "error");
       return;
     }
 
     const confirmed = await confirm({
-      title: "Archive Selected Tasks",
-      message: `Archive ${actionableTasks.length} selected task${actionableTasks.length === 1 ? "" : "s"}?`,
-      confirmLabel: "Archive",
-      cancelLabel: "Cancel",
+      title: t("listView.bulkArchiveTitle", "Archive Selected Tasks"),
+      message: t("listView.bulkArchiveMessage", "Archive {{count}} selected task(s)?", { count: actionableTasks.length }),
+      confirmLabel: t("common.archive", "Archive"),
+      cancelLabel: t("common.cancel", "Cancel"),
       danger: false,
     });
 
@@ -1045,12 +1047,11 @@ export function ListView({
           }
 
           const confirmedArchive = await confirm({
-            title: "Force Delete Task",
+            title: t("listView.forceDeleteTitle", "Force Delete Task"),
             message:
-              `${task.id} has lineage children (${lineageConflict.lineageChildIds.join(", ")}) that reference it as a source parent.\n\n` +
-              "Archive anyway by unlinking these references first?",
-            confirmLabel: "Archive",
-            cancelLabel: "Skip",
+              t("listView.lineageArchiveMessage", "{{taskId}} has lineage children ({{children}}) that reference it as a source parent.\n\nArchive anyway by unlinking these references first?", { taskId: task.id, children: lineageConflict.lineageChildIds.join(", ") }),
+            confirmLabel: t("common.archive", "Archive"),
+            cancelLabel: t("common.skip", "Skip"),
             danger: true,
           });
 
@@ -1082,7 +1083,7 @@ export function ListView({
     }
 
     addToast(
-      `Archived ${archivedIds.length} · ${skippedCount} skipped · ${failedIds.length} failed`,
+      t("listView.bulkArchiveSummary", "Archived {{archived}} · {{skipped}} skipped · {{failed}} failed", { archived: archivedIds.length, skipped: skippedCount, failed: failedIds.length }),
       failedIds.length > 0 ? "error" : "success",
     );
   }, [addToast, confirm, onArchiveTask, selectedTaskIds, tasks]);
@@ -1096,7 +1097,7 @@ export function ListView({
     });
 
     if (taskIds.length === 0) {
-      addToast("No valid tasks to update (archived tasks cannot be modified)", "error");
+      addToast(t("listView.bulkUpdateNoTasks", "No valid tasks to update (archived tasks cannot be modified)"), "error");
       return;
     }
 
@@ -1148,7 +1149,7 @@ export function ListView({
 
     // Check if any changes were made
     if (Object.keys(payload).length === 1) {
-      addToast("No changes to apply", "info");
+      addToast(t("listView.bulkNoChanges", "No changes to apply"), "info");
       return;
     }
 
@@ -1170,7 +1171,7 @@ export function ListView({
         onTasksUpdated(result.updated);
       }
 
-      addToast(`Updated ${taskIds.length} task${taskIds.length === 1 ? "" : "s"}`, "success");
+      addToast(t("listView.bulkUpdateSuccess", "Updated {{count}} task(s)", { count: taskIds.length }), "success");
 
       // Reset state
       clearSelection();
@@ -1178,7 +1179,7 @@ export function ListView({
       setValidatorModel("__no_change__");
       setNodeOverride("__no_change__");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to update models", "error");
+      addToast(getErrorMessage(err) || t("listView.bulkUpdateFailed", "Failed to update models"), "error");
     } finally {
       setIsApplying(false);
     }
@@ -1340,7 +1341,7 @@ export function ListView({
 
       // Prevent dropping into archived column
       if (column === "archived") {
-        addToast("Tasks can only be archived via the archive button", "error");
+        addToast(t("listView.archiveViaButton", "Tasks can only be archived via the archive button"), "error");
         return;
       }
 
@@ -1352,20 +1353,20 @@ export function ListView({
         let moveOptions: { preserveProgress?: boolean } | undefined;
         if (shouldPrompt) {
           const keepProgress = await confirm({
-            title: "Preserve Progress?",
-            message: "This task has completed steps. Keep progress before moving?",
-            confirmLabel: "Keep Progress",
-            cancelLabel: "Reset Progress",
+            title: t("listView.preserveProgressTitle", "Preserve Progress?"),
+            message: t("listView.preserveProgressMessage", "This task has completed steps. Keep progress before moving?"),
+            confirmLabel: t("listView.keepProgress", "Keep Progress"),
+            cancelLabel: t("listView.resetProgress", "Reset Progress"),
           });
 
           if (keepProgress) {
             moveOptions = { preserveProgress: true };
           } else {
             const resetProgress = await confirm({
-              title: "Reset Progress?",
-              message: "Reset all step progress before moving this task?",
-              confirmLabel: "Reset Progress",
-              cancelLabel: "Cancel Move",
+              title: t("listView.resetProgressTitle", "Reset Progress?"),
+              message: t("listView.resetProgressMessage", "Reset all step progress before moving this task?"),
+              confirmLabel: t("listView.resetProgress", "Reset Progress"),
+              cancelLabel: t("listView.cancelMove", "Cancel Move"),
               danger: true,
             });
             if (!resetProgress) {
@@ -1401,7 +1402,7 @@ export function ListView({
             <label
               key={column}
               className={`list-column-dropdown-item${isLastVisible ? " disabled" : ""}`}
-              title={isLastVisible ? "At least one column must be visible" : ""}
+              title={isLastVisible ? t("listView.lastColumnWarning", "At least one column must be visible") : ""}
             >
               <input
                 type="checkbox"
@@ -1418,26 +1419,26 @@ export function ListView({
         className="btn btn-sm list-hide-done-toggle"
         onClick={() => setHideDoneTasks((prev) => !prev)}
         aria-pressed={hideDoneTasks}
-        title={hideDoneTasks ? "Show done tasks" : "Hide done tasks"}
+        title={hideDoneTasks ? t("listView.showDoneTitle", "Show done tasks") : t("listView.hideDoneTitle", "Hide done tasks")}
       >
         {hideDoneTasks ? <Eye size={14} /> : <EyeOff size={14} />}
-        {hideDoneTasks ? "Show Done" : "Hide Done"}
+        {hideDoneTasks ? t("listView.showDone", "Show Done") : t("listView.hideDone", "Hide Done")}
       </button>
       <button
         className="btn btn-sm list-hide-done-toggle"
         onClick={() => setStaleOnlyFilter((prev) => !prev)}
         aria-pressed={staleOnlyFilter}
-        title={staleOnlyFilter ? "Show all tasks" : "Show stale tasks only"}
+        title={staleOnlyFilter ? t("listView.showAllTitle", "Show all tasks") : t("listView.staleOnlyTitle", "Show stale tasks only")}
       >
-        {staleOnlyFilter ? "Show all" : "Stale only"}
+        {staleOnlyFilter ? t("listView.showAll", "Show all") : t("listView.staleOnly", "Stale only")}
       </button>
       <button
         className="btn btn-sm list-hide-done-toggle"
         onClick={() => setStalePausedReviewOnlyFilter((prev) => !prev)}
         aria-pressed={stalePausedReviewOnlyFilter}
-        title={stalePausedReviewOnlyFilter ? "Show all tasks" : "Show stale paused review tasks only"}
+        title={stalePausedReviewOnlyFilter ? t("listView.showAllTitle", "Show all tasks") : t("listView.stalePausedReviewTitle", "Show stale paused review tasks only")}
       >
-        {stalePausedReviewOnlyFilter ? "Show all" : "Stale paused review"}
+        {stalePausedReviewOnlyFilter ? t("listView.showAll", "Show all") : t("listView.stalePausedReview", "Stale paused review")}
       </button>
       <div className="list-drop-zones list-drop-zones--sidebar">
         {COLUMNS.map((column) => {
@@ -1457,7 +1458,7 @@ export function ListView({
               data-column={column}
             >
               <span className={`list-section-dot dot-${column}`} />
-              <span className="drop-zone-label">{COLUMN_LABELS[column]}</span>
+              <span className="drop-zone-label">{columnLabel(column)}</span>
               <span className="drop-zone-count">
                 {showPartial ? `${visibleCount} of ${totalCount}` : totalCount}
               </span>
@@ -1471,34 +1472,34 @@ export function ListView({
   const renderBulkEditToolbars = () => (
     <>
       <div className="bulk-edit-toolbar">
-        <button className="btn btn-sm" onClick={handleBulkPause} disabled={isApplying} title="Pause all selected tasks that are not already paused">
+        <button className="btn btn-sm" onClick={handleBulkPause} disabled={isApplying} title={t("listView.pauseSelectedTitle", "Pause all selected tasks that are not already paused")}>
           <Pause size={14} />
-          Pause selected
+          {t("listView.pauseSelected", "Pause selected")}
         </button>
-        <button className="btn btn-sm" onClick={handleBulkUnpause} disabled={isApplying} title="Unpause selected tasks that are currently paused">
+        <button className="btn btn-sm" onClick={handleBulkUnpause} disabled={isApplying} title={t("listView.unpauseSelectedTitle", "Unpause selected tasks that are currently paused")}>
           <Play size={14} />
-          Unpause selected
+          {t("listView.unpauseSelected", "Unpause selected")}
         </button>
-        <button className="btn btn-sm" onClick={handleBulkArchive} disabled={isApplying} title="Archive selected tasks that are in Done">
+        <button className="btn btn-sm" onClick={handleBulkArchive} disabled={isApplying} title={t("listView.archiveSelectedTitle", "Archive selected tasks that are in Done")}>
           <Archive size={14} />
-          Archive selected
+          {t("listView.archiveSelected", "Archive selected")}
         </button>
-        <button className="btn btn-danger btn-sm" onClick={handleBulkDelete} disabled={isApplying} title="Delete selected tasks">
+        <button className="btn btn-danger btn-sm" onClick={handleBulkDelete} disabled={isApplying} title={t("listView.deleteSelectedTitle", "Delete selected tasks")}>
           <Trash2 size={14} />
-          Delete selected
+          {t("listView.deleteSelected", "Delete selected")}
         </button>
       </div>
       {availableModels && availableModels.length > 0 ? (
         <div className="bulk-edit-toolbar">
-          <span className="bulk-edit-label">Bulk Edit Models &amp; Node:</span>
+          <span className="bulk-edit-label">{t("listView.bulkEditModelsLabel", "Bulk Edit Models & Node:")}</span>
           <div className="bulk-edit-dropdown">
             <CustomModelDropdown
               models={availableModels}
               value={executorModel}
               onChange={setExecutorModel}
-              label="Executor Model"
+              label={t("listView.executorModel", "Executor Model")}
               noChangeValue="__no_change__"
-              noChangeLabel="No change"
+              noChangeLabel={t("listView.noChange", "No change")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={onToggleFavorite}
               favoriteModels={favoriteModels}
@@ -1510,9 +1511,9 @@ export function ListView({
               models={availableModels}
               value={validatorModel}
               onChange={setValidatorModel}
-              label="Reviewer Model"
+              label={t("listView.reviewerModel", "Reviewer Model")}
               noChangeValue="__no_change__"
-              noChangeLabel="No change"
+              noChangeLabel={t("listView.noChange", "No change")}
               favoriteProviders={favoriteProviders}
               onToggleFavorite={onToggleFavorite}
               favoriteModels={favoriteModels}
@@ -1524,14 +1525,14 @@ export function ListView({
               className="select bulk-node-select"
               value={nodeOverride}
               onChange={(e) => setNodeOverride(e.target.value)}
-              aria-label="Node Override"
+              aria-label={t("listView.nodeOverrideLabel", "Node Override")}
               disabled={isLoadingNodes}
             >
-              <option value="__no_change__">No change</option>
-              <option value="">Use project default</option>
+              <option value="__no_change__">{t("listView.noChange", "No change")}</option>
+              <option value="">{t("listView.useProjectDefault", "Use project default")}</option>
               {availableNodes.map((node) => (
                 <option key={node.id} value={node.id}>
-                  {`${getNodeStatusSymbol(node.status)} ${node.name || node.id} (${getNodeStatusLabel(node.status)})`}
+                  {`${getNodeStatusSymbol(node.status)} ${node.name || node.id} (${getNodeStatusLabel(node.status, t)})`}
                 </option>
               ))}
             </select>
@@ -1542,7 +1543,7 @@ export function ListView({
             onClick={handleApplyBulkUpdate}
             disabled={isApplying || (executorModel === "__no_change__" && validatorModel === "__no_change__" && nodeOverride === "__no_change__")}
           >
-            {isApplying ? "Applying..." : "Apply"}
+            {isApplying ? t("listView.applying", "Applying...") : t("listView.apply", "Apply")}
           </button>
         </div>
       ) : null}
@@ -1555,7 +1556,7 @@ export function ListView({
         <>
           <div className="list-toolbar">
             <button className="btn btn-sm" onClick={toggleBulkEdit} aria-pressed={bulkEditEnabled}>
-              {bulkEditEnabled ? "Done Editing" : "Bulk Edit"}
+              {bulkEditEnabled ? t("listView.doneEditing", "Done Editing") : t("listView.bulkEdit", "Bulk Edit")}
             </button>
             <button
               className="btn btn-sm list-view-options-toggle"
@@ -1564,17 +1565,17 @@ export function ListView({
               aria-controls="list-view-options-panel-mobile"
             >
               <Columns3 size={14} />
-              View options
+              {t("listView.viewOptions", "View options")}
             </button>
             {onNewTask ? (
               <button className="btn btn-task-create btn-sm list-new-task-action" onClick={onNewTask}>
-                + New Task
+                {t("listView.newTask", "+ New Task")}
               </button>
             ) : null}
             <div className="list-stats">
               {selectedColumn
-                ? `${filteredCount} of ${tasks.length} tasks in ${COLUMN_LABELS[selectedColumn]}`
-                : `${filteredCount} of ${tasks.length} tasks`}
+                ? t("listView.statsInColumn", "{{count}} of {{total}} tasks in {{column}}", { count: filteredCount, total: tasks.length, column: columnLabel(selectedColumn) })
+                : t("listView.stats", "{{count}} of {{total}} tasks", { count: filteredCount, total: tasks.length })}
             </div>
           </div>
           {viewOptionsOpen ? (
@@ -1585,9 +1586,9 @@ export function ListView({
               <div className="list-mobile-bulk-actions-wrapper">{renderBulkEditToolbars()}</div>
             ) : (
               <div className="list-mobile-bulk-actions">
-                <span className="list-mobile-bulk-actions__count">{`${selectedTaskIds.size} selected`}</span>
+                <span className="list-mobile-bulk-actions__count">{t("listView.selectedCount", "{{count}} selected", { count: selectedTaskIds.size })}</span>
                 <button className="btn btn-sm" onClick={clearSelection}>
-                  Clear
+                  {t("listView.clear", "Clear")}
                 </button>
               </div>
             )
@@ -1604,41 +1605,41 @@ export function ListView({
             style={isMobile ? undefined : { width: `${sidebarWidth}px` }}
           >
             {!isMobile && (
-              <aside className="list-sidebar-controls" aria-label="List controls">
+              <aside className="list-sidebar-controls" aria-label={t("listView.listControlsLabel", "List controls")}>
                 <div className="list-sidebar-controls__header">
                   <p className="list-stats">
                     {selectedColumn
-                      ? `${filteredCount} of ${tasks.length} tasks in ${COLUMN_LABELS[selectedColumn]}`
-                      : `${filteredCount} of ${tasks.length} tasks`}
+                      ? t("listView.statsInColumn", "{{count}} of {{total}} tasks in {{column}}", { count: filteredCount, total: tasks.length, column: columnLabel(selectedColumn) })
+                      : t("listView.stats", "{{count}} of {{total}} tasks", { count: filteredCount, total: tasks.length })}
                     {hiddenCompletedCount > 0 && !selectedColumn && (
-                      <span className="list-stats-hidden"> ({hiddenCompletedCount} hidden)</span>
+                      <span className="list-stats-hidden"> ({t("listView.hidden", "{{count}} hidden", { count: hiddenCompletedCount })})</span>
                     )}
                   </p>
                   <div className="list-sidebar-controls__actions">
                     <button className="btn btn-sm" onClick={toggleBulkEdit} aria-pressed={bulkEditEnabled}>
-                      {bulkEditEnabled ? "Done Editing" : "Bulk Edit"}
+                      {bulkEditEnabled ? t("listView.doneEditing", "Done Editing") : t("listView.bulkEdit", "Bulk Edit")}
                     </button>
                     {onNewTask ? (
                       <button className="btn btn-task-create btn-sm list-new-task-action" onClick={onNewTask}>
-                        + New Task
+                        {t("listView.newTask", "+ New Task")}
                       </button>
                     ) : null}
                   </div>
                   <div className="list-sidebar-summary-chips">
                     {selectedColumn ? (
-                      <button className="btn btn-sm" onClick={clearColumnFilter} aria-label="Clear column filter">
-                        {`Filter: ${COLUMN_LABELS[selectedColumn]}`}
+                      <button className="btn btn-sm" onClick={clearColumnFilter} aria-label={t("listView.clearColumnFilter", "Clear column filter")}>
+                        {t("listView.filterChip", "Filter: {{column}}", { column: columnLabel(selectedColumn) })}
                       </button>
                     ) : null}
-                    {hideDoneTasks ? <span className="list-sidebar-chip">Done hidden</span> : null}
-                    {staleOnlyFilter ? <span className="list-sidebar-chip">Stale only</span> : null}
-                    {stalePausedReviewOnlyFilter ? <span className="list-sidebar-chip">Stale paused review</span> : null}
+                    {hideDoneTasks ? <span className="list-sidebar-chip">{t("listView.doneHiddenChip", "Done hidden")}</span> : null}
+                    {staleOnlyFilter ? <span className="list-sidebar-chip">{t("listView.staleOnly", "Stale only")}</span> : null}
+                    {stalePausedReviewOnlyFilter ? <span className="list-sidebar-chip">{t("listView.stalePausedReview", "Stale paused review")}</span> : null}
                     {bulkEditEnabled ? (
-                      <span className="list-sidebar-chip">Bulk edit</span>
+                      <span className="list-sidebar-chip">{t("listView.bulkEdit", "Bulk edit")}</span>
                     ) : null}
                     {bulkEditEnabled && selectedTaskIds.size > 0 ? (
                       <button className="btn btn-sm" onClick={clearSelection}>
-                        {`${selectedTaskIds.size} selected`}
+                        {t("listView.selectedCount", "{{count}} selected", { count: selectedTaskIds.size })}
                       </button>
                     ) : null}
                   </div>
@@ -1650,7 +1651,7 @@ export function ListView({
                   aria-controls="list-view-options-panel"
                 >
                   <Columns3 size={14} />
-                  View options
+                  {t("listView.viewOptions", "View options")}
                 </button>
                 {viewOptionsOpen && renderViewOptionsPanel("list-view-options-panel")}
                 {bulkEditEnabled && selectedTaskIds.size > 0 ? renderBulkEditToolbars() : null}
@@ -1658,7 +1659,7 @@ export function ListView({
             )}
             <div className="list-quick-entry-above-table">
               <QuickEntryBox 
-                onCreate={onQuickCreate ?? (async () => addToast("Task creation not available", "error"))} 
+                onCreate={onQuickCreate ?? (async () => addToast(t("listView.taskCreationUnavailable", "Task creation not available"), "error"))} 
                 addToast={addToast}
                 tasks={tasks}
                 availableModels={availableModels}
@@ -1684,7 +1685,7 @@ export function ListView({
             </div>
         {filteredCount === 0 ? (
           <div className="list-empty">
-            {searchQuery ? "No tasks match your filter" : "No tasks yet"}
+            {searchQuery ? t("listView.noTasksMatch", "No tasks match your filter") : t("listView.noTasksYet", "No tasks yet")}
           </div>
         ) : isMobile ? (
           <div className="list-cards">
@@ -1718,14 +1719,14 @@ export function ListView({
                       className={`list-section-chevron${!isCollapsed ? " list-section-chevron--expanded" : ""}`}
                     />
                     <span className={`list-section-dot dot-${column}`} />
-                    <span className="list-section-title">{COLUMN_LABELS[column]}</span>
+                    <span className="list-section-title">{columnLabel(column)}</span>
                     <span className="list-section-count">{columnTasks.length}</span>
                   </div>
 
                   {!isCollapsed && (
                     <>
                       {isEmpty ? (
-                        <div className="list-empty-cell list-card-empty">No tasks</div>
+                        <div className="list-empty-cell list-card-empty">{t("listView.noTasks", "No tasks")}</div>
                       ) : (
                         columnTasks.map((task) => {
                           const isDoneColumn = task.column === "done";
@@ -1763,7 +1764,7 @@ export function ListView({
                                     }}
                                     onClick={(e) => e.stopPropagation()}
                                     disabled={task.column === "archived"}
-                                    aria-label={`Select ${task.id}`}
+                                    aria-label={t("listView.selectTask", "Select {{taskId}}", { taskId: task.id })}
                                   />
                                 </label>
                               )}
@@ -1773,21 +1774,21 @@ export function ListView({
                                 {task.executionMode === "fast" && (
                                   <span
                                     className="list-execution-mode-badge list-execution-mode-badge--fast"
-                                    title="Fast mode"
-                                    aria-label="Fast mode"
+                                    title={t("listView.fastMode", "Fast mode")}
+                                    aria-label={t("listView.fastMode", "Fast mode")}
                                   >
                                     <Zap aria-hidden="true" />
-                                    <span className="visually-hidden">Fast mode</span>
+                                    <span className="visually-hidden">{t("listView.fastMode", "Fast mode")}</span>
                                   </span>
                                 )}
                                 <span className="list-card-spacer" />
                                 {isPaused && task.pausedByAgentId ? (
-                                  <span className="list-status-badge paused">paused by agent</span>
+                                  <span className="list-status-badge paused">{t("listView.pausedByAgent", "paused by agent")}</span>
                                 ) : isStuckState ? (
-                                  <span className="list-status-badge stuck">Stuck</span>
+                                  <span className="list-status-badge stuck">{t("listView.stuck", "Stuck")}</span>
                                 ) : hasStatus ? (
                                   <span className={`list-status-badge list-status-badge--${task.column}${isFailed ? " failed" : ""}${isAgentActive ? " pulsing" : ""}`}>
-                                    {getTaskStatusLabel(visualStatus ?? "")}
+                                    {getTaskStatusLabel(visualStatus ?? "", t)}
                                   </span>
                                 ) : null}
                               </div>
@@ -1842,35 +1843,35 @@ export function ListView({
                         if (el) el.indeterminate = isSelectIndeterminate;
                       }}
                       onChange={toggleSelectAll}
-                      aria-label="Select all visible tasks"
+                      aria-label={t("listView.selectAll", "Select all visible tasks")}
                     />
                   </th>
                 )}
                 {visibleColumns.has("title") && (
                   <th className="list-header-cell" onClick={() => handleSort("title")}>
-                    Title {getSortIcon("title")}
+                    {t("listView.colTitle", "Title")} {getSortIcon("title")}
                   </th>
                 )}
                 {visibleColumns.has("status") && (
                   <th className="list-header-cell" onClick={() => handleSort("status")}>
-                    Status {getSortIcon("status")}
+                    {t("listView.colStatus", "Status")} {getSortIcon("status")}
                   </th>
                 )}
                 {visibleColumns.has("column") && (
                   <th className="list-header-cell" onClick={() => handleSort("column")}>
-                    Column {getSortIcon("column")}
+                    {t("listView.colColumn", "Column")} {getSortIcon("column")}
                   </th>
                 )}
                 {visibleColumns.has("retries") && (
                   <th className="list-header-cell" onClick={() => handleSort("retries")}>
-                    Retries {getSortIcon("retries")}
+                    {t("listView.colRetries", "Retries")} {getSortIcon("retries")}
                   </th>
                 )}
                 {visibleColumns.has("dependencies") && (
-                  <th className="list-header-cell">Dependencies</th>
+                  <th className="list-header-cell">{t("listView.colDependencies", "Dependencies")}</th>
                 )}
                 {visibleColumns.has("progress") && (
-                  <th className="list-header-cell">Progress</th>
+                  <th className="list-header-cell">{t("listView.colProgress", "Progress")}</th>
                 )}
               </tr>
             </thead>
@@ -1904,7 +1905,7 @@ export function ListView({
                           className={`list-section-chevron${!isCollapsed ? " list-section-chevron--expanded" : ""}`}
                         />
                         <span className={`list-section-dot dot-${column}`} />
-                        <span className="list-section-title">{COLUMN_LABELS[column]}</span>
+                        <span className="list-section-title">{columnLabel(column)}</span>
                         <span className="list-section-count">{columnTasks.length}</span>
                       </th>
                     </tr>
@@ -1915,7 +1916,7 @@ export function ListView({
                         {isEmpty ? (
                           <tr className="list-section-empty">
                             <td colSpan={visibleColumns.size + (bulkEditEnabled ? 1 : 0)} className="list-empty-cell">
-                              No tasks
+                              {t("listView.noTasks", "No tasks")}
                             </td>
                           </tr>
                         ) : (
@@ -1958,7 +1959,7 @@ export function ListView({
                                       }}
                                       onClick={(e) => e.stopPropagation()}
                                       disabled={task.column === "archived"}
-                                      aria-label={`Select ${task.id}`}
+                                      aria-label={t("listView.selectTask", "Select {{taskId}}", { taskId: task.id })}
                                     />
                                   </td>
                                 )}
@@ -1970,11 +1971,11 @@ export function ListView({
                                         {task.executionMode === "fast" && (
                                           <span
                                             className="list-execution-mode-badge list-execution-mode-badge--fast"
-                                            title="Fast mode"
-                                            aria-label="Fast mode"
+                                            title={t("listView.fastMode", "Fast mode")}
+                                            aria-label={t("listView.fastMode", "Fast mode")}
                                           >
                                             <Zap aria-hidden="true" />
-                                            <span className="visually-hidden">Fast mode</span>
+                                            <span className="visually-hidden">{t("listView.fastMode", "Fast mode")}</span>
                                           </span>
                                         )}
                                         <span className="list-title-text">{task.title || task.description}</span>
@@ -1985,10 +1986,10 @@ export function ListView({
                                 {visibleColumns.has("status") && (
                                   <td className="list-cell">
                                     {isPaused && task.pausedByAgentId ? (
-                                      <span className="list-status-badge paused">paused by agent</span>
+                                      <span className="list-status-badge paused">{t("listView.pausedByAgent", "paused by agent")}</span>
                                     ) : isStuckState ? (
                                       <span className="list-status-badge stuck">
-                                        Stuck
+                                        {t("listView.stuck", "Stuck")}
                                       </span>
                                     ) : visualStatus ? (
                                       <span
@@ -1996,7 +1997,7 @@ export function ListView({
                                           isAgentActive ? " pulsing" : ""
                                         }`}
                                       >
-                                        {getTaskStatusLabel(visualStatus ?? "")}
+                                        {getTaskStatusLabel(visualStatus ?? "", t)}
                                       </span>
                                     ) : (
                                       <span className="list-status-badge">-</span>
@@ -2012,7 +2013,7 @@ export function ListView({
                                         color: COLUMN_COLOR_MAP[task.column],
                                       }}
                                     >
-                                      {COLUMN_LABELS[task.column]}
+                                      {columnLabel(task.column)}
                                     </span>
                                   </td>
                                 )}
@@ -2075,7 +2076,7 @@ export function ListView({
                 role="separator"
                 tabIndex={0}
                 aria-orientation="vertical"
-                aria-label="Resize task list sidebar"
+                aria-label={t("listView.resizeSidebar", "Resize task list sidebar")}
                 aria-valuemin={LIST_SIDEBAR_MIN_WIDTH}
                 aria-valuemax={Math.round(
                   getSidebarMaxWidth(
@@ -2088,7 +2089,7 @@ export function ListView({
               <div className="list-split-detail" data-testid="list-split-detail">
                 {!selectedTaskSnapshot ? (
                   <div className="list-split-detail-empty">
-                    <p>Select a task to view details</p>
+                    <p>{t("listView.selectTaskPrompt", "Select a task to view details")}</p>
                   </div>
                 ) : (
                   <div className="list-split-detail-content" data-testid="list-split-detail-content">

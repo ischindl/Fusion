@@ -25,6 +25,7 @@ vi.mock("@fusion/core", () => {
   return {
     GlobalSettingsStore: vi.fn(),
     DEFAULT_SETTINGS,
+    SUPPORTED_LOCALES: ["en", "zh-CN", "zh-TW", "fr", "es", "ko"],
     resolveWorktrunkSettings: (globalValue: any, projectValue: any) => ({
       enabled: projectValue?.enabled ?? globalValue?.enabled ?? false,
       ...(projectValue?.binaryPath ?? globalValue?.binaryPath ? { binaryPath: projectValue?.binaryPath ?? globalValue?.binaryPath } : {}),
@@ -153,6 +154,34 @@ describe("settings commands", () => {
 
     expect(updateSettings).toHaveBeenCalledWith({ ntfyEnabled: true });
     expect(resolveProject).not.toHaveBeenCalled();
+  });
+
+  it("runSettingsSet language persists a supported locale globally", async () => {
+    const updateSettings = vi.fn().mockResolvedValue(makeSettings({ language: "zh-TW" } as any));
+    const getSettings = vi.fn().mockResolvedValue(makeSettings({ language: "zh-TW" } as any));
+    (GlobalSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      updateSettings,
+      getSettings,
+    }));
+
+    await runSettingsSet("language", "zh-TW");
+
+    expect(updateSettings).toHaveBeenCalledWith({ language: "zh-TW" });
+  });
+
+  it("runSettingsSet language auto clears the persisted locale (null-as-delete)", async () => {
+    const updateSettings = vi.fn().mockResolvedValue(makeSettings({}));
+    const getSettings = vi.fn().mockResolvedValue(makeSettings({}));
+    (GlobalSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      updateSettings,
+      getSettings,
+    }));
+
+    await runSettingsSet("language", "auto");
+
+    expect(updateSettings).toHaveBeenCalledWith({ language: null });
   });
 
   it("runSettingsSet with project updates project-only settings", async () => {

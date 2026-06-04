@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, Download, Upload } from "lucide-react";
 import "./SettingsSyncLog.css";
 import { linkifyFilePaths } from "../utils/filePathLinkify";
@@ -38,6 +39,7 @@ export function SettingsSyncLog({
   loading = false,
   singleNode = false,
 }: SettingsSyncLogProps) {
+  const { t } = useTranslation("app");
   const [isExpanded, setIsExpanded] = useState(false);
   const [directionFilter, setDirectionFilter] = useState<"all" | "push" | "pull">("all");
   const [nodeFilter, setNodeFilter] = useState<string>("all");
@@ -104,15 +106,15 @@ export function SettingsSyncLog({
   const getResultText = useCallback((result: SyncLogEntry["result"]): string => {
     switch (result) {
       case "success":
-        return "Success";
+        return t("syncLog.resultSuccess", "Success");
       case "conflict":
-        return "Conflict";
+        return t("syncLog.resultConflict", "Conflict");
       case "error":
-        return "Error";
+        return t("syncLog.resultError", "Error");
       default:
         return result;
     }
-  }, []);
+  }, [t]);
 
   return (
     <div className="settings-sync-log">
@@ -128,7 +130,7 @@ export function SettingsSyncLog({
           className={`settings-sync-log__chevron ${isExpanded ? "settings-sync-log__chevron--expanded" : ""}`}
         />
         <span>
-          {entries.length} {entries.length === 1 ? "entry" : "entries"}
+          {t("syncLog.entryCount", { count: entries.length, defaultValue_one: "{{count}} entry", defaultValue_other: "{{count}} entries" })}
         </span>
       </button>
 
@@ -136,25 +138,25 @@ export function SettingsSyncLog({
         <>
           <div className="settings-sync-log__filters">
             <label>
-              Direction:
+              {t("syncLog.filterDirection", "Direction:")}
               <select
                 value={directionFilter}
                 onChange={(e) => setDirectionFilter(e.target.value as "all" | "push" | "pull")}
               >
-                <option value="all">All</option>
-                <option value="push">Push</option>
-                <option value="pull">Pull</option>
+                <option value="all">{t("syncLog.filterAll", "All")}</option>
+                <option value="push">{t("syncLog.filterPush", "Push")}</option>
+                <option value="pull">{t("syncLog.filterPull", "Pull")}</option>
               </select>
             </label>
 
             {!singleNode && (
               <label>
-                Node:
+                {t("syncLog.filterNode", "Node:")}
                 <select
                   value={nodeFilter}
                   onChange={(e) => setNodeFilter(e.target.value)}
                 >
-                  <option value="all">All Nodes</option>
+                  <option value="all">{t("syncLog.filterAllNodes", "All Nodes")}</option>
                   {uniqueNodes.map((nodeName) => (
                     <option key={nodeName} value={nodeName}>
                       {nodeName}
@@ -166,9 +168,9 @@ export function SettingsSyncLog({
           </div>
 
           {loading && entries.length === 0 ? (
-            <div className="settings-sync-log__empty">Loading...</div>
+            <div className="settings-sync-log__empty">{t("syncLog.loading", "Loading...")}</div>
           ) : filteredEntries.length === 0 ? (
-            <div className="settings-sync-log__empty">No sync history available</div>
+            <div className="settings-sync-log__empty">{t("syncLog.noHistory", "No sync history available")}</div>
           ) : (
             <div className="settings-sync-log__list">
               {filteredEntries.map((entry) => (

@@ -11,6 +11,10 @@ dist/
 dist-electron/
 *.tsbuildinfo
 
+# Generated i18n catalogs synced into the dashboard tree from @fusion/i18n
+# (authored source-of-truth lives in packages/i18n/locales/)
+packages/dashboard/app/locales/
+
 # Desktop packaging artifacts
 *.dmg
 *.dmg.blockmap

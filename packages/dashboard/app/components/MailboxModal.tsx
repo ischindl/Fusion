@@ -1,5 +1,7 @@
 import "./MailboxModal.css";
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
   X,
   Mail,
@@ -57,7 +59,7 @@ interface MailboxModalProps {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-function formatTimestamp(ts: string): string {
+function formatTimestamp(ts: string, t?: TFunction<"app">): string {
   const date = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -65,10 +67,10 @@ function formatTimestamp(ts: string): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t?.("mailbox.timeJustNow", "Just now") ?? "Just now";
+  if (diffMins < 60) return t?.("mailbox.timeMinsAgo", "{{count}}m ago", { count: diffMins }) ?? `${diffMins}m ago`;
+  if (diffHours < 24) return t?.("mailbox.timeHoursAgo", "{{count}}h ago", { count: diffHours }) ?? `${diffHours}h ago`;
+  if (diffDays < 7) return t?.("mailbox.timeDaysAgo", "{{count}}d ago", { count: diffDays }) ?? `${diffDays}d ago`;
 
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
@@ -77,22 +79,23 @@ function participantLabel(
   id: string,
   type: ParticipantType,
   agentNamesById?: ReadonlyMap<string, string>,
+  t?: TFunction<"app">,
 ): string {
-  if (type === "user") return id === "dashboard" ? "You" : `User: ${id}`;
+  if (type === "user") return id === "dashboard" ? (t?.("mailbox.labelYou", "You") ?? "You") : (t?.("mailbox.labelUser", "User: {{id}}", { id }) ?? `User: ${id}`);
   if (type === "agent") {
     const name = agentNamesById?.get(id)?.trim();
-    if (!name || name === id) return `Agent: ${id}`;
-    return `Agent: ${name}`;
+    if (!name || name === id) return (t?.("mailbox.labelAgent", "Agent: {{id}}", { id }) ?? `Agent: ${id}`);
+    return (t?.("mailbox.labelAgentNamed", "Agent: {{name}}", { name }) ?? `Agent: ${name}`);
   }
-  return "System";
+  return t?.("mailbox.labelSystem", "System") ?? "System";
 }
 
-function messageTypeLabel(type: MessageType): string {
+function messageTypeLabel(type: MessageType, t?: TFunction<"app">): string {
   switch (type) {
-    case "agent-to-agent": return "Agent ↔ Agent";
-    case "agent-to-user": return "Agent → You";
-    case "user-to-agent": return "You → Agent";
-    case "system": return "System";
+    case "agent-to-agent": return t?.("mailbox.typeAgentToAgent", "Agent ↔ Agent") ?? "Agent ↔ Agent";
+    case "agent-to-user": return t?.("mailbox.typeAgentToUser", "Agent → You") ?? "Agent → You";
+    case "user-to-agent": return t?.("mailbox.typeUserToAgent", "You → Agent") ?? "You → Agent";
+    case "system": return t?.("mailbox.typeSystem", "System") ?? "System";
   }
 }
 
@@ -155,6 +158,7 @@ export function MailboxModal({
   addToast,
   agents = [],
 }: MailboxModalProps) {
+  const { t } = useTranslation("app");
   const cacheSuffix = projectId ?? "";
   const inboxCacheKey = `${SWR_CACHE_KEYS.MAILBOX_INBOX_PREFIX}${cacheSuffix}`;
   const outboxCacheKey = `${SWR_CACHE_KEYS.MAILBOX_OUTBOX_PREFIX}${cacheSuffix}`;
@@ -398,7 +402,7 @@ export function MailboxModal({
           return next;
         });
       } catch {
-        // Non-critical
+        // Non-critical failure marking message as read
       }
     }
     // Load conversation thread
@@ -489,11 +493,11 @@ export function MailboxModal({
         }
         return next;
       });
-      addToast?.(`Marked ${result.markedAsRead} messages as read`, "success");
+      addToast?.(t("mailbox.markedAsRead", "Marked {{count}} messages as read", { count: result.markedAsRead }), "success");
     } catch {
-      addToast?.("Failed to mark messages as read", "error");
+      addToast?.(t("mailbox.markReadFailed", "Failed to mark messages as read"), "error");
     }
-  }, [addToast, inboxCacheKey, projectId, unreadCountCacheKey]);
+  }, [addToast, inboxCacheKey, projectId, unreadCountCacheKey, t]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {
     try {
@@ -505,11 +509,11 @@ export function MailboxModal({
       else if (activeTab === "outbox") loadOutbox();
       else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
       else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
-      addToast?.("Message deleted", "success");
+      addToast?.(t("mailbox.messageDeleted", "Message deleted"), "success");
     } catch {
-      addToast?.("Failed to delete message", "error");
+      addToast?.(t("mailbox.deleteFailed", "Failed to delete message"), "error");
     }
-  }, [projectId, activeTab, selectedAgentId, loadInbox, loadOutbox, loadAgentMailbox, loadAllAgentsMailbox, addToast]);
+  }, [projectId, activeTab, selectedAgentId, loadInbox, loadOutbox, loadAgentMailbox, loadAllAgentsMailbox, addToast, t]);
 
   const handleReply = useCallback((message: Message) => {
     setComposeRecipient({ id: message.fromId, type: message.fromType });
@@ -524,12 +528,12 @@ export function MailboxModal({
     setShowComposer(false);
     setComposeRecipient(null);
     setComposeReplyContext(null);
-    addToast?.("Message sent", "success");
+    addToast?.(t("mailbox.messageSent", "Message sent"), "success");
     // Refresh current tab
     if (activeTab === "outbox") loadOutbox();
     else if (activeTab === "agents" && selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
     else if (activeTab === "agents" && selectedAgentId) loadAgentMailbox(selectedAgentId);
-  }, [activeTab, loadOutbox, selectedAgentId, loadAgentMailbox, loadAllAgentsMailbox, addToast]);
+  }, [activeTab, loadOutbox, selectedAgentId, loadAgentMailbox, loadAllAgentsMailbox, addToast, t]);
 
   const handleOpenCompose = useCallback(() => {
     // Pre-fill recipient from selected agent if available
@@ -572,7 +576,7 @@ export function MailboxModal({
       });
       return message;
     } catch {
-      setReplyContextErrors((prev) => ({ ...prev, [messageId]: "Failed to load replied message. Click to retry." }));
+      setReplyContextErrors((prev) => ({ ...prev, [messageId]: t("mailbox.replyLoadFailed", "Failed to load replied message. Click to retry.") }));
       return null;
     } finally {
       setReplyContextLoading((prev) => ({ ...prev, [messageId]: false }));
@@ -630,7 +634,7 @@ export function MailboxModal({
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
           <span>
-            ↪ Replying to {cacheMessage ? messagePreview(cacheMessage.content, 60) : `message ${replyToId}`}
+            ↪ {t("mailbox.replyingTo", "Replying to {{preview}}", { preview: cacheMessage ? messagePreview(cacheMessage.content, 60) : `message ${replyToId}` })}
           </span>
           {isLoadingReply && <Loader2 size={14} className="spin" />}
         </button>
@@ -641,8 +645,8 @@ export function MailboxModal({
             {cacheMessage && (
               <>
                 <div className="mailbox-conversation-msg-header">
-                  <span>{participantLabel(cacheMessage.fromId, cacheMessage.fromType, agentNamesById)}</span>
-                  <span className="mailbox-message-time">{formatTimestamp(cacheMessage.createdAt)}</span>
+                  <span>{participantLabel(cacheMessage.fromId, cacheMessage.fromType, agentNamesById, t)}</span>
+                  <span className="mailbox-message-time">{formatTimestamp(cacheMessage.createdAt, t)}</span>
                 </div>
                 <div className="mailbox-conversation-msg-body">{cacheMessage.content}</div>
                 {cacheMessage.metadata?.replyTo?.messageId && !nextAncestorIds.has(cacheMessage.metadata.replyTo.messageId) && (
@@ -677,7 +681,7 @@ export function MailboxModal({
         <div className="modal-header mailbox-header">
           <div className="mailbox-title">
             <Mail size={18} />
-            <span>Mailbox</span>
+            <span>{t("mailbox.title", "Mailbox")}</span>
             {unreadCount > 0 && (
               <span className="mailbox-unread-badge" data-testid="mailbox-unread-badge">
                 {unreadCount}
@@ -688,21 +692,21 @@ export function MailboxModal({
             <button
               className="btn btn-sm btn-primary"
               onClick={handleOpenCompose}
-              title="Compose message"
+              title={t("mailbox.composeTitle", "Compose message")}
               data-testid="mailbox-header-compose"
             >
               <MessageSquare size={14} />
-              <span>Compose</span>
+              <span>{t("mailbox.composeButton", "Compose")}</span>
             </button>
             {activeTab === "inbox" && unreadCount > 0 && (
               <button
                 className="btn btn-sm btn-secondary"
                 onClick={handleMarkAllRead}
-                title="Mark all as read"
+                title={t("mailbox.markAllReadTitle", "Mark all as read")}
                 data-testid="mailbox-mark-all-read"
               >
                 <CheckCheck size={14} />
-                <span>Mark all read</span>
+                <span>{t("mailbox.markAllReadButton", "Mark all read")}</span>
               </button>
             )}
             <button
@@ -714,7 +718,7 @@ export function MailboxModal({
                 else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
               }}
               disabled={isLoading}
-              title="Refresh"
+              title={t("mailbox.refreshTitle", "Refresh")}
               data-testid="mailbox-refresh"
             >
               {isLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
@@ -722,8 +726,8 @@ export function MailboxModal({
             <button
               className="modal-close"
               onClick={onClose}
-              aria-label="Close"
-              title="Close"
+              aria-label={t("mailbox.closeAriaLabel", "Close")}
+              title={t("mailbox.closeTitle", "Close")}
               data-testid="mailbox-close"
             >
               <X size={16} />
@@ -739,7 +743,7 @@ export function MailboxModal({
             data-testid="mailbox-tab-inbox"
           >
             <InboxIcon size={14} />
-            <span>Inbox</span>
+            <span>{t("mailbox.inboxTab", "Inbox")}</span>
             {unreadCount > 0 && <span className="mailbox-tab-badge">{unreadCount}</span>}
           </button>
           <button
@@ -748,7 +752,7 @@ export function MailboxModal({
             data-testid="mailbox-tab-outbox"
           >
             <Send size={14} />
-            <span>Outbox</span>
+            <span>{t("mailbox.outboxTab", "Outbox")}</span>
           </button>
           <button
             className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "agents" ? "active" : ""}`}
@@ -756,7 +760,7 @@ export function MailboxModal({
             data-testid="mailbox-tab-agents"
           >
             <Bot size={14} />
-            <span>Agents</span>
+            <span>{t("mailbox.agentsTab", "Agents")}</span>
           </button>
         </div>
 
@@ -771,11 +775,11 @@ export function MailboxModal({
                   onClick={handleCloseMessage}
                   data-testid="mailbox-back-to-list"
                 >
-                  ← Back
+                  {t("mailbox.backButton", "← Back")}
                 </button>
                 <div className="mailbox-message-detail-meta">
-                  <span className="mailbox-message-type">{messageTypeLabel(selectedMessage.type)}</span>
-                  <span className="mailbox-message-time">{formatTimestamp(selectedMessage.createdAt)}</span>
+                  <span className="mailbox-message-type">{messageTypeLabel(selectedMessage.type, t)}</span>
+                  <span className="mailbox-message-time">{formatTimestamp(selectedMessage.createdAt, t)}</span>
                 </div>
                 <div className="mailbox-message-detail-actions">
                   {selectedMessage.fromType === "agent" && (
@@ -785,7 +789,7 @@ export function MailboxModal({
                       data-testid="mailbox-reply"
                     >
                       <MessageSquare size={14} />
-                      <span>Reply</span>
+                      <span>{t("mailbox.replyButton", "Reply")}</span>
                     </button>
                   )}
                   <button
@@ -794,30 +798,31 @@ export function MailboxModal({
                     data-testid="mailbox-delete"
                   >
                     <Trash2 size={14} />
-                    <span>Delete</span>
+                    <span>{t("mailbox.deleteButton", "Delete")}</span>
                   </button>
                 </div>
               </div>
               <div className="mailbox-message-participants">
                 <div className="mailbox-participant">
-                  <span className="mailbox-participant-label">From:</span>
+                  <span className="mailbox-participant-label">{t("mailbox.fromLabel", "From:")}
+</span>
                   <span className="mailbox-participant-value">
                     {selectedMessage.fromType === "agent" ? <Bot size={14} /> : <User size={14} />}
-                    {participantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById)}
+                    {participantLabel(selectedMessage.fromId, selectedMessage.fromType, agentNamesById, t)}
                   </span>
                 </div>
                 <div className="mailbox-participant">
-                  <span className="mailbox-participant-label">To:</span>
+                  <span className="mailbox-participant-label">{t("mailbox.toLabel", "To:")}</span>
                   <span className="mailbox-participant-value">
                     {selectedMessage.toType === "agent" ? <Bot size={14} /> : <User size={14} />}
-                    {participantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById)}
+                    {participantLabel(selectedMessage.toId, selectedMessage.toType, agentNamesById, t)}
                   </span>
                 </div>
               </div>
               {/* Conversation thread */}
               {threadMessages.length > 1 && (
                 <div className="mailbox-conversation" data-testid="mailbox-conversation">
-                  <div className="mailbox-conversation-label">Conversation</div>
+                  <div className="mailbox-conversation-label">{t("mailbox.conversationLabel", "Conversation")}</div>
                   {threadMessages.map((msg) => {
                     const replyToId = msg.metadata?.replyTo?.messageId;
                     const replyToMessage = replyToId
@@ -831,8 +836,8 @@ export function MailboxModal({
                         className={`mailbox-conversation-msg ${msg.id === selectedMessage.id ? "current" : ""}`}
                       >
                         <div className="mailbox-conversation-msg-header">
-                          <span>{participantLabel(msg.fromId, msg.fromType, agentNamesById)}</span>
-                          <span className="mailbox-message-time">{formatTimestamp(msg.createdAt)}</span>
+                          <span>{participantLabel(msg.fromId, msg.fromType, agentNamesById, t)}</span>
+                          <span className="mailbox-message-time">{formatTimestamp(msg.createdAt, t)}</span>
                         </div>
                         {replyToId && (
                           <ReplyContextExpandable
@@ -897,7 +902,7 @@ export function MailboxModal({
                   {inbox && inbox.messages.length === 0 && (
                     <div className="mailbox-empty" data-testid="mailbox-inbox-empty">
                       <InboxIcon size={32} />
-                      <p>No messages in your inbox</p>
+                      <p>{t("mailbox.noInbox", "No messages in your inbox")}</p>
                     </div>
                   )}
                   {inbox?.messages.map((msg) => (
@@ -914,9 +919,9 @@ export function MailboxModal({
                       <div className="mailbox-item-content">
                         <div className="mailbox-item-header">
                           <span className="mailbox-item-from">
-                            {participantLabel(msg.fromId, msg.fromType, agentNamesById)}
+                            {participantLabel(msg.fromId, msg.fromType, agentNamesById, t)}
                           </span>
-                          <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                          <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                         </div>
                         <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                       </div>
@@ -933,7 +938,7 @@ export function MailboxModal({
                   {outbox && outbox.messages.length === 0 && (
                     <div className="mailbox-empty" data-testid="mailbox-outbox-empty">
                       <Send size={32} />
-                      <p>No sent messages</p>
+                      <p>{t("mailbox.noOutbox", "No sent messages")}</p>
                     </div>
                   )}
                   {outbox?.messages.map((msg) => (
@@ -950,9 +955,9 @@ export function MailboxModal({
                       <div className="mailbox-item-content">
                         <div className="mailbox-item-header">
                           <span className="mailbox-item-to">
-                            To: {participantLabel(msg.toId, msg.toType, agentNamesById)}
+                            {t("mailbox.toPrefix", "To: {{recipient}}", { recipient: participantLabel(msg.toId, msg.toType, agentNamesById, t) })}
                           </span>
-                          <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                          <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                         </div>
                         <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                       </div>
@@ -967,7 +972,7 @@ export function MailboxModal({
                   {agents.length === 0 ? (
                     <div className="mailbox-empty">
                       <Bot size={32} />
-                      <p>No agents found</p>
+                      <p>{t("mailbox.noAgents", "No agents found")}</p>
                     </div>
                   ) : (
                     <>
@@ -979,7 +984,7 @@ export function MailboxModal({
                             onChange={(e) => { setSelectedAgentId(e.target.value); setAgentSubTab("inbox"); }}
                             data-testid="mailbox-agent-select"
                           >
-                            <option value={ALL_AGENTS_MAILBOX_ID}>All agents</option>
+                            <option value={ALL_AGENTS_MAILBOX_ID}>{t("mailbox.allAgentsOption", "All agents")}</option>
                             {agents.map((agent) => (
                               <option key={agent.id} value={agent.id}>
                                 {agent.name || agent.id}
@@ -993,7 +998,7 @@ export function MailboxModal({
                           data-testid="mailbox-compose-btn"
                         >
                           <MessageSquare size={14} />
-                          <span>Compose</span>
+                          <span>{t("mailbox.composeButton", "Compose")}</span>
                         </button>
                       </div>
 
@@ -1006,7 +1011,7 @@ export function MailboxModal({
                             data-testid="mailbox-agent-subtab-inbox"
                           >
                             <InboxIcon size={12} />
-                            <span>Inbox</span>
+                            <span>{t("mailbox.inboxTab", "Inbox")}</span>
                             {agentMailbox && agentMailbox.unreadCount > 0 && (
                               <span className="mailbox-tab-badge">{agentMailbox.unreadCount}</span>
                             )}
@@ -1017,7 +1022,7 @@ export function MailboxModal({
                             data-testid="mailbox-agent-subtab-outbox"
                           >
                             <Send size={12} />
-                            <span>Outbox</span>
+                            <span>{t("mailbox.outboxTab", "Outbox")}</span>
                           </button>
                         </div>
                       )}
@@ -1026,7 +1031,7 @@ export function MailboxModal({
                         {selectedAgentId === ALL_AGENTS_MAILBOX_ID && allAgentsMailbox && allAgentsMailbox.messages.length === 0 && (
                           <div className="mailbox-empty">
                             <InboxIcon size={32} />
-                            <p>No agent-to-agent messages</p>
+                            <p>{t("mailbox.noAgentMessages", "No agent-to-agent messages")}</p>
                           </div>
                         )}
                         {selectedAgentId === ALL_AGENTS_MAILBOX_ID && allAgentsMailbox && allAgentsMailbox.messages.map((msg) => (
@@ -1043,13 +1048,13 @@ export function MailboxModal({
                             <div className="mailbox-item-content">
                               <div className="mailbox-item-header">
                                 <span className="mailbox-item-from">
-                                  {participantLabel(msg.fromId, msg.fromType, agentNamesById)}
+                                  {participantLabel(msg.fromId, msg.fromType, agentNamesById, t)}
                                 </span>
-                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                               </div>
                               <div className="mailbox-item-participants" data-testid={`mailbox-item-participants-${msg.id}`}>
-                                <span>From: {participantLabel(msg.fromId, msg.fromType, agentNamesById)}</span>
-                                <span>To: {participantLabel(msg.toId, msg.toType, agentNamesById)}</span>
+                                <span>{t("mailbox.fromPrefix", "From: {{participant}}", { participant: participantLabel(msg.fromId, msg.fromType, agentNamesById, t) })}</span>
+                                <span>{t("mailbox.toPrefix", "To: {{recipient}}", { recipient: participantLabel(msg.toId, msg.toType, agentNamesById, t) })}</span>
                               </div>
                               <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                             </div>
@@ -1060,13 +1065,13 @@ export function MailboxModal({
                         {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "inbox" && agentMailbox.inbox.length === 0 && (
                           <div className="mailbox-empty">
                             <InboxIcon size={32} />
-                            <p>No received messages for this agent</p>
+                            <p>{t("mailbox.noReceivedMessages", "No received messages for this agent")}</p>
                           </div>
                         )}
                         {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "outbox" && agentMailbox.outbox.length === 0 && (
                           <div className="mailbox-empty">
                             <Send size={32} />
-                            <p>No sent messages for this agent</p>
+                            <p>{t("mailbox.noSentMessages", "No sent messages for this agent")}</p>
                           </div>
                         )}
                         {selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID && agentMailbox && agentSubTab === "inbox" && agentMailbox.inbox.map((msg) => (
@@ -1083,9 +1088,9 @@ export function MailboxModal({
                             <div className="mailbox-item-content">
                               <div className="mailbox-item-header">
                                 <span className="mailbox-item-from">
-                                  {participantLabel(msg.fromId, msg.fromType, agentNamesById)}
+                                  {participantLabel(msg.fromId, msg.fromType, agentNamesById, t)}
                                 </span>
-                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                               </div>
                               <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                             </div>
@@ -1105,9 +1110,9 @@ export function MailboxModal({
                             <div className="mailbox-item-content">
                               <div className="mailbox-item-header">
                                 <span className="mailbox-item-to">
-                                  To: {participantLabel(msg.toId, msg.toType, agentNamesById)}
+                                  {t("mailbox.toPrefix", "To: {{recipient}}", { recipient: participantLabel(msg.toId, msg.toType, agentNamesById, t) })}
                                 </span>
-                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt)}</span>
+                                <span className="mailbox-item-time">{formatTimestamp(msg.createdAt, t)}</span>
                               </div>
                               <div className="mailbox-item-preview">{msg.content.slice(0, 80)}{msg.content.length > 80 ? "…" : ""}</div>
                             </div>

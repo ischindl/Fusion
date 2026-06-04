@@ -2,6 +2,8 @@ import React, { useState, useSyncExternalStore, useCallback, useEffect, useRef }
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import TextInput from "ink-text-input";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
@@ -220,6 +222,7 @@ const LARGE_LOGO_MIN_COLS = 70;
 const LARGE_LOGO_MIN_ROWS = 16;
 
 function SplashScreen({ loadingStatus, updateStatus }: { loadingStatus: string; updateStatus: UpdateStatus | null }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   const rows = stdout?.rows ?? 24;
@@ -237,7 +240,7 @@ function SplashScreen({ loadingStatus, updateStatus }: { loadingStatus: string; 
       <Text color="cyanBright" dimColor>{FUSION_URL}</Text>
       <Text color="cyanBright" dimColor>{`v${FUSION_VERSION}`}</Text>
       {updateStatus?.updateAvailable && (
-        <Text color="yellow" dimColor>{`Update available: v${updateStatus.currentVersion} → v${updateStatus.latestVersion}. Run \`fn update\` for an installed CLI, or pull this source checkout.`}</Text>
+        <Text color="yellow" dimColor>{t("tui.updateAvailable", "Update available: v{{currentVersion}} → v{{latestVersion}}. Run `fn update` for an installed CLI, or pull this source checkout.", { currentVersion: updateStatus.currentVersion, latestVersion: updateStatus.latestVersion })}</Text>
       )}
       <Box height={1} />
       <Box flexDirection="row" gap={1}>
@@ -299,15 +302,16 @@ function Panel({ title, isFocused, children, flexGrow, flexShrink, width }: Pane
 // ── System panel ──────────────────────────────────────────────────────────────
 
 function SystemPanel({ state, isFocused }: { state: DashboardState; isFocused: boolean }) {
+  const { t } = useTranslation("cli");
   const info = state.systemInfo;
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   // Watcher is the lowest-signal chip — drop it first when chips would wrap.
   const showWatcher = cols >= 100;
   return (
-    <Panel title="System" isFocused={isFocused} flexGrow={1}>
+    <Panel title={t("tui.systemPanelTitle", "System")} isFocused={isFocused} flexGrow={1}>
       {!info ? (
-        <Text dimColor>System information not available.</Text>
+        <Text dimColor>{t("tui.systemInfoUnavailable", "System information not available.")}</Text>
       ) : (
         <Box flexDirection="column" flexShrink={0}>
           {/* Status chips wrap to multiple rows at narrow widths. */}
@@ -344,7 +348,7 @@ function SystemPanel({ state, isFocused }: { state: DashboardState; isFocused: b
               off-panel. The token in particular MUST always render in
               full so users can copy it (via [c]) or click-drag select it. */}
           {state.isReady && Number.isFinite(info.startupDurationMs) && (
-            <Text dimColor>{`Ready in ${((info.startupDurationMs ?? 0) / 1000).toFixed(1)}s`}</Text>
+            <Text dimColor>{t("tui.readyIn", "Ready in {{secs}}s", { secs: ((info.startupDurationMs ?? 0) / 1000).toFixed(1) })}</Text>
           )}
           <Box flexDirection="row" gap={1} flexShrink={0}>
             <Text dimColor>URL</Text>
@@ -364,11 +368,11 @@ function SystemPanel({ state, isFocused }: { state: DashboardState; isFocused: b
               token, regardless of split focus. */}
           <Box flexShrink={0}>
             <Text dimColor wrap="truncate-end">
-              <Text color="cyanBright">[Enter]</Text> open URL
+              <Text color="cyanBright">[Enter]</Text> {t("tui.systemOpenUrl", "open URL")}
               {info.authToken ? (
-                <Text> · <Text color="cyanBright">[c]</Text> copy token · select token text to copy manually</Text>
+                <Text> · <Text color="cyanBright">[c]</Text> {t("tui.systemCopyTokenHint", "copy token · select token text to copy manually")}</Text>
               ) : (
-                <Text> · drag to select</Text>
+                <Text> · {t("tui.systemDragToSelect", "drag to select")}</Text>
               )}
             </Text>
           </Box>
@@ -436,6 +440,7 @@ function StatRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 function StatsPanel({ state, isFocused }: { state: DashboardState; isFocused: boolean }) {
+  const { t } = useTranslation("cli");
   const sys = state.systemStats;
   const systemMemUsed = sys ? sys.systemTotalMem - sys.systemFreeMem : 0;
   const systemMemUsageColor = sys ? sysMemColor(systemMemUsed, sys.systemTotalMem) : undefined;
@@ -445,7 +450,7 @@ function StatsPanel({ state, isFocused }: { state: DashboardState; isFocused: bo
       : null;
 
   return (
-    <Panel title="Stats" isFocused={isFocused} flexGrow={1}>
+    <Panel title={t("tui.statsPanelTitle", "Stats")} isFocused={isFocused} flexGrow={1}>
       <Box flexDirection="column">
         {sys ? (
           <>
@@ -483,7 +488,7 @@ function StatsPanel({ state, isFocused }: { state: DashboardState; isFocused: bo
             </StatRow>
           </>
         ) : (
-          <Text dimColor>Stats not available.</Text>
+          <Text dimColor>{t("tui.statsUnavailable", "Stats not available.")}</Text>
         )}
       </Box>
     </Panel>
@@ -493,11 +498,12 @@ function StatsPanel({ state, isFocused }: { state: DashboardState; isFocused: bo
 // ── Settings panel (status mode) ──────────────────────────────────────────────
 
 function SettingsPanel({ state, isFocused }: { state: DashboardState; isFocused: boolean }) {
+  const { t } = useTranslation("cli");
   const s = state.settings;
   return (
-    <Panel title="Settings" isFocused={isFocused} flexGrow={1}>
+    <Panel title={t("tui.settingsPanelTitle", "Settings")} isFocused={isFocused} flexGrow={1}>
       {!s ? (
-        <Text dimColor>Settings not available.</Text>
+        <Text dimColor>{t("tui.settingsUnavailable", "Settings not available.")}</Text>
       ) : (
         <Box flexDirection="column">
           {(
@@ -601,9 +607,10 @@ function LogsPanel({
   const hiddenAbove = visibleStart;
   const hiddenBelow = entries.length - visibleEnd;
 
+  const { t } = useTranslation("cli");
   const panelTitle = state.clipboardFlash
-    ? `Logs (${state.logEntries.length}/1000) · ${state.clipboardFlash.ok ? "✓ Copied!" : "✗ Copy failed"}`
-    : `Logs (${state.logEntries.length}/1000)`;
+    ? `${t("tui.logsPanelTitle", "Logs")} (${state.logEntries.length}/1000) · ${state.clipboardFlash.ok ? t("tui.copiedSuccess", "✓ Copied!") : t("tui.copyFailed", "✗ Copy failed")}`
+    : `${t("tui.logsPanelTitle", "Logs")} (${state.logEntries.length}/1000)`;
   return (
     <Panel title={panelTitle} isFocused={isFocused} flexGrow={1}>
       {logsExpandedMode && entries[cursor] ? (
@@ -614,9 +621,9 @@ function LogsPanel({
           clipboardFlash={state.clipboardFlash}
         />
       ) : entries.length === 0 ? (
-        <Text dimColor>No log entries yet.</Text>
+        <Text dimColor>{t("tui.noLogEntries", "No log entries yet.")}</Text>
       ) : entries.length !== state.logEntries.length && entries.length === 0 ? (
-        <Text dimColor>No entries match filter {logsSeverityFilter.toUpperCase()}.</Text>
+        <Text dimColor>{t("tui.noEntriesMatchFilter", "No entries match filter {{filter}}.", { filter: logsSeverityFilter.toUpperCase() })}</Text>
       ) : (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
           <Box height={1} flexDirection="row" gap={1} marginBottom={0} flexShrink={0} overflow="hidden">
@@ -707,29 +714,30 @@ function ExpandedLog({
   total: number;
   clipboardFlash: { ok: boolean; at: number } | null;
 }) {
+  const { t } = useTranslation("cli");
   return (
     <Box flexDirection="column" flexGrow={1} width="100%">
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Entry {index + 1}/{total} · [Enter/Esc] close · [c] copy</Text>
+        <Text dimColor>{t("tui.expandedLogHeader", "Entry {{index}}/{{total}} · [Enter/Esc] close · [c] copy", { index: index + 1, total })}</Text>
         {clipboardFlash && (
           <Text color={clipboardFlash.ok ? "greenBright" : "redBright"} bold>
-            {clipboardFlash.ok ? "✓ Copied!" : "✗ Copy failed"}
+            {clipboardFlash.ok ? t("tui.copiedSuccess", "✓ Copied!") : t("tui.copyFailed", "✗ Copy failed")}
           </Text>
         )}
       </Box>
       <Box height={1} />
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Time:</Text>
+        <Text dimColor>{t("tui.expandedLogTime", "Time:")}</Text>
         <Text>{formatTimestamp(entry.timestamp)}</Text>
       </Box>
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Level:</Text>
+        <Text dimColor>{t("tui.expandedLogLevel", "Level:")}</Text>
         <LevelBadge level={entry.level} />
         <Text>{entry.level.toUpperCase()}</Text>
       </Box>
       {entry.prefix && (
         <Box flexDirection="row" gap={1}>
-          <Text dimColor>Prefix:</Text>
+          <Text dimColor>{t("tui.expandedLogPrefix", "Prefix:")}</Text>
           <Text>{entry.prefix}</Text>
         </Box>
       )}
@@ -742,19 +750,20 @@ function ExpandedLog({
 // ── Utilities panel ───────────────────────────────────────────────────────────
 
 function UtilitiesPanel({ state, isFocused }: { state: DashboardState; isFocused: boolean }) {
+  const { t } = useTranslation("cli");
   const autoKill = state.autoKillVitestOnPressure;
   const thresholdPct = Math.round(state.vitestKillThreshold * 100);
   const actions: Array<{ key: string; label: string }> = [
-    { key: "r", label: "Refresh Stats" },
-    { key: "c", label: "Clear Logs" },
-    { key: "t", label: "Toggle Engine Pause" },
-    { key: "k", label: "Kill Vitest Processes" },
-    { key: "v", label: `Auto-Kill Vitest >${thresholdPct}% Mem: ${autoKill ? "ON" : "OFF"}` },
-    { key: "+/-", label: `Adjust Threshold (${thresholdPct}%)` },
-    { key: "?", label: "Help" },
+    { key: "r", label: t("tui.utilitiesRefreshStats", "Refresh Stats") },
+    { key: "c", label: t("tui.utilitiesClearLogs", "Clear Logs") },
+    { key: "t", label: t("tui.utilitiesToggleEnginePause", "Toggle Engine Pause") },
+    { key: "k", label: t("tui.utilitiesKillVitest", "Kill Vitest Processes") },
+    { key: "v", label: t("tui.utilitiesAutoKillVitest", "Auto-Kill Vitest >{{pct}}% Mem: {{state}}", { pct: thresholdPct, state: autoKill ? "ON" : "OFF" }) },
+    { key: "+/-", label: t("tui.utilitiesAdjustThreshold", "Adjust Threshold ({{pct}}%)", { pct: thresholdPct }) },
+    { key: "?", label: t("tui.utilitiesHelp", "Help") },
   ];
   return (
-    <Panel title="Utilities" isFocused={isFocused} flexGrow={1}>
+    <Panel title={t("tui.utilitiesPanelTitle", "Utilities")} isFocused={isFocused} flexGrow={1}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
         {actions.map((action) => (
           <Box key={action.key} flexDirection="row" flexShrink={0}>
@@ -770,49 +779,50 @@ function UtilitiesPanel({ state, isFocused }: { state: DashboardState; isFocused
 // ── Help overlay ──────────────────────────────────────────────────────────────
 
 function HelpOverlay() {
+  const { t } = useTranslation("cli");
   const shortcuts: Array<[string, string]> = [
-    ["[m] / [s]", "Main (status mode)"],
-    ["[b]", "Board view"],
-    ["[a]", "Agents view"],
-    ["[g]", "Settings view"],
-    ["[t]", "Git view"],
-    ["[f]", "Files (when not on Logs); cycles log severity filter on Logs"],
-    ["[Tab]", "Cycle focused panel / pane forward"],
-    ["[Shift+Tab]", "Cycle focused panel / pane backward"],
-    ["[1-5]", "Jump to panel (Main: System/Logs/Stats/Utilities/Settings)"],
-    ["[← / →]", "Switch pane (Agents, Settings, Files, Git)"],
-    ["[→] / [↓] / [n]", "Next panel (Main; ↑/↓ scroll on Logs)"],
-    ["[←] / [↑] / [p]", "Previous panel (Main; ↑/↓ scroll on Logs)"],
-    ["[Enter]", "Expand log + release mouse for text selection (Logs)"],
-    ["[r]", "Refresh stats (Utilities)"],
-    ["[c]", "Clear logs (Utilities)"],
-    ["[k]", "Kill all vitest processes (Utilities)"],
-    ["[v]", "Toggle auto-kill vitest on memory pressure (Utilities)"],
-    ["[+/-]", "Adjust vitest kill memory threshold (Utilities)"],
-    ["[Enter]", "Open dashboard URL in browser (System)"],
-    ["[c]", "Copy auth token to clipboard (System)"],
-    ["[M]", "Manual mouse-mode toggle (auto: on for Logs/Files/Git/Board, off elsewhere)"],
-    ["[↑/↓/k/j]", "Navigate list / log entries"],
-    ["[Home / G]", "First / last log entry (Logs)"],
-    ["[Enter/Space]", "Expand log entry (Logs)"],
-    ["[c]", "Copy selected log entry to clipboard (Logs)"],
-    ["[w]", "Toggle word wrap (Logs / Files)"],
-    ["[Space]", "Toggle boolean (Settings)"],
-    ["[+/-]", "Adjust number (Settings)"],
-    ["[p]", "Project picker (Board, Files)"],
-    ["[n]", "New task (Board)"],
-    ["[D]", "Delete agent — requires confirm (Agents)"],
-    ["[P] / [F]", "Push / fetch (Git)"],
-    ["[.]", "Toggle hidden files (Files)"],
-    ["[?] / [h]", "Toggle help"],
-    ["[q]", "Quit"],
-    ["[Ctrl+C]", "Force quit"],
+    ["[m] / [s]", t("tui.helpShortcutMain", "Main (status mode)")],
+    ["[b]", t("tui.helpShortcutBoard", "Board view")],
+    ["[a]", t("tui.helpShortcutAgents", "Agents view")],
+    ["[g]", t("tui.helpShortcutSettings", "Settings view")],
+    ["[t]", t("tui.helpShortcutGit", "Git view")],
+    ["[f]", t("tui.helpShortcutFiles", "Files (when not on Logs); cycles log severity filter on Logs")],
+    ["[Tab]", t("tui.helpShortcutTabForward", "Cycle focused panel / pane forward")],
+    ["[Shift+Tab]", t("tui.helpShortcutTabBackward", "Cycle focused panel / pane backward")],
+    ["[1-5]", t("tui.helpShortcutJumpPanel", "Jump to panel (Main: System/Logs/Stats/Utilities/Settings)")],
+    ["[← / →]", t("tui.helpShortcutSwitchPane", "Switch pane (Agents, Settings, Files, Git)")],
+    ["[→] / [↓] / [n]", t("tui.helpShortcutNextPanel", "Next panel (Main; ↑/↓ scroll on Logs)")],
+    ["[←] / [↑] / [p]", t("tui.helpShortcutPrevPanel", "Previous panel (Main; ↑/↓ scroll on Logs)")],
+    ["[Enter]", t("tui.helpShortcutExpandLog", "Expand log + release mouse for text selection (Logs)")],
+    ["[r]", t("tui.helpShortcutRefreshStats", "Refresh stats (Utilities)")],
+    ["[c]", t("tui.helpShortcutClearLogs", "Clear logs (Utilities)")],
+    ["[k]", t("tui.helpShortcutKillVitest", "Kill all vitest processes (Utilities)")],
+    ["[v]", t("tui.helpShortcutToggleAutoKill", "Toggle auto-kill vitest on memory pressure (Utilities)")],
+    ["[+/-]", t("tui.helpShortcutAdjustThreshold", "Adjust vitest kill memory threshold (Utilities)")],
+    ["[Enter]", t("tui.helpShortcutOpenUrl", "Open dashboard URL in browser (System)")],
+    ["[c]", t("tui.helpShortcutCopyToken", "Copy auth token to clipboard (System)")],
+    ["[M]", t("tui.helpShortcutMouseToggle", "Manual mouse-mode toggle (auto: on for Logs/Files/Git/Board, off elsewhere)")],
+    ["[↑/↓/k/j]", t("tui.helpShortcutNavigate", "Navigate list / log entries")],
+    ["[Home / G]", t("tui.helpShortcutFirstLast", "First / last log entry (Logs)")],
+    ["[Enter/Space]", t("tui.helpShortcutExpandEntry", "Expand log entry (Logs)")],
+    ["[c]", t("tui.helpShortcutCopyEntry", "Copy selected log entry to clipboard (Logs)")],
+    ["[w]", t("tui.helpShortcutWordWrap", "Toggle word wrap (Logs / Files)")],
+    ["[Space]", t("tui.helpShortcutToggleBool", "Toggle boolean (Settings)")],
+    ["[+/-]", t("tui.helpShortcutAdjustNumber", "Adjust number (Settings)")],
+    ["[p]", t("tui.helpShortcutProjectPicker", "Project picker (Board, Files)")],
+    ["[n]", t("tui.helpShortcutNewTask", "New task (Board)")],
+    ["[D]", t("tui.helpShortcutDeleteAgent", "Delete agent — requires confirm (Agents)")],
+    ["[P] / [F]", t("tui.helpShortcutPushFetch", "Push / fetch (Git)")],
+    ["[.]", t("tui.helpShortcutHiddenFiles", "Toggle hidden files (Files)")],
+    ["[?] / [h]", t("tui.helpShortcutToggleHelp", "Toggle help")],
+    ["[q]", t("tui.helpShortcutQuit", "Quit")],
+    ["[Ctrl+C]", t("tui.helpShortcutForceQuit", "Force quit")],
   ];
 
   const rowKeyWidth = 22;
   const rowDescWidth = Math.max(...shortcuts.map(([, d]) => d.length));
   const innerWidth = rowKeyWidth + 2 + rowDescWidth + 2;
-  const titleRow = " KEYBOARD SHORTCUTS".padEnd(innerWidth);
+  const titleRow = ` ${t("tui.helpTitle", "KEYBOARD SHORTCUTS")}`.padEnd(innerWidth);
 
   return (
     <Box borderStyle="round" borderColor="cyanBright" flexDirection="column" backgroundColor="black">
@@ -1020,11 +1030,12 @@ function StatusModeSingle({
 }
 
 function StatusBar({ state, controller: _controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   const { systemInfo, updateStatus } = state;
   const hasUpdate = updateStatus?.updateAvailable === true;
   const uptime = systemInfo ? formatUptime(Date.now() - systemInfo.startTimeMs) : null;
   const url = systemInfo?.baseUrl ?? null;
-  const help = "Tab cycle panel  ·  1-5 jump";
+  const help = t("tui.statusBarHelp", "Tab cycle panel  ·  1-5 jump");
 
   // Single Text so Yoga truncates the tail (help text) when natural width
   // exceeds cols — guarantees a one-row footer with version/url preserved.
@@ -1048,6 +1059,7 @@ function StatusBar({ state, controller: _controller }: { state: DashboardState; 
 // ── Unified main header — used by both status and interactive modes ──────────
 
 function MainHeader({ state }: { state: DashboardState }) {
+  const { t } = useTranslation("cli");
   const inInteractive = state.mode === "interactive";
   const interactiveView = state.interactiveView;
   const { stdout } = useStdout();
@@ -1056,12 +1068,12 @@ function MainHeader({ state }: { state: DashboardState }) {
     | { key: string; label: string; kind: "main" }
     | { key: string; label: string; kind: "interactive"; view: InteractiveView };
   const tabs: Tab[] = [
-    { key: "m", label: "Main", kind: "main" },
-    { key: "b", label: "Board", kind: "interactive", view: "board" },
-    { key: "a", label: "Agents", kind: "interactive", view: "agents" },
-    { key: "g", label: "Settings", kind: "interactive", view: "settings" },
-    { key: "t", label: "Git", kind: "interactive", view: "git" },
-    { key: "f", label: "Files", kind: "interactive", view: "files" },
+    { key: "m", label: t("tui.tabMain", "Main"), kind: "main" },
+    { key: "b", label: t("tui.tabBoard", "Board"), kind: "interactive", view: "board" },
+    { key: "a", label: t("tui.tabAgents", "Agents"), kind: "interactive", view: "agents" },
+    { key: "g", label: t("tui.tabSettings", "Settings"), kind: "interactive", view: "settings" },
+    { key: "t", label: t("tui.tabGit", "Git"), kind: "interactive", view: "git" },
+    { key: "f", label: t("tui.tabFiles", "Files"), kind: "interactive", view: "files" },
   ];
   const showHelpHint = cols >= 110;
   const fullLabels = cols >= 90;
@@ -1105,14 +1117,16 @@ function MainHeader({ state }: { state: DashboardState }) {
       <Box flexGrow={1} flexShrink={1} justifyContent="flex-end" overflow="hidden" marginRight={1}>
         {state.remoteStatus?.state === "running" && (
           <Text wrap="truncate-end" color="green" bold>
-            ● tunnel{state.remoteStatus.url ? ` ${state.remoteStatus.url}` : ""}{cols >= 80 ? "  [^Q] QR" : ""}
+            ● {t("tui.headerTunnelRunning", "tunnel")}
+            {state.remoteStatus.url ? ` ${state.remoteStatus.url}` : ""}
+            {cols >= 80 ? t("tui.headerTunnelQrHint", "  [^Q] QR") : ""}
           </Text>
         )}
         {state.remoteStatus?.state === "starting" && (
-          <Text wrap="truncate-end" color="yellow">● tunnel starting…</Text>
+          <Text wrap="truncate-end" color="yellow">● {t("tui.headerTunnelStarting", "tunnel starting…")}</Text>
         )}
       </Box>
-      {showHelpHint && <Box flexShrink={0}><Text wrap="truncate-end" dimColor>[?] help  [q] quit</Text></Box>}
+      {showHelpHint && <Box flexShrink={0}><Text wrap="truncate-end" dimColor>{t("tui.headerHelpQuitHint", "[?] help  [q] quit")}</Text></Box>}
     </Box>
   );
 }
@@ -1142,11 +1156,12 @@ function TaskCard({
   selected: boolean;
   width: number;
 }) {
+  const { t } = useTranslation("cli");
   const accent = COLUMN_COLORS[task.column] ?? "white";
   const borderColor = selected ? "cyanBright" : "gray";
   const titleColor = selected ? "whiteBright" : undefined;
   const shortId = task.id.length > 10 ? task.id.slice(0, 8) : task.id;
-  const title = task.title ?? task.description ?? "(untitled)";
+  const title = task.title ?? task.description ?? t("tui.taskCardUntitled", "(untitled)");
   return (
     <Box
       borderStyle="round"
@@ -1257,13 +1272,14 @@ function ProjectSelector({
   selectedIndex: number;
   onSelect: (i: number) => void;
 }) {
+  const { t } = useTranslation("cli");
   const current = projects[selectedIndex] ?? null;
   if (!open) {
     return (
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Project:</Text>
-        <Text bold color="white">{current?.name ?? "(none)"}</Text>
-        <Text dimColor>[p] change</Text>
+        <Text dimColor>{t("tui.projectSelectorLabel", "Project:")}</Text>
+        <Text bold color="white">{current?.name ?? t("tui.projectSelectorNone", "(none)")}</Text>
+        <Text dimColor>{t("tui.projectSelectorChangeHint", "[p] change")}</Text>
       </Box>
     );
   }
@@ -1276,9 +1292,9 @@ function ProjectSelector({
       backgroundColor="black"
       width={Math.max(30, ...projects.map((p) => p.name.length + 4))}
     >
-      <Text bold color="cyanBright" backgroundColor="black">Pick a project</Text>
+      <Text bold color="cyanBright" backgroundColor="black">{t("tui.projectSelectorPickTitle", "Pick a project")}</Text>
       {projects.length === 0 ? (
-        <Text dimColor backgroundColor="black">(no projects registered)</Text>
+        <Text dimColor backgroundColor="black">{t("tui.projectSelectorNoProjects", "(no projects registered)")}</Text>
       ) : (
         projects.map((p, i) => {
           const isSel = i === selectedIndex;
@@ -1293,7 +1309,7 @@ function ProjectSelector({
         })
       )}
       <Box height={1} />
-      <Text dimColor backgroundColor="black">↑↓ navigate · Enter select · Esc cancel</Text>
+      <Text dimColor backgroundColor="black">{t("tui.projectSelectorNavHints", "↑↓ navigate · Enter select · Esc cancel")}</Text>
     </Box>
   );
 }
@@ -1353,6 +1369,7 @@ function TaskDetailScreen({
   interactiveData: DashboardState["interactiveData"];
   controller: DashboardTUI;
 }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   const isNarrow = cols < NARROW_THRESHOLD;
@@ -1531,7 +1548,7 @@ function TaskDetailScreen({
             <Text color={accent}>▶ {task.agentState}</Text>
           )}
         </Box>
-        <Text dimColor>[Esc] back</Text>
+        <Text dimColor>{t("tui.taskDetailBack", "[Esc] back")}</Text>
       </Box>
 
       <Box height={1} flexShrink={0} />
@@ -1545,12 +1562,12 @@ function TaskDetailScreen({
       {detail === null && (
         <Box flexDirection="row" gap={1} flexShrink={0}>
           <Text color="cyanBright"><Spinner type="dots" /></Text>
-          <Text dimColor>Loading task details…</Text>
+          <Text dimColor>{t("tui.taskDetailLoading", "Loading task details…")}</Text>
         </Box>
       )}
 
       {detail === "unavailable" && (
-        <Text color="yellow">Task no longer available — Esc to go back</Text>
+        <Text color="yellow">{t("tui.taskDetailUnavailable", "Task no longer available — Esc to go back")}</Text>
       )}
 
       {detail && detail !== "unavailable" && (
@@ -1576,9 +1593,9 @@ function TaskDetailScreen({
           <Box height={1} flexShrink={0} />
 
           {/* Steps section */}
-          <Text dimColor>── Steps ──────────────────────────────────────</Text>
+          <Text dimColor>{t("tui.taskDetailStepsSectionHeader", "── Steps ──────────────────────────────────────")}</Text>
           {detail.steps.length === 0 ? (
-            <Text dimColor>(no steps yet)</Text>
+            <Text dimColor>{t("tui.taskDetailNoSteps", "(no steps yet)")}</Text>
           ) : (
             detail.steps.map((step) => {
               const icon = STEP_ICON[step.status] ?? "·";
@@ -1589,10 +1606,10 @@ function TaskDetailScreen({
               let durationText = "";
               if (isRunning && step.startedAt) {
                 const elapsed = Date.now() - new Date(step.startedAt).getTime();
-                durationText = ` (running — ${formatDurationMs(elapsed)})`;
+                durationText = t("tui.stepDurationRunning", " (running — {{duration}})", { duration: formatDurationMs(elapsed) });
               } else if (isDone && step.startedAt && step.endedAt) {
                 const elapsed = new Date(step.endedAt).getTime() - new Date(step.startedAt).getTime();
-                durationText = ` (${step.status} — ${formatDurationMs(elapsed)})`;
+                durationText = t("tui.stepDurationDone", " ({{status}} — {{duration}})", { status: step.status, duration: formatDurationMs(elapsed) });
               }
 
               return (
@@ -1613,14 +1630,14 @@ function TaskDetailScreen({
 
           {/* Logs section — flexGrow so it fills remaining vertical space */}
           <Box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-            <Text dimColor>── Logs ───────────────────────────────────────</Text>
+            <Text dimColor>{t("tui.taskDetailLogsSectionHeader", "── Logs ───────────────────────────────────────")}</Text>
             <Text color={autoFollow ? "cyanBright" : undefined} dimColor={!autoFollow}>
-              {autoFollow ? "[live]" : "[paused]"}
+              {autoFollow ? t("tui.taskDetailLogsLive", "[live]") : t("tui.taskDetailLogsPaused", "[paused]")}
             </Text>
           </Box>
 
           {detail.recentLogs.length === 0 ? (
-            <Text dimColor>(no log entries yet)</Text>
+            <Text dimColor>{t("tui.taskDetailNoLogEntries", "(no log entries yet)")}</Text>
           ) : (
             <Box flexDirection="column" flexGrow={1} overflow="hidden">
               {/* Compute the visible window from the bottom, offset by scroll position. */}
@@ -1667,7 +1684,7 @@ function TaskDetailScreen({
       )}
 
       <Box flexGrow={1} />
-      <Text dimColor>↑↓/j/k scroll · PgUp/PgDn half-page · g top · G bottom · Esc back</Text>
+      <Text dimColor>{t("tui.taskDetailScrollHints", "↑↓/j/k scroll · PgUp/PgDn half-page · g top · G bottom · Esc back")}</Text>
     </Box>
   );
 }
@@ -1695,6 +1712,7 @@ function groupTasksByColumn(tasks: TaskItem[]): Record<KanbanColumn, TaskItem[]>
 }
 
 function BoardView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   const rows = stdout?.rows ?? 24;
@@ -1852,11 +1870,11 @@ function BoardView({ state, controller }: { state: DashboardState; controller: D
   const submitNewTask = async () => {
     const title = newTaskTitle.trim();
     if (!title) {
-      setCreateError("Title cannot be empty");
+      setCreateError(t("tui.boardCreateTaskTitleEmpty", "Title cannot be empty"));
       return;
     }
     if (!state.interactiveData || !selectedProject) {
-      setCreateError("No project selected");
+      setCreateError(t("tui.boardCreateTaskNoProject", "No project selected"));
       return;
     }
     setCreating(true);
@@ -1898,17 +1916,17 @@ function BoardView({ state, controller }: { state: DashboardState; controller: D
             paddingY={1}
             width={Math.min(80, Math.max(40, cols - 8))}
           >
-            <Text bold color="white">New Task</Text>
-            <Text dimColor>Project: {selectedProject?.name ?? "(none)"}</Text>
+            <Text bold color="white">{t("tui.boardNewTaskTitle", "New Task")}</Text>
+            <Text dimColor>{t("tui.boardNewTaskProject", "Project: {{name}}", { name: selectedProject?.name ?? "(none)" })}</Text>
             <Box height={1} />
-            <Text dimColor>Title</Text>
+            <Text dimColor>{t("tui.boardNewTaskTitleLabel", "Title")}</Text>
             <Box>
               <Text color="white">▸ </Text>
               <TextInput
                 value={newTaskTitle}
                 onChange={setNewTaskTitle}
                 onSubmit={() => void submitNewTask()}
-                placeholder="What needs doing?"
+                placeholder={t("tui.boardNewTaskPlaceholder", "What needs doing?")}
               />
             </Box>
             <Box height={1} />
@@ -1918,10 +1936,10 @@ function BoardView({ state, controller }: { state: DashboardState; controller: D
             {creating ? (
               <Box flexDirection="row" gap={1}>
                 <Text color="white"><Spinner type="dots" /></Text>
-                <Text dimColor>Creating…</Text>
+                <Text dimColor>{t("tui.boardCreatingTask", "Creating…")}</Text>
               </Box>
             ) : (
-              <Text dimColor>Enter to create · Esc to cancel</Text>
+              <Text dimColor>{t("tui.boardCreateTaskHints", "Enter to create · Esc to cancel")}</Text>
             )}
           </Box>
         </Box>
@@ -1937,12 +1955,13 @@ function BoardView({ state, controller }: { state: DashboardState; controller: D
       ) : tasksState.loading ? (
         <Box justifyContent="center" alignItems="center" flexGrow={1} gap={1}>
           <Text color="white"><Spinner type="dots" /></Text>
-          <Text dimColor>Loading tasks…</Text>
+          <Text dimColor>{t("tui.loadingTasks", "Loading tasks…")}</Text>
         </Box>
       ) : tasksState.tasks.length === 0 ? (
         <Box justifyContent="center" alignItems="center" flexGrow={1} flexDirection="column">
-          <Text dimColor>No tasks in this project.</Text>
-          <Text dimColor>Press [p] to switch projects.</Text>
+          <Text dimColor>{t("tui.noTasks", "No tasks in this project.")}</Text>
+          {/* Keybinding accelerator [{{key}}] stays literal — never translated. */}
+          <Text dimColor>{t("tui.switchProjectsHint", { key: "p", defaultValue: "Press [{{key}}] to switch projects." })}</Text>
         </Box>
       ) : (
         <Box flexDirection="row" flexGrow={1} overflow="hidden">
@@ -1995,18 +2014,18 @@ function heartbeatFreshness(lastHeartbeatAt?: string): { fresh: boolean; label: 
 
 type AgentSubView = "list" | "confirm-delete";
 
-function formatRunStatusLabel(status: string): string {
+function formatRunStatusLabel(status: string, t: TFunction): string {
   switch (status) {
     case "completed":
-      return "Completed";
+      return t("tui.runStatusCompleted", "Completed");
     case "failed":
-      return "Failed";
+      return t("tui.runStatusFailed", "Failed");
     case "terminated":
-      return "Terminated";
+      return t("tui.runStatusTerminated", "Terminated");
     case "active":
-      return "Active";
+      return t("tui.runStatusActive", "Active");
     default:
-      return status.length > 0 ? `${status[0]!.toUpperCase()}${status.slice(1)}` : "Unknown";
+      return status.length > 0 ? `${status[0]!.toUpperCase()}${status.slice(1)}` : t("tui.runStatusUnknown", "Unknown");
   }
 }
 
@@ -2025,29 +2044,30 @@ function runStatusColor(status: string): "green" | "red" | "yellow" | "cyanBrigh
   }
 }
 
-function getRunLogLines(run: AgentRunItem): string[] {
+function getRunLogLines(run: AgentRunItem, t: TFunction): string[] {
   if (Array.isArray(run.logs) && run.logs.length > 0) return run.logs;
 
   const lines: string[] = [];
-  if (run.triggerDetail) lines.push(`trigger: ${run.triggerDetail}`);
-  if (run.invocationSource) lines.push(`source: ${run.invocationSource}`);
+  if (run.triggerDetail) lines.push(`${t("tui.runLogTrigger", "trigger")}: ${run.triggerDetail}`);
+  if (run.invocationSource) lines.push(`${t("tui.runLogSource", "source")}: ${run.invocationSource}`);
   if (run.stdoutExcerpt) {
-    lines.push("stdout:");
+    lines.push(t("tui.runLogStdout", "stdout:"));
     lines.push(...run.stdoutExcerpt.split(/\r?\n/).filter((line) => line.length > 0));
   }
   if (run.stderrExcerpt) {
-    lines.push("stderr:");
+    lines.push(t("tui.runLogStderr", "stderr:"));
     lines.push(...run.stderrExcerpt.split(/\r?\n/).filter((line) => line.length > 0));
   }
   if (run.resultJson) {
-    lines.push("result:");
+    lines.push(t("tui.runLogResult", "result:"));
     lines.push(JSON.stringify(run.resultJson));
   }
 
-  return lines.length > 0 ? lines : ["No logs captured for this run."];
+  return lines.length > 0 ? lines : [t("tui.runLogNone", "No logs captured for this run.")];
 }
 
 function AgentsView({ state }: { state: DashboardState }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   // Narrow mode: hide the inactive pane so list and detail don't overlap side-by-side.
@@ -2122,7 +2142,7 @@ function AgentsView({ state }: { state: DashboardState }) {
         if (!data || !selectedAgent) { setSubView("list"); return; }
         data.deleteAgent(selectedAgent.id)
           .then(() => {
-            setStatusMsg(`Deleted agent ${selectedAgent.name}`);
+            setStatusMsg(t("tui.agentDeleted", "Deleted agent {{name}}", { name: selectedAgent.name }));
             return refreshList();
           })
           .catch((err: unknown) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`))
@@ -2183,14 +2203,14 @@ function AgentsView({ state }: { state: DashboardState }) {
     if (input === "s") {
       if (!data || !selectedAgent) return;
       data.updateAgentState(selectedAgent.id, "active")
-        .then(() => { setStatusMsg("Agent started"); return refreshList(); })
+        .then(() => { setStatusMsg(t("tui.agentStarted", "Agent started")); return refreshList(); })
         .catch((err: unknown) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
     if (input === "x") {
       if (!data || !selectedAgent) return;
       data.updateAgentState(selectedAgent.id, "idle")
-        .then(() => { setStatusMsg("Agent stopped"); return refreshList(); })
+        .then(() => { setStatusMsg(t("tui.agentStopped", "Agent stopped")); return refreshList(); })
         .catch((err: unknown) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
@@ -2208,12 +2228,12 @@ function AgentsView({ state }: { state: DashboardState }) {
     return (
       <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
         <Box borderStyle="round" borderColor="red" flexDirection="column" paddingX={2} paddingY={1}>
-          <Text bold color="red">Delete agent?</Text>
+          <Text bold color="red">{t("tui.agentDeleteConfirmTitle", "Delete agent?")}</Text>
           <Box height={1} />
-          <Text>Agent: <Text bold color="whiteBright">{selectedAgent.name}</Text></Text>
-          <Text dimColor>ID: {selectedAgent.id}</Text>
+          <Text>{t("tui.agentDeleteConfirmName", "Agent:")} <Text bold color="whiteBright">{selectedAgent.name}</Text></Text>
+          <Text dimColor>{t("tui.agentDeleteConfirmId", "ID:")} {selectedAgent.id}</Text>
           <Box height={1} />
-          <Text>[y] confirm delete  [any other key] cancel</Text>
+          <Text>{t("tui.agentDeleteConfirmHints", "[y] confirm delete  [any other key] cancel")}</Text>
         </Box>
       </Box>
     );
@@ -2240,12 +2260,12 @@ function AgentsView({ state }: { state: DashboardState }) {
           >
             <Box paddingX={1}>
               <Text bold={!detailFocused} color={!detailFocused ? "cyanBright" : undefined} dimColor={detailFocused}>
-                Agents ({agents.length})
+                {t("tui.agentsListTitle", "Agents ({{count}})", { count: agents.length })}
               </Text>
             </Box>
             <Box flexDirection="column" paddingX={1} flexGrow={1} overflow="hidden">
               {agents.length === 0 ? (
-                <Text dimColor>No agents found.</Text>
+                <Text dimColor>{t("tui.agentsNoAgents", "No agents found.")}</Text>
               ) : (
                 agents.map((agent, i) => {
                   const isSel = i === selectedIndex;
@@ -2286,19 +2306,19 @@ function AgentsView({ state }: { state: DashboardState }) {
           >
             <Box paddingX={1}>
               <Text bold={detailFocused} color={detailFocused ? "cyanBright" : undefined} dimColor={!detailFocused}>
-                Agent Detail
+                {t("tui.agentDetailTitle", "Agent Detail")}
               </Text>
             </Box>
             <Box flexDirection="column" paddingX={1} flexGrow={1} overflow="hidden">
               {!selectedAgent ? (
-                <Text dimColor>Select an agent from the list.</Text>
+                <Text dimColor>{t("tui.agentDetailSelectHint", "Select an agent from the list.")}</Text>
               ) : loadingDetail ? (
                 <Box flexDirection="row" gap={1}>
                   <Text color="white"><Spinner type="dots" /></Text>
-                  <Text dimColor>Loading…</Text>
+                  <Text dimColor>{t("tui.loading", "Loading…")}</Text>
                 </Box>
               ) : !detail ? (
-                <Text dimColor>Could not load agent detail.</Text>
+                <Text dimColor>{t("tui.agentDetailLoadError", "Could not load agent detail.")}</Text>
               ) : (
                 <Box flexDirection="column">
                   <Text bold color="whiteBright">{detail.name}</Text>
@@ -2307,60 +2327,60 @@ function AgentsView({ state }: { state: DashboardState }) {
 
                   {showRunLogs && selectedRun ? (
                     <>
-                      <Text dimColor>Run logs ({selectedRunIndex + 1})</Text>
-                      <Text dimColor>ID: {selectedRun.id}</Text>
+                      <Text dimColor>{t("tui.agentRunLogsTitle", "Run logs ({{index}})", { index: selectedRunIndex + 1 })}</Text>
+                      <Text dimColor>{t("tui.agentRunId", "ID:")} {selectedRun.id}</Text>
                       <Box height={1} />
-                      {getRunLogLines(selectedRun).slice(0, 10).map((line, i) => (
+                      {getRunLogLines(selectedRun, t).slice(0, 10).map((line, i) => (
                         <Text key={`${selectedRun.id}-log-${i}`} wrap="truncate-end">{line}</Text>
                       ))}
                       <Box height={1} />
-                      <Text dimColor>[Esc/q] back to runs</Text>
+                      <Text dimColor>{t("tui.agentRunLogsBackHint", "[Esc/q] back to runs")}</Text>
                     </>
                   ) : (
                     <>
                       <Box flexDirection="row" gap={1}>
-                        <Text dimColor>State:</Text>
+                        <Text dimColor>{t("tui.agentDetailState", "State:")}</Text>
                         <Text color={agentStateColor(detail.state) as "cyanBright" | "green" | "red" | "gray"} bold>
                           {detail.state}
                         </Text>
                       </Box>
                       <Box flexDirection="row" gap={1}>
-                        <Text dimColor>Role:</Text>
+                        <Text dimColor>{t("tui.agentDetailRole", "Role:")}</Text>
                         <Text>{detail.role}</Text>
                       </Box>
                       {detail.title && (
                         <Box flexDirection="row" gap={1}>
-                          <Text dimColor>Title:</Text>
+                          <Text dimColor>{t("tui.agentDetailTitle2", "Title:")}</Text>
                           <Text>{detail.title}</Text>
                         </Box>
                       )}
                       {detail.taskId && (
                         <Box flexDirection="row" gap={1}>
-                          <Text dimColor>Task:</Text>
+                          <Text dimColor>{t("tui.agentDetailTask", "Task:")}</Text>
                           <Text color="cyanBright">{detail.taskId}</Text>
                         </Box>
                       )}
                       {detail.capabilities.length > 0 && (
                         <Box flexDirection="row" gap={1}>
-                          <Text dimColor>Caps:</Text>
+                          <Text dimColor>{t("tui.agentDetailCaps", "Caps:")}</Text>
                           <Text>{detail.capabilities.join(", ")}</Text>
                         </Box>
                       )}
                       {recentRuns.length > 0 && (
                         <>
                           <Box height={1} />
-                          <Text dimColor>Run history (latest first):</Text>
+                          <Text dimColor>{t("tui.agentRunHistory", "Run history (latest first):")}</Text>
                           {recentRuns.slice(0, 5).map((run, i) => (
                             <Box key={run.id} flexDirection="row" gap={1} marginLeft={1}>
                               <Text color={detailFocused && i === selectedRunIndex ? "white" : "gray"}>
                                 {detailFocused && i === selectedRunIndex ? "▶" : " "}
                               </Text>
-                              <Text color={runStatusColor(run.status)}>{formatRunStatusLabel(run.status)}</Text>
+                              <Text color={runStatusColor(run.status)}>{formatRunStatusLabel(run.status, t)}</Text>
                               <Text dimColor>{run.startedAt.slice(11, 19)}</Text>
                               {run.triggerDetail && <Text dimColor wrap="truncate-end">{run.triggerDetail}</Text>}
                             </Box>
                           ))}
-                          <Text dimColor>[Enter] open logs</Text>
+                          <Text dimColor>{t("tui.agentOpenLogsHint", "[Enter] open logs")}</Text>
                         </>
                       )}
                     </>
@@ -2374,9 +2394,9 @@ function AgentsView({ state }: { state: DashboardState }) {
 
       {/* Footer */}
       <Box paddingX={1} flexDirection="row" gap={1}>
-        <Text dimColor>[s] start  [x] stop  [D] delete  [r] refresh  [Tab] focus  ↑↓ select</Text>
+        <Text dimColor>{t("tui.agentsFooterHints", "[s] start  [x] stop  [D] delete  [r] refresh  [Tab] focus  ↑↓ select")}</Text>
         {isNarrow && (
-          <Text dimColor>[narrow] {detailFocused ? "detail" : "list"}</Text>
+          <Text dimColor>{t("tui.narrowModeIndicator", "[narrow]")} {detailFocused ? t("tui.agentNarrowDetail", "detail") : t("tui.agentNarrowList", "list")}</Text>
         )}
       </Box>
     </Box>
@@ -2389,25 +2409,27 @@ type SettingKey = "maxConcurrent" | "maxWorktrees" | "autoMerge" | "mergeStrateg
 
 interface SettingDef {
   key: SettingKey;
-  label: string;
+  labelKey: string;
+  labelDefault: string;
   type: "number" | "boolean" | "enum";
   options?: string[];
 }
 
 const SETTING_DEFS: SettingDef[] = [
-  { key: "maxConcurrent", label: "Max Concurrent", type: "number" },
-  { key: "maxWorktrees", label: "Max Worktrees", type: "number" },
-  { key: "autoMerge", label: "Auto Merge", type: "boolean" },
-  { key: "mergeStrategy", label: "Merge Strategy", type: "enum", options: ["direct", "squash", "rebase"] },
-  { key: "pollIntervalMs", label: "Poll Interval (ms)", type: "number" },
-  { key: "enginePaused", label: "Engine Paused", type: "boolean" },
-  { key: "globalPause", label: "Global Pause", type: "boolean" },
-  { key: "remoteActiveProvider", label: "Remote Provider", type: "enum", options: ["tailscale", "cloudflare"] },
-  { key: "remoteShortLivedEnabled", label: "Short-Lived Tokens", type: "boolean" },
-  { key: "remoteShortLivedTtlMs", label: "Short-Lived TTL (ms)", type: "number" },
+  { key: "maxConcurrent", labelKey: "tui.settingMaxConcurrent", labelDefault: "Max Concurrent", type: "number" },
+  { key: "maxWorktrees", labelKey: "tui.settingMaxWorktrees", labelDefault: "Max Worktrees", type: "number" },
+  { key: "autoMerge", labelKey: "tui.settingAutoMerge", labelDefault: "Auto Merge", type: "boolean" },
+  { key: "mergeStrategy", labelKey: "tui.settingMergeStrategy", labelDefault: "Merge Strategy", type: "enum", options: ["direct", "squash", "rebase"] },
+  { key: "pollIntervalMs", labelKey: "tui.settingPollIntervalMs", labelDefault: "Poll Interval (ms)", type: "number" },
+  { key: "enginePaused", labelKey: "tui.settingEnginePaused", labelDefault: "Engine Paused", type: "boolean" },
+  { key: "globalPause", labelKey: "tui.settingGlobalPause", labelDefault: "Global Pause", type: "boolean" },
+  { key: "remoteActiveProvider", labelKey: "tui.settingRemoteActiveProvider", labelDefault: "Remote Provider", type: "enum", options: ["tailscale", "cloudflare"] },
+  { key: "remoteShortLivedEnabled", labelKey: "tui.settingRemoteShortLivedEnabled", labelDefault: "Short-Lived Tokens", type: "boolean" },
+  { key: "remoteShortLivedTtlMs", labelKey: "tui.settingRemoteShortLivedTtlMs", labelDefault: "Short-Lived TTL (ms)", type: "number" },
 ];
 
 function SettingsInteractiveView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [localSettings, setLocalSettings] = useState<SettingsValues | null>(null);
   const [models, setModels] = useState<ModelItem[]>([]);
@@ -2463,7 +2485,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       const remoteStatus = data.remote ? await data.remote.getStatus().catch(() => null) : null;
       const remoteSettingsSnapshot = data.remote ? await data.remote.getSettings().catch(() => updated.remoteSettingsSnapshot) : undefined;
       setLocalSettings(remoteStatus ? { ...updated, remoteStatus, remoteSettingsSnapshot } : updated);
-      setStatusMsg("Saved");
+      setStatusMsg(t("tui.settingsSaved", "Saved"));
     } catch (err) {
       setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -2521,14 +2543,14 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     if (ttlInputMode) {
       if (key.escape) {
         setTtlInputMode(false);
-        setStatusMsg("Cancelled short-lived token input");
+        setStatusMsg(t("tui.settingsCancelledTokenInput", "Cancelled short-lived token input"));
       }
       return;
     }
 
     if (inputUpper === "R") {
       void refreshRemoteStatus();
-      setStatusMsg("Remote status refreshed");
+      setStatusMsg(t("tui.settingsRemoteStatusRefreshed", "Remote status refreshed"));
       return;
     }
 
@@ -2537,24 +2559,24 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     if (data?.remote && inputUpper === "C") {
       const provider = localSettings.remoteActiveProvider;
       if (!provider) {
-        setStatusMsg("Select a remote provider first");
+        setStatusMsg(t("tui.settingsSelectProviderFirst", "Select a remote provider first"));
       } else {
         void data.remote.activateProvider(provider)
           .then(() => refreshRemoteStatus())
-          .then(() => setStatusMsg(`Activated provider: ${provider}`))
+          .then(() => setStatusMsg(t("tui.settingsActivatedProvider", "Activated provider: {{provider}}", { provider })))
           .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       }
       return;
     }
 
     if (data?.remote && inputUpper === "V") {
-      void data.remote.startTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg("Remote tunnel starting"))
+      void data.remote.startTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStarting", "Remote tunnel starting")))
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
 
     if (data?.remote && inputUpper === "X") {
-      void data.remote.stopTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg("Remote tunnel stopped"))
+      void data.remote.stopTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStopped", "Remote tunnel stopped")))
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
@@ -2563,7 +2585,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       void data.remote.regeneratePersistentToken()
         .then((result) => {
           setPersistentMaskedToken(result.maskedToken ?? null);
-          setStatusMsg("Persistent token regenerated");
+          setStatusMsg(t("tui.settingsPersistentTokenRegenerated", "Persistent token regenerated"));
         })
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
@@ -2572,20 +2594,20 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     if (data?.remote && inputUpper === "L") {
       setTtlInputValue(String(localSettings.remoteShortLivedTtlMs));
       setTtlInputMode(true);
-      setStatusMsg("Enter TTL milliseconds and press Enter");
+      setStatusMsg(t("tui.settingsEnterTtl", "Enter TTL milliseconds and press Enter"));
       return;
     }
 
     if (data?.remote && inputUpper === "U") {
       void handleFetchRemoteUrl("persistent")
-        .then(() => setStatusMsg("Remote URL fetched"))
+        .then(() => setStatusMsg(t("tui.settingsRemoteUrlFetched", "Remote URL fetched")))
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
 
     if (data?.remote && inputUpper === "K") {
       void handleFetchRemoteQr("persistent")
-        .then(() => setStatusMsg("QR payload fetched"))
+        .then(() => setStatusMsg(t("tui.settingsQrFetched", "QR payload fetched")))
         .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
       return;
     }
@@ -2672,7 +2694,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     if (!data?.remote || !localSettings) return;
     const ttlMs = Number(value.trim());
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
-      setStatusMsg("TTL must be a positive number (ms)");
+      setStatusMsg(t("tui.settingsTtlMustBePositive", "TTL must be a positive number (ms)"));
       return;
     }
 
@@ -2685,7 +2707,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       setLocalSettings({ ...localSettings, remoteShortLivedTtlMs: ttlMs });
       await saveField({ remoteShortLivedTtlMs: ttlMs });
       await handleFetchRemoteUrl("short-lived", ttlMs);
-      setStatusMsg("Short-lived token generated");
+      setStatusMsg(t("tui.settingsShortLivedTokenGenerated", "Short-lived token generated"));
     } catch (err) {
       setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -2697,7 +2719,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     <Box flexDirection="column" flexGrow={1}>
       {statusMsg && (
         <Box paddingX={1}>
-          <Text color="yellow">{saving ? "Saving…" : statusMsg}</Text>
+          <Text color="yellow">{saving ? t("tui.settingsSavingInProgress", "Saving…") : statusMsg}</Text>
         </Box>
       )}
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
@@ -2711,12 +2733,12 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
         >
           <Box paddingX={1}>
             <Text bold={!detailFocused} color={!detailFocused ? "cyanBright" : undefined} dimColor={detailFocused}>
-              Settings
+              {t("tui.settingsInteractivePanelTitle", "Settings")}
             </Text>
           </Box>
           <Box flexDirection="column" paddingX={1} flexGrow={1} overflow="hidden">
             {!localSettings ? (
-              <Text dimColor>Loading…</Text>
+              <Text dimColor>{t("tui.loading", "Loading…")}</Text>
             ) : (
               SETTING_DEFS.map((def, i) => {
                 const isSel = i === selectedIndex;
@@ -2724,7 +2746,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
                   <Box key={def.key} flexDirection="row" gap={1}>
                     <Text color={isSel ? "white" : "gray"}>{isSel ? "▶" : " "}</Text>
                     <Text bold={isSel} color={isSel ? "whiteBright" : undefined} wrap="truncate">
-                      {def.label}
+                      {t(def.labelKey, def.labelDefault)}
                     </Text>
                     <Box flexGrow={1} />
                     {renderValue(def, localSettings)}
@@ -2745,32 +2767,32 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
         >
           <Box paddingX={1}>
             <Text bold={detailFocused} color={detailFocused ? "cyanBright" : undefined} dimColor={!detailFocused}>
-              Edit / Models
+              {t("tui.settingsEditModelsTitle", "Edit / Models")}
             </Text>
           </Box>
           <Box flexDirection="column" paddingX={1} flexGrow={1} overflow="hidden">
             {!localSettings ? (
-              <Text dimColor>Loading settings…</Text>
+              <Text dimColor>{t("tui.settingsLoadingSettings", "Loading settings…")}</Text>
             ) : !selectedDef ? null : (
               <>
-                <Text bold color="whiteBright">{selectedDef.label}</Text>
+                <Text bold color="whiteBright">{t(selectedDef.labelKey, selectedDef.labelDefault)}</Text>
                 <Box height={1} />
                 <Box flexDirection="row" gap={1}>
-                  <Text dimColor>Current:</Text>
+                  <Text dimColor>{t("tui.settingsCurrentLabel", "Current:")}</Text>
                   {renderValue(selectedDef, localSettings)}
                 </Box>
                 <Box height={1} />
                 {selectedDef.type === "boolean" && (
-                  <Text dimColor>[Space] toggle</Text>
+                  <Text dimColor>{t("tui.settingsBoolToggleHint", "[Space] toggle")}</Text>
                 )}
                 {selectedDef.type === "number" && (
                   <Text dimColor>
-                    {selectedDef.key === "pollIntervalMs" ? "[+/-] adjust by 5000ms" : "[+/-] adjust by 1"}
+                    {selectedDef.key === "pollIntervalMs" ? t("tui.settingsAdjust5000ms", "[+/-] adjust by 5000ms") : t("tui.settingsAdjust1", "[+/-] adjust by 1")}
                   </Text>
                 )}
                 {selectedDef.type === "enum" && selectedDef.options && (
                   <Box flexDirection="column">
-                    <Text dimColor>[←/→] cycle options:</Text>
+                    <Text dimColor>{t("tui.settingsEnumCycleHint", "[←/→] cycle options:")}</Text>
                     {selectedDef.options.map((opt) => (
                       <Box key={opt} flexDirection="row" gap={1} marginLeft={1}>
                         <Text color={(localSettings[selectedDef.key] as string) === opt ? "white" : "gray"}>
@@ -2783,31 +2805,31 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
                 )}
 
                 <Box height={1} />
-                <Text dimColor>──── Remote ────</Text>
+                <Text dimColor>{t("tui.settingsRemoteHeader", "──── Remote ────")}</Text>
                 <Box flexDirection="row" gap={1}>
-                  <Text dimColor>Provider:</Text>
-                  <Text>{localSettings.remoteActiveProvider ?? "none"}</Text>
-                  <Text dimColor>State:</Text>
-                  <Text color={localSettings.remoteStatus?.state === "running" ? "green" : "yellow"}>{localSettings.remoteStatus?.state ?? "unknown"}</Text>
+                  <Text dimColor>{t("tui.settingsRemoteProvider", "Provider:")}</Text>
+                  <Text>{localSettings.remoteActiveProvider ?? t("tui.settingsRemoteProviderNone", "none")}</Text>
+                  <Text dimColor>{t("tui.settingsRemoteState", "State:")}</Text>
+                  <Text color={localSettings.remoteStatus?.state === "running" ? "green" : "yellow"}>{localSettings.remoteStatus?.state ?? t("tui.settingsRemoteStateUnknown", "unknown")}</Text>
                 </Box>
                 <Box flexDirection="row" gap={1}>
-                  <Text dimColor>Short-lived:</Text>
-                  <Text>{localSettings.remoteSettingsSnapshot?.shortLivedEnabled ? "on" : "off"}</Text>
+                  <Text dimColor>{t("tui.settingsRemoteShortLived", "Short-lived:")}</Text>
+                  <Text>{localSettings.remoteSettingsSnapshot?.shortLivedEnabled ? t("tui.settingsRemoteOn", "on") : t("tui.settingsRemoteOff", "off")}</Text>
                 </Box>
                 {localSettings.remoteStatus?.url && (
-                  <Text dimColor wrap="truncate-end">Tunnel URL: {localSettings.remoteStatus.url}</Text>
+                  <Text dimColor wrap="truncate-end">{t("tui.settingsRemoteTunnelUrl", "Tunnel URL:")} {localSettings.remoteStatus.url}</Text>
                 )}
                 {remoteUrl && (
-                  <Text color="white" wrap="truncate-end">Auth URL: {remoteUrl}</Text>
+                  <Text color="white" wrap="truncate-end">{t("tui.settingsRemoteAuthUrl", "Auth URL:")} {remoteUrl}</Text>
                 )}
                 {remoteTokenMeta && (
-                  <Text dimColor wrap="truncate-end">Token: {remoteTokenMeta}</Text>
+                  <Text dimColor wrap="truncate-end">{t("tui.settingsRemoteToken", "Token:")} {remoteTokenMeta}</Text>
                 )}
                 {persistentMaskedToken && (
-                  <Text dimColor wrap="truncate-end">Persistent token: {persistentMaskedToken}</Text>
+                  <Text dimColor wrap="truncate-end">{t("tui.settingsRemotePersistentToken", "Persistent token:")} {persistentMaskedToken}</Text>
                 )}
                 {shortLivedExpiresAt && (
-                  <Text dimColor wrap="truncate-end">Short-lived expires: {new Date(shortLivedExpiresAt).toLocaleString()}</Text>
+                  <Text dimColor wrap="truncate-end">{t("tui.settingsRemoteShortLivedExpires", "Short-lived expires:")} {new Date(shortLivedExpiresAt).toLocaleString()}</Text>
                 )}
                 {remoteQrDisplay && (
                   <Box flexDirection="column">
@@ -2821,7 +2843,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
                 )}
                 {ttlInputMode && (
                   <Box flexDirection="row" gap={1}>
-                    <Text dimColor>TTL ms:</Text>
+                    <Text dimColor>{t("tui.settingsTtlLabel", "TTL ms:")}</Text>
                     <TextInput
                       value={ttlInputValue}
                       onChange={setTtlInputValue}
@@ -2829,18 +2851,18 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
                         void submitShortLivedTtlInput(value);
                       }}
                     />
-                    <Text dimColor>[Enter] generate [Esc] cancel</Text>
+                    <Text dimColor>{t("tui.settingsTtlHints", "[Enter] generate [Esc] cancel")}</Text>
                   </Box>
                 )}
-                <Text dimColor>[C] activate provider  [V] start  [X] stop  [P] persistent token  [L] short-lived token</Text>
-                <Text dimColor>[U] URL hand-off  [K] QR hand-off  [R] refresh</Text>
+                <Text dimColor>{t("tui.settingsRemoteActions1", "[C] activate provider  [V] start  [X] stop  [P] persistent token  [L] short-lived token")}</Text>
+                <Text dimColor>{t("tui.settingsRemoteActions2", "[U] URL hand-off  [K] QR hand-off  [R] refresh")}</Text>
 
                 {/* Models subsection */}
                 {models.length > 0 && (
                   <>
                     <Box height={1} />
-                    <Text dimColor>──── Available Models ────</Text>
-                    <Text dimColor>Configure default model in web dashboard</Text>
+                    <Text dimColor>{t("tui.settingsAvailableModelsHeader", "──── Available Models ────")}</Text>
+                    <Text dimColor>{t("tui.settingsConfigureModelInDashboard", "Configure default model in web dashboard")}</Text>
                     <Box height={1} />
                     {models.slice(0, 8).map((m) => (
                       <Box key={`${m.provider}/${m.id}`} flexDirection="row" gap={1}>
@@ -2850,7 +2872,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
                       </Box>
                     ))}
                     {models.length > 8 && (
-                      <Text dimColor>… and {models.length - 8} more</Text>
+                      <Text dimColor>{t("tui.settingsMoreModels", "… and {{count}} more", { count: models.length - 8 })}</Text>
                     )}
                   </>
                 )}
@@ -2861,7 +2883,7 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       </Box>
 
       <Box paddingX={1}>
-        <Text dimColor>[Tab] switch panel  ↑↓ select setting  [Space] toggle bool  [+/-] adjust num  [←/→] cycle enum  [C/V/X/P/L/U/K/R] remote actions</Text>
+        <Text dimColor>{t("tui.settingsFooterHints", "[Tab] switch panel  ↑↓ select setting  [Space] toggle bool  [+/-] adjust num  [←/→] cycle enum  [C/V/X/P/L/U/K/R] remote actions")}</Text>
       </Box>
     </Box>
   );
@@ -2918,6 +2940,7 @@ function PushModal({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation("cli");
   useInput((_input, key) => {
     if (key.return) { onConfirm(); return; }
     if (key.escape) { onCancel(); return; }
@@ -2934,18 +2957,18 @@ function PushModal({
       paddingY={1}
       backgroundColor="black"
     >
-      <Text bold color="white">Push to remote</Text>
+      <Text bold color="white">{t("tui.gitPushModalTitle", "Push to remote")}</Text>
       <Box height={1} />
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Branch:</Text>
+        <Text dimColor>{t("tui.gitPushModalBranch", "Branch:")}</Text>
         <Text color="cyan">{status.branch}</Text>
-        <Text dimColor>ahead</Text>
+        <Text dimColor>{t("tui.gitPushModalAhead", "ahead")}</Text>
         <Text color="yellow">{status.ahead}</Text>
       </Box>
       {toPush.length > 0 && (
         <>
           <Box height={1} />
-          <Text dimColor>Commits to push (oldest→newest):</Text>
+          <Text dimColor>{t("tui.gitPushModalCommits", "Commits to push (oldest→newest):")}</Text>
           {[...toPush].reverse().map((c) => (
             <Box key={c.sha} flexDirection="row" gap={1} marginLeft={1}>
               <Text color="gray">{c.shortSha}</Text>
@@ -2955,12 +2978,13 @@ function PushModal({
         </>
       )}
       <Box height={1} />
-      <Text dimColor>[Enter] push  [Esc] cancel</Text>
+      <Text dimColor>{t("tui.gitPushModalHints", "[Enter] push  [Esc] cancel")}</Text>
     </Box>
   );
 }
 
 function GitView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
@@ -3046,7 +3070,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
           setPushModal({ phase: "pushing" });
           if (data && projectPath) {
             data.git.push(projectPath).then((result) => {
-              setPushModal({ phase: "done", message: result.output || (result.success ? "Push successful" : "Push failed"), isError: !result.success });
+              setPushModal({ phase: "done", message: result.output || (result.success ? t("tui.gitPushSuccessful", "Push successful") : t("tui.gitPushFailed", "Push failed")), isError: !result.success });
               if (result.success) {
                 setTimeout(() => { setPushModal(null); void refresh(); }, 2000);
               }
@@ -3083,9 +3107,9 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
     }
 
     if (input === "F" && data && projectPath) {
-      setStatusMsg("Fetching…");
+      setStatusMsg(t("tui.gitFetching", "Fetching…"));
       data.git.fetch(projectPath).then((result) => {
-        setStatusMsg(result.success ? "Fetched" : `Fetch failed: ${result.output}`);
+        setStatusMsg(result.success ? t("tui.gitFetched", "Fetched") : t("tui.gitFetchFailed", "Fetch failed: {{output}}", { output: result.output }));
         void refresh();
       }).catch((err: unknown) => {
         setStatusMsg(`Fetch error: ${err instanceof Error ? err.message : String(err)}`);
@@ -3160,14 +3184,14 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
       {/* Top bar: project selector + status */}
       <Box flexDirection="row" gap={2} paddingX={1}>
         <Box flexDirection="row" gap={1}>
-          <Text dimColor>Project:</Text>
-          <Text bold color="white">{selectedProject?.name ?? "(none)"}</Text>
-          <Text dimColor>[p] change</Text>
+          <Text dimColor>{t("tui.projectSelectorLabel", "Project:")}</Text>
+          <Text bold color="white">{selectedProject?.name ?? t("tui.projectSelectorNone", "(none)")}</Text>
+          <Text dimColor>{t("tui.projectSelectorChangeHint", "[p] change")}</Text>
         </Box>
         {loading && (
           <Box flexDirection="row" gap={1}>
             <Text color="cyanBright"><Spinner type="dots" /></Text>
-            <Text dimColor>refreshing</Text>
+            <Text dimColor>{t("tui.gitRefreshing", "refreshing")}</Text>
           </Box>
         )}
         {statusMsg && <Text color="yellow">{statusMsg}</Text>}
@@ -3214,7 +3238,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
                 </Box>
                 <Box flexDirection="column" paddingX={1} overflow="hidden">
                   {!gitStatus ? (
-                    <Text dimColor>{projectPath ? "Loading…" : "No project"}</Text>
+                    <Text dimColor>{projectPath ? t("tui.loading", "Loading…") : t("tui.gitNoProject", "No project")}</Text>
                   ) : (
                     <>
                       <Box flexDirection="row" gap={1}>
@@ -3327,7 +3351,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
                 </Box>
                 <Box flexDirection="column" paddingX={1} flexGrow={1} overflow="hidden">
                   {commits.length === 0 ? (
-                    <Text dimColor>{loading ? "Loading…" : "No commits"}</Text>
+                    <Text dimColor>{loading ? t("tui.loading", "Loading…") : t("tui.gitNoCommits", "No commits")}</Text>
                   ) : (
                     commits.map((c, i) => {
                       const isSel = i === commitIndex;
@@ -3435,7 +3459,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
                   </Box>
                 ) : (
                   <Box paddingX={1}>
-                    <Text dimColor>Working tree clean</Text>
+                    <Text dimColor>{t("tui.gitWorkingTreeClean", "Working tree clean")}</Text>
                   </Box>
                 )}
               </Box>
@@ -3447,10 +3471,10 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
       {/* Footer */}
       <Box paddingX={1} flexDirection="row" gap={1}>
         <Text dimColor>
-          [r] refresh  {gitStatus && gitStatus.ahead > 0 ? "[P] push  " : ""}[F] fetch  [↑↓] rows  [←→] status▸branches{worktrees.length > 1 ? "▸worktrees" : ""}▸commits▸changes  [p] project  [Esc/s] back
+          {t("tui.gitFooterHints", "[r] refresh  {{push}}[F] fetch  [↑↓] rows  [←→] status▸branches{{worktrees}}▸commits▸changes  [p] project  [Esc/s] back", { push: gitStatus && gitStatus.ahead > 0 ? "[P] push  " : "", worktrees: worktrees.length > 1 ? "▸worktrees" : "" })}
         </Text>
         {isNarrow && (
-          <Text dimColor>[narrow] {activePane}</Text>
+          <Text dimColor>{t("tui.narrowModeIndicator", "[narrow]")} {activePane}</Text>
         )}
       </Box>
 
@@ -3477,7 +3501,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
                 setPushModal({ phase: "pushing" });
                 if (data && projectPath) {
                   data.git.push(projectPath).then((result) => {
-                    setPushModal({ phase: "done", message: result.output || (result.success ? "Push successful" : "Push failed"), isError: !result.success });
+                    setPushModal({ phase: "done", message: result.output || (result.success ? t("tui.gitPushSuccessful", "Push successful") : t("tui.gitPushFailed", "Push failed")), isError: !result.success });
                     if (result.success) {
                       setTimeout(() => { setPushModal(null); void refresh(); }, 2000);
                     }
@@ -3500,7 +3524,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
               backgroundColor="black"
             >
               <Text color="cyanBright"><Spinner type="dots" /></Text>
-              <Text color="white">Pushing to origin/{gitStatus?.branch ?? "…"}</Text>
+              <Text color="white">{t("tui.gitPushingToOrigin", "Pushing to origin/{{branch}}", { branch: gitStatus?.branch ?? "…" })}</Text>
             </Box>
           )}
           {pushModal.phase === "done" && (
@@ -3515,7 +3539,7 @@ function GitView({ state, controller }: { state: DashboardState; controller: Das
               <Text color={pushModal.isError ? "red" : "green"}>
                 {pushModal.message}
               </Text>
-              {pushModal.isError && <Text dimColor>[Esc] dismiss</Text>}
+              {pushModal.isError && <Text dimColor>{t("tui.gitPushDismissHint", "[Esc] dismiss")}</Text>}
             </Box>
           )}
         </Box>
@@ -3579,6 +3603,7 @@ function entriesToNodes(entries: FileEntry[], depth: number): TreeNode[] {
 }
 
 function FilesView({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
@@ -3897,10 +3922,10 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
             {treeLoading ? (
               <Box flexDirection="row" gap={1}>
                 <Text color="cyanBright"><Spinner type="dots" /></Text>
-                <Text dimColor>Loading…</Text>
+                <Text dimColor>{t("tui.loading", "Loading…")}</Text>
               </Box>
             ) : flatNodes.length === 0 ? (
-              <Text dimColor>(empty)</Text>
+              <Text dimColor>{t("tui.filesEmpty", "(empty)")}</Text>
             ) : (
               flatNodes.map((node, i) => {
                 const isSelected = focusedPane === "tree" && i === selectedIndex;
@@ -3965,18 +3990,18 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
               {previewLoading ? (
                 <Box flexDirection="row" gap={1}>
                   <Text color="cyanBright"><Spinner type="dots" /></Text>
-                  <Text dimColor>Loading…</Text>
+                  <Text dimColor>{t("tui.loading", "Loading…")}</Text>
                 </Box>
               ) : !previewEntry ? (
-                <Text dimColor>Select a file to preview</Text>
+                <Text dimColor>{t("tui.filesSelectToPreview", "Select a file to preview")}</Text>
               ) : previewResult === null ? (
-                <Text dimColor>Unable to read file</Text>
+                <Text dimColor>{t("tui.filesUnableToRead", "Unable to read file")}</Text>
               ) : previewResult.isBinary ? (
-                <Text dimColor>[binary file, {formatFileSize(previewResult.size)}]</Text>
+                <Text dimColor>{t("tui.filesBinary", "[binary file, {{size}}]", { size: formatFileSize(previewResult.size) })}</Text>
               ) : previewResult.tooLarge ? (
-                <Text dimColor>{formatFileSize(previewResult.size)} — [too large to preview]</Text>
+                <Text dimColor>{t("tui.filesTooLarge", "{{size}} — [too large to preview]", { size: formatFileSize(previewResult.size) })}</Text>
               ) : previewResult.content === "" ? (
-                <Text dimColor>(empty file)</Text>
+                <Text dimColor>{t("tui.filesEmptyFile", "(empty file)")}</Text>
               ) : previewLines ? (
                 <Box flexDirection="column" overflow="hidden">
                   {previewLines.map((line, i) => {
@@ -3991,7 +4016,7 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
                     );
                   })}
                   {totalLines > previewScroll + previewHeight && (
-                    <Text dimColor>… {totalLines - previewScroll - previewHeight} more lines</Text>
+                    <Text dimColor>{t("tui.filesMoreLines", "… {{count}} more lines", { count: totalLines - previewScroll - previewHeight })}</Text>
                   )}
                 </Box>
               ) : null}
@@ -4003,10 +4028,10 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
       {/* Footer hints */}
       <Box paddingX={1} flexDirection="row" gap={1}>
         <Text dimColor>
-          [Tab] switch pane  [↑↓/jk] move  [Enter] open  [←/→] collapse/expand  [.] hidden  [w] wrap  [p] project  [r] reload
+          {t("tui.filesFooterHints", "[Tab] switch pane  [↑↓/jk] move  [Enter] open  [←/→] collapse/expand  [.] hidden  [w] wrap  [p] project  [r] reload")}
         </Text>
         {isNarrow && (
-          <Text dimColor>[narrow] {focusedPane}</Text>
+          <Text dimColor>{t("tui.narrowModeIndicator", "[narrow]")} {focusedPane}</Text>
         )}
       </Box>
 
@@ -4021,7 +4046,7 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
             paddingY={1}
             backgroundColor="black"
           >
-            <Text bold color="white">Select Project</Text>
+            <Text bold color="white">{t("tui.filesSelectProject", "Select Project")}</Text>
             <Box height={1} />
             {projectsState.projects.map((proj, i) => (
               <Box key={proj.id} flexDirection="row" gap={1}>
@@ -4041,11 +4066,12 @@ function FilesView({ state, controller }: { state: DashboardState; controller: D
 // ── Interactive mode root ─────────────────────────────────────────────────────
 
 function InteractiveMode({ state, controller }: { state: DashboardState; controller: DashboardTUI }) {
+  const { t } = useTranslation("cli");
   if (state.interactiveData === null) {
     return (
       <Box flexDirection="column" flexGrow={1}>
         <Box justifyContent="center" alignItems="center" flexGrow={1}>
-          <Text dimColor>Interactive mode unavailable — no data source</Text>
+          <Text dimColor>{t("tui.interactiveModeUnavailable", "Interactive mode unavailable — no data source")}</Text>
         </Box>
       </Box>
     );
@@ -4072,6 +4098,7 @@ interface DashboardAppProps {
 }
 
 export function DashboardApp({ controller }: DashboardAppProps) {
+  const { t } = useTranslation("cli");
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -4194,7 +4221,7 @@ export function DashboardApp({ controller }: DashboardAppProps) {
       const remote = state.interactiveData?.remote;
       if (!remote) return;
       if (state.remoteStatus?.state !== "running") {
-        setQrOverlay({ state: "error", message: "No remote tunnel is running. Start one in Settings (g)." });
+        setQrOverlay({ state: "error", message: t("tui.qrNoTunnelRunning", "No remote tunnel is running. Start one in Settings (g).") });
         return;
       }
       setQrOverlay({ state: "loading" });
@@ -4581,8 +4608,8 @@ export function DashboardApp({ controller }: DashboardAppProps) {
       )}
       {qrOverlay && (
         <Box position="absolute" marginTop={2} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="cyan" backgroundColor="black" paddingX={1}>
-          <Text bold color="cyanBright">Remote Access — Scan to connect</Text>
-          {qrOverlay.state === "loading" && <Text dimColor>Generating QR…</Text>}
+          <Text bold color="cyanBright">{t("tui.qrOverlayTitle", "Remote Access — Scan to connect")}</Text>
+          {qrOverlay.state === "loading" && <Text dimColor>{t("tui.qrGenerating", "Generating QR…")}</Text>}
           {qrOverlay.state === "error" && <Text color="red">{qrOverlay.message}</Text>}
           {qrOverlay.state === "ready" && (
             <>
@@ -4596,7 +4623,7 @@ export function DashboardApp({ controller }: DashboardAppProps) {
               </Text>
             </>
           )}
-          <Text dimColor>[Esc] close</Text>
+          <Text dimColor>{t("tui.qrCloseHint", "[Esc] close")}</Text>
         </Box>
       )}
     </Box>

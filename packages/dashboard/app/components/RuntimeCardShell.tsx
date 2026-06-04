@@ -9,6 +9,7 @@
  */
 
 import { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 
 export type RuntimeStatusKind = "neutral" | "ok" | "err" | "loading";
@@ -48,6 +49,7 @@ export interface RuntimeCardShellProps {
 }
 
 export function RuntimeCardShell(props: RuntimeCardShellProps) {
+  const { t } = useTranslation("app");
   const {
     name,
     subname,
@@ -95,7 +97,7 @@ export function RuntimeCardShell(props: RuntimeCardShellProps) {
           target="_blank"
           rel="noreferrer"
         >
-          Learn more →
+          {t("common.learnMore", "Learn more →")}
         </a>
       </header>
 
@@ -128,10 +130,10 @@ export function RuntimeCardShell(props: RuntimeCardShellProps) {
         >
           {busy === "testing" ? (
             <>
-              <Loader2 size={12} className="animate-spin" /> Testing…
+              <Loader2 size={12} className="animate-spin" /> {t("common.testing", "Testing…")}
             </>
           ) : (
-            "Test"
+            t("common.test", "Test")
           )}
         </button>
         <button
@@ -140,7 +142,7 @@ export function RuntimeCardShell(props: RuntimeCardShellProps) {
           onClick={onSave}
           disabled={busy !== null}
         >
-          {busy === "saving" ? "Saving…" : "Save"}
+          {busy === "saving" ? t("common.saving", "Saving…") : t("common.save", "Save")}
         </button>
         <button
           type="button"
@@ -150,10 +152,10 @@ export function RuntimeCardShell(props: RuntimeCardShellProps) {
         >
           {busy === "save-test" ? (
             <>
-              <Loader2 size={12} className="animate-spin" /> Saving…
+              <Loader2 size={12} className="animate-spin" /> {t("common.saving", "Saving…")}
             </>
           ) : (
-            "Save & Test"
+            t("common.saveAndTest", "Save & Test")
           )}
         </button>
       </footer>

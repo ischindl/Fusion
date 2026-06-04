@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import "./SettingsSyncConflictModal.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -84,6 +85,7 @@ export function SettingsSyncConflictModal({
   remoteNodeName,
   addToast,
 }: SettingsSyncConflictModalProps) {
+  const { t } = useTranslation("app");
   const [resolutionMap, setResolutionMap] = useState<Record<string, ResolutionState>>({});
   const [isResolving, setIsResolving] = useState(false);
 
@@ -189,10 +191,10 @@ export function SettingsSyncConflictModal({
       });
 
       await onResolve(results);
-      addToast("Settings conflicts resolved successfully", "success");
+      addToast(t("settings.resolvedSuccess", "Settings conflicts resolved successfully"), "success");
       onClose();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to resolve conflicts";
+      const message = error instanceof Error ? error.message : t("settings.resolveFailed", "Failed to resolve conflicts");
       addToast(message, "error");
     } finally {
       setIsResolving(false);
@@ -219,11 +221,11 @@ export function SettingsSyncConflictModal({
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Resolve Settings Conflicts"
+        aria-label={t("settings.conflictModalTitle", "Resolve Settings Conflicts")}
       >
         <div className="modal-header">
-          <h3>Resolve Settings Conflicts</h3>
-          <button className="modal-close" onClick={onClose} aria-label="Close conflict modal">
+          <h3>{t("settings.conflictModalTitle", "Resolve Settings Conflicts")}</h3>
+          <button className="modal-close" onClick={onClose} aria-label={t("settings.closeModal", "Close conflict modal")}>
             &times;
           </button>
         </div>
@@ -265,7 +267,7 @@ export function SettingsSyncConflictModal({
                         checked={state.resolution === "local"}
                         onChange={() => handleResolutionChange(conflict.key, "local")}
                       />
-                      Keep Local
+                      {t("settings.keepLocal", "Keep Local")}
                     </label>
                     <label>
                       <input
@@ -274,7 +276,7 @@ export function SettingsSyncConflictModal({
                         checked={state.resolution === "remote"}
                         onChange={() => handleResolutionChange(conflict.key, "remote")}
                       />
-                      Keep Remote
+                      {t("settings.keepRemote", "Keep Remote")}
                     </label>
                     <label>
                       <input
@@ -283,7 +285,7 @@ export function SettingsSyncConflictModal({
                         checked={state.resolution === "manual"}
                         onChange={() => handleResolutionChange(conflict.key, "manual")}
                       />
-                      Merge Manually
+                      {t("settings.mergeManually", "Merge Manually")}
                     </label>
                   </div>
 
@@ -292,7 +294,7 @@ export function SettingsSyncConflictModal({
                       className="settings-sync-conflict-modal__manual-input"
                       value={state.manualValue ?? ""}
                       onChange={(e) => handleManualValueChange(conflict.key, e.target.value)}
-                      placeholder="Enter JSON value..."
+                      placeholder={t("settings.jsonPlaceholder", "Enter JSON value...")}
                     />
                   )}
                 </div>
@@ -306,28 +308,28 @@ export function SettingsSyncConflictModal({
               onClick={() => handleBulkResolution("local")}
               type="button"
             >
-              Resolve All: Keep Local
+              {t("settings.resolveAllLocal", "Resolve All: Keep Local")}
             </button>
             <button
               className="btn btn-sm"
               onClick={() => handleBulkResolution("remote")}
               type="button"
             >
-              Resolve All: Keep Remote
+              {t("settings.resolveAllRemote", "Resolve All: Keep Remote")}
             </button>
           </div>
         </div>
 
         <div className="modal-actions settings-sync-conflict-modal__footer">
           <button className="btn btn-sm" onClick={onClose}>
-            Cancel
+            {t("actions.cancel", "Cancel")}
           </button>
           <button
             className="btn btn-primary btn-sm"
             onClick={handleConfirm}
             disabled={isResolving}
           >
-            {isResolving ? "Resolving..." : "Confirm"}
+            {isResolving ? t("settings.resolving", "Resolving...") : t("actions.confirm", "Confirm")}
           </button>
         </div>
       </div>

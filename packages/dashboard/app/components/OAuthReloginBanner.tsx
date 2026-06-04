@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, X } from "lucide-react";
 import { fetchAuthStatus } from "../api";
 import { OAUTH_RELOGIN_SUCCESS_EVENT } from "../auth";
@@ -35,6 +36,7 @@ export function OAuthReloginBanner({
   onReLogin: (providerId?: string) => void;
   pollIntervalMs?: number;
 }): JSX.Element | null {
+  const { t } = useTranslation("app");
   const [expiredProviders, setExpiredProviders] = useState<Array<{ id: string; name: string }>>([]);
   const [dismissedProviderIds, setDismissedProviderIds] = useState<Set<string>>(() => loadDismissedProviderIds());
 
@@ -113,8 +115,8 @@ export function OAuthReloginBanner({
         <AlertTriangle aria-hidden="true" />
         <p className="oauth-relogin-banner__message">
           {isSingleProvider
-            ? `Re-login required: ${providerList}. Your ${providerList} session expired — sign in again to keep agents running.`
-            : `Re-login required: ${providerList}`}
+            ? t("auth.reloginRequired", "Re-login required: {{provider}}. Your {{provider}} session expired — sign in again to keep agents running.", { provider: providerList })
+            : t("auth.reloginRequiredMultiple", "Re-login required: {{providers}}", { providers: providerList })}
         </p>
       </div>
       <div className="oauth-relogin-banner__actions">
@@ -123,12 +125,12 @@ export function OAuthReloginBanner({
           className="btn btn-sm"
           onClick={() => onReLogin(isSingleProvider ? visibleExpiredProviders[0]?.id : undefined)}
         >
-          Re-login
+          {t("auth.relogin", "Re-login")}
         </button>
         <button
           type="button"
           className="btn-icon oauth-relogin-banner__dismiss"
-          aria-label="Dismiss OAuth re-login banner"
+          aria-label={t("actions.dismissOAuth", "Dismiss OAuth re-login banner")}
           onClick={handleDismiss}
         >
           <X aria-hidden="true" />

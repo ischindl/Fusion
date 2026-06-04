@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { resolveResearchSettings, type Settings } from "@fusion/core";
 import { Loader2, Search } from "lucide-react";
 import { fetchAuthStatus, fetchSettings } from "../api";
@@ -26,17 +28,22 @@ const PROVIDER_TO_SOURCE_KEY: Record<ResearchProviderOption, keyof ReturnType<ty
   "llm-synthesis": "llmSynthesis",
 };
 
-const PROVIDER_LABELS: Record<ResearchProviderOption, string> = {
-  "web-search": "Web Search",
-  "page-fetch": "Page Fetch",
-  github: "GitHub",
-  "local-docs": "Local Docs",
-  "llm-synthesis": "LLM Synthesis",
-};
+function useProviderLabels(t: TFunction): Record<ResearchProviderOption, string> {
+  return {
+    "web-search": t("research.providerWebSearch", "Web Search"),
+    "page-fetch": t("research.providerPageFetch", "Page Fetch"),
+    github: t("research.providerGitHub", "GitHub"),
+    "local-docs": t("research.providerLocalDocs", "Local Docs"),
+    "llm-synthesis": t("research.providerLlmSynthesis", "LLM Synthesis"),
+  };
+}
 
 let researchViewWasPreviouslyInactive = false;
 
 export function ResearchView({ projectId, addToast, onOpenSettings, readinessVersion = 0 }: ResearchViewProps) {
+  const { t } = useTranslation("app");
+  const providerLabels = useProviderLabels(t);
+
   useEffect(() => {
     recordResumeEvent({
       view: "ResearchView",
@@ -132,9 +139,9 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
   }, [projectId, readinessVersion]);
 
   const statusLabel = useMemo(() => {
-    if (!selectedRun) return "No run selected";
+    if (!selectedRun) return t("research.noRunSelected", "No run selected");
     return selectedRun.status;
-  }, [selectedRun]);
+  }, [selectedRun, t]);
 
   const statusDotClass = useMemo(() => {
     if (!selectedRun) return "status-dot";
@@ -163,27 +170,27 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
   const setupState = useMemo(() => {
     if (!availability.available) {
       return {
-        reason: availability.reason ?? "Research is unavailable for this project.",
+        reason: availability.reason ?? t("research.unavailable", "Research is unavailable for this project."),
         details: availability.setupInstructions,
         settingsSection: "research-project" as SectionId,
       };
     }
     if (!effectiveSettings.enabled) {
       return {
-        reason: "Research is disabled for this project.",
-        details: "Enable project research settings to create runs.",
+        reason: t("research.disabled", "Research is disabled for this project."),
+        details: t("research.enableResearchHint", "Enable project research settings to create runs."),
         settingsSection: "research-project" as SectionId,
       };
     }
     if (missingCredentialProvider) {
       return {
-        reason: `Missing API key for ${missingCredentialProvider}.`,
-        details: "Add provider credentials in Authentication settings.",
+        reason: t("research.missingApiKey", "Missing API key for {{provider}}.", { provider: missingCredentialProvider }),
+        details: t("research.addCredentialsHint", "Add provider credentials in Authentication settings."),
         settingsSection: "authentication" as SectionId,
       };
     }
     return null;
-  }, [availability.available, availability.reason, availability.setupInstructions, effectiveSettings.enabled, missingCredentialProvider]);
+  }, [availability.available, availability.reason, availability.setupInstructions, effectiveSettings.enabled, missingCredentialProvider, t]);
 
   const runAction = async (key: string, action: () => Promise<unknown>, successMessage: string) => {
     setActionLoading(key);
@@ -192,7 +199,7 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
       addToast?.(successMessage, "success");
       await refresh();
     } catch (err) {
-      addToast?.(err instanceof Error ? err.message : "Action failed", "error");
+      addToast?.(err instanceof Error ? err.message : t("research.actionFailed", "Action failed"), "error");
     } finally {
       setActionLoading(null);
     }
@@ -212,9 +219,9 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      addToast?.(`Exported ${payload.filename}`, "success");
+      addToast?.(t("research.exportedFile", "Exported {{filename}}", { filename: payload.filename }), "success");
     } catch (err) {
-      addToast?.(err instanceof Error ? err.message : "Export failed", "error");
+      addToast?.(err instanceof Error ? err.message : t("research.exportFailed", "Export failed"), "error");
     } finally {
       setActionLoading(null);
     }
@@ -227,31 +234,31 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
       const providers = selectedProviders.filter((provider) => isProviderEnabled(provider));
       if (providers.length === 0) {
         setSubmitting(false);
-        addToast?.("No enabled research sources are available for this project.", "error");
+        addToast?.(t("research.noSourcesAvailable", "No enabled research sources are available for this project."), "error");
         return;
       }
       const response = await createRun({ query: query.trim(), providers });
       setSelectedRunId(response.run.id);
       setQuery("");
-      addToast?.("Research run created", "success");
+      addToast?.(t("research.runCreated", "Research run created"), "success");
       await refresh();
     } catch (err) {
-      addToast?.(err instanceof Error ? err.message : "Failed to create run", "error");
+      addToast?.(err instanceof Error ? err.message : t("research.createRunFailed", "Failed to create run"), "error");
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <section className="research-view" aria-label="Research view">
+    <section className="research-view" aria-label={t("research.viewLabel", "Research view")}>
       <header className="research-view__header">
         <div>
-          <h2 className="research-view__title">Research</h2>
-          <p className="research-view__subtitle">Cited search and synthesis runs: gather sources, fetch content, and synthesize findings.</p>
+          <h2 className="research-view__title">{t("research.title", "Research")}</h2>
+          <p className="research-view__subtitle">{t("research.subtitle", "Cited search and synthesis runs: gather sources, fetch content, and synthesize findings.")}</p>
         </div>
         <div className="research-view__header-actions">
           <button className="btn" type="button" onClick={() => void refresh()}>
-            Refresh
+            {t("actions.refresh", "Refresh")}
           </button>
         </div>
       </header>
@@ -265,10 +272,10 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
           </p>
           <div className="research-view__actions">
             <button className="btn" type="button" onClick={() => void refresh()}>
-              Refresh
+              {t("actions.refresh", "Refresh")}
             </button>
             <button className="btn btn-primary" type="button" onClick={() => onOpenSettings?.(setupState.settingsSection)}>
-              Open Settings
+              {t("actions.openSettings", "Open Settings")}
             </button>
           </div>
         </div>
@@ -279,11 +286,11 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
           <div className="research-view__sidebar-content">
             <div className="research-view__form">
               <div className="form-group">
-                <label htmlFor="research-query">Query</label>
+                <label htmlFor="research-query">{t("research.queryLabel", "Query")}</label>
                 <textarea id="research-query" className="input research-view__textarea" value={query} onChange={(event) => setQuery(event.target.value)} />
               </div>
               <div className="form-group">
-                <label>Providers</label>
+                <label>{t("research.providersLabel", "Providers")}</label>
                 <div className="research-view__providers">
                   {providerOptions.map((provider) => {
                     const providerEnabled = isProviderEnabled(provider);
@@ -304,8 +311,8 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                           }}
                         />
                         <span>
-                          {PROVIDER_LABELS[provider] ?? provider}
-                          {providerLocked ? <span className="research-view__provider-lock">Always on</span> : null}
+                          {providerLabels[provider] ?? provider}
+                          {providerLocked ? <span className="research-view__provider-lock">{t("research.alwaysOn", "Always on")}</span> : null}
                         </span>
                       </label>
                     );
@@ -314,18 +321,18 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
               </div>
               <button className="btn btn-primary" type="button" disabled={!query.trim() || submitting} onClick={() => void handleCreateRun()}>
                 {submitting ? <Loader2 className="animate-spin" size={14} /> : null}
-                Create Run
+                {t("research.createRun", "Create Run")}
               </button>
             </div>
 
             <div className="research-view__history-header form-group">
-              <label htmlFor="research-run-search">Search</label>
+              <label htmlFor="research-run-search">{t("actions.search", "Search")}</label>
               <div className="research-view__history-search-row">
                 <Search size={14} />
                 <input
                   id="research-run-search"
                   className="input"
-                  placeholder="Search runs"
+                  placeholder={t("research.searchRunsPlaceholder", "Search runs")}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                 />
@@ -348,9 +355,9 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
         </aside>
 
         <div className="research-view__reader card">
-          {loading && <p data-testid="research-state-loading">Loading research runs…</p>}
+          {loading && <p data-testid="research-state-loading">{t("research.loadingRuns", "Loading research runs…")}</p>}
           {!loading && error && <p data-testid="research-state-error">{error}</p>}
-          {!loading && !error && runs.length === 0 && <p data-testid="research-state-empty">No research runs yet</p>}
+          {!loading && !error && runs.length === 0 && <p data-testid="research-state-empty">{t("research.noRunsYet", "No research runs yet")}</p>}
           <div className="research-view__reader-content">
             {selectedRun && (
               <div className="research-view__run-detail">
@@ -360,29 +367,29 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                 </div>
                 <h3 className="research-view__run-title">{selectedRun.title}</h3>
                 <p className="research-view__run-query">{selectedRun.query}</p>
-                <p className="research-view__run-summary" data-testid="research-state-results">{selectedRun.results?.summary ?? "No summary yet."}</p>
+                <p className="research-view__run-summary" data-testid="research-state-results">{selectedRun.results?.summary ?? t("research.noSummaryYet", "No summary yet.")}</p>
                 <div className="research-view__actions">
                   <button
                     className="btn"
                     type="button"
                     title={!runActionState.cancelable ? runActionState.blockingReason : undefined}
                     disabled={actionLoading === "cancel" || actionLoading === "retry" || !runActionState.cancelable}
-                    onClick={() => void runAction("cancel", () => cancelRun(selectedRun.id), "Run cancelled")}
+                    onClick={() => void runAction("cancel", () => cancelRun(selectedRun.id), t("research.runCancelled", "Run cancelled"))}
                   >
-                    Cancel
+                    {t("actions.cancel", "Cancel")}
                   </button>
                   <button
                     className="btn"
                     type="button"
                     title={!runActionState.retryable ? runActionState.blockingReason : undefined}
                     disabled={actionLoading === "cancel" || actionLoading === "retry" || !runActionState.retryable}
-                    onClick={() => void runAction("retry", () => retryRun(selectedRun.id), "Run retried")}
+                    onClick={() => void runAction("retry", () => retryRun(selectedRun.id), t("research.runRetried", "Run retried"))}
                   >
-                    Retry
+                    {t("actions.retry", "Retry")}
                   </button>
-                  {supportedExportFormats.includes("markdown") && <button className="btn" type="button" disabled={actionLoading === "export-markdown"} onClick={() => void handleExport("markdown")}>Export MD</button>}
-                  {supportedExportFormats.includes("json") && <button className="btn" type="button" disabled={actionLoading === "export-json"} onClick={() => void handleExport("json")}>Export JSON</button>}
-                  {supportedExportFormats.includes("html") && <button className="btn" type="button" disabled={actionLoading === "export-html"} onClick={() => void handleExport("html")}>Export HTML</button>}
+                  {supportedExportFormats.includes("markdown") && <button className="btn" type="button" disabled={actionLoading === "export-markdown"} onClick={() => void handleExport("markdown")}>{t("research.exportMd", "Export MD")}</button>}
+                  {supportedExportFormats.includes("json") && <button className="btn" type="button" disabled={actionLoading === "export-json"} onClick={() => void handleExport("json")}>{t("research.exportJson", "Export JSON")}</button>}
+                  {supportedExportFormats.includes("html") && <button className="btn" type="button" disabled={actionLoading === "export-html"} onClick={() => void handleExport("html")}>{t("research.exportHtml", "Export HTML")}</button>}
                 </div>
                 {selectedRun.error && <p className="research-view__error">{selectedRun.error}</p>}
                 {uiError && (
@@ -391,12 +398,12 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                     {uiError.setupHint && <p>{uiError.setupHint}</p>}
                     {uiError.code === "MISSING_CREDENTIALS" && (
                       <button className="btn btn-sm" type="button" onClick={() => onOpenSettings?.("authentication")}>
-                        Open Authentication Settings
+                        {t("research.openAuthSettings", "Open Authentication Settings")}
                       </button>
                     )}
                     {uiError.code === "FEATURE_DISABLED" && (
                       <button className="btn btn-sm" type="button" onClick={() => onOpenSettings?.("research-project")}>
-                        Open Research Settings
+                        {t("research.openResearchSettings", "Open Research Settings")}
                       </button>
                     )}
                   </div>
@@ -419,14 +426,14 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                               type="button"
                               onClick={() => setModalState({ mode: "create", findingId })}
                             >
-                              Create Task
+                              {t("research.createTask", "Create Task")}
                             </button>
                             <button
                               className="btn btn-sm"
                               type="button"
                               onClick={() => setModalState({ mode: "enrich", findingId })}
                             >
-                              Enrich Task
+                              {t("research.enrichTask", "Enrich Task")}
                             </button>
                           </div>
                         </article>
@@ -443,7 +450,7 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                 )}
                 {selectedRun.events.length > 0 && (
                   <details>
-                    <summary>Run history</summary>
+                    <summary>{t("research.runHistory", "Run history")}</summary>
                     <ul className="research-view__events">
                       {selectedRun.events.map((event) => (
                         <li key={event.id}>{event.message}</li>
@@ -453,12 +460,12 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                 )}
               </div>
             )}
-            {!selectedRun && runs.length > 0 && <p>Select a run to view details.</p>}
+            {!selectedRun && runs.length > 0 && <p>{t("research.selectRunToViewDetails", "Select a run to view details.")}</p>}
 
             <div className="research-view__stats">
-              <div className="research-view__stat-card"><div className="research-view__stat-label">Running</div><div className="research-view__stat-value">{statusCounts.running}</div></div>
-              <div className="research-view__stat-card"><div className="research-view__stat-label">Completed</div><div className="research-view__stat-value">{statusCounts.completed}</div></div>
-              <div className="research-view__stat-card"><div className="research-view__stat-label">Failed</div><div className="research-view__stat-value">{statusCounts.failed}</div></div>
+              <div className="research-view__stat-card"><div className="research-view__stat-label">{t("research.statRunning", "Running")}</div><div className="research-view__stat-value">{statusCounts.running}</div></div>
+              <div className="research-view__stat-card"><div className="research-view__stat-label">{t("research.statCompleted", "Completed")}</div><div className="research-view__stat-value">{statusCounts.completed}</div></div>
+              <div className="research-view__stat-card"><div className="research-view__stat-label">{t("research.statFailed", "Failed")}</div><div className="research-view__stat-value">{statusCounts.failed}</div></div>
             </div>
           </div>
         </div>
@@ -487,13 +494,13 @@ export function ResearchView({ projectId, addToast, onOpenSettings, readinessVer
                 await runAction(
                   "create-task",
                   () => createTaskFromRun(selectedRun.id, title, modalState.findingId, description, priority, attachExport),
-                  "Task created from research",
+                  t("research.taskCreatedFromResearch", "Task created from research"),
                 );
               } else if (taskId) {
                 await runAction(
                   "attach-task",
                   () => attachRunToTask(selectedRun.id, taskId, modalState.findingId, attachExport),
-                  "Task enriched from research",
+                  t("research.taskEnrichedFromResearch", "Task enriched from research"),
                 );
               }
               setModalState(null);

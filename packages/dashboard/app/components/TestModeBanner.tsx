@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { FlaskConical } from "lucide-react";
 import "./TestModeBanner.css";
 
@@ -6,6 +7,7 @@ interface TestModeBannerProps {
 }
 
 export function TestModeBanner({ isActive }: TestModeBannerProps) {
+  const { t } = useTranslation("app");
   if (!isActive) {
     return null;
   }
@@ -13,7 +15,7 @@ export function TestModeBanner({ isActive }: TestModeBannerProps) {
   return (
     <div className="test-mode-banner" role="status" aria-live="polite">
       <FlaskConical aria-hidden="true" />
-      <span>Test mode — no real AI calls</span>
+      <span>{t("app.testMode", "Test mode — no real AI calls")}</span>
     </div>
   );
 }

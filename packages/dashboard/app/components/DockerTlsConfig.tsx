@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { DockerHostConfig } from "@fusion/core";
 import "./DockerTlsConfig.css";
 
@@ -10,6 +11,7 @@ interface DockerTlsConfigProps {
 }
 
 export function DockerTlsConfig({ value, onChange }: DockerTlsConfigProps) {
+  const { t } = useTranslation("app");
   const [enabled, setEnabled] = useState(Boolean(value?.tlsCaPath || value?.tlsCertPath || value?.tlsKeyPath || value?.tlsVerify));
 
   useEffect(() => {
@@ -24,12 +26,12 @@ export function DockerTlsConfig({ value, onChange }: DockerTlsConfigProps) {
     <div className="docker-tls-config">
       <label className="checkbox-label">
         <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-        Use TLS
+        {t("docker.useTls", "Use TLS")}
       </label>
       {enabled && (
         <div className="docker-tls-config__fields">
           <div className="docker-tls-config__field">
-            <label htmlFor="docker-tls-ca-path">CA Certificate Path</label>
+            <label htmlFor="docker-tls-ca-path">{t("docker.caPath", "CA Certificate Path")}</label>
             <input
               id="docker-tls-ca-path"
               className="input"
@@ -39,7 +41,7 @@ export function DockerTlsConfig({ value, onChange }: DockerTlsConfigProps) {
             />
           </div>
           <div className="docker-tls-config__field">
-            <label htmlFor="docker-tls-cert-path">Client Certificate Path</label>
+            <label htmlFor="docker-tls-cert-path">{t("docker.certPath", "Client Certificate Path")}</label>
             <input
               id="docker-tls-cert-path"
               className="input"
@@ -49,7 +51,7 @@ export function DockerTlsConfig({ value, onChange }: DockerTlsConfigProps) {
             />
           </div>
           <div className="docker-tls-config__field">
-            <label htmlFor="docker-tls-key-path">Client Key Path</label>
+            <label htmlFor="docker-tls-key-path">{t("docker.keyPath", "Client Key Path")}</label>
             <input
               id="docker-tls-key-path"
               className="input"
@@ -60,7 +62,7 @@ export function DockerTlsConfig({ value, onChange }: DockerTlsConfigProps) {
           </div>
           <label className="checkbox-label">
             <input type="checkbox" checked={tls.tlsVerify} onChange={(event) => onChange({ ...tls, tlsVerify: event.target.checked })} />
-            Verify TLS Certificate
+            {t("docker.verifyTls", "Verify TLS Certificate")}
           </label>
         </div>
       )}

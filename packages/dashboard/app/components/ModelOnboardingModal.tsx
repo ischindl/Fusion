@@ -35,6 +35,7 @@ import { copyTextToClipboard } from "../utils/copyToClipboard";
 import { filterVisibleOnboardingAndSettingsProviders } from "./providerVisibility";
 import { useShellConnection } from "../hooks/useShellConnection";
 import { useConfirm } from "../hooks/useConfirm";
+import { useTranslation } from "react-i18next";
 
 const mapLegacyCustomProviderToConfig = (
   provider: CustomProvider | CustomProviderConfig,
@@ -72,73 +73,75 @@ interface ProviderInfo {
 }
 
 /** Provider metadata with plain-language descriptions for the onboarding UI */
-const PROVIDER_INFO: Record<string, ProviderInfo> = {
-  anthropic: { description: "Claude models — strong at reasoning, analysis, and code" },
-  openai: {
-    description: "GPT models — versatile for a wide range of tasks",
-    apiKeyInfo: {
-      fieldLabel: "OpenAI API Key",
-      setupInstructions: "Create an API key from your OpenAI dashboard under API keys.",
-      dashboardUrl: "https://platform.openai.com/api-keys",
-      inputPlaceholder: "sk-...",
-      usageDescription: "Used for GPT models in task execution and planning",
+function getProviderInfoMap(t: (key: string, defaultValue: string) => string): Record<string, ProviderInfo> {
+  return {
+    anthropic: { description: t("setup.providerDesc.anthropic", "Claude models — strong at reasoning, analysis, and code") },
+    openai: {
+      description: t("setup.providerDesc.openai", "GPT models — versatile for a wide range of tasks"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.openai", "OpenAI API Key"),
+        setupInstructions: t("setup.apiKeySetup.openai", "Create an API key from your OpenAI dashboard under API keys."),
+        dashboardUrl: "https://platform.openai.com/api-keys",
+        inputPlaceholder: "sk-...",
+        usageDescription: t("setup.apiKeyUsage.openai", "Used for GPT models in task execution and planning"),
+      },
     },
-  },
-  "openai-codex": { description: "Codex models by OpenAI — optimized for coding tasks" },
-  google: { description: "Gemini models — multimodal with strong reasoning" },
-  gemini: { description: "Gemini models — multimodal with strong reasoning" },
-  ollama: {
-    description: "Run open-source models locally on your machine",
-    apiKeyInfo: {
-      fieldLabel: "Ollama Endpoint",
-      setupInstructions: "Enter your Ollama endpoint URL (for example http://localhost:11434).",
-      inputPlaceholder: "http://localhost:11434",
-      usageDescription: "Connects to your local Ollama instance",
+    "openai-codex": { description: t("setup.providerDesc.openaiCodex", "Codex models by OpenAI — optimized for coding tasks") },
+    google: { description: t("setup.providerDesc.google", "Gemini models — multimodal with strong reasoning") },
+    gemini: { description: t("setup.providerDesc.gemini", "Gemini models — multimodal with strong reasoning") },
+    ollama: {
+      description: t("setup.providerDesc.ollama", "Run open-source models locally on your machine"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.ollama", "Ollama Endpoint"),
+        setupInstructions: t("setup.apiKeySetup.ollama", "Enter your Ollama endpoint URL (for example http://localhost:11434)."),
+        inputPlaceholder: "http://localhost:11434",
+        usageDescription: t("setup.apiKeyUsage.ollama", "Connects to your local Ollama instance"),
+      },
     },
-  },
-  minimax: {
-    description: "MiniMax models — cost-effective for high-volume usage",
-    apiKeyInfo: {
-      fieldLabel: "MiniMax API Key",
-      setupInstructions: "Generate an API key from the MiniMax platform developer console.",
-      dashboardUrl: "https://platform.minimaxi.com/",
-      inputPlaceholder: "Enter your MiniMax API key",
-      usageDescription: "Used for MiniMax models in task execution",
+    minimax: {
+      description: t("setup.providerDesc.minimax", "MiniMax models — cost-effective for high-volume usage"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.minimax", "MiniMax API Key"),
+        setupInstructions: t("setup.apiKeySetup.minimax", "Generate an API key from the MiniMax platform developer console."),
+        dashboardUrl: "https://platform.minimaxi.com/",
+        inputPlaceholder: t("setup.apiKeyPlaceholder.minimax", "Enter your MiniMax API key"),
+        usageDescription: t("setup.apiKeyUsage.minimax", "Used for MiniMax models in task execution"),
+      },
     },
-  },
-  zai: {
-    description: "GLM models by Zhipu AI — strong multilingual support",
-    apiKeyInfo: {
-      fieldLabel: "Zhipu AI API Key",
-      setupInstructions: "Create an API key in the Zhipu AI open platform account settings.",
-      dashboardUrl: "https://open.bigmodel.cn/",
-      inputPlaceholder: "Enter your Zhipu AI API key",
-      usageDescription: "Used for GLM models in task execution",
+    zai: {
+      description: t("setup.providerDesc.zai", "GLM models by Zhipu AI — strong multilingual support"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.zai", "Zhipu AI API Key"),
+        setupInstructions: t("setup.apiKeySetup.zai", "Create an API key in the Zhipu AI open platform account settings."),
+        dashboardUrl: "https://open.bigmodel.cn/",
+        inputPlaceholder: t("setup.apiKeyPlaceholder.zai", "Enter your Zhipu AI API key"),
+        usageDescription: t("setup.apiKeyUsage.zai", "Used for GLM models in task execution"),
+      },
     },
-  },
-  kimi: { description: "Kimi by Moonshot AI — long-context capabilities" },
-  moonshot: { description: "Kimi by Moonshot AI — long-context capabilities" },
-  "kimi-coding": {
-    description: "Kimi by Moonshot AI — long-context capabilities",
-    apiKeyInfo: {
-      fieldLabel: "Kimi API Key",
-      setupInstructions: "Create your API key in the Moonshot platform account settings.",
-      dashboardUrl: "https://platform.moonshot.cn/",
-      inputPlaceholder: "Enter your Kimi API key",
-      usageDescription: "Used for Kimi/Moonshot AI models in task execution and planning",
+    kimi: { description: t("setup.providerDesc.kimi", "Kimi by Moonshot AI — long-context capabilities") },
+    moonshot: { description: t("setup.providerDesc.moonshot", "Kimi by Moonshot AI — long-context capabilities") },
+    "kimi-coding": {
+      description: t("setup.providerDesc.kimiCoding", "Kimi by Moonshot AI — long-context capabilities"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.kimiCoding", "Kimi API Key"),
+        setupInstructions: t("setup.apiKeySetup.kimiCoding", "Create your API key in the Moonshot platform account settings."),
+        dashboardUrl: "https://platform.moonshot.cn/",
+        inputPlaceholder: t("setup.apiKeyPlaceholder.kimiCoding", "Enter your Kimi API key"),
+        usageDescription: t("setup.apiKeyUsage.kimiCoding", "Used for Kimi/Moonshot AI models in task execution and planning"),
+      },
     },
-  },
-  openrouter: {
-    description: "OpenRouter — route requests across multiple AI providers",
-    apiKeyInfo: {
-      fieldLabel: "OpenRouter API Key",
-      setupInstructions: "Create an API key from your OpenRouter account key management page.",
-      dashboardUrl: "https://openrouter.ai/keys",
-      inputPlaceholder: "sk-or-v1-...",
-      usageDescription: "Routes to multiple AI model providers through a single key",
+    openrouter: {
+      description: t("setup.providerDesc.openrouter", "OpenRouter — route requests across multiple AI providers"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.openrouter", "OpenRouter API Key"),
+        setupInstructions: t("setup.apiKeySetup.openrouter", "Create an API key from your OpenRouter account key management page."),
+        dashboardUrl: "https://openrouter.ai/keys",
+        inputPlaceholder: "sk-or-v1-...",
+        usageDescription: t("setup.apiKeyUsage.openrouter", "Routes to multiple AI model providers through a single key"),
+      },
     },
-  },
-};
+  };
+}
 
 const PROVIDER_KEY_HINTS: Record<string, {
   pattern: RegExp;
@@ -283,10 +286,10 @@ function compareOnboardingProviders(a: AuthProvider, b: AuthProvider): number {
   return a.id.localeCompare(b.id);
 }
 
-function validateApiKeyFormat(providerId: string, key: string): string | null {
+function validateApiKeyFormat(providerId: string, key: string, t: (key: string, defaultValue: string, options?: Record<string, unknown>) => string): string | null {
   const trimmedKey = key.trim();
   if (!trimmedKey) {
-    return "API key is required";
+    return t("setup.apiKeyRequired", "API key is required");
   }
 
   const providerHint = PROVIDER_KEY_HINTS[providerId] ?? PROVIDER_KEY_HINTS_FALLBACK;
@@ -295,29 +298,29 @@ function validateApiKeyFormat(providerId: string, key: string): string | null {
   }
 
   const providerName = getProviderDisplayName(providerId);
-  return `${providerName} keys should follow this format: ${providerHint.hint} (e.g. ${providerHint.example})`;
+  return t("setup.apiKeyFormatError", "{{providerName}} keys should follow this format: {{hint}} (e.g. {{example}})", { providerName, hint: providerHint.hint, example: providerHint.example });
 }
 
-const API_KEY_INFO_FALLBACK: ApiKeyInfo = {
-  fieldLabel: "API Key",
-  setupInstructions: "Enter your API key for this provider.",
-  inputPlaceholder: "Enter API key",
-  usageDescription: "Used by Fusion to authenticate requests to this provider",
-};
-
-/** Fallback description for providers not in the map */
-const PROVIDER_INFO_FALLBACK: ProviderInfo = {
-  description: "AI provider — connect to start using AI models",
-  apiKeyInfo: API_KEY_INFO_FALLBACK,
-};
-
-function getProviderInfo(providerId: string): ProviderInfo {
-  return PROVIDER_INFO[providerId] ?? PROVIDER_INFO_FALLBACK;
+function getApiKeyInfoFallback(t: (key: string, defaultValue: string) => string): ApiKeyInfo {
+  return {
+    fieldLabel: t("setup.apiKeyLabel.fallback", "API Key"),
+    setupInstructions: t("setup.apiKeySetup.fallback", "Enter your API key for this provider."),
+    inputPlaceholder: t("setup.apiKeyPlaceholder.fallback", "Enter API key"),
+    usageDescription: t("setup.apiKeyUsage.fallback", "Used by Fusion to authenticate requests to this provider"),
+  };
 }
 
-function getApiKeyInfo(provider: AuthProvider): ApiKeyInfo {
-  const info = getProviderInfo(provider.id);
-  return info.apiKeyInfo ?? API_KEY_INFO_FALLBACK;
+function getProviderInfo(providerId: string, t: (key: string, defaultValue: string) => string): ProviderInfo {
+  const fallback: ProviderInfo = {
+    description: t("setup.providerDesc.fallback", "AI provider — connect to start using AI models"),
+    apiKeyInfo: getApiKeyInfoFallback(t),
+  };
+  return getProviderInfoMap(t)[providerId] ?? fallback;
+}
+
+function getApiKeyInfo(provider: AuthProvider, t: (key: string, defaultValue: string) => string): ApiKeyInfo {
+  const info = getProviderInfo(provider.id, t);
+  return info.apiKeyInfo ?? getApiKeyInfoFallback(t);
 }
 
 interface ReadinessItem {
@@ -331,19 +334,20 @@ interface ReadinessSummaryProps {
 }
 
 function ReadinessSummary({ items }: ReadinessSummaryProps) {
+  const { t } = useTranslation("app");
   const hasAttentionItems = items.some((item) => item.status !== "connected");
 
   if (!hasAttentionItems) {
     return (
       <div className="onboarding-readiness-summary" data-testid="readiness-summary" role="status">
-        <p className="onboarding-readiness-all-connected">✓ All integrations connected</p>
+        <p className="onboarding-readiness-all-connected">{t("setup.readinessAllConnected", "✓ All integrations connected")}</p>
       </div>
     );
   }
 
   return (
     <div className="onboarding-readiness-summary" data-testid="readiness-summary" role="status">
-      <p className="onboarding-readiness-header">Setup Summary</p>
+      <p className="onboarding-readiness-header">{t("setup.readinessSummaryHeader", "Setup Summary")}</p>
       {items.map((item) => {
         const statusIcon =
           item.status === "connected"
@@ -397,6 +401,7 @@ function ApiKeyEntryForm({
   onSave,
   onClear,
 }: ApiKeyEntryFormProps) {
+  const { t } = useTranslation("app");
   const inputId = `onboarding-apikey-input-${provider.id}`;
   const saveDisabled = isSaving || !inputValue.trim();
   const providerKeyHint = PROVIDER_KEY_HINTS[provider.id];
@@ -408,7 +413,7 @@ function ApiKeyEntryForm({
     <>
       {providerKeyHint && (
         <small className="onboarding-apikey-hint">
-          Format: {providerKeyHint.hint}
+          {t("setup.apiKeyFormatHint", "Format: {{hint}}", { hint: providerKeyHint.hint })}
         </small>
       )}
       <p className="onboarding-apikey-instructions">{apiKeyInfo.setupInstructions}</p>
@@ -419,7 +424,7 @@ function ApiKeyEntryForm({
           rel="noreferrer"
           className="onboarding-apikey-dashboard-link"
         >
-          Get your API key →
+          {t("setup.getApiKeyLink", "Get your API key →")}
         </a>
       )}
       <p className="onboarding-apikey-usage">{apiKeyInfo.usageDescription}</p>
@@ -431,16 +436,16 @@ function ApiKeyEntryForm({
       <div className="onboarding-apikey-form" data-testid={`onboarding-apikey-form-${provider.id}`}>
         <div className="onboarding-apikey-connected-header">
           <strong className="onboarding-provider-card__name">{apiKeyInfo.fieldLabel}</strong>
-          <span className="auth-status-badge connected">✓ API key saved</span>
+          <span className="auth-status-badge connected">{t("setup.apiKeySaved", "✓ API key saved")}</span>
         </div>
         <button
           className="btn btn-sm"
           onClick={() => onClear(provider.id)}
           disabled={isSaving}
         >
-          {isSaving ? "Removing…" : "Remove Key"}
+          {isSaving ? t("setup.removingKey", "Removing…") : t("setup.removeKey", "Remove Key")}
         </button>
-        <OnboardingDisclosure summary="Advanced setup details">
+        <OnboardingDisclosure summary={t("setup.advancedSetupDetails", "Advanced setup details")}>
           {advancedSetupDetails}
         </OnboardingDisclosure>
         {error && <small className="field-error">{error}</small>}
@@ -458,7 +463,7 @@ function ApiKeyEntryForm({
           id={inputId}
           type="password"
           className={inputClassName}
-          placeholder={apiKeyInfo.inputPlaceholder ?? "Enter API key"}
+          placeholder={apiKeyInfo.inputPlaceholder ?? t("setup.enterApiKey", "Enter API key")}
           value={inputValue}
           onChange={(e) => onInputChange(provider.id, e.target.value)}
           onKeyDown={(e) => {
@@ -474,7 +479,7 @@ function ApiKeyEntryForm({
           disabled={saveDisabled}
           data-testid={`onboarding-apikey-save-${provider.id}`}
         >
-          {isSaving ? "Saving…" : "Save"}
+          {isSaving ? t("setup.savingKey", "Saving…") : t("setup.saveKey", "Save")}
         </button>
       </div>
       {error && <small className="field-error">{error}</small>}
@@ -486,7 +491,7 @@ function ApiKeyEntryForm({
           {success}
         </small>
       )}
-      <OnboardingDisclosure summary="Advanced setup details">
+      <OnboardingDisclosure summary={t("setup.advancedSetupDetails", "Advanced setup details")}>
         {advancedSetupDetails}
       </OnboardingDisclosure>
     </div>
@@ -560,6 +565,7 @@ export function ModelOnboardingModal({
   firstCreatedTask,
   onViewTask,
 }: ModelOnboardingModalProps) {
+  const { t } = useTranslation("app");
   const { confirm } = useConfirm();
   // Initialize from persisted state if available (allows resume from last step)
   const persistedState = getOnboardingState();
@@ -661,10 +667,10 @@ export function ModelOnboardingModal({
   // Step definitions for progress indicator.
   // Keep labels aligned with the ordered ONBOARDING_FLOW_STEPS state contract.
   const steps = [
-    { key: "ai-setup" as const, label: "AI Setup" },
-    { key: "github" as const, label: "GitHub" },
-    { key: "project-setup" as const, label: "Project" },
-    { key: "first-task" as const, label: "First Task" },
+    { key: "ai-setup" as const, label: t("setup.stepAiSetup", "AI Setup") },
+    { key: "github" as const, label: t("setup.stepGithub", "GitHub") },
+    { key: "project-setup" as const, label: t("setup.stepProject", "Project") },
+    { key: "first-task" as const, label: t("setup.stepFirstTask", "First Task") },
   ];
 
   // Get current step index for progress indicator.
@@ -800,7 +806,7 @@ export function ModelOnboardingModal({
       await fetchModels().then((response) => setAvailableModels(response.models ?? []));
       setShowCustomProviderForm(false);
     } catch (err) {
-      setCustomProviderError(getErrorMessage(err) || "Failed to create custom provider");
+      setCustomProviderError(getErrorMessage(err) || t("setup.failedToCreateCustomProvider", "Failed to create custom provider"));
     } finally {
       setCustomProviderSaving(false);
     }
@@ -858,10 +864,10 @@ export function ModelOnboardingModal({
   // Status badge component for provider connection status
   function ProviderStatusBadge({ status }: { status: ProviderConnectionStatus }) {
     const config: Record<ProviderConnectionStatus, { text: string; className: string }> = {
-      connected: { text: "✓ Connected", className: "auth-status-badge connected" },
-      "not-connected": { text: "Not connected", className: "auth-status-badge not-connected" },
-      skipped: { text: "Skipped", className: "auth-status-badge skipped" },
-      retry: { text: "Retry", className: "auth-status-badge retry" },
+      connected: { text: t("setup.statusConnected", "✓ Connected"), className: "auth-status-badge connected" },
+      "not-connected": { text: t("setup.statusNotConnected", "Not connected"), className: "auth-status-badge not-connected" },
+      skipped: { text: t("setup.statusSkipped", "Skipped"), className: "auth-status-badge skipped" },
+      retry: { text: t("setup.statusRetry", "Retry"), className: "auth-status-badge retry" },
     };
     const { text, className: badgeClassName } = config[status];
     return (
@@ -896,11 +902,11 @@ export function ModelOnboardingModal({
 
   function GitHubStatusBadge({ status }: { status: GitHubConnectionStatus }) {
     const config: Record<GitHubConnectionStatus, { text: string; className: string }> = {
-      connected: { text: "✓ Connected", className: "auth-status-badge connected" },
-      pending: { text: "⏳ Connecting…", className: "auth-status-badge pending" },
-      failed: { text: "✗ Connection failed", className: "auth-status-badge retry" },
-      skipped: { text: "Skipped", className: "auth-status-badge skipped" },
-      "not-connected": { text: "Not connected", className: "auth-status-badge not-connected" },
+      connected: { text: t("setup.statusConnected", "✓ Connected"), className: "auth-status-badge connected" },
+      pending: { text: t("setup.statusConnecting", "⏳ Connecting…"), className: "auth-status-badge pending" },
+      failed: { text: t("setup.statusConnectionFailed", "✗ Connection failed"), className: "auth-status-badge retry" },
+      skipped: { text: t("setup.statusSkipped", "Skipped"), className: "auth-status-badge skipped" },
+      "not-connected": { text: t("setup.statusNotConnected", "Not connected"), className: "auth-status-badge not-connected" },
     };
 
     const { text, className: badgeClassName } = config[status];
@@ -1079,10 +1085,10 @@ export function ModelOnboardingModal({
       const provider = authProviders.find((entry) => entry.id === providerId);
       if (provider?.requiresManualCode === true) {
         const shouldContinue = await confirm({
-          title: "Heads up — manual paste-back required",
+          title: t("setup.manualPastebackTitle", "Heads up — manual paste-back required"),
           message: getManualCodeLoginWarningMessage(provider.name),
-          confirmLabel: "Continue to login",
-          cancelLabel: "Cancel",
+          confirmLabel: t("setup.continueToLogin", "Continue to login"),
+          cancelLabel: t("setup.cancelLogin", "Cancel"),
         });
         if (!shouldContinue) {
           return;
@@ -1177,7 +1183,7 @@ export function ModelOnboardingModal({
             ));
             setLoginOutcomes((prev) => ({ ...prev, [providerId]: "timeout" }));
             clearAuthLoginUiState();
-            addToast("Login timed out. Please try again.", "warning");
+            addToast(t("setup.loginTimedOut", "Login timed out. Please try again."), "warning");
             return;
           }
 
@@ -1198,7 +1204,7 @@ export function ModelOnboardingModal({
               if (providerId === "github") {
                 setGitHubSkippedState(false);
               }
-              addToast("Login successful", "success");
+              addToast(t("setup.loginSuccessful", "Login successful"), "success");
               window.dispatchEvent(new CustomEvent(OAUTH_RELOGIN_SUCCESS_EVENT, { detail: { providerId } }));
               return;
             }
@@ -1211,7 +1217,7 @@ export function ModelOnboardingModal({
               setAuthActionInProgress(null);
               setLoginOutcomes((prev) => ({ ...prev, [providerId]: "failed" }));
               clearAuthLoginUiState();
-              addToast("Login did not complete. Please try again.", "error");
+              addToast(t("setup.loginDidNotComplete", "Login did not complete. Please try again."), "error");
             }
           } catch {
             // Continue polling
@@ -1224,11 +1230,11 @@ export function ModelOnboardingModal({
           (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 409);
 
         if (isConcurrentLogin) {
-          addToast("Login already in progress. Cancel it to retry.", "warning");
+          addToast(t("setup.loginAlreadyInProgress", "Login already in progress. Cancel it to retry."), "warning");
           setLoginOutcomes((prev) => ({ ...prev, [providerId]: "pending" }));
           void loadAuthStatus();
         } else {
-          addToast(err instanceof Error ? err.message : "Login failed", "error");
+          addToast(err instanceof Error ? err.message : t("setup.loginFailed", "Login failed"), "error");
           setLoginOutcomes((prev) => ({ ...prev, [providerId]: "failed" }));
         }
         setAuthActionInProgress(null);
@@ -1241,7 +1247,7 @@ export function ModelOnboardingModal({
   const handleSubmitManualCode = useCallback(async (providerId: string) => {
     const code = manualCodeInputs[providerId]?.trim();
     if (!code) {
-      addToast("Paste the full redirect URL or authorization code first.", "warning");
+      addToast(t("setup.pasteRedirectUrlFirst", "Paste the full redirect URL or authorization code first."), "warning");
       return;
     }
 
@@ -1257,12 +1263,12 @@ export function ModelOnboardingModal({
           delete next[providerId];
           return next;
         });
-        addToast("Authorization code received. Finishing login…", "success");
+        addToast(t("setup.authCodeReceived", "Authorization code received. Finishing login…"), "success");
       } else {
-        addToast("That authorization code was already submitted. Waiting for login…", "warning");
+        addToast(t("setup.authCodeAlreadySubmitted", "That authorization code was already submitted. Waiting for login…"), "warning");
       }
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to submit authorization code", "error");
+      addToast(getErrorMessage(err) || t("setup.failedToSubmitAuthCode", "Failed to submit authorization code"), "error");
     } finally {
       setManualCodeSubmitInProgress(null);
     }
@@ -1284,9 +1290,9 @@ export function ModelOnboardingModal({
     try {
       await cancelProviderLogin(providerId);
       await loadAuthStatus().catch(() => {});
-      addToast("Login cancelled", "success");
+      addToast(t("setup.loginCancelled", "Login cancelled"), "success");
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to cancel login", "error");
+      addToast(getErrorMessage(err) || t("setup.failedToCancelLogin", "Failed to cancel login"), "error");
     } finally {
       setAuthActionInProgress(null);
       setLoginInstructions((prev) => {
@@ -1385,7 +1391,7 @@ export function ModelOnboardingModal({
   const handleSaveApiKey = useCallback(
     async (providerId: string, keyValue?: string) => {
       const key = (keyValue ?? apiKeyInputs[providerId] ?? "").trim();
-      const validationError = validateApiKeyFormat(providerId, key);
+      const validationError = validateApiKeyFormat(providerId, key, t);
       if (validationError) {
         setApiKeyErrors((prev) => ({
           ...prev,
@@ -1435,7 +1441,7 @@ export function ModelOnboardingModal({
         });
         setApiKeySuccess((prev) => ({
           ...prev,
-          [providerId]: "✓ Key saved",
+          [providerId]: t("setup.keySavedInline", "✓ Key saved"),
         }));
 
         apiKeySuccessTimers.current[providerId] = setTimeout(() => {
@@ -1450,14 +1456,14 @@ export function ModelOnboardingModal({
           delete apiKeySuccessTimers.current[providerId];
         }, 3000);
 
-        addToast("API key saved", "success");
+        addToast(t("setup.apiKeySavedToast", "API key saved"), "success");
       } catch (err: unknown) {
         const errorMessage =
           err instanceof TypeError && err.message.includes("Failed to fetch")
-            ? "Could not reach the server. Check your connection and try again."
+            ? t("setup.couldNotReachServer", "Could not reach the server. Check your connection and try again.")
             : err instanceof Error
               ? err.message
-              : "Failed to save API key";
+              : t("setup.failedToSaveApiKey", "Failed to save API key");
 
         setApiKeyErrors((prev) => ({
           ...prev,
@@ -1487,10 +1493,10 @@ export function ModelOnboardingModal({
       try {
         await clearApiKey(providerId);
         await loadAuthStatus();
-        addToast("API key removed", "success");
+        addToast(t("setup.apiKeyRemoved", "API key removed"), "success");
       } catch (err: unknown) {
         addToast(
-          err instanceof Error ? err.message : "Failed to clear API key",
+          err instanceof Error ? err.message : t("setup.failedToClearApiKey", "Failed to clear API key"),
           "error",
         );
       } finally {
@@ -1507,10 +1513,10 @@ export function ModelOnboardingModal({
       try {
         await logoutProvider(providerId);
         await loadAuthStatus();
-        addToast("Logged out", "success");
+        addToast(t("setup.loggedOut", "Logged out"), "success");
       } catch (err: unknown) {
         addToast(
-          err instanceof Error ? err.message : "Logout failed",
+          err instanceof Error ? err.message : t("setup.logoutFailed", "Logout failed"),
           "error",
         );
       } finally {
@@ -1581,7 +1587,7 @@ export function ModelOnboardingModal({
 
     const trimmedDescription = firstTaskDescription.trim();
     if (!trimmedDescription) {
-      setTaskCreationError("Please enter a task description.");
+      setTaskCreationError(t("setup.pleaseEnterTaskDescription", "Please enter a task description."));
       return;
     }
 
@@ -1598,13 +1604,13 @@ export function ModelOnboardingModal({
       setInlineCreatedTask(createdTask);
       setShowTaskCreated(true);
       trackOnboardingEvent("onboarding:first-task-created", { taskId: createdTask?.id });
-      addToast("Task created", "success");
+      addToast(t("setup.taskCreated", "Task created"), "success");
       success = true;
     } catch (err: unknown) {
       const message =
         err instanceof Error
           ? err.message
-          : "Something went wrong creating your task. Please try again.";
+          : t("setup.taskCreationFailed", "Something went wrong creating your task. Please try again.");
       setTaskCreationError(message);
       addToast(message, "error");
     } finally {
@@ -1721,14 +1727,14 @@ export function ModelOnboardingModal({
       try {
         await shellApi.setActiveProfile(saved.id);
       } catch (error) {
-        setShellConnectionError(getErrorMessage(error) || "Saved profile but failed to activate it");
+        setShellConnectionError(getErrorMessage(error) || t("setup.savedProfileButFailedToActivate", "Saved profile but failed to activate it"));
         return;
       }
       setShellServerUrl("");
       setShellAuthToken("");
-      addToast("Remote server profile saved", "success");
+      addToast(t("setup.remoteServerProfileSaved", "Remote server profile saved"), "success");
     } catch (error) {
-      setShellConnectionError(getErrorMessage(error) || "Failed to save shell connection");
+      setShellConnectionError(getErrorMessage(error) || t("setup.failedToSaveShellConnection", "Failed to save shell connection"));
     } finally {
       setShellConnectionSaving(false);
     }
@@ -1763,67 +1769,67 @@ export function ModelOnboardingModal({
 
   if (hasProjectSelected) {
     readinessItems.push({
-      label: "Project",
+      label: t("setup.readinessProjectLabel", "Project"),
       status: "connected",
-      detail: "Project selected — task creation and imports are available",
+      detail: t("setup.readinessProjectConnected", "Project selected — task creation and imports are available"),
     });
   } else {
     readinessItems.push({
-      label: "Project",
+      label: t("setup.readinessProjectLabel", "Project"),
       status: "missing",
-      detail: "Register a project to enable task creation and imports",
+      detail: t("setup.readinessProjectMissing", "Register a project to enable task creation and imports"),
     });
   }
 
   if (hasAiProvider) {
     const firstConnectedProviderName = getProviderDisplayName(connectedAiProviders[0]?.id ?? "");
     readinessItems.push({
-      label: "AI Provider",
+      label: t("setup.readinessAiProviderLabel", "AI Provider"),
       status: "connected",
-      detail: `${firstConnectedProviderName} connected — AI agents can work on tasks`,
+      detail: t("setup.readinessAiProviderConnected", "{{name}} connected — AI agents can work on tasks", { name: firstConnectedProviderName }),
     });
   } else if (
     aiProviders.length > 0
     && aiProviders.some((provider) => skippedProviders[provider.id])
   ) {
     readinessItems.push({
-      label: "AI Provider",
+      label: t("setup.readinessAiProviderLabel", "AI Provider"),
       status: "skipped",
-      detail: "AI agents won't be available until you connect a provider",
+      detail: t("setup.readinessAiProviderSkipped", "AI agents won't be available until you connect a provider"),
     });
   } else {
     readinessItems.push({
-      label: "AI Provider",
+      label: t("setup.readinessAiProviderLabel", "AI Provider"),
       status: "missing",
-      detail: "Connect a provider in Settings → AI Setup",
+      detail: t("setup.readinessAiProviderMissing", "Connect a provider in Settings → AI Setup"),
     });
   }
 
   if (isGitHubReady) {
     readinessItems.push({
-      label: "GitHub",
+      label: t("setup.readinessGitHubLabel", "GitHub"),
       status: "connected",
       detail: isGitHubReadyViaCli
-        ? "Connected via GitHub CLI — imports and PR tracking are available"
-        : "Issues and PRs can be imported",
+        ? t("setup.readinessGitHubViaCli", "Connected via GitHub CLI — imports and PR tracking are available")
+        : t("setup.readinessGitHubConnected", "Issues and PRs can be imported"),
     });
   } else if (!hasGithubProvider || isGithubSkipped) {
     readinessItems.push({
-      label: "GitHub",
+      label: t("setup.readinessGitHubLabel", "GitHub"),
       status: "skipped",
-      detail: "You can connect anytime from Settings",
+      detail: t("setup.readinessGitHubSkipped", "You can connect anytime from Settings"),
     });
   } else {
     readinessItems.push({
-      label: "GitHub",
+      label: t("setup.readinessGitHubLabel", "GitHub"),
       status: "missing",
-      detail: "Connect to import issues as tasks",
+      detail: t("setup.readinessGitHubMissing", "Connect to import issues as tasks"),
     });
   }
 
   if (selectedModelDisplayName) {
     readinessItems.push({
-      label: "Default Model",
+      label: t("setup.readinessDefaultModelLabel", "Default Model"),
       status: "connected",
       detail: selectedModelDisplayName,
     });
@@ -1896,8 +1902,8 @@ export function ModelOnboardingModal({
     }
 
     if (provider.type === "api_key") {
-      const providerInfo = getProviderInfo(provider.id);
-      const apiKeyInfo = getApiKeyInfo(provider);
+      const providerInfo = getProviderInfo(provider.id, t);
+      const apiKeyInfo = getApiKeyInfo(provider, t);
 
       return (
         <div
@@ -1922,7 +1928,7 @@ export function ModelOnboardingModal({
             </span>
             <ProviderStatusBadge status={getProviderStatus(provider)} />
             {provider.authenticated && provider.keyHint && (
-              <span className="auth-key-hint">Key: {provider.keyHint}</span>
+              <span className="auth-key-hint">{t("setup.apiKeyHint", "Key: {{keyHint}}", { keyHint: provider.keyHint })}</span>
             )}
           </div>
           <div className="onboarding-provider-card__actions onboarding-provider-card__actions--api-key">
@@ -1959,7 +1965,7 @@ export function ModelOnboardingModal({
         <div className="onboarding-provider-card__body">
           <strong className="onboarding-provider-card__name">{provider.name}</strong>
           <span className="onboarding-provider-card__description">
-            {getProviderInfo(provider.id).description}
+            {getProviderInfo(provider.id, t).description}
           </span>
           <ProviderStatusBadge status={getProviderStatus(provider)} />
         </div>
@@ -1967,31 +1973,31 @@ export function ModelOnboardingModal({
           {authActionInProgress === provider.id ? (
             provider.authenticated ? (
               <button className="btn btn-sm" disabled>
-                Logging out…
+                {t("setup.loggingOut", "Logging out…")}
               </button>
             ) : (
               <>
                 <button className="btn btn-sm" disabled>
-                  Waiting for login…
+                  {t("setup.waitingForLogin", "Waiting for login…")}
                 </button>
                 <button
                   className="btn btn-sm"
                   onClick={() => void handleCancelLogin(provider.id)}
                 >
-                  Cancel
+                  {t("setup.cancelLogin", "Cancel")}
                 </button>
               </>
             )
           ) : showRemoteLoginInProgress ? (
             <>
               <button className="btn btn-sm" disabled>
-                Waiting for login…
+                {t("setup.waitingForLogin", "Waiting for login…")}
               </button>
               <button
                 className="btn btn-sm"
                 onClick={() => void handleCancelLogin(provider.id)}
               >
-                Cancel
+                {t("setup.cancelLogin", "Cancel")}
               </button>
             </>
           ) : provider.authenticated ? (
@@ -1999,20 +2005,20 @@ export function ModelOnboardingModal({
               className="btn btn-sm"
               onClick={() => handleLogout(provider.id)}
             >
-              Logout
+              {t("setup.logout", "Logout")}
             </button>
           ) : (
             <button
               className="btn btn-primary btn-sm"
               onClick={() => handleLogin(provider.id)}
             >
-              Login
+              {t("setup.login", "Login")}
             </button>
           )}
         </div>
         {(authActionInProgress === provider.id || showRemoteLoginInProgress) && provider.id === "github-copilot" && deviceCodes[provider.id] && (
           <div className="auth-device-code-panel" data-testid={`onboarding-device-code-${provider.id}`}>
-            <strong>Enter this code on GitHub</strong>
+            <strong>{t("setup.enterCodeOnGitHub", "Enter this code on GitHub")}</strong>
             <div className="auth-device-code-pill">{deviceCodes[provider.id].userCode}</div>
             <div className="auth-provider-actions-row">
               <button
@@ -2021,17 +2027,17 @@ export function ModelOnboardingModal({
                   void (async () => {
                     const copied = await copyTextToClipboard(deviceCodes[provider.id].userCode);
                     if (copied) {
-                      addToast("Copied code to clipboard", "success");
+                      addToast(t("setup.copiedCodeToClipboard", "Copied code to clipboard"), "success");
                       return;
                     }
-                    addToast("Failed to copy code — copy it manually from the box above", "error");
+                    addToast(t("setup.failedToCopyCode", "Failed to copy code — copy it manually from the box above"), "error");
                   })();
                 }}
               >
-                Copy code
+                {t("setup.copyCode", "Copy code")}
               </button>
               <button className="btn btn-sm" onClick={() => window.open(appendTokenQuery(deviceCodes[provider.id].verificationUri), "_blank")}>
-                Open GitHub
+                {t("setup.openGitHub", "Open GitHub")}
               </button>
             </div>
           </div>
@@ -2051,18 +2057,18 @@ export function ModelOnboardingModal({
             placeholder={manualCodeConfigs[provider.id].placeholder}
             helpText={manualCodeConfigs[provider.id].helpText}
             disabled={manualCodeSubmitInProgress === provider.id}
-            submitLabel={manualCodeSubmitInProgress === provider.id ? "Submitting…" : "Submit code"}
+            submitLabel={manualCodeSubmitInProgress === provider.id ? t("setup.submittingCode", "Submitting…") : t("setup.submitCode", "Submit code")}
             data-testid={`onboarding-manual-code-${provider.id}`}
           />
         )}
         {loginOutcomes[provider.id] === "timeout" && authActionInProgress !== provider.id && (
           <p className="onboarding-helper-text onboarding-inline-feedback">
-            Login timed out. Please try again.
+            {t("setup.loginTimedOutInline", "Login timed out. Please try again.")}
           </p>
         )}
         {loginOutcomes[provider.id] === "failed" && authActionInProgress !== provider.id && (
           <p className="field-error onboarding-inline-feedback">
-            Login failed. Please try again.
+            {t("setup.loginFailedInline", "Login failed. Please try again.")}
           </p>
         )}
       </div>
@@ -2082,27 +2088,27 @@ export function ModelOnboardingModal({
           <h2 id="onboarding-title" className="model-onboarding-title">
             {step === "ai-setup" && (
               <>
-                <Zap size={24} /> Set Up AI <span className="onboarding-optional-badge">Optional</span>
+                <Zap size={24} /> {t("setup.titleAiSetup", "Set Up AI")} <span className="onboarding-optional-badge">{t("setup.optionalBadge", "Optional")}</span>
               </>
             )}
             {step === "github" && (
               <>
-                <GitPullRequest size={24} /> Connect GitHub <span className="onboarding-optional-badge">Optional</span>
+                <GitPullRequest size={24} /> {t("setup.titleConnectGitHub", "Connect GitHub")} <span className="onboarding-optional-badge">{t("setup.optionalBadge", "Optional")}</span>
               </>
             )}
             {step === "project-setup" && (
               <>
-                <Rocket size={24} /> Set Up Your Project
+                <Rocket size={24} /> {t("setup.titleSetUpProject", "Set Up Your Project")}
               </>
             )}
             {step === "first-task" && (
               <>
-                <Rocket size={24} /> Create Your First Task
+                <Rocket size={24} /> {t("setup.titleCreateFirstTask", "Create Your First Task")}
               </>
             )}
             {step === "complete" && (
               <>
-                <CheckCircle size={24} /> All Set!
+                <CheckCircle size={24} /> {t("setup.titleAllSet", "All Set!")}
               </>
             )}
           </h2>
@@ -2110,8 +2116,8 @@ export function ModelOnboardingModal({
             <button
               className="modal-close"
               onClick={handleDismiss}
-              aria-label="Skip onboarding"
-              title="Skip for now"
+              aria-label={t("setup.skipOnboardingAriaLabel", "Skip onboarding")}
+              title={t("setup.skipForNow", "Skip for now")}
             >
               <X size={20} />
             </button>
@@ -2142,8 +2148,8 @@ export function ModelOnboardingModal({
                       step === s.key ? "active" : ""
                     } ${isDone ? "done" : ""} ${isSkipped ? "skipped" : ""}`}
                     onClick={() => setStep(s.key)}
-                    aria-label={`Go back to ${s.label}`}
-                    title={`Review ${s.label}`}
+                    aria-label={t("setup.goBackToStep", "Go back to {{label}}", { label: s.label })}
+                    title={t("setup.reviewStep", "Review {{label}}", { label: s.label })}
                   >
                     <span className="step-number">
                       {isDone ? (
@@ -2184,39 +2190,37 @@ export function ModelOnboardingModal({
           {step === "ai-setup" && (
             <div className="model-onboarding-ai-setup">
               <p className="model-onboarding-description">
-                Fusion uses AI models to plan, write, and review code for you.
-                Connect an AI provider below to get started — you can use a hosted
-                service or enter an API key.
+                {t("setup.aiSetupDescription", "Fusion uses AI models to plan, write, and review code for you. Connect an AI provider below to get started — you can use a hosted service or enter an API key.")}
               </p>
               <p className="onboarding-helper-text model-onboarding-primary-helper">
-                You only need one provider to get started.
+                {t("setup.onlyNeedOneProvider", "You only need one provider to get started.")}
               </p>
               <p className="onboarding-helper-text">
-                Research runs require provider credentials and an enabled Research View. After onboarding, verify these in Settings → Authentication and Settings → Experimental Features.
+                {t("setup.researchRunsNote", "Research runs require provider credentials and an enabled Research View. After onboarding, verify these in Settings → Authentication and Settings → Experimental Features.")}
               </p>
 
               {showShellConnectionSetup && (
                 <div className="card">
-                  <h3 className="onboarding-section-title">Connect remote Fusion server</h3>
+                  <h3 className="onboarding-section-title">{t("setup.connectRemoteServer", "Connect remote Fusion server")}</h3>
                   <p className="onboarding-helper-text">
-                    Your native shell needs an active remote profile before dashboard handoff can complete.
+                    {t("setup.remoteServerNote", "Your native shell needs an active remote profile before dashboard handoff can complete.")}
                   </p>
-                  <label htmlFor="onboarding-shell-profile-name" className="onboarding-apikey-field-label">Profile name</label>
+                  <label htmlFor="onboarding-shell-profile-name" className="onboarding-apikey-field-label">{t("setup.profileName", "Profile name")}</label>
                   <input
                     id="onboarding-shell-profile-name"
                     className="input"
                     value={shellProfileName}
                     onChange={(event) => setShellProfileName(event.target.value)}
                   />
-                  <label htmlFor="onboarding-shell-server-url" className="onboarding-apikey-field-label">Server URL</label>
+                  <label htmlFor="onboarding-shell-server-url" className="onboarding-apikey-field-label">{t("setup.serverUrl", "Server URL")}</label>
                   <input
                     id="onboarding-shell-server-url"
                     className="input"
-                    placeholder="https://your-fusion-host"
+                    placeholder={t("setup.serverUrlPlaceholder", "https://your-fusion-host")}
                     value={shellServerUrl}
                     onChange={(event) => setShellServerUrl(event.target.value)}
                   />
-                  <label htmlFor="onboarding-shell-token" className="onboarding-apikey-field-label">Auth token (optional)</label>
+                  <label htmlFor="onboarding-shell-token" className="onboarding-apikey-field-label">{t("setup.authTokenOptional", "Auth token (optional)")}</label>
                   <input
                     id="onboarding-shell-token"
                     className="input"
@@ -2227,7 +2231,7 @@ export function ModelOnboardingModal({
                   {shellConnectionError && <small className="field-error">{shellConnectionError}</small>}
                   <div className="onboarding-apikey-input-row">
                     <button type="button" className="btn btn-sm" onClick={() => void shellApi?.openConnectionManager()}>
-                      Open manager
+                      {t("setup.openManager", "Open manager")}
                     </button>
                     <button
                       type="button"
@@ -2235,7 +2239,7 @@ export function ModelOnboardingModal({
                       onClick={() => void saveShellConnectionProfile()}
                       disabled={!shellServerUrl.trim() || shellConnectionSaving}
                     >
-                      {shellConnectionSaving ? "Saving…" : "Save remote server"}
+                      {shellConnectionSaving ? t("setup.savingRemoteServer", "Saving…") : t("setup.saveRemoteServer", "Save remote server")}
                     </button>
                   </div>
                 </div>
@@ -2255,13 +2259,15 @@ export function ModelOnboardingModal({
 
                   if (connectedCount > 0) {
                     summaryClass += " onboarding-provider-summary--connected";
-                    summaryText = `✓ ${connectedCount} of ${totalAiProviders} provider${totalAiProviders !== 1 ? "s" : ""} connected`;
+                    summaryText = t("setup.providersConnectedSummary", "✓ {{connected}} of {{total}} providers connected", { connected: connectedCount, total: totalAiProviders });
                   } else if (skippedCount > 0) {
                     summaryClass += " onboarding-provider-summary--skipped";
-                    summaryText = `${skippedCount} provider${skippedCount !== 1 ? "s" : ""} skipped`;
+                    summaryText = skippedCount === 1
+                      ? t("setup.providersSkippedSummary_one", "{{count}} provider skipped", { count: skippedCount })
+                      : t("setup.providersSkippedSummary_other", "{{count}} providers skipped", { count: skippedCount });
                   } else {
                     summaryClass += " onboarding-provider-summary--none";
-                    summaryText = "No providers connected yet";
+                    summaryText = t("setup.noProvidersConnectedYet", "No providers connected yet");
                   }
 
                   return (
@@ -2275,29 +2281,27 @@ export function ModelOnboardingModal({
               <PluginSlot slotId="onboarding-recommendation-card" projectId={projectId} />
 
               {/* Provider explanation disclosure */}
-              <OnboardingDisclosure summary="What are AI providers?">
+              <OnboardingDisclosure summary={t("setup.whatAreAiProviders", "What are AI providers?")}>
                 <p className="onboarding-helper-text">
-                  AI providers like OpenAI and Anthropic power the AI capabilities in Fusion.
-                  Connecting a provider lets Fusion's agents use AI models to help with your tasks.
+                  {t("setup.whatAreAiProvidersBody", "AI providers like OpenAI and Anthropic power the AI capabilities in Fusion. Connecting a provider lets Fusion's agents use AI models to help with your tasks.")}
                 </p>
               </OnboardingDisclosure>
 
               {/* Show helper text when providers exist but none are authenticated */}
               {authProviders.length > 0 && !authProviders.some((p) => p.authenticated) && (
                 <p className="onboarding-helper-text">
-                  Skip this step if you'd like — you can always add providers later from Settings.
+                  {t("setup.skipProviderHint", "Skip this step if you'd like — you can always add providers later from Settings.")}
                 </p>
               )}
 
               {authLoading ? (
                 <div className="model-onboarding-loading">
                   <Loader2 size={24} className="animate-spin" />
-                  <span>Loading providers…</span>
+                  <span>{t("setup.loadingProviders", "Loading providers…")}</span>
                 </div>
               ) : authProviders.length === 0 ? (
                 <div className="model-onboarding-empty">
-                  No AI providers are configured. Please check your Fusion
-                  configuration.
+                  {t("setup.noProvidersConfigured", "No AI providers are configured. Please check your Fusion configuration.")}
                 </div>
               ) : (
                 <>
@@ -2309,21 +2313,21 @@ export function ModelOnboardingModal({
                   />
 
                   <section className="onboarding-provider-section" data-testid="onboarding-quick-start-providers">
-                    <h3 className="onboarding-section-title">Quick start providers</h3>
+                    <h3 className="onboarding-section-title">{t("setup.quickStartProviders", "Quick start providers")}</h3>
                     {quickStartProviders.length > 0 ? (
                       <div className="model-onboarding-providers">
                         {quickStartProviders.map((provider) => renderAiProviderCard(provider))}
                       </div>
                     ) : (
                       <p className="onboarding-helper-text">
-                        No quick-start providers are available in this environment.
+                        {t("setup.noQuickStartProviders", "No quick-start providers are available in this environment.")}
                       </p>
                     )}
                   </section>
 
                   {connectedNonQuickStartProviders.length > 0 && (
                     <section className="onboarding-provider-section" data-testid="onboarding-connected-providers">
-                      <h3 className="onboarding-section-title">Connected providers</h3>
+                      <h3 className="onboarding-section-title">{t("setup.connectedProviders", "Connected providers")}</h3>
                       <div className="model-onboarding-providers">
                         {connectedNonQuickStartProviders.map((provider) => renderAiProviderCard(provider))}
                       </div>
@@ -2333,24 +2337,21 @@ export function ModelOnboardingModal({
                   {/* Model Selection — placed directly after the authenticated provider list */}
                   <div className="onboarding-model-section">
                     <h3 className="onboarding-section-title">
-                      Default Model (Optional)
+                      {t("setup.defaultModelOptional", "Default Model (Optional)")}
                     </h3>
                     <p className="model-onboarding-description">
-                      Pick a default model for AI tasks, or leave this blank to choose
-                      later. Models vary in speed, capability, and cost.
+                      {t("setup.defaultModelDescription", "Pick a default model for AI tasks, or leave this blank to choose later. Models vary in speed, capability, and cost.")}
                     </p>
 
-                    <OnboardingDisclosure summary="How do I choose a model?">
+                    <OnboardingDisclosure summary={t("setup.howDoIChooseModel", "How do I choose a model?")}>
                       <p className="onboarding-helper-text">
-                        Models vary in speed, capability, and cost. A good default is usually
-                        the latest model from your connected provider. You can always change this
-                        later in Settings.
+                        {t("setup.howDoIChooseModelBody", "Models vary in speed, capability, and cost. A good default is usually the latest model from your connected provider. You can always change this later in Settings.")}
                       </p>
                     </OnboardingDisclosure>
 
                     {availableModels.length === 0 ? (
                       <div className="model-onboarding-empty">
-                        No models available yet. Connect a provider above to see model options.
+                        {t("setup.noModelsAvailable", "No models available yet. Connect a provider above to see model options.")}
                       </div>
                     ) : (
                       <div className="onboarding-model-selector">
@@ -2358,8 +2359,8 @@ export function ModelOnboardingModal({
                           models={availableModels}
                           value={selectedModel}
                           onChange={handleModelSelect}
-                          placeholder="Select a default model…"
-                          label="Default model"
+                          placeholder={t("setup.selectDefaultModel", "Select a default model…")}
+                          label={t("setup.defaultModelLabel", "Default model")}
                         />
                       </div>
                     )}
@@ -2367,7 +2368,7 @@ export function ModelOnboardingModal({
                     {selectedModel && (
                       <div className="onboarding-model-preview">
                         <small className="settings-muted">
-                          Selected:{" "}
+                          {t("setup.selectedModel", "Selected:")} {" "}
                           {availableModels.find((m) => m.id === selectedModel)
                             ?.name ?? selectedModel}
                         </small>
@@ -2375,7 +2376,7 @@ export function ModelOnboardingModal({
                     )}
                   </div>
 
-                  <OnboardingDisclosure summary="Advanced provider settings" className="onboarding-provider-advanced">
+                  <OnboardingDisclosure summary={t("setup.advancedProviderSettings", "Advanced provider settings")} className="onboarding-provider-advanced">
                     <div data-testid="onboarding-advanced-provider-settings">
                       {advancedProviders.length > 0 ? (
                         <div className="model-onboarding-providers">
@@ -2383,7 +2384,7 @@ export function ModelOnboardingModal({
                         </div>
                       ) : (
                         <p className="onboarding-helper-text">
-                          All currently available providers are already shown above.
+                          {t("setup.allProvidersShown", "All currently available providers are already shown above.")}
                         </p>
                       )}
 
@@ -2400,7 +2401,7 @@ export function ModelOnboardingModal({
 
                       {!showCustomProviderForm ? (
                         <button type="button" className="btn btn-sm" onClick={() => setShowCustomProviderForm(true)}>
-                          Add custom provider
+                          {t("setup.addCustomProvider", "Add custom provider")}
                         </button>
                       ) : (
                         <CustomProviderForm
@@ -2415,22 +2416,18 @@ export function ModelOnboardingModal({
 
                   {/* OAuth login disclosure */}
                   {hasOauthProviders && (
-                    <OnboardingDisclosure summary="How does login work?">
+                    <OnboardingDisclosure summary={t("setup.howDoesLoginWork", "How does login work?")}>
                       <p className="onboarding-helper-text">
-                        Clicking Login opens the provider's website in a new tab where you sign in.
-                        Once you authorize Fusion, this page will automatically detect the connection.
-                        Your credentials are never stored in Fusion.
+                        {t("setup.howDoesLoginWorkBody", "Clicking Login opens the provider's website in a new tab where you sign in. Once you authorize Fusion, this page will automatically detect the connection. Your credentials are never stored in Fusion.")}
                       </p>
                     </OnboardingDisclosure>
                   )}
 
                   {/* API key disclosure */}
                   {hasApiKeyProviders && (
-                    <OnboardingDisclosure summary="What is an API key?">
+                    <OnboardingDisclosure summary={t("setup.whatIsApiKey", "What is an API key?")}>
                       <p className="onboarding-helper-text">
-                        An API key is a secret token that authenticates Fusion with the provider.
-                        You can find your key in the provider's dashboard under API settings.
-                        Keys are stored securely on your machine.
+                        {t("setup.whatIsApiKeyBody", "An API key is a secret token that authenticates Fusion with the provider. You can find your key in the provider's dashboard under API settings. Keys are stored securely on your machine.")}
                       </p>
                     </OnboardingDisclosure>
                   )}
@@ -2448,29 +2445,29 @@ export function ModelOnboardingModal({
               {isGitHubReady ? (
                 <p className="model-onboarding-description">
                   {isGitHubReadyViaCli
-                    ? "GitHub CLI is already authenticated — issue imports and pull request tracking work right now. You're all set; no further action needed."
-                    : "GitHub is connected — issue imports and pull request tracking are available. You're all set; no further action needed."}
+                    ? t("setup.githubCliAlreadyAuth", "GitHub CLI is already authenticated — issue imports and pull request tracking work right now. You're all set; no further action needed.")
+                    : t("setup.githubConnected", "GitHub is connected — issue imports and pull request tracking are available. You're all set; no further action needed.")}
                 </p>
               ) : (
                 <p className="model-onboarding-description">
-                  Connecting GitHub unlocks issue imports and pull request tracking. You can skip this — task creation works without it.
+                  {t("setup.githubConnectionDescription", "Connecting GitHub unlocks issue imports and pull request tracking. You can skip this — task creation works without it.")}
                 </p>
               )}
               {!isGitHubReady && (
                 <div className="onboarding-feature-list">
                   <ul>
                     <li className="onboarding-feature-list-heading">
-                      <strong>Without GitHub (available now):</strong>
+                      <strong>{t("setup.withoutGitHubHeading", "Without GitHub (available now):")}</strong>
                     </li>
-                    <li className="onboarding-helper-text">Create tasks manually</li>
-                    <li className="onboarding-helper-text">Describe work for AI agents</li>
-                    <li className="onboarding-helper-text">Track progress on the board</li>
+                    <li className="onboarding-helper-text">{t("setup.withoutGitHub1", "Create tasks manually")}</li>
+                    <li className="onboarding-helper-text">{t("setup.withoutGitHub2", "Describe work for AI agents")}</li>
+                    <li className="onboarding-helper-text">{t("setup.withoutGitHub3", "Track progress on the board")}</li>
                     <li className="onboarding-feature-list-heading">
-                      <strong>With GitHub (after connecting):</strong>
+                      <strong>{t("setup.withGitHubHeading", "With GitHub (after connecting):")}</strong>
                     </li>
-                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">Import issues as tasks</li>
-                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">Sync pull request status</li>
-                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">Link code changes to tasks</li>
+                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">{t("setup.withGitHub1", "Import issues as tasks")}</li>
+                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">{t("setup.withGitHub2", "Sync pull request status")}</li>
+                    <li className="onboarding-helper-text onboarding-feature-list-item--with-github">{t("setup.withGitHub3", "Link code changes to tasks")}</li>
                   </ul>
                 </div>
               )}
@@ -2478,17 +2475,16 @@ export function ModelOnboardingModal({
               {/* Skip-state banner: shown when AI setup was skipped */}
               {aiSetupSkipped && (
                 <div className="onboarding-skip-banner" role="status">
-                  <strong>No AI provider connected</strong>
+                  <strong>{t("setup.noAiProviderConnected", "No AI provider connected")}</strong>
                   <p>
-                    AI features like task planning and code generation won&apos;t be available until you connect one.
-                    You can set this up later in Settings.
+                    {t("setup.noAiProviderBody", "AI features like task planning and code generation won't be available until you connect one. You can set this up later in Settings.")}
                   </p>
                 </div>
               )}
 
-              <OnboardingDisclosure summary="What does GitHub integration do?">
+              <OnboardingDisclosure summary={t("setup.whatDoesGitHubIntegrationDo", "What does GitHub integration do?")}>
                 <p className="onboarding-helper-text">
-                  Without GitHub, you can still create and manage tasks manually. GitHub integration adds the ability to import issues as tasks, track pull request status alongside your work, and automatically link commits to tasks. Connect anytime from Settings → Authentication.
+                  {t("setup.whatDoesGitHubIntegrationDoBody", "Without GitHub, you can still create and manage tasks manually. GitHub integration adds the ability to import issues as tasks, track pull request status alongside your work, and automatically link commits to tasks. Connect anytime from Settings → Authentication.")}
                 </p>
               </OnboardingDisclosure>
 
@@ -2499,14 +2495,11 @@ export function ModelOnboardingModal({
                   </div>
                   {isGitHubReadyViaCli ? (
                     <p>
-                      GitHub CLI is already authenticated, so imports and PR tracking work now.
-                      OAuth from the dashboard is optional and only controls
-                      dashboard-managed connect/disconnect.
+                      {t("setup.githubCliAuthNote", "GitHub CLI is already authenticated, so imports and PR tracking work now. OAuth from the dashboard is optional and only controls dashboard-managed connect/disconnect.")}
                     </p>
                   ) : (
                     <p>
-                      GitHub OAuth isn&apos;t connected yet. You can set it up in Settings → Authentication,
-                      or continue now and connect later.
+                      {t("setup.githubOauthNotConnected", "GitHub OAuth isn't connected yet. You can set it up in Settings → Authentication, or continue now and connect later.")}
                     </p>
                   )}
                   <div className="model-onboarding-github-optional__actions">
@@ -2515,14 +2508,14 @@ export function ModelOnboardingModal({
                       onClick={() => setStep("project-setup")}
                     >
                       {isGitHubReadyViaCli
-                        ? "Continue with gh CLI auth →"
-                        : "Continue without GitHub →"}
+                        ? t("setup.continueWithGhCli", "Continue with gh CLI auth →")
+                        : t("setup.continueWithoutGitHub", "Continue without GitHub →")}
                     </button>
                     {isGitHubReadyViaCli && (
                       (authActionInProgress === "github" || isGithubLoginInProgress) ? (
                         <button className="btn btn-sm" disabled>
                           <Loader2 size={14} className="onboarding-spinner" />
-                          Waiting for OAuth login…
+                          {t("setup.waitingForOauthLogin", "Waiting for OAuth login…")}
                         </button>
                       ) : (
                         <button
@@ -2530,7 +2523,7 @@ export function ModelOnboardingModal({
                           onClick={() => handleLogin("github")}
                         >
                           <ProviderIcon provider="github" size="sm" />
-                          Connect OAuth (optional)
+                          {t("setup.connectOauthOptional", "Connect OAuth (optional)")}
                         </button>
                       )
                     )}
@@ -2557,14 +2550,14 @@ export function ModelOnboardingModal({
                     {isGithubAuthenticated && (
                       authActionInProgress === "github" ? (
                         <button className="btn btn-sm" disabled>
-                          Logging out…
+                          {t("setup.loggingOut", "Logging out…")}
                         </button>
                       ) : (
                         <button
                           className="btn btn-sm"
                           onClick={() => handleLogout("github")}
                         >
-                          Disconnect
+                          {t("setup.disconnect", "Disconnect")}
                         </button>
                       )
                     )}
@@ -2575,13 +2568,13 @@ export function ModelOnboardingModal({
                       {(authActionInProgress === "github" || isGithubLoginInProgress) ? (
                         <div className="onboarding-github-connect-actions">
                           <button className="btn btn-sm" disabled>
-                            Waiting for login…
+                            {t("setup.waitingForLogin", "Waiting for login…")}
                           </button>
                           <button
                             className="btn btn-sm"
                             onClick={() => void handleCancelLogin("github")}
                           >
-                            Cancel
+                            {t("setup.cancelLogin", "Cancel")}
                           </button>
                         </div>
                       ) : (
@@ -2590,7 +2583,7 @@ export function ModelOnboardingModal({
                           onClick={() => handleLogin("github")}
                         >
                           <GitPullRequest size={16} />
-                          Connect
+                          {t("setup.connect", "Connect")}
                         </button>
                       )}
                       {(authActionInProgress === "github" || isGithubLoginInProgress) && loginInstructions.github && (
@@ -2605,26 +2598,26 @@ export function ModelOnboardingModal({
                   {githubStatus === "connected" && (
                     <div className="onboarding-github-feedback onboarding-github-feedback--success">
                       {isGitHubReadyViaCli
-                        ? "GitHub CLI is authenticated. Imports and pull request tracking are available. Connect OAuth in Settings → Authentication if you want dashboard-managed sign-in controls."
-                        : "GitHub OAuth is connected. You can import issues and track pull requests."}
+                        ? t("setup.githubCliAuthSuccess", "GitHub CLI is authenticated. Imports and pull request tracking are available. Connect OAuth in Settings → Authentication if you want dashboard-managed sign-in controls.")
+                        : t("setup.githubOauthConnected", "GitHub OAuth is connected. You can import issues and track pull requests.")}
                     </div>
                   )}
 
                   {githubStatus === "failed" && (
                     <div className="onboarding-github-feedback onboarding-github-feedback--error">
-                      <p>Connection failed or timed out.</p>
+                      <p>{t("setup.githubConnectionFailed", "Connection failed or timed out.")}</p>
                       <div className="onboarding-github-feedback-actions">
                         <button
                           className="btn btn-sm"
                           onClick={() => handleLogin("github")}
                         >
-                          Retry
+                          {t("setup.retry", "Retry")}
                         </button>
                         <button
                           className="onboarding-skip-step-link"
                           onClick={handleSkipGitHubStep}
                         >
-                          Skip for now
+                          {t("setup.skipForNow", "Skip for now")}
                         </button>
                       </div>
                     </div>
@@ -2632,19 +2625,19 @@ export function ModelOnboardingModal({
 
                   {githubStatus === "pending" && (
                     <div className="onboarding-github-feedback onboarding-github-feedback--info">
-                      Waiting for GitHub authorization…
+                      {t("setup.waitingForGitHubAuth", "Waiting for GitHub authorization…")}
                     </div>
                   )}
 
                   {githubStatus === "skipped" && (
                     <div className="onboarding-github-feedback onboarding-github-feedback--info">
-                      <p>GitHub was skipped. You can connect anytime from Settings → Authentication.</p>
+                      <p>{t("setup.githubSkipped", "GitHub was skipped. You can connect anytime from Settings → Authentication.")}</p>
                       <div className="onboarding-github-feedback-actions">
                         <button
                           className="btn btn-sm"
                           onClick={() => handleLogin("github")}
                         >
-                          Connect anyway
+                          {t("setup.connectAnyway", "Connect anyway")}
                         </button>
                       </div>
                     </div>
@@ -2652,7 +2645,7 @@ export function ModelOnboardingModal({
 
                   {githubStatus === "not-connected" && (
                     <p className="onboarding-helper-text">
-                      No worries if you're not ready — connect GitHub anytime from Settings → Authentication.
+                      {t("setup.connectGitHubAnytime", "No worries if you're not ready — connect GitHub anytime from Settings → Authentication.")}
                     </p>
                   )}
                 </>
@@ -2663,14 +2656,13 @@ export function ModelOnboardingModal({
           {step === "project-setup" && (
             <div className="model-onboarding-project-setup">
               <p className="model-onboarding-description">
-                Choose your first project before creating or importing tasks.
-                You can register an existing local directory or clone a GitHub repository URL through the setup wizard.
+                {t("setup.projectSetupDescription", "Choose your first project before creating or importing tasks. You can register an existing local directory or clone a GitHub repository URL through the setup wizard.")}
               </p>
 
               {!hasProjectSelected ? (
                 <div className="onboarding-project-prerequisite" data-testid="onboarding-project-prerequisite">
                   <p className="onboarding-helper-text">
-                    A project is required before first-task actions are available.
+                    {t("setup.projectRequired", "A project is required before first-task actions are available.")}
                   </p>
                   <button
                     type="button"
@@ -2678,22 +2670,21 @@ export function ModelOnboardingModal({
                     onClick={onOpenSetupWizard}
                     data-testid="onboarding-open-setup-wizard"
                   >
-                    Set Up Project
+                    {t("setup.setUpProject", "Set Up Project")}
                   </button>
                   <p className="onboarding-helper-text">
-                    In the setup wizard, pick an existing directory or paste a GitHub clone URL.
+                    {t("setup.setupWizardHint", "In the setup wizard, pick an existing directory or paste a GitHub clone URL.")}
                   </p>
                 </div>
               ) : (
                 <div className="onboarding-project-ready" data-testid="onboarding-project-ready" role="status">
-                  <p>Project selected — task creation and imports are available.</p>
+                  <p>{t("setup.projectSelected", "Project selected — task creation and imports are available.")}</p>
                 </div>
               )}
 
-              <OnboardingDisclosure summary="What does project setup do?">
+              <OnboardingDisclosure summary={t("setup.whatDoesProjectSetupDo", "What does project setup do?")}>
                 <p className="onboarding-helper-text">
-                  Project setup registers a workspace so Fusion knows where to read files,
-                  run commands, and track task changes.
+                  {t("setup.whatDoesProjectSetupDoBody", "Project setup registers a workspace so Fusion knows where to read files, run commands, and track task changes.")}
                 </p>
               </OnboardingDisclosure>
             </div>
@@ -2702,19 +2693,19 @@ export function ModelOnboardingModal({
           {step === "first-task" && (
             <div className="model-onboarding-first-task">
               <p className="model-onboarding-description">
-                Create your first task to start the board and launch AI execution.
+                {t("setup.firstTaskDescription", "Create your first task to start the board and launch AI execution.")}
               </p>
 
               {showTaskCreated && createdTaskForDisplay ? (
                 <div className="onboarding-task-created">
                   <CheckCircle size={56} className="success-icon" />
-                  <h3 className="onboarding-task-created__title">Your first task is ready!</h3>
+                  <h3 className="onboarding-task-created__title">{t("setup.firstTaskReady", "Your first task is ready!")}</h3>
                   <div className="onboarding-task-created__task-id">{createdTaskForDisplay.id}</div>
                   {firstCreatedTaskPreview && (
                     <p className="onboarding-task-created__description">{firstCreatedTaskPreview}</p>
                   )}
                   <p className="onboarding-task-created__hint">
-                    Your task has been created and will appear on the board.
+                    {t("setup.taskCreatedHint", "Your task has been created and will appear on the board.")}
                   </p>
                   <div className="onboarding-task-created__actions">
                     <button
@@ -2722,14 +2713,14 @@ export function ModelOnboardingModal({
                       className="btn btn-primary"
                       onClick={handleViewCreatedTask}
                     >
-                      View Task
+                      {t("setup.viewTask", "View Task")}
                     </button>
                     <button
                       type="button"
                       className="btn"
                       onClick={handleGoToDashboard}
                     >
-                      Go to Dashboard
+                      {t("setup.goToDashboard", "Go to Dashboard")}
                     </button>
                   </div>
                 </div>
@@ -2738,7 +2729,7 @@ export function ModelOnboardingModal({
                   {!hasProjectSelected ? (
                     <div className="onboarding-project-prerequisite" data-testid="onboarding-project-prerequisite">
                       <p className="onboarding-helper-text">
-                        A project must be selected before you can create tasks or import from GitHub.
+                        {t("setup.projectMustBeSelected", "A project must be selected before you can create tasks or import from GitHub.")}
                       </p>
                       <button
                         type="button"
@@ -2746,14 +2737,14 @@ export function ModelOnboardingModal({
                         onClick={onOpenSetupWizard}
                         data-testid="onboarding-open-setup-wizard"
                       >
-                        Set Up Project
+                        {t("setup.setUpProject", "Set Up Project")}
                       </button>
                     </div>
                   ) : (
                     <>
                       <div className="onboarding-first-task-form">
                         <label className="onboarding-first-task-form__label" htmlFor="onboarding-first-task-input">
-                          Describe your first task
+                          {t("setup.describeFirstTask", "Describe your first task")}
                         </label>
                         <textarea
                           id="onboarding-first-task-input"
@@ -2764,7 +2755,7 @@ export function ModelOnboardingModal({
                             setFirstTaskDescription(event.target.value);
                             setTaskCreationError(null);
                           }}
-                          placeholder="Example: Build a login page with email and password"
+                          placeholder={t("setup.firstTaskPlaceholder", "Example: Build a login page with email and password")}
                           rows={4}
                         />
                         <div className="onboarding-first-task-form__actions">
@@ -2778,10 +2769,10 @@ export function ModelOnboardingModal({
                             {isCreatingFirstTask ? (
                               <>
                                 <Loader2 size={16} className="animate-spin" />
-                                <span>Creating task…</span>
+                                <span>{t("setup.creatingTask", "Creating task…")}</span>
                               </>
                             ) : (
-                              "Create First Task"
+                              t("setup.createFirstTask", "Create First Task")
                             )}
                           </button>
                         </div>
@@ -2790,7 +2781,7 @@ export function ModelOnboardingModal({
                       {taskCreationError && (
                         <div className="onboarding-task-error" role="alert" data-testid="onboarding-task-error">
                           <p className="field-error">{taskCreationError}</p>
-                          <p className="onboarding-helper-text">Your text has been preserved — fix the issue and try again.</p>
+                          <p className="onboarding-helper-text">{t("setup.taskErrorHint", "Your text has been preserved — fix the issue and try again.")}</p>
                         </div>
                       )}
                     </>
@@ -2800,11 +2791,9 @@ export function ModelOnboardingModal({
 
                   {hasProjectSelected && (
                     <>
-                      <OnboardingDisclosure summary="What happens when I create a task?">
+                      <OnboardingDisclosure summary={t("setup.whatHappensWhenCreateTask", "What happens when I create a task?")}>
                         <p className="onboarding-helper-text">
-                          A task describes something you want done. Fusion's AI agents will read
-                          your description and work on implementing it. You can track progress on
-                          the board and review the results.
+                          {t("setup.whatHappensWhenCreateTaskBody", "A task describes something you want done. Fusion's AI agents will read your description and work on implementing it. You can track progress on the board and review the results.")}
                         </p>
                       </OnboardingDisclosure>
 
@@ -2818,8 +2807,8 @@ export function ModelOnboardingModal({
                             <Plus size={24} />
                           </div>
                           <div className="cta-content">
-                            <strong>Create a New Task</strong>
-                            <span>Describe what you need built and AI will work on it</span>
+                            <strong>{t("setup.createNewTask", "Create a New Task")}</strong>
+                            <span>{t("setup.createNewTaskSubtitle", "Describe what you need built and AI will work on it")}</span>
                           </div>
                         </button>
 
@@ -2833,18 +2822,18 @@ export function ModelOnboardingModal({
                             <GitPullRequest size={24} />
                           </div>
                           <div className="cta-content">
-                            <strong>Import from GitHub</strong>
-                            <span>Turn GitHub issues into tasks you can track here</span>
+                            <strong>{t("setup.importFromGitHub", "Import from GitHub")}</strong>
+                            <span>{t("setup.importFromGitHubSubtitle", "Turn GitHub issues into tasks you can track here")}</span>
                             {!isGitHubReady && (
-                              <small className="onboarding-cta-note">Requires GitHub connection</small>
+                              <small className="onboarding-cta-note">{t("setup.requiresGitHubConnection", "Requires GitHub connection")}</small>
                             )}
                           </div>
                         </button>
                       </div>
 
                       <p className="onboarding-skip-note">
-                        You can create tasks anytime from the board, or use{" "}
-                        <code>fn task create</code> in the terminal.
+                        {t("setup.createTasksAnytimeNote", "You can create tasks anytime from the board, or use")} {" "}
+                        <code>fn task create</code> {t("setup.createTasksAnytimeNoteTerminal", "in the terminal.")}
                       </p>
                     </>
                   )}
@@ -2857,8 +2846,7 @@ export function ModelOnboardingModal({
             <div className="model-onboarding-complete">
               <CheckCircle size={48} className="success-icon" />
               <p>
-                Setup complete! Head to the board to create your first task, or
-                explore the dashboard to see what's available.
+                {t("setup.setupComplete", "Setup complete! Head to the board to create your first task, or explore the dashboard to see what's available.")}
               </p>
             </div>
           )}
@@ -2873,13 +2861,13 @@ export function ModelOnboardingModal({
                 onClick={handleDismiss}
                 disabled={saving}
               >
-                Skip for now
+                {t("setup.skipForNow", "Skip for now")}
               </button>
               <button className="onboarding-skip-step-link" onClick={handleSkip}>
-                Skip setup →
+                {t("setup.skipSetup", "Skip setup →")}
               </button>
               <button className="btn btn-primary" onClick={handleNext}>
-                Next →
+                {t("setup.next", "Next →")}
               </button>
             </>
           )}
@@ -2887,13 +2875,13 @@ export function ModelOnboardingModal({
           {step === "github" && (
             <>
               <button className="btn btn-sm" onClick={handleBack}>
-                ← Back
+                {t("setup.back", "← Back")}
               </button>
               <button className="onboarding-skip-step-link" onClick={handleSkip}>
-                Skip GitHub →
+                {t("setup.skipGitHub", "Skip GitHub →")}
               </button>
               <button className="btn btn-primary" onClick={handleNext}>
-                Next →
+                {t("setup.next", "Next →")}
               </button>
             </>
           )}
@@ -2901,10 +2889,10 @@ export function ModelOnboardingModal({
           {step === "project-setup" && (
             <>
               <button className="btn btn-sm" onClick={handleBack}>
-                ← Back
+                {t("setup.back", "← Back")}
               </button>
               <button className="btn btn-primary" onClick={handleNext} disabled={!hasProjectSelected}>
-                Next →
+                {t("setup.next", "Next →")}
               </button>
             </>
           )}
@@ -2912,7 +2900,7 @@ export function ModelOnboardingModal({
           {step === "first-task" && !showTaskCreated && (
             <>
               <button className="btn btn-sm" onClick={handleBack}>
-                ← Back
+                {t("setup.back", "← Back")}
               </button>
               <button
                 className="btn btn-primary"
@@ -2922,10 +2910,10 @@ export function ModelOnboardingModal({
                 {saving ? (
                   <>
                     <Loader2 size={16} className="animate-spin" />
-                    <span>Saving…</span>
+                    <span>{t("setup.saving", "Saving…")}</span>
                   </>
                 ) : (
-                  "Finish Setup"
+                  t("setup.finishSetup", "Finish Setup")
                 )}
               </button>
             </>
@@ -2934,7 +2922,7 @@ export function ModelOnboardingModal({
           {step === "complete" && (
             <button className="btn btn-primary" onClick={handleFinish}>
               <CheckCircle size={16} />
-              <span>Get Started</span>
+              <span>{t("setup.getStarted", "Get Started")}</span>
             </button>
           )}
         </div>

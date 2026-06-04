@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   fetchPaperclipAgents,
   fetchPaperclipCliAgents,
@@ -119,6 +120,7 @@ function settingsFromRecord(raw: Record<string, unknown>): PaperclipSettings {
 }
 
 export function PaperclipRuntimeCard() {
+  const { t } = useTranslation("app");
   const [settings, setSettings] = useState<PaperclipSettings>(DEFAULT_SETTINGS);
   const [status, setStatus] = useState<PaperclipProviderStatus | null>(null);
   const [cliDiscovery, setCliDiscovery] =
@@ -328,26 +330,26 @@ export function PaperclipRuntimeCard() {
       if (settings.transport === "cli" && cliDiscovery && !cliDiscovery.ok) {
         setToast({
           kind: "err",
-          message: `✗ CLI discovery failed: ${cliDiscovery.reason}`,
+          message: t("paperclip.cliDiscoveryFailed", "✗ CLI discovery failed: {{reason}}", { reason: cliDiscovery.reason }),
         });
       } else {
-        setToast({ kind: "err", message: "Test failed — see status above." });
+        setToast({ kind: "err", message: t("paperclip.testFailed", "Test failed — see status above.") });
       }
     } else if (next.connection.available) {
       const id = next.connection.identity;
       setToast({
         kind: "ok",
         message: id
-          ? `✓ Connected as ${id.agentName}${id.companyName ? ` at ${id.companyName}` : ""}.`
-          : "✓ Connected.",
+          ? t("paperclip.connectedAsAgent", "✓ Connected as {{agentName}}{{companyInfo}}.", { agentName: id.agentName, companyInfo: id.companyName ? ` at ${id.companyName}` : "" })
+          : t("paperclip.connected", "✓ Connected."),
       });
     } else {
       setToast({
         kind: "err",
-        message: `✗ ${next.connection.reason ?? "Paperclip server unreachable"}`,
+        message: t("paperclip.unreachable", "✗ {{reason}}", { reason: next.connection.reason ?? "Paperclip server unreachable" }),
       });
     }
-  }, [probe, settings.transport, cliDiscovery]);
+  }, [probe, settings.transport, cliDiscovery, t]);
 
   const handleSave = useCallback(async () => {
     setBusy("saving");
@@ -355,7 +357,7 @@ export function PaperclipRuntimeCard() {
     try {
       await updatePluginSettings(PLUGIN_ID, buildPayload());
       if (mountedRef.current) {
-        setToast({ kind: "ok", message: "Settings saved." });
+        setToast({ kind: "ok", message: t("paperclip.settingsSaved", "Settings saved.") });
         setApiKeyDirty(false);
       }
     } catch (err) {
@@ -364,7 +366,7 @@ export function PaperclipRuntimeCard() {
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload]);
+  }, [buildPayload, t]);
 
   const handleSaveAndTest = useCallback(async () => {
     setBusy("save-test");
@@ -378,23 +380,23 @@ export function PaperclipRuntimeCard() {
         if (settings.transport === "cli" && cliDiscovery && !cliDiscovery.ok) {
           setToast({
             kind: "err",
-            message: `Saved · ✗ CLI discovery failed: ${cliDiscovery.reason}`,
+            message: t("paperclip.savedCliDiscoveryFailed", "Saved · ✗ CLI discovery failed: {{reason}}", { reason: cliDiscovery.reason }),
           });
         } else {
-          setToast({ kind: "err", message: "Saved, but probe failed." });
+          setToast({ kind: "err", message: t("paperclip.savedProbeFailed", "Saved, but probe failed.") });
         }
       } else if (next.connection.available) {
         const id = next.connection.identity;
         setToast({
           kind: "ok",
           message: id
-            ? `Saved · ✓ Connected as ${id.agentName}${id.companyName ? ` at ${id.companyName}` : ""}.`
-            : "Saved · ✓ Connected.",
+            ? t("paperclip.savedConnectedAsAgent", "Saved · ✓ Connected as {{agentName}}{{companyInfo}}.", { agentName: id.agentName, companyInfo: id.companyName ? ` at ${id.companyName}` : "" })
+            : t("paperclip.savedConnected", "Saved · ✓ Connected."),
         });
       } else {
         setToast({
           kind: "err",
-          message: `Saved · ✗ ${next.connection.reason ?? "Paperclip server unreachable"}`,
+          message: t("paperclip.savedUnreachable", "Saved · ✗ {{reason}}", { reason: next.connection.reason ?? "Paperclip server unreachable" }),
         });
       }
     } catch (err) {
@@ -403,7 +405,7 @@ export function PaperclipRuntimeCard() {
     } finally {
       if (mountedRef.current) setBusy(null);
     }
-  }, [buildPayload, probe, settings.transport, cliDiscovery]);
+  }, [buildPayload, probe, settings.transport, cliDiscovery, t]);
 
   const connected = status?.connection.available ?? null;
   const identity = status?.connection.identity;
@@ -419,19 +421,19 @@ export function PaperclipRuntimeCard() {
   const statusText =
     status === null
       ? settings.transport === "cli" && cliDiscovery && !cliOk
-        ? `✗ CLI discovery failed: ${cliDiscovery.reason}`
-        : "Probing Paperclip server…"
+        ? t("paperclip.statusCliDiscoveryFailed", "✗ CLI discovery failed: {{reason}}", { reason: cliDiscovery.reason })
+        : t("paperclip.statusProbing", "Probing Paperclip server…")
       : connected
         ? identity
-          ? `✓ Connected as ${identity.agentName}${identity.role ? ` (${identity.role})` : ""}${identity.companyName ? ` at ${identity.companyName}` : ""}`
-          : "✓ Connected"
-        : `✗ ${status.connection.reason ?? "Unreachable"}`;
+          ? t("paperclip.statusConnectedAs", "✓ Connected as {{agentName}}{{roleInfo}}{{companyInfo}}", { agentName: identity.agentName, roleInfo: identity.role ? ` (${identity.role})` : "", companyInfo: identity.companyName ? ` at ${identity.companyName}` : "" })
+          : t("paperclip.statusConnected", "✓ Connected")
+        : t("paperclip.statusUnreachable", "✗ {{reason}}", { reason: status.connection.reason ?? "Unreachable" });
 
   const tabs = (
     <div
       className="runtime-card__tabs"
       role="tablist"
-      aria-label="Paperclip connection mode"
+      aria-label={t("paperclip.connectionModeAriaLabel", "Paperclip connection mode")}
     >
       <button
         type="button"
@@ -440,7 +442,7 @@ export function PaperclipRuntimeCard() {
         className="runtime-card__tab"
         onClick={() => setSettings((s) => ({ ...s, transport: "api" }))}
       >
-        API (URL + token)
+        {t("paperclip.tabApi", "API (URL + token)")}
       </button>
       <button
         type="button"
@@ -449,7 +451,7 @@ export function PaperclipRuntimeCard() {
         className="runtime-card__tab"
         onClick={() => setSettings((s) => ({ ...s, transport: "cli" }))}
       >
-        Local CLI (auto-derive)
+        {t("paperclip.tabCliAutoDerve", "Local CLI (auto-derive)")}
       </button>
     </div>
   );
@@ -458,16 +460,13 @@ export function PaperclipRuntimeCard() {
     <RuntimeCardShell
       testId="paperclip-runtime-card"
       logo={<ProviderIcon provider="paperclip" size="lg" />}
-      name="Paperclip"
+      name={t("paperclip.name", "Paperclip")}
       learnMoreHref={PAPERCLIP_LEARN_MORE}
       statusKind={statusKind}
       statusText={statusText}
       description={
         <>
-          Drive a Paperclip agent ("employee") in a Paperclip company. Each
-          prompt dispatches a task-shaped request; governance, budgets, and
-          approvals are enforced by Paperclip. Expect seconds-to-minutes
-          latency per turn.
+          {t("paperclip.description", "Drive a Paperclip agent (\"employee\") in a Paperclip company. Each prompt dispatches a task-shaped request; governance, budgets, and approvals are enforced by Paperclip. Expect seconds-to-minutes latency per turn.")}
         </>
       }
       tabs={tabs}
@@ -479,17 +478,17 @@ export function PaperclipRuntimeCard() {
       belowForm={
         connected === false ? (
           <div className="onboarding-helper-text">
-            <p>Make sure a Paperclip server is running. To install Paperclip:</p>
+            <p>{t("paperclip.onboardingStep1", "Make sure a Paperclip server is running. To install Paperclip:")}</p>
             <pre>
               <code>npm install -g paperclipai</code>
             </pre>
             <p>
               <a href={PAPERCLIP_LEARN_MORE} target="_blank" rel="noreferrer">
-                Paperclip docs
+                {t("paperclip.docsLink", "Paperclip docs")}
               </a>{" "}
               ·{" "}
               <a href={PAPERCLIP_GITHUB} target="_blank" rel="noreferrer">
-                GitHub
+                {t("paperclip.githubLink", "GitHub")}
               </a>
             </p>
           </div>
@@ -501,14 +500,14 @@ export function PaperclipRuntimeCard() {
         <div className="settings-muted" style={{ marginBottom: "var(--space-sm)" }}>
           {cliOk ? (
             <small>
-              CLI config: <code>{(cliDiscovery as { configPath: string }).configPath}</code>{" "}
-              · resolved <code>{cliDiscovery.apiUrl}</code>
+              {t("paperclip.cliConfigLabel", "CLI config:")} <code>{(cliDiscovery as { configPath: string }).configPath}</code>{" "}
+              · {t("paperclip.resolved", "resolved")} <code>{cliDiscovery.apiUrl}</code>
               {(cliDiscovery as { deploymentMode?: string }).deploymentMode
                 ? ` · ${(cliDiscovery as { deploymentMode?: string }).deploymentMode}`
                 : ""}
             </small>
           ) : (
-            <small>CLI discovery failed: {cliDiscovery.reason}</small>
+            <small>{t("paperclip.cliDiscoveryFailedLabel", "CLI discovery failed: {{reason}}", { reason: cliDiscovery.reason })}</small>
           )}
         </div>
       )}
@@ -517,7 +516,7 @@ export function PaperclipRuntimeCard() {
       {settings.transport === "api" && (
         <>
           <div className="form-group">
-            <label htmlFor="paperclip-apiUrl">API URL</label>
+            <label htmlFor="paperclip-apiUrl">{t("paperclip.apiUrlLabel", "API URL")}</label>
             <input
               id="paperclip-apiUrl"
               type="text"
@@ -525,22 +524,22 @@ export function PaperclipRuntimeCard() {
               value={settings.apiUrl}
               onChange={(e) => setSettings((s) => ({ ...s, apiUrl: e.target.value }))}
             />
-            <small>Base URL of the Paperclip server.</small>
+            <small>{t("paperclip.apiUrlHelp", "Base URL of the Paperclip server.")}</small>
           </div>
 
           <div className="form-group">
-            <label htmlFor="paperclip-apiKey">API key</label>
+            <label htmlFor="paperclip-apiKey">{t("paperclip.apiKeyLabel", "API key")}</label>
             <input
               id="paperclip-apiKey"
               type="password"
-              placeholder={apiKeyDirty ? "" : "••••••••  (leave blank to keep existing)"}
+              placeholder={apiKeyDirty ? "" : t("paperclip.apiKeyPlaceholder", "••••••••  (leave blank to keep existing)")}
               value={settings.apiKey}
               onChange={(e) => {
                 setSettings((s) => ({ ...s, apiKey: e.target.value }));
                 setApiKeyDirty(true);
               }}
             />
-            <small>Agent API key. Local-trusted deployments may leave this blank.</small>
+            <small>{t("paperclip.apiKeyHelp", "Agent API key. Local-trusted deployments may leave this blank.")}</small>
           </div>
         </>
       )}
@@ -549,7 +548,7 @@ export function PaperclipRuntimeCard() {
       {settings.transport === "cli" && (
         <>
           <div className="form-group">
-            <label htmlFor="paperclip-cliBinaryPath">paperclipai binary</label>
+            <label htmlFor="paperclip-cliBinaryPath">{t("paperclip.cliBinaryLabel", "paperclipai binary")}</label>
             <input
               id="paperclip-cliBinaryPath"
               type="text"
@@ -560,12 +559,11 @@ export function PaperclipRuntimeCard() {
               }
             />
             <small>
-              Optional — informational; the adapter currently reads the instance
-              config file directly.
+              {t("paperclip.cliBinaryHelp", "Optional — informational; the adapter currently reads the instance config file directly.")}
             </small>
           </div>
           <div className="form-group">
-            <label htmlFor="paperclip-cliConfigPath">Instance config path</label>
+            <label htmlFor="paperclip-cliConfigPath">{t("paperclip.cliConfigPathLabel", "Instance config path")}</label>
             <input
               id="paperclip-cliConfigPath"
               type="text"
@@ -576,17 +574,16 @@ export function PaperclipRuntimeCard() {
               }
             />
             <small>
-              Override the path to <code>config.json</code>. Leave blank for the
-              default.
+              {t("paperclip.cliConfigPathHelp", "Override the path to config.json. Leave blank for the default.")}
             </small>
           </div>
           <div className="form-group">
-            <label htmlFor="paperclip-cli-apikey">API key (override, optional)</label>
+            <label htmlFor="paperclip-cli-apikey">{t("paperclip.cliApiKeyLabel", "API key (override, optional)")}</label>
             <input
               id="paperclip-cli-apikey"
               type="password"
               placeholder={
-                apiKeyDirty ? "" : "Optional — only required for non-local-trusted modes"
+                apiKeyDirty ? "" : t("paperclip.cliApiKeyPlaceholder", "Optional — only required for non-local-trusted modes")
               }
               value={settings.apiKey}
               onChange={(e) => {
@@ -594,7 +591,7 @@ export function PaperclipRuntimeCard() {
                 setApiKeyDirty(true);
               }}
             />
-            <small>Local-trusted deployments do not require a key.</small>
+            <small>{t("paperclip.cliApiKeyHelp", "Local-trusted deployments do not require a key.")}</small>
             {/* Mint button: show when CLI mode, connection attempted but unavailable, and agent selected */}
             {status !== null && connected === false && settings.agentId && (
               <button
@@ -608,7 +605,7 @@ export function PaperclipRuntimeCard() {
                   if (!agentId || !companyId) {
                     setToast({
                       kind: "err",
-                      message: "✗ Company ID is required to mint a Paperclip API key.",
+                      message: t("paperclip.companyIdRequired", "✗ Company ID is required to mint a Paperclip API key."),
                     });
                     return;
                   }
@@ -628,18 +625,18 @@ export function PaperclipRuntimeCard() {
                     setApiKeyDirty(true);
                     setToast({
                       kind: "ok",
-                      message: `✓ API key minted via paperclipai (key 'fusion-runtime' installed for agent ${agentId}). Click Save to persist.`,
+                      message: t("paperclip.apiKeyMinted", "✓ API key minted via paperclipai (key 'fusion-runtime' installed for agent {{agentId}}). Click Save to persist.", { agentId }),
                     });
                     void probe();
                   } else {
                     setToast({
                       kind: "err",
-                      message: `✗ Mint failed: ${result.reason}. Run \`paperclipai onboard\` first if your CLI isn't authenticated.`,
+                      message: t("paperclip.mintFailed", "✗ Mint failed: {{reason}}. Run `paperclipai onboard` first if your CLI isn't authenticated.", { reason: result.reason }),
                     });
                   }
                 }}
               >
-                ✨ Mint API key via paperclipai
+                {t("paperclip.mintButton", "✨ Mint API key via paperclipai")}
               </button>
             )}
           </div>
@@ -648,7 +645,7 @@ export function PaperclipRuntimeCard() {
 
       {/* Company picker */}
       <div className="form-group">
-        <label htmlFor="paperclip-companyId">Company</label>
+        <label htmlFor="paperclip-companyId">{t("paperclip.companyLabel", "Company")}</label>
         <select
           id="paperclip-companyId"
           value={settings.companyId}
@@ -657,7 +654,7 @@ export function PaperclipRuntimeCard() {
         >
           {companies.length === 0 ? (
             <option value="">
-              {connected ? "No companies discovered" : "Connect to populate"}
+              {connected ? t("paperclip.noCompaniesDiscovered", "No companies discovered") : t("paperclip.connectToPopulate", "Connect to populate")}
             </option>
           ) : (
             companies.map((c) => (
@@ -667,12 +664,12 @@ export function PaperclipRuntimeCard() {
             ))
           )}
         </select>
-        <small>Select a Paperclip company.</small>
+        <small>{t("paperclip.companyHelp", "Select a Paperclip company.")}</small>
       </div>
 
       {/* Agent picker */}
       <div className="form-group">
-        <label htmlFor="paperclip-agentId">Agent</label>
+        <label htmlFor="paperclip-agentId">{t("paperclip.agentLabel", "Agent")}</label>
         <select
           id="paperclip-agentId"
           value={settings.agentId}
@@ -681,7 +678,7 @@ export function PaperclipRuntimeCard() {
         >
           {agents.length === 0 ? (
             <option value="">
-              {settings.companyId ? "No agents discovered" : "Pick a company first"}
+              {settings.companyId ? t("paperclip.noAgentsDiscovered", "No agents discovered") : t("paperclip.pickCompanyFirst", "Pick a company first")}
             </option>
           ) : (
             agents.map((a) => (
@@ -692,12 +689,12 @@ export function PaperclipRuntimeCard() {
             ))
           )}
         </select>
-        <small>Pick the Paperclip agent this Fusion runtime will proxy.</small>
+        <small>{t("paperclip.agentHelp", "Pick the Paperclip agent this Fusion runtime will proxy.")}</small>
       </div>
 
       {/* Conversation mode */}
       <div className="form-group">
-        <label htmlFor="paperclip-mode">Conversation mode</label>
+        <label htmlFor="paperclip-mode">{t("paperclip.modeLabel", "Conversation mode")}</label>
         <select
           id="paperclip-mode"
           value={settings.mode}
@@ -707,52 +704,52 @@ export function PaperclipRuntimeCard() {
         >
           {MODE_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
-              {opt.label}
+              {t(`paperclip.mode.${opt.value}`, opt.label)}
             </option>
           ))}
         </select>
-        <small>{MODE_OPTIONS.find((o) => o.value === settings.mode)?.help}</small>
+        <small>{t(`paperclip.modeHelp.${settings.mode}`, MODE_OPTIONS.find((o) => o.value === settings.mode)?.help ?? "")}</small>
       </div>
 
       {/* Optional scoping */}
       <div className="form-group">
-        <label htmlFor="paperclip-projectId">Project ID (optional)</label>
+        <label htmlFor="paperclip-projectId">{t("paperclip.projectIdLabel", "Project ID (optional)")}</label>
         <input
           id="paperclip-projectId"
           type="text"
-          placeholder="Optional"
+          placeholder={t("paperclip.optionalPlaceholder", "Optional")}
           value={settings.projectId}
           onChange={(e) => setSettings((s) => ({ ...s, projectId: e.target.value }))}
         />
-        <small>Pin work to a specific Paperclip project.</small>
+        <small>{t("paperclip.projectIdHelp", "Pin work to a specific Paperclip project.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="paperclip-parentIssueId">Parent issue ID (optional)</label>
+        <label htmlFor="paperclip-parentIssueId">{t("paperclip.parentIssueIdLabel", "Parent issue ID (optional)")}</label>
         <input
           id="paperclip-parentIssueId"
           type="text"
-          placeholder="Optional"
+          placeholder={t("paperclip.optionalPlaceholder", "Optional")}
           value={settings.parentIssueId}
           onChange={(e) => setSettings((s) => ({ ...s, parentIssueId: e.target.value }))}
         />
-        <small>Scope work under an existing parent issue.</small>
+        <small>{t("paperclip.parentIssueIdHelp", "Scope work under an existing parent issue.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="paperclip-goalId">Goal ID (optional)</label>
+        <label htmlFor="paperclip-goalId">{t("paperclip.goalIdLabel", "Goal ID (optional)")}</label>
         <input
           id="paperclip-goalId"
           type="text"
-          placeholder="Optional"
+          placeholder={t("paperclip.optionalPlaceholder", "Optional")}
           value={settings.goalId}
           onChange={(e) => setSettings((s) => ({ ...s, goalId: e.target.value }))}
         />
-        <small>Associate work with a Paperclip goal.</small>
+        <small>{t("paperclip.goalIdHelp", "Associate work with a Paperclip goal.")}</small>
       </div>
 
       <div className="form-group">
-        <label htmlFor="paperclip-runTimeoutMs">Run timeout (ms)</label>
+        <label htmlFor="paperclip-runTimeoutMs">{t("paperclip.runTimeoutLabel", "Run timeout (ms)")}</label>
         <input
           id="paperclip-runTimeoutMs"
           type="number"
@@ -766,7 +763,7 @@ export function PaperclipRuntimeCard() {
             }))
           }
         />
-        <small>Local cap before Fusion gives up on a Paperclip run.</small>
+        <small>{t("paperclip.runTimeoutHelp", "Local cap before Fusion gives up on a Paperclip run.")}</small>
       </div>
     </RuntimeCardShell>
   );

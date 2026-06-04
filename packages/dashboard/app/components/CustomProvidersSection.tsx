@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   addCustomProvider,
   deleteCustomProvider,
@@ -65,6 +66,7 @@ interface CustomProvidersSectionProps {
 }
 
 export function CustomProvidersSection({ embedded = false, onProviderChange }: CustomProvidersSectionProps) {
+  const { t } = useTranslation("app");
   const [providers, setProviders] = useState<CustomProvider[]>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -89,11 +91,11 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
       setProviders(normalizeProviders(response));
       setLoaded(true);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load custom providers.");
+      setError(loadError instanceof Error ? loadError.message : t("providers.failedLoad", "Failed to load custom providers."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleDisclosureToggle = useCallback(
     (isOpen: boolean) => {
@@ -151,11 +153,11 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
 
   const validateForm = useCallback((): string | null => {
     if (!name.trim()) {
-      return "Provider name is required.";
+      return t("providers.nameRequired", "Provider name is required.");
     }
 
     if (!baseUrl.trim()) {
-      return "Base URL is required.";
+      return t("providers.urlRequired", "Base URL is required.");
     }
 
     let validProtocol = false;
@@ -167,21 +169,21 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
     }
 
     if (!validProtocol) {
-      return "Base URL must be a valid http/https URL.";
+      return t("providers.urlInvalid", "Base URL must be a valid http/https URL.");
     }
 
     if (!API_TYPES.includes(apiType)) {
-      return "API type is invalid.";
+      return t("providers.apiTypeInvalid", "API type is invalid.");
     }
 
     return null;
-  }, [apiType, baseUrl, name]);
+  }, [apiType, baseUrl, name, t]);
 
   // Detect Models is available for all API types that expose a /models endpoint
   const handleDetectModels = useCallback(async () => {
     const trimmedBaseUrl = baseUrl.trim();
     if (!trimmedBaseUrl) {
-      setDetectError("Base URL is required to detect models.");
+      setDetectError(t("providers.urlRequiredForDetect", "Base URL is required to detect models."));
       return;
     }
 
@@ -208,16 +210,16 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           return newIds.join(", ") + (existing ? ", " + existing : "");
         });
       } else {
-        setDetectError("No models found. The provider may require an API key.");
+        setDetectError(t("providers.noModelsFound", "No models found. The provider may require an API key."));
       }
     } catch (err) {
       setDetectError(
-        err instanceof Error ? err.message : "Failed to detect models",
+        err instanceof Error ? err.message : t("providers.failedDetect", "Failed to detect models"),
       );
     } finally {
       setDetecting(false);
     }
-  }, [baseUrl, apiKey, apiType]);
+  }, [baseUrl, apiKey, apiType, t]);
 
   const handleSave = useCallback(async () => {
     const validationError = validateForm();
@@ -246,15 +248,15 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
       onProviderChange?.();
       resetForm();
     } catch (saveError) {
-      setFormError(saveError instanceof Error ? saveError.message : "Failed to save provider.");
+      setFormError(saveError instanceof Error ? saveError.message : t("providers.failedSave", "Failed to save provider."));
     } finally {
       setSaving(false);
     }
-  }, [apiKey, apiType, baseUrl, editingProvider, loadProviders, models, name, resetForm, validateForm]);
+  }, [apiKey, apiType, baseUrl, editingProvider, loadProviders, models, name, resetForm, validateForm, t]);
 
   const handleDelete = useCallback(
     async (provider: CustomProvider) => {
-      if (!window.confirm(`Delete custom provider "${provider.name}"?`)) return;
+      if (!window.confirm(t("providers.deleteConfirm", `Delete custom provider "{{name}}"?`, { name: provider.name }))) return;
 
       setError(null);
       try {
@@ -262,17 +264,17 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
         await loadProviders();
         onProviderChange?.();
       } catch (deleteError) {
-        setError(deleteError instanceof Error ? deleteError.message : "Failed to delete provider.");
+        setError(deleteError instanceof Error ? deleteError.message : t("providers.failedDelete", "Failed to delete provider."));
       }
     },
-    [loadProviders, onProviderChange],
+    [loadProviders, onProviderChange, t],
   );
 
   const sectionContent = (
     <>
       {embedded ? null : loading ? (
         <div className="custom-provider-empty" role="status">
-          <Loader2 aria-hidden="true" className="spin" /> Loading custom providers…
+          <Loader2 aria-hidden="true" className="spin" /> {t("providers.loading", "Loading custom providers…")}
         </div>
       ) : null}
 
@@ -303,7 +305,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                       type="button"
                       className="btn btn-icon btn-sm"
                       onClick={() => openEditForm(provider)}
-                      aria-label={`Edit ${provider.name}`}
+                      aria-label={t("providers.editLabel", "Edit {{name}}", { name: provider.name })}
                     >
                       <Pencil aria-hidden="true" />
                     </button>
@@ -311,7 +313,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                       type="button"
                       className="btn btn-icon btn-sm"
                       onClick={() => void handleDelete(provider)}
-                      aria-label={`Delete ${provider.name}`}
+                      aria-label={t("providers.deleteLabel", "Delete {{name}}", { name: provider.name })}
                     >
                       <Trash2 aria-hidden="true" />
                     </button>
@@ -321,7 +323,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                 {isEditingThisProvider ? (
                   <div className="custom-provider-form custom-provider-item-edit-form">
                     <div className="form-group custom-provider-form-row">
-                      <label htmlFor="custom-provider-name">Provider name</label>
+                      <label htmlFor="custom-provider-name">{t("providers.nameLabel", "Provider name")}</label>
                       <input
                         id="custom-provider-name"
                         className="input"
@@ -332,7 +334,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                     </div>
 
                     <div className="form-group custom-provider-form-row">
-                      <label htmlFor="custom-provider-api-type">API type</label>
+                      <label htmlFor="custom-provider-api-type">{t("providers.apiTypeLabel", "API type")}</label>
                       <select
                         id="custom-provider-api-type"
                         className="select"
@@ -340,14 +342,14 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                         onChange={(event) => setApiType(event.target.value as ProviderApiType)}
                         disabled={saving}
                       >
-                        <option value="openai-compatible">OpenAI-compatible</option>
-                        <option value="openai-responses">OpenAI Responses</option>
-                        <option value="anthropic-compatible">Anthropic-compatible</option>
+                        <option value="openai-compatible">{t("providers.apiTypeOpenAi", "OpenAI-compatible")}</option>
+                        <option value="openai-responses">{t("providers.apiTypeOpenAiResp", "OpenAI Responses")}</option>
+                        <option value="anthropic-compatible">{t("providers.apiTypeAnthropic", "Anthropic-compatible")}</option>
                       </select>
                     </div>
 
                     <div className="form-group custom-provider-form-row">
-                      <label htmlFor="custom-provider-base-url">Base URL</label>
+                      <label htmlFor="custom-provider-base-url">{t("providers.baseUrlLabel", "Base URL")}</label>
                       <input
                         id="custom-provider-base-url"
                         className="input"
@@ -359,7 +361,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                     </div>
 
                     <div className="form-group custom-provider-form-row">
-                      <label htmlFor="custom-provider-api-key">API key</label>
+                      <label htmlFor="custom-provider-api-key">{t("providers.apiKeyLabel", "API key")}</label>
                       <input
                         id="custom-provider-api-key"
                         type="password"
@@ -371,7 +373,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                     </div>
 
                     <div className="form-group custom-provider-form-row">
-                      <label htmlFor="custom-provider-models">Available models</label>
+                      <label htmlFor="custom-provider-models">{t("providers.modelsLabel", "Available models")}</label>
                       <input
                         id="custom-provider-models"
                         className="input"
@@ -388,15 +390,15 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                         className="btn btn-sm"
                         onClick={() => void handleDetectModels()}
                         disabled={saving || detecting || !baseUrl.trim()}
-                        title="Auto-detect models from the provider's /models endpoint"
+                        title={t("providers.detectTitle", "Auto-detect models from the provider's /models endpoint")}
                       >
                         {detecting ? (
                           <>
-                            <Loader2 className="spin" size={14} /> Detecting…
+                            <Loader2 className="spin" size={14} /> {t("providers.detecting", "Detecting…")}
                           </>
                         ) : (
                           <>
-                            <Search size={14} /> Detect Models
+                            <Search size={14} /> {t("providers.detectModels", "Detect Models")}
                           </>
                         )}
                       </button>
@@ -407,7 +409,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
 
                     <div className="custom-provider-form-actions">
                       <button type="button" className="btn btn-sm" onClick={resetForm} disabled={saving}>
-                        Cancel
+                        {t("actions.cancel", "Cancel")}
                       </button>
                       <button
                         type="button"
@@ -415,7 +417,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                         onClick={() => void handleSave()}
                         disabled={saving}
                       >
-                        {saving ? "Saving…" : "Save Changes"}
+                        {saving ? t("providers.saving", "Saving…") : t("providers.saveChanges", "Save Changes")}
                       </button>
                     </div>
                   </div>
@@ -427,17 +429,17 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
       ) : null}
 
       {!loading && providers.length === 0 && !error ? (
-        <div className="custom-provider-empty">No custom providers configured.</div>
+        <div className="custom-provider-empty">{t("providers.noneConfigured", "No custom providers configured.")}</div>
       ) : null}
 
       <button type="button" className="btn btn-sm custom-provider-add-btn" onClick={openAddForm}>
-        <Plus aria-hidden="true" /> Add Custom Provider
+        <Plus aria-hidden="true" /> {t("providers.addCustom", "Add Custom Provider")}
       </button>
 
       {isFormOpen && !editingProvider ? (
         <div className="custom-provider-form">
           <div className="form-group custom-provider-form-row">
-            <label htmlFor="custom-provider-name">Provider name</label>
+            <label htmlFor="custom-provider-name">{t("providers.nameLabel", "Provider name")}</label>
             <input
               id="custom-provider-name"
               className="input"
@@ -448,7 +450,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           </div>
 
           <div className="form-group custom-provider-form-row">
-            <label htmlFor="custom-provider-api-type">API type</label>
+            <label htmlFor="custom-provider-api-type">{t("providers.apiTypeLabel", "API type")}</label>
             <select
               id="custom-provider-api-type"
               className="select"
@@ -456,14 +458,14 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
               onChange={(event) => setApiType(event.target.value as ProviderApiType)}
               disabled={saving}
             >
-              <option value="openai-compatible">OpenAI-compatible</option>
-              <option value="openai-responses">OpenAI Responses</option>
-              <option value="anthropic-compatible">Anthropic-compatible</option>
+              <option value="openai-compatible">{t("providers.apiTypeOpenAi", "OpenAI-compatible")}</option>
+              <option value="openai-responses">{t("providers.apiTypeOpenAiResp", "OpenAI Responses")}</option>
+              <option value="anthropic-compatible">{t("providers.apiTypeAnthropic", "Anthropic-compatible")}</option>
             </select>
           </div>
 
           <div className="form-group custom-provider-form-row">
-            <label htmlFor="custom-provider-base-url">Base URL</label>
+            <label htmlFor="custom-provider-base-url">{t("providers.baseUrlLabel", "Base URL")}</label>
             <input
               id="custom-provider-base-url"
               className="input"
@@ -475,7 +477,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           </div>
 
           <div className="form-group custom-provider-form-row">
-            <label htmlFor="custom-provider-api-key">API key</label>
+            <label htmlFor="custom-provider-api-key">{t("providers.apiKeyLabel", "API key")}</label>
             <input
               id="custom-provider-api-key"
               type="password"
@@ -487,7 +489,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
           </div>
 
           <div className="form-group custom-provider-form-row">
-            <label htmlFor="custom-provider-models">Available models</label>
+            <label htmlFor="custom-provider-models">{t("providers.modelsLabel", "Available models")}</label>
             <input
               id="custom-provider-models"
               className="input"
@@ -504,15 +506,15 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
               className="btn btn-sm"
               onClick={() => void handleDetectModels()}
               disabled={saving || detecting || !baseUrl.trim()}
-              title="Auto-detect models from the provider's /models endpoint"
+              title={t("providers.detectTitle", "Auto-detect models from the provider's /models endpoint")}
             >
               {detecting ? (
                 <>
-                  <Loader2 className="spin" size={14} /> Detecting…
+                  <Loader2 className="spin" size={14} /> {t("providers.detecting", "Detecting…")}
                 </>
               ) : (
                 <>
-                  <Search size={14} /> Detect Models
+                  <Search size={14} /> {t("providers.detectModels", "Detect Models")}
                 </>
               )}
             </button>
@@ -523,7 +525,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
 
           <div className="custom-provider-form-actions">
             <button type="button" className="btn btn-sm" onClick={resetForm} disabled={saving}>
-              Cancel
+              {t("actions.cancel", "Cancel")}
             </button>
             <button
               type="button"
@@ -531,7 +533,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
               onClick={() => void handleSave()}
               disabled={saving}
             >
-              {saving ? "Saving…" : "Save Provider"}
+              {saving ? t("providers.saving", "Saving…") : t("providers.saveProvider", "Save Provider")}
             </button>
           </div>
         </div>

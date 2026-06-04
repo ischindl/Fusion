@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { TaskDetail } from "@fusion/core";
 import { fetchTaskDetail, type ProjectInfo } from "../api";
 import type { ToastType } from "./useToast";
@@ -26,6 +27,7 @@ export interface UseDeepLinkResult {
  * Handles task deep-link behavior (?project=...&task=...).
  */
 export function useDeepLink(options: UseDeepLinkOptions): UseDeepLinkResult {
+  const { t } = useTranslation("app");
   const {
     projectId,
     projects,
@@ -80,7 +82,7 @@ export function useDeepLink(options: UseDeepLinkOptions): UseDeepLinkResult {
       const matchingProject = projects.find((project) => project.id === projectParam);
       if (!matchingProject) {
         if (projectNotFoundToastRef.current !== projectParam) {
-          addToast(`Project '${projectParam}' not found`, "error");
+          addToast(t("deepLink.projectNotFound", "Project '{{id}}' not found", { id: projectParam }), "error");
           projectNotFoundToastRef.current = projectParam;
         }
         return;
@@ -112,7 +114,7 @@ export function useDeepLink(options: UseDeepLinkOptions): UseDeepLinkResult {
         deepLinkTaskIdRef.current = taskId;
       })
       .catch(() => {
-        addToast(`Task ${taskId} not found`, "error");
+        addToast(t("deepLink.taskNotFound", "Task {{id}} not found", { id: taskId }), "error");
       });
   }, [
     projectId,

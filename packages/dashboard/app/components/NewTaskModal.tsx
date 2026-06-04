@@ -1,5 +1,6 @@
 import "./NewTaskModal.css";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { DEFAULT_TASK_PRIORITY, type Task, type TaskCreateInput, type TaskPriority } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import type { ToastType } from "../hooks/useToast";
@@ -27,6 +28,7 @@ interface NewTaskModalProps {
 }
 
 export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, addToast }: NewTaskModalProps) {
+  const { t } = useTranslation("app");
   const { confirm } = useConfirm();
   const viewportMode = useViewportMode();
   useMobileScrollLock(isOpen);
@@ -179,8 +181,8 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
   const handleClose = useCallback(async () => {
     if (hasDirtyState) {
       const shouldDiscard = await confirm({
-        title: "Discard Changes",
-        message: "You have unsaved changes. Discard them?",
+        title: t("newTaskModal.discardChanges", "Discard Changes"),
+        message: t("newTaskModal.unsavedChanges", "You have unsaved changes. Discard them?"),
         danger: true,
       });
       if (!shouldDiscard) return;
@@ -213,7 +215,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
     setGithubTrackingEnabled(false);
     setGithubRepoOverride("");
     onClose();
-  }, [hasDirtyState, onClose, pendingImages, confirm]);
+  }, [hasDirtyState, onClose, pendingImages, confirm, t]);
 
   const handleSubmit = useCallback(async () => {
     const trimmedDesc = description.trim();
@@ -289,7 +291,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
           }
         }
         if (failures.length > 0) {
-          addToast(`Failed to upload: ${failures.join(", ")}`, "error");
+          addToast(t("newTaskModal.failedToUpload", "Failed to upload: {{files}}", { files: failures.join(", ") }), "error");
         }
       }
 
@@ -317,14 +319,14 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
       setBranch("");
       setBaseBranch("");
 
-      addToast(`Created ${task.id}`, "success");
+      addToast(t("newTaskModal.taskCreated", "Created {{taskId}}", { taskId: task.id }), "success");
       onClose();
     } catch (err) {
-      addToast(getErrorMessage(err) || "Failed to create task", "error");
+      addToast(getErrorMessage(err) || t("newTaskModal.failedToCreate", "Failed to create task"), "error");
     } finally {
       setIsSubmitting(false);
     }
-  }, [description, dependencies, pendingImages, executorModel, validatorModel, planningModel, thinkingLevel, isSubmitting, githubRepoOverrideInvalid, hasInvalidBranchSelection, onCreateTask, addToast, onClose, projectId, presetMode, selectedPresetId, selectedWorkflowId, selectedWorkflowSteps, workflowStepsExplicitlySet, selectedAgentId, reviewLevel, autoMerge, priority, nodeId, branchMode, isBranchNameRequired, branch, baseBranch, githubTrackingEnabled, githubRepoOverrideTrimmed]);
+  }, [description, dependencies, pendingImages, executorModel, validatorModel, planningModel, thinkingLevel, isSubmitting, githubRepoOverrideInvalid, hasInvalidBranchSelection, onCreateTask, addToast, onClose, projectId, presetMode, selectedPresetId, selectedWorkflowId, selectedWorkflowSteps, workflowStepsExplicitlySet, selectedAgentId, reviewLevel, autoMerge, priority, nodeId, branchMode, isBranchNameRequired, branch, baseBranch, githubTrackingEnabled, githubRepoOverrideTrimmed, t]);
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -343,7 +345,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
     <div className="new-task-quick-fields">
       {/* Dependencies field */}
       <div className="form-group">
-        <label>Dependencies</label>
+        <label>{t("newTaskModal.dependencies", "Dependencies")}</label>
         <div className="dep-trigger-wrap" ref={quickFieldsDepRef}>
           <button
             type="button"
@@ -352,20 +354,20 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
             disabled={isSubmitting}
             data-testid="dep-trigger"
           >
-            {dependencies.length > 0 ? `${dependencies.length} selected` : "Add dependencies"}
+            {dependencies.length > 0 ? t("newTaskModal.selectedCount", "{{count}} selected", { count: dependencies.length }) : t("newTaskModal.addDependencies", "Add dependencies")}
           </button>
           {showDeps && (
             <div className="dep-dropdown">
               <input
                 className="dep-dropdown-search"
-                placeholder="Search tasks…"
+                placeholder={t("newTaskModal.searchTasks", "Search tasks…")}
                 autoFocus
                 value={depSearch}
                 onChange={(e) => setDepSearch(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
               />
               {filteredDeps.length === 0 ? (
-                <div className="dep-dropdown-empty">No available tasks</div>
+                <div className="dep-dropdown-empty">{t("newTaskModal.noAvailableTasks", "No available tasks")}</div>
               ) : (
                 filteredDeps.map((t) => (
                   <div
@@ -409,7 +411,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
 
       {/* Agent Assignment */}
       <div className="form-group">
-        <label>Assign Agent</label>
+        <label>{t("newTaskModal.assignAgent", "Assign Agent")}</label>
         <div className="agent-trigger-wrap" ref={agentPickerRef}>
           <button
             type="button"
@@ -425,12 +427,12 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
             data-testid="new-task-agent-button"
           >
             <Bot size={12} style={{ verticalAlign: "middle" }} />
-            {selectedAgentLabel ? ` ${selectedAgentLabel}` : " Assign agent"}
+            {selectedAgentLabel ? ` ${selectedAgentLabel}` : ` ${t("newTaskModal.assignAgentButton", "Assign agent")}`}
           </button>
           {showAgentPicker && (
             <div className="dep-dropdown agent-picker-dropdown" onMouseDown={(e) => e.preventDefault()}>
-              <div className="dep-dropdown-search-header">Select agent</div>
-              {agentsLoading && <div className="dep-dropdown-empty">Loading agents...</div>}
+              <div className="dep-dropdown-search-header">{t("newTaskModal.selectAgent", "Select agent")}</div>
+              {agentsLoading && <div className="dep-dropdown-empty">{t("newTaskModal.loadingAgents", "Loading agents...")}</div>}
               {!agentsLoading && agents.map((a) => (
                 <div
                   key={a.id}
@@ -448,7 +450,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
                 </div>
               ))}
               {!agentsLoading && agents.length === 0 && (
-                <div className="dep-dropdown-empty">No agents available</div>
+                <div className="dep-dropdown-empty">{t("newTaskModal.noAgentsAvailable", "No agents available")}</div>
               )}
               {selectedAgentId && (
                 <div
@@ -459,7 +461,7 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
                     setShowAgentPicker(false);
                   }}
                 >
-                  <span className="dep-dropdown-title">Clear selection</span>
+                  <span className="dep-dropdown-title">{t("newTaskModal.clearSelection", "Clear selection")}</span>
                 </div>
               )}
             </div>
@@ -490,8 +492,8 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
         style={keyboardStyle}
       >
         <div className="modal-header">
-          <h3>New Task</h3>
-          <button className="modal-close" onClick={handleClose} disabled={isSubmitting} aria-label="Close">
+          <h3>{t("newTaskModal.title", "New Task")}</h3>
+          <button className="modal-close" onClick={handleClose} disabled={isSubmitting} aria-label={t("actions.close", "Close")}>
             &times;
           </button>
         </div>
@@ -560,19 +562,19 @@ export function NewTaskModal({ isOpen, onClose, projectId, tasks, onCreateTask, 
         </div>
 
         {hasInvalidBranchSelection && (
-          <div className="form-error new-task-branch-error">Branch name is required for this branch strategy.</div>
+          <div className="form-error new-task-branch-error">{t("newTaskModal.branchRequired", "Branch name is required for this branch strategy.")}</div>
         )}
 
         <div className="modal-actions">
           <button className="btn btn-sm" onClick={handleClose} disabled={isSubmitting}>
-            Cancel
+            {t("actions.cancel", "Cancel")}
           </button>
           <button
             className="btn btn-primary btn-sm"
             onClick={handleSubmit}
             disabled={!description.trim() || isSubmitting || githubRepoOverrideInvalid || hasInvalidBranchSelection}
           >
-            {isSubmitting ? "Creating..." : "Create Task"}
+            {isSubmitting ? t("newTaskModal.creating", "Creating...") : t("newTaskModal.createTask", "Create Task")}
           </button>
         </div>
       </div>
