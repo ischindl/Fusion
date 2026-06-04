@@ -10,7 +10,7 @@ import { initReactI18next } from "react-i18next";
 // default, options) returning the interpolated English default, so tests
 // keep asserting the same strings as before the i18n migration. Tests that
 // vi.mock("react-i18next") or "../i18n" are unaffected.
-void i18next.use(initReactI18next).init({
+await i18next.use(initReactI18next).init({
   lng: "en",
   fallbackLng: "en",
   // Each namespace present (empty) so hasLoadedNamespace() is true — an
