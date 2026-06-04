@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, TaskDocumentWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, SourceType, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, TaskCommitAssociationMatchSource, TaskCommitAssociationConfidence, GithubIssueAction, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, CompletionHandoffMarker } from "./types.js";
 import { createActivityLogSnapshot, createRunAuditSnapshot, createTaskMetadataSnapshot, toTaskMetadataRecord, validateSnapshotEnvelope, type ActivityLogSnapshot, type RunAuditSnapshot, type TaskMetadataSnapshot } from "./shared-mesh-state.js";
-import { VALID_TRANSITIONS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
+import { VALID_TRANSITIONS, COLUMNS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
 import { parseWorkflowIr, serializeWorkflowIr } from "./workflow-ir.js";
 import { isWorkflowColumnsEnabled } from "./workflow-columns-settings.js";
@@ -36,7 +36,12 @@ import {
   makeTransitionRejection,
   makeTransitionPending,
 } from "./transition-types.js";
-import { writeTransitionPending, clearTransitionPending } from "./transition-pending.js";
+import {
+  writeTransitionPending,
+  clearTransitionPending,
+  readTransitionPending,
+  reconcileHooksRemaining,
+} from "./transition-pending.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "./builtin-coding-workflow-ir.js";
 import type { WorkflowIr, WorkflowIrColumn } from "./workflow-ir-types.js";
 // Side-effect import: registers the 14 built-in trait DEFINITIONS into the
@@ -1604,6 +1609,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const settings = await this.getSettingsFast();
       if (isWorkflowColumnsEnabled(settings)) {
         await this.runWorkflowColumnsIntegrityPass();
+        // #1401: recover any transitionPending markers stranded by a crash
+        // between the in-txn write and the post-commit clear (they otherwise
+        // permanently inflate capacity counts for their target column).
+        await this.recoverStaleTransitionPending();
+      } else {
+        // #1409: flag-OFF init — evacuate any card stuck in a non-legacy column
+        // (e.g. the flag was toggled OFF out-of-process while a card sat in a
+        // custom column) so the board stays listable and moves work.
+        await this.evacuateCustomColumnsToLegacy("flag-off-init");
       }
     } catch (err) {
       storeLog.warn("workflowColumns integrity pass failed during init", {
@@ -3369,6 +3383,20 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const updatedMerged: Settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...updatedProjectSettings } as Settings;
       this.emit("settings:updated", { settings: updatedMerged, previous: previousMerged });
 
+      // #1409: if this update flipped workflowColumns ON→OFF, evacuate any card
+      // stranded in a custom (non-legacy) column back to a legacy column so the
+      // board stays listable / movable on the legacy path.
+      if (isWorkflowColumnsEnabled(previousMerged) && !isWorkflowColumnsEnabled(updatedMerged)) {
+        try {
+          await this.evacuateCustomColumnsToLegacy("flag-toggled-off");
+        } catch (err) {
+          storeLog.warn("workflowColumns ON→OFF evacuation failed", {
+            phase: "evacuate-custom-columns",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       // Bootstrap project memory file when memory is toggled on
       if (updatedMerged.memoryEnabled !== false && previousMerged.memoryEnabled === false) {
         try {
@@ -3469,6 +3497,21 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
     // Emit settings:updated so SSE listeners pick up the change
     this.emit("settings:updated", { settings: merged, previous });
+
+    // #1409: workflowColumns lives in experimentalFeatures (a global key), so the
+    // ON→OFF toggle flows through here. Evacuate any card stranded in a custom
+    // column when the flag flips off.
+    if (isWorkflowColumnsEnabled(previous) && !isWorkflowColumnsEnabled(merged)) {
+      try {
+        await this.evacuateCustomColumnsToLegacy("flag-toggled-off");
+      } catch (err) {
+        storeLog.warn("workflowColumns ON→OFF evacuation failed", {
+          phase: "evacuate-custom-columns",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return merged;
   }
 
@@ -5839,7 +5882,18 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     if (useWorkflow && workflowIr) {
       // ── Flag-ON validation + sync guards (typed rejections, KTD-3/R13) ─────
       // 1. Target column must exist in the task's workflow → unknown-column.
-      if (!workflowHasColumn(workflowIr, toColumn)) {
+      //    #1411: a recoveryRehome move to a LEGACY column (todo/archived/…) is
+      //    the engine's self-healing rescue path — those targets are guaranteed
+      //    safe landing columns even when a custom workflow never defined them.
+      //    recoveryRehome already skips adjacency (below); it must likewise skip
+      //    the unknown-column rejection for legacy recovery targets, otherwise a
+      //    custom-workflow card could never be rescued to todo/archived and would
+      //    stay stuck — the exact bug #1411 describes. Non-legacy unknown targets
+      //    still reject (a genuine programming error), and normal (non-recovery)
+      //    moves are unaffected.
+      const recoveryToLegacy =
+        options?.recoveryRehome === true && (COLUMNS as readonly string[]).includes(toColumn);
+      if (!workflowHasColumn(workflowIr, toColumn) && !recoveryToLegacy) {
         throw new TransitionRejectionError(
           makeTransitionRejection(
             "unknown-column",
@@ -5932,12 +5986,26 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       // A task can sit in a custom column when the flag was toggled ON→OFF;
       // `VALID_TRANSITIONS` only keys the legacy columns, so a missing entry
       // degrades to the legacy "Invalid transition" error instead of a TypeError.
-      const validTargets = VALID_TRANSITIONS[task.column as Column] ?? [];
-      if (!validTargets.includes(toColumn)) {
-        throw new Error(
-          `Invalid transition: '${task.column}' → '${toColumn}'. ` +
-            `Valid targets: ${validTargets.join(", ") || "none"}`,
-        );
+      // #1409: flag-OFF evacuation. A recoveryRehome move OUT of a non-legacy
+      // (custom) column into a legacy target is the ON→OFF evacuation path —
+      // `VALID_TRANSITIONS` never keys a custom source column, so the legacy
+      // check below would strand the card forever. Allow it through (bypassing
+      // only the adjacency check; this is unreachable for normal flag-OFF moves,
+      // which never set recoveryRehome and always start from a legacy column, so
+      // characterization behavior is byte-identical).
+      const sourceIsLegacy = (COLUMNS as readonly string[]).includes(task.column);
+      const isEvacuation =
+        options?.recoveryRehome === true &&
+        !sourceIsLegacy &&
+        (COLUMNS as readonly string[]).includes(toColumn);
+      if (!isEvacuation) {
+        const validTargets = VALID_TRANSITIONS[task.column as Column] ?? [];
+        if (!validTargets.includes(toColumn)) {
+          throw new Error(
+            `Invalid transition: '${task.column}' → '${toColumn}'. ` +
+              `Valid targets: ${validTargets.join(", ") || "none"}`,
+          );
+        }
       }
 
       if (fromColumn === "in-review" && toColumn === "done" && !options?.skipMergeBlocker) {
@@ -12247,6 +12315,201 @@ ${stepsSection}`;
       });
     }
     return { scanned, rehomed, skippedTerminal };
+  }
+
+  // ── #1401: transitionPending recovery sweep ───────────────────────────────
+  //
+  // A crash between the in-txn `transitionPending` marker write and the
+  // post-commit `clearTransitionPending` leaves the marker set forever. Because
+  // `countActiveInCapacitySlotSync` counts a pending marker as occupying a
+  // capacity slot for its `toColumn`, a stale marker permanently inflates that
+  // (workflow, column) capacity count. This sweep is the backstop the comments
+  // across store.ts / merge-trait.ts / transition-pending.ts reference: it scans
+  // every task carrying a non-null marker, reconciles `hooksRemaining` against
+  // the currently-known hook set, re-runs the surviving idempotent post-commit
+  // hooks via the same runner the live path uses, audits the recovery, and
+  // clears the marker so the reserved capacity slot is released.
+  //
+  // Idempotent: the default-workflow field effects already committed in-lock, so
+  // re-running them is a no-op, and a second sweep finds no markers. Plugin hooks
+  // are re-derived from the resolved IR (so an uninstalled-plugin hook simply
+  // drops, surfaced as an audit warning) and are expected to be idempotent per
+  // KTD-2. Runs at store init (alongside the integrity pass) and periodically
+  // from the flag-ON sweep cadence.
+  async recoverStaleTransitionPending(): Promise<{ scanned: number; recovered: number; degradedHooks: number }> {
+    let scanned = 0;
+    let recovered = 0;
+    let degradedHooks = 0;
+
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM tasks WHERE transitionPending IS NOT NULL AND transitionPending != '' AND deletedAt IS NULL`,
+      )
+      .all() as Array<{ id: string }>;
+
+    // The set of hook ids the current process can still honor: the always-present
+    // default-workflow post-commit marker plus every registered plugin trait's
+    // onEnter/onExit hook. A marker entry not in this set belongs to an
+    // uninstalled plugin and is dropped (audited) rather than re-run.
+    const registry = getTraitRegistry();
+    const knownHookIds = new Set<string>(["default-workflow:postCommit"]);
+    for (const def of registry.listTraits()) {
+      if (def.hooks?.onEnter) knownHookIds.add(`${def.id}:onEnter`);
+      if (def.hooks?.onExit) knownHookIds.add(`${def.id}:onExit`);
+    }
+
+    for (const { id } of rows) {
+      scanned += 1;
+      const marker = readTransitionPending(this.db, id);
+      // null = nothing pending (corrupt/empty marker degrades to settled); we
+      // still clear the stored column so the slot is released. undefined = row
+      // vanished mid-sweep — skip.
+      if (marker === undefined) continue;
+
+      await this.withTaskLock(id, async () => {
+        // Re-read inside the lock: another path may have cleared it already.
+        const live = readTransitionPending(this.db, id);
+        if (live == null) {
+          // Corrupt/empty marker — clear the stored value defensively so it stops
+          // counting against capacity, then move on.
+          if (live === null) {
+            try {
+              clearTransitionPending(this.db, id);
+            } catch {
+              // best-effort
+            }
+          }
+          return;
+        }
+
+        const { hooksRemaining, warnings } = reconcileHooksRemaining(live.hooksRemaining, knownHookIds);
+        degradedHooks += warnings.length;
+
+        // Re-run the surviving idempotent post-commit hooks. The default-workflow
+        // field effects already committed in-lock pre-crash, so the only work that
+        // can still be owed is the plugin trait hook runner, which re-derives its
+        // pending set from the resolved IR and is idempotent (KTD-2). We invoke it
+        // only when a plugin hook entry survived (a marker carrying just
+        // `default-workflow:postCommit` needs no re-run — just a clear).
+        const hasSurvivingPluginHook = hooksRemaining.some((h) => h !== "default-workflow:postCommit");
+        if (hasSurvivingPluginHook) {
+          const task = this.readTaskFromDb(id, { includeDeleted: false });
+          if (task) {
+            const ir = this.resolveTaskWorkflowIrSync(id);
+            // fromColumn is unknown post-crash; the marker only records toColumn.
+            // The hook runner keys onEnter off toColumn (and onExit off fromColumn);
+            // re-running onEnter for the destination is the recoverable, idempotent
+            // half. Use the task's current column as fromColumn (it committed to
+            // toColumn at marker-write time, so current == toColumn and onExit is a
+            // no-op, which is correct — we never re-fire an exit we may have run).
+            try {
+              await this.runPluginColumnTransitionHooks(id, ir, task.column, live.toColumn);
+            } catch (err) {
+              storeLog.warn("transitionPending recovery: hook re-run faulted (degraded)", {
+                phase: "recover-stale-transition-pending",
+                taskId: id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        }
+
+        for (const warning of warnings) {
+          storeLog.warn(warning, {
+            phase: "recover-stale-transition-pending",
+            taskId: id,
+          });
+        }
+
+        // Clear the marker — releases the reserved capacity slot.
+        try {
+          clearTransitionPending(this.db, id);
+        } catch {
+          // best-effort; a later sweep retries.
+        }
+
+        this.recordRunAuditEvent({
+          taskId: id,
+          agentId: "system",
+          runId: `transition-pending-recovery-${id}-${Date.now()}`,
+          domain: "database",
+          mutationType: "task:transition-pending-recovered",
+          target: id,
+          metadata: {
+            toColumn: live.toColumn,
+            hooksReran: hooksRemaining,
+            droppedHooks: warnings.length,
+            startedAt: live.startedAt,
+          },
+        });
+        recovered += 1;
+      });
+    }
+
+    if (recovered > 0 || degradedHooks > 0) {
+      storeLog.log("transitionPending recovery sweep completed", {
+        phase: "recover-stale-transition-pending",
+        scanned,
+        recovered,
+        degradedHooks,
+      });
+    }
+    return { scanned, recovered, degradedHooks };
+  }
+
+  // ── #1409: flag ON→OFF evacuation ─────────────────────────────────────────
+  //
+  // When `workflowColumns` is disabled (or at flag-OFF store init), the board
+  // reverts to the legacy enum/`VALID_TRANSITIONS` path, where only the legacy
+  // {@link COLUMNS} are valid. Any card sitting in a CUSTOM (non-legacy) column
+  // would be stuck: it can't be listed/moved through the legacy path. This pass
+  // detects those cards and re-homes each to the nearest legacy column — the
+  // default workflow's entry column (`todo`) — via the existing recovery-rehome
+  // path (engine source + bypassGuards + recoveryRehome, capacity-honoring),
+  // auditing one event per card. Terminal cards (done/archived) are left put.
+  //
+  // Idempotent: a second run finds every card in a legacy column and is a no-op.
+  async evacuateCustomColumnsToLegacy(
+    trigger: "flag-off-init" | "flag-toggled-off",
+  ): Promise<{ scanned: number; evacuated: number }> {
+    let scanned = 0;
+    let evacuated = 0;
+
+    const legacyColumns = new Set<string>(COLUMNS);
+    // Nearest legacy landing column: the default workflow's entry column
+    // (triage). Falls back to "triage" defensively if the IR can't be resolved.
+    const targetColumn = resolveEntryColumnId(BUILTIN_CODING_WORKFLOW_IR) ?? "triage";
+
+    const rows = this.db
+      .prepare(`SELECT id, "column" AS col FROM tasks WHERE deletedAt IS NULL`)
+      .all() as Array<{ id: string; col: string }>;
+
+    for (const { id, col } of rows) {
+      scanned += 1;
+      // Already in a legacy column (the common case) — nothing to evacuate.
+      if (legacyColumns.has(col)) continue;
+      // Never disturb terminal cards (legacy terminal semantics — these column
+      // ids are never legacy here, but guard defensively for parity with the
+      // integrity pass).
+      if (col === "done" || col === "archived") continue;
+
+      await this.rehomeOccupant(id, targetColumn, "workflow-edit-rehome", {
+        evacuation: true,
+        trigger,
+        invalidColumn: col,
+      });
+      evacuated += 1;
+    }
+
+    if (evacuated > 0) {
+      storeLog.log("workflowColumns ON→OFF evacuation completed", {
+        phase: "evacuate-custom-columns",
+        trigger,
+        scanned,
+        evacuated,
+      });
+    }
+    return { scanned, evacuated };
   }
 
   // ── Workflow selection (resolves a workflow to enabledWorkflowSteps) ────

@@ -219,24 +219,18 @@ describe("U12 rollback safety — flag OFF after flag ON keeps legacy behavior",
     await store.selectTaskWorkflowAndReconcile(task.id, wf.id);
     expect((await store.getTask(task.id)).column).toBe("intake");
 
-    // Toggle the flag OFF — the card stays in the custom "intake" column.
+    // Toggle the flag OFF — #1409: the ON→OFF evacuation re-homes the card from
+    // the custom "intake" column to the nearest legacy column (the default
+    // workflow's entry column, triage) so it is not stranded on the legacy path.
     await store.updateGlobalSettings({ experimentalFeatures: { workflowColumns: false } });
-    expect((await store.getTask(task.id)).column).toBe("intake");
+    expect((await store.getTask(task.id)).column).toBe("triage");
 
-    // listTasks must not throw with a task sitting in an unknown column.
+    // listTasks stays healthy.
     await expect(store.listTasks()).resolves.toBeDefined();
 
-    // A move attempt degrades to the legacy "Invalid transition" error rather
-    // than a TypeError on the undefined VALID_TRANSITIONS lookup.
-    let caught: unknown;
-    try {
-      await store.moveTask(task.id, "in-progress", { moveSource: "user" });
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toMatch(/Invalid transition/);
-    expect((caught as Error)).not.toBeInstanceOf(TypeError);
+    // The evacuated card now moves legacy-style: triage → todo works.
+    await store.moveTask(task.id, "todo", { moveSource: "user" });
+    expect((await store.getTask(task.id)).column).toBe("todo");
   });
 });
 
