@@ -208,3 +208,12 @@ remains the canonical mechanism.
 ## U8 gate decision (2026-06-03): Vitest 4.x upgrade DEFERRED
 
 Gate criterion: proceed only if cold-start/transform cost is a top contributor blocking the 30s/5min targets. Evidence: cold-start probe ~1.3-1.8s/process (~35-40s aggregate across ~25 invocations, ~10% of full-suite wall-clock); heavy real-SQLite/real-git integration tests dominate and are irreducible-by-design (U7). Transform/collect is the largest *remaining addressable* cost (dashboard lanes show collect ~= test time), so the upgrade is worthwhile as a dedicated follow-up PR — but it is not the top blocker, and a major-version bump across 28 configs + an experimental cache flag does not belong on this already-large branch. Pre-paid: deprecation delta confirmed zero (U5 audit). Re-open with: normalize caret ranges across ALL packages (incl. desktop/mobile/droid-cli/pi-*), pre-bump peer-dep audit, fsModuleCache with kill switch + stale-transform invalidation test, inventory EQUALITY before/after.
+
+## L2 happy-dom canary (2026-06-04): rejected with evidence
+
+| Lane | jsdom wall (env) | happy-dom wall (env) | verdict |
+|---|---|---|---|
+| app-quality-backfill 1/4 | 26.8s (17.9s) | 61.1s (6.2s) — tests phase ballooned | revert: 5 pass->fail (getComputedStyle layout, color tokens, DataTransfer DnD) + 2.3x slower wall |
+| foundation-ui | 10.3s (15.9s) | 7.1s (6.6s) | revert: pass-set identical but 2 new unhandled ECONNREFUSED 127.0.0.1:4040-4042 — happy-dom's EventSource opens REAL sockets where jsdom no-ops |
+
+Systemic: env cost is parallelized off the critical path under the threads pool, so env savings don't convert to wall-time; happy-dom's per-test DOM op cost dominates instead. Do not re-trial without (a) layout-assertion-free lanes and (b) an EventSource stub.

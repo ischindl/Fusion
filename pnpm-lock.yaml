@@ -43,10 +43,10 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.78.0
-        version: 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
+        version: 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
       '@earendil-works/pi-coding-agent':
         specifier: ^0.78.0
-        version: 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
+        version: 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
       dockerode:
         specifier: ^4.0.12
         version: 4.0.12
@@ -98,7 +98,7 @@ importers:
         version: 19.2.14
       '@vitest/coverage-v8':
         specifier: ^3.1.0
-        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))
+        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))
       cross-env:
         specifier: ^7.0.0
         version: 7.0.3
@@ -122,7 +122,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
       yaml:
         specifier: ^2.8.3
         version: 2.8.3
@@ -165,13 +165,13 @@ importers:
         version: 25.5.2
       '@vitest/coverage-v8':
         specifier: ^3.1.0
-        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))
+        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
     optionalDependencies:
       keytar:
         specifier: ^7.9.0
@@ -332,7 +332,7 @@ importers:
         version: 4.7.0(vite@6.4.1(@types/node@25.5.2)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0))
       '@vitest/coverage-v8':
         specifier: ^3.1.0
-        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
+        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
       jsdom:
         specifier: ^29.0.1
         version: 29.0.1
@@ -347,7 +347,7 @@ importers:
         version: 6.4.1(@types/node@25.5.2)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0)
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/desktop:
     dependencies:
@@ -375,7 +375,7 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitest/coverage-v8':
         specifier: ^3.1.0
-        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
+        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
       electron:
         specifier: ^35.0.0
         version: 35.7.5
@@ -408,7 +408,7 @@ importers:
         version: 6.4.1(@types/node@25.5.2)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0)
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/droid-cli:
     dependencies:
@@ -430,7 +430,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/engine:
     dependencies:
@@ -467,13 +467,13 @@ importers:
         version: 4.1.4
       '@vitest/coverage-v8':
         specifier: ^3.1.0
-        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
+        version: 3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/mobile:
     dependencies:
@@ -513,16 +513,16 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/pi-claude-cli:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '*'
-        version: 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+        version: 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
       '@earendil-works/pi-coding-agent':
         specifier: '*'
-        version: 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+        version: 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
     devDependencies:
       '@types/node':
         specifier: ^25.5.2
@@ -532,7 +532,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/pi-llama-cpp:
     dependencies:
@@ -548,7 +548,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/plugin-sdk:
     dependencies:
@@ -564,7 +564,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.0
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/examples/fusion-plugin-auto-label:
     dependencies:
@@ -580,7 +580,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/examples/fusion-plugin-ci-status:
     dependencies:
@@ -596,7 +596,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/examples/fusion-plugin-notification:
     dependencies:
@@ -612,7 +612,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/examples/fusion-plugin-settings-demo:
     dependencies:
@@ -628,7 +628,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-acp-runtime:
     dependencies:
@@ -653,7 +653,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-agent-browser:
     dependencies:
@@ -669,7 +669,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-cli-printing-press:
     dependencies:
@@ -715,7 +715,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-compound-engineering:
     dependencies:
@@ -755,7 +755,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-cursor-runtime:
     dependencies:
@@ -777,7 +777,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-dependency-graph:
     dependencies:
@@ -811,7 +811,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-droid-runtime:
     dependencies:
@@ -833,7 +833,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-even-realities-glasses:
     dependencies:
@@ -855,7 +855,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-hermes-runtime:
     dependencies:
@@ -871,7 +871,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-openclaw-runtime:
     dependencies:
@@ -887,7 +887,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-paperclip-runtime:
     dependencies:
@@ -903,7 +903,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-reports:
     dependencies:
@@ -946,7 +946,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-roadmap:
     dependencies:
@@ -992,7 +992,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
   plugins/fusion-plugin-whatsapp-chat:
     dependencies:
@@ -1017,7 +1017,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
 
 packages:
 
@@ -2701,6 +2701,9 @@ packages:
   '@types/verror@1.10.11':
     resolution: {integrity: sha512-RlDm9K7+o5stv0Co8i8ZRGxDbrTxhJtgjqjFyVh/tXQyl/rYtTKlnTvZ88oSTeYREWurwx20Js4kTuKCsFkUtg==}
 
+  '@types/whatwg-mimetype@3.0.2':
+    resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
+
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
@@ -3190,6 +3193,10 @@ packages:
 
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
+
+  buffer-image-size@0.6.4:
+    resolution: {integrity: sha512-nEh+kZOPY1w+gcCMobZ6ETUp9WfibndnosbpwB1iJk/8Gt5ZF2bhS6+B6bPYz424KtwsR6Rflc3tCz1/ghX2dQ==}
+    engines: {node: '>=4.0'}
 
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
@@ -3728,6 +3735,10 @@ packages:
     resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
     engines: {node: '>=0.12'}
 
+  entities@7.0.1:
+    resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
+    engines: {node: '>=0.12'}
+
   env-paths@2.2.1:
     resolution: {integrity: sha512-+h1lkLKhZMTYjog1VEpJNG7NZJWcuc2DDk/qsqSTRRCOXiLjeQ1d1/udrUGhqMxUgAlwKNZ0cf2uqan5GLuS2A==}
     engines: {node: '>=6'}
@@ -4162,6 +4173,10 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
+
+  happy-dom@20.10.1:
+    resolution: {integrity: sha512-awPoqPjx8CgjapJllyDlgzgVHjBExcitKK5ZJkxwhQJyQpHFkyS2bEcqCm7IeW20cQvuCI0cz2Ifq79CJKqtiw==}
+    engines: {node: '>=20.0.0'}
 
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
@@ -6324,6 +6339,10 @@ packages:
     resolution: {integrity: sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==}
     engines: {node: '>=20'}
 
+  whatwg-mimetype@3.0.0:
+    resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
+    engines: {node: '>=12'}
+
   whatwg-mimetype@5.0.0:
     resolution: {integrity: sha512-sXcNcHOC51uPGF0P/D4NVtrkjSU2fNsm9iog4ZvZJsL3rjoDAzXZhkm2MWt1y+PUdggKAYVoMAIYcs78wJ51Cw==}
     engines: {node: '>=20'}
@@ -7235,9 +7254,9 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-agent-core@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
+  '@earendil-works/pi-agent-core@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
     dependencies:
-      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
       ignore: 7.0.5
       typebox: 1.1.38
       yaml: 2.9.0
@@ -7249,9 +7268,9 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-agent-core@0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
+  '@earendil-works/pi-agent-core@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
     dependencies:
-      '@earendil-works/pi-ai': 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
+      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
       ignore: 7.0.5
       typebox: 1.1.38
       yaml: 2.9.0
@@ -7311,16 +7330,16 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
+  '@earendil-works/pi-ai@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
     dependencies:
-      '@anthropic-ai/sdk': 0.91.1(zod@4.3.6)
+      '@anthropic-ai/sdk': 0.91.1(zod@3.25.76)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
-      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))
+      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))
       '@mistralai/mistralai': 2.2.1
       '@smithy/node-http-handler': 4.7.3
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      openai: 6.26.0(ws@8.20.0)(zod@4.3.6)
+      openai: 6.26.0(ws@8.20.0)(zod@3.25.76)
       partial-json: 0.1.7
       typebox: 1.1.38
     transitivePeerDependencies:
@@ -7331,16 +7350,16 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
+  '@earendil-works/pi-ai@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
     dependencies:
-      '@anthropic-ai/sdk': 0.91.1(zod@3.25.76)
+      '@anthropic-ai/sdk': 0.91.1(zod@4.3.6)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
-      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))
+      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))
       '@mistralai/mistralai': 2.2.1
       '@smithy/node-http-handler': 4.7.3
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      openai: 6.26.0(ws@8.20.0)(zod@3.25.76)
+      openai: 6.26.0(ws@8.20.0)(zod@4.3.6)
       partial-json: 0.1.7
       typebox: 1.1.38
     transitivePeerDependencies:
@@ -7420,10 +7439,10 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
+  '@earendil-works/pi-coding-agent@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
     dependencies:
-      '@earendil-works/pi-agent-core': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
-      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-agent-core': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
+      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
       '@earendil-works/pi-tui': 0.77.0
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
@@ -7449,11 +7468,11 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)':
+  '@earendil-works/pi-coding-agent@0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)':
     dependencies:
-      '@earendil-works/pi-agent-core': 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
-      '@earendil-works/pi-ai': 0.78.0(@modelcontextprotocol/sdk@1.28.0(zod@3.25.76))(ws@8.20.0)(zod@3.25.76)
-      '@earendil-works/pi-tui': 0.78.0
+      '@earendil-works/pi-agent-core': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-ai': 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
+      '@earendil-works/pi-tui': 0.77.0
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -8734,6 +8753,9 @@ snapshots:
   '@types/verror@1.10.11':
     optional: true
 
+  '@types/whatwg-mimetype@3.0.2':
+    optional: true
+
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 25.5.2
@@ -8848,7 +8870,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))':
+  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
@@ -8863,11 +8885,11 @@ snapshots:
       std-env: 3.10.0
       test-exclude: 7.0.2
       tinyrainbow: 2.0.0
-      vitest: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
+      vitest: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3)
     transitivePeerDependencies:
       - supports-color
 
-  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))':
+  '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
@@ -8882,7 +8904,7 @@ snapshots:
       std-env: 3.10.0
       test-exclude: 7.0.2
       tinyrainbow: 2.0.0
-      vitest: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
+      vitest: 3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -9346,6 +9368,11 @@ snapshots:
   buffer-equal-constant-time@1.0.1: {}
 
   buffer-from@1.1.2: {}
+
+  buffer-image-size@0.6.4:
+    dependencies:
+      '@types/node': 25.5.2
+    optional: true
 
   buffer@5.7.1:
     dependencies:
@@ -9941,6 +9968,9 @@ snapshots:
 
   entities@6.0.1: {}
 
+  entities@7.0.1:
+    optional: true
+
   env-paths@2.2.1: {}
 
   environment@1.1.0: {}
@@ -10507,6 +10537,20 @@ snapshots:
       responselike: 2.0.1
 
   graceful-fs@4.2.11: {}
+
+  happy-dom@20.10.1:
+    dependencies:
+      '@types/node': 25.5.2
+      '@types/whatwg-mimetype': 3.0.2
+      '@types/ws': 8.18.1
+      buffer-image-size: 0.6.4
+      entities: 7.0.1
+      whatwg-mimetype: 3.0.0
+      ws: 8.20.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+    optional: true
 
   has-flag@4.0.0: {}
 
@@ -13005,7 +13049,7 @@ snapshots:
       tsx: 4.21.0
       yaml: 2.9.0
 
-  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3):
+  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.8.3):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
@@ -13033,6 +13077,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.13
       '@types/node': 25.5.2
+      happy-dom: 20.10.1
       jsdom: 29.0.1
     transitivePeerDependencies:
       - jiti
@@ -13048,7 +13093,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0):
+  vitest@3.2.4(@types/debug@4.1.13)(@types/node@25.5.2)(happy-dom@20.10.1)(jiti@2.7.0)(jsdom@29.0.1)(tsx@4.21.0)(yaml@2.9.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
@@ -13076,6 +13121,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.13
       '@types/node': 25.5.2
+      happy-dom: 20.10.1
       jsdom: 29.0.1
     transitivePeerDependencies:
       - jiti
@@ -13104,6 +13150,9 @@ snapshots:
   web-streams-polyfill@3.3.3: {}
 
   webidl-conversions@8.0.1: {}
+
+  whatwg-mimetype@3.0.0:
+    optional: true
 
   whatwg-mimetype@5.0.0: {}
 
