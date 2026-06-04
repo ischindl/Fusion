@@ -69,6 +69,7 @@ describe("goal injection diagnostics wiring seam", () => {
     for (const lane of lanes) {
       const store = {
         getGoalStore: () => ({ listGoals: () => [goal("G-1", "one", "2026-01-01T00:00:00.000Z")] }),
+        getMissionStore: () => ({ listGoalIdsForTask: () => ["G-PROV-1", "G-PROV-2"] }),
         logEntry: vi.fn().mockResolvedValue(undefined),
         recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
       } as any;
@@ -86,12 +87,17 @@ describe("goal injection diagnostics wiring seam", () => {
       expect(audit.database).toHaveBeenCalledTimes(1);
       expect(audit.database.mock.calls[0][0].metadata.lane).toBe(lane);
       expect(store.recordRunAuditEvent).toHaveBeenCalledTimes(1);
-      expect(store.recordRunAuditEvent.mock.calls[0][0].metadata.lane).toBe(lane);
+      expect(store.recordRunAuditEvent.mock.calls[0][0].metadata).toMatchObject({
+        lane,
+        provenanceGoalIds: ["G-PROV-1", "G-PROV-2"],
+      });
+      expect(store.logEntry.mock.calls[0][1]).toContain('provenance=["G-PROV-1","G-PROV-2"]');
     }
   });
 
   it("resolveAndEmitGoalContext handles missing getGoalStore with disabled classification", async () => {
     const store = {
+      getMissionStore: () => ({ listGoalIdsForTask: () => [] }),
       logEntry: vi.fn().mockResolvedValue(undefined),
       recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
     } as any;
@@ -109,6 +115,7 @@ describe("goal injection diagnostics wiring seam", () => {
     expect(resolution.classification).toMatchObject({ outcome: "disabled-or-failed", reason: "store-unavailable" });
     expect(audit.database).toHaveBeenCalledTimes(1);
     expect(store.recordRunAuditEvent).toHaveBeenCalledTimes(1);
+    expect(store.recordRunAuditEvent.mock.calls[0][0].metadata).toMatchObject({ provenanceGoalIds: [] });
   });
   it("emits applied audit metadata for positive injection", async () => {
     const goals = [goal("G-1", "one", "2026-01-01T00:00:00.000Z"), goal("G-2", "two", "2026-01-02T00:00:00.000Z")];
@@ -149,6 +156,32 @@ describe("goal injection diagnostics wiring seam", () => {
 
     expect(recordRunAuditEvent).toHaveBeenCalledTimes(1);
     expect(recordRunAuditEvent.mock.calls[0][0].metadata).toMatchObject({ outcome: "no-goals", goalCount: 0, goalIds: [] });
+  });
+
+  it("fails soft when provenance resolution throws", async () => {
+    const store = {
+      getGoalStore: () => ({ listGoals: () => [goal("G-1", "one", "2026-01-01T00:00:00.000Z")] }),
+      getMissionStore: () => ({
+        listGoalIdsForTask: () => {
+          throw new Error("boom");
+        },
+      }),
+      logEntry: vi.fn().mockResolvedValue(undefined),
+      recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    const audit = { database: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await expect(resolveAndEmitGoalContext({
+      lane: "executor",
+      store,
+      audit,
+      taskId: "FN-1",
+      runContext: { runId: "exec-run", agentId: "agent-1", taskId: "FN-1", phase: "execute" },
+    })).resolves.toMatchObject({
+      classification: { outcome: "applied", goalIds: ["G-1"] },
+    });
+
+    expect(store.recordRunAuditEvent.mock.calls[0][0].metadata).toMatchObject({ provenanceGoalIds: [] });
   });
 
   it("classifies list failure and keeps prompt construction alive", async () => {

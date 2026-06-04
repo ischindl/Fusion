@@ -618,6 +618,13 @@ export function apiPromoteBranchGroup(id: string, projectId?: string): Promise<P
   });
 }
 
+export function apiAbandonBranchGroup(id: string, projectId?: string): Promise<{ groupId: string; group: BranchGroupSummary }> {
+  return api<{ groupId: string; group: BranchGroupSummary }>(withProjectId(`/branch-groups/${id}/abandon`, projectId), {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export type RecoverBranchBindingOutcome =
   | { taskId: string; result: "applied"; branch: string; aheadCount: number; integrationBase: string; previousBranch: string | null }
   | { taskId: string; result: "skipped"; reason: "binding-intact" | "no-live-branch" | "ambiguous-candidates" | "no-unique-work"; candidates?: Array<{ branch: string; aheadCount: number }> };
@@ -2416,6 +2423,18 @@ export interface PrPreflightResponse {
   changedFiles: PrPreflightChangedFile[];
 }
 
+export interface ResolvePrConflictsResult {
+  resolved: boolean;
+  pushed: boolean;
+  conflictedFiles: string[];
+  message: string;
+}
+
+export interface ResolvePrConflictsResponse {
+  result: ResolvePrConflictsResult;
+  preflight: PrPreflightResponse;
+}
+
 export interface PrOptionsUser {
   login: string;
   name?: string;
@@ -2454,6 +2473,14 @@ export function generatePrMetadata(id: string, projectId?: string): Promise<PrMe
 export function fetchPrPreflight(id: string, projectId?: string, base?: string): Promise<PrPreflightResponse> {
   const baseParam = base ? `?base=${encodeURIComponent(base)}` : "";
   return api<PrPreflightResponse>(withProjectId(`/tasks/${id}/pr/preflight${baseParam}`, projectId));
+}
+
+/** Ask Fusion to resolve Create-PR merge conflicts for a task branch */
+export function resolvePrConflicts(id: string, base?: string, projectId?: string): Promise<ResolvePrConflictsResponse> {
+  return api<ResolvePrConflictsResponse>(withProjectId(`/tasks/${id}/pr/resolve-conflicts`, projectId), {
+    method: "POST",
+    ...(base ? { body: JSON.stringify({ base }) } : {}),
+  });
 }
 
 /** Fetch PR creation options (branches/reviewers/assignees/labels) for a task */

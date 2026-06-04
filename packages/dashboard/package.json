@@ -97,6 +97,7 @@
     "@codemirror/view": "^6.36.4",
     "@earendil-works/pi-coding-agent": "^0.78.0",
     "@fusion-plugin-examples/cli-printing-press": "workspace:*",
+    "@fusion-plugin-examples/compound-engineering": "workspace:*",
     "@fusion-plugin-examples/cursor-runtime": "workspace:*",
     "@fusion-plugin-examples/dependency-graph": "workspace:*",
     "@fusion-plugin-examples/droid-runtime": "workspace:*",

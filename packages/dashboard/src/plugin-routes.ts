@@ -18,6 +18,7 @@
 import { Router, type Request, type Response } from "express";
 import { access, stat, readFile } from "node:fs/promises";
 import { join, isAbsolute, dirname, basename } from "node:path";
+import { emitPluginCustomSseEvent } from "./sse.js";
 import type {
   PluginLoader,
   PluginStore,
@@ -573,6 +574,12 @@ export function createPluginRouter(
           taskStore,
           settings,
           resolveProjectTaskStore: getOrCreateProjectStore,
+          // Real publish-to-/api/events seam: forward custom plugin events to
+          // connected SSE clients, scoped to the request's project so a
+          // project stream only sees its own events.
+          emitEvent: (event: string, data: unknown) => {
+            emitPluginCustomSseEvent(pluginId, event, data, projectId);
+          },
         });
 
         // Call the route handler with Express Request cast to unknown

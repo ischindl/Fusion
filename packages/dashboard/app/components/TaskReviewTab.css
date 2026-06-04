@@ -274,6 +274,10 @@
     width: 100%;
   }
 
+  .task-review-tab__summary-wrap {
+    flex: 0 0 auto;
+  }
+
   .task-review-tab__actions {
     justify-content: flex-start;
     gap: var(--space-sm);

@@ -1940,6 +1940,134 @@ describe("MissionStore", () => {
     });
   });
 
+  describe("task goal provenance", () => {
+    async function createStoreWithTaskStore() {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      return { ts, ms: ts.getMissionStore(), goals: ts.getGoalStore() };
+    }
+
+    it("returns empty arrays for unknown and unlinked tasks", async () => {
+      const { ts, ms } = await createStoreWithTaskStore();
+      const task = await ts.createTask({ title: "Standalone task", description: "No mission link" });
+
+      expect(ms.listGoalIdsForTask("FN-DOES-NOT-EXIST")).toEqual([]);
+      expect(ms.listGoalsForTask("FN-DOES-NOT-EXIST")).toEqual([]);
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([]);
+    });
+
+    it("returns an empty array for mission-linked tasks when the mission has no goals", async () => {
+      const { ts, ms } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([]);
+    });
+
+    it("preserves stable ordering for multiple linked goals and matches hierarchy mapping", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goalA = goals.createGoal({ title: "Goal A" });
+      const goalB = goals.createGoal({ title: "Goal B" });
+
+      ms.linkGoal(mission.id, goalA.id);
+      ms.linkGoal(mission.id, goalB.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goalA.id, goalB.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual(ms.getMissionWithHierarchy(mission.id)?.linkedGoals ?? []);
+    });
+
+    it("keeps archived linked goals in task provenance", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goal = goals.createGoal({ title: "Archived goal" });
+      ms.linkGoal(mission.id, goal.id);
+      const archivedGoal = goals.archiveGoal(goal.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([archivedGoal]);
+    });
+
+    it("falls back through feature linkage when tasks.missionId is unset", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const mission = ms.createMission({ title: "Mission" });
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const goal = goals.createGoal({ title: "Fallback goal" });
+      ms.linkGoal(mission.id, goal.id);
+
+      const task = await ts.createTask({ title: "Task", description: "Linked task" });
+      ms.linkFeatureToTask(feature.id, task.id);
+      // Clear missionId on THIS test's in-memory TaskStore db (the outer `db`
+      // belongs to a different store) so the lookup genuinely exercises the
+      // feature-linkage fallback instead of the normal task→mission path.
+      (ts as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).db
+        .prepare("UPDATE tasks SET missionId = NULL WHERE id = ?")
+        .run(task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([goal]);
+    });
+
+    it("resolves provenance for triaged tasks without storing goal ids on the task row", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const goal = goals.createGoal({ title: "Goal title" });
+      const mission = ms.createMission({ title: "Mission" });
+      ms.linkGoal(mission.id, goal.id);
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature", description: "Desc" });
+
+      const triaged = await ms.triageFeature(feature.id);
+      const task = await ts.getTask(triaged.taskId!);
+
+      expect(ms.listGoalsForTask(triaged.taskId!)).toEqual([
+        expect.objectContaining({ id: goal.id, title: goal.title }),
+      ]);
+      expect(task?.missionId).toBe(mission.id);
+      expect(task).not.toHaveProperty("goalId");
+      expect(task).not.toHaveProperty("goalIds");
+    });
+
+    it("resolves provenance identically for manual feature linkage", async () => {
+      const { ts, ms, goals } = await createStoreWithTaskStore();
+      const goal = goals.createGoal({ title: "Manual goal" });
+      const mission = ms.createMission({ title: "Mission" });
+      ms.linkGoal(mission.id, goal.id);
+      const milestone = ms.addMilestone(mission.id, { title: "Milestone" });
+      const slice = ms.addSlice(milestone.id, { title: "Slice" });
+      const feature = ms.addFeature(slice.id, { title: "Feature" });
+      const task = await ts.createTask({ title: "Manual task", description: "Manual" });
+
+      ms.linkFeatureToTask(feature.id, task.id);
+
+      expect(ms.listGoalIdsForTask(task.id)).toEqual([goal.id]);
+      expect(ms.listGoalsForTask(task.id)).toEqual([
+        expect.objectContaining({ id: goal.id, title: goal.title }),
+      ]);
+    });
+  });
+
   // ── Transaction Tests ────────────────────────────────────────────────
 
   describe("Transaction Handling", () => {
@@ -2216,6 +2344,12 @@ describe("MissionStore", () => {
       const task = await ts.getTask(triaged.taskId!);
 
       expect(task?.branchContext?.assignmentMode).toBe("per-task-derived");
+      // Non-shared members must NOT carry a groupId: stamping a synthetic
+      // `mission:<id>` would let the legacy membership fallback sweep them into a
+      // shared group later created for the same mission.
+      expect(task?.branchContext?.groupId).toBeUndefined();
+      // And no branch group is ensured for a non-shared mission triage.
+      expect(ts.getBranchGroupBySource("mission", mission.id)).toBeNull();
     });
 
     it("uses mission branchStrategy existing branch when branch options are omitted", async () => {
@@ -2236,7 +2370,9 @@ describe("MissionStore", () => {
 
       expect(task?.branch).toMatch(/^release\/shared\//);
       expect(task?.branch).not.toBe("release/shared");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2258,7 +2394,9 @@ describe("MissionStore", () => {
 
       expect(task?.branch).toMatch(/^hotfix\/shared\//);
       expect(task?.branch).not.toBe("hotfix/shared");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2459,6 +2597,10 @@ describe("MissionStore", () => {
 
       expect(triaged[0].id).toBe(f1.id);
       expect(task?.branchContext?.assignmentMode).toBe("per-task-derived");
+      // Non-shared invariant: a per-task-derived member must NOT carry a groupId
+      // and must NOT create a synthetic mission:<id> branch group.
+      expect(task?.branchContext?.groupId).toBeUndefined();
+      expect(ts.getBranchGroupBySource("mission", mission.id)).toBeNull();
     });
 
     it("triageSlice respects explicit branch options over mission strategy defaults", async () => {
@@ -2485,7 +2627,9 @@ describe("MissionStore", () => {
       expect(task?.branch).toMatch(/^feature\/manual\//);
       expect(task?.branch).not.toBe("feature/manual");
       expect(task?.baseBranch).toBe("release");
-      expect(task?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      // U1: branchContext.groupId carries the real BranchGroup id, not the synthetic `mission:<id>` string.
+      expect(task?.branchContext?.groupId).toBe(ts.getBranchGroupBySource("mission", mission.id)?.id);
+      expect(task?.branchContext?.groupId).toMatch(/^BG-/);
       expect(task?.branchContext?.assignmentMode).toBe("shared");
     });
 
@@ -2512,15 +2656,23 @@ describe("MissionStore", () => {
       expect(firstTask?.branch).not.toBe("feature/shared");
       expect(secondTask?.branch).not.toBe("feature/shared");
       expect(firstTask?.branch).not.toBe(secondTask?.branch);
-      expect(firstTask?.branchContext?.groupId).toBe(`mission:${mission.id}`);
-      expect(secondTask?.branchContext?.groupId).toBe(`mission:${mission.id}`);
+      const branchGroup = ts.getBranchGroupBySource("mission", mission.id);
+      // U1: both members carry the real BranchGroup id so listTasksByBranchGroup(group.id) resolves them.
+      expect(branchGroup?.id).toMatch(/^BG-/);
+      expect(firstTask?.branchContext?.groupId).toBe(branchGroup?.id);
+      expect(secondTask?.branchContext?.groupId).toBe(branchGroup?.id);
       expect(firstTask?.branchContext?.assignmentMode).toBe("shared");
       expect(secondTask?.branchContext?.assignmentMode).toBe("shared");
       expect(firstTask?.branchContext?.source).toBe("mission");
       expect(secondTask?.branchContext?.source).toBe("mission");
 
-      const branchGroup = ts.getBranchGroupBySource("mission", mission.id);
       expect(branchGroup?.branchName).toBe("feature/shared");
+
+      // U1: members enumerate by the real group id.
+      const members = await ts.listTasksByBranchGroup(branchGroup!.id);
+      expect(members.map((task) => task.id).sort()).toEqual(
+        [firstTask!.id, secondTask!.id].sort(),
+      );
     });
 
     it("triageSlice does not inject baseBranch when mission has none", async () => {

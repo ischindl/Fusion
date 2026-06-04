@@ -1603,4 +1603,25 @@ describe("PluginRunner", () => {
       expect(true).toBe(true); // Handler exists and doesn't throw
     });
   });
+
+  describe("interactive AI session injection boundary", () => {
+    it("does NOT expose createInteractiveAiSession on runtime contexts (parity with createAiSession)", async () => {
+      // Register a factory the way the engine module-load block would.
+      const core = await import("@fusion/core");
+      core.setCreateInteractiveAiSessionFactory(
+        async () => ({ session: {} as never }),
+      );
+      try {
+        mockPluginLoader.getPlugin.mockReturnValue(createMockPlugin({ state: "started" }));
+        const ctx = await pluginRunner.createRuntimeContext("test-plugin");
+        expect(ctx).not.toBeNull();
+        // Tool/runtime contexts must not receive the interactive factory,
+        // exactly as they do not receive createAiSession.
+        expect(ctx?.createAiSession).toBeUndefined();
+        expect(ctx?.createInteractiveAiSession).toBeUndefined();
+      } finally {
+        core.setCreateInteractiveAiSessionFactory(undefined);
+      }
+    });
+  });
 });

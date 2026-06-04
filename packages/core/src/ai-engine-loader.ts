@@ -10,7 +10,7 @@
  * returns `undefined` and callers degrade gracefully.
  */
 
-import type { CreateAiSessionFactory } from "./plugin-types.js";
+import type { CreateAiSessionFactory, CreateInteractiveAiSessionFactory } from "./plugin-types.js";
 
 // Engine exports a function type we intentionally don't pull in here — importing
 // the type would reintroduce the cycle this module is designed to avoid.
@@ -19,6 +19,7 @@ type CreateFnAgent = any;
 
 let createFnAgent: CreateFnAgent | undefined;
 let createAiSessionFactory: CreateAiSessionFactory | undefined;
+let createInteractiveAiSessionFactory: CreateInteractiveAiSessionFactory | undefined;
 
 /** Shape of a message in an agent session's state. */
 export interface AgentMessage {
@@ -56,4 +57,24 @@ export function setCreateAiSessionFactory(fn: CreateAiSessionFactory | undefined
  */
 export async function getCreateAiSessionFactory(): Promise<CreateAiSessionFactory | undefined> {
   return createAiSessionFactory;
+}
+
+/**
+ * Wire engine's plugin-facing interactive AI session factory into core.
+ * Called by `@fusion/engine` at module load; tests may register stubs.
+ */
+export function setCreateInteractiveAiSessionFactory(
+  fn: CreateInteractiveAiSessionFactory | undefined,
+): void {
+  createInteractiveAiSessionFactory = fn;
+}
+
+/**
+ * Returns engine-registered plugin interactive AI session factory, or
+ * `undefined` when engine hasn't registered it (common in isolated core tests).
+ */
+export async function getCreateInteractiveAiSessionFactory(): Promise<
+  CreateInteractiveAiSessionFactory | undefined
+> {
+  return createInteractiveAiSessionFactory;
 }

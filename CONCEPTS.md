@@ -73,8 +73,66 @@ The merge-request state for a Task whose merge needs an explicit human go-ahead 
 ### Self-healing sweep
 A recurring background scan that detects and repairs stuck Task states — stalled In-review Tasks, confirmed merges never finalized, ghost or limbo states, exhausted retries. Sweeps respect the same Auto-merge eligibility as the Merge queue: they may inspect any Task but mutate only those eligible for auto-merge processing.
 
+Sweeps must honor the same merge-target rules as the normal path — a Shared branch group member is always evaluated against its group branch, never the project default — and attribution of already-merged work must be anchored to commit ownership markers, not free-text matches.
+
 ### Shared branch group
-A set of Tasks integrating into a common shared branch instead of each merging straight to the project's default branch. Member integration (task branch → shared branch) is a soft pre-integration step exempt from the global auto-merge gate; promotion (shared branch → default branch) is gated separately.
+A cohort of Tasks integrating into a common shared branch instead of each merging straight to the project's default branch. The group — not its member Tasks — owns the shared branch name, the managed PR identity, and the group lifecycle (open, finalized, abandoned); members reference their group by the group's stored id, never by a derivable string. Member integration (task branch → shared branch) is a soft pre-integration step exempt from the global auto-merge gate; Group promotion (shared branch → default branch) is gated separately.
+
+The group's shared branch is only ever a merge *target*; it is never any member Task's working branch. Each member works on its own per-task branch and lands onto the group branch.
+
+### Branch assignment mode
+The strategy by which a Task acquires its working branch and merge target. Shared mode gives the Task a per-task working branch derived from the group's shared branch and sets the shared branch as merge target; per-task-derived mode gives a derived working branch with no shared target; the remaining modes (project default, existing, custom new) bind the Task directly to a named branch. Only shared mode creates Shared branch group membership.
+
+### Landed
+The status of a Shared branch group member whose work is merge-confirmed onto *its own group's* shared branch via the branch-group integration path. A member merged onto any other branch — a sibling task branch, the project default — is not Landed, regardless of its column. A group is complete when it has at least one member and every member is Landed; completeness gates Group promotion.
+
+### Group promotion
+The completion-gated, idempotent act of carrying a complete Shared branch group forward: merging the group branch toward the project's integration branch and, in pull-request mode, creating-or-reusing the group's single managed PR. Re-running a promotion never creates a second PR. Under disabled auto-merge, promotion is an explicit user action; member-to-group landing may still proceed without triggering it.
+
+## Branching & diff attribution
+
+### Integration branch
+The local branch (by default the project's default branch) where the merger lands Task branches and from whose tip new Task worktrees fork. Because the merger lands commits locally before pushing, the Integration branch can be ahead of its origin counterpart by merged-but-unpushed commits — any fork-point or merge-base computation must measure against the local branch first, with the origin ref only as a fallback.
+
+### Fork point
+The commit on the Integration branch from which a Task's branch was created — the exclusive lower bound of the Task's owned changes. Every "files changed" computation diffs fork point to branch tip, so a recorded base older than the true Fork point permanently attributes predecessors' files to the Task.
+
+### Rebase-and-push
+The post-merge step that rebases locally-landed merge commits onto the upstream branch before pushing, rewriting their SHAs. The original commits become orphaned — no longer reachable from the Integration branch — while still present in the history of any Task branch forked before the push, which is why a too-old recorded Fork point cannot be recovered after this step.
+
+### Contamination
+Foreign commits — work attributed to other Tasks — appearing on a Task's branch beyond its recorded Fork point. Contamination checks must compute their reference base fresh from the Integration branch rather than reuse the Task's stored base, since a stale stored base makes every legitimately merged commit look foreign.
+
+## Chat
+
+### Generation
+A single in-flight assistant turn for a chat session, owned server-side and identified by a generation id. At most one Generation runs per session: starting a new one aborts whatever Generation is still active for that session, so an "extra" send from a client is never harmless. A Generation periodically persists an in-flight snapshot so a reconnecting client can recover the streaming UI.
+
+### Queued message
+A follow-up the user sends while a Generation is active. It is held client-side (and persisted per session so navigation cannot lose it) and flushed — actually sent — only when the session's Generation settles. Flushing decisions must be made against the server's authoritative generation state, not a locally cached copy.
+
+### Enrichment field
+A session field computed at the API route from live server state (whether a Generation is running, last-message preview) rather than stored on the session row. Enrichment fields exist only in responses from enriching endpoints: store-event payloads and SSE broadcasts lack them, so a client that overwrites its session state from those sources silently degrades enrichment fields to absent — any side-effecting decision gated on one must re-fetch from an enriching endpoint.
+
+## Compound Engineering sessions
+
+### CE Stage
+A registered step of the compound-engineering pipeline (e.g. brainstorm, plan, work, compound), each mapped to a bundled skill and a conventional artifact location. Adding a stage is a registry data entry, not new code surface.
+
+### CE Session
+A single interactive run of a CE Stage: an agent drives a question/answer flow with the user and produces the stage's artifact on completion. Sessions are independent pipeline runs — many can exist concurrently, each with its own lifecycle (launching, active, awaiting-input, completed, error, interrupted) and conversation history. A completed work-stage CE Session lands derived Tasks on the board, linked back to the session for provenance.
+
+### Detached turn
+The execution posture for CE Session agent turns: the request that triggers a turn returns as soon as the session reflects it, and the turn runs in the background while clients converge through push events and polling. A detached turn never rejects — every failure persists into session state and emits an observable event, so progress is never silently lost.
+
+### Live activity
+The transient working output of an in-flight agent turn — accumulated thinking, streamed text, and tool execution markers. It is observable while the turn runs but is not session state; when the turn settles or is interrupted, a condensed trace is folded into the conversation history so the transcript keeps the story.
+
+### Steering
+The user's mid-stage feedback channel: free-text guidance attached to an answer, or sent on its own without answering the pending question. Agents treat steering as first-class input — incorporate it, adjust course, and either re-ask or proceed.
+
+### Rehydration
+Re-establishing a live agent handle for a paused CE Session by replaying its recorded conversation against the model. Replay is side-effect-suppressed: it reconstructs the agent's context without re-emitting events, re-streaming Live activity, or re-writing artifacts.
 
 ## Flagged ambiguities
 

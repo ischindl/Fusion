@@ -1,0 +1,519 @@
+.ce-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  height: 100%;
+  overflow: auto;
+}
+
+.ce-view-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ce-view-header h2 {
+  margin: 0;
+}
+
+.ce-view-summary {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.ce-loading,
+.ce-view-error {
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+}
+
+.ce-view-error {
+  color: var(--color-danger, #d23);
+}
+
+.ce-empty {
+  max-width: 36rem;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.ce-empty h3 {
+  margin: 0;
+}
+
+.ce-empty-hint {
+  opacity: 0.7;
+  font-size: 0.85rem;
+}
+
+.ce-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+
+.ce-group {
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.25));
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.ce-group[data-empty="true"] {
+  opacity: 0.65;
+}
+
+.ce-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ce-group-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.ce-group-count {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.ce-group-empty {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+
+.ce-artifact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.ce-artifact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.ce-artifact.is-selected {
+  font-weight: 600;
+}
+
+.ce-artifact-btn {
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  color: inherit;
+  padding: 0.25rem 0;
+  flex: 1;
+}
+
+.ce-artifact-path {
+  font-size: 0.7rem;
+  opacity: 0.55;
+}
+
+.ce-artifact-error .ce-artifact-error-msg {
+  color: var(--color-danger, #d23);
+  font-size: 0.78rem;
+}
+
+.ce-artifact-error {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+
+.ce-view[data-mobile="true"] .ce-groups {
+  grid-template-columns: 1fr;
+}
+
+/* --- Stage launcher (U6) --- */
+.ce-launcher {
+  margin: 0.75rem 0;
+}
+.ce-launcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem;
+}
+.ce-launcher-tile {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ce-launcher-icon {
+  flex: none;
+}
+.ce-view-start {
+  margin-left: auto;
+}
+
+/* --- CeFlow interactive renderer (U6) --- */
+.ce-flow {
+  margin: 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.ce-flow-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ce-flow-header h3 {
+  margin: 0;
+  text-transform: capitalize;
+}
+.ce-flow-status {
+  font-size: 0.72rem;
+  opacity: 0.7;
+  text-transform: capitalize;
+}
+.ce-flow-close {
+  margin-left: auto;
+}
+.ce-flow-transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ce-flow-turn {
+  display: flex;
+  flex-direction: column;
+}
+.ce-flow-turn-role {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.ce-flow-turn-agent .ce-flow-turn-text {
+  white-space: pre-wrap;
+}
+.ce-flow-thinking {
+  font-style: italic;
+  opacity: 0.7;
+}
+.ce-flow-question {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.ce-flow-question-text {
+  font-weight: 600;
+  margin: 0;
+}
+.ce-flow-question-desc {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin: 0;
+}
+.ce-flow-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.ce-flow-text textarea {
+  width: 100%;
+  resize: vertical;
+}
+.ce-flow-confirm {
+  display: flex;
+  gap: 0.5rem;
+}
+.ce-flow-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.ce-flow-options ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ce-flow-option {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+}
+.ce-flow-option-desc {
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+.ce-flow-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+.ce-flow-error {
+  color: var(--color-danger, #d23);
+  font-size: 0.82rem;
+}
+
+/* Degraded chat fallback (R8/AE1) — must read as visibly distinct. */
+.ce-flow-degraded {
+  border: 1px dashed var(--color-warning, #c80);
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: color-mix(in srgb, var(--color-warning, #c80) 8%, transparent);
+}
+.ce-flow-degraded-banner {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-warning, #a60);
+}
+.ce-flow-degraded-options {
+  font-size: 0.78rem;
+  opacity: 0.8;
+  margin: 0 0 0.4rem;
+  padding-left: 1.1rem;
+}
+
+/* Sessions panel — manage/switch across multiple concurrent CE sessions. */
+.ce-sessions {
+  margin-bottom: 0.8rem;
+}
+.ce-sessions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ce-session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ce-session-row.is-active .ce-session-open {
+  border-color: var(--color-accent, #36c);
+  background: color-mix(in srgb, var(--color-accent, #36c) 8%, transparent);
+}
+.ce-session-open {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.ce-session-open:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.ce-session-stage {
+  font-weight: 600;
+}
+.ce-session-status {
+  font-size: 0.74rem;
+  text-transform: capitalize;
+  opacity: 0.8;
+}
+.ce-session-status-awaiting_input {
+  color: var(--color-warning, #a60);
+  font-weight: 600;
+  opacity: 1;
+}
+.ce-session-status-error,
+.ce-session-status-interrupted {
+  color: var(--color-danger, #d23);
+  opacity: 1;
+}
+.ce-session-status-completed {
+  color: var(--color-success, #2a7);
+  opacity: 1;
+}
+.ce-session-updated {
+  margin-left: auto;
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+
+/* ── Q&A transcript bubbles ────────────────────────────────────────────── */
+.ce-flow-transcript {
+  list-style: none;
+  margin: 0 0 0.8rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.ce-flow-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 85%;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-border, #ddd) 30%, transparent);
+}
+.ce-flow-turn-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--color-accent, #36c) 12%, transparent);
+}
+.ce-flow-turn-role {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
+}
+.ce-flow-turn-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.86rem;
+}
+.ce-flow-turn-question {
+  border-left: 3px solid var(--color-accent, #36c);
+}
+.ce-flow-turn-answer.is-steering {
+  border-left: 3px solid var(--color-warning, #c80);
+}
+.ce-flow-turn-comment {
+  font-size: 0.78rem;
+  font-style: italic;
+  opacity: 0.85;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border, #ddd) 60%, transparent);
+  padding-top: 0.25rem;
+}
+.ce-flow-turn-done {
+  align-self: center;
+  background: color-mix(in srgb, var(--color-success, #2a7) 10%, transparent);
+  font-size: 0.8rem;
+}
+.ce-flow-turn-activity {
+  background: transparent;
+  padding: 0;
+  max-width: 100%;
+}
+
+/* ── Agent working trace (persisted + live) ─────────────────────────────── */
+.ce-flow-activity-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+.ce-flow-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.3rem 0 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--color-border, #ddd) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-border, #ddd) 12%, transparent);
+  max-height: 16rem;
+  overflow-y: auto;
+}
+.ce-activity-block {
+  margin: 0;
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ce-activity-thinking {
+  opacity: 0.6;
+  font-style: italic;
+}
+.ce-activity-tool {
+  font-size: 0.76rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ce-activity-tool.is-running .ce-activity-tool-marker {
+  color: var(--color-accent, #36c);
+}
+.ce-activity-tool.is-done .ce-activity-tool-marker {
+  color: var(--color-success, #2a7);
+}
+.ce-activity-tool.is-error .ce-activity-tool-marker {
+  color: var(--color-danger, #d23);
+}
+
+/* ── Live working pane ──────────────────────────────────────────────────── */
+.ce-flow-working {
+  margin: 0.4rem 0;
+}
+.ce-flow-working-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.82rem;
+  opacity: 0.85;
+}
+.ce-flow-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent, #36c);
+  animation: ce-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ce-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Steering / guidance channel ────────────────────────────────────────── */
+.ce-flow-guidance {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border, #ddd) 70%, transparent);
+}
+.ce-flow-guidance-label {
+  display: block;
+  font-size: 0.74rem;
+  opacity: 0.65;
+  margin-bottom: 0.3rem;
+}
+.ce-flow-guidance-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-end;
+}
+.ce-flow-guidance-row textarea {
+  flex: 1;
+  resize: vertical;
+}

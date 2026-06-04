@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PrCreateModal } from "../PrCreateModal";
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   fetchPrPreflight: vi.fn(),
   fetchPrOptions: vi.fn(),
   createPr: vi.fn(),
+  resolvePrConflicts: vi.fn(),
 }));
 
 vi.mock("../../api", () => ({
@@ -16,6 +17,7 @@ vi.mock("../../api", () => ({
   fetchPrPreflight: mocks.fetchPrPreflight,
   fetchPrOptions: mocks.fetchPrOptions,
   createPr: mocks.createPr,
+  resolvePrConflicts: mocks.resolvePrConflicts,
 }));
 
 const metadata = { title: "AI title", body: "## Summary\n\n## Changes\n\n## Testing\n\n## Linked Task\n", templateUsed: true };
@@ -67,11 +69,63 @@ describe("PrCreateModal", () => {
     mocks.fetchPrPreflight.mockResolvedValue(preflight);
     mocks.fetchPrOptions.mockResolvedValue(options);
     mocks.createPr.mockResolvedValue({ number: 12, title: "AI title", url: "url", status: "open", headBranch: "h", baseBranch: "main", commentCount: 0 } as PrInfo);
+    mocks.resolvePrConflicts.mockResolvedValue({ result: { resolved: true, pushed: true, conflictedFiles: ["a.ts"], message: "resolved" }, preflight });
   });
 
   it("renders nothing when closed", () => {
     render(<PrCreateModal open={false} taskId="FN-4756" onClose={vi.fn()} onCreated={vi.fn()} addToast={vi.fn()} />);
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("portals out of a container-type containing block", async () => {
+    const { container } = render(
+      <div data-testid="trap" style={{ containerType: "inline-size" }}>
+        <PrCreateModal open taskId="FN-4756" onClose={vi.fn()} onCreated={vi.fn()} addToast={vi.fn()} />
+      </div>,
+    );
+
+    await screen.findByDisplayValue("AI title");
+
+    const trap = within(container).getByTestId("trap");
+    expect(trap.querySelector('[role="dialog"]')).toBeNull();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(dialog.parentElement).toHaveClass("modal-overlay", "open");
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+  });
+
+  it("portals independently of an outer modal overlay", async () => {
+    const outerOnClose = vi.fn();
+    const innerOnClose = vi.fn();
+
+    const { container } = render(
+      <div>
+        <div className="modal-overlay open" data-testid="outer-overlay" onClick={outerOnClose}>
+          <div className="modal" role="dialog" aria-modal="true" aria-label="Outer modal">Outer modal</div>
+        </div>
+        <div data-testid="outer-shell">
+          <PrCreateModal open taskId="FN-4756" onClose={innerOnClose} onCreated={vi.fn()} addToast={vi.fn()} />
+        </div>
+      </div>,
+    );
+
+    await screen.findByDisplayValue("AI title");
+
+    const outerShell = within(container).getByTestId("outer-shell");
+    expect(outerShell.querySelector('[role="dialog"]')).toBeNull();
+
+    const overlays = Array.from(document.body.querySelectorAll(".modal-overlay.open"));
+    expect(overlays).toHaveLength(2);
+
+    const outerOverlay = within(container).getByTestId("outer-overlay");
+    const innerDialog = screen.getByRole("dialog", { name: "Create Pull Request" });
+    expect(outerOverlay.contains(innerDialog)).toBe(false);
+
+    fireEvent.click(outerOverlay);
+    expect(outerOnClose).toHaveBeenCalledTimes(1);
+    expect(innerOnClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Create Pull Request" })).toBeInTheDocument();
   });
 
   it("loads metadata/preflight/options on open and renders key sections", async () => {
@@ -156,11 +210,39 @@ describe("PrCreateModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /remove reviewer 1/i }));
   });
 
+  it("renders AI conflict resolution affordance and enables submit after success", async () => {
+    mocks.fetchPrPreflight.mockResolvedValue({ ...preflight, conflictsWithBase: true, branchOnRemote: false });
+    mocks.resolvePrConflicts.mockResolvedValueOnce({ result: { resolved: true, pushed: true, conflictedFiles: ["a.ts"], message: "resolved" }, preflight });
+    const { addToast } = await renderModalLoaded();
+
+    const submitButton = screen.getByRole("button", { name: "Create PR" });
+    expect(submitButton).toBeDisabled();
+    const resolveButton = await screen.findByRole("button", { name: "Resolve conflicts with AI" });
+
+    fireEvent.click(resolveButton);
+
+    await waitFor(() => expect(mocks.resolvePrConflicts).toHaveBeenCalledWith("FN-4756", "main", undefined));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create PR" })).toBeEnabled());
+    expect(addToast).toHaveBeenCalledWith("Resolved PR conflicts and pushed branch", "success");
+  });
+
+  it("surfaces conflict resolution failures", async () => {
+    mocks.fetchPrPreflight.mockResolvedValue({ ...preflight, conflictsWithBase: true });
+    mocks.resolvePrConflicts.mockRejectedValueOnce(new Error("unable to resolve"));
+    await renderModalLoaded();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve conflicts with AI" }));
+
+    expect(await screen.findByText("unable to resolve")).toBeInTheDocument();
+  });
+
   it("shows submit error and retries with same payload", async () => {
     mocks.createPr.mockRejectedValueOnce(new Error("bad")).mockResolvedValueOnce({ number: 22, title: "ok", url: "u", status: "open", headBranch: "h", baseBranch: "main", commentCount: 0 } as PrInfo);
     await renderModalLoaded();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create PR" })).toBeEnabled());
 
     fireEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    await waitFor(() => expect(mocks.createPr).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("bad")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(mocks.createPr).toHaveBeenCalledTimes(2));
@@ -181,13 +263,23 @@ describe("PrCreateModal", () => {
     });
     mocks.createPr.mockRejectedValueOnce(err);
     await renderModalLoaded();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create PR" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    await waitFor(() => expect(mocks.createPr).toHaveBeenCalledTimes(1));
     expect((await screen.findAllByText(/gh auth login/i)).length).toBeGreaterThan(0);
+  });
+
+  it("closes on overlay click", async () => {
+    const { onClose } = await renderModalLoaded();
+    const overlay = document.querySelector(".modal-overlay.open");
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay as Element);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("closes on escape", async () => {
     const { onClose } = await renderModalLoaded();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -235,6 +235,34 @@ export function emitApprovalSseEvent(event: ApprovalSseEventType, payload: unkno
 }
 
 /**
+ * Custom plugin events forwarded to connected SSE clients. This is the real
+ * publish-to-`/api/events` seam plugins reach through `ctx.emitEvent`: the
+ * dashboard wires a plugin route context's `emitEvent` to call this, and each
+ * open SSE stream forwards matching (project-scoped) events to the browser as a
+ * single `plugin:custom` event. Lets a plugin push live updates (e.g. CE session
+ * turns) instead of relying on client polling.
+ */
+export type PluginCustomSseListener = (
+  pluginId: string,
+  event: string,
+  payload: unknown,
+  projectId?: string,
+) => void;
+
+const pluginCustomSseListeners = new Set<PluginCustomSseListener>();
+
+export function emitPluginCustomSseEvent(
+  pluginId: string,
+  event: string,
+  payload: unknown,
+  projectId?: string,
+): void {
+  for (const listener of pluginCustomSseListeners) {
+    listener(pluginId, event, payload, projectId);
+  }
+}
+
+/**
  * Normalized plugin lifecycle payload emitted via SSE.
  * This is the stable contract the UI can reconcile.
  */
@@ -591,6 +619,13 @@ export function createSSE(
       send(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
     };
 
+    const onPluginCustomEvent: PluginCustomSseListener = (pluginId, event, payload, eventProjectId) => {
+      // Scope match mirrors approvals: a project-scoped stream only forwards
+      // events for its own project; the default stream forwards unscoped events.
+      if (projectId && eventProjectId && eventProjectId !== projectId) return;
+      send(`event: plugin:custom\ndata: ${JSON.stringify({ pluginId, event, payload })}\n\n`);
+    };
+
     // --- Chat store event handlers ---
     const onChatSessionCreated = (session: unknown) => {
       send(`event: chat:session:created\ndata: ${JSON.stringify(session)}\n\n`);
@@ -740,6 +775,7 @@ export function createSSE(
         messageStore.off("message:deleted", onMessageDeleted);
       }
       approvalSseListeners.delete(onApprovalEvent);
+      pluginCustomSseListeners.delete(onPluginCustomEvent);
       if (chatStore) {
         chatStore.off("chat:session:created", onChatSessionCreated);
         chatStore.off("chat:session:updated", onChatSessionUpdated);
@@ -886,6 +922,7 @@ export function createSSE(
     // (SSE comments starting with ":" are silently consumed and never
     // fire event listeners in the browser).
     approvalSseListeners.add(onApprovalEvent);
+    pluginCustomSseListeners.add(onPluginCustomEvent);
 
     registerManagedConnection({
       id: connectionId,

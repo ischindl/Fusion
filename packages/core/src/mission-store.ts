@@ -487,6 +487,15 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     };
   }
 
+  private listGoalsByIds(goalIds: string[]): Goal[] {
+    return goalIds
+      .map((goalId) => this.db
+        .prepare("SELECT id, title, description, status, createdAt, updatedAt FROM goals WHERE id = ?")
+        .get(goalId) as GoalRow | undefined)
+      .filter((row): row is GoalRow => Boolean(row))
+      .map((row) => this.rowToGoal(row));
+  }
+
   /**
    * Convert a database row to a MissionContractAssertion object.
    */
@@ -703,12 +712,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     const mission = this.getMission(id);
     if (!mission) return undefined;
 
-    const linkedGoals = this.listGoalIdsForMission(id)
-      .map((goalId) => this.db
-        .prepare("SELECT id, title, description, status, createdAt, updatedAt FROM goals WHERE id = ?")
-        .get(goalId) as GoalRow | undefined)
-      .filter((row): row is GoalRow => Boolean(row))
-      .map((row) => this.rowToGoal(row));
+    const linkedGoals = this.listGoalsByIds(this.listGoalIdsForMission(id));
 
     const milestones = this.listMilestones(id);
     const milestonesWithSlices = milestones.map((milestone) => {
@@ -1414,6 +1418,45 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
       .prepare("SELECT missionId FROM mission_goals WHERE goalId = ? ORDER BY createdAt ASC, missionId ASC")
       .all(goalId) as Array<{ missionId: string }>;
     return rows.map((row) => row.missionId);
+  }
+
+  /**
+   * Resolve task → goal provenance by deriving the owning mission from mission linkage.
+   * Goal IDs are never duplicated onto the task row; provenance is always recovered from mission links.
+   */
+  listGoalIdsForTask(taskId: string): string[] {
+    const feature = this.getFeatureByTaskId(taskId);
+    const missionIdFromFeature = feature
+      ? (() => {
+          const slice = this.getSlice(feature.sliceId);
+          if (!slice) {
+            return undefined;
+          }
+          const milestone = this.getMilestone(slice.milestoneId);
+          return milestone?.missionId;
+        })()
+      : undefined;
+
+    const missionId = missionIdFromFeature ?? (() => {
+      const row = this.db
+        .prepare('SELECT missionId FROM tasks WHERE id = ? AND "deletedAt" IS NULL')
+        .get(taskId) as { missionId?: string | null } | undefined;
+      return row?.missionId ?? undefined;
+    })();
+
+    if (!missionId) {
+      return [];
+    }
+
+    return this.listGoalIdsForMission(missionId);
+  }
+
+  /**
+   * Resolve task → goal provenance to full Goal records derived from the owning mission.
+   * Goal rows are read on demand so archived goals remain visible without storing duplicate task-level goal data.
+   */
+  listGoalsForTask(taskId: string): Goal[] {
+    return this.listGoalsByIds(this.listGoalIdsForTask(taskId));
   }
 
   // ── Milestone Operations ───────────────────────────────────────────
@@ -3812,6 +3855,12 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
         linkedTaskId = guard.existing.id;
       } else {
         let sharedBranchBaseForMission: string | undefined;
+        // Stamp the real BranchGroup id (BG-…) so listTasksByBranchGroup(group.id)
+        // resolves members. The group is only ensured (and the id set) in shared
+        // mode below. Non-shared members get NO groupId — stamping a synthetic
+        // `mission:<id>` here would let the legacy membership fallback sweep them
+        // into a shared group later created for the same mission.
+        let missionGroupId: string | undefined;
         if (missionId && resolvedAssignmentMode === "shared") {
           const settings = await this.taskStore.getSettings();
           const settingsDefaultBranch =
@@ -3820,10 +3869,11 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
               : "main";
           const settingsAutoMerge = typeof settings.autoMerge === "boolean" ? settings.autoMerge : false;
           sharedBranchBaseForMission = resolvedBranch ?? resolvedBaseBranch ?? settingsDefaultBranch;
-          this.taskStore.ensureBranchGroupForSource("mission", missionId, {
+          const group = this.taskStore.ensureBranchGroupForSource("mission", missionId, {
             branchName: sharedBranchBaseForMission,
             autoMerge: mission?.autoMerge ?? settingsAutoMerge,
           });
+          missionGroupId = group.id;
         }
 
         const taskSegment = feature.id;
@@ -3841,7 +3891,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
           ...(missionId
             ? {
                 branchContext: {
-                  groupId: `mission:${missionId}`,
+                  ...(missionGroupId ? { groupId: missionGroupId } : {}),
                   source: "mission" as const,
                   assignmentMode: resolvedAssignmentMode,
                   inheritedBaseBranch: resolvedBaseBranch,

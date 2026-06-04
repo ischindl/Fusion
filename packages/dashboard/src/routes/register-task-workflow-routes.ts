@@ -29,6 +29,7 @@ import {
   findDuplicateMatches,
   deterministicGuardLocks,
   runDeterministicDuplicateGuard,
+  buildAutoPauseClearPatch,
   buildManualRetryResetPatch,
   reconcileDeterministicDuplicate,
   extractIntentSignature,
@@ -1390,6 +1391,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         throw badRequest(`Task is not in a retryable state (current status: ${task.status || 'none'})`);
       }
 
+      const autoPauseClearPatch = buildAutoPauseClearPatch(task);
+      const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
+      const retryLogSuffix = clearedDeadlockAutoPause ? ", cleared deadlock auto-pause" : "";
+
       // In-review retry: distinguish between execution failures (incomplete steps)
       // and merge failures (all steps done).
       if (isInReviewRetry) {
@@ -1405,11 +1410,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           await scopedStore.updateTask(req.params.id, {
             status: null,
             error: null,
+            ...autoPauseClearPatch,
             ...buildManualRetryResetPatch(),
           });
           await scopedStore.logEntry(
             req.params.id,
-            "Retry requested from dashboard (execution failure in-review → todo, preserving progress)",
+            `Retry requested from dashboard (execution failure in-review → todo, preserving progress${retryLogSuffix})`,
           );
           const updated = await scopedStore.moveTask(req.params.id, "todo", { preserveProgress: true });
           res.json(updated);
@@ -1419,9 +1425,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         await scopedStore.updateTask(req.params.id, {
           status: null,
           error: null,
+          ...autoPauseClearPatch,
           ...buildManualRetryResetPatch({ resetMergeRetries: true }),
         });
-        await scopedStore.logEntry(req.params.id, "Retry requested from dashboard (in-review merge retry, mergeRetries reset)");
+        await scopedStore.logEntry(req.params.id, `Retry requested from dashboard (in-review merge retry, mergeRetries reset${retryLogSuffix})`);
         const updated = await scopedStore.getTask(req.params.id);
         res.json(updated);
         return;
@@ -1434,6 +1441,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         branch: null,
         baseBranch: null,
         baseCommitSha: null,
+        ...autoPauseClearPatch,
         ...buildManualRetryResetPatch({ resetMergeRetries: true }),
       });
 

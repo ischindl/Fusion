@@ -613,6 +613,7 @@ Inspect task definition, logs, review feedback, comments, documents, workflow ou
 - In shared task edit/create forms, GitHub Tracking appears at the bottom of **More options**, after **Workflow Steps**.
 - From this section you can explicitly enable/disable tracking and manage a per-task repo override (`owner/repo`). Clearing the override saves `null` and falls back to project/global defaults.
 - In `in-review`, pull-request controls/status (including stall badges) are in a dedicated **Pull Request** tab instead of the Definition tab.
+- In the **Create Pull Request** modal, if preflight detects `conflictsWithBase`, the modal now offers **Resolve conflicts with AI**. Fusion uses an AI coding agent to resolve merge markers on the task branch, commits the result, pushes `fusion/<task-id-lower>` to `origin`, and refreshes preflight so normal PR creation can continue once conflicts are gone.
 - The **Review** tab is separate from **Comments**: Review shows actionable PR/reviewer feedback and same-task revision controls, while Comments remains the general collaboration thread.
 - **Request revision** in Review resumes work on the same task ID (no refinement task): `in-progress` tasks get steering injection, while `in-review` tasks are moved back to `in-progress` for the same branch/worktree revision pass.
 - Review supports a manual **Refresh** action in-place: PR mode pulls latest GitHub review state/decision, while direct mode rehydrates reviewer-agent feedback from persisted task data (no GitHub call).
@@ -1071,7 +1072,7 @@ The `index.html` shell is templated server-side: the server injects a per-user `
 
 ### Design tokens
 
-`styles.css` is the source of truth for tokens (`--space-*`, `--radius-*`, `--shadow-*`, `--transition-*`, `--font-*`, `--header-height`, `--mobile-nav-height`, `--standalone-bottom-gap`, `--overlay-padding-top`) and color variables (`--bg`, `--surface`, `--card`, `--text`, `--text-muted`, status colors `--triage`/`--todo`/`--in-progress`/`--in-review`/`--done`, semantic `--color-success`/`--color-error`/`--color-warning`/`--color-info`, status backgrounds `--status-*-bg`).
+`styles.css` is the source of truth for tokens (`--space-*`, `--radius-*`, `--shadow-*`, `--duration-*`, `--transition-*`, `--font-*`, `--header-height`, `--mobile-nav-height`, `--standalone-bottom-gap`, `--overlay-padding-top`) and color variables (`--bg`, `--surface`, `--card`, `--text`, `--text-muted`, status colors `--triage`/`--todo`/`--in-progress`/`--in-review`/`--done`, semantic `--color-success`/`--color-error`/`--color-warning`/`--color-info`, status backgrounds `--status-*-bg`).
 
 **Always reference tokens. Never hardcode pixels, hex, or `rgba()` in component CSS** — the only exception is inside `:root`/theme blocks where tokens are *defined*. For translucent backgrounds use `color-mix(in srgb, var(--color) X%, transparent)`, not `rgba()`.
 
@@ -1089,7 +1090,7 @@ Dark/light modes via `data-theme`; 54 color themes via `data-color-theme` (lazy-
 
 Reuse existing primitives from `styles.css`:
 - **Buttons**: `.btn`, `.btn-primary`, `.btn-danger`, `.btn-warning`, `.btn-sm`, `.btn-icon`, `.btn-icon--active`, `.btn-badge`. All inherit `:focus-visible` via `--focus-ring-strong` and `:active` via `transform: scale(0.97)`.
-- **Modals**: `.modal-overlay[.open]`, `.modal`, `.modal-lg`, `.modal-header`, `.modal-close`, `.modal-actions`, `.modal-actions-left/right`. Overlay pads top with `--overlay-padding-top`.
+- **Modals**: `.modal-overlay[.open]`, `.modal`, `.modal-lg`, `.modal-header`, `.modal-close`, `.modal-actions`, `.modal-actions-left/right`. Overlay pads top with `--overlay-padding-top`. Overlay dialogs should render through `createPortal(..., document.body)` so `position: fixed` overlays escape transformed, contained, or fixed ancestors.
 - **Forms**: `.form-group`, `.input`, `.select`, `.checkbox-label`, `.form-error`. Inputs in `.form-group` get focus styles automatically.
 - **Cards**: `.card`, `.card-header`, `.card-id`, `.card-title`, `.card-meta`, `.card-status-badge--{triage,todo,in-progress,in-review,done,archived}`.
 - **Utility**: `.touch-target` (44px min), `.visually-hidden`.
@@ -1167,6 +1168,7 @@ Reuse `packages/dashboard/app/utils/filePathLinkify.tsx` and `FileBrowserContext
 - **Mobile board scroll-snap (FN-001)** — `scroll-snap-type: x mandatory` on mobile `.board` causes iOS Safari to compress the viewport when switching from ListView. Use `x proximity` + `overflow-anchor: none`.
 - **`lucide-react` icon adds** — update `vi.mock("lucide-react")` test mocks immediately; missing exports cascade.
 - **`.spin` is global** — don't redefine the generic spin keyframes in component CSS.
+- **Animation durations use `--duration-*`, never `--transition-*`** — transition tokens carry a `duration easing` pair; substituting one into an `animation` shorthand that names its own easing (or into `calc()`) is invalid at computed-value time and silently resolves the whole declaration to `animation: none`. Enforced by `animation-duration-tokens.css.test.ts`; see `docs/solutions/ui-bugs/css-animation-frozen-by-transition-token-shape-mismatch.md`.
 
 ## Integration Branch Push to Origin
 

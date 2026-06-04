@@ -24,6 +24,7 @@ const qualityAppFoundationUiTests = [
   "app/__tests__/activity-log-mobile-layout.test.ts",
   "app/__tests__/agent-css-classes.test.ts",
   "app/__tests__/agent-runs-ui.test.ts",
+  "app/__tests__/animation-duration-tokens.css.test.ts",
   "app/__tests__/auth.test.ts",
   "app/__tests__/board-mobile-corner-rendering.test.ts",
   "app/__tests__/board-tablet-overflow.test.ts",
@@ -210,7 +211,7 @@ const qualityAppSettingsOnlyTests = ["app/components/__tests__/SettingsModal.tes
 const qualityApiTests = [
   // Critical HTTP/server behavior: auth, task/project/settings mutation,
   // git/GitHub, agents, nodes, chat/files, realtime, and isolation guards.
-  "src/__tests__/{api-error,auth-middleware,auth-middleware-integration,chat-attachment-routes,chat-routes,file-service,github,github-webhooks,initialize,planning-flow-diagnostics-guardrail,pr-routes-auto-merge,pr-routes.contract,project-routes,project-store-resolver,register-git-github.pr-options-preflight-metadata,remote-access-routes,remote-auth,routes-agent-budget,routes-agent-keys,routes-agent-permissions,routes-agent-ratings,routes-agent-runs,routes-agent-soul-memory,routes-agents,routes-automation,routes-branch-groups,routes-git,routes-github,routes-merge-advance-push-origin,routes-nodes,routes-nodes-sync-contract,routes-planning,routes-secrets-sync,routes-settings,routes-task-commit-associations,routes-tasks,routes-tasks-deterministic-dedup,routes-tasks-duplicate-check,routes-tasks-explicit-duplicate-marker,server,server-static-assets,server-webhook,server.events,setup-routes,sse,sse-buffer,test-isolation-guard,update-check-route,websocket,recover-branch-binding-route}.test.ts",
+  "src/__tests__/{api-error,auth-middleware,auth-middleware-integration,chat-attachment-routes,chat-routes,file-service,github,github-webhooks,initialize,planning-flow-diagnostics-guardrail,pr-routes-auto-merge,pr-routes.contract,project-routes,project-store-resolver,register-git-github.pr-options-preflight-metadata,register-git-github.pr-resolve-conflicts,remote-access-routes,remote-auth,routes-agent-budget,routes-agent-keys,routes-agent-permissions,routes-agent-ratings,routes-agent-runs,routes-agent-soul-memory,routes-agents,routes-automation,routes-branch-groups,routes-git,routes-github,routes-merge-advance-push-origin,routes-nodes,routes-nodes-sync-contract,routes-planning,routes-secrets-sync,routes-settings,routes-task-commit-associations,routes-tasks,routes-tasks-deterministic-dedup,routes-tasks-duplicate-check,routes-tasks-explicit-duplicate-marker,server,server-static-assets,server-webhook,server.events,setup-routes,sse,sse-buffer,test-isolation-guard,update-check-route,websocket,recover-branch-binding-route}.test.ts",
   "src/__tests__/dashboard-test-config-guard.test.ts",
   "src/routes/__tests__/{custom-provider-routes,custom-providers,register-docker-node-routes,register-diagnostics-routes,stash-recovery-routes}.test.ts",
   "scripts/__tests__/run-vitest-with-heap.test.ts",

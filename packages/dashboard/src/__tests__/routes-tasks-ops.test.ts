@@ -498,6 +498,44 @@ describe("POST /tasks/:id/retry", () => {
     expect(updateCall.nextRecoveryAt).toBeNull();
   });
 
+  it("clears the deadlock auto-pause when retrying an execution-failed in-review task", async () => {
+    const executionFailedTask = {
+      ...FAKE_TASK_DETAIL,
+      column: "in-review" as const,
+      status: "failed",
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      mergeRetries: 0,
+      steps: [
+        { name: "Step 0", status: "done" },
+        { name: "Step 1", status: "in-progress" },
+        { name: "Step 2", status: "pending" },
+      ],
+    };
+    const movedTask = { ...executionFailedTask, column: "todo" as const, status: undefined, paused: undefined, pausedReason: undefined };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(executionFailedTask);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue(executionFailedTask);
+    (store.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue(movedTask);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/retry", JSON.stringify({}), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
+      status: null,
+      error: null,
+      paused: false,
+      pausedReason: null,
+      ...buildManualRetryResetPatch(),
+    });
+    expect(store.moveTask).toHaveBeenCalledWith("KB-001", "todo", { preserveProgress: true });
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "KB-001",
+      "Retry requested from dashboard (execution failure in-review → todo, preserving progress, cleared deadlock auto-pause)",
+    );
+  });
+
   it("retries execution-failed in-review task by moving to todo with progress preserved", async () => {
     const executionFailedTask = {
       ...FAKE_TASK_DETAIL,
@@ -531,6 +569,44 @@ describe("POST /tasks/:id/retry", () => {
     );
   });
 
+  it("clears the deadlock auto-pause when retrying a merge-failed in-review task", async () => {
+    const mergeFailedTask = {
+      ...FAKE_TASK_DETAIL,
+      column: "in-review" as const,
+      status: "failed",
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      mergeRetries: 3,
+      steps: [
+        { name: "Step 0", status: "done" },
+        { name: "Step 1", status: "done" },
+        { name: "Step 2", status: "done" },
+      ],
+    };
+    (store.getTask as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(mergeFailedTask)
+      .mockResolvedValueOnce({ ...mergeFailedTask, paused: undefined, pausedReason: undefined, status: undefined, mergeRetries: 0 });
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue(mergeFailedTask);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/retry", JSON.stringify({}), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith("KB-001", {
+      status: null,
+      error: null,
+      paused: false,
+      pausedReason: null,
+      ...buildManualRetryResetPatch({ resetMergeRetries: true }),
+    });
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "KB-001",
+      "Retry requested from dashboard (in-review merge retry, mergeRetries reset, cleared deadlock auto-pause)",
+    );
+  });
+
   it("retries merge-failed in-review task by staying in-review with mergeRetries reset", async () => {
     const mergeFailedTask = {
       ...FAKE_TASK_DETAIL,
@@ -558,6 +634,71 @@ describe("POST /tasks/:id/retry", () => {
       ...buildManualRetryResetPatch({ resetMergeRetries: true }),
     });
     expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "KB-001",
+      "Retry requested from dashboard (in-review merge retry, mergeRetries reset)",
+    );
+  });
+
+  it("does not clear an explicit user pause when retrying in-review merge failure", async () => {
+    const mergeFailedTask = {
+      ...FAKE_TASK_DETAIL,
+      column: "in-review" as const,
+      status: "failed",
+      paused: true,
+      userPaused: true,
+      pausedReason: "manual",
+      mergeRetries: 3,
+      steps: [
+        { name: "Step 0", status: "done" },
+        { name: "Step 1", status: "done" },
+      ],
+    };
+    (store.getTask as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(mergeFailedTask)
+      .mockResolvedValueOnce(mergeFailedTask);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue(mergeFailedTask);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/retry", JSON.stringify({}), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    const updateCall = (store.updateTask as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(updateCall).not.toHaveProperty("paused");
+    expect(updateCall).not.toHaveProperty("pausedReason");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "KB-001",
+      "Retry requested from dashboard (in-review merge retry, mergeRetries reset)",
+    );
+  });
+
+  it("does not clear unrelated automatic pauses when retrying in-review merge failure", async () => {
+    const mergeFailedTask = {
+      ...FAKE_TASK_DETAIL,
+      column: "in-review" as const,
+      status: "failed",
+      paused: true,
+      pausedReason: "branch-conflict-unrecoverable",
+      mergeRetries: 3,
+      steps: [
+        { name: "Step 0", status: "done" },
+        { name: "Step 1", status: "done" },
+      ],
+    };
+    (store.getTask as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(mergeFailedTask)
+      .mockResolvedValueOnce(mergeFailedTask);
+    (store.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue(mergeFailedTask);
+
+    const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/retry", JSON.stringify({}), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    const updateCall = (store.updateTask as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(updateCall).not.toHaveProperty("paused");
+    expect(updateCall).not.toHaveProperty("pausedReason");
     expect(store.logEntry).toHaveBeenCalledWith(
       "KB-001",
       "Retry requested from dashboard (in-review merge retry, mergeRetries reset)",

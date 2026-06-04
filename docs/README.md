@@ -31,6 +31,7 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 | [Task Management](./task-management.md) | Task creation modes, lifecycle, prompt specs, comments, archiving, and GitHub integration |
 | [Todo View](./todo-view.md) | Canonical guide for the experimental Todo View, including enablement, usage, API routes, and storage |
 | [Missions](./missions.md) | Mission hierarchy, planning flow, activation, progress tracking, and autopilot behavior |
+| [Goals Refinement Gate](./goals-refinement-gate.md) | Evidence gate for activating the conditional post-v1 goals refinement slice only after real usage pain is documented |
 | [Research](./research.md) | Research runs, provider setup, dashboard/CLI usage, findings, exports, and task integration |
 | [Research View UX Spec](./research-view-ux-spec.md) | Canonical layout and capability-state messaging spec for the Research dashboard view (FN-4138, informs FN-4134/FN-4135) |
 | [Workflow Steps](./workflow-steps.md) | Reusable quality gates, templates, pre/post-merge phases, and workflow execution results |

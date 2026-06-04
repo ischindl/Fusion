@@ -52,6 +52,25 @@ Mission ↔ goal links are created and removed deliberately as part of normal pl
 
 Mission Manager shows an **Unlinked** indicator on active mission cards when `linkedGoalCount` is zero. This is a read-only attention badge so operators can quickly find active missions that still need an explicit goal association.
 
+### Task → Goal provenance
+
+When a mission feature is linked or triaged into a task, Fusion does **not** copy goal ids onto the task row. Instead, task goal provenance is always derived from the mission link owned by `MissionStore`:
+
+- `listGoalIdsForTask(taskId)` resolves the owning mission from the linked feature hierarchy first (`feature -> slice -> milestone -> mission`), then falls back to the live task row's `missionId` when needed.
+- `listGoalsForTask(taskId)` maps those ids back to full `Goal` records using the same goals-table read path as `getMissionWithHierarchy`, so mission reads and task provenance stay in sync.
+- Unknown, unlinked, or partially missing hierarchy state resolves fail-soft to `[]`.
+- Archived goals remain part of provenance; only missing goal rows are dropped.
+
+This derived bridge lets downstream systems recover which strategic goals a task serves without duplicating mission-goal linkage during task creation.
+
+### Goal-injection diagnostics provenance field
+
+The engine's `resolveAndEmitGoalContext` seam still injects only the always-on active-goal context into prompts, but diagnostics now add `provenanceGoalIds: string[]` alongside the existing injected `goalIds` / `goalCount` fields.
+
+- `goalIds` / `goalCount` continue to describe the active goals injected into the prompt.
+- `provenanceGoalIds` records which mission-linked goals the task serves.
+- Diagnostics and run-audit metadata persist ids/counts only — never goal titles, descriptions, or prompt text.
+
 ## Creating Missions
 
 ### Mission base branch defaults

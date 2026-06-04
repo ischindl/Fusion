@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, GitBranch, GitPullRequest, Loader2 } from "lucide-react";
 import type { BranchGroupSummary } from "../api";
-import { apiGetBranchGroup, apiPromoteBranchGroup } from "../api";
+import { apiAbandonBranchGroup, apiGetBranchGroup, apiPromoteBranchGroup } from "../api";
 import { subscribeSse } from "../sse-bus";
 
 interface BranchGroupCardProps {
@@ -17,6 +17,7 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
+  const [abandoning, setAbandoning] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
   const loadGroup = useCallback(async () => {
@@ -92,6 +93,16 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
     }
   }, [groupId, loadGroup, projectId]);
 
+  const onAbandon = useCallback(async () => {
+    setAbandoning(true);
+    try {
+      await apiAbandonBranchGroup(groupId, projectId);
+      await loadGroup();
+    } finally {
+      setAbandoning(false);
+    }
+  }, [groupId, loadGroup, projectId]);
+
   if (loading) {
     return <div className="card branch-group-card"><Loader2 className="spin" size={14} /> {t("branchGroup.loading", "Loading branch group…")}</div>;
   }
@@ -142,7 +153,19 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
         </ul>
       )}
 
-      {!collapsed && complete && (
+      {!collapsed && (group.prState === "merged" || group.prState === "closed") && (
+        <div className="branch-group-card-actions">
+          <span className="badge">{group.prState === "merged" ? "Group PR merged" : "Group PR closed"}</span>
+          {group.prUrl && (
+            <a className="btn" href={group.prUrl} target="_blank" rel="noreferrer">
+              <GitPullRequest size={14} /> PR #{group.prNumber ?? "—"}
+              <ExternalLink size={12} />
+            </a>
+          )}
+        </div>
+      )}
+
+      {!collapsed && (complete || group.prState === "open") && group.prState !== "merged" && group.prState !== "closed" && (
         <div className="branch-group-card-actions">
           {group.prUrl && (
             <a className="btn" href={group.prUrl} target="_blank" rel="noreferrer">
@@ -150,12 +173,26 @@ export function BranchGroupCard({ groupId, projectId }: BranchGroupCardProps) {
               <ExternalLink size={12} />
             </a>
           )}
-          {group.autoMerge ? (
+          {/* Promote (Open PR / Merge group) stays gated on completion: a group
+              can only be promoted once every member has landed. Abandon below is
+              reachable whenever the PR is open, even if completion later reverts. */}
+          {complete && (group.autoMerge ? (
             <span className="badge">{t("branchGroup.autoMergeEnabled", "Auto-merge enabled")}</span>
+          ) : group.prState === "none" ? (
+            <button type="button" className="btn" onClick={() => void onPromote()} disabled={promoting}>
+              {promoting ? <Loader2 size={14} className="spin" /> : <GitPullRequest size={14} />}
+              {t("branchGroup.openPr", "Open PR")}
+            </button>
           ) : (
             <button type="button" className="btn" onClick={() => void onPromote()} disabled={promoting}>
               {promoting ? <Loader2 size={14} className="spin" /> : <GitPullRequest size={14} />}
-              {group.prState === "none" ? t("branchGroup.openPr", "Open PR") : t("branchGroup.mergeIntoMain", "Merge group into main")}
+              {t("branchGroup.mergeIntoMain", "Merge group into main")}
+            </button>
+          ))}
+          {group.prState === "open" && (
+            <button type="button" className="btn btn-danger" onClick={() => void onAbandon()} disabled={abandoning}>
+              {abandoning ? <Loader2 size={14} className="spin" /> : null}
+              {t("branchGroup.abandonGroup", "Abandon group")}
             </button>
           )}
         </div>
