@@ -149,7 +149,7 @@ export function probeFts5(db: DatabaseSync): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 107;
+const SCHEMA_VERSION = 108;
 
 export { SCHEMA_VERSION };
 
@@ -323,7 +323,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   checkoutLeaseEpoch INTEGER DEFAULT 0,
   deletedAt TEXT,
   allowResurrection INTEGER DEFAULT 0,
-  transitionPending TEXT
+  transitionPending TEXT,
+  customFields TEXT DEFAULT '{}'
 );
 
 -- Config table (single row with project settings)
@@ -588,6 +589,32 @@ CREATE TABLE IF NOT EXISTS workflow_run_branches (
   PRIMARY KEY (taskId, runId, branchId)
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_run_branches_task_run ON workflow_run_branches(taskId, runId);
+
+-- Per-step-instance run state for the step-inversion foreach region (step-inversion
+-- U4, KTD-6). One row per expanded step instance inside a foreach region; resume
+-- reconstructs the instance set from pinnedStepCount + persisted currentNodeId/
+-- reworkCount without re-running completed instances. baselineSha/checkpointId
+-- persist the RETHINK reset anchors (previously in-memory, lost on restart).
+-- branchName/integratedAt and the "awaiting-integration" status serve parallel
+-- mode (KTD-11) and are null/unused at concurrency 1. Additive-only, reconstructible.
+-- status ∈ "pending" | "in-progress" | "awaiting-integration" | "completed" | "failed".
+CREATE TABLE IF NOT EXISTS workflow_run_step_instances (
+  taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  runId TEXT NOT NULL,
+  foreachNodeId TEXT NOT NULL,
+  stepIndex INTEGER NOT NULL,
+  pinnedStepCount INTEGER NOT NULL,
+  currentNodeId TEXT,
+  status TEXT NOT NULL,
+  baselineSha TEXT,
+  checkpointId TEXT,
+  reworkCount INTEGER NOT NULL DEFAULT 0,
+  branchName TEXT,
+  integratedAt TEXT,
+  updatedAt TEXT NOT NULL,
+  PRIMARY KEY (taskId, runId, foreachNodeId, stepIndex)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_step_instances_task_run ON workflow_run_step_instances(taskId, runId);
 
 -- Task documents (key-value store per task with revision tracking)
 CREATE TABLE IF NOT EXISTS task_documents (
@@ -4226,6 +4253,41 @@ export class Database {
           );
           CREATE INDEX IF NOT EXISTS idx_workflow_run_branches_task_run ON workflow_run_branches(taskId, runId);
         `);
+      });
+    }
+
+    // Migration 108: Step-inversion persistence (step-inversion U4, KTD-6/KTD-13).
+    // Adds workflow_run_step_instances — one row per expanded step instance inside a
+    // foreach region — so a crashed/restarted run reconstructs the instance set from
+    // pinnedStepCount + persisted currentNodeId/reworkCount, and the RETHINK reset
+    // anchors (baselineSha/checkpointId) survive restart (previously in-memory Maps).
+    // branchName/integratedAt + "awaiting-integration" status serve parallel mode
+    // (KTD-11; null/unused at concurrency 1). Also adds tasks.customFields (KTD-13),
+    // the JSON store for workflow-defined custom task field values. Additive-only,
+    // idempotent (table-exists / addColumnIfMissing guards); no backfill.
+    // status ∈ "pending" | "in-progress" | "awaiting-integration" | "completed" | "failed".
+    if (version < 108) {
+      this.applyMigration(108, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS workflow_run_step_instances (
+            taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            runId TEXT NOT NULL,
+            foreachNodeId TEXT NOT NULL,
+            stepIndex INTEGER NOT NULL,
+            pinnedStepCount INTEGER NOT NULL,
+            currentNodeId TEXT,
+            status TEXT NOT NULL,
+            baselineSha TEXT,
+            checkpointId TEXT,
+            reworkCount INTEGER NOT NULL DEFAULT 0,
+            branchName TEXT,
+            integratedAt TEXT,
+            updatedAt TEXT NOT NULL,
+            PRIMARY KEY (taskId, runId, foreachNodeId, stepIndex)
+          );
+          CREATE INDEX IF NOT EXISTS idx_workflow_run_step_instances_task_run ON workflow_run_step_instances(taskId, runId);
+        `);
+        this.addColumnIfMissing("tasks", "customFields", "TEXT DEFAULT '{}'");
       });
     }
 

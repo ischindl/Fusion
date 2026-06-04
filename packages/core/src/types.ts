@@ -681,6 +681,59 @@ export interface WorkflowStepResult {
   completedAt?: string;
 }
 
+/**
+ * Lifecycle status of one persisted step instance (step-inversion U4, KTD-6).
+ * - `pending` — expanded but not yet started.
+ * - `in-progress` — actively executing inside its foreach sub-walk.
+ * - `awaiting-integration` — work complete on a parallel-mode branch, waiting
+ *   for the ordered integration stage (KTD-11; unused at concurrency 1).
+ * - `completed` — terminal success (integrated in parallel mode).
+ * - `failed` — terminal failure.
+ */
+export type WorkflowRunStepInstanceStatus =
+  | "pending"
+  | "in-progress"
+  | "awaiting-integration"
+  | "completed"
+  | "failed";
+
+/**
+ * Persisted run-state for one expanded step instance inside a foreach region
+ * (step-inversion U4, KTD-6). One row per `(taskId, runId, foreachNodeId,
+ * stepIndex)`; mirrors the `workflow_run_branches` posture. Resume reconstructs
+ * the instance set from `pinnedStepCount` + per-instance `currentNodeId` /
+ * `reworkCount`. `baselineSha` / `checkpointId` are the RETHINK reset anchors
+ * (previously in-memory, lost on restart). `branchName` / `integratedAt` and the
+ * `awaiting-integration` status serve parallel mode (KTD-11); null/unused at
+ * concurrency 1. This is the core row shape; the engine-side instance model is
+ * separate and engine-owned.
+ */
+export interface WorkflowRunStepInstance {
+  taskId: string;
+  runId: string;
+  /** Node id of the foreach region that expanded this instance. */
+  foreachNodeId: string;
+  /** Zero-based index of the step this instance runs. */
+  stepIndex: number;
+  /** Step count pinned at expansion; resume fails on mismatch with live steps[]. */
+  pinnedStepCount: number;
+  /** Current sub-walk node id for the in-flight instance; null when not started. */
+  currentNodeId?: string | null;
+  status: WorkflowRunStepInstanceStatus;
+  /** Git sha the RETHINK reset rewinds to; null when no baseline captured. */
+  baselineSha?: string | null;
+  /** Session checkpoint to rewind to on RETHINK; null when none captured. */
+  checkpointId?: string | null;
+  /** Number of rework cycles consumed against the rework budget. */
+  reworkCount: number;
+  /** Per-instance branch name in worktree-isolation mode (KTD-11); null otherwise. */
+  branchName?: string | null;
+  /** ISO-8601 timestamp the instance branch was integrated (KTD-11); null otherwise. */
+  integratedAt?: string | null;
+  /** ISO-8601 timestamp of the last write to this row. */
+  updatedAt: string;
+}
+
 /** A built-in workflow step template for one-click creation. */
 export interface WorkflowStepTemplate {
   /** Unique template identifier (e.g., "documentation-review") */
@@ -1825,6 +1878,14 @@ export interface Task {
   worktree?: string;
   steps: TaskStep[];
   currentStep: number;
+  /**
+   * Workflow-defined custom task field values (KTD-13), keyed by field id.
+   * Persisted as the `tasks.customFields` JSON column. Treated as opaque by
+   * the core row⇄Task mapping and `updateTask`; the validation/write authority
+   * (type/enum/render checks against the workflow's field schema) lands in a
+   * later unit. Absent on legacy tasks.
+   */
+  customFields?: Record<string, unknown>;
   status?: string;
   /** ID of the in-progress task whose file scope overlaps with this task,
    *  causing the scheduler to defer it. Set when the scheduler queues
@@ -4037,6 +4098,8 @@ export interface ArchivedTaskEntry {
   dependencies: string[];
   steps: TaskStep[];
   currentStep: number;
+  /** Workflow-defined custom task field values (KTD-13) frozen at archive time. */
+  customFields?: Record<string, unknown>;
   size?: "S" | "M" | "L";
   reviewLevel?: number;
   /** Execution mode for task implementation at time of archival.
