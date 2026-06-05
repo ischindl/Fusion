@@ -144,6 +144,14 @@ A first-class, workflow-defined unit of task state: an id, a display name, and a
 ### Trait
 Composable column configuration: declarative flags (e.g. `complete`, `archived`, `countsTowardWip`) plus optional lifecycle hooks (`guard`, `gate`, `onEnter`, `onExit`, `releaseCondition`). Built-in and plugin-contributed traits register through one registry. Sync `guard` hooks and the `complete`/`archived` flags are built-in-only; plugin traits get async hook points only. A column's effective flags are the merged flags of its traits; conflicting compositions are rejected at save (server-side and in the editor).
 
+### Column agent
+A permanent agent binding on a workflow-defined column — a registry agent plus a mode — staffing all session-running work attributable to that column (custom nodes, the execute seam's coding session, per-step sessions; foreach template nodes inherit the enclosing foreach's column unless they declare their own). `defer` makes the column agent the default, applying only when the work carries no own agent identity and no complete model pair; `override` supersedes node- and task-level agent/model settings wholesale.
+
+Requires both the workflow-columns and graph-executor flags; with either off, bindings are inert at execution time. A missing or deleted agent degrades to normal resolution without aborting a live session. Binding an agent whose permission policy is broader than the project default requires explicit confirmation at save time on every write surface.
+
+### Effective agent (execution principal)
+The agent identity that actually runs a piece of work after column-agent precedence resolves — and the principal every identity-keyed subsystem must consult: permission gating, heartbeat serialization in both directions, resume re-dispatch, and mid-flight change detection. It may differ from the task's assigned agent under an override binding, and one task may have multiple effective agents across concurrent branch sessions.
+
 ### Lane
 A horizontal row on the multi-lane board, one per workflow in use by visible cards. Each lane renders its own workflow's columns. Tasks with no workflow selection appear in the Default workflow's lane; every card appears in exactly one lane. Zero-card lanes are hidden; lanes are collapsible with persisted state.
 
