@@ -16,6 +16,41 @@ import { CliAdapterRegistry, type CliAgentAdapter } from "../adapter.js";
 
 const textDecoder = new TextDecoder();
 
+// Probe whether real PTY I/O actually flows in this environment. Some sandboxed
+// shells allow node-pty to load and spawn but never deliver PTY bytes; in that
+// case the real-PTY suite self-skips (same philosophy as the native-load skip).
+async function canRealPtyIo(): Promise<boolean> {
+  try {
+    const { loadPtyModule } = await import("../../pty-native.js");
+    const pty = await loadPtyModule();
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const settle = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        try {
+          proc.kill();
+        } catch {
+          // already dead
+        }
+        resolve(ok);
+      };
+      const proc = pty.spawn("bash", ["-c", "printf PROBE"], {
+        name: "xterm-256color",
+        cols: 20,
+        rows: 5,
+        cwd: tmpdir(),
+        env: { PATH: process.env.PATH ?? "" },
+      });
+      proc.onData(() => settle(true));
+      proc.onExit(() => settle(false));
+      setTimeout(() => settle(false), 4000);
+    });
+  } catch {
+    return false;
+  }
+}
+
 // ── Mock PTY at the loadPtyModule seam ─────────────────────────────────────
 //
 // A scripted in-memory PTY records every byte written, lets the test push
@@ -550,6 +585,10 @@ describe("CliSessionManager (real node-pty)", () => {
   });
 
   it("spawns a real PTY, detects readiness, injects, captures echoed output, kills cleanly", async () => {
+    if (!(await canRealPtyIo())) {
+      console.warn("[test] PTY I/O does not flow in this environment, skipping real-PTY test");
+      return;
+    }
     const fusionDir = join(tmpDir, ".fusion");
     db = new Database(fusionDir, { inMemory: true });
     db.init();
