@@ -205,15 +205,18 @@ async function syncOpenRouterModels(options: StartupSyncOptions, settings: Setti
 
 export function normalizeOpencodeGoModel(modelId: string): ModelConfig {
   const trimmed = modelId.trim();
-  const normalizedId = trimmed.startsWith("opencode/")
-    ? `opencode-go/${trimmed.slice("opencode/".length)}`
-    : trimmed.startsWith("opencode-go/")
-      ? trimmed
-      : `opencode-go/${trimmed}`;
+  // Strip the provider prefix (opencode/ or opencode-go/) — the Pi SDK
+  // already routes requests by provider, and the OpenCode API expects the
+  // bare model name (e.g. "deepseek-v4-flash", not "opencode-go/deepseek-v4-flash").
+  const bareModel = trimmed.startsWith("opencode-go/")
+    ? trimmed.slice("opencode-go/".length)
+    : trimmed.startsWith("opencode/")
+      ? trimmed.slice("opencode/".length)
+      : trimmed;
 
   return {
-    id: normalizedId,
-    name: normalizedId,
+    id: bareModel,
+    name: bareModel,
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
