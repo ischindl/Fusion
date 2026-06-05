@@ -357,4 +357,19 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       rethrowAsApiError(err);
     }
   });
+
+  // POST /api/workflows/migrate-legacy-steps — Lazy idempotent migration of
+  // legacy user-authored workflow steps into fragments + a combined "Migrated
+  // steps" workflow (U2/R5/KTD-3). Fired once per project on first editor open;
+  // safe to call repeatedly (idempotent via per-row markers). Returns the counts.
+  router.post("/workflows/migrate-legacy-steps", async (req, res) => {
+    try {
+      const { store } = await getProjectContext(req);
+      const result = await store.migrateLegacyWorkflowSteps();
+      res.json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
+  });
 }

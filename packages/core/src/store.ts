@@ -8,6 +8,7 @@ import { createActivityLogSnapshot, createRunAuditSnapshot, createTaskMetadataSn
 import { VALID_TRANSITIONS, COLUMNS, DEFAULT_SETTINGS, isGlobalOnlySettingsKey, WORKFLOW_STEP_TEMPLATES, validateDocumentKey } from "./types.js";
 import { DEFAULT_PROJECT_SETTINGS } from "./settings-schema.js";
 import { parseWorkflowIr, serializeWorkflowIr, downgradeIrToV1IfPure } from "./workflow-ir.js";
+import { stepsToWorkflowIr, stepToFragmentIr, layoutForIr } from "./workflow-steps-to-ir.js";
 import { isWorkflowColumnsEnabled } from "./workflow-columns-settings.js";
 import { resolveAllowedColumns, workflowHasColumn } from "./workflow-transitions.js";
 import {
@@ -12995,6 +12996,159 @@ ${stepsSection}`;
     }
     // null is updateSettings' explicit-delete sentinel for project keys.
     await this.updateSettings({ defaultWorkflowId: workflowId } as unknown as Partial<Settings>);
+  }
+
+  /**
+   * Synchronous workflow-definition insert used by migration (U2/KTD-3). Mirrors
+   * the persistence side of `createWorkflowDefinition` (validation + flag-aware
+   * downgrade + INSERT + cache bust) but stays synchronous so it can run inside
+   * `transactionImmediate`. The flag value is resolved by the async caller and
+   * passed in, since reading it is async.
+   */
+  private insertWorkflowDefinitionSync(
+    input: WorkflowDefinitionInput,
+    flagOn: boolean,
+  ): WorkflowDefinition {
+    const name = input.name?.trim();
+    if (!name) throw new Error("Workflow name is required");
+    const ir = parseWorkflowIr(input.ir);
+    this.assertWorkflowIrTraitsValid(ir);
+    const layout = input.layout ?? {};
+    const now = new Date().toISOString();
+    const id = this.nextWorkflowDefinitionId();
+    const definition: WorkflowDefinition = {
+      id,
+      name,
+      description: input.description ?? "",
+      kind: input.kind === "fragment" ? "fragment" : "workflow",
+      ir,
+      layout,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO workflows (id, name, description, ir, layout, kind, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        definition.id,
+        definition.name,
+        definition.description,
+        serializeWorkflowIr(flagOn ? definition.ir : downgradeIrToV1IfPure(definition.ir)),
+        JSON.stringify(definition.layout),
+        definition.kind,
+        definition.createdAt,
+        definition.updatedAt,
+      );
+    this.workflowDefinitionsCache = null;
+    return definition;
+  }
+
+  /**
+   * Lazy, idempotent migration of legacy user-authored workflow steps into the
+   * dual workflow-definition representation (U2 / R5 / KTD-3). Runs on first
+   * editor open per project via `POST /api/workflows/migrate-legacy-steps`.
+   *
+   * Policy:
+   *  - Every unmigrated user step (enabled or not, excluding compiled-materialized
+   *    rows) becomes a `kind: "fragment"` definition — the reusable palette piece.
+   *  - The `defaultOn` subset additionally becomes ONE combined `kind: "workflow"`
+   *    definition named "Migrated steps" (these were the steps that ran
+   *    automatically on new tasks); when non-empty and no project default is
+   *    already set, it becomes the project default so new-task behavior is
+   *    preserved. An explicit existing default is never clobbered.
+   *  - Each source row is stamped with `migratedFragmentId` (idempotency marker).
+   *    Source rows are never deleted.
+   *
+   * Idempotency: the unmigrated-rows SELECT and the marker stamping happen inside
+   * a single `transactionImmediate` (write lock acquired BEFORE the SELECT,
+   * matching `selectTaskWorkflow`'s ordering rationale), so concurrent opens /
+   * re-runs converge to a single set of definitions. A second run sees zero
+   * unmigrated rows and returns `{ migrated: 0, skipped: n }`.
+   */
+  async migrateLegacyWorkflowSteps(): Promise<{
+    migrated: number;
+    skipped: number;
+    combinedWorkflowId?: string;
+  }> {
+    // Resolve async prerequisites BEFORE the synchronous transaction: the
+    // workflow-columns flag (for flag-aware persistence) and the current project
+    // default (for the no-clobber guard).
+    const flagOn = await this.workflowColumnsFlagOn();
+    const existingDefaultId = await this.getDefaultWorkflowId();
+
+    const result = this.db.transactionImmediate(() => {
+      // Write lock is now held. Read the raw step rows directly (the cached,
+      // plugin-merged listWorkflowSteps() is not transaction-scoped). Mirror
+      // listWorkflowSteps()'s compiled-materialized filter and toStoredWorkflowStep
+      // mapping so policy decisions match the user-facing step listing.
+      const rows = this.db
+        .prepare("SELECT * FROM workflow_steps ORDER BY createdAt ASC")
+        .all() as Array<Parameters<typeof this.toStoredWorkflowStep>[0]>;
+
+      const userSteps = rows
+        .map((row) => this.applyLegacyWorkflowStepOverrides(this.toStoredWorkflowStep(row)))
+        // Compiled-materialized rows are an execution detail, not user-authored.
+        .filter((step) => !step.templateId?.startsWith(WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX));
+
+      const alreadyMigrated = userSteps.filter((s) => s.migratedFragmentId);
+      const unmigrated = userSteps.filter((s) => !s.migratedFragmentId);
+
+      if (unmigrated.length === 0) {
+        return { migrated: 0, skipped: alreadyMigrated.length, combinedWorkflowId: undefined as string | undefined };
+      }
+
+      // Every unmigrated user step → a single-node fragment; stamp the source row.
+      for (const step of unmigrated) {
+        const fragment = this.insertWorkflowDefinitionSync(
+          {
+            name: step.name,
+            description: step.description,
+            kind: "fragment",
+            ir: stepToFragmentIr(step),
+            layout: layoutForIr(stepToFragmentIr(step)),
+          },
+          flagOn,
+        );
+        this.db
+          .prepare("UPDATE workflow_steps SET migrated_fragment_id = ?, updatedAt = ? WHERE id = ?")
+          .run(fragment.id, new Date().toISOString(), step.id);
+      }
+      this.workflowStepsCache = null;
+      this.db.bumpLastModified();
+
+      // The defaultOn subset → one combined "Migrated steps" workflow.
+      const defaultOnSteps = unmigrated.filter((s) => s.defaultOn === true);
+      let combinedWorkflowId: string | undefined;
+      if (defaultOnSteps.length > 0) {
+        const ir = stepsToWorkflowIr(defaultOnSteps, "Migrated steps");
+        const combined = this.insertWorkflowDefinitionSync(
+          {
+            name: "Migrated steps",
+            description: "Converted from your legacy workflow steps",
+            kind: "workflow",
+            ir,
+            layout: layoutForIr(ir),
+          },
+          flagOn,
+        );
+        combinedWorkflowId = combined.id;
+      }
+
+      return { migrated: unmigrated.length, skipped: alreadyMigrated.length, combinedWorkflowId };
+    });
+
+    // Set the combined workflow as the project default — only when one was
+    // created AND no explicit default is already set (don't clobber a user
+    // choice). Done outside the transaction via the async setter so the project
+    // default-workflow hooks run. Racing re-runs are harmless: the second run
+    // creates no combined workflow, so this branch is skipped.
+    if (result.combinedWorkflowId && !existingDefaultId) {
+      await this.setDefaultWorkflowId(result.combinedWorkflowId);
+    }
+
+    return result;
   }
 
   /** Whether a raw workflow CLI command has been approved (trust-on-first-use).

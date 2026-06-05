@@ -1465,7 +1465,8 @@
     "unableToLoadData": "Impossible de charger les données",
     "unknown": "Inconnu",
     "unsavedChanges": "Modifications non enregistrées",
-    "yes": "Oui"
+    "yes": "Oui",
+    "dismiss": ""
   },
   "composer": {
     "loadingAgents": "Chargement des agents…",
@@ -6805,7 +6806,8 @@
     "emptyDescription": "",
     "emptyTitle": "",
     "nameLabel": "",
-    "newWorkflow": ""
+    "newWorkflow": "",
+    "migrationNotice": ""
   },
   "workflowSelector": {
     "switchActiveMessage": "",

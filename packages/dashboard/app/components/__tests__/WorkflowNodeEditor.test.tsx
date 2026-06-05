@@ -10,6 +10,7 @@ vi.mock("../../api", () => ({
   updateWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
   compileWorkflow: vi.fn(),
+  migrateLegacyWorkflowSteps: vi.fn(),
   fetchTraits: vi.fn(),
   fetchStepParsers: vi.fn(),
   fetchModels: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock("../../api", () => ({
 }));
 
 import { fireEvent } from "@testing-library/react";
-import { fetchWorkflows, fetchTraits, fetchStepParsers, updateWorkflow, compileWorkflow, createWorkflow, deleteWorkflow, fetchModels } from "../../api";
+import { fetchWorkflows, fetchTraits, fetchStepParsers, updateWorkflow, compileWorkflow, createWorkflow, deleteWorkflow, fetchModels, migrateLegacyWorkflowSteps } from "../../api";
 import type { TraitCatalogEntry } from "../../api";
 import { WorkflowNodeEditor } from "../WorkflowNodeEditor";
 import { ConfirmDialogProvider } from "../../hooks/useConfirm";
@@ -33,6 +34,7 @@ const TRAIT_CATALOG: TraitCatalogEntry[] = [
 function v2Def(): WorkflowDefinition {
   return {
     id: "WF-002",
+    kind: "workflow",
     name: "Custom",
     description: "",
     ir: {
@@ -70,6 +72,7 @@ function builtinDef(): WorkflowDefinition {
 function def(): WorkflowDefinition {
   return {
     id: "WF-001",
+    kind: "workflow",
     name: "QA",
     description: "",
     ir: {
@@ -1075,5 +1078,54 @@ describe("WorkflowNodeEditor — U6 empty/onboarding states", () => {
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     expect(await screen.findByTestId("wf-readonly-banner")).toBeInTheDocument();
     expect(screen.queryByTestId("wf-trivial-hint")).not.toBeInTheDocument();
+  });
+});
+
+describe("WorkflowNodeEditor — U2 legacy-step migration notice", () => {
+  beforeEach(() => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([]);
+    vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
+    vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  it("shows the one-time notice when migration converted steps", async () => {
+    vi.mocked(migrateLegacyWorkflowSteps).mockResolvedValue({ migrated: 2, skipped: 0, combinedWorkflowId: "WF-010" });
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} projectId="p1" />);
+    expect(await screen.findByTestId("wf-migration-notice")).toBeInTheDocument();
+    expect(migrateLegacyWorkflowSteps).toHaveBeenCalledWith("p1");
+  });
+
+  it("dismisses the notice, persisting the dismissal so it stays hidden on re-open", async () => {
+    vi.mocked(migrateLegacyWorkflowSteps).mockResolvedValue({ migrated: 2, skipped: 0, combinedWorkflowId: "WF-010" });
+    const { unmount } = render(
+      <WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} projectId="p1" />,
+    );
+    const notice = await screen.findByTestId("wf-migration-notice");
+    expect(notice).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("wf-migration-notice-dismiss"));
+    await waitFor(() => expect(screen.queryByTestId("wf-migration-notice")).not.toBeInTheDocument());
+    expect(localStorage.getItem("fusion:wf-migration-notice-dismissed:p1")).toBe("1");
+
+    // Re-open the editor: the persisted dismissal keeps the notice hidden even
+    // though migration still reports migrated > 0.
+    unmount();
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} projectId="p1" />);
+    await screen.findByTestId("wf-new-workflow");
+    expect(screen.queryByTestId("wf-migration-notice")).not.toBeInTheDocument();
+  });
+
+  it("does not show the notice when migration converted nothing", async () => {
+    vi.mocked(migrateLegacyWorkflowSteps).mockResolvedValue({ migrated: 0, skipped: 3 });
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} projectId="p1" />);
+    await screen.findByTestId("wf-new-workflow");
+    expect(screen.queryByTestId("wf-migration-notice")).not.toBeInTheDocument();
   });
 });

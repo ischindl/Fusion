@@ -34,6 +34,7 @@ import type { TraitCatalogEntry } from "../../api";
 function makeDef(ir: WorkflowDefinition["ir"]): WorkflowDefinition {
   return {
     id: "WF-001",
+    kind: "workflow",
     name: ir.name,
     description: "",
     ir,

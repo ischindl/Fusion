@@ -5108,6 +5108,23 @@ export function compileWorkflow(id: string, projectId?: string): Promise<{ steps
   });
 }
 
+/** Result of the lazy legacy-step migration (U2/R5). `migrated` is the number of
+ *  newly converted user steps; `skipped` the count already migrated; when the
+ *  defaultOn subset was non-empty a combined "Migrated steps" workflow id is set. */
+export interface MigrateLegacyStepsResult {
+  migrated: number;
+  skipped: number;
+  combinedWorkflowId?: string;
+}
+
+/** Run the lazy, idempotent migration of legacy user-authored workflow steps into
+ *  fragments + a combined workflow (U2/R5). Safe to call repeatedly. */
+export function migrateLegacyWorkflowSteps(projectId?: string): Promise<MigrateLegacyStepsResult> {
+  return api<MigrateLegacyStepsResult>(withProjectId("/workflows/migrate-legacy-steps", projectId), {
+    method: "POST",
+  });
+}
+
 /** Read the workflow currently selected for a task. */
 export function fetchTaskWorkflow(taskId: string, projectId?: string): Promise<{ workflowId: string | null }> {
   return api<{ workflowId: string | null }>(

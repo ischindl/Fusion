@@ -35,6 +35,37 @@
   cursor: pointer;
 }
 
+/* U2/R5: one-time legacy-step migration notice banner. */
+.wf-migration-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--accent-subtle, rgba(59, 130, 246, 0.12));
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.wf-migration-notice-text {
+  flex: 1;
+}
+
+.wf-migration-notice-dismiss {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.wf-migration-notice-dismiss:hover {
+  color: var(--text);
+}
+
 .wf-editor-close:hover {
   color: var(--text);
 }
