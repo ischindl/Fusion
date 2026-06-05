@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import type { WorkflowDefinition } from "@fusion/core";
 import { irToFlow, flowToIr, emptyWorkflowIr, emptyWorkflowLayout, foreachChildFlowId } from "../workflow-flow-mapping";
 import { BUILTIN_STEPWISE_CODING_WORKFLOW_IR } from "@fusion/core";
@@ -141,6 +141,33 @@ describe("WorkflowNodeEditor", () => {
   it("renders nothing when closed", () => {
     const { container } = render(<WorkflowNodeEditor isOpen={false} onClose={() => {}} addToast={() => {}} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("WorkflowNodeEditor — U1 card-style nodes", () => {
+  beforeEach(() => {
+    vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
+    vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("renders a config-summary row for a configured node", async () => {
+    // def()'s gate node "Lint" has gateMode "gate" → summary "Gate (blocks)".
+    vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    const gate = await screen.findByTestId("wf-node-gate");
+    const summary = await within(gate).findByTestId("wf-node-summary");
+    expect(summary).toHaveTextContent("Gate (blocks)");
+  });
+
+  it("does not render a summary row for structural nodes (start/end)", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    const start = await screen.findByTestId("wf-node-start");
+    expect(within(start).queryByTestId("wf-node-summary")).not.toBeInTheDocument();
   });
 });
 

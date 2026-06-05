@@ -6761,7 +6761,14 @@
     "reviewPlan": "Plan review",
     "reviewType": "Review type",
     "splitNote": "분기는 이 노드에서 동시에 실행됩니다. 분기 내에서는 실행 및 병합 이음새가 허용되지 않습니다.",
-    "stepExecuteLabel": "Step execute"
+    "stepExecuteLabel": "Step execute",
+    "summaryAwaitInput": "",
+    "summaryCodeDefault": "",
+    "summaryGateAdvisory": "",
+    "summaryGateBlocks": "",
+    "summaryHoldRelease": "",
+    "summaryNotConfigured": "",
+    "summaryReviewType": ""
   },
   "workflows": {
     "duplicateToCustomize": "",

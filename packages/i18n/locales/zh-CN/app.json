@@ -6761,7 +6761,14 @@
     "reviewPlan": "Plan review",
     "reviewType": "Review type",
     "splitNote": "分支从此节点并发运行。分支内不允许执行和合并接缝。",
-    "stepExecuteLabel": "Step execute"
+    "stepExecuteLabel": "Step execute",
+    "summaryAwaitInput": "",
+    "summaryCodeDefault": "",
+    "summaryGateAdvisory": "",
+    "summaryGateBlocks": "",
+    "summaryHoldRelease": "",
+    "summaryNotConfigured": "",
+    "summaryReviewType": ""
   },
   "workflows": {
     "duplicateToCustomize": "",

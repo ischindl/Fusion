@@ -6761,7 +6761,14 @@
     "reviewPlan": "Plan review",
     "reviewType": "Review type",
     "splitNote": "分支從此節點並行執行。分支內不允許執行與合併接縫。",
-    "stepExecuteLabel": "Step execute"
+    "stepExecuteLabel": "Step execute",
+    "summaryAwaitInput": "",
+    "summaryCodeDefault": "",
+    "summaryGateAdvisory": "",
+    "summaryGateBlocks": "",
+    "summaryHoldRelease": "",
+    "summaryNotConfigured": "",
+    "summaryReviewType": ""
   },
   "workflows": {
     "duplicateToCustomize": "",

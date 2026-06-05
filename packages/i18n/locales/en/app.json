@@ -6795,7 +6795,14 @@
     "reviewPlan": "Plan review",
     "reviewType": "Review type",
     "splitNote": "Branches run concurrently from this node. Execute and merge seams are not allowed inside a branch.",
-    "stepExecuteLabel": "Step execute"
+    "stepExecuteLabel": "Step execute",
+    "summaryAwaitInput": "Waits for user input",
+    "summaryCodeDefault": "TypeScript",
+    "summaryGateAdvisory": "Advisory",
+    "summaryGateBlocks": "Gate (blocks)",
+    "summaryHoldRelease": "Release: {{release}}",
+    "summaryNotConfigured": "Not configured",
+    "summaryReviewType": "{{type}} review"
   },
   "workflows": {
     "duplicateToCustomize": "Duplicate to customize",

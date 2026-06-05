@@ -36,11 +36,23 @@ export type { WorkflowFieldDefinition as WorkflowFieldDefinitionShape };
 // `<groupId>::<templateNodeId>`; flowToIr strips the prefix back out when it
 // reassembles the template. Geometry for the group + auto-layout for template
 // nodes lacking persisted layout data.
-export const FOREACH_GROUP_WIDTH = 520;
-export const FOREACH_GROUP_HEIGHT = 200;
+// ── Card-style node dimensions (U1) ─────────────────────────────────────────
+//
+// Cards are larger than the old icon+label pills: a header row plus a config
+// summary line. These constants are the single source of truth for card sizing
+// — the CSS sizes cards to WF_CARD_WIDTH (with WF_CARD_MAX_WIDTH as the hard
+// ceiling so long labels/summaries truncate rather than grow the canvas), and
+// U5's auto-layout imports WF_CARD_WIDTH for column spacing rather than
+// duplicating the number.
+export const WF_CARD_WIDTH = 200;
+export const WF_CARD_MAX_WIDTH = 240;
+export const WF_CARD_HEIGHT = 64;
+
+export const FOREACH_GROUP_WIDTH = 560;
+export const FOREACH_GROUP_HEIGHT = 220;
 export const FOREACH_CHILD_X = 30;
 export const FOREACH_CHILD_Y = 56;
-export const FOREACH_CHILD_STEP_X = 170;
+export const FOREACH_CHILD_STEP_X = 260;
 
 const FOREACH_CHILD_SEP = "::";
 /** Compose a globally-unique flow-node id for a template child. */

@@ -15,6 +15,13 @@ import {
   templateNodeIdFromChild,
   shortConditionLabel,
   COLUMN_BAND_HEIGHT,
+  WF_CARD_WIDTH,
+  WF_CARD_MAX_WIDTH,
+  WF_CARD_HEIGHT,
+  FOREACH_GROUP_WIDTH,
+  FOREACH_GROUP_HEIGHT,
+  FOREACH_CHILD_X,
+  FOREACH_CHILD_Y,
 } from "../workflow-flow-mapping";
 import type { WorkflowFlowNodeData } from "../nodes/WorkflowNodeTypes";
 import type { TraitCatalogEntry } from "../../api";
@@ -435,5 +442,18 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     const ids = unplacedNodeIds(nodes, columns);
     expect(ids).not.toContain(foreachChildFlowId("loop", "exec"));
     expect(ids).not.toContain(foreachChildFlowId("loop", "review"));
+  });
+});
+
+describe("card dimension constants (U1)", () => {
+  it("card max width is at least the nominal card width", () => {
+    expect(WF_CARD_MAX_WIDTH).toBeGreaterThanOrEqual(WF_CARD_WIDTH);
+  });
+
+  it("a child card fits inside the foreach group with padding", () => {
+    // Child offset + card max dimensions must stay inside the group box so a
+    // card never overflows or gets clamped by extent:"parent".
+    expect(FOREACH_CHILD_X + WF_CARD_MAX_WIDTH).toBeLessThanOrEqual(FOREACH_GROUP_WIDTH);
+    expect(FOREACH_CHILD_Y + WF_CARD_HEIGHT).toBeLessThanOrEqual(FOREACH_GROUP_HEIGHT);
   });
 });

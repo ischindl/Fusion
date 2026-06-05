@@ -6761,7 +6761,14 @@
     "reviewPlan": "Plan review",
     "reviewType": "Review type",
     "splitNote": "Las ramas se ejecutan de forma concurrente desde este nodo. No se permiten uniones de ejecución y fusión dentro de una rama.",
-    "stepExecuteLabel": "Step execute"
+    "stepExecuteLabel": "Step execute",
+    "summaryAwaitInput": "",
+    "summaryCodeDefault": "",
+    "summaryGateAdvisory": "",
+    "summaryGateBlocks": "",
+    "summaryHoldRelease": "",
+    "summaryNotConfigured": "",
+    "summaryReviewType": ""
   },
   "workflows": {
     "duplicateToCustomize": "",

@@ -35,6 +35,8 @@ import type { ToastType } from "../hooks/useToast";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { workflowNodeTypes, type WorkflowFlowNodeData, type WorkflowEditorNodeKind } from "./nodes/WorkflowNodeTypes";
+import { WorkflowEditorCatalogContext } from "./nodes/WorkflowEditorCatalogContext";
+import type { NodeSummaryCatalogs } from "./nodes/node-summary";
 import {
   irToFlow,
   flowToIr,
@@ -547,10 +549,49 @@ function InnerEditor({
     return [];
   }, [activeWorkflow]);
 
-  // Lazy-loaded executor resources
+  // Executor resources. Prefetched once when the editor opens (U1/KTD-6) so node
+  // cards can resolve model/agent/skill ids to display names in their config
+  // summaries; the inspector selects reuse the same state. Failures are
+  // non-fatal — summaries fall back to raw ids — so the prefetch is toastless.
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<DiscoveredSkill[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Promise.resolve wraps so a synchronously-undefined return (e.g. a bare
+    // test mock) degrades to "no catalog" instead of throwing — summaries then
+    // fall back to raw ids, which is the documented failure behavior (KTD-6).
+    Promise.resolve(fetchModels())
+      .then((res) => {
+        if (!cancelled && res?.models) setModels(res.models);
+      })
+      .catch(() => {});
+    Promise.resolve(fetchAgents())
+      .then((res) => {
+        if (!cancelled && Array.isArray(res)) setAgents(res);
+      })
+      .catch(() => {});
+    Promise.resolve(fetchDiscoveredSkills(projectId))
+      .then((res) => {
+        if (!cancelled && Array.isArray(res)) setSkills(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Catalogs handed to the rendered node cards via context (KTD-6). Minimal
+  // structural shape — nodeConfigSummary reads only id/name/provider.
+  const catalogs: NodeSummaryCatalogs = useMemo(
+    () => ({
+      models: models.map((m) => ({ provider: m.provider, id: m.id, name: m.name })),
+      agents: agents.map((a) => ({ id: a.id, name: a.name })),
+      skills: skills.map((s) => ({ id: s.id, name: s.name })),
+    }),
+    [models, agents, skills],
+  );
 
   const currentExecutor = (selectedNode?.data.config?.executor as ExecutorKind | undefined) ?? "model";
 
@@ -679,6 +720,7 @@ function InnerEditor({
                 )}
 
                 <div className="wf-editor-canvas">
+                  <WorkflowEditorCatalogContext.Provider value={catalogs}>
                   <ReactFlow
                     nodes={nodesForRender}
                     edges={edges}
@@ -705,6 +747,7 @@ function InnerEditor({
                     <Controls />
                     <MiniMap pannable zoomable />
                   </ReactFlow>
+                  </WorkflowEditorCatalogContext.Provider>
                 </div>
               </>
             ) : (

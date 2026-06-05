@@ -6114,6 +6114,12 @@ export default interface Resources {
       "switchToPlainText": "Switch to plain text",
       "yes": "Yes"
     },
+    "taskFields": {
+      "moreFields": "Additional fields",
+      "orphaned": "Orphaned fields",
+      "saveFailed": "Failed to save field",
+      "unset": "—"
+    },
     "taskForm": {
       "addDependencies": "Add dependencies",
       "attachHint": "You can also paste images or drag & drop",
@@ -6717,11 +6723,64 @@ export default interface Resources {
       "unplacedCount_one": "{{count}} nodes not placed in a column",
       "unplacedCount_other": "{{count}} nodes not placed in a column"
     },
+    "workflowFields": {
+      "add": "Add field",
+      "addOption": "Add option",
+      "badge": "Render as badge",
+      "default": "Default",
+      "defaultLabel": "Default value",
+      "defaultTrue": "Default on",
+      "duplicateId": "A field with that id already exists",
+      "editId": "Edit id",
+      "empty": "No custom fields yet. Add a field to extend the task form and cards.",
+      "idLabel": "Field id",
+      "idWarn": "Changing the id discards values stored under the old id (remove + add).",
+      "nameLabel": "Field name",
+      "newFieldName": "New field",
+      "newOptionLabel": "Option 1",
+      "noDefault": "— none —",
+      "optionColor": "Option color",
+      "optionLabel": "Option label",
+      "optionN": "Option {{n}}",
+      "optionValue": "Option value",
+      "options": "Options",
+      "placement": "Placement",
+      "placementCard": "Card badge",
+      "placementDetail": "Detail (inline)",
+      "placementSection": "Detail section",
+      "readOnlyHint": "Built-in workflows are read-only — duplicate to edit",
+      "remove": "Remove field",
+      "removeOption": "Remove option",
+      "required": "Required",
+      "title": "Fields",
+      "typeLabel": "Type",
+      "widget": "Widget",
+      "widgetDefault": "Default"
+    },
     "workflowNodes": {
       "advisory": "Advisory",
+      "codeNote": "Runs sandboxed TypeScript. Syntax is validated at save.",
+      "codeSource": "Source (TypeScript)",
+      "codeTimeout": "Timeout (ms)",
+      "edgeConditionLabel": "Condition: {{condition}}",
+      "edgeInspector": "Edge",
+      "edgeNoVerdict": "— success (no verdict) —",
+      "edgeRework": "Rework edge (loop back, bounded)",
+      "edgeReworkNote": "Rework edges are the only legal cycles — they loop back within the for-each step instance, bounded by Max rework cycles.",
+      "edgeVerdict": "Review verdict",
       "failureCollect": "Collect (wait for all)",
       "failureFailFast": "Fail-fast (cancel siblings)",
       "failurePolicy": "On branch failure",
+      "foreachConcurrency": "Concurrency",
+      "foreachEmptyHint": "Drag a step-execute node here",
+      "foreachIsolation": "Isolation",
+      "foreachMaxRework": "Max rework cycles",
+      "foreachMode": "Mode",
+      "foreachNote": "Expands once per planned step. Drop a step-execute node (and optional step-review) into the region.",
+      "foreachParallel": "Parallel",
+      "foreachSequential": "Sequential",
+      "foreachShared": "Shared worktree",
+      "foreachWorktree": "Per-step worktree",
       "gateBlocks": "Gate (blocks)",
       "gateMode": "Gate mode",
       "joinAll": "All branches",
@@ -6729,6 +6788,8 @@ export default interface Resources {
       "joinMode": "Join mode",
       "joinQuorum": "Quorum (n)",
       "mergeBoundaryNote": "Steps before this marker run pre-merge; steps after run post-merge.",
+      "parseArtifact": "Artifact",
+      "parseParser": "Parser",
       "quorumN": "Quorum count (n)",
       "releaseCapacity": "Downstream capacity",
       "releaseCondition": "Release condition",
@@ -6736,7 +6797,20 @@ export default interface Resources {
       "releaseExternal": "External event",
       "releaseManual": "Manual promote",
       "releaseTimer": "Timer",
-      "splitNote": "Branches run concurrently from this node. Execute and merge seams are not allowed inside a branch."
+      "reviewCode": "Code review",
+      "reviewModel": "Review model (optional)",
+      "reviewNote": "Verdicts route as outcome edges. Click an outgoing edge to set its verdict and rework behavior.",
+      "reviewPlan": "Plan review",
+      "reviewType": "Review type",
+      "splitNote": "Branches run concurrently from this node. Execute and merge seams are not allowed inside a branch.",
+      "stepExecuteLabel": "Step execute",
+      "summaryAwaitInput": "Waits for user input",
+      "summaryCodeDefault": "TypeScript",
+      "summaryGateAdvisory": "Advisory",
+      "summaryGateBlocks": "Gate (blocks)",
+      "summaryHoldRelease": "Release: {{release}}",
+      "summaryNotConfigured": "Not configured",
+      "summaryReviewType": "{{type}} review"
     },
     "workflowSelector": {
       "switchActiveMessage": "This task has an active session. Switching workflows aborts it and re-homes the card into the new workflow's entry column. Continue?",
@@ -6996,6 +7070,11 @@ export default interface Resources {
     }
   },
   "common": {
+    "actions": {
+      "cancel": "Cancel",
+      "close": "Close",
+      "save": "Save"
+    },
     "agents": {
       "ratings": {
         "trendDeclining": "↓ Declining",
@@ -7026,6 +7105,7 @@ export default interface Resources {
         "minutesAgo_other": "{{count}}m ago"
       }
     },
+    "archive": "Archive",
     "board": {
       "rejection": {
         "capacityExhausted": "That column is at capacity. Try again when a slot frees up.",
@@ -7035,6 +7115,7 @@ export default interface Resources {
         "workflowMismatch": "Drag can't move a card between workflows. Use the workflow switcher instead."
       }
     },
+    "cancel": "Cancel",
     "chat": {
       "failedToGetResponse": "Failed to get response",
       "failureReferenceId": "ID",
@@ -7053,6 +7134,16 @@ export default interface Resources {
       "toolCallsHeader": "Tool calls",
       "viewFailureDetails": "View failure details"
     },
+    "close": "Close",
+    "columns": {
+      "archived": "Archived",
+      "done": "Done",
+      "in-progress": "In Progress",
+      "in-review": "In Review",
+      "todo": "Todo",
+      "triage": "Planning"
+    },
+    "delete": "Delete",
     "health": {
       "anomaly": {
         "duplicateActiveId": "Duplicate active task ID",
@@ -7117,6 +7208,7 @@ export default interface Resources {
         "stopped": "Stopped"
       }
     },
+    "refresh": "Refresh",
     "research": {
       "providerGitHub": "GitHub",
       "providerLlmSynthesis": "LLM Synthesis",
@@ -7124,6 +7216,7 @@ export default interface Resources {
       "providerPageFetch": "Page Fetch",
       "providerWebSearch": "Web Search"
     },
+    "retry": "Retry",
     "routing": {
       "policyLabel": {
         "block": "Block execution",
@@ -7183,6 +7276,7 @@ export default interface Resources {
         "zai": "GLM models by Zhipu AI — strong multilingual support"
       }
     },
+    "skip": "Skip",
     "taskForm": {
       "nodeStatusConnecting": "Connecting",
       "nodeStatusError": "Error",
@@ -7197,6 +7291,7 @@ export default interface Resources {
       "refreshSourceInitialLoad": "Initial load",
       "refreshSourceManual": "Manual"
     },
+    "tryAgain": "Try Again",
     "workflow": {
       "postMerge": "Post-merge",
       "preMerge": "Pre-merge",
