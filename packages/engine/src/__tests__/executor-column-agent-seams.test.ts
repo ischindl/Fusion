@@ -1,6 +1,64 @@
 // Column-agent coding seams: execute + step-execute sessions (plan U4,
 // R2/R3/R4/R8, KTD-2/KTD-3/KTD-5/KTD-6).
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// SURFACE-ENUMERATION MATRIX AUDIT (plan U7 / FN-5893)
+//
+// The invariant is proven across mode × surface × own-settings. Every cell that
+// matters has at least one assertion in one of the five column-agent test files;
+// this block is the completeness ledger (cell → file → test). `own-present` =
+// node cfg.agentId OR complete task model pair; `own-absent` = bare.
+//
+// resolver = column-agent-resolver.test.ts (core, pure precedence)
+// custom   = executor-column-agent-custom-node.test.ts
+// seams    = executor-column-agent-seams.test.ts (this file)
+// princ    = executor-column-agent-principal.test.ts
+//
+// SURFACE: custom node ───────────────────────────────────────────────────────
+//   override × own-present → custom "override column: node with own cfg.agentId…"
+//   override × own-absent  → custom "override column: bare node adopts the column agent"
+//   defer    × own-present → custom "defer column: node with own cfg.agentId keeps it…" (a)
+//   defer    × own-absent  → custom "defer column: …bare node adopts the column agent" (b)
+//
+// SURFACE: execute seam ──────────────────────────────────────────────────────
+//   override × own-present → seams "override column, task assigned to Y → …X's model"
+//   override × own-absent  → seams "override column, bare task (no own settings) → column agent"
+//   defer    × own-present → seams "defer column, task with complete modelProvider/modelId…"
+//   defer    × own-absent  → seams "defer column, bare task (no own settings) → column agent adopted"
+//
+// SURFACE: step-execute ───────────────────────────────────────────────────────
+//   override × own-present → seams "foreach instance node inherits the foreach's bound column…"
+//   override × own-absent  → seams "step-execute override, bare task → column-agent attribution"
+//   defer    × own-present → seams "defer column with task own complete model pair → assigned attribution"
+//   defer    × own-absent  → seams "step-execute defer, bare task → column-agent attribution adopted"
+//
+// SURFACE: heartbeat-deferred (principal) ─────────────────────────────────────
+//   override × own-present → princ "override column X (allowParallelExecution=false)…defers"
+//                            + princ "resumeTaskForAgent…pass 2 re-dispatches it"
+//   override × own-absent  → princ "two tasks bound to different column agents…" (bare tasks)
+//   defer    × own-present → princ "defer column with task own complete model pair → X NOT effective, pass 2 does not fire"
+//   defer    × own-absent  → resolver "defer × bare → column agent wins" (gate input);
+//                            the deferral gate consumes resolveEffectivePrincipalId, exercised override-side above
+//
+// SURFACE: missing-agent fallback ─────────────────────────────────────────────
+//   custom (override) → custom "missing column agent in registry → logged, node falls back…"
+//   execute seam      → seams "column agent missing from registry at seam time → fallback…"
+//   step-execute      → seams "column agent missing from registry at step-execute seam → fallback…"
+//   restart watcher   → princ "column agent deleted mid-session → no restart storm…fallback (R8)"
+//
+// NO-BINDING (parity / invisibility) ──────────────────────────────────────────
+//   execute seam      → seams characterization "execute seam: …assigned agent, no column-agent log"
+//   step-execute      → seams characterization "step session: attribution falls back to assignedAgentId"
+//   gating principal  → princ "no binding → gating context built for the assigned Y (byte-identical)"
+//   default workflow  → workflow-graph-executor-parity.test.ts "column agent feature is invisible…"
+//
+// Cells deliberately NOT separately pinned: defer × heartbeat × own-absent at the
+// *surface* level — the deferral gate's only column-agent input is the resolver
+// verdict (proven in resolver) routed through resolveEffectivePrincipalId (proven
+// override-side, where the principal differs from assignedAgentId; under defer ×
+// own-absent the principal is still the column agent by the same code path).
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // The graph EXECUTE seam (single coding session) and STEP-EXECUTE seam
 // (StepSessionExecutor per-step sessions) must run as the column agent when the
 // governing seam node's DECLARED column carries a binding. Session identity =
@@ -273,6 +331,26 @@ describe("column-agent coding seams (plan U4)", () => {
       ).toBe(true);
     });
 
+    it("override column, bare task (no own settings) → column agent adopted", async () => {
+      // override × own-absent at the execute seam: the column agent wins
+      // regardless of own settings, and here there are none to begin with.
+      const store = createMockStore();
+      const task = singleSessionTask(); // no assignedAgentId, no model pair
+      store.getTask.mockResolvedValue(task as any);
+      const { executor, agentStore } = makeExecutor(store, { "agent-col": makeColumnAgent() });
+      installTaskDoneAgent();
+
+      await runExecuteSeam(executor, task, "execute-node", OVERRIDE_COL);
+
+      const opts = lastFnAgentOpts();
+      expect(opts.defaultProvider).toBe("anthropic");
+      expect(opts.defaultModelId).toBe("claude-col");
+      expect(agentStore.getAgent).toHaveBeenCalledWith("agent-col");
+      expect(
+        loggedLines(store).some((l) => l.includes("running as column agent 'agent-col' (override)")),
+      ).toBe(true);
+    });
+
     it("column agent missing from registry at seam time → fallback to assignedAgentId path, logged, run proceeds", async () => {
       const store = createMockStore();
       const task = singleSessionTask({ assignedAgentId: "agent-Y" });
@@ -374,6 +452,42 @@ describe("column-agent coding seams (plan U4)", () => {
       expect(opts.effectiveAgentId).toBeUndefined();
       expect(opts.assignedAgentRuntimeConfig).toEqual(makeAssignedAgent().runtimeConfig);
       expect(agentStore.getAgent).not.toHaveBeenCalledWith("agent-col");
+    });
+
+    it("override, bare task (no own settings) → step session carries column-agent attribution", async () => {
+      // override × own-absent at the step-execute seam.
+      const store = createMockStore();
+      const task = singleSessionTask(); // no assignedAgentId, no model pair
+      store.getTask.mockResolvedValue(task as any);
+      const { executor, agentStore } = makeExecutor(store, { "agent-col": makeColumnAgent() });
+      installTaskDoneAgent();
+
+      await runStepSessionSeam(executor, task, "foreach-1#0:step-exec", OVERRIDE_COL);
+
+      const opts = lastStepExecutorOpts();
+      expect(opts.effectiveAgentId).toBe("agent-col");
+      expect(opts.assignedAgentRuntimeConfig).toEqual(makeColumnAgent().runtimeConfig);
+      expect(agentStore.getAgent).toHaveBeenCalledWith("agent-col");
+    });
+
+    it("defer, bare task (no own settings) → step session adopts column-agent attribution", async () => {
+      // defer × own-absent at the step-execute seam: nothing suppresses defer, so
+      // the column agent is adopted.
+      const store = createMockStore();
+      const task = singleSessionTask(); // no assignedAgentId, no model pair
+      store.getTask.mockResolvedValue(task as any);
+      const { executor, agentStore } = makeExecutor(store, { "agent-col": makeColumnAgent() });
+      installTaskDoneAgent();
+
+      await runStepSessionSeam(executor, task, "foreach-1#0:step-exec", DEFER_COL);
+
+      const opts = lastStepExecutorOpts();
+      expect(opts.effectiveAgentId).toBe("agent-col");
+      expect(opts.assignedAgentRuntimeConfig).toEqual(makeColumnAgent().runtimeConfig);
+      expect(agentStore.getAgent).toHaveBeenCalledWith("agent-col");
+      expect(
+        loggedLines(store).some((l) => l.includes("running as column agent 'agent-col' (defer)")),
+      ).toBe(true);
     });
 
     it("column agent missing from registry at step-execute seam → fallback to assigned-agent attribution, logged", async () => {

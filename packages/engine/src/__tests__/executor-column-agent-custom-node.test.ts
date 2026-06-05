@@ -144,6 +144,26 @@ describe("runGraphCustomNode column-agent resolution (plan U3)", () => {
     }
   });
 
+  it("override column: bare node adopts the column agent (own-absent cell)", async () => {
+    // override × own-absent: nothing to supersede, the column agent is adopted.
+    const store = createMockStore();
+    store.getTask.mockResolvedValue({ id: "FN-001", worktree: "/tmp/wt", log: [] } as any);
+    const { executor, agentStore } = makeExecutor(store, makeAgent());
+    const captured = spyStep(executor);
+
+    const node = { id: "review", kind: "prompt", column: "review", config: { prompt: "Plain." } };
+    const result = await (executor as any).runGraphCustomNode(node, { id: "FN-001" }, {}, OVERRIDE);
+
+    expect(result.outcome).toBe("success");
+    expect(agentStore.getAgent).toHaveBeenCalledWith("agent-col");
+    expect(captured.step.modelProvider).toBe("anthropic");
+    expect(captured.step.modelId).toBe("claude-col");
+    expect(captured.step.prompt).toContain("I am the senior reviewer.");
+    expect(
+      loggedLines(store).some((l) => l.includes("running as column agent 'agent-col' (override)")),
+    ).toBe(true);
+  });
+
   it("missing column agent in registry → logged, node falls back, step still executes", async () => {
     const store = createMockStore();
     store.getTask.mockResolvedValue({ id: "FN-001", worktree: "/tmp/wt", log: [] } as any);
