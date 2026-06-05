@@ -1764,9 +1764,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         if (settings.opencodeGoModelSync === false) {
           return { registeredCount: 0, reason: "disabled-by-settings" };
         }
+        const opencodeGoKey = await dashboardAuthStorage.getApiKey("opencode-go") ?? await dashboardAuthStorage.getApiKey("opencode");
         return await refreshOpencodeGoModels({
           modelRegistry,
           log: (scope, message) => logSink.log(message, scope),
+          apiKey: opencodeGoKey,
         });
       },
       getClaudeCliExtensionStatus: () => {
@@ -2085,9 +2087,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         if (settings.opencodeGoModelSync === false) {
           return { registeredCount: 0, reason: "disabled-by-settings" };
         }
+        const opencodeGoKey = await dashboardAuthStorage.getApiKey("opencode-go") ?? await dashboardAuthStorage.getApiKey("opencode");
         return await refreshOpencodeGoModels({
           modelRegistry,
           log: (scope, message) => logSink.log(message, scope),
+          apiKey: opencodeGoKey,
         });
       },
       getClaudeCliExtensionStatus: () => {

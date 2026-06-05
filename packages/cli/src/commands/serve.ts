@@ -831,9 +831,11 @@ export async function runServe(
       if (settings.opencodeGoModelSync === false) {
         return { registeredCount: 0, reason: "disabled-by-settings" };
       }
+      const opencodeGoKey = await dashboardAuthStorage.getApiKey("opencode-go") ?? await dashboardAuthStorage.getApiKey("opencode");
       return await refreshOpencodeGoModels({
         modelRegistry,
         log: (scope, message) => console.log(`[${scope}] ${message}`),
+        apiKey: opencodeGoKey,
       });
     },
     getClaudeCliExtensionStatus: () => {

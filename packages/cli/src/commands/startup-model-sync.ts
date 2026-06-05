@@ -233,10 +233,15 @@ export function parseOpencodeModelsOutput(stdout: string): string[] {
   return [...ids];
 }
 
-export async function discoverOpencodeGoModels(): Promise<string[]> {
+export async function discoverOpencodeGoModels(apiKey?: string): Promise<string[]> {
   return await new Promise<string[]>((resolve, reject) => {
+    const env: Record<string, string> = { ...process.env as Record<string, string> };
+    if (apiKey) {
+      env.OPENCODE_API_KEY = apiKey;
+    }
     const proc = spawn("opencode", ["models", "opencode", "--refresh"], {
       stdio: ["ignore", "pipe", "pipe"],
+      env,
     });
 
     let stdout = "";
@@ -272,10 +277,11 @@ export async function discoverOpencodeGoModels(): Promise<string[]> {
 export async function refreshOpencodeGoModels(options: {
   modelRegistry: ModelRegistryLike;
   log: (scope: string, message: string) => void;
+  apiKey?: string;
 }): Promise<OpencodeGoRefreshResult> {
   try {
-    const { modelRegistry, log } = options;
-    const modelIds = await discoverOpencodeGoModels();
+    const { modelRegistry, log, apiKey } = options;
+    const modelIds = await discoverOpencodeGoModels(apiKey);
     if (modelIds.length === 0) {
       log("opencode-go", "No models discovered from opencode CLI refresh");
       return { registeredCount: 0, reason: "no-models-from-cli" };
@@ -310,6 +316,7 @@ export async function syncStartupModels(options: StartupSyncOptions): Promise<vo
   }
 
   if (settings.opencodeGoModelSync !== false) {
-    await refreshOpencodeGoModels({ modelRegistry: options.modelRegistry, log: options.log });
+    const opencodeGoApiKey = await options.authStorage.getApiKey("opencode-go") ?? await options.authStorage.getApiKey("opencode");
+    await refreshOpencodeGoModels({ modelRegistry: options.modelRegistry, log: options.log, apiKey: opencodeGoApiKey });
   }
 }
