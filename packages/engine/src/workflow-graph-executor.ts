@@ -11,6 +11,7 @@ import {
   type WorkflowCustomNodeRunner,
   type WorkflowLegacySeams,
 } from "./workflow-node-handlers.js";
+import type { PrNodeDeps } from "./pr-nodes.js";
 import {
   runSplitJoin,
   type BranchEnvironment,
@@ -56,6 +57,9 @@ export interface WorkflowGraphExecutorDeps {
   /** Step-inversion (U14, KTD-15): runner for the `code` node (esbuild compile +
    *  child-process execution). Absent → a code node fails cleanly. */
   runCode?: CodeNodeRunner;
+  /** PR-entity nodes (U3): deps for `pr-create`/`pr-respond`/`pr-merge` (injected
+   *  GitHub callbacks + store accessor). Absent → the pr-* kinds fail cleanly. */
+  prNodes?: PrNodeDeps;
   maxRetriesPerNode?: number;
   /** Per-branch run-state persistence (U13). Optional — fully in-memory without it. */
   branchPersistence?: WorkflowBranchPersistence;
@@ -145,6 +149,7 @@ export class WorkflowGraphExecutor {
       ...createDefaultNodeHandlers(deps.seams ?? createNoopLegacySeams(), deps.runCustomNode, {
         parseSteps: deps.parseStepsDeps,
         runCode: deps.runCode,
+        prNodes: deps.prNodes,
       }),
       ...(deps.handlers ?? {}),
     };

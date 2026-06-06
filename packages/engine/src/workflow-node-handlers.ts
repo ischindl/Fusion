@@ -2,6 +2,7 @@ import { WorkflowIrError, getStepParser } from "@fusion/core";
 import type { TaskDetail, TaskStep, WorkflowIrNode } from "@fusion/core";
 
 import type { WorkflowNodeHandler, WorkflowNodeResult } from "./workflow-graph-executor.js";
+import { createPrNodeHandlers, type PrNodeDeps } from "./pr-nodes.js";
 
 export type WorkflowSeamName = "planning" | "execute" | "review" | "merge" | "schedule" | "step-execute";
 
@@ -517,6 +518,8 @@ export interface DefaultNodeHandlerDeps {
   parseSteps?: ParseStepsHandlerDeps;
   /** code node runner (U14). When absent, a code node fails cleanly. */
   runCode?: CodeNodeRunner;
+  /** PR node deps (U3). When absent, the three pr-* kinds fail cleanly. */
+  prNodes?: PrNodeDeps;
 }
 
 export function createDefaultNodeHandlers(
@@ -524,7 +527,15 @@ export function createDefaultNodeHandlers(
   runCustomNode?: WorkflowCustomNodeRunner,
   deps?: DefaultNodeHandlerDeps,
 ): Record<
-  "prompt" | "script" | "gate" | "step-review" | "parse-steps" | "code",
+  | "prompt"
+  | "script"
+  | "gate"
+  | "step-review"
+  | "parse-steps"
+  | "code"
+  | "pr-create"
+  | "pr-respond"
+  | "pr-merge",
   WorkflowNodeHandler
 > {
   const promptLike = createPromptLikeHandler(seams, runCustomNode);
@@ -533,6 +544,16 @@ export function createDefaultNodeHandlers(
   const parseSteps: WorkflowNodeHandler = deps?.parseSteps
     ? createParseStepsHandler(deps.parseSteps)
     : async () => ({ outcome: "failure", value: "parse-steps-unwired" });
+  // PR nodes without deps fail closed (mirrors parse-steps): a pr-* node reached
+  // without GitHub wiring must NOT silently succeed — it would route an
+  // unverified PR side effect forward.
+  const prNodes: Record<"pr-create" | "pr-respond" | "pr-merge", WorkflowNodeHandler> = deps?.prNodes
+    ? createPrNodeHandlers(deps.prNodes)
+    : {
+        "pr-create": async () => ({ outcome: "failure", value: "pr-nodes-unwired" }),
+        "pr-respond": async () => ({ outcome: "failure", value: "pr-nodes-unwired" }),
+        "pr-merge": async () => ({ outcome: "failure", value: "pr-nodes-unwired" }),
+      };
   return {
     prompt: promptLike,
     script: promptLike,
@@ -540,6 +561,7 @@ export function createDefaultNodeHandlers(
     "step-review": createStepReviewHandler(seams),
     "parse-steps": parseSteps,
     code: createCodeNodeHandler(deps?.runCode),
+    ...prNodes,
   };
 }
 

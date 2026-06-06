@@ -17,6 +17,7 @@ import { Scheduler } from "../scheduler.js";
 import type { PrMonitor, PrComment } from "../pr-monitor.js";
 import type { PrInfo } from "@fusion/core";
 import { TaskExecutor, type TaskExecutorOptions } from "../executor.js";
+import { buildPrNodeDeps } from "../pr-nodes.js";
 import { WorktreePool, isGitRepository, type PoolInvariantViolation } from "../worktree-pool.js";
 import { AgentSemaphore } from "../concurrency.js";
 import { HeartbeatMonitor, HeartbeatTriggerScheduler, type WakeContext } from "../agent-heartbeat.js";
@@ -442,6 +443,7 @@ export class InProcessRuntime
         }
       }
 
+      const prNodeGithubOps = this.config.prNodeGithubOps;
       const executorOptions: TaskExecutorOptions = {
         semaphore: this.globalSemaphore,
         pool: this.worktreePool,
@@ -451,6 +453,13 @@ export class InProcessRuntime
         messageStore: this.messageStore,
         missionStore,
         reflectionService,
+        // PR-entity nodes (U3): assemble the handler deps from the CLI-injected
+        // GitHub ops (createPr/mergePr/respond) + the engine-owned store. The CLI
+        // layer never holds a store reference; the engine binds it here. Absent
+        // ops → undefined → the pr-* node kinds fail closed.
+        prNodes: prNodeGithubOps
+          ? buildPrNodeDeps(() => this.taskStore, prNodeGithubOps)
+          : undefined,
         onSliceComplete: (slice) => {
           void this.scheduler.onSliceComplete(slice);
         },

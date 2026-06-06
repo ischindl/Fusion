@@ -1,9 +1,11 @@
 /** Node kinds. v1 kinds (start/prompt/script/gate/end) plus the v2 additions:
- *  `hold` (passive dwell column states), `split`/`join` (parallel fan-out), and
- *  the step-inversion additions (FN step-inversion, KTD-3/4/12/15):
- *  `foreach` (runtime-expanding per-step template region), `step-review`
- *  (per-step review verdicts as outcome edges), `parse-steps` (graph-native
- *  step-list parsing), and `code` (sandboxed TypeScript). */
+ *  `hold` (passive dwell column states), `split`/`join` (parallel fan-out), the
+ *  step-inversion additions (FN step-inversion, KTD-3/4/12/15): `foreach`
+ *  (runtime-expanding per-step template region), `step-review` (per-step review
+ *  verdicts as outcome edges), `parse-steps` (graph-native step-list parsing),
+ *  and `code` (sandboxed TypeScript); and the unified PR-entity additions (U3):
+ *  `pr-create` (open/reuse the PR + write the entity), `pr-respond` (the
+ *  review-response run), and `pr-merge` (tool-side merge with expectedHeadOid). */
 export type WorkflowIrNodeKind =
   | "start"
   | "prompt"
@@ -16,7 +18,10 @@ export type WorkflowIrNodeKind =
   | "foreach"
   | "step-review"
   | "parse-steps"
-  | "code";
+  | "code"
+  | "pr-create"
+  | "pr-respond"
+  | "pr-merge";
 
 export interface WorkflowIrNode {
   id: string;

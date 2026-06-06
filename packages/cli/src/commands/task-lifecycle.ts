@@ -27,7 +27,7 @@ import type { TaskStore } from "@fusion/core";
 import { resolveTaskMergeTarget, getCurrentRepo, isBranchGroupMemberLanded } from "@fusion/core";
 import type { Settings, TaskDetail, PrInfo, MergeResult, BranchGroup, BranchGroupPrState, Task } from "@fusion/core";
 import { activeSessionRegistry, resolveIntegrationBranch } from "@fusion/engine";
-import type { CreateGroupPrFn, SyncGroupPrFn, WorktreePool } from "@fusion/engine";
+import type { CreateGroupPrFn, SyncGroupPrFn, WorktreePool, PrNodeGithubOps } from "@fusion/engine";
 
 /**
  * Minimal interface for GitHub operations needed by the PR merge workflow.
@@ -43,7 +43,7 @@ interface GitHubOperations {
     mergeReady: boolean;
     blockingReasons: string[];
   }>;
-  mergePr(params: { number: number; method?: "merge" | "squash" | "rebase" }): Promise<PrInfo>;
+  mergePr(params: { number: number; method?: "merge" | "squash" | "rebase"; expectedHeadOid?: string }): Promise<PrInfo>;
   getPrStatus(owner: string, repo: string, number: number): Promise<PrInfo>;
   updatePr(params: { owner?: string; repo?: string; number: number; title?: string; body?: string }): Promise<PrInfo>;
   closePr(params: { number: number }): Promise<PrInfo>;
@@ -300,6 +300,90 @@ export function syncGroupPrCallback(
       body: buildGroupPrSyncBody(group, members),
     });
     return { prNumber: updated.number, prUrl: updated.url, prState: toBranchGroupPrState(updated) };
+  };
+}
+
+/** Best-effort resolve the head commit OID for a branch (so `pr-merge` can pass
+ *  `expectedHeadOid`). Returns undefined on any failure — the merge then runs
+ *  without the stale-head guard, which the reconcile still corroborates. */
+async function resolveBranchHeadOid(cwd: string, branch: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execAsync(`git rev-parse "${branch}"`, { cwd, timeout: 30_000 });
+    const oid = stdout.trim();
+    return oid.length > 0 ? oid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Structural detection of the dashboard `PrStaleHeadError` without importing the
+ *  class (task-lifecycle.ts deliberately has no @fusion/dashboard dependency). */
+function isStaleHeadError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "stale-head"
+  );
+}
+
+/**
+ * Build the `prNodeGithubOps` engine callbacks (U3) backing the `pr-create` /
+ * `pr-respond` / `pr-merge` workflow nodes. Closes over a GitHub client so the
+ * engine never imports the dashboard `GitHubClient` (FN-3049). Mirrors
+ * `createGroupPrCallback` / `syncGroupPrCallback`.
+ *
+ * - resolvePrSource: derives the single-task PR source identity (repo from the
+ *   per-process repo, head branch from the task branch-naming convention).
+ * - createPr: pushes the task branch to origin, opens the PR, resolves the head OID.
+ * - mergePr: merges with `expectedHeadOid`; a `PrStaleHeadError` (detected
+ *   structurally) maps to `{ status: "stale-head" }` so the node routes the race.
+ * - respond: omitted in U3 (U5 wires the real review-response run); the node then
+ *   falls back to its inert `disagreed-only` default.
+ */
+export function createPrNodeGithubOps(
+  github: Pick<GitHubOperations, "createPr" | "mergePr">,
+): PrNodeGithubOps {
+  return {
+    resolvePrSource: (task) => {
+      const repo = getCurrentRepo();
+      const repoSlug = repo ? `${repo.owner}/${repo.repo}` : "";
+      return {
+        sourceType: "task",
+        sourceId: task.id,
+        repo: repoSlug,
+        headBranch: getTaskBranchName(task.id),
+      };
+    },
+    createPr: async ({ task, entity }) => {
+      const cwd = process.cwd();
+      const headBranch = entity.headBranch || getTaskBranchName(task.id);
+      await pushTaskBranchToOrigin(cwd, headBranch);
+      const created = await github.createPr({
+        title: task.title ?? `Task ${task.id}`,
+        body: task.description ?? "",
+        head: headBranch,
+        base: entity.baseBranch,
+      });
+      const headOid = await resolveBranchHeadOid(cwd, headBranch);
+      return { prNumber: created.number, prUrl: created.url, headOid };
+    },
+    mergePr: async ({ entity }) => {
+      if (entity.prNumber == null) {
+        throw new Error(`pr-merge: entity ${entity.id} has no persisted prNumber`);
+      }
+      try {
+        await github.mergePr({
+          number: entity.prNumber,
+          method: "squash",
+          expectedHeadOid: entity.headOid,
+        });
+        return { status: "merged-requested" };
+      } catch (err) {
+        if (isStaleHeadError(err)) return { status: "stale-head" };
+        throw err;
+      }
+    },
   };
 }
 

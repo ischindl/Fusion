@@ -47,6 +47,20 @@ export {
   type DefaultNodeHandlerDeps,
 } from "./workflow-node-handlers.js";
 export {
+  createPrNodeHandlers,
+  buildPrNodeDeps,
+  type PrNodeDeps,
+  type PrNodeGithubOps,
+  type PrNodeStore,
+  type PrSourceDescriptor,
+  type PrCreateCallInput,
+  type PrCreateCallResult,
+  type PrMergeCallInput,
+  type PrMergeCallResult,
+  type PrRespondCallInput,
+  type PrRespondCallResult,
+} from "./pr-nodes.js";
+export {
   WorkflowGraphTaskRunner,
   type WorkflowGraphRunDisposition,
   type WorkflowGraphRunnerStore,

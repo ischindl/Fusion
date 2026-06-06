@@ -522,6 +522,23 @@ export {
   isBranchGroupMemberLanded,
   isBranchGroupComplete,
 } from "./branch-group-completion.js";
+export type {
+  PrEntity,
+  PrEntityCreateInput,
+  PrEntityUpdate,
+  PrEntityState,
+  PrEntitySourceType,
+  PrReviewDecision,
+  PrChecksRollup,
+  PrThreadState,
+  PrThreadOutcome,
+} from "./types.js";
+export {
+  isPrEntityActive,
+  isPrBacked,
+  isPrEntityActionable,
+  isPrEntityAutoMergeReady,
+} from "./pr-entity.js";
 export {
   findVitestProcessIds,
   type FindVitestProcessIdsOptions,
