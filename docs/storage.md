@@ -136,7 +136,7 @@ Important execution nuance:
   - done tasks: prefer `mergeDetails.landedFiles`
   - in-progress/in-review (or legacy pre-FN-4646 tasks): fall back to `task.modifiedFiles`
 
-## FTS5 task-index maintenance (FN-5943)
+## FTS5 task-index maintenance (FN-5943 / FN-5976)
 
 - Live task search uses the `tasks_fts` external-content FTS5 table in `fusion.db`; the archive log uses a separate `archived_tasks_fts` table in `archive.db`.
 - `tasks_fts_au` is value-aware: even though hot task writes still upsert full rows, the trigger only fires when indexed text actually changes (`id`, `title`, `description`, `comments`, `deletedAt`). Status/step/worktree churn no longer rewrites the FTS row on every update.
@@ -148,7 +148,34 @@ Important execution nuance:
 - Each maintenance pass emits run-audit telemetry with `mutationType: "task:fts-maintenance"` and `metadata` including `mode`, `bytesBefore`, `bytesAfter`, `taskCount`, `rebuilt`, and the threshold values.
 - `rebuildFts5Index()` and migration 103 also set conservative FTS5 merge policy (`automerge=8`, `crisismerge=16`) so legitimate text edits merge segments sooner without forcing the heaviest optimize path on every write.
 - `archived_tasks_fts` is intentionally **not** compacted by this task. The archive DB is effectively append-only for completed tasks, so it does not see the same constant-update churn as the live board; archive FTS compaction is deferred to a follow-up if archive bloat is observed.
-- Separate attached-DB recommendation: **defer** moving `tasks_fts*` into a dedicated attached SQLite file. It would isolate FTS bloat/corruption from the main DB, but today it would complicate cross-DB joins in `searchTasks`, widen transaction/backup/checkpoint coordination, and add new multi-instance/polling failure modes on a path that is now bounded by guarded triggers + maintenance. Revisit only if live-main-DB FTS size or corruption remains operationally significant after FN-5943.
+
+### Attached live-FTS DB investigation (FN-5976)
+
+- Recommendation: **defer** moving `tasks_fts*` into a dedicated attached SQLite file.
+- The key blocker is architectural, not syntactic:
+  - SQLite FTS5 external-content tables require the content table to live in the **same database** (`https://www.sqlite.org/fts5.html`, §4.4.3).
+  - SQLite non-TEMP triggers may only query/modify tables in the **same database** as the trigger target (`https://www.sqlite.org/lang_createtrigger.html`, §2.1).
+  - So relocating `tasks_fts*` while `tasks` stays in `fusion.db` is **not** a simple shadow-table split. It forces a move away from external-content FTS to a **contentless/standalone** FTS table with manual population and sync.
+- Current code paths that would have to change for such a redesign:
+  - `packages/core/src/db.ts` — FTS table definition, trigger model, `rebuildFts5Index()`, integrity/maintenance hooks
+  - `packages/core/src/store.ts` — `searchTasks()` join shape and FTS corruption-recovery wrappers
+  - potentially backup/checkpoint handling for a second live writable DB file
+- The existing `archive.db` setup is only a partial precedent: `archived_tasks_fts` lives in a separate file from `fusion.db`, but it still lives in the **same file** as its own content table (`archived_tasks`). It does **not** demonstrate cross-database external-content FTS.
+- `DatabaseSync` can execute `ATTACH DATABASE` because the adapter exposes raw SQLite `exec()` / `prepare()`, and an empirical `node:sqlite` probe confirmed that an attached contentless FTS table can participate in a cross-db `JOIN` + `MATCH` query. But that only proves query feasibility after a redesign; it does not preserve today's automatic external-content sync model.
+
+| Dimension | Verdict vs baseline | Why |
+| --- | --- | --- |
+| Cross-DB search joins | worse | Feasible only after abandoning external-content semantics and rewriting `searchTasks()` around a manually maintained attached FTS table. |
+| Transaction / atomicity behavior | blocker | SQLite attached-db docs warn that with `journal_mode=WAL`, crash atomicity is only per file, so `tasks` and attached FTS writes can tear across files (`https://www.sqlite.org/lang_attach.html`). |
+| WAL / checkpoint coordination | worse | `walCheckpoint()` / self-healing would need to coordinate two live WAL files instead of one. |
+| Backup / restore flow | worse | Operators must back up and restore a consistent multi-file live DB set or treat the FTS file as disposable and rebuild it explicitly. |
+| Multi-instance polling | worse | Two writable files widen the lock/busy surface for concurrent Fusion processes over the same project storage. |
+| FTS corruption recovery | improves | Best upside: corruption/bloat would be isolated to a disposable FTS file instead of the primary task DB. |
+
+- Why defer now:
+  - FN-5943 already landed the lower-risk fix for the observed incident: fewer rewrites, bounded merge/optimize maintenance, and threshold-triggered rebuild.
+  - The attached-file idea still improves corruption isolation, but it would trade away the current same-file trigger-maintained index for a manual two-file sync architecture with weaker crash atomicity under WAL.
+- Revisit only if post-FN-5943 production evidence shows recurring `fusion.db`-coupled FTS corruption or materially persistent live-index bloat significant enough to justify a contentless/manual-sync redesign.
 
 ## SQLite write-path lock recovery (FN-4042 / FN-4083)
 
