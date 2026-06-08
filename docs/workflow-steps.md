@@ -123,7 +123,7 @@ The **step-inversion** track makes task *steps* themselves workflow-modelable. T
 
 `loop` repeats an inline template subgraph until a configured output condition matches or a budget is exhausted. Config:
 
-```
+```ts
 { template: { nodes, edges },
   exitWhen: {
     type: "output-contains", value: string, nodeId?: string

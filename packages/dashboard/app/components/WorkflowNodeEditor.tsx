@@ -3207,12 +3207,18 @@ function InnerEditor({
                                   nextType === "output-matches"
                                     ? String(current.pattern ?? current.value ?? "")
                                     : String(current.value ?? current.pattern ?? "");
+                                const nextExitWhen: Record<string, unknown> = {
+                                  ...current,
+                                  type: nextType,
+                                };
+                                delete nextExitWhen.pattern;
+                                delete nextExitWhen.value;
                                 return {
                                   ...prev,
                                   exitWhen:
                                     nextType === "output-matches"
-                                      ? { type: nextType, pattern: text }
-                                      : { type: nextType, value: text },
+                                      ? { ...nextExitWhen, pattern: text }
+                                      : { ...nextExitWhen, value: text },
                                 };
                               },
                             });

@@ -85,6 +85,44 @@ describe("loop validation", () => {
     expect(() => parseWorkflowIr(loopIr({ template }))).toThrow(/nested loop\/foreach/);
   });
 
+  it("rejects loop nodes inside foreach templates", () => {
+    const ir: WorkflowIrV2 = {
+      version: "v2",
+      name: "foreach-loop-test",
+      columns,
+      nodes: [
+        { id: "start", kind: "start" },
+        {
+          id: "steps",
+          kind: "foreach",
+          config: {
+            source: "task-steps",
+            template: {
+              nodes: [
+                {
+                  id: "nested-loop",
+                  kind: "loop",
+                  config: {
+                    exitWhen: { type: "output-contains", value: "DONE" },
+                    template: loopTemplate(),
+                  },
+                },
+              ],
+              edges: [],
+            },
+          },
+        },
+        { id: "end", kind: "end" },
+      ],
+      edges: [
+        { from: "start", to: "steps" },
+        { from: "steps", to: "end" },
+      ],
+    };
+
+    expect(() => parseWorkflowIr(ir)).toThrow(/nested loop\/foreach/);
+  });
+
   it("rejects foreach-only seams and normal cycles inside loop templates", () => {
     const seamTemplate = loopTemplate();
     seamTemplate.nodes[0] = { id: "ask", kind: "prompt", config: { seam: "step-execute" } };
@@ -106,6 +144,9 @@ describe("loop validation", () => {
     expect(() => parseWorkflowIr(loopIr({ exitWhen: { type: "output-matches", pattern: "[" } }))).toThrow(
       /exitWhen.pattern is invalid/,
     );
+    expect(() =>
+      parseWorkflowIr(loopIr({ exitWhen: { type: "output-matches", pattern: "(a+)+" } })),
+    ).toThrow(/potentially unsafe/);
   });
 
   it("clamps high maxIterations and rejects invalid budgets", () => {

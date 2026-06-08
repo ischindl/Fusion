@@ -165,15 +165,23 @@ export function nodeConfigSummary(
           ? (() => {
               const condition = exitWhen as Record<string, unknown>;
               const type = str(condition.type);
-              if (type === "output-matches") return `until matches /${str(condition.pattern)}/`;
-              if (type === "output-contains") return `until contains "${str(condition.value)}"`;
+              if (type === "output-matches") {
+                return t("workflowNodes.summaryLoopUntilMatches", "until matches /{{pattern}}/", {
+                  pattern: str(condition.pattern),
+                });
+              }
+              if (type === "output-contains") {
+                return t('workflowNodes.summaryLoopUntilContains', 'until contains "{{value}}"', {
+                  value: str(condition.value),
+                });
+              }
               return "";
             })()
           : "";
       const maxIterations =
         typeof config.maxIterations === "number" && Number.isFinite(config.maxIterations)
-          ? `${config.maxIterations}x`
-          : "3x";
+          ? t("workflowNodes.summaryLoopIterations", "{{count}}x", { count: config.maxIterations })
+          : t("workflowNodes.summaryLoopIterations", "{{count}}x", { count: 3 });
       return exit ? `${exit} · ${maxIterations}` : maxIterations;
     }
     case "step-review": {

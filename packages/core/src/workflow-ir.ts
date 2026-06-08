@@ -99,6 +99,9 @@ const MAX_FOREACH_CONCURRENCY = 8;
 const MAX_LOOP_ITERATIONS_CAP = 50;
 const MAX_LOOP_TIMEOUT_MS = 3_600_000;
 const WORKFLOW_EXTENSION_KEY_PATTERN = /^plugin:[a-z0-9]([a-z0-9-]*[a-z0-9])?:[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+const MAX_LOOP_REGEX_PATTERN_LENGTH = 256;
+const LOOP_REGEX_NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[*+](?:[^()\\]|\\.)*\)\s*(?:[*+]|\{\d+,?\d*\})/;
+const LOOP_REGEX_BACKREFERENCE = /\\[1-9]/;
 
 /** The implicit step-source artifact allowed when no artifacts are declared. */
 const IMPLICIT_DEFAULT_ARTIFACT = "PROMPT.md";
@@ -106,6 +109,19 @@ const IMPLICIT_DEFAULT_ARTIFACT = "PROMPT.md";
 /** True when a prompt node carries the `step-execute` seam (KTD-2/KTD-4). */
 function isStepExecuteNode(node: WorkflowIrNode): boolean {
   return node.kind === "prompt" && node.config?.seam === "step-execute";
+}
+
+function assertSafeLoopRegexPattern(nodeId: string, pattern: string): void {
+  if (pattern.length > MAX_LOOP_REGEX_PATTERN_LENGTH) {
+    throw new WorkflowIrError(
+      `loop node '${nodeId}' exitWhen.pattern must be ${MAX_LOOP_REGEX_PATTERN_LENGTH} characters or fewer`,
+    );
+  }
+  if (LOOP_REGEX_BACKREFERENCE.test(pattern) || LOOP_REGEX_NESTED_QUANTIFIER.test(pattern)) {
+    throw new WorkflowIrError(
+      `loop node '${nodeId}' exitWhen.pattern uses a potentially unsafe regex construct`,
+    );
+  }
 }
 
 /** Default-workflow column ids in legacy enum order (KTD-1). */
@@ -374,13 +390,13 @@ function validateForeach(
     );
   }
 
-  // No nested foreach. Also: a template node's declared `column` must resolve to a
+  // No nested template groups. Also: a template node's declared `column` must resolve to a
   // top-level column id (column-agent plan KTD-1) — otherwise a dangling reference
   // is a silent no-binding no-op at runtime instead of a typed authoring error.
   for (const inner of templateNodes) {
-    if (inner.kind === "foreach") {
+    if (inner.kind === "foreach" || inner.kind === "loop") {
       throw new WorkflowIrError(
-        `foreach node '${node.id}' template may not contain a nested foreach ('${inner.id}')`,
+        `foreach node '${node.id}' template may not contain nested loop/foreach ('${inner.id}')`,
       );
     }
     if (inner.column !== undefined && !columnIds.has(inner.column)) {
@@ -505,6 +521,7 @@ function validateLoop(
         `loop node '${node.id}' exitWhen.pattern is invalid: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    assertSafeLoopRegexPattern(node.id, exitWhen.pattern);
   } else {
     throw new WorkflowIrError(`loop node '${node.id}' exitWhen.type must be output-contains or output-matches`);
   }
@@ -1218,8 +1235,8 @@ function validateV2(ir: WorkflowIrV2): void {
   validateForeachDominance(ir.nodes, ir.edges, outgoing);
 }
 
-/** Clamp foreach `maxReworkCycles` > cap down to the cap, in place, mirroring the
- *  maxRetries clamp posture (KTD-5). Reject-of-<1 happens in validation. */
+/** Clamp bounded workflow-node configs down to their caps, in place, mirroring
+ *  the maxRetries clamp posture. Reject-of-<1 happens in validation. */
 function clampForeachConfigs(ir: WorkflowIrV2): void {
   for (const node of ir.nodes) {
     if (node.kind === "loop") {
@@ -1351,9 +1368,9 @@ export function serializeWorkflowIr(ir: WorkflowIr): string {
 
 /**
  * Strip the trust-escalating `cliSkipApproval`/`autoApprove` flags from every
- * node config in an IR, recursing into foreach `config.template.nodes` at any
- * nesting depth (foreach-in-foreach). Mutates the passed IR in place and returns
- * it alongside a `stripped` flag indicating whether anything was removed.
+ * node config in an IR, recursing into template-group `config.template.nodes`.
+ * Mutates the passed IR in place and returns it alongside a `stripped` flag
+ * indicating whether anything was removed.
  *
  * These flags bypass the CLI first-run approval gate (see executor.ts). They are
  * legitimate only for workflows authored through the trusted dashboard editor /

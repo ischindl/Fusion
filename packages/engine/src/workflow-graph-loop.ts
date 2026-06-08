@@ -11,6 +11,7 @@ const MAX_TIMEOUT_MS = 3_600_000;
 interface LoopConfig {
   template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] };
   exitWhen: WorkflowLoopConfig["exitWhen"];
+  exitRegex?: RegExp;
   maxIterations: number;
   timeoutMs: number;
 }
@@ -49,9 +50,12 @@ function resolveLoopConfig(node: WorkflowIrNode): LoopConfig {
     typeof cfg.timeoutMs === "number" && Number.isFinite(cfg.timeoutMs)
       ? Math.max(1, Math.min(MAX_TIMEOUT_MS, Math.floor(cfg.timeoutMs)))
       : DEFAULT_TIMEOUT_MS;
+  const exitRegex =
+    cfg.exitWhen.type === "output-matches" ? new RegExp(cfg.exitWhen.pattern, cfg.exitWhen.flags) : undefined;
   return {
     template: cfg.template,
     exitWhen: cfg.exitWhen,
+    exitRegex,
     maxIterations,
     timeoutMs,
   };
@@ -87,12 +91,13 @@ function exitNodeId(nodes: WorkflowIrNode[], edges: WorkflowIrEdge[], loopId: st
   return exits[0].id;
 }
 
-function matchesExit(condition: WorkflowLoopConfig["exitWhen"], value: unknown): boolean {
+function matchesExit(config: LoopConfig, value: unknown): boolean {
   const text = typeof value === "string" ? value : value == null ? "" : String(value);
+  const condition = config.exitWhen;
   if (condition.type === "output-contains") {
     return text.includes(condition.value);
   }
-  return new RegExp(condition.pattern, condition.flags).test(text);
+  return (config.exitRegex ?? new RegExp(condition.pattern, condition.flags)).test(text);
 }
 
 function publishIterationContext(
@@ -185,7 +190,7 @@ export async function runLoop(
       ...(finalValue !== undefined ? { value: String(finalValue) } : {}),
     });
     publishIterationContext(env.context, iterationContext);
-    if (matchesExit(config.exitWhen, finalValue)) {
+    if (matchesExit(config, finalValue)) {
       env.context[`node:${loopNode.id}:loop`] = {
         iterations: iteration,
         exitReason: "matched",

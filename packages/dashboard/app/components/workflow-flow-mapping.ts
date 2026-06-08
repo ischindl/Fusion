@@ -1005,10 +1005,15 @@ export function insertFragment(
       const groupKind = editorKind(node);
       template.nodes.forEach((inner, innerIdx) => {
         const innerKind = editorKind(inner);
+        const childPos =
+          layout?.[foreachChildFlowId(node.id, inner.id)] ?? {
+            x: FOREACH_CHILD_X + innerIdx * FOREACH_CHILD_STEP_X,
+            y: FOREACH_CHILD_Y,
+          };
         childNodes.push({
           id: foreachChildFlowId(id, inner.id),
           type: innerKind,
-          position: { x: FOREACH_CHILD_X + innerIdx * FOREACH_CHILD_STEP_X, y: FOREACH_CHILD_Y },
+          position: childPos,
           parentId: id,
           extent: "parent",
           data: { kind: innerKind, label: nodeLabel(inner), config: { ...(inner.config ?? {}) } },

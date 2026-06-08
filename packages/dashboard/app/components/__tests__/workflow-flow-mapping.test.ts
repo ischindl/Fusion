@@ -493,11 +493,15 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
         { from: "retry", to: "end" },
       ],
     };
-    const inserted = insertFragment([], [], parseWorkflowIr(fragment), { x: 10, y: 20 });
+    const inserted = insertFragment([], [], parseWorkflowIr(fragment), { x: 10, y: 20 }, {
+      [foreachChildFlowId("retry", "try")]: { x: 86, y: 132 },
+    });
     const group = inserted.nodes.find((n) => n.data.kind === "loop");
+    const child = inserted.nodes.find((n) => n.parentId === group?.id);
 
     expect(group).toBeTruthy();
     expect(group?.type).toBe("loop");
+    expect(child?.position).toEqual({ x: 86, y: 132 });
     expect(inserted.nodes.filter((n) => n.parentId === group?.id)).toHaveLength(1);
     expect(inserted.edges).toHaveLength(0);
   });
