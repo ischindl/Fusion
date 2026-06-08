@@ -3457,10 +3457,12 @@ describe("TaskExecutor loop recovery", () => {
     const compactRetVal = overrides && "compactResult" in overrides ? overrides.compactResult : defaultResult;
     const compact = vi.fn(async () => compactRetVal);
     const steer = vi.fn(async () => {});
+    const abort = vi.fn(async () => {});
 
     return {
       prompt: vi.fn(async () => {}),
       dispose: vi.fn(),
+      abort,
       subscribe: vi.fn(),
       setThinkingLevel: vi.fn(),
       steer,
@@ -3598,6 +3600,7 @@ describe("TaskExecutor loop recovery", () => {
     await vi.advanceTimersByTimeAsync(60000);
 
     await expect(resultPromise).resolves.toBe(false);
+    expect(mockSession.abort).toHaveBeenCalled();
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-001",
       expect.stringContaining("Context compaction timed out"),

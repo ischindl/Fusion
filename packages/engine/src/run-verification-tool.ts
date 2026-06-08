@@ -36,7 +36,9 @@ const DEFAULT_TIMEOUT_PACKAGE_SEC = 300;
 const DEFAULT_TIMEOUT_WORKSPACE_SEC = 900;
 const MAX_TIMEOUT_SEC = 1800;
 
-function shellSplit(input: string): string[] {
+const packageDirCache = new Map<string, string | null>();
+
+function shellSplit(input: string): string[] | null {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | "\"" | null = null;
@@ -75,6 +77,7 @@ function shellSplit(input: string): string[] {
   }
 
   if (escaped) current += "\\";
+  if (quote !== null) return null;
   if (current.length > 0) tokens.push(current);
   return tokens;
 }
@@ -85,7 +88,8 @@ function shellQuote(value: string): string {
 }
 
 function findWorkspacePackageDir(rootDir: string, packageName: string): string | null {
-  if (packageName === "@runfusion/fusion") return "packages/cli";
+  const cacheKey = `${rootDir}\0${packageName}`;
+  if (packageDirCache.has(cacheKey)) return packageDirCache.get(cacheKey) ?? null;
 
   const lastSegment = packageName.split("/").pop();
   const candidates = [
@@ -97,7 +101,10 @@ function findWorkspacePackageDir(rootDir: string, packageName: string): string |
     if (!candidate) continue;
     try {
       const pkg = JSON.parse(readFileSync(join(rootDir, candidate, "package.json"), "utf8")) as { name?: string };
-      if (pkg.name === packageName) return candidate;
+      if (pkg.name === packageName) {
+        packageDirCache.set(cacheKey, candidate);
+        return candidate;
+      }
     } catch {
       // Keep looking.
     }
@@ -123,13 +130,17 @@ function findWorkspacePackageDir(rootDir: string, packageName: string): string |
       const child = join(current.dir, entry.name);
       try {
         const pkg = JSON.parse(readFileSync(join(rootDir, child, "package.json"), "utf8")) as { name?: string };
-        if (pkg.name === packageName) return child;
+        if (pkg.name === packageName) {
+          packageDirCache.set(cacheKey, child);
+          return child;
+        }
       } catch {
         if (current.depth < 3) queue.push({ dir: child, depth: current.depth + 1 });
       }
     }
   }
 
+  packageDirCache.set(cacheKey, null);
   return null;
 }
 
@@ -152,6 +163,7 @@ function toPackageRelativeFilter(token: string, rootDir: string, packageDir: str
 export function normalizeVerificationCommand(command: string, rootDir: string): { command: string; warnings: string[] } {
   const tokens = shellSplit(command);
   const warnings: string[] = [];
+  if (!tokens) return { command, warnings };
   if (tokens[0] !== "pnpm") return { command, warnings };
 
   const filterIndex = tokens.findIndex((token) => token === "--filter" || token === "-F");
@@ -182,8 +194,10 @@ export function normalizeVerificationCommand(command: string, rootDir: string): 
 
   const hasReporter = vitestArgs.some((token) => token === "--reporter" || token.startsWith("--reporter="));
   const hasSilent = vitestArgs.some((token) => token === "--silent" || token.startsWith("--silent="));
+  const pnpmGlobalFlags = tokens.slice(1, filterIndex);
   const normalizedTokens = [
     "pnpm",
+    ...pnpmGlobalFlags,
     "--filter",
     packageName,
     "exec",

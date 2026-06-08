@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runVerificationCommand, normalizeVerificationCommand, type RunVerificationOptions } from "../run-verification-tool.js";
 
 // Some tests use platform-appropriate shell syntax. On Windows, sh-style
@@ -24,7 +24,7 @@ const itPosix = onPosix ? it : it.skip;
 // so we fall back to os.tmpdir() which is always C:\Users\…\Temp there.
 describe("runVerificationCommand", { timeout: 30000 }, () => {
   const tempDir = onPosix ? "/tmp" : tmpdir();
-  const workspaceRoot = join(process.cwd(), "../..");
+  const workspaceRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
   describe("command normalization", () => {
     it("rewrites package test -- --run filters to direct vitest with package-relative files", () => {
@@ -53,6 +53,33 @@ describe("runVerificationCommand", { timeout: 30000 }, () => {
     it("leaves ordinary package tests unchanged when no file filter is forwarded", () => {
       const command = "pnpm --filter @fusion/dashboard test";
       expect(normalizeVerificationCommand(command, workspaceRoot)).toEqual({ command, warnings: [] });
+    });
+
+    it("leaves commands with unterminated shell quotes unchanged", () => {
+      const command = "pnpm --filter @fusion/dashboard test -- --run 'src/__tests__/routes-tasks.test.ts";
+      expect(normalizeVerificationCommand(command, workspaceRoot)).toEqual({ command, warnings: [] });
+    });
+
+    it("preserves pnpm global flags that precede --filter", () => {
+      const result = normalizeVerificationCommand(
+        "pnpm -w --filter @fusion/dashboard test -- --run packages/dashboard/src/__tests__/routes-tasks.test.ts",
+        workspaceRoot,
+      );
+
+      expect(result.command).toBe(
+        "pnpm -w --filter @fusion/dashboard exec vitest run src/__tests__/routes-tasks.test.ts --silent=passed-only --reporter=dot",
+      );
+    });
+
+    it("verifies the CLI package directory through package.json before rewriting", () => {
+      const result = normalizeVerificationCommand(
+        "pnpm --filter @runfusion/fusion test -- --run packages/cli/src/__tests__/cli.test.ts",
+        workspaceRoot,
+      );
+
+      expect(result.command).toBe(
+        "pnpm --filter @runfusion/fusion exec vitest run src/__tests__/cli.test.ts --silent=passed-only --reporter=dot",
+      );
     });
   });
 

@@ -13421,6 +13421,14 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
 
     let compactionTimedOut = false;
     let compactionTimer: ReturnType<typeof setTimeout> | undefined;
+    const abortActiveSession = () => {
+      const sessionWithAbort = activeEntry.session as unknown as { abort?: () => Promise<void> };
+      if (typeof sessionWithAbort.abort === "function") {
+        void sessionWithAbort.abort().catch((err: unknown) => {
+          executorLog.warn(`${taskId} loop compaction abort after timeout failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    };
     let compactResult: Awaited<ReturnType<typeof compactSessionContext>> | null;
     try {
       compactResult = await Promise.race([
@@ -13428,6 +13436,7 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
         new Promise<null>((resolve) => {
           compactionTimer = setTimeout(() => {
             compactionTimedOut = true;
+            abortActiveSession();
             resolve(null);
           }, LOOP_COMPACTION_TIMEOUT_MS);
         }),
