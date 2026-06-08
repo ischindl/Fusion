@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../manifest.json";
+import packageJson from "../../package.json";
 import plugin from "../index.js";
 import { COMPOUND_ENGINEERING_SKILLS } from "../skills.js";
 import { settingsSchema } from "../settings.js";
@@ -73,6 +74,11 @@ describe("compound engineering plugin manifest", () => {
 
   it("registers an onLoad hook that installs bundled skills (U2)", () => {
     expect(typeof plugin.hooks?.onLoad).toBe("function");
+  });
+
+  it("copies dashboard CSS into dist during build", () => {
+    expect(packageJson.scripts.build).toContain("tsc");
+    expect(packageJson.scripts.build).toContain("node scripts/copy-css.mjs");
   });
 
   it("wires the settings schema onto the runtime manifest and manifest.json (U9)", () => {

@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-css.mjs",
     "test": "vitest run --silent=passed-only --reporter=dot"
   },
   "dependencies": {
