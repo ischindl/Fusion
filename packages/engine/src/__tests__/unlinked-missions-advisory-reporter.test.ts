@@ -131,26 +131,35 @@ describe("UnlinkedMissionsAdvisoryReporter", () => {
     expect(content.missionIds).toEqual(["M-UNLINKED-A", "M-UNLINKED-B"]);
   });
 
-  it("does not emit a second advisory when an existing advisory insight already exists", async () => {
-    const insightStore = {
-      upsertInsight: vi.fn(),
-      listInsights: vi.fn().mockReturnValue([
-        {
-          title: UNLINKED_MISSIONS_ADVISORY_TITLE,
-          updatedAt: "2026-06-03T12:00:00.000Z",
-          provenance: { metadata: { advisoryKey: UNLINKED_MISSIONS_ADVISORY_KEY } },
-        },
-      ]),
-    };
-    const store = createStore({
-      missions: [createMission({ id: "M-UNLINKED" })],
-      insightStore,
-    });
-    const reporter = new UnlinkedMissionsAdvisoryReporter({ store, projectId: "/tmp/project", logger });
+  it.each(["generated", "dismissed", "archived", "confirmed"] as const)(
+    "does not emit a second advisory when an existing %s advisory insight already exists",
+    async (status) => {
+      const insightStore = {
+        upsertInsight: vi.fn(),
+        listInsights: vi.fn().mockReturnValue([
+          {
+            title: UNLINKED_MISSIONS_ADVISORY_TITLE,
+            status,
+            updatedAt: "2026-06-03T12:00:00.000Z",
+            provenance: { metadata: { advisoryKey: UNLINKED_MISSIONS_ADVISORY_KEY } },
+          },
+        ]),
+      };
+      const store = createStore({
+        missions: [createMission({ id: "M-UNLINKED" })],
+        insightStore,
+      });
+      const reporter = new UnlinkedMissionsAdvisoryReporter({ store, projectId: "/tmp/project", logger });
 
-    await expect(reporter.report()).resolves.toEqual({ alerted: false, reason: "already-reported" });
-    expect(insightStore.upsertInsight).not.toHaveBeenCalled();
-  });
+      await expect(reporter.report()).resolves.toEqual({ alerted: false, reason: "already-reported" });
+      expect(insightStore.listInsights).toHaveBeenCalledWith({
+        projectId: "/tmp/project",
+        category: "workflow",
+        limit: 10,
+      });
+      expect(insightStore.upsertInsight).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { projectId: "", throwInsightStore: false },

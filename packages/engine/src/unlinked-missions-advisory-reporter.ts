@@ -76,7 +76,6 @@ export class UnlinkedMissionsAdvisoryReporter {
       const existingInsights = insightStore.listInsights({
         projectId: this.projectId,
         category: "workflow",
-        status: "generated",
         limit: 10,
       });
       const existing = existingInsights.find(
