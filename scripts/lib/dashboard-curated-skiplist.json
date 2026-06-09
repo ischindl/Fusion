@@ -122,6 +122,10 @@
       "reason": "pre-existing failure (orphaned from curated gate, never previously executed in CI; tracked as FN-TBD)"
     },
     {
+      "file": "packages/dashboard/src/__tests__/chat-manager.test.ts",
+      "reason": "pre-existing exclusion from dashboard-api-quality-backfill; tracked for rescue in FN-TBD"
+    },
+    {
       "file": "packages/dashboard/src/__tests__/shared-branch-group-entry-points.test.ts",
       "reason": "pre-existing failure (orphaned from curated gate, never previously executed in CI; tracked as FN-TBD)"
     },

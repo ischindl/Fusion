@@ -82,9 +82,10 @@ function loadSkipList(skipListPathOverride) {
  * Returns the parsed array of { name, file, projectName }.
  * Throws on a non-zero exit so capture never silently records a partial set.
  */
-function runVitestList(packageDir, projects, { repoRoot = REPO_ROOT } = {}) {
+function runVitestList(packageDir, projects, { repoRoot = REPO_ROOT, filesOnly = false } = {}) {
   const cwd = join(repoRoot, packageDir);
   const args = ["exec", "vitest", "list", "--json"];
+  if (filesOnly) args.push("--filesOnly");
   for (const project of projects || []) {
     args.push("--project", project);
   }
@@ -254,7 +255,7 @@ function listExecutedDashboardQualityFiles({ repoRoot = REPO_ROOT, listFn = runV
   if (!dashboard || !Array.isArray(curatedProjects)) {
     throw new Error('spec must define @fusion/dashboard with "curatedProjects" or "projects"');
   }
-  const rows = listFn(dashboard.dir, curatedProjects, { repoRoot });
+  const rows = listFn(dashboard.dir, curatedProjects, { repoRoot, filesOnly: true });
   return new Set(rows.map((row) => toRepoRelative(row.file, repoRoot)));
 }
 

@@ -71,11 +71,14 @@ vi.mock("@fusion/core", () => {
     parseCompanyArchive: (...args: unknown[]) => mockParseCompanyArchive(...args),
     parseSingleAgentManifest: (...args: unknown[]) => mockParseSingleAgentManifest(...args),
     prepareAgentCompaniesImport: (...args: unknown[]) => mockPrepareAgentCompaniesImport(...args),
+    CLI_AGENT_ADAPTER_IDS: ["claude-code", "codex", "droid", "pi", "generic"],
+    sanitizeCliAgentSettings: (value: unknown) => value,
     AgentCompaniesParseError: MockAgentCompaniesParseError,
     isEphemeralAgent: (agent: { metadata?: Record<string, unknown> }) =>
       agent?.metadata?.agentKind === "task-worker",
     deterministicGuardLocks: new Map(),
     registerTraitHookImpl: () => {},
+    setTaskCreatedHook: () => {},
   };
 });
 
