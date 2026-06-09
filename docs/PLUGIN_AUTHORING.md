@@ -769,7 +769,7 @@ Bundled workspace plugin pattern:
 
 Runtime host context contract:
 - Registered views receive a `context` object from the dashboard host (`PluginDashboardViewContext`).
-- Context includes the active `projectId`, current visible `tasks`, optional `workflowSteps`, and `openTaskDetail` for launching the native task detail flow.
+- Context includes the active `projectId`, current visible `tasks`, optional `workflowSteps`, `openTaskDetail` for launching the native task detail flow, and `openFile(path, options?)` for opening project-relative files in the dashboard's built-in file viewer.
 - Keep view-specific UI behavior in the plugin; treat host context as service/data injection only.
 
 Placement guidance:

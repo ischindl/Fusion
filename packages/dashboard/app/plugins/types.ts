@@ -30,6 +30,8 @@ export interface PluginDashboardViewContext {
   tasks: Task[];
   workflowSteps: WorkflowStep[];
   openTaskDetail: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => void;
+  /** Open a project-relative file in the dashboard's built-in file viewer. */
+  openFile: (path: string, options?: { workspace?: string; line?: number; col?: number }) => void;
   renderTaskCard?: (task: Task | TaskDetail) => ReactNode;
   addToast?: (message: string, type?: PluginToastType) => void;
   /**

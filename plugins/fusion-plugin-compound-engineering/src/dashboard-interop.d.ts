@@ -24,6 +24,7 @@ declare module "@fusion/dashboard/app/plugins/types" {
     tasks: Task[];
     workflowSteps: WorkflowStep[];
     openTaskDetail: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => void;
+    openFile: (path: string, options?: { workspace?: string; line?: number; col?: number }) => void;
     renderTaskCard?: (task: Task | TaskDetail) => ReactNode;
     addToast?: (message: string, type?: PluginToastType) => void;
     subscribePluginEvents?: (

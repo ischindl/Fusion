@@ -119,6 +119,44 @@ describe("CompoundEngineeringView", () => {
     expect(screen.getAllByTestId("ce-group-empty").length).toBeGreaterThan(0);
   });
 
+  it("opens an artifact in the built-in file viewer via context.openFile", async () => {
+    const openFile = vi.fn();
+    listArtifacts.mockResolvedValue(
+      makeResult({
+        strategy: [
+          { kind: "artifact", id: "strategy:STRATEGY.md", stage: "strategy", path: "STRATEGY.md", name: "STRATEGY.md", size: 10, updatedAt: 1 },
+        ],
+      }),
+    );
+    render(
+      <CompoundEngineeringView
+        projectId="p1"
+        enabledOverride
+        context={{ openFile, tasks: [], workflowSteps: [], openTaskDetail: vi.fn() }}
+      />,
+    );
+
+    await screen.findByTestId("ce-artifact");
+    fireEvent.click(screen.getByTestId("ce-artifact-open"));
+    expect(openFile).toHaveBeenCalledWith("STRATEGY.md");
+  });
+
+  it("renders artifact open button without crashing when openFile is not in context", async () => {
+    listArtifacts.mockResolvedValue(
+      makeResult({
+        strategy: [
+          { kind: "artifact", id: "strategy:STRATEGY.md", stage: "strategy", path: "STRATEGY.md", name: "STRATEGY.md", size: 10, updatedAt: 1 },
+        ],
+      }),
+    );
+    render(<CompoundEngineeringView projectId="p1" enabledOverride />);
+
+    await screen.findByTestId("ce-artifact");
+    const open = screen.getByTestId("ce-artifact-open");
+    expect(open).toBeInTheDocument();
+    fireEvent.click(open);
+  });
+
   it("renders an error entry for an unreadable artifact (not a crash or silent drop)", async () => {
     listArtifacts.mockResolvedValue(
       makeResult({

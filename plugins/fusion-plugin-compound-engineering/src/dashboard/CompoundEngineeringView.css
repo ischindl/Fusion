@@ -135,6 +135,22 @@
   opacity: 0.55;
 }
 
+.ce-artifact-open {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--color-primary, #2563eb);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.ce-artifact-open:hover,
+.ce-artifact-open:focus-visible {
+  color: var(--color-primary-hover, #1d4ed8);
+}
+
 .ce-artifact-error .ce-artifact-error-msg {
   color: var(--color-danger, #d23);
   font-size: 0.78rem;

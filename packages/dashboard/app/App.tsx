@@ -1446,6 +1446,7 @@ function AppInner() {
               workflowSteps,
               subscribePluginEvents,
               openTaskDetail: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => openDetailTask(task, initialTab),
+              openFile: openFileInBrowser,
               renderTaskCard: (task: Task | TaskDetail) => (
                 <TaskCard
                   task={task}
