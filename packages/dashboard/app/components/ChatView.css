@@ -1372,6 +1372,8 @@
 }
 
 .chat-input-row {
+  --chat-input-control-size: calc(var(--space-lg) * 2.5);
+
   display: flex;
   align-items: flex-end;
   gap: var(--space-sm);
@@ -1480,8 +1482,8 @@
 }
 
 .chat-input-send {
-  width: 36px;
-  height: 36px;
+  width: var(--chat-input-control-size);
+  min-height: var(--chat-input-control-size);
   border-radius: 50%;
   border: none;
   background: var(--accent);
@@ -1499,8 +1501,8 @@
 }
 
 .chat-input-stop {
-  width: 36px;
-  height: 36px;
+  width: var(--chat-input-control-size);
+  min-height: var(--chat-input-control-size);
   border-radius: var(--radius-md);
   border: none;
   background: color-mix(in srgb, var(--color-error) 15%, transparent);
@@ -1869,11 +1871,15 @@
   }
 
   /* primary touch targets per AGENTS.md convention */
-  .chat-attach-btn,
-  .chat-input-send,
-  .chat-input-stop {
+  .chat-attach-btn {
     min-width: calc(var(--space-lg) * 2.25);
     min-height: calc(var(--space-lg) * 2.25);
+  }
+
+  .chat-input-send,
+  .chat-input-stop {
+    min-width: var(--chat-input-control-size);
+    min-height: var(--chat-input-control-size);
   }
 
   .chat-attachment-preview {

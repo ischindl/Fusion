@@ -15,16 +15,22 @@ describe("ChatView chat input autosize", () => {
     expect(textareaRule?.[0]).toContain("overflow-y: hidden");
   });
 
-  it("keeps the stop button dimensions aligned with the send button", () => {
+  it("keeps the stop button dimensions aligned with the send button and textarea minimum", () => {
+    const rowRule = chatViewCss.match(/\.chat-input-row\s*\{[^}]*\}/);
+    const textareaRule = chatViewCss.match(/\.chat-input-textarea\s*\{[^}]*\}/);
     const sendRule = chatViewCss.match(/\.chat-input-send\s*\{[^}]*\}/);
     const stopRule = chatViewCss.match(/\.chat-input-stop\s*\{[^}]*\}/);
 
+    expect(rowRule).not.toBeNull();
+    expect(textareaRule).not.toBeNull();
     expect(sendRule).not.toBeNull();
     expect(stopRule).not.toBeNull();
-    expect(sendRule?.[0]).toContain("width: 36px");
-    expect(sendRule?.[0]).toContain("height: 36px");
-    expect(stopRule?.[0]).toContain("width: 36px");
-    expect(stopRule?.[0]).toContain("height: 36px");
+    expect(rowRule?.[0]).toContain("--chat-input-control-size: calc(var(--space-lg) * 2.5)");
+    expect(textareaRule?.[0]).toContain("min-height: 40px");
+    expect(sendRule?.[0]).toContain("width: var(--chat-input-control-size)");
+    expect(sendRule?.[0]).toContain("min-height: var(--chat-input-control-size)");
+    expect(stopRule?.[0]).toContain("width: var(--chat-input-control-size)");
+    expect(stopRule?.[0]).toContain("min-height: var(--chat-input-control-size)");
   });
 
   it("clamps oversized textarea growth to the new max height", () => {
