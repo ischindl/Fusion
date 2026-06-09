@@ -4385,6 +4385,46 @@ describe("TaskCard mission badge", () => {
     expect(actionRow).not.toBeNull();
     expect(actionRow?.contains(promoteButton)).toBe(true);
     expect(css).toMatch(/\.card-promote-action\s*\{[^}]*margin-left:\s*auto;[^}]*\}/);
+    expect(css).toMatch(/\.card-promote-action\.card-send-back-btn\s*\{[^}]*margin-left:\s*auto;[^}]*\}/);
+  });
+
+  it("keeps the promote action right-aligned in the mobile card action row", () => {
+    const css = loadAllAppCss();
+    const onPromote = vi.fn().mockResolvedValue(undefined);
+
+    const soloRender = render(
+      <TaskCard
+        task={makeTask({ id: "FN-782", column: "todo" })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onPromote={onPromote}
+      />,
+    );
+
+    const soloPromoteButton = screen.getByTestId("card-promote-FN-782");
+    expect(soloPromoteButton.closest(".card-action-row")?.children).toHaveLength(1);
+    expect(soloPromoteButton).toHaveClass("card-promote-action", "card-send-back-btn");
+    soloRender.unmount();
+
+    render(
+      <TaskCard
+        task={makeTask({ id: "FN-783", column: "in-review", paused: false, userPaused: false, prInfo: undefined as any })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onPromote={onPromote}
+        prAuthAvailable={true}
+        autoMergeEnabled={false}
+      />,
+    );
+
+    const createPrButton = screen.getByRole("button", { name: "Create pull request" });
+    const promoteButton = screen.getByTestId("card-promote-FN-783");
+    const actionRow = promoteButton.closest(".card-action-row");
+
+    expect(actionRow).not.toBeNull();
+    expect(actionRow?.contains(createPrButton)).toBe(true);
+    expect(createPrButton.compareDocumentPosition(promoteButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(css).toMatch(/@media[^{}]*\(max-width:\s*768px\)[^{]*\{[\s\S]*?\.card-promote-action\.card-send-back-btn\s*\{[^}]*margin-left:\s*auto;[^}]*\}/);
   });
 
   it("calls onPromote without opening the card when promote is clicked", () => {

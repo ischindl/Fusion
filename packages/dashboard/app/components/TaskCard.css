@@ -1299,6 +1299,7 @@
 .card-promote-action.card-send-back-btn {
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
+  margin-left: auto;
   border: var(--btn-border-width) solid color-mix(in srgb, var(--text-muted) 30%, transparent);
   background: color-mix(in srgb, var(--text-muted) 12%, transparent);
   color: var(--text);
@@ -1433,6 +1434,10 @@
 
   .card-send-back-btn {
     opacity: 1;
+  }
+
+  .card-promote-action.card-send-back-btn {
+    margin-left: auto;
   }
 
   /* Card: compact progress bar on narrow cards */
