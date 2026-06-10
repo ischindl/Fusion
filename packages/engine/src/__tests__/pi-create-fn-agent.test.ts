@@ -2115,7 +2115,7 @@ describe("createFnAgent", () => {
 
     it("diagnostics are logged via structured logger with [skills] context", async () => {
       const { piLog } = await import("../logger.js");
-      const piWarnSpy = vi.spyOn(piLog, "warn").mockImplementation(() => {});
+      const piLogSpy = vi.spyOn(piLog, "log").mockImplementation(() => {});
 
       // Test diagnostics logging by directly calling createSkillsOverrideFromSelection
       const { createSkillsOverrideFromSelection } = await import("../skill-resolver.js");
@@ -2141,7 +2141,7 @@ describe("createFnAgent", () => {
       expect(result.diagnostics.length).toBeGreaterThan(0);
 
       // Check that diagnostics were logged with [skills] context
-      const skillLogs = piWarnSpy.mock.calls.filter(call =>
+      const skillLogs = piLogSpy.mock.calls.filter(call =>
         String(call[0]).includes("[skills]")
       );
       expect(skillLogs.length).toBeGreaterThan(0);
@@ -2150,7 +2150,7 @@ describe("createFnAgent", () => {
       const lastLog = skillLogs[skillLogs.length - 1][0] as string;
       expect(lastLog).toContain("[executor]");
 
-      piWarnSpy.mockRestore();
+      piLogSpy.mockRestore();
     });
   });
 });
