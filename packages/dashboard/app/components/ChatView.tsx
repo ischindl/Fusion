@@ -1090,8 +1090,10 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   const mentionCursorPosRef = useRef(0);
   const copyFeedbackTimeoutsRef = useRef<Map<string, number>>(new Map());
   const roomSendInFlightRef = useRef(false);
+  const tabletKeyboardSidebarVisibilityRef = useRef<boolean | null>(null);
   const mode = useViewportMode();
   const isMobile = mode === "mobile";
+  const isTablet = mode === "tablet";
 
   useEffect(() => {
     if (!activeSession?.id) {
@@ -1200,8 +1202,33 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
 
   const roomThreadActive = chatRoomsEnabled && chatScope === "rooms" && !!rooms.activeRoom;
   const { keyboardOverlap, keyboardOpen } = useMobileKeyboard({
-    enabled: isMobile && (!!activeSession || roomThreadActive),
+    enabled: (isMobile || isTablet) && (!!activeSession || roomThreadActive),
+    allowNonMobileViewport: isTablet,
   });
+  const tabletKeyboardOpen = isTablet && keyboardOpen;
+
+  useEffect(() => {
+    if (!isTablet) {
+      tabletKeyboardSidebarVisibilityRef.current = null;
+      return;
+    }
+
+    if (keyboardOpen) {
+      setSidebarVisible((currentSidebarVisible) => {
+        if (tabletKeyboardSidebarVisibilityRef.current === null) {
+          tabletKeyboardSidebarVisibilityRef.current = currentSidebarVisible;
+        }
+        return currentSidebarVisible ? false : currentSidebarVisible;
+      });
+      return;
+    }
+
+    if (tabletKeyboardSidebarVisibilityRef.current !== null) {
+      const shouldRestoreSidebar = tabletKeyboardSidebarVisibilityRef.current;
+      tabletKeyboardSidebarVisibilityRef.current = null;
+      setSidebarVisible(shouldRestoreSidebar);
+    }
+  }, [isTablet, keyboardOpen]);
 
   const filteredSkills = useMemo(() => {
     const normalizedFilter = skillFilter.trim().toLowerCase();
@@ -2334,7 +2361,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   }, []);
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (isMobile) {
+    if (isMobile || tabletKeyboardOpen) {
       return;
     }
 
@@ -2373,10 +2400,10 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
 
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
-  }, [isMobile, persistSidebarWidth, sidebarWidth]);
+  }, [isMobile, persistSidebarWidth, sidebarWidth, tabletKeyboardOpen]);
 
   const handleResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (isMobile) {
+    if (isMobile || tabletKeyboardOpen) {
       return;
     }
 
@@ -2391,7 +2418,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     const nextWidth = Math.max(CHAT_SIDEBAR_MIN_WIDTH, Math.min(CHAT_SIDEBAR_MAX_WIDTH, sidebarWidth + delta));
     setSidebarWidth(nextWidth);
     persistSidebarWidth(nextWidth);
-  }, [isMobile, persistSidebarWidth, sidebarWidth]);
+  }, [isMobile, persistSidebarWidth, sidebarWidth, tabletKeyboardOpen]);
 
   // Handle session click
   const handleSessionClick = useCallback(
@@ -3150,7 +3177,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
         )}
       </div>
 
-      {!isMobile && sidebarVisible && (
+      {!isMobile && sidebarVisible && !tabletKeyboardOpen && (
         <div
           className="chat-sidebar-resize-handle"
           role="separator"

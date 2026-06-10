@@ -144,10 +144,11 @@ export function _resetInitialViewportHeight(): void {
 
 interface UseMobileKeyboardOptions {
   enabled?: boolean;
+  allowNonMobileViewport?: boolean;
 }
 
 export function useMobileKeyboard(
-  { enabled = true }: UseMobileKeyboardOptions = {},
+  { enabled = true, allowNonMobileViewport = false }: UseMobileKeyboardOptions = {},
 ): { keyboardOverlap: number; viewportHeight: number | null; viewportOffsetTop: number; keyboardOpen: boolean } {
   const [keyboardOverlap, setKeyboardOverlap] = useState(0);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
@@ -156,7 +157,7 @@ export function useMobileKeyboard(
   const stableMetricsRef = useRef<KeyboardMetrics>(CLOSED_KEYBOARD_METRICS);
 
   useEffect(() => {
-    if (!enabled || !isMobileDevice()) {
+    if (!enabled || (!allowNonMobileViewport && !isMobileDevice())) {
       setKeyboardOverlap(0);
       setViewportHeight(null);
       setViewportOffsetTop(0);
@@ -316,7 +317,7 @@ export function useMobileKeyboard(
       setViewportOffsetTop(0);
       setKeyboardOpen(false);
     };
-  }, [enabled]);
+  }, [allowNonMobileViewport, enabled]);
 
   return { keyboardOverlap, viewportHeight, viewportOffsetTop, keyboardOpen };
 }
