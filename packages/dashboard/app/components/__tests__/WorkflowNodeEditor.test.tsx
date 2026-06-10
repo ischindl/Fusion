@@ -83,6 +83,16 @@ import { WorkflowNodeEditor } from "../WorkflowNodeEditor";
 import { ConfirmDialogProvider } from "../../hooks/useConfirm";
 import { MOBILE_MEDIA_QUERY } from "../../hooks/useViewportMode";
 
+function getPromptFullscreenOverlay() {
+  return document.body.querySelector(".wf-prompt-editor--fullscreen") as HTMLElement | null;
+}
+
+function getPromptFullscreenTextarea() {
+  const overlay = getPromptFullscreenOverlay();
+  expect(overlay).not.toBeNull();
+  return within(overlay!).getByLabelText("Prompt") as HTMLTextAreaElement;
+}
+
 function mockWorkflowEditorViewport(mode: "desktop" | "mobile" | "tablet" = "desktop") {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -528,19 +538,22 @@ describe("WorkflowNodeEditor", () => {
     const expand = await screen.findByRole("button", { name: "Expand prompt editor" });
     expect(expand).toBeInTheDocument();
 
-    const promptEditor = expand.closest(".wf-prompt-editor");
-    expect(promptEditor).not.toBeNull();
-    expect(promptEditor).not.toHaveClass("wf-prompt-editor--fullscreen");
+    const inlinePromptEditor = expand.closest(".wf-prompt-editor");
+    expect(inlinePromptEditor).not.toBeNull();
+    expect(inlinePromptEditor).not.toHaveClass("wf-prompt-editor--fullscreen");
+    expect(getPromptFullscreenOverlay()).toBeNull();
 
     fireEvent.click(expand);
 
-    expect(promptEditor).toHaveClass("wf-prompt-editor--fullscreen");
-    expect(screen.getByRole("button", { name: "Collapse prompt editor" })).toBeVisible();
-    expect(screen.getByLabelText("Prompt")).not.toHaveAttribute("rows");
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+    expect(inlinePromptEditor).not.toHaveClass("wf-prompt-editor--fullscreen");
+    expect(within(fullscreenPromptEditor!).getByRole("button", { name: "Collapse prompt editor" })).toBeVisible();
+    expect(getPromptFullscreenTextarea()).not.toHaveAttribute("rows");
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse prompt editor" }));
+    fireEvent.click(within(fullscreenPromptEditor!).getByRole("button", { name: "Collapse prompt editor" }));
 
-    expect(promptEditor).not.toHaveClass("wf-prompt-editor--fullscreen");
+    expect(getPromptFullscreenOverlay()).toBeNull();
     expect(screen.getByRole("button", { name: "Expand prompt editor" })).toBeInTheDocument();
   });
 
@@ -553,13 +566,12 @@ describe("WorkflowNodeEditor", () => {
     fireEvent.click(await screen.findByTestId("wf-node-prompt"));
     fireEvent.click(await screen.findByRole("button", { name: "Expand prompt editor" }));
 
-    const promptEditor = screen.getByRole("button", { name: "Collapse prompt editor" }).closest(".wf-prompt-editor");
-    expect(promptEditor).not.toBeNull();
-    expect(promptEditor).toHaveClass("wf-prompt-editor--fullscreen");
+    const promptEditor = getPromptFullscreenOverlay();
+    expect(promptEditor).toBeInTheDocument();
 
     fireEvent.keyDown(promptEditor!, { key: "Escape" });
 
-    expect(promptEditor).not.toHaveClass("wf-prompt-editor--fullscreen");
+    expect(getPromptFullscreenOverlay()).toBeNull();
     expect(screen.getByRole("button", { name: "Expand prompt editor" })).toBeInTheDocument();
   });
 
@@ -575,6 +587,97 @@ describe("WorkflowNodeEditor", () => {
     const inspector = await screen.findByTestId("wf-node-inspector");
     expect(within(inspector).getByLabelText("Prompt")).toHaveValue("");
     expect(within(inspector).getByRole("button", { name: "Expand prompt editor" })).toBeInTheDocument();
+  });
+
+  it("opens the fullscreen prompt editor from the mobile prompt inspector", async () => {
+    mockWorkflowEditorViewport("mobile");
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Custom" }));
+    fireEvent.click(await screen.findByTestId("wf-node-prompt"));
+
+    const inspector = await screen.findByTestId("wf-node-inspector");
+    fireEvent.click(within(inspector).getByRole("button", { name: "Expand prompt editor" }));
+
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+    expect(within(fullscreenPromptEditor!).getByRole("button", { name: "Collapse prompt editor" })).toBeVisible();
+    expect(getPromptFullscreenTextarea()).toHaveFocus();
+  });
+
+  it("closes the fullscreen prompt editor with the mobile collapse button", async () => {
+    mockWorkflowEditorViewport("mobile");
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Custom" }));
+    fireEvent.click(await screen.findByTestId("wf-node-prompt"));
+    fireEvent.click(await screen.findByRole("button", { name: "Expand prompt editor" }));
+
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+
+    fireEvent.click(within(fullscreenPromptEditor!).getByRole("button", { name: "Collapse prompt editor" }));
+
+    expect(getPromptFullscreenOverlay()).toBeNull();
+  });
+
+  it("closes the fullscreen prompt editor with Escape on mobile", async () => {
+    mockWorkflowEditorViewport("mobile");
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Custom" }));
+    fireEvent.click(await screen.findByTestId("wf-node-prompt"));
+    fireEvent.click(await screen.findByRole("button", { name: "Expand prompt editor" }));
+
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+
+    fireEvent.keyDown(fullscreenPromptEditor!, { key: "Escape" });
+
+    expect(getPromptFullscreenOverlay()).toBeNull();
+  });
+
+  it("persists mobile fullscreen prompt edits back to the inline textarea", async () => {
+    mockWorkflowEditorViewport("mobile");
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Custom" }));
+    fireEvent.click(await screen.findByTestId("wf-node-prompt"));
+    fireEvent.click(await screen.findByRole("button", { name: "Expand prompt editor" }));
+
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+
+    fireEvent.change(getPromptFullscreenTextarea(), { target: { value: "mobile edit" } });
+    fireEvent.click(within(fullscreenPromptEditor!).getByRole("button", { name: "Collapse prompt editor" }));
+
+    const inspector = await screen.findByTestId("wf-node-inspector");
+    expect(within(inspector).getByLabelText("Prompt")).toHaveValue("mobile edit");
+  });
+
+  it("opens the fullscreen prompt editor for empty mobile gate prompts", async () => {
+    mockWorkflowEditorViewport("mobile");
+    vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "QA" }));
+    fireEvent.click(await screen.findByTestId("wf-node-gate"));
+
+    const inspector = await screen.findByTestId("wf-node-inspector");
+    fireEvent.click(within(inspector).getByRole("button", { name: "Expand prompt editor" }));
+
+    const fullscreenPromptEditor = getPromptFullscreenOverlay();
+    expect(fullscreenPromptEditor).toBeInTheDocument();
+    expect(within(fullscreenPromptEditor!).getByLabelText("Prompt")).toHaveValue("");
   });
 
   it("does not show the prompt expand button for non-prompt nodes", async () => {
