@@ -59,7 +59,8 @@ import { resolvePermanentAgentToolDecision } from "./permanent-agent-gating.js";
 import type { SystemPromptLayers } from "./prompt-layers.js";
 import { READONLY_ALLOWLIST, filterCustomToolsForReadonly, isReadonlyAllowed } from "./workflow-step-tool-policy.js";
 import { createStreamingDeltaNormalizer } from "./streaming-delta.js";
-import { isUnsupportedMessageRoleError } from "./transient-error-detector.js";
+import { isModelAuthTierIncompatibilityError, isUnsupportedMessageRoleError } from "./transient-error-detector.js";
+export { isModelAuthTierIncompatibilityError } from "./transient-error-detector.js";
 
 const RTK_ACCEPTED_REWRITE_EXIT_CODES = new Set([0, 3]);
 const RTK_EXPECTED_PASSTHROUGH_EXIT_CODES = new Set([1, 2]);
@@ -388,6 +389,15 @@ export async function promptSessionAndCheck(session: AgentSession, prompt: strin
       const modelDesc = describeModel(session);
       piLog.warn(`pi state error — Codex WebSocket transport drop (model=${modelDesc}): ${stateError}`);
       throw new Error(`${stateError} (model=${modelDesc})`);
+    }
+    if (isModelAuthTierIncompatibilityError(stateError)) {
+      const modelDesc = describeModel(session);
+      const hint =
+        "Operator action required: this agent's configured model is not supported by the current authentication tier. "
+        + "Update the model selection in Settings → Models or configure a fallback model. "
+        + "If using a ChatGPT account with Codex, use a Codex-supported model (not a GPT model).";
+      piLog.error(`pi state error — model not supported for auth tier (model=${modelDesc}): ${stateError}`);
+      throw new Error(`${stateError} (model=${modelDesc}). ${hint}`);
     }
     if (isUnsupportedMessageRoleError(stateError)) {
       const modelDesc = describeModel(session);
@@ -1028,6 +1038,15 @@ function resolveConfiguredModel(
 }
 
 export function isRetryableModelSelectionError(message: string): boolean {
+  // Codex ChatGPT-account auth-tier model incompatibility: the model is valid
+  // but not available for the current auth tier. This is a model-selection
+  // problem — a configured fallback model may work. Treat as retryable so the
+  // fallback path is tried once (the `usingFallback` guard prevents infinite
+  // swaps).
+  if (isModelAuthTierIncompatibilityError(message)) {
+    return true;
+  }
+
   // An unsupported message-role rejection (e.g. a reasoning model sending the
   // "developer" system role to a provider that only accepts
   // system/user/assistant/tool) is fundamentally a model+provider

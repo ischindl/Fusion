@@ -193,12 +193,35 @@ export function extractMissingModulePath(errorMessage: string): string | null {
 
 const UNSUPPORTED_MESSAGE_ROLE_PATTERN = /\bmessages\.\[\d+\]\.role\b[\s\S]*\bis not one of\b|\bis not one of\b[\s\S]*\bmessages\.\[\d+\]\.role\b/i;
 const NON_CONTINUABLE_SESSION_PATTERN = /cannot continue from message role\s*[:=-]?\s*(?:['"`]?)(assistant|tool|function|system|user)(?:['"`]?)\b/i;
+const MODEL_AUTH_TIER_INCOMPATIBILITY_PATTERNS: RegExp[] = [
+  // Codex ChatGPT-account auth-tier incompatibility: the model is valid, but
+  // unavailable for the current auth tier.
+  /\bmodel\b[\s\S]{0,160}\bnot\s+supported\s+when\s+using\s+Codex\s+with\s+a\s+ChatGPT\s+account\b/i,
+  // General provider model-compatibility shapes. Keep these model-scoped so
+  // generic 400/invalid_request_error failures are not treated as model swaps.
+  /\bmodel\b[\s\S]{0,160}\b(?:is|was)\s+not\s+(?:supported|available)\b/i,
+  /(?:['"`][^'"`]+['"`]\s+)?\bmodel\b\s+(?:is|was)\s+not\s+(?:supported|available)\b/i,
+];
 
 export function isUnsupportedMessageRoleError(errorMessage: string): boolean {
   if (!errorMessage || typeof errorMessage !== "string") {
     return false;
   }
   return UNSUPPORTED_MESSAGE_ROLE_PATTERN.test(errorMessage);
+}
+
+export function isModelAuthTierIncompatibilityError(errorMessage: string): boolean {
+  if (!errorMessage || typeof errorMessage !== "string") {
+    return false;
+  }
+
+  const hasModelContext = /\bmodel\b/i.test(errorMessage);
+  const hasCompatibilitySignal = /\bnot\s+(?:supported|available|found)\b/i.test(errorMessage);
+  if (/\binvalid_request_error\b/i.test(errorMessage) && hasModelContext && hasCompatibilitySignal) {
+    return true;
+  }
+
+  return MODEL_AUTH_TIER_INCOMPATIBILITY_PATTERNS.some((pattern) => pattern.test(errorMessage));
 }
 
 export function isNonContinuableSessionError(errorMessage: string): boolean {
@@ -229,6 +252,7 @@ export function isOperatorActionableAgentError(errorMessage: string): boolean {
   }
   return (
     isUnsupportedMessageRoleError(errorMessage) ||
+    isModelAuthTierIncompatibilityError(errorMessage) ||
     OPERATOR_ACTIONABLE_AGENT_ERROR_PATTERNS.some((pattern) => pattern.test(errorMessage))
   );
 }

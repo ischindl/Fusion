@@ -57,6 +57,31 @@ describe("promptSessionAndCheck recursion guard (FN-4930)", () => {
     expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining("failed to inspect transcript"));
   });
 
+  it("annotates model-auth-tier incompatibility errors with model identity and actionable hint", async () => {
+    const { promptSessionAndCheck } = await import("../pi.js");
+
+    const state = {
+      errorMessage: "",
+      messages: [],
+    };
+
+    const session = {
+      model: { provider: "openai-codex", id: "gpt-5.3-codex" },
+      prompt: vi.fn(async () => {
+        state.errorMessage =
+          "Codex error: 400 invalid_request_error — \"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.\"";
+      }),
+      state,
+    } as any;
+
+    await expect(promptSessionAndCheck(session, "hello")).rejects.toThrow(/model=openai-codex\/gpt-5\.3-codex/);
+    await expect(promptSessionAndCheck(session, "hello")).rejects.toThrow(
+      /Operator action required: this agent's configured model is not supported by the current authentication tier\./,
+    );
+    await expect(promptSessionAndCheck(session, "hello")).rejects.toThrow(/configure a fallback model/);
+    await expect(promptSessionAndCheck(session, "hello")).rejects.toThrow(/use a Codex-supported model \(not a GPT model\)/);
+  });
+
   it("annotates unsupported message-role provider errors with actionable hint", async () => {
     const { promptSessionAndCheck } = await import("../pi.js");
 

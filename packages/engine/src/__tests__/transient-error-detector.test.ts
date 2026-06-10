@@ -6,6 +6,7 @@ import {
   extractMissingModulePath,
   isOperatorActionableAgentError,
   isStaleWorktreeModuleResolutionError,
+  isModelAuthTierIncompatibilityError,
   isUnsupportedMessageRoleError,
   isNonContinuableSessionError,
   TRANSIENT_ERROR_PATTERNS,
@@ -325,6 +326,19 @@ describe("Transient Error Detector", () => {
     });
   });
 
+  describe("isModelAuthTierIncompatibilityError", () => {
+    it("matches model compatibility errors without matching generic 400s", () => {
+      expect(
+        isModelAuthTierIncompatibilityError(
+          "Codex error: 400 invalid_request_error — \"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.\"",
+        ),
+      ).toBe(true);
+      expect(isModelAuthTierIncompatibilityError("model gpt-5.3-codex is not supported for this account")).toBe(true);
+      expect(isModelAuthTierIncompatibilityError("400 invalid_request_error: model gpt-5.3-codex not found")).toBe(true);
+      expect(isModelAuthTierIncompatibilityError("400 invalid_request_error: invalid temperature")).toBe(false);
+    });
+  });
+
   describe("isOperatorActionableAgentError", () => {
     it("returns true for credential/model/billing errors", () => {
       expect(isOperatorActionableAgentError("invalid api key")).toBe(true);
@@ -339,6 +353,16 @@ describe("Transient Error Detector", () => {
         "developer is not one of ['system', 'assistant', 'user', 'tool', 'function'] - 'messages.[0].role'";
       expect(isOperatorActionableAgentError(message)).toBe(true);
       expect(classifyError(message)).toBe("permanent");
+    });
+
+    it("returns true for model-auth-tier compatibility errors", () => {
+      expect(
+        isOperatorActionableAgentError(
+          "Codex error: 400 invalid_request_error — \"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.\"",
+        ),
+      ).toBe(true);
+      expect(isOperatorActionableAgentError("model gpt-5.3-codex is not supported for this account")).toBe(true);
+      expect(isOperatorActionableAgentError("400 invalid_request_error: missing required field messages")).toBe(false);
     });
 
     it("returns false for transient network errors", () => {
