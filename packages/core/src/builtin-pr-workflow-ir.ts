@@ -110,6 +110,7 @@ const RAW_BUILTIN_PR_WORKFLOW_IR: WorkflowIr = {
     // Auto-merge gate (U6, R10): routes outcome:auto-on → pr-merge,
     // outcome:auto-off → park back on await-review for a manual merge.
     { id: "gate", kind: "gate", column: "await-review", config: { gate: "auto-merge" } },
+    { id: "manual-merge-hold", kind: "manual-merge-hold", column: "await-review", config: { release: "manual" } },
     // await-rebase: the conflict dwell column. The reconcile fires
     // github:pr-conflict-cleared to release it back to await-review.
     {
@@ -159,7 +160,8 @@ const RAW_BUILTIN_PR_WORKFLOW_IR: WorkflowIr = {
     // auto-merge gate routing. auto-on goes forward to pr-merge; auto-off parks
     // back on await-review for a manual merge (rework loop-back).
     { from: "gate", to: "pr-merge", condition: "outcome:auto-on" },
-    { from: "gate", to: "await-review", condition: "outcome:auto-off", kind: "rework" },
+    { from: "gate", to: "manual-merge-hold", condition: "outcome:auto-off" },
+    { from: "manual-merge-hold", to: "pr-merge", condition: "success" },
     // pr-merge outcomes: merged-requested ends (reconcile corroborates `merged`);
     // a stale-head race re-evaluates against the new head via await-review.
     { from: "pr-merge", to: "end", condition: "outcome:merged-requested" },

@@ -5,6 +5,10 @@
  *  verdicts as outcome edges), `parse-steps` (graph-native step-list parsing),
  *  `code` (sandboxed TypeScript), `notify` (workflow-authored notifications),
  *  and `loop` (bounded repeat-until region);
+ *  and the workflow-owned merge/retry/recovery policy additions:
+ *  `merge-gate`, `merge-attempt`, `manual-merge-hold`, `retry-backoff`,
+ *  `recovery-router`, `branch-group-member-integration`, and
+ *  `branch-group-promotion`;
  *  and the unified PR-entity additions (U3):
  *  `pr-create` (open/reuse the PR + write the entity), `pr-respond` (the
  *  review-response run), and `pr-merge` (tool-side merge with expectedHeadOid). */
@@ -23,6 +27,13 @@ export type WorkflowIrNodeKind =
   | "parse-steps"
   | "code"
   | "notify"
+  | "merge-gate"
+  | "merge-attempt"
+  | "manual-merge-hold"
+  | "retry-backoff"
+  | "recovery-router"
+  | "branch-group-member-integration"
+  | "branch-group-promotion"
   | "pr-create"
   | "pr-respond"
   | "pr-merge";

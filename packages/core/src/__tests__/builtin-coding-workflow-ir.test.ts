@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_CODING_WORKFLOW_IR,
+  BUILTIN_PR_WORKFLOW_IR,
+  BUILTIN_STEPWISE_CODING_WORKFLOW_IR,
   DEFAULT_WORKFLOW_COLUMN_IDS,
   parseWorkflowIr,
   serializeWorkflowIr,
@@ -36,7 +38,8 @@ describe("builtin coding workflow ir", () => {
     const seams = BUILTIN_CODING_WORKFLOW_IR.nodes
       .map((node) => String(node.config?.seam ?? ""))
       .filter((seam) => seam.length > 0);
-    expect(seams).toEqual(expect.arrayContaining(["execute", "workflow-step", "review", "merge"]));
+    expect(seams).toEqual(expect.arrayContaining(["execute", "workflow-step", "review"]));
+    expect(seams).not.toContain("merge");
     expect(seams).not.toContain("triage");
   });
 
@@ -72,7 +75,8 @@ describe("builtin coding workflow ir", () => {
     expect(byId.get("execute")?.column).toBe("in-progress");
     expect(byId.get("workflow-step")?.column).toBe("in-progress");
     expect(byId.get("review")?.column).toBe("in-review");
-    expect(byId.get("merge")?.column).toBe("in-review");
+    expect(byId.get("merge-gate")?.column).toBe("in-review");
+    expect(byId.get("merge-attempt")?.column).toBe("in-review");
   });
 
   it("assigns descriptive names to execute/workflow-step/review/merge seam nodes", () => {
@@ -80,7 +84,6 @@ describe("builtin coding workflow ir", () => {
     expect(byId.get("execute")?.config?.name).toBe("Execute");
     expect(byId.get("workflow-step")?.config?.name).toBe("Pre-merge workflow steps");
     expect(byId.get("review")?.config?.name).toBe("Review");
-    expect(byId.get("merge")?.config?.name).toBe("Merge boundary");
   });
 
   it("declares a bounded retry budget only on the execute seam", () => {
@@ -93,15 +96,53 @@ describe("builtin coding workflow ir", () => {
     const byId = new Map(BUILTIN_CODING_WORKFLOW_IR.nodes.map((n) => [n.id, n]));
     expect(byId.get("workflow-step")?.config?.name).toBe("Pre-merge workflow steps");
     expect(byId.get("review")?.config?.name).toBe("Review");
-    expect(byId.get("merge")?.config?.name).toBe("Merge boundary");
     expect(byId.get("workflow-step")?.config?.maxRetries).toBeUndefined();
     expect(byId.get("review")?.config?.maxRetries).toBeUndefined();
-    expect(byId.get("merge")?.config?.maxRetries).toBeUndefined();
+    expect(byId.get("merge-attempt")?.config?.maxReworkCycles).toBe(3);
   });
 
   it("preserves the execute retry declaration through parse/serialize round-trip", () => {
     const reparsed = parseWorkflowIr(serializeWorkflowIr(BUILTIN_CODING_WORKFLOW_IR));
     const config = executeNodeConfig(reparsed);
     expect(config.maxRetries).toBe(EXECUTE_NODE_MAX_RETRIES);
+  });
+
+  it("expresses default merge retry recovery and branch-group policy as built-in nodes", () => {
+    const byId = new Map(BUILTIN_CODING_WORKFLOW_IR.nodes.map((node) => [node.id, node]));
+    expect(byId.get("merge-gate")?.kind).toBe("merge-gate");
+    expect(byId.get("merge-retry")?.kind).toBe("retry-backoff");
+    expect(byId.get("merge-manual-hold")?.kind).toBe("manual-merge-hold");
+    expect(byId.get("branch-group-member-integration")?.kind).toBe("branch-group-member-integration");
+    expect(byId.get("branch-group-promotion")?.kind).toBe("branch-group-promotion");
+    expect(byId.get("merge-attempt")?.kind).toBe("merge-attempt");
+    expect(byId.get("recovery-router")?.kind).toBe("recovery-router");
+    expect(BUILTIN_CODING_WORKFLOW_IR.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: "merge-gate", to: "branch-group-member-integration", condition: "outcome:auto-on" }),
+        expect.objectContaining({ from: "merge-gate", to: "merge-manual-hold", condition: "outcome:auto-off" }),
+        expect.objectContaining({ from: "merge-attempt", to: "merge-retry", condition: "outcome:transient-failure" }),
+      ]),
+    );
+  });
+
+  it("expresses merge policy regions in stepwise and PR built-ins", () => {
+    expect(BUILTIN_STEPWISE_CODING_WORKFLOW_IR.nodes.map((node) => node.kind)).toEqual(
+      expect.arrayContaining([
+        "merge-gate",
+        "retry-backoff",
+        "manual-merge-hold",
+        "branch-group-member-integration",
+        "branch-group-promotion",
+        "merge-attempt",
+        "recovery-router",
+      ]),
+    );
+    expect(BUILTIN_PR_WORKFLOW_IR.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(["manual-merge-hold", "pr-merge"]));
+    expect(BUILTIN_PR_WORKFLOW_IR.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: "gate", to: "manual-merge-hold", condition: "outcome:auto-off" }),
+        expect.objectContaining({ from: "manual-merge-hold", to: "pr-merge", condition: "success" }),
+      ]),
+    );
   });
 });
