@@ -875,6 +875,13 @@ export function createDefaultNodeHandlers(
   | "parse-steps"
   | "code"
   | "notify"
+  | "merge-gate"
+  | "merge-attempt"
+  | "manual-merge-hold"
+  | "retry-backoff"
+  | "recovery-router"
+  | "branch-group-member-integration"
+  | "branch-group-promotion"
   | "pr-create"
   | "pr-respond"
   | "pr-merge",
@@ -918,6 +925,23 @@ export function createDefaultNodeHandlers(
     "parse-steps": parseSteps,
     code: createCodeNodeHandler(deps?.runCode),
     notify: createNotifyHandler(deps?.notifyDispatch),
+    "merge-gate": async (_node, ctx) => ({
+      outcome: "success",
+      value: ctx.context.autoMerge === false ? "auto-off" : "auto-on",
+    }),
+    "merge-attempt": async (_node, ctx) => {
+      if (!deps?.primitives) return { outcome: "failure", value: "merge-primitives-unwired" };
+      const result = await deps.primitives.requestMerge(primitiveContextForNode(_node, ctx.task, ctx.context), ctx.task);
+      return { outcome: result.outcome, value: result.value, contextPatch: result.contextPatch };
+    },
+    "manual-merge-hold": async () => ({ outcome: "failure", value: "manual-required" }),
+    "retry-backoff": async () => ({ outcome: "success" }),
+    "recovery-router": async (_node, ctx) => ({
+      outcome: "success",
+      value: typeof ctx.context.recoveryOutcome === "string" ? ctx.context.recoveryOutcome : "wake-merge",
+    }),
+    "branch-group-member-integration": async () => ({ outcome: "success" }),
+    "branch-group-promotion": async () => ({ outcome: "success" }),
     ...prNodes,
   };
 }

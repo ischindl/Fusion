@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Settings, TaskDetail, WorkflowIr } from "@fusion/core";
+import type { Settings, TaskDetail, WorkflowIr, WorkflowWorkItem, WorkflowWorkItemState } from "@fusion/core";
 
 import { WorkflowTaskRuntime, type WorkflowTaskRuntimeDeps } from "../workflow-task-runtime.js";
 import type { WorkflowNodeResult } from "../workflow-graph-executor.js";
@@ -193,7 +193,17 @@ describe("WorkflowTaskRuntime", () => {
 
     expect(result.disposition).toBe("completed");
     expect(calls).toEqual(["planning", "prepare-worktree", "execute", "workflow-step", "review", "merge"]);
-    expect(result.visitedNodeIds).toEqual(["start", "planning", "execute", "workflow-step", "review", "merge"]);
+    expect(result.visitedNodeIds).toEqual([
+      "start",
+      "planning",
+      "execute",
+      "workflow-step",
+      "review",
+      "merge-gate",
+      "branch-group-member-integration",
+      "branch-group-promotion",
+      "merge-attempt",
+    ]);
   });
 
   it("stops the built-in workflow before review when workflow-step remediation is scheduled", async () => {
@@ -304,6 +314,101 @@ describe("WorkflowTaskRuntime", () => {
     await runtime.run(task, flagOff);
 
     expect(observedRunIds).toContain("FN-9002:WF-001");
+  });
+
+  it("runs a leased workflow work item at its addressed node and persists success", async () => {
+    const calls: string[] = [];
+    const transitions: Array<{ id: string; state: WorkflowWorkItemState; patch?: Record<string, unknown> }> = [];
+    const runtime = new WorkflowTaskRuntime({
+      store: {
+        getTask: async () => task,
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-001", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir: selectedIr() }),
+        transitionWorkflowWorkItem: (id, state, patch) => {
+          transitions.push({ id, state, patch });
+          return { ...workItem, state };
+        },
+      },
+      primitives: recordingPrimitives(calls),
+      runCustomNode: async (node) => {
+        calls.push(`custom:${node.id}`);
+        return { outcome: "success" };
+      },
+    });
+    const workItem = {
+      id: "work-1",
+      runId: "run-1",
+      taskId: task.id,
+      nodeId: "execute",
+      kind: "task",
+      state: "running",
+      attempt: 0,
+      retryAfter: null,
+      leaseOwner: "scheduler-a",
+      leaseExpiresAt: "2026-06-09T00:01:00.000Z",
+      lastError: null,
+      blockedReason: null,
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+    } satisfies WorkflowWorkItem;
+
+    const result = await runtime.runWorkItem(workItem, flagOff);
+
+    expect(result.disposition).toBe("completed");
+    expect(calls).toEqual(["prepare-worktree", "execute"]);
+    expect(result.visitedNodeIds).toEqual(["execute"]);
+    expect(transitions).toEqual([
+      {
+        id: "work-1",
+        state: "succeeded",
+        patch: { leaseOwner: null, leaseExpiresAt: null, lastError: null },
+      },
+    ]);
+  });
+
+  it("fails and releases a workflow work item when the addressed node fails", async () => {
+    const transitions: Array<{ id: string; state: WorkflowWorkItemState; patch?: Record<string, unknown> }> = [];
+    const workItem = {
+      id: "work-2",
+      runId: "run-1",
+      taskId: task.id,
+      nodeId: "execute",
+      kind: "task",
+      state: "running",
+      attempt: 0,
+      retryAfter: null,
+      leaseOwner: "scheduler-a",
+      leaseExpiresAt: "2026-06-09T00:01:00.000Z",
+      lastError: null,
+      blockedReason: null,
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+    } satisfies WorkflowWorkItem;
+    const runtime = new WorkflowTaskRuntime({
+      store: {
+        getTask: async () => task,
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-001", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir: selectedIr() }),
+        transitionWorkflowWorkItem: (id, state, patch) => {
+          transitions.push({ id, state, patch });
+          return { ...workItem, state };
+        },
+      },
+      primitives: recordingPrimitives([], { execute: { outcome: "failure", value: "implementation-incomplete" } }),
+      runCustomNode: async () => ({ outcome: "success" }),
+    });
+
+    const result = await runtime.runWorkItem(workItem, flagOff);
+
+    expect(result.disposition).toBe("failed");
+    expect(result.reason).toBe("implementation-incomplete");
+    expect(transitions).toEqual([
+      {
+        id: "work-2",
+        state: "failed",
+        patch: { leaseOwner: null, leaseExpiresAt: null, lastError: "implementation-incomplete" },
+      },
+    ]);
   });
 
   it("uses the built-in workflow id in the default run id for unselected tasks", async () => {
