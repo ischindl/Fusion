@@ -502,8 +502,6 @@ export class Scheduler {
   private wasPermanentAgentUnavailable = new Set<string>();
   /** Tracks dispatch-queued reason signatures to avoid per-tick log spam. */
   private wasDispatchQueuedReasonLogged = new Set<string>();
-  /** Tracks the last stable concurrency-block signature emitted for a task. */
-  private dispatchQueuedConcurrencyAuditMemo = new Map<string, string>();
   /** Tracks per-task candidacy fingerprints for task:updated auto-claim invalidation gating. */
   private lastAutoClaimFingerprint = new Map<string, string>();
   /** Tracks recent engine-sourced in-progress → todo requeues to prevent immediate re-dispatch races. */
@@ -791,7 +789,6 @@ export class Scheduler {
       this.wasNodeBlocked.delete(task.id);
       this.wasPermanentAgentUnavailable.delete(task.id);
       this.clearDispatchQueuedReasonMemo(task.id);
-      this.clearDispatchQueuedConcurrencyAuditMemo(task.id);
 
       void (async () => {
         try {
@@ -936,7 +933,6 @@ export class Scheduler {
     this.wasNodeDispatchValidationBlocked.clear();
     this.wasPermanentAgentUnavailable.clear();
     this.wasDispatchQueuedReasonLogged.clear();
-    this.dispatchQueuedConcurrencyAuditMemo.clear();
     schedulerLog.log("Stopped");
   }
 
@@ -955,25 +951,9 @@ export class Scheduler {
     }
 
     this.clearDispatchQueuedReasonMemo(taskId);
-    if (!key.includes(":queued-concurrency:")) {
-      this.clearDispatchQueuedConcurrencyAuditMemo(taskId);
-    }
     this.wasDispatchQueuedReasonLogged.add(key);
     await this.store.logEntry(taskId, reason);
     return true;
-  }
-
-  private shouldEmitDispatchQueuedConcurrencyAudit(taskId: string, signature: string): boolean {
-    const lastSignature = this.dispatchQueuedConcurrencyAuditMemo.get(taskId);
-    if (lastSignature === signature) {
-      return false;
-    }
-    this.dispatchQueuedConcurrencyAuditMemo.set(taskId, signature);
-    return true;
-  }
-
-  private clearDispatchQueuedConcurrencyAuditMemo(taskId: string): void {
-    this.dispatchQueuedConcurrencyAuditMemo.delete(taskId);
   }
 
   private emitDependencyParityDiff(diff: SchedulingDependencyParityDiff): void {
@@ -990,33 +970,6 @@ export class Scheduler {
         markerResult: diff.markerSatisfied,
       },
     });
-  }
-
-  private async emitDispatchQueuedConcurrencyAudit(task: Task, diagnostic: ConcurrencyGateDiagnostic): Promise<void> {
-    try {
-      await this.store.recordRunAuditEvent?.({
-        taskId: task.id,
-        agentId: "scheduler",
-        runId: generateSyntheticRunId("scheduler", task.id),
-        domain: "database",
-        mutationType: "scheduler:dispatch-queued-concurrency",
-        target: task.id,
-        metadata: {
-          bindingGates: diagnostic.bindingGates,
-          maxConcurrent: diagnostic.maxConcurrentGate,
-          maxWorktrees: diagnostic.maxWorktreesGate,
-          semaphore: diagnostic.semaphoreGate,
-          holders: diagnostic.holders,
-          available: diagnostic.available,
-          // U6: additive per-column capacity gates (present only flag-ON).
-          ...(diagnostic.perColumnGates ? { perColumnGates: diagnostic.perColumnGates } : {}),
-        },
-      });
-    } catch (error) {
-      schedulerLog.warn(
-        `Task ${task.id} failed to emit dispatch queued concurrency audit: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
   }
 
   private async emitNodeUnreachableRecoveryAudit(
@@ -1676,9 +1629,6 @@ export class Scheduler {
             reason,
             concurrencySignature,
           );
-          if (this.shouldEmitDispatchQueuedConcurrencyAudit(task.id, concurrencySignature)) {
-            await this.emitDispatchQueuedConcurrencyAudit(task, concurrencyGateDiagnostic);
-          }
           continue;
         }
 
@@ -2014,7 +1964,6 @@ export class Scheduler {
         this.wasNodeDispatchValidationBlocked.delete(task.id);
         this.wasPermanentAgentUnavailable.delete(task.id);
         this.clearDispatchQueuedReasonMemo(task.id);
-        this.clearDispatchQueuedConcurrencyAuditMemo(task.id);
         await this.store.logEntry(task.id, `Node routing resolved: ${effectiveNode.nodeId ?? "local"} (source: ${effectiveNode.source})`);
         this.options.onSchedule?.(task);
         started++;

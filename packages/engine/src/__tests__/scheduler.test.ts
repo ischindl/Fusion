@@ -1834,12 +1834,6 @@ describe("Scheduler", () => {
         (call: unknown[]) => call[0] === "FN-C" && String(call[1]).includes("queued — concurrency limit reached"),
       );
       expect(concurrencyReasonCalls).toHaveLength(1);
-
-      const auditCalls = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) => (call[0] as { mutationType?: string } | undefined)?.mutationType === "scheduler:dispatch-queued-concurrency",
-      );
-      expect(auditCalls).toHaveLength(1);
-      expect(auditCalls[0]?.[0]?.metadata?.bindingGates).toEqual(["maxConcurrent"]);
     });
 
     it("dedupes queued-concurrency logs when only non-binding semaphore counts change", async () => {
@@ -1872,12 +1866,6 @@ describe("Scheduler", () => {
         (call: unknown[]) => call[0] === "FN-D" && String(call[1]).includes("queued — concurrency limit reached"),
       );
       expect(concurrencyReasonCalls).toHaveLength(1);
-
-      const auditCalls = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) => (call[0] as { mutationType?: string } | undefined)?.mutationType === "scheduler:dispatch-queued-concurrency",
-      );
-      expect(auditCalls).toHaveLength(1);
-      expect(auditCalls[0]?.[0]?.metadata?.bindingGates).toEqual(["maxWorktrees"]);
     });
 
     it("dedupes queued-concurrency logs across used/limit churn on the same binding gate", async () => {
@@ -1910,13 +1898,6 @@ describe("Scheduler", () => {
       );
       expect(concurrencyReasonCalls).toHaveLength(1);
       expect(String(concurrencyReasonCalls[0]?.[1])).toContain("semaphore used=1/2");
-
-      const auditCalls = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) => (call[0] as { mutationType?: string } | undefined)?.mutationType === "scheduler:dispatch-queued-concurrency",
-      );
-      expect(auditCalls).toHaveLength(1);
-      expect(auditCalls[0]?.[0]?.metadata?.bindingGates).toEqual(["semaphore"]);
-      expect(auditCalls[0]?.[0]?.metadata?.semaphore).toEqual({ used: 1, limit: 2, slack: 1 });
     });
 
     it("suppresses re-log and re-audit when only binding holder identity changes", async () => {
@@ -1950,13 +1931,6 @@ describe("Scheduler", () => {
         (call: unknown[]) => call[0] === "FN-D" && String(call[1]).includes("queued — concurrency limit reached"),
       );
       expect(concurrencyReasonCalls).toHaveLength(1);
-
-      const auditCalls = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) => (call[0] as { mutationType?: string } | undefined)?.mutationType === "scheduler:dispatch-queued-concurrency",
-      );
-      expect(auditCalls).toHaveLength(1);
-      expect(auditCalls[0]?.[0]?.metadata?.bindingGates).toEqual(["maxWorktrees"]);
-      expect(auditCalls[0]?.[0]?.metadata?.holders?.maxWorktrees).toEqual(["FN-A"]);
     });
 
     it("re-logs and re-audits when binding gate changes", async () => {
@@ -1995,13 +1969,6 @@ describe("Scheduler", () => {
       expect(concurrencyReasonCalls).toHaveLength(2);
       expect(String(concurrencyReasonCalls[0]?.[1])).toContain("gate=maxConcurrent");
       expect(String(concurrencyReasonCalls[1]?.[1])).toContain("gate=maxWorktrees");
-
-      const auditCalls = (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) => (call[0] as { mutationType?: string } | undefined)?.mutationType === "scheduler:dispatch-queued-concurrency",
-      );
-      expect(auditCalls).toHaveLength(2);
-      expect(auditCalls[0]?.[0]?.metadata?.bindingGates).toEqual(["maxConcurrent"]);
-      expect(auditCalls[1]?.[0]?.metadata?.bindingGates).toEqual(["maxWorktrees"]);
     });
 
     it("formats queued-concurrency memo keys from binding gates only", () => {
