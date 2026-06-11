@@ -299,3 +299,15 @@ Copy this checklist into a bug-fix or UI-affordance add/remove task's `## Surfac
 - [ ] Leftover shells after removal — empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels — are explicitly checked and fixed/hidden
 
 Motivating incident: FN-6115/FN-6118/FN-6123 — a single workflow-row chevron required three tasks to fully remove because the affordance rendered across multiple components and one mobile surface kept an empty `btn-icon` button shell.
+
+### Symptom Verification for bug-class tasks
+
+Bug-class/bug-fix tasks must also include a `## Symptom Verification` section so FN-5893 acceptance proves the original user-visible failure is gone, not merely that a change landed or broad checks are green. Feature/docs/non-bug tasks are not required to carry this section.
+
+Use the exact heading `## Symptom Verification` and include all three required contents:
+
+- [ ] **Original symptom** — what the user/issue reported was broken.
+- [ ] **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure.
+- [ ] **Assertion it is gone** — final verification reproduces the original failure condition and asserts it no longer occurs via a real automated test.
+
+Symptom-based acceptance is mandatory for bug fixes: reproduce the original failure, prove it is gone, and keep the invariant covered across the `## Surface Enumeration` checklist. Green build/tests alone are insufficient when they do not exercise the reported symptom.

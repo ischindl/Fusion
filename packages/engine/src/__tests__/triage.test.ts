@@ -668,11 +668,13 @@ describe("FN-5893 invariant regression wording", () => {
     }
   });
 
-  it("requires a Surface Enumeration section and blocking REVISE guidance for bug-fix specs", () => {
+  it("requires a Surface Enumeration section and proves missing sections are blocking REVISEs for bug-fix specs", () => {
+    const missingSectionRevisePattern =
+      /For bug fixes and UI-affordance add\/remove tasks, the spec MUST include a `## Surface Enumeration` section\. During self-review via `fn_review_spec\(\)`, treat a missing section on a bug-fix or UI-affordance add\/remove spec as a blocking REVISE\./;
+
     for (const prompt of [TRIAGE_SYSTEM_PROMPT, FAST_TRIAGE_SYSTEM_PROMPT]) {
       expect(prompt).toContain("## Surface Enumeration");
-      expect(prompt).toContain("spec MUST include a `## Surface Enumeration` section");
-      expect(prompt).toContain("blocking REVISE");
+      expect(prompt).toMatch(missingSectionRevisePattern);
       expect(prompt).toContain("docs/testing.md");
       expect(prompt).toContain("duplicate / populated data states");
       expect(prompt).toContain("shared hooks/components/modules/helpers");
@@ -699,6 +701,21 @@ describe("FN-5893 invariant regression wording", () => {
       expect(prompt).toContain(
         "For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist in the `## Surface Enumeration` section",
       );
+    }
+  });
+
+  it("defines the FN-6229 Symptom Verification contract in standard and fast prompts", () => {
+    for (const prompt of [TRIAGE_SYSTEM_PROMPT, FAST_TRIAGE_SYSTEM_PROMPT]) {
+      expect(prompt).toContain("## Symptom Verification");
+      expect(prompt).toContain("Use the exact heading `## Symptom Verification`");
+      expect(prompt).toContain("**Original symptom** — what the user/issue reported was broken");
+      expect(prompt).toContain("**Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure");
+      expect(prompt).toContain("**Assertion it is gone**");
+      expect(prompt).toContain("final verification must reproduce that original failure condition and assert it no longer occurs");
+      expect(prompt).toContain("Green build/tests alone are insufficient");
+      expect(prompt).toContain("symptom-based acceptance");
+      expect(prompt).toContain("bug-class/bug-fix tasks");
+      expect(prompt).toContain("feature/docs/non-bug tasks do not need this section");
     }
   });
 

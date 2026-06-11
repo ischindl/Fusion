@@ -98,6 +98,7 @@ pnpm verify:workspace  # deep opt-in verification (lint -> test:full -> build); 
 ### Standing Rule: Fix the Invariant, Not the Repro (FN-5893)
 
 - When fixing a bug, the regression test must assert the general invariant across ALL known surfaces — not only the single reported reproduction.
+- Symptom-based acceptance is mandatory for bug-class tasks: the final verification must reproduce the original failure condition and assert it no longer occurs via a real automated test. Encode this as a `## Symptom Verification` section in PROMPT.md with **Original symptom**, **Exact reproduction**, and **Assertion it is gone**; green build/tests alone are insufficient. This marker is the contract consumed by the GitHub auto-close gate (FN-6230).
 - Surface enumeration is now an enforced bug-fix artifact: the spec must include a `## Surface Enumeration` section, planning must REVISE when that section is missing, and review must REVISE any repro-only regression test.
 - The Surface Enumeration gate also applies to tasks that add or remove UI affordances (icons, buttons, chevrons, toggles, badges, menu entries, click targets), including Review Level 0 cosmetic tasks.
 - Enumerate the surfaces before filing or closing the fix: every provider/bridge for streaming and agent paths, both desktop and mobile breakpoints for UI behavior, empty/undefined/duplicate/populated data states, and every shared hook/component/module/helper that reuses the affected logic.

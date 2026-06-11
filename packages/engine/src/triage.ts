@@ -124,6 +124,10 @@ Follow this structure exactly:
 
 {Required for bug-fix tasks and UI-affordance add/remove tasks (adding, removing, or restructuring icons, buttons, chevrons/arrows, toggles, badges, menu entries, click targets): a checklist enumerating every surface the fixed invariant must hold across. Include every provider/bridge for streaming and agent paths; desktop AND mobile breakpoints; empty/undefined/duplicate/populated data states; and every hook/component/module that shares the affected logic. For UI-affordance add/remove tasks, enumerate every component that renders the affordance by searching the codebase for the icon/class/testid — not just the component the user pointed at. Explicitly check for leftover shells after removal (empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels) across both desktop and mobile breakpoints. Use the canonical checklist in docs/testing.md as the starting point.}
 
+## Symptom Verification
+
+{Required for bug-class/bug-fix tasks only; feature/docs/non-bug tasks do not need this section. Use the exact heading \`## Symptom Verification\` and include: (1) **Original symptom** — what the user/issue reported was broken; (2) **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure; (3) **Assertion it is gone** — the executor's final verification must reproduce that original failure condition and assert it no longer occurs via a real automated test. Green build/tests alone are insufficient without symptom-based acceptance.}
+
 ## Dependencies
 
 - **None**
@@ -167,6 +171,11 @@ For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist
 - [ ] Shared hooks / components / modules / helpers reusing the logic
 - [ ] Every component that renders the affordance (search the codebase for the icon/class/testid, not just the one the user pointed at)
 - [ ] Leftover shells after removal — empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels — are explicitly checked and fixed/hidden
+
+For bug-class/bug-fix tasks, add and fill in the exact \`## Symptom Verification\` section:
+- [ ] **Original symptom** — what the user/issue reported was broken
+- [ ] **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure
+- [ ] **Assertion it is gone** — final verification reproduces the original failure condition and asserts it no longer occurs via a real automated test; green build/tests alone are insufficient
 
 **Artifacts:**
 - \`path/to/file\` (new | modified)
@@ -245,6 +254,7 @@ tests. Manual verification is NOT a test.
 - For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. During self-review via \`fn_review_spec()\`, treat a missing section on a bug-fix or UI-affordance add/remove spec as a blocking REVISE.
 - For bug fixes and UI-affordance add/remove tasks, populate \`## Surface Enumeration\` with this checklist from \`docs/testing.md\`: providers/bridges/execution paths; desktop + mobile breakpoints/platforms; empty/undefined/duplicate/populated data states; shared hooks/components/modules/helpers; every component that renders the affordance; leftover shells after removal.
 - For bug fixes and UI-affordance add/remove tasks, regression tests must assert the invariant across all known surfaces — enumerate every provider/bridge, desktop + mobile breakpoints, empty/undefined/populated data states, and for UI-affordance changes every component rendering the affordance plus leftover shells after removal — not just the reported repro (see FN-5787/FN-5789/FN-5803, FN-5751, and FN-6115/FN-6118/FN-6123)
+- For bug-class/bug-fix tasks, the spec MUST include a \`## Symptom Verification\` section with **Original symptom**, **Exact reproduction**, and **Assertion it is gone**. The final verification step must perform symptom-based acceptance: reproduce the original failure and prove it is gone with a real automated test. Green build/tests alone are insufficient. Feature/docs/non-bug tasks are not required to carry \`## Symptom Verification\`.
 - The final Testing step runs lint, impacted/package-scoped tests first, and project typecheck when the repo exposes one. Run workspace-wide suites only when explicitly required by the task/workflow or during final integration after impacted checks pass.
 - Specs must instruct executors to fix lint failures and quality-gate failures directly, even when the required edits extend beyond the original File Scope
 - If the project has no test framework, the Testing step must include setting one up
@@ -438,6 +448,10 @@ Follow this structure exactly:
 
 {Required for bug-fix tasks and UI-affordance add/remove tasks (adding, removing, or restructuring icons, buttons, chevrons/arrows, toggles, badges, menu entries, click targets): a checklist enumerating every surface the fixed invariant must hold across. Include every provider/bridge for streaming and agent paths; desktop AND mobile breakpoints; empty/undefined/duplicate/populated data states; and every hook/component/module that shares the affected logic. For UI-affordance add/remove tasks, enumerate every component that renders the affordance by searching the codebase for the icon/class/testid — not just the component the user pointed at. Explicitly check for leftover shells after removal (empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels) across both desktop and mobile breakpoints. Use the canonical checklist in docs/testing.md as the starting point.}
 
+## Symptom Verification
+
+{Required for bug-class/bug-fix tasks only; feature/docs/non-bug tasks do not need this section. Use the exact heading \`## Symptom Verification\` and include: (1) **Original symptom** — what the user/issue reported was broken; (2) **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure; (3) **Assertion it is gone** — the executor's final verification must reproduce that original failure condition and assert it no longer occurs via a real automated test. Green build/tests alone are insufficient without symptom-based acceptance.}
+
 ## Dependencies
 
 - **None**
@@ -481,6 +495,11 @@ For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist
 - [ ] Shared hooks / components / modules / helpers reusing the logic
 - [ ] Every component that renders the affordance (search the codebase for the icon/class/testid, not just the one the user pointed at)
 - [ ] Leftover shells after removal — empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels — are explicitly checked and fixed/hidden
+
+For bug-class/bug-fix tasks, add and fill in the exact \`## Symptom Verification\` section:
+- [ ] **Original symptom** — what the user/issue reported was broken
+- [ ] **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure
+- [ ] **Assertion it is gone** — final verification reproduces the original failure condition and asserts it no longer occurs via a real automated test; green build/tests alone are insufficient
 
 **Artifacts:**
 - \`path/to/file\` (new | modified)
@@ -554,6 +573,7 @@ If this task REMOVES existing functionality (deleting modules, settings, API end
 - For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. During self-review via \`fn_review_spec()\`, treat a missing section on a bug-fix or UI-affordance add/remove spec as a blocking REVISE.
 - For bug fixes and UI-affordance add/remove tasks, populate \`## Surface Enumeration\` with this checklist from \`docs/testing.md\`: providers/bridges/execution paths; desktop + mobile breakpoints/platforms; empty/undefined/duplicate/populated data states; shared hooks/components/modules/helpers; every component that renders the affordance; leftover shells after removal.
 - For bug fixes and UI-affordance add/remove tasks, regression tests must assert the invariant across all known surfaces — enumerate every provider/bridge, desktop + mobile breakpoints, empty/undefined/populated data states, and for UI-affordance changes every component rendering the affordance plus leftover shells after removal — not just the reported repro (see FN-5787/FN-5789/FN-5803, FN-5751, and FN-6115/FN-6118/FN-6123)
+- For bug-class/bug-fix tasks, the spec MUST include a \`## Symptom Verification\` section with **Original symptom**, **Exact reproduction**, and **Assertion it is gone**. The final verification step must perform symptom-based acceptance: reproduce the original failure and prove it is gone with a real automated test. Green build/tests alone are insufficient. Feature/docs/non-bug tasks are not required to carry \`## Symptom Verification\`.
 - Include targeted tests in implementation steps and full quality-gate runs in final verification
 
 ## Duplicate check

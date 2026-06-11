@@ -294,19 +294,46 @@ describe("reviewStep — spec review type", () => {
 describe("FN-5928 surface-enumeration review-gate wording", () => {
   it("requires spec reviews to block missing or incomplete surface enumeration for bug-fix specs", () => {
     expect(REVIEWER_SYSTEM_PROMPT).toContain("**Surface enumeration:**");
-    expect(REVIEWER_SYSTEM_PROMPT).toContain("Missing or incomplete coverage is a blocking REVISE");
+    expect(REVIEWER_SYSTEM_PROMPT).toMatch(
+      /For bug-fix specs and UI-affordance add\/remove specs, is `## Surface Enumeration` present[\s\S]*Missing or incomplete coverage is a blocking REVISE\./,
+    );
     expect(REVIEWER_SYSTEM_PROMPT).toContain("desktop + mobile breakpoints/platforms");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("shared hooks/components/modules/helpers");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("bug-fix specs and UI-affordance add/remove specs");
   });
 
   it("requires code reviews to reject repro-only regression tests for bug fixes", () => {
+    expect(REVIEWER_SYSTEM_PROMPT).toMatch(
+      /For bug fixes, apply FN-5893 strictly: if the regression test only reproduces the reported case instead of asserting the invariant across the spec's `## Surface Enumeration` surfaces, issue REVISE\./,
+    );
     expect(REVIEWER_SYSTEM_PROMPT).toContain("single-surface-only test");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("doesn't verify the invariant across the spec's enumerated surfaces");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("Keep enforcing FN-5893 for bug fixes");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("FN-5787/FN-5789/FN-5803");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("FN-5797/FN-5875/FN-5919");
     expect(REVIEWER_SYSTEM_PROMPT).toContain("FN-5751");
+  });
+
+  it("requires spec reviews to block bug-class specs missing symptom verification", () => {
+    expect(REVIEWER_SYSTEM_PROMPT).toContain("**Symptom verification:**");
+    expect(REVIEWER_SYSTEM_PROMPT).toMatch(
+      /For bug-class\/bug-fix specs only, is `## Symptom Verification` present and complete with \*\*Original symptom\*\*, \*\*Exact reproduction\*\*, and \*\*Assertion it is gone\*\*\?/,
+    );
+    expect(REVIEWER_SYSTEM_PROMPT).toContain(
+      "A bug-class spec whose final verification only checks green build/tests without reproducing the original failure and asserting it no longer occurs is a blocking REVISE under FN-5893",
+    );
+    expect(REVIEWER_SYSTEM_PROMPT).toContain(
+      "Missing, empty, or incomplete `## Symptom Verification` is a blocking REVISE for bug-class specs",
+    );
+    expect(REVIEWER_SYSTEM_PROMPT).toContain("feature/docs/non-bug specs are not required to carry it");
+  });
+
+  it("requires code reviews to reject green-build-only symptom acceptance for bug fixes", () => {
+    expect(REVIEWER_SYSTEM_PROMPT).toMatch(
+      /For bug-class\/bug-fix specs, also enforce symptom-based acceptance:[\s\S]*final verification only checks green build\/tests without reproducing the original failure condition and asserting it no longer occurs, issue REVISE\./,
+    );
+    expect(REVIEWER_SYSTEM_PROMPT).toContain("lacks **Original symptom**, **Exact reproduction**, or **Assertion it is gone**");
+    expect(REVIEWER_SYSTEM_PROMPT).toContain("Do not require `## Symptom Verification` for feature/docs/non-bug specs");
   });
 
   it("requires spec/code reviews to enforce surface enumeration for UI-affordance add/remove tasks", () => {
