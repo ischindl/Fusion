@@ -18,12 +18,19 @@ export function applyPrepackTransform(pkg) {
     devDependencies,
     // Inject exports only for the packed manifest so workspace/dev resolution
     // remains unchanged (postpack restore reverts this file to original state).
+    //
+    // Declaring any `exports` field flips Node into strict subpath mode, which
+    // would otherwise hide every other `./dist/*` file. The runfusion.ai alias
+    // imports `@runfusion/fusion/dist/bin.js` and the pi loader reads
+    // `./dist/extension.js`, so a `./dist/*` passthrough is required to keep
+    // those subpaths resolvable post-pack.
     exports: {
       ...(pkg.exports || {}),
       "./plugin-sdk": {
         types: "./dist/plugin-sdk/index.d.ts",
         import: "./dist/plugin-sdk/index.js",
       },
+      "./dist/*": "./dist/*",
       "./package.json": "./package.json",
     },
   };

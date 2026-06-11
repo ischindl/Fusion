@@ -25,6 +25,10 @@ describe("plugin-sdk export surface", () => {
       import: "./dist/plugin-sdk/index.js",
     });
     expect(transformed.exports["./package.json"]).toBe("./package.json");
+    // The runfusion.ai alias imports `@runfusion/fusion/dist/bin.js`; the
+    // injected exports field must keep `./dist/*` subpaths resolvable or the
+    // pre-publish smoke test fails with ERR_PACKAGE_PATH_NOT_EXPORTED.
+    expect(transformed.exports["./dist/*"]).toBe("./dist/*");
     expect(transformed.bin).toEqual(pkg.bin);
     expect(transformed.pi).toEqual(pkg.pi);
   });
