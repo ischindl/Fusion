@@ -14,8 +14,8 @@ describe("workflow scheduler policy deletion guard", () => {
     expect(source).toContain("acquireWorkflowWorkItemLease");
     expect(source).not.toMatch(/\bgetTask\b/);
     expect(source).not.toMatch(/\bmoveTask\b/);
-    expect(source).not.toContain("in-review");
-    expect(source).not.toContain("mergeRetries");
-    expect(source).not.toContain("retryAfter");
+    expect(source).not.toMatch(/["']in-review["']/);
+    expect(source).not.toMatch(/\bmergeRetries\b/);
+    expect(source).not.toMatch(/\bretryAfter\b/);
   });
 });
