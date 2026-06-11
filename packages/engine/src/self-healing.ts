@@ -5907,12 +5907,20 @@ export class SelfHealingManager {
             transientRecoveryCount: nextCount,
           },
         });
-        publishWorkflowRecoveryEvent(this.store, {
-          taskId: task.id,
-          kind: "transient-merge-failure",
-          source: "self-healing",
-          reason: errorSnippet,
-        });
+        try {
+          publishWorkflowRecoveryEvent(this.store, {
+            taskId: task.id,
+            kind: "transient-merge-failure",
+            source: "self-healing",
+            reason: errorSnippet,
+          });
+        } catch (eventErr) {
+          log.warn(
+            `recoverTransientMergeFailures: workflow recovery event publish failed for ${task.id}: ${
+              eventErr instanceof Error ? eventErr.message : String(eventErr)
+            }`,
+          );
+        }
         try {
           await audit.database({
             type: "merger:transient-failure-auto-recovered",
@@ -7072,12 +7080,20 @@ export class SelfHealingManager {
       await this.store.updateTask(task.id, {
         completionHandoffLimboRecoveryCount: currentCount + 1,
       });
-      publishWorkflowRecoveryEvent(this.store, {
-        taskId: task.id,
-        kind: "completion-handoff-limbo",
-        source: "self-healing",
-        reason: `ageMs=${ageMs}; attempts=${currentCount + 1}`,
-      });
+      try {
+        publishWorkflowRecoveryEvent(this.store, {
+          taskId: task.id,
+          kind: "completion-handoff-limbo",
+          source: "self-healing",
+          reason: `ageMs=${ageMs}; attempts=${currentCount + 1}`,
+        });
+      } catch (eventErr) {
+        log.warn(
+          `recoverCompletionHandoffLimbo: workflow recovery event publish failed for ${task.id}: ${
+            eventErr instanceof Error ? eventErr.message : String(eventErr)
+          }`,
+        );
+      }
 
       const audit = createRunAuditor(this.store, {
         runId: generateSyntheticRunId("self-heal", task.id),
