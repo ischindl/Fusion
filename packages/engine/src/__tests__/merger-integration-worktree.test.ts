@@ -12,6 +12,7 @@ import { activeSessionRegistry, executingTaskLock } from "../active-session-regi
 import * as branchAutocorrect from "../branch-autocorrect.js";
 import {
   acquireReuseHandoff,
+  ensureUsableMergeIntegrationRoot,
   MergeHandoffRefusedError,
   probeIntegrationWorktreeState,
   releaseReuseHandoff,
@@ -90,6 +91,87 @@ describe("resolveMergeIntegrationRoot", () => {
       rootDir: "/tmp/task-worktree",
       branchName: "fusion/fn-5279",
     });
+  });
+});
+
+describe("ensureUsableMergeIntegrationRoot", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("treats an empty reuse worktree sentinel as missing without probing git", async () => {
+    const classifySpy = vi.spyOn(worktreePool, "classifyTaskWorktree");
+
+    await expect(
+      ensureUsableMergeIntegrationRoot({
+        resolution: { mode: "reuse-task-worktree", rootDir: "", branchName: "fusion/fn-5279" },
+        projectRoot: "/tmp/project-root",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      checked: "reuse-task-worktree",
+      reason: "missing-task-worktree",
+    });
+    expect(classifySpy).not.toHaveBeenCalled();
+  });
+
+  it("classifies absent reuse worktrees before they can be used as cwd", async () => {
+    vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({
+      ok: false,
+      classification: "missing",
+      reason: "worktree directory does not exist",
+    });
+
+    const result = await ensureUsableMergeIntegrationRoot({
+      resolution: { mode: "reuse-task-worktree", rootDir: "/tmp/dead-task-worktree", branchName: "fusion/fn-5279" },
+      projectRoot: "/tmp/project-root",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      checked: "reuse-task-worktree",
+      reason: "unusable-task-worktree",
+      classification: { classification: "missing" },
+    });
+    expect(worktreePool.classifyTaskWorktree).toHaveBeenCalledWith("/tmp/project-root", "/tmp/dead-task-worktree");
+  });
+
+  it("classifies de-registered reuse worktrees before handoff", async () => {
+    vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({
+      ok: false,
+      classification: "unregistered",
+      reason: "not registered in git worktree list",
+    });
+
+    await expect(
+      ensureUsableMergeIntegrationRoot({
+        resolution: { mode: "reuse-task-worktree", rootDir: "/tmp/unregistered-task-worktree", branchName: "fusion/fn-5279" },
+        projectRoot: "/tmp/project-root",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "unusable-task-worktree",
+      classification: { classification: "unregistered" },
+    });
+  });
+
+  it("leaves healthy reuse roots unchanged", async () => {
+    vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({ ok: true });
+    const resolution = { mode: "reuse-task-worktree" as const, rootDir: "/tmp/task-worktree", branchName: "fusion/fn-5279" };
+
+    await expect(
+      ensureUsableMergeIntegrationRoot({ resolution, projectRoot: "/tmp/project-root" }),
+    ).resolves.toEqual({ ok: true, resolution, checked: "reuse-task-worktree" });
+  });
+
+  it("does not stat or git-probe projectRoot/default mode", async () => {
+    const classifySpy = vi.spyOn(worktreePool, "classifyTaskWorktree");
+    const resolution = { mode: "cwd-integration-branch" as const, rootDir: "/tmp/project-root", branchName: "fusion/fn-5279" };
+
+    await expect(
+      ensureUsableMergeIntegrationRoot({ resolution, projectRoot: "/tmp/project-root" }),
+    ).resolves.toEqual({ ok: true, resolution, checked: false });
+    expect(classifySpy).not.toHaveBeenCalled();
   });
 });
 

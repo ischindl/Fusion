@@ -129,6 +129,7 @@ import { detectAlreadyLandedOnMain, type AlreadyMergedDetectionStrategy } from "
 import { decideAutoPrerebase, probeDivergence, runAutoPrerebase } from "./merger-auto-prerebase.js";
 import {
   acquireReuseHandoff,
+  ensureUsableMergeIntegrationRoot,
   MergeHandoffRefusedError,
   probeIntegrationWorktreeState,
   releaseReuseHandoff,
@@ -8170,19 +8171,15 @@ export async function aiMergeTask(
 
   let reuseHandoff: HandoffResult | undefined;
   if (integrationRoot.mode === "reuse-task-worktree") {
-    const reusableWorktreePath = task.worktree?.trim();
-    if (!reusableWorktreePath) {
-      await reacquireReuseIntegrationWorktree("missing-task-worktree", {
+    const preflight = await ensureUsableMergeIntegrationRoot({
+      resolution: integrationRoot,
+      projectRoot: projectRootDir,
+    });
+    if (!preflight.ok) {
+      await reacquireReuseIntegrationWorktree(preflight.reason, {
         requestedMode: requestedIntegrationMode,
+        classification: preflight.classification ?? null,
       });
-    } else {
-      const classification = await classifyTaskWorktree(projectRootDir, reusableWorktreePath);
-      if (!classification.ok) {
-        await reacquireReuseIntegrationWorktree("unusable-task-worktree", {
-          requestedMode: requestedIntegrationMode,
-          classification,
-        });
-      }
     }
   }
 

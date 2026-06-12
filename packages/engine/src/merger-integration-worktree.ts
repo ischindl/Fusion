@@ -71,6 +71,62 @@ export function resolveMergeIntegrationRoot(
   };
 }
 
+export type MergeIntegrationRootPreflightResult =
+  | { ok: true; resolution: MergeIntegrationRootResolution; checked: false | "reuse-task-worktree" }
+  | {
+    ok: false;
+    resolution: MergeIntegrationRootResolution;
+    checked: "reuse-task-worktree";
+    reason: "missing-task-worktree" | "unusable-task-worktree";
+    classification?: Awaited<ReturnType<typeof classifyTaskWorktree>>;
+  };
+
+export interface EnsureUsableMergeIntegrationRootInput {
+  resolution: MergeIntegrationRootResolution;
+  projectRoot: string;
+}
+
+/**
+ * Preflight the merge integration cwd before any merge-runner git spawn.
+ *
+ * In cwd/project-root mode this is intentionally a no-op: the project root is
+ * the stable repository checkout and the common path should not pay an extra
+ * stat or git-worktree-list probe. In reuse-task-worktree mode the resolved
+ * `task.worktree` is user/session mutable, so classify it before it can be
+ * used as `cwd`; callers can then reacquire/recreate the worktree instead of
+ * letting Node surface a misleading `spawn git ENOENT` for a vanished cwd.
+ */
+export async function ensureUsableMergeIntegrationRoot(
+  input: EnsureUsableMergeIntegrationRootInput,
+): Promise<MergeIntegrationRootPreflightResult> {
+  if (input.resolution.mode !== "reuse-task-worktree") {
+    return { ok: true, resolution: input.resolution, checked: false };
+  }
+
+  const reusableRoot = input.resolution.rootDir.trim();
+  if (!reusableRoot) {
+    return {
+      ok: false,
+      resolution: input.resolution,
+      checked: "reuse-task-worktree",
+      reason: "missing-task-worktree",
+    };
+  }
+
+  const classification = await classifyTaskWorktree(input.projectRoot, reusableRoot);
+  if (!classification.ok) {
+    return {
+      ok: false,
+      resolution: input.resolution,
+      checked: "reuse-task-worktree",
+      reason: "unusable-task-worktree",
+      classification,
+    };
+  }
+
+  return { ok: true, resolution: input.resolution, checked: "reuse-task-worktree" };
+}
+
 export interface ResolveIntegrationRemoteInput {
   settings: Pick<ProjectSettings, "worktreeRebaseRemote">;
   rootDir: string;
@@ -306,6 +362,21 @@ function asCentralClaimAccessor(store: TaskStore): {
 export async function acquireReuseHandoff(input: ReuseHandoffInput): Promise<HandoffResult> {
   const expectedBranch = canonicalFusionBranchName(input.task.id);
   const worktreePath = input.worktreePath;
+  const preflight = await ensureUsableMergeIntegrationRoot({
+    resolution: {
+      mode: "reuse-task-worktree",
+      rootDir: worktreePath,
+      branchName: expectedBranch,
+    },
+    projectRoot: input.projectRoot,
+  });
+  if (!preflight.ok) {
+    throw new MergeHandoffRefusedError("integration-root-preflight", preflight.reason, {
+      taskId: input.task.id,
+      worktreePath,
+      classification: preflight.classification ?? null,
+    });
+  }
   if (canonicalizePath(worktreePath) === canonicalizePath(input.projectRoot)) {
     throw new MergeHandoffRefusedError("reuse-misconfigured", "worktree-equals-project-root", {
       taskId: input.task.id,
