@@ -1675,14 +1675,23 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     };
   }, [isMobile, keyboardOpen]);
 
-  // On mount and on visibility/page restore, if iOS thinks the keyboard is
-  // up but the textarea isn't actually focused (or vice versa), the
-  // visualViewport metrics get stuck in a half-state — composer pushed up
-  // or covered by a blank pane. Force a blur+refocus on the textarea to
-  // make iOS resync. Only runs on mobile and only when ChatView holds the
-  // active session (avoids stealing focus from other views).
+  // On page restore, if iOS thinks the keyboard is up but the textarea
+  // isn't actually focused (or vice versa), the visualViewport metrics get
+  // stuck in a half-state — composer pushed up or covered by a blank pane.
+  // Force a blur+refocus on the textarea to make iOS resync.
+  //
+  // This is an iOS-only quirk fix and must stay iOS-only: on Android a
+  // programmatic focus() after blur() does NOT re-raise the soft keyboard
+  // (Android only opens the keyboard from a real user gesture), so running
+  // this there permanently collapses the keyboard whenever a spurious
+  // visibilitychange fires — including the ones Android browsers emit
+  // mid-keyboard-transition while the user is typing. We also only resync
+  // when the document is actually becoming visible; visibilitychange also
+  // fires on hide, where a blur+refocus is pointless and disruptive. Only
+  // runs when ChatView holds the active session (avoids stealing focus
+  // from other views).
   useEffect(() => {
-    if (!isMobile || !activeSession) return;
+    if (!isMobile || !activeSession || !isIOS()) return;
     const resync = () => {
       const ta = inputRef.current;
       if (!ta) return;
@@ -1692,10 +1701,14 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
         ta.focus({ preventScroll: true });
       }, 0);
     };
-    document.addEventListener("visibilitychange", resync);
+    const resyncOnVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      resync();
+    };
+    document.addEventListener("visibilitychange", resyncOnVisible);
     window.addEventListener("pageshow", resync);
     return () => {
-      document.removeEventListener("visibilitychange", resync);
+      document.removeEventListener("visibilitychange", resyncOnVisible);
       window.removeEventListener("pageshow", resync);
     };
   }, [isMobile, activeSession]);
