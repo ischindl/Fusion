@@ -120,7 +120,7 @@ function expectComposerSendableAfterDraft(message = "Please continue") {
 function expectNoInactiveSessionHint() {
   expect(screen.queryByText(/picked up by the next session/i)).not.toBeInTheDocument();
   expect(document.querySelector(".task-chat-session-hint")).not.toBeInTheDocument();
-  expect(screen.getByPlaceholderText("Message the agent…")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText("Steer the currently executing agent")).toBeInTheDocument();
 }
 
 function expectActiveSessionCopy() {
@@ -779,6 +779,15 @@ describe("TaskChatTab", () => {
     expect(screen.getByRole("button", { name: "Jump to latest message" })).toHaveClass("task-chat-jump-to-bottom");
   });
 
+  it("renders an icon-only send button with preserved accessible name and new placeholder", () => {
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
+
+    expect(screen.getByPlaceholderText("Steer the currently executing agent")).toBeInTheDocument();
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    expect(sendButton).toHaveClass("task-chat-send");
+    expect(sendButton).toHaveTextContent("");
+  });
+
   it("posts composer text through addSteeringComment and clears on success", async () => {
     const user = userEvent.setup();
     mockedAddSteeringComment.mockResolvedValue(makeTask());
@@ -1205,7 +1214,9 @@ describe("TaskChatTab", () => {
     expect(sendButton).not.toBeDisabled();
     await user.click(sendButton);
 
-    expect(screen.getByRole("button", { name: "Sending" })).toBeDisabled();
+    const sendingButton = screen.getByRole("button", { name: "Sending" });
+    expect(sendingButton).toBeDisabled();
+    expect(sendingButton).toHaveTextContent("");
     expect(input).toBeDisabled();
 
     await act(async () => {
@@ -1306,10 +1317,22 @@ describe("TaskChatTab", () => {
 
   it("keeps mobile breakpoint scaffolding for the transcript, composer, and collapsible groups", () => {
     const css = readFileSync(resolve(__dirname, "../TaskChatTab.css"), "utf8");
+    const sendRule = getCssRuleBlock(css, ".task-chat-send");
+    const mobileCss = getCssAfter(css, "@media (max-width: 768px)");
+    const mobileComposerRule = getCssRuleBlock(mobileCss, ".task-chat-composer-row");
+    const mobileSendRule = getCssRuleBlock(mobileCss, ".task-chat-send");
+
     expect(css).toContain("@media (max-width: 768px)");
     expect(css).toContain(".task-chat-transcript");
     expect(css).toContain(".task-chat-jump-to-bottom");
     expect(css).toContain(".task-chat-composer-row");
+    expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
+    expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
+    expect(sendRule).not.toContain("gap");
+    expect(mobileComposerRule).toContain("align-items: flex-end");
+    expect(mobileComposerRule).not.toContain("flex-direction: column");
+    expect(mobileComposerRule).not.toContain("align-items: stretch");
+    expect(mobileSendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(css).toContain(".task-chat-tool-group-summary");
     expect(css).toContain(".task-chat-tool-group-names");
     expect(css).toContain(".task-chat-tool-group-error-count");

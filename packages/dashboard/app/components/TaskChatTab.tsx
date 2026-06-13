@@ -671,16 +671,21 @@ export function TaskChatTab({ task, projectId, active, addToast, sessionLive, on
             ref={textareaRef}
             className="input task-chat-input"
             value={draft}
-            placeholder={activeSession ? "Message the active agent session…" : "Message the agent…"}
+            placeholder="Steer the currently executing agent"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
             disabled={sending}
             aria-label="Message active agent session"
             rows={1}
           />
-          <button type="submit" className="btn btn-primary task-chat-send" disabled={!canSend}>
+          <button
+            type="submit"
+            className="btn btn-primary btn-icon task-chat-send"
+            disabled={!canSend}
+            aria-label={sending ? "Sending" : "Send"}
+            title={sending ? "Sending" : "Send"}
+          >
             {sending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
-            <span>{sending ? "Sending" : "Send"}</span>
           </button>
         </div>
       </form>
