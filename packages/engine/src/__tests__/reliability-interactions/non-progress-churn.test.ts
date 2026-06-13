@@ -214,7 +214,9 @@ describe("reliability interactions: non-progress churn", () => {
     expect(task.status).toBe("queued");
     expect(task.column).toBe("todo");
     expect(task.paused).toBe(false);
-    expect(task.userPaused).toBe(false);
+    // FN-6252 / Move-Task contract: engine rebounds do not write userPaused,
+    // so a never-user-paused task remains undefined while still not user-paused.
+    expect(task.userPaused).not.toBe(true);
     expect(task.pausedReason).toBeNull();
     expect(task.stuckKillCount).toBe(7);
     expect(task.steps).toEqual([{ name: "Implement", status: "in-progress" }]);
