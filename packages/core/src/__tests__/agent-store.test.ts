@@ -1846,7 +1846,11 @@ describe("AgentStore", () => {
       taskStore = new TaskStore(rootDir, join(rootDir, ".fusion-global-settings"));
       await taskStore.init();
 
-      store = new AgentStore({ rootDir, taskStore });
+      // Mirror the top-level AgentStore setup: checkout-leasing assertions need
+      // the disk-backed TaskStore for task persistence, but not a disk-backed
+      // AgentStore SQLite database in a shared hook.
+      store.close();
+      store = new AgentStore({ rootDir, inMemoryDb: true, taskStore });
       await store.init();
 
       const holder = await store.createAgent({ name: "Checkout Holder", role: "executor" });
@@ -1859,7 +1863,6 @@ describe("AgentStore", () => {
     });
 
     afterEach(() => {
-      store.close();
       taskStore.close();
     });
 
