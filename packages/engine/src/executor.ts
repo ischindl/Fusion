@@ -961,6 +961,21 @@ const spawnAgentParams = Type.Object({
   ),
 });
 
+/**
+ * Sentinel a skill running in a Fusion workflow step emits when it needs to ask
+ * the user a blocking question (it has no synchronous question tool — see the CE
+ * skills' "Running inside Fusion" sections). The executor detects this in the
+ * step's output and parks the task `awaiting-user-input`, reusing the same
+ * pause/resume machinery as an `awaitInput` node (U6). Returns the question text,
+ * or null when no well-formed sentinel is present.
+ */
+export function parseAwaitInputSentinel(output: string | undefined): string | null {
+  if (!output) return null;
+  const m = output.match(/===FUSION_AWAIT_INPUT===\s*([\s\S]*?)\s*===END_FUSION_AWAIT_INPUT===/);
+  const question = m?.[1]?.trim();
+  return question ? question : null;
+}
+
 /** Result returned from fn_spawn_agent tool */
 interface SpawnAgentResult {
   agentId: string;
@@ -5783,6 +5798,38 @@ export class TaskExecutor {
       return this.runAwaitInputNode(node, live);
     }
 
+    // Skill-emitted await-input resume (U6): a prior run of THIS node may have
+    // paused the task because its skill asked the user a blocking question via
+    // the ===FUSION_AWAIT_INPUT=== sentinel. Mirror runAwaitInputNode's resume:
+    // when the user has replied (a steering comment at/after the pause
+    // watermark), clear the marker and fall through to RE-RUN the skill so it
+    // continues with the answer; otherwise keep the task parked and halt.
+    const skillAwaitMarker = `workflow-input:${node.id}`;
+    const skillPausedReason = live.pausedReason ?? "";
+    if (skillPausedReason.startsWith(skillAwaitMarker)) {
+      const watermark = (() => {
+        const mm = skillPausedReason.slice(skillAwaitMarker.length).match(/^@(\d+)/);
+        const t = mm ? Number(mm[1]) : NaN;
+        return Number.isFinite(t) ? t : undefined;
+      })();
+      const steering = Array.isArray(live.steeringComments) ? live.steeringComments : [];
+      const replies = watermark === undefined
+        ? steering
+        : steering.filter((c) => {
+            const created = Date.parse((c as { createdAt?: string }).createdAt ?? "");
+            return Number.isFinite(created) ? created >= watermark : false;
+          });
+      if (replies.length === 0) {
+        // Still paused, or unpaused without a reply — keep waiting.
+        if (!live.paused) {
+          await this.store.updateTask(live.id, { status: "awaiting-user-input", paused: true }, this.getRunContextFor(live.id));
+        }
+        return { outcome: "failure", value: "awaiting-user-input" };
+      }
+      await this.store.updateTask(live.id, { status: null, pausedReason: null }, this.getRunContextFor(live.id));
+      await this.store.logEntry(live.id, `Workflow input received for step '${node.id}' — resuming`, undefined, this.getRunContextFor(live.id));
+    }
+
     const executorKind = typeof cfg.executor === "string" ? cfg.executor : "model";
 
     // CLI Agent Executor (U7): a `cli-agent` node drives an engine-owned CLI
@@ -5987,6 +6034,27 @@ export class TaskExecutor {
     const outcome = mode === "script"
       ? await this.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv)
       : await this.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv);
+
+    // Skill-emitted await-input (U6): if the skill asked the user a blocking
+    // question via the ===FUSION_AWAIT_INPUT=== sentinel, park the task
+    // awaiting-user-input with the question (dashboard / task card surfaces it)
+    // and halt the walk. On resume this node re-runs and the resume check above
+    // consumes the user's steering reply.
+    const awaitQuestion = parseAwaitInputSentinel((outcome as { output?: string }).output);
+    if (awaitQuestion) {
+      await this.store.logEntry(
+        live.id,
+        `Workflow step '${node.id}' is waiting for your input: ${awaitQuestion}`,
+        undefined,
+        this.getRunContextFor(live.id),
+      );
+      await this.store.updateTask(
+        live.id,
+        { status: "awaiting-user-input", paused: true, pausedReason: `${skillAwaitMarker}@${Date.now()}: ${awaitQuestion}` },
+        this.getRunContextFor(live.id),
+      );
+      return { outcome: "failure", value: "awaiting-user-input" };
+    }
 
     const blocking = step.gateMode === "gate";
     // Script-mode outcomes carry no structured verdict; prompt-mode may.
