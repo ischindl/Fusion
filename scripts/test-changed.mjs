@@ -198,6 +198,37 @@ export function pruneFusionTestHomes(maxEntries = PRUNE_MAX_ENTRIES) {
   }
 }
 
+export function pruneFusionTestWorkers(maxEntries = PRUNE_MAX_ENTRIES) {
+  let tmpEntries = [];
+  try {
+    tmpEntries = readdirSync(tmpdir(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  let removed = 0;
+  for (const entry of tmpEntries) {
+    if (removed >= maxEntries) break;
+    if (!entry.isDirectory() || !entry.name.startsWith("fusion-test-workers-")) continue;
+    const rawPath = path.join(tmpdir(), entry.name);
+    try {
+      realpathSync(rawPath);
+    } catch {
+      // Keep raw path fallback.
+    }
+    try {
+      // FN-6360: if a Vitest invocation is SIGKILL'd, globalTeardown never runs.
+      // This capped, single-level prefix prune mirrors pruneFusionTestHomes so
+      // orphaned worker roots are swept before check-test-isolation runs.
+      rmSync(rawPath, { recursive: true, force: true });
+      removed++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[test-changed] failed to prune leftover ${rawPath}: ${message}`);
+    }
+  }
+}
+
 function runMaybeIsolated(command, commandArgs, options = {}) {
   const enabled = shouldRunIsolationGuard();
   const env = options.env ?? process.env;
@@ -210,6 +241,7 @@ function runMaybeIsolated(command, commandArgs, options = {}) {
       onBeforeAfterCheck();
     }
     pruneFusionTestHomes();
+    pruneFusionTestWorkers();
     if (enabled) runIsolationCheck(false, env);
   }
 }

@@ -29,6 +29,7 @@ import {
   __setCleanupRmSyncForTests,
   emitModeDecision,
   pruneFusionTestHomes,
+  pruneFusionTestWorkers,
   buildForwardDependencyMap,
   collectTransitiveDependencies,
   computeOwnHash,
@@ -951,6 +952,23 @@ test("pruneFusionTestHomes: bounded — removes at most maxEntries per call", ()
   }
 });
 
+test("pruneFusionTestWorkers: bounded — removes at most maxEntries per call", () => {
+  const created = [];
+  try {
+    for (let i = 0; i < 5; i++) {
+      const dir = path.join(tmpdir(), `fusion-test-workers-prune-budget-${process.pid}-${i}`);
+      mkdirSync(dir, { recursive: true });
+      created.push(dir);
+    }
+    // Cap at 2 → at least 3 of ours survive this call.
+    pruneFusionTestWorkers(2);
+    const survivors = created.filter((dir) => existsSync(dir));
+    assert.ok(survivors.length >= 3, `expected >=3 survivors with cap=2, got ${survivors.length}`);
+  } finally {
+    for (const dir of created) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // U4: real-git-fixture integration (dirty working tree + transitive deps).
 //
@@ -1351,6 +1369,21 @@ test("pruneFusionTestHomes: only targets the fusion-test-home-root- prefix", () 
   try {
     pruneFusionTestHomes();
     assert.equal(existsSync(ours), false, "our prefixed dir should be pruned");
+    assert.equal(existsSync(foreign), true, "foreign dir must be left untouched");
+  } finally {
+    rmSync(ours, { recursive: true, force: true });
+    rmSync(foreign, { recursive: true, force: true });
+  }
+});
+
+test("pruneFusionTestWorkers: only targets the fusion-test-workers- prefix", () => {
+  const ours = path.join(tmpdir(), `fusion-test-workers-prune-prefix-${process.pid}`);
+  const foreign = path.join(tmpdir(), `not-ours-workers-prune-prefix-${process.pid}`);
+  mkdirSync(ours, { recursive: true });
+  mkdirSync(foreign, { recursive: true });
+  try {
+    pruneFusionTestWorkers();
+    assert.equal(existsSync(ours), false, "orphaned worker root should be pruned");
     assert.equal(existsSync(foreign), true, "foreign dir must be left untouched");
   } finally {
     rmSync(ours, { recursive: true, force: true });

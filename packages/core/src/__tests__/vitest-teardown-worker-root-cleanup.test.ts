@@ -1,0 +1,88 @@
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import setup, {
+  __setWorkerRootRmSyncForTests,
+  __setWorkerRootSleepMsSyncForTests,
+} from "../__test-utils__/vitest-teardown";
+
+const createdPaths: string[] = [];
+const originalWorkerRoot = process.env.FUSION_TEST_WORKER_ROOT;
+
+function remember(path: string): string {
+  createdPaths.push(path);
+  return path;
+}
+
+function makeWorkerChild(root: string, label: string): void {
+  const workerDir = join(root, `w-${process.pid}-${label}`);
+  mkdirSync(workerDir, { recursive: true });
+  writeFileSync(join(workerDir, "file.txt"), "worker temp payload");
+}
+
+function restoreWorkerRootEnv(): void {
+  if (originalWorkerRoot === undefined) {
+    delete process.env.FUSION_TEST_WORKER_ROOT;
+  } else {
+    process.env.FUSION_TEST_WORKER_ROOT = originalWorkerRoot;
+  }
+}
+
+afterEach(() => {
+  __setWorkerRootRmSyncForTests(rmSync);
+  __setWorkerRootSleepMsSyncForTests(() => {});
+  restoreWorkerRootEnv();
+  for (const path of createdPaths.splice(0).reverse()) {
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+describe("vitest global teardown worker-root cleanup", () => {
+  it("removes the per-invocation worker root on the clean path", async () => {
+    const teardown = setup();
+    const workerRoot = remember(process.env.FUSION_TEST_WORKER_ROOT!);
+    makeWorkerChild(workerRoot, "clean");
+
+    await teardown();
+
+    expect(existsSync(workerRoot)).toBe(false);
+  });
+
+  it("retries an EBUSY worker-root removal and removes the root", async () => {
+    const teardown = setup();
+    const workerRoot = remember(process.env.FUSION_TEST_WORKER_ROOT!);
+    makeWorkerChild(workerRoot, "busy");
+    let attempts = 0;
+    const sleeps: number[] = [];
+
+    __setWorkerRootRmSyncForTests((path, options) => {
+      attempts++;
+      if (attempts === 1) {
+        const error = new Error("resource busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      rmSync(path, options);
+    });
+    __setWorkerRootSleepMsSyncForTests((ms) => {
+      sleeps.push(ms);
+    });
+
+    await teardown();
+
+    expect(attempts).toBe(2);
+    expect(sleeps).toEqual([75]);
+    expect(existsSync(workerRoot)).toBe(false);
+  });
+
+  it("tolerates ENOENT when the worker root is already gone", async () => {
+    const teardown = setup();
+    const workerRoot = remember(process.env.FUSION_TEST_WORKER_ROOT!);
+    makeWorkerChild(workerRoot, "enoent");
+    rmSync(workerRoot, { recursive: true, force: true });
+
+    await teardown();
+
+    expect(existsSync(workerRoot)).toBe(false);
+  });
+});
