@@ -233,7 +233,6 @@ const qualityAppChatOnlyTests = ["app/components/__tests__/ChatView.test.tsx"];
 const qualityAppSettingsOnlyTests = ["app/components/__tests__/SettingsModal.test.tsx"];
 const quarantinedDashboardTests: string[] = [
   "app/components/__tests__/QuickEntryBox.test.tsx",
-  "src/__tests__/routes-settings.test.ts",
 ];
 
 const qualityApiTests = [

@@ -25,11 +25,6 @@
       "file": "packages/engine/src/__tests__/reliability-interactions/soft-delete-blocker-residue.test.ts",
       "reason": "Flake observed during FN-6294 verification and reproduced during FN-6319 broad `pnpm --filter @fusion/engine test`: `clearStaleBlockedBy handles missed task:deleted event with soft-deleted-blocker reason` failed because the log entry was absent, while the same file passed standalone and the narrow three-file reproduction passed. Product-code cross-check: `clearStaleBlockedBy` still has the soft-deleted-blocker branch and soft-delete-deadlock-scan-exclusion.test.ts covers it via a deterministic store double, indicating suite-order/concurrency sensitivity in this reliability-interactions fixture rather than a confirmed product bug.",
       "quarantinedAt": "2026-06-12"
-    },
-    {
-      "file": "packages/dashboard/src/__tests__/routes-settings.test.ts",
-      "reason": "Flake observed during FN-6354 broad `pnpm test`: `GET /api/memory/audit > preserves extraction metadata across extract then audit requests` received HTTP 503 instead of 200 in the dashboard api:curated lane, while the same named test passed standalone immediately afterward. FN-6354 only changed the task-detail Chat composer UI/tests, so this is classified as unrelated suite-order/concurrency sensitivity in the dashboard API quality lane.",
-      "quarantinedAt": "2026-06-13"
     }
   ]
 }
