@@ -33,6 +33,10 @@ type TaskChatSegment =
   | { kind: "thinking"; entries: AgentLogEntry[]; startIndex: number }
   | { kind: "text"; entry: AgentLogEntry; index: number };
 
+type TaskChatToolGroupRow =
+  | { kind: "invocation"; call: AgentLogEntry; completion?: AgentLogEntry; callIndex: number; completionIndex?: number }
+  | { kind: "entry"; entry: AgentLogEntry; index: number };
+
 const STEERING_BLOCKED_STATUSES = new Set([
   "paused",
   "awaiting-user-input",
@@ -123,8 +127,22 @@ function formatEntryLabel(entry: AgentLogEntry): string {
   }
 }
 
+const TOOL_NAME_SUMMARY_LIMIT = 5;
+
 function formatToolCallCount(count: number): string {
   return count === 1 ? "1 tool call" : `${count} tool calls`;
+}
+
+function getToolInvocationEntries(entries: AgentLogEntry[]): AgentLogEntry[] {
+  const callEntries = entries.filter((entry) => entry.type === "tool");
+  return callEntries.length > 0 ? callEntries : entries.filter((entry) => isToolLikeEntry(entry));
+}
+
+function getToolNameSummary(entries: AgentLogEntry[]): { visibleNames: string[]; overflowCount: number } {
+  const invocationEntries = getToolInvocationEntries(entries);
+  const names = Array.from(new Set(invocationEntries.map((entry) => entry.text).filter(Boolean)));
+  const visibleNames = names.slice(0, TOOL_NAME_SUMMARY_LIMIT);
+  return { visibleNames, overflowCount: Math.max(0, names.length - visibleNames.length) };
 }
 
 function segmentGroupEntries(entries: AgentLogEntry[]): TaskChatSegment[] {
@@ -190,36 +208,90 @@ function TaskChatToolEntry({ entry }: { entry: AgentLogEntry }) {
   );
 }
 
+function getToolGroupRows(entries: AgentLogEntry[]): TaskChatToolGroupRow[] {
+  const rows: TaskChatToolGroupRow[] = [];
+  let index = 0;
+
+  while (index < entries.length) {
+    const entry = entries[index];
+    if (entry.type === "tool") {
+      const nextEntry = entries[index + 1];
+      const hasCompletion = nextEntry?.type === "tool_result" || nextEntry?.type === "tool_error";
+      rows.push({
+        kind: "invocation",
+        call: entry,
+        completion: hasCompletion ? nextEntry : undefined,
+        callIndex: index,
+        completionIndex: hasCompletion ? index + 1 : undefined,
+      });
+      index += hasCompletion ? 2 : 1;
+      continue;
+    }
+
+    rows.push({ kind: "entry", entry, index });
+    index += 1;
+  }
+
+  return rows;
+}
+
+function TaskChatToolInvocation({ row }: { row: Extract<TaskChatToolGroupRow, { kind: "invocation" }> }) {
+  const completion = row.completion;
+  const completionLabel = completion ? formatEntryLabel(completion).replace("Tool ", "") : undefined;
+  const className = `task-chat-tool-entry task-chat-tool-invocation${completion?.type === "tool_error" ? " task-chat-tool-entry--tool-error" : ""}`;
+
+  return (
+    <article className={className} data-testid="task-chat-tool-invocation">
+      <div className="task-chat-entry-kicker">
+        {completionLabel ? `Tool call → ${completionLabel}` : "Tool call"}
+      </div>
+      <div className="task-chat-entry-text">{row.call.text}</div>
+      {row.call.detail ? (
+        <div className="task-chat-tool-detail-block">
+          <div className="task-chat-tool-detail-label">Arguments</div>
+          <pre className="task-chat-tool-detail">{linkifyFilePaths(row.call.detail)}</pre>
+        </div>
+      ) : null}
+      {completion?.detail ? (
+        <div className="task-chat-tool-detail-block">
+          <div className="task-chat-tool-detail-label">{completion.type === "tool_error" ? "Error" : "Result"}</div>
+          <pre className="task-chat-tool-detail">{linkifyFilePaths(completion.detail)}</pre>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function TaskChatToolGroup({ entries }: { entries: AgentLogEntry[] }) {
-  const callCount = entries.filter((entry) => entry.type === "tool").length;
-  const resultCount = entries.filter((entry) => entry.type === "tool_result").length;
+  const invocationEntries = getToolInvocationEntries(entries);
+  const invocationCount = invocationEntries.length;
   const errorCount = entries.filter((entry) => entry.type === "tool_error").length;
+  const { visibleNames, overflowCount } = getToolNameSummary(entries);
+  const rows = getToolGroupRows(entries);
 
   return (
     <details className="task-chat-tool-group" data-testid="task-chat-tool-group">
       <summary className="task-chat-tool-group-summary">
-        <span className="task-chat-tool-group-count">{formatToolCallCount(entries.length)}</span>
-        <span className="task-chat-tool-group-status" aria-label="Tool status breakdown">
-          {callCount > 0 ? (
-            <span className="task-chat-tool-group-status-part task-chat-tool-group-status-part--call">
-              {callCount === 1 ? "1 call" : `${callCount} calls`}
-            </span>
-          ) : null}
-          {resultCount > 0 ? (
-            <span className="task-chat-tool-group-status-part">
-              {resultCount === 1 ? "1 result" : `${resultCount} results`}
-            </span>
-          ) : null}
-          {errorCount > 0 ? (
-            <span className="task-chat-tool-group-status-part task-chat-tool-group-status-part--error">
-              {errorCount === 1 ? "1 error" : `${errorCount} errors`}
-            </span>
-          ) : null}
-        </span>
+        <span className="task-chat-tool-group-count">{formatToolCallCount(invocationCount)}</span>
+        {visibleNames.length > 0 ? (
+          <span className="task-chat-tool-group-names" aria-label="Tool names">
+            {visibleNames.join(", ")}
+            {overflowCount > 0 ? <span className="task-chat-tool-group-overflow">, +{overflowCount} more</span> : null}
+          </span>
+        ) : null}
+        {errorCount > 0 ? (
+          <span className="task-chat-tool-group-error-count">
+            {errorCount === 1 ? "1 error" : `${errorCount} errors`}
+          </span>
+        ) : null}
       </summary>
       <div className="task-chat-tool-group-entries">
-        {entries.map((entry, entryIndex) => (
-          <TaskChatToolEntry key={getEntryKey(entry, entryIndex)} entry={entry} />
+        {rows.map((row) => (
+          row.kind === "invocation" ? (
+            <TaskChatToolInvocation key={getEntryKey(row.call, row.callIndex)} row={row} />
+          ) : (
+            <TaskChatToolEntry key={getEntryKey(row.entry, row.index)} entry={row.entry} />
+          )
         ))}
       </div>
     </details>

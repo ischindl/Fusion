@@ -99,6 +99,10 @@
   list-style: none;
 }
 
+.task-chat-tool-group-summary {
+  flex-wrap: wrap;
+}
+
 .task-chat-tool-group-summary::-webkit-details-marker,
 .task-chat-thinking-summary::-webkit-details-marker {
   display: none;
@@ -120,20 +124,23 @@
   font-weight: 600;
 }
 
-.task-chat-tool-group-status {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
+.task-chat-tool-group-names {
+  min-width: 0;
   color: var(--text-muted);
   font-size: var(--space-md);
+  overflow-wrap: anywhere;
 }
 
-.task-chat-tool-group-status-part--call {
-  color: var(--color-warning);
+.task-chat-tool-group-overflow {
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.task-chat-tool-group-status-part--error {
+.task-chat-tool-group-error-count {
+  flex: 0 0 auto;
   color: var(--color-error);
+  font-size: var(--space-md);
+  font-weight: 600;
 }
 
 .task-chat-tool-group-entries,
@@ -201,8 +208,18 @@
   margin-bottom: 0;
 }
 
+.task-chat-tool-detail-block {
+  margin-top: var(--space-sm);
+}
+
+.task-chat-tool-detail-label {
+  color: var(--text-muted);
+  font-size: var(--space-md);
+  font-weight: 600;
+}
+
 .task-chat-tool-detail {
-  margin: var(--space-sm) 0 0;
+  margin: var(--space-xs) 0 0;
   max-width: 100%;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -265,7 +282,8 @@
     flex-direction: column;
   }
 
-  .task-chat-tool-group-status {
+  .task-chat-tool-group-names,
+  .task-chat-tool-group-error-count {
     width: 100%;
   }
 

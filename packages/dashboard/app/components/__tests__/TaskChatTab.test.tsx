@@ -189,30 +189,84 @@ describe("TaskChatTab", () => {
     expect(screen.getByLabelText("Reviewer messages")).toBeTruthy();
   });
 
-  it("collapses consecutive tool entries into one expandable summary", async () => {
+  it("counts a tool call plus result as one collapsed invocation and shows the tool name", async () => {
     const user = userEvent.setup();
     mockLogs([
       makeEntry({ agent: "executor", type: "tool", text: "bash", detail: "pnpm test" }),
-      makeEntry({ agent: "executor", type: "tool_result", text: "done", detail: "ok" }),
-      makeEntry({ agent: "executor", type: "tool_error", text: "failed", detail: "stderr" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "bash", detail: "ok" }),
     ]);
 
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
 
     const toolGroup = screen.getByTestId("task-chat-tool-group");
+    const summary = toolGroup.querySelector("summary");
+    expect(summary).toBeTruthy();
     expect(toolGroup).not.toHaveAttribute("open");
-    expect(screen.getByText("3 tool calls")).toBeVisible();
-    expect(screen.getByText("1 call")).toBeVisible();
-    expect(screen.getByText("1 result")).toBeVisible();
-    expect(screen.getByText("1 error")).toBeVisible();
-    expect(screen.getByText("stderr")).not.toBeVisible();
+    expect(within(summary as HTMLElement).getByText("1 tool call")).toBeVisible();
+    expect(within(summary as HTMLElement).getByText("bash")).toBeVisible();
+    expect(screen.queryByText("2 tool calls")).not.toBeInTheDocument();
+    expect(screen.getByText("pnpm test")).not.toBeVisible();
+    expect(screen.getByText("ok")).not.toBeVisible();
 
-    await user.click(within(toolGroup).getByText("3 tool calls"));
+    await user.click(within(summary as HTMLElement).getByText("1 tool call"));
 
     expect(toolGroup).toHaveAttribute("open");
-    expect(screen.getByText("Tool call")).toBeVisible();
-    expect(screen.getByText("Tool result")).toBeVisible();
-    expect(screen.getByText("Tool error")).toBeVisible();
+    expect(screen.getByText("Tool call → result")).toBeVisible();
+    expect(screen.getByText("Arguments")).toBeVisible();
+    expect(screen.getByText("Result")).toBeVisible();
+    expect(screen.getByText("pnpm test")).toBeVisible();
+    expect(screen.getByText("ok")).toBeVisible();
+  });
+
+  it("summarizes multiple invocations with deduped names and overflow", () => {
+    mockLogs([
+      makeEntry({ agent: "executor", type: "tool", text: "bash", detail: "run tests" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "bash", detail: "ok" }),
+      makeEntry({ agent: "executor", type: "tool", text: "read", detail: "open file" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "read", detail: "contents" }),
+      makeEntry({ agent: "executor", type: "tool", text: "edit", detail: "patch" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "edit", detail: "done" }),
+      makeEntry({ agent: "executor", type: "tool", text: "grep", detail: "search" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "grep", detail: "matches" }),
+      makeEntry({ agent: "executor", type: "tool", text: "find", detail: "glob" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "find", detail: "paths" }),
+      makeEntry({ agent: "executor", type: "tool", text: "write", detail: "file" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "write", detail: "saved" }),
+      makeEntry({ agent: "executor", type: "tool", text: "bash", detail: "rerun" }),
+      makeEntry({ agent: "executor", type: "tool_result", text: "bash", detail: "ok again" }),
+    ]);
+
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
+
+    const summary = screen.getByTestId("task-chat-tool-group").querySelector("summary");
+    expect(summary).toBeTruthy();
+    expect(within(summary as HTMLElement).getByText("7 tool calls")).toBeVisible();
+    const names = within(summary as HTMLElement).getByLabelText("Tool names");
+    expect(names).toHaveTextContent("bash, read, edit, grep, find, +1 more");
+    expect(within(summary as HTMLElement).getByText(", +1 more")).toBeVisible();
+  });
+
+  it("surfaces tool errors in the summary and paired expanded body", async () => {
+    const user = userEvent.setup();
+    mockLogs([
+      makeEntry({ agent: "executor", type: "tool", text: "bash", detail: "pnpm test" }),
+      makeEntry({ agent: "executor", type: "tool_error", text: "bash", detail: "stderr" }),
+    ]);
+
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
+
+    const toolGroup = screen.getByTestId("task-chat-tool-group");
+    const summary = toolGroup.querySelector("summary");
+    expect(summary).toBeTruthy();
+    const errorCount = within(summary as HTMLElement).getByText("1 error");
+    expect(errorCount).toBeVisible();
+    expect(errorCount).toHaveClass("task-chat-tool-group-error-count");
+    expect(screen.getByText("stderr")).not.toBeVisible();
+
+    await user.click(within(summary as HTMLElement).getByText("1 tool call"));
+
+    expect(screen.getByText("Tool call → error")).toBeVisible();
+    expect(screen.getByText("Error")).toBeVisible();
     expect(screen.getByText("stderr")).toBeVisible();
   });
 
@@ -224,9 +278,28 @@ describe("TaskChatTab", () => {
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
 
     const toolGroup = screen.getByTestId("task-chat-tool-group");
+    const summary = toolGroup.querySelector("summary");
+    expect(summary).toBeTruthy();
     expect(toolGroup).not.toHaveAttribute("open");
-    expect(screen.getByText("1 tool call")).toBeVisible();
-    expect(screen.getByText("bash")).not.toBeVisible();
+    expect(within(summary as HTMLElement).getByText("1 tool call")).toBeVisible();
+    expect(within(summary as HTMLElement).getByText("bash")).toBeVisible();
+    expect(screen.queryByText("Arguments")).not.toBeInTheDocument();
+  });
+
+  it("falls back to result entries when a tool completion has no preceding call", () => {
+    mockLogs([
+      makeEntry({ agent: "executor", type: "tool_result", text: "bash", detail: "ok" }),
+    ]);
+
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
+
+    const toolGroup = screen.getByTestId("task-chat-tool-group");
+    const summary = toolGroup.querySelector("summary");
+    expect(summary).toBeTruthy();
+    expect(toolGroup).not.toHaveAttribute("open");
+    expect(within(summary as HTMLElement).getByText("1 tool call")).toBeVisible();
+    expect(within(summary as HTMLElement).getByText("bash")).toBeVisible();
+    expect(screen.queryByText("0 tool calls")).not.toBeInTheDocument();
   });
 
   it("renders thinking in an expanded-by-default collapsible block", async () => {
@@ -263,6 +336,8 @@ describe("TaskChatTab", () => {
     expect(toolGroups[0]).not.toHaveAttribute("open");
     expect(toolGroups[1]).not.toHaveAttribute("open");
     expect(screen.getAllByText("1 tool call")).toHaveLength(2);
+    expect(within(toolGroups[0]).getByLabelText("Tool names")).toHaveTextContent("first tool");
+    expect(within(toolGroups[1]).getByLabelText("Tool names")).toHaveTextContent("second tool");
     expect(screen.getByText("plain response")).toBeVisible();
     expect(screen.getByText("thinking between tools")).toBeVisible();
   });
@@ -554,6 +629,8 @@ describe("TaskChatTab", () => {
     expect(css).toContain(".task-chat-transcript");
     expect(css).toContain(".task-chat-composer-row");
     expect(css).toContain(".task-chat-tool-group-summary");
+    expect(css).toContain(".task-chat-tool-group-names");
+    expect(css).toContain(".task-chat-tool-group-error-count");
     expect(css).toContain(".task-chat-thinking-summary");
   });
 });
