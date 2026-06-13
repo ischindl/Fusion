@@ -1376,6 +1376,10 @@ describe("GET /settings/scopes", () => {
     expect(res.body.global.persistAgentThinkingLog).toBe(false);
     expect(res.body.project.maxConcurrent).toBe(4);
     expect(res.body.project.autoMerge).toBe(false);
+    expect(res.body.workflowSettings).toEqual({});
+    expect(res.body.workflowSettings).not.toBeNull();
+    expect(typeof res.body.workflowSettings).toBe("object");
+    expect(Array.isArray(res.body.workflowSettings)).toBe(false);
     expect(res.body.project.persistAgentToolOutput).toBeUndefined();
     expect(res.body.project.persistAgentThinkingLogPermanent).toBeUndefined();
     expect(res.body.project.persistAgentThinkingLogEphemeral).toBeUndefined();
@@ -1398,6 +1402,9 @@ describe("GET /settings/scopes", () => {
     expect(res.body).toHaveProperty("global");
     expect(res.body).toHaveProperty("project");
     expect(res.body).toHaveProperty("workflowSettings");
+    expect(res.body.workflowSettings).not.toBeNull();
+    expect(typeof res.body.workflowSettings).toBe("object");
+    expect(Array.isArray(res.body.workflowSettings)).toBe(false);
     // No unexpected top-level keys
     const keys = Object.keys(res.body);
     expect(keys).toHaveLength(3);
@@ -1587,6 +1594,10 @@ describe("GET /settings/scopes with projectId scoping", () => {
     expect(projectStoreResolver.getOrCreateProjectStore).toHaveBeenCalledWith(projectId);
     expect(scopedStore.getSettingsByScopeFast).toHaveBeenCalled();
     expect(defaultStore.getSettingsByScopeFast).not.toHaveBeenCalled();
+    expect(res.body.workflowSettings).toEqual({});
+    expect(res.body.workflowSettings).not.toBeNull();
+    expect(typeof res.body.workflowSettings).toBe("object");
+    expect(Array.isArray(res.body.workflowSettings)).toBe(false);
     expect(res.body.project.maxConcurrent).toBe(8);
     expect(res.body.project.planningProvider).toBe("anthropic");
   });

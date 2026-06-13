@@ -21,7 +21,7 @@ At runtime, settings are merged. **Project settings override global settings** w
 | `PUT /api/settings` | Update project settings only. |
 | `GET /api/settings/global` | Get global settings only. |
 | `PUT /api/settings/global` | Update global settings only. |
-| `GET /api/settings/scopes` | Get separated `{ global, project }` view. |
+| `GET /api/settings/scopes` | Get separated `{ global, project, workflowSettings }` view. |
 
 ---
 
