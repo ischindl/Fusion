@@ -52,11 +52,6 @@
       "quarantinedAt": "2026-06-12"
     },
     {
-      "file": "packages/core/src/__tests__/db.test.ts",
-      "reason": "Flake observed during FN-6299 verification: broad `pnpm --filter @fusion/core test` timed out in `Database.recoverIfCorrupt startup guard > rebuilds a malformed database and preserves the corrupt original` after 15s; earlier `pnpm test` attempt SIGTERM'd the core package and leaked a fusion-test-workers temp dir. Follow-up FN-6334.",
-      "quarantinedAt": "2026-06-12"
-    },
-    {
       "file": "packages/core/src/__tests__/store-create-summarize-deferred-hook.test.ts",
       "reason": "Flake observed during FN-6320 final broad `pnpm test`: `store-create.test.ts > TaskStore > createTask with title summarization > defers the task-created hook until store-managed summarize completes` timed out because the registered task-created hook had zero calls after the gated store-managed summarizer prompt was released. FN-6326 cross-check: the test passed twice standalone after FN-6313, and product code in `TaskStore.createTask` suppresses the synchronous hook only while `hasPendingSummarization` is true, then unconditionally refreshes the task and calls `invokeTaskCreatedHook(latestTask)` after `onSummarize` settles across success/null/throw branches. The broad/package load failure was therefore classified as suite-load/harness sensitivity rather than a confirmed product defect; the single flaky `it` was extracted so the rest of `store-create.test.ts` remains covered.",
       "quarantinedAt": "2026-06-12"

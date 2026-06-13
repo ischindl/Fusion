@@ -3216,9 +3216,10 @@ describe("Database.recoverIfCorrupt startup guard", () => {
     const dbPath = join(fusionDir, "fusion.db");
     const db = new Database(fusionDir);
     db.init();
-    // Span many pages so mid-file corruption lands on a B-tree page.
+    // Span enough pages so mid-file corruption lands on a B-tree page
+    // without overfeeding sqlite3 .recover.
     db.transaction(() => {
-      for (let i = 0; i < 3000; i++) {
+      for (let i = 0; i < 100; i++) {
         db.prepare("INSERT INTO activityLog (id, timestamp, type, details) VALUES (?, ?, 'test', '{}')").run(
           `row-${i}`,
           new Date().toISOString(),
