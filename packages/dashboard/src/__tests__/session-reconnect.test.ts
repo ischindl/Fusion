@@ -9,7 +9,6 @@ import express from "express";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { setImmediate } from "node:timers";
 import { join } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Database, TaskStore } from "@fusion/core";
@@ -105,6 +104,7 @@ describe("session reconnect + replay", () => {
   let db: Database;
   let aiSessionStore: AiSessionStore;
   let app: express.Express;
+  let apiRouter: express.Router & { dispose?: () => void };
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -129,7 +129,16 @@ describe("session reconnect + replay", () => {
 
     app = express();
     app.use(express.json());
-    app.use("/api", createApiRoutes(store, { aiSessionStore }));
+    /*
+    FNXC:DashboardSessionTests 2026-06-14-12:05:
+    These SSE replay tests exercise planning/subtask/mission routes, not the EventEmitter-driven GitHub tracking services that createApiRoutes starts for a full TaskStore. Hide on/off for this focused harness so unrelated startup reconcile work cannot touch the temp .fusion tree after the test-owned store closes.
+    */
+    Object.defineProperties(store, {
+      on: { value: undefined, configurable: true },
+      off: { value: undefined, configurable: true },
+    });
+    apiRouter = createApiRoutes(store, { aiSessionStore }) as express.Router & { dispose?: () => void };
+    app.use("/api", apiRouter);
   });
 
   afterEach(async () => {
@@ -138,6 +147,12 @@ describe("session reconnect + replay", () => {
     __resetSubtaskBreakdownState();
     __resetMissionInterviewState();
 
+    try {
+      apiRouter.dispose?.();
+    } catch {
+      // no-op
+    }
+    aiSessionStore.stopScheduledCleanup();
     try {
       store.close();
     } catch {
@@ -148,8 +163,7 @@ describe("session reconnect + replay", () => {
     } catch {
       // no-op
     }
-    // FNXC:DashboardSessionTests 2026-06-14-09:20: TaskStore.close() closes watcher/database handles synchronously but their filesystem close callbacks settle on the next event-loop turn; drain that turn before deleting .fusion.
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    // FNXC:DashboardSessionTests 2026-06-14-12:07: FN-6447 requires teardown to remove tmpRoot only after route-owned background workers are prevented/disposed and both TaskStore/AiSession DB handles are closed; do not use retry-rm loops that can mask a live writer.
     await rm(tmpRoot, { recursive: true, force: true });
   });
 

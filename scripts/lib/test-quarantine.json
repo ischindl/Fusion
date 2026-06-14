@@ -65,11 +65,6 @@
       "file": "packages/dashboard/src/__tests__/planning.test.ts",
       "reason": "FN-6444: orphaned dashboard planning route/API test is slow and fails standalone across stale agent/session mocks plus temp cleanup leakage. Quarantined instead of widening waits/timeouts or weakening assertions.",
       "quarantinedAt": "2026-06-14"
-    },
-    {
-      "file": "packages/dashboard/src/__tests__/session-reconnect.test.ts",
-      "reason": "FN-6444/FN-6447: dashboard API backfill shard 1 observed ENOTEMPTY temp cleanup leakage while replaying planning buffered events. Quarantined on sight for focused rescue/delete review instead of adding waits or weakening assertions.",
-      "quarantinedAt": "2026-06-14"
     }
   ]
 }

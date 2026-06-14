@@ -246,7 +246,10 @@ const quarantinedDashboardTests: string[] = [
   FN-6441 removed the dashboard component orphan batch from the curated skip-list so passing rescues run in backfill and still-failing tests are excluded only through the dated quarantine ledger. Keep these one-line excludes mirrored with scripts/lib/test-quarantine.json until each file is rescued or deleted under the deletion ratchet.
 
   FNXC:DashboardTests 2026-06-14-09:58:
-  FN-6444 applies the same no-silent-orphan invariant to dashboard src route/API tests: rescued files run in backfill, while broad stale mission/planning suites plus the newly observed FN-6447 reconnect temp-cleanup flake are represented only by the dated quarantine ledger.
+  FN-6444 applies the same no-silent-orphan invariant to dashboard src route/API tests: rescued files run in backfill, while broad stale mission/planning suites are represented only by the dated quarantine ledger.
+
+  FNXC:DashboardSessionTests 2026-06-14-12:10:
+  FN-6447 rescued session-reconnect by isolating the SSE harness from unrelated route background workers, so it must stay out of this quarantine list and run in dashboard-api-quality-backfill.
   */
   "app/components/__tests__/ChatView.regular-composer-no-right-line.test.tsx",
   "app/components/__tests__/MissionManager.test.tsx",
@@ -261,7 +264,6 @@ const quarantinedDashboardTests: string[] = [
   "app/components/__tests__/mobile-css.test.tsx",
   "src/__tests__/mission-e2e.test.ts",
   "src/__tests__/planning.test.ts",
-  "src/__tests__/session-reconnect.test.ts",
 ];
 
 const qualityApiTests = [
