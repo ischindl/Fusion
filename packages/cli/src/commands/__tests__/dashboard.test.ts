@@ -689,6 +689,7 @@ vi.mock("@fusion/engine", async (importOriginal) => {
     // Keep real WorktreePool & AgentSemaphore
     WorktreePool: original.WorktreePool,
     AgentSemaphore: original.AgentSemaphore,
+    createFusionAuthStorage: vi.fn(() => mockAuthStorage),
     // Stub heavy classes/functions
     ProjectEngine,
     ProjectEngineManager: makeConstructibleMock((centralCore: any, options: any) => {
@@ -3137,9 +3138,9 @@ describe("runDashboard — merge stream sink routing", () => {
     resetGitHubMocks();
     process.env.FUSION_DASHBOARD_TOKEN = "fn_test_dashboard_token";
     const { TaskStore, AutomationStore, AgentStore, PluginStore, PluginLoader, CentralCore } = await import("@fusion/core");
-    const { aiMergeTask } = await import("@fusion/engine");
+    const { aiMergeTask, createFusionAuthStorage } = await import("@fusion/engine");
     const { createServer } = await import("@fusion/dashboard");
-    const { AuthStorage, DefaultPackageManager, ModelRegistry, discoverAndLoadExtensions, createExtensionRuntime } = await import("@earendil-works/pi-coding-agent");
+    const { DefaultPackageManager, ModelRegistry, discoverAndLoadExtensions, createExtensionRuntime } = await import("@earendil-works/pi-coding-agent");
 
     (TaskStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => makeMockStore());
     (AutomationStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
@@ -3168,7 +3169,7 @@ describe("runDashboard — merge stream sink routing", () => {
       listProjects: vi.fn().mockResolvedValue([{ id: "project-1", path: process.cwd() }]),
     }));
 
-    (AuthStorage.create as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    (createFusionAuthStorage as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       getApiKey: vi.fn().mockResolvedValue(undefined),
       getAuth: vi.fn(),
       setAuth: vi.fn(),

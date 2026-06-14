@@ -32,9 +32,9 @@ import {
   HybridExecutor,
   shouldUseHybridExecutor,
   setHostExtensionPaths,
+  createFusionAuthStorage,
 } from "@fusion/engine";
 import {
-  AuthStorage,
   DefaultPackageManager,
   ModelRegistry,
   SettingsManager,
@@ -51,8 +51,8 @@ import {
 } from "./task-lifecycle.js";
 import { promptForPort } from "./port-prompt.js";
 import { createReadOnlyProviderSettingsView } from "./provider-settings.js";
-import { createReadOnlyAuthFileStorage, mergeAuthStorageReads, wrapAuthStorageWithApiKeyProviders } from "./provider-auth.js";
-import { getClaudeCodeCredentialPaths, getCodexCliAuthPath, getFusionAuthPath, getLegacyAuthPaths, getModelRegistryModelsPath, getPackageManagerAgentDir } from "./auth-paths.js";
+import { wrapAuthStorageWithApiKeyProviders } from "./provider-auth.js";
+import { getModelRegistryModelsPath, getPackageManagerAgentDir } from "./auth-paths.js";
 import { resolveProject } from "../project-context.js";
 import {
   ensureClaudeSkillsForAllProjectsOnStartup,
@@ -596,16 +596,10 @@ export async function runServe(
   const missionExecutionLoop = primaryEngine.getRuntime().getMissionExecutionLoop();
   const automationStore = primaryEngine.getAutomationStore();
 
-  const authStorage = AuthStorage.create(getFusionAuthPath());
-  const supplementalAuthStorage = createReadOnlyAuthFileStorage([
-    ...getLegacyAuthPaths(),
-    getCodexCliAuthPath(),
-    ...getClaudeCodeCredentialPaths(),
-  ]);
-  const mergedAuthStorage = mergeAuthStorageReads(authStorage, [supplementalAuthStorage]);
-  const modelRegistry = ModelRegistry.create(mergedAuthStorage, getModelRegistryModelsPath());
+  const authStorage = createFusionAuthStorage();
+  const modelRegistry = ModelRegistry.create(authStorage, getModelRegistryModelsPath());
   registerBuiltInZaiProvider(modelRegistry, (message) => console.log(`[extensions] ${message}`));
-  const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(mergedAuthStorage, modelRegistry);
+  const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(authStorage, modelRegistry);
 
   // PackageManager may be used for skills adapter even if extension loading fails
   let packageManager: DefaultPackageManager | undefined;

@@ -271,9 +271,23 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         keyHint?: string;
         loginInProgress?: boolean;
         requiresManualCode?: boolean;
-      }[] = oauthProviders.map((p) => {
-        const hasAuth = storage.hasAuth(p.id);
-        const expired = hasAuth && isExpiredOauthCredential(p.id, storage);
+      }[] = await Promise.all(oauthProviders.map(async (p) => {
+        let hasAuth = storage.hasAuth(p.id);
+        let expired = hasAuth && isExpiredOauthCredential(p.id, storage);
+        if (expired && storage.getApiKey) {
+          /*
+          FNXC:ClaudeOAuth 2026-06-13-22:46:
+          The auth status poll should clear a Claude re-login banner after Fusion refreshes a stored OAuth token, without waiting for a separate model request to touch auth storage.
+          Keep this best-effort so providers without refresh support still report expired and ask the user to re-authenticate.
+          */
+          try {
+            await storage.getApiKey(p.id);
+          } catch {
+            // Best-effort refresh only; preserve the expired status below.
+          }
+          hasAuth = storage.hasAuth(p.id);
+          expired = hasAuth && isExpiredOauthCredential(p.id, storage);
+        }
         return {
           id: p.id,
           name: p.name,
@@ -283,7 +297,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
           loginInProgress: loginInProgress.has(p.id),
           requiresManualCode: getManualCodeConfig(p.id, origin) !== undefined || undefined,
         };
-      });
+      }));
 
       // Include API-key-backed providers if supported
       if (storage.getApiKeyProviders) {

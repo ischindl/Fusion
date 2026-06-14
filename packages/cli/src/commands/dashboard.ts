@@ -51,8 +51,9 @@ import {
   HybridExecutor,
   shouldUseHybridExecutor,
   setHostExtensionPaths,
+  createFusionAuthStorage,
 } from "@fusion/engine";
-import { AuthStorage, DefaultPackageManager, ModelRegistry, SettingsManager, discoverAndLoadExtensions, createExtensionRuntime } from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, ModelRegistry, SettingsManager, discoverAndLoadExtensions, createExtensionRuntime } from "@earendil-works/pi-coding-agent";
 import {
   getMergeStrategy,
   getTaskBranchName,
@@ -65,8 +66,8 @@ import {
 import { promptForPort } from "./port-prompt.js";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
 import { createReadOnlyProviderSettingsView } from "./provider-settings.js";
-import { createReadOnlyAuthFileStorage, mergeAuthStorageReads, wrapAuthStorageWithApiKeyProviders } from "./provider-auth.js";
-import { getClaudeCodeCredentialPaths, getCodexCliAuthPath, getFusionAuthPath, getLegacyAuthPaths, getModelRegistryModelsPath, getPackageManagerAgentDir } from "./auth-paths.js";
+import { wrapAuthStorageWithApiKeyProviders } from "./provider-auth.js";
+import { getModelRegistryModelsPath, getPackageManagerAgentDir } from "./auth-paths.js";
 import { resolveProject } from "../project-context.js";
 import {
   ensureClaudeSkillsForAllProjectsOnStartup,
@@ -1363,16 +1364,14 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // ModelRegistry discovers available models from configured providers.
   // Passing these to createServer enables the dashboard's Authentication
   // tab (login/logout) and Model selector.
-  const authStorage = AuthStorage.create(getFusionAuthPath());
-  const supplementalAuthStorage = createReadOnlyAuthFileStorage([
-    ...getLegacyAuthPaths(),
-    getCodexCliAuthPath(),
-    ...getClaudeCodeCredentialPaths(),
-  ]);
-  const mergedAuthStorage = mergeAuthStorageReads(authStorage, [supplementalAuthStorage]);
-  const modelRegistry = ModelRegistry.create(mergedAuthStorage, getModelRegistryModelsPath());
+  /*
+  FNXC:AuthRefresh 2026-06-13-22:46:
+  Dashboard status polling, model discovery, and execution-facing auth reads must share the engine auth store so expired Claude OAuth credentials refresh once and legacy Claude/Codex credentials keep working.
+  */
+  const authStorage = createFusionAuthStorage();
+  const modelRegistry = ModelRegistry.create(authStorage, getModelRegistryModelsPath());
   registerBuiltInZaiProvider(modelRegistry, (message) => logSink.log(message, "extensions"));
-  const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(mergedAuthStorage, modelRegistry);
+  const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(authStorage, modelRegistry);
 
   // PackageManager may be used for skills adapter even if extension loading fails.
   // packageManager.resolve() walks installed npm/git/local pi packages and is

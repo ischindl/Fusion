@@ -563,8 +563,9 @@ vi.mock("@fusion/dashboard", () => ({
 vi.mock("@fusion/engine", async (importOriginal) => {
   const { createCliEngineMock } = await import("../../test/mockCoreEngine");
   return createCliEngineMock(() => importOriginal<typeof import("@fusion/engine")>(), {
-  ProjectEngine: mocks.projectEngineCtor,
-  ProjectEngineManager: vi.fn().mockImplementation(function (centralCore: any, options: any) {
+    createFusionAuthStorage: vi.fn(() => mocks.authStorage),
+    ProjectEngine: mocks.projectEngineCtor,
+    ProjectEngineManager: vi.fn().mockImplementation(function (centralCore: any, options: any) {
     const engines = new Map<string, any>();
     return {
       startAll: vi.fn(async () => {

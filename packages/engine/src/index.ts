@@ -1,5 +1,6 @@
 export { AgentLogger, type AgentLoggerOptions, summarizeToolArgs } from "./agent-logger.js";
 export { reloadExemptTools, addToExemptTools, getExemptToolNames } from "./agent-action-gate.js";
+export { createFusionAuthStorage } from "./auth-storage.js";
 export {
   createTaskCreateTool,
   createTaskDocumentReadTool,
