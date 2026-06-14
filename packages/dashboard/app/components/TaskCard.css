@@ -760,10 +760,10 @@
   align-items: center;
 }
 
-.card-footer-row > .card-time-indicator:first-of-type {
-  margin-left: auto;
-}
-
+/*
+FNXC:TaskCardTimingBadge 2026-06-13-17:26:
+The execution-time badge is part of the footer's bottom-right chip cluster, so it inherits the same height, padding, font, and responsive sizing as retry and GitHub tracking badges instead of using the old meta-row placement.
+*/
 .card-time-indicator,
 .card-github-tracking-chip,
 .card-retry-badge,

@@ -125,7 +125,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
     }
   });
 
-  it("keeps github and retry right-aligned while timer joins card meta badges", () => {
+  it("keeps github, retry, and timer right-aligned in the footer cluster", () => {
     const { container } = render(
       <TaskCard
         task={{
@@ -134,6 +134,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
           column: "in-review",
           retrySummary: { total: 2 },
           executionStartedAt: "2026-05-12T00:00:00.000Z",
+          executionCompletedAt: "2026-05-12T00:05:00.000Z",
           updatedAt: "2026-05-12T00:05:00.000Z",
         }}
         onOpenDetail={noop}
@@ -146,14 +147,14 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
     const rightCluster = footerRow.querySelector(":scope > .card-footer-row-right") as HTMLElement;
     const githubChip = rightCluster.querySelector(":scope > .card-github-tracking-chip") as HTMLElement;
     const retryChip = rightCluster.querySelector(":scope > .card-retry-badge") as HTMLElement;
-    const timerChip = container.querySelector(".card-meta-badges > .card-time-indicator") as HTMLElement;
+    const timerChip = rightCluster.querySelector(":scope > .card-time-indicator") as HTMLElement;
 
     expect(footerRow).toBeTruthy();
     expect(rightCluster).toBeTruthy();
     expect(githubChip).toBeTruthy();
     expect(retryChip).toBeTruthy();
     expect(timerChip).toBeTruthy();
-    expect(rightCluster.contains(timerChip)).toBe(false);
+    expect(rightCluster.contains(timerChip)).toBe(true);
 
     expect(getComputedStyle(rightCluster).marginLeft).toBe("auto");
 
@@ -170,6 +171,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
           sourceType: "github_import",
           retrySummary: { total: 3 },
           executionStartedAt: "2026-05-12T00:00:00.000Z",
+          executionCompletedAt: "2026-05-12T00:05:00.000Z",
           updatedAt: "2026-05-12T00:05:00.000Z",
         }}
         onOpenDetail={noop}
@@ -183,7 +185,7 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
     const rightCluster = footerRow.querySelector(":scope > .card-footer-row-right") as HTMLElement;
     const retryChip = rightCluster.querySelector(":scope > .card-retry-badge") as HTMLElement;
     const githubChip = rightCluster.querySelector(":scope > .card-github-tracking-chip") as HTMLElement;
-    const timerChip = container.querySelector(".card-meta-badges > .card-time-indicator") as HTMLElement;
+    const timerChip = rightCluster.querySelector(":scope > .card-time-indicator") as HTMLElement;
 
     expect(footerRow).toBeTruthy();
     expect(sourceChip).toBeTruthy();
@@ -191,13 +193,14 @@ describe("FN-4598 TaskCard footer chip alignment", () => {
     expect(retryChip).toBeTruthy();
     expect(githubChip).toBeTruthy();
     expect(timerChip).toBeTruthy();
-    expect(rightCluster.contains(timerChip)).toBe(false);
+    expect(rightCluster.contains(timerChip)).toBe(true);
 
     expect(getComputedStyle(sourceChip).marginLeft).not.toBe("auto");
     expect(getComputedStyle(rightCluster).marginLeft).toBe("auto");
     expect(Array.from(rightCluster.children).map((node) => (node as HTMLElement).className)).toEqual([
       "card-github-tracking-chip card-github-tracking-link",
       expect.stringContaining("card-retry-badge"),
+      "card-time-indicator",
     ]);
   });
 });

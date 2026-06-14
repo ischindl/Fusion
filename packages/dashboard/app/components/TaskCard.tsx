@@ -1789,8 +1789,7 @@ function TaskCardComponent({
     && Boolean(githubTrackedIssue);
   const hasCardMetaBadges = showPriorityBadge
     || task.executionMode === "fast"
-    || isAgentCreated
-    || timeIndicator != null;
+    || isAgentCreated;
 
   if (isEditing) {
     return (
@@ -2010,16 +2009,6 @@ function TaskCardComponent({
                 <Bot size={11} aria-hidden="true" />
                 <span className="visually-hidden">{agentCreatedTitle}</span>
                 <span aria-hidden="true">{agentCreatedVisibleLabel}</span>
-              </span>
-            )}
-            {timeIndicator && (
-              <span
-                className="card-time-indicator"
-                title={timeIndicator.title}
-                aria-label={timeIndicator.ariaLabel}
-              >
-                <Clock size={12} />
-                <span>{timeIndicator.label}</span>
               </span>
             )}
           </div>
@@ -2289,7 +2278,7 @@ function TaskCardComponent({
           </>
         );
       })()}
-      {(filesChangedButton || isGitHubImportedTask || showNearDuplicateChip || ((showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue) || (task.retrySummary?.total ?? 0) > 0) && (
+      {(filesChangedButton || isGitHubImportedTask || timeIndicator || showNearDuplicateChip || ((showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue) || (task.retrySummary?.total ?? 0) > 0) && (
         <div className={`card-footer-row${chipFarRight ? " card-footer-row--chip-far-right" : ""}`}>
           {filesChangedButton}
           {isGitHubImportedTask && !showLinkedIssueChipForImport && (
@@ -2301,7 +2290,7 @@ function TaskCardComponent({
               <ProviderIcon provider="github" size="sm" />
             </span>
           )}
-          {(showNearDuplicateChip || ((showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue) || (task.retrySummary?.total ?? 0) > 0) && (
+          {(timeIndicator || showNearDuplicateChip || ((showTrackingIndicator || showLinkedIssueChipForImport) && githubTrackedIssue) || (task.retrySummary?.total ?? 0) > 0) && (
             <div className="card-footer-row-right">
               {showNearDuplicateChip && (
                 <>
@@ -2374,6 +2363,20 @@ function TaskCardComponent({
                     <span>{`#${githubTrackedIssue.number}`}</span>
                   </a>
                 )}
+              {/*
+              FNXC:TaskCardTimingBadge 2026-06-13-17:20:
+              The execution-time badge belongs in the bottom-right footer cluster and must match sibling footer badge sizing while preserving its existing label, title, aria text, and live-update data.
+              */}
+              {timeIndicator && (
+                <span
+                  className="card-time-indicator"
+                  title={timeIndicator.title}
+                  aria-label={timeIndicator.ariaLabel}
+                >
+                  <Clock size={12} />
+                  <span>{timeIndicator.label}</span>
+                </span>
+              )}
             </div>
           )}
         </div>
