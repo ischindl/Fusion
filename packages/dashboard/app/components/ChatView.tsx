@@ -1097,6 +1097,14 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
   const mentionCursorPosRef = useRef(0);
   const copyFeedbackTimeoutsRef = useRef<Map<string, number>>(new Map());
   const roomSendInFlightRef = useRef(false);
+  // Mobile send-button tap latch. iOS suppresses the trailing synthetic click
+  // after preventDefault() in the touch sequence, so the send must fire from
+  // pointerdown/touchstart. This latch dedupes the multiple events of one tap
+  // (pointerdown + touchstart, plus any surviving click) into a single send,
+  // and self-clears on a timer so a suppressed click can't leave it stuck true
+  // (which would swallow the next real tap and make the button look dead).
+  const handledSendTouchRef = useRef(false);
+  const handledSendTouchTimerRef = useRef<number | null>(null);
   const tabletKeyboardSidebarVisibilityRef = useRef<boolean | null>(null);
   const mode = useViewportMode();
   const isMobile = mode === "mobile";
@@ -1929,6 +1937,37 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
       return [];
     });
   }, [activeDraftKey]);
+
+  // Mark that a touch gesture already triggered the send so the trailing
+  // onClick (if it survives) bails. Auto-resets so a suppressed click never
+  // leaves the latch stuck.
+  const markHandledSendTouch = useCallback(() => {
+    handledSendTouchRef.current = true;
+    if (handledSendTouchTimerRef.current != null) {
+      clearTimeout(handledSendTouchTimerRef.current);
+    }
+    handledSendTouchTimerRef.current = window.setTimeout(() => {
+      handledSendTouchRef.current = false;
+      handledSendTouchTimerRef.current = null;
+    }, 700);
+  }, []);
+
+  // Consume the latch (cancelling its timer) so a trailing onClick bails once.
+  const consumeHandledSendTouch = useCallback(() => {
+    if (!handledSendTouchRef.current) return false;
+    handledSendTouchRef.current = false;
+    if (handledSendTouchTimerRef.current != null) {
+      clearTimeout(handledSendTouchTimerRef.current);
+      handledSendTouchTimerRef.current = null;
+    }
+    return true;
+  }, []);
+
+  useEffect(() => () => {
+    if (handledSendTouchTimerRef.current != null) {
+      clearTimeout(handledSendTouchTimerRef.current);
+    }
+  }, []);
 
   // Handle send message including pending attachment uploads.
   const handleSend = useCallback(() => {
@@ -2980,13 +3019,24 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
             className="chat-input-send"
             onPointerDown={(event) => {
               if (event.pointerType && event.pointerType !== "mouse") {
+                // iOS suppresses the trailing click after this preventDefault,
+                // so fire the send here (deduped) rather than relying on onClick.
                 event.preventDefault();
+                if (handledSendTouchRef.current) return;
+                markHandledSendTouch();
+                void handleSend();
               }
+            }}
+            onTouchStart={() => {
+              if (handledSendTouchRef.current) return;
+              markHandledSendTouch();
+              void handleSend();
             }}
             onMouseDown={(event) => {
               event.preventDefault();
             }}
             onClick={() => {
+              if (consumeHandledSendTouch()) return;
               void handleSend();
             }}
             disabled={!messageInput.trim() && pendingAttachments.length === 0}

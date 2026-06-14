@@ -214,7 +214,7 @@ export function useQuickChat(
   const [pendingMessage, setPendingMessage] = useState("");
 
   // Stream connection ref for cleanup
-  const streamRef = useRef<{ close: () => void } | null>(null);
+  const streamRef = useRef<{ close: () => void; isConnected: () => boolean } | null>(null);
   const lastAttachedGenerationRef = useRef<{ sessionId: string; replayFromEventId: number | null } | null>(null);
   const cancelledByUserRef = useRef(false);
   const cancelStreamingFlushesRef = useRef<(() => void) | null>(null);
@@ -813,6 +813,47 @@ export function useQuickChat(
     }
   }, [attachIfGenerating, projectId, refreshSessions, reloadMessages]);
 
+  // A stream that dropped without firing onDone/onError — commonly a mobile tab
+  // suspension severing the SSE connection — leaves isStreamingRef stuck `true`
+  // with a dead-but-non-null streamRef. Every later send then takes the "queue
+  // while streaming" branch below and strands in the composer: the message
+  // shows locally but never reaches the agent or the persisted session (so it
+  // also never appears in regular chat). When a send is queued this way,
+  // confirm with the server whether a generation is truly in flight; if not,
+  // the flag is stale, so tear down the dead stream and flush the queued send.
+  const recoverQueuedSendIfStreamStale = useCallback(async (sessionId: string) => {
+    // Fast path: an OPEN stream socket means a healthy in-flight generation, so
+    // leave the message queued for its onDone/onError to flush. Only a dead or
+    // missing stream needs recovery — this also avoids a server round-trip (and
+    // its side effects) in the common "queued while genuinely streaming" case.
+    if (streamRef.current?.isConnected()) {
+      return;
+    }
+    try {
+      const { session: refreshed } = await fetchChatSession(sessionId, projectId);
+      if (
+        // Genuinely generating server-side: the live stream will flush.
+        refreshed.isGenerating ||
+        // A stream reconnected while we were awaiting: defer to it.
+        streamRef.current?.isConnected() ||
+        activeSessionRef.current?.id !== sessionId ||
+        pendingMessageRef.current.trim().length === 0
+      ) {
+        return;
+      }
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+      setIsStreaming(false);
+      isStreamingRef.current = false;
+      flushPendingMessage();
+    } catch {
+      // Leave the queued message; another trigger (visibility resume, manual
+      // resend, stream completion) can still deliver it.
+    }
+  }, [projectId, flushPendingMessage]);
+
   /**
    * Send a message using SSE streaming.
    * @param content message text content
@@ -858,6 +899,7 @@ export function useQuickChat(
         pendingMessageRef.current = content;
         setPendingMessage(content);
         setPersistedPendingChatMessage(activeSession.id, content);
+        void recoverQueuedSendIfStreamStale(activeSession.id);
         return Promise.resolve();
       }
 
@@ -988,7 +1030,7 @@ export function useQuickChat(
       void completionPromise.catch(() => {});
       return completionPromise;
     },
-    [activeSession, projectId, addToast, reloadMessages, reconnectSessionSilently, flushPendingMessage],
+    [activeSession, projectId, addToast, reloadMessages, reconnectSessionSilently, flushPendingMessage, recoverQueuedSendIfStreamStale],
   );
 
   sendMessageRef.current = sendMessage;

@@ -152,6 +152,49 @@ describe("useQuickChat", () => {
     });
   });
 
+  it("recovers a queued send when the streaming flag is stuck after a dropped stream", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001" });
+    mockFetchResumeChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    // The server confirms no generation is actually in flight: the first
+    // stream died without delivering onDone/onError (e.g. mobile tab
+    // suspension dropped the SSE connection).
+    mockFetchChatSession.mockResolvedValue({
+      session: { ...session, isGenerating: false },
+    });
+
+    const { result } = renderHook(() => useQuickChat("proj-123"));
+
+    await act(async () => {
+      await result.current.switchSession("agent-001");
+    });
+    await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+
+    // First send: the stream attaches but never completes and its socket is no
+    // longer OPEN (the tab was suspended), so isStreaming stays stuck true with
+    // a dead-but-non-null stream ref.
+    const closeSpy = vi.fn();
+    mockStreamChatResponse.mockReturnValue({ close: closeSpy, isConnected: () => false });
+    await act(async () => {
+      void result.current.sendMessage("First");
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+    expect(mockStreamChatResponse).toHaveBeenCalledTimes(1);
+
+    // Second send while the flag is stuck. It must NOT strand in the composer:
+    // the stale flag is detected (server says not generating) and the message
+    // is delivered to the agent.
+    await act(async () => {
+      void result.current.sendMessage("Second");
+    });
+
+    await waitFor(() => {
+      expect(mockStreamChatResponse).toHaveBeenCalledTimes(2);
+      expect(mockStreamChatResponse.mock.calls[1]?.[1]).toBe("Second");
+    });
+    expect(result.current.pendingMessage).toBe("");
+  });
+
   it("sendMessage returns a promise that resolves on stream completion", async () => {
     const session = makeSession({ id: "session-001", agentId: "agent-001" });
     mockFetchResumeChatSession.mockResolvedValue({ session });
