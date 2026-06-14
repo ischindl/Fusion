@@ -199,13 +199,129 @@ For future proof-point runs, replace the release URL and checksum only with valu
 
 ## Reference: concrete validated path (FN-6437)
 
-`upstream-pending-verification`: FN-6437 is the first proof-point validation task, but its restored `proof-point-report` was not accessible to this FN-6438 execution environment at the time this runbook was written. FN-6449 is archived as the restoration task, and follow-up FN-6452 tracks backfilling this section with the authoritative FN-6437 report contents once accessible.
+<!--
+FNXC:Plugins 2026-06-14-14:11:
+FN-6452 backfills FN-6437's concrete proof-point evidence from FN-6449's restored report and FN-6437's surviving notes revisions. The historical result is NOT MET against released @runfusion/fusion 0.43.0 because the plugin scaffold omitted the required state field; keep absent list/enable evidence explicit instead of inventing a successful transcript.
+-->
 
-Do not infer or fabricate FN-6437's outcome. When the report is available, replace this section with:
+**VERDICT: NOT MET — blocked-on-release because the released `@runfusion/fusion@0.43.0` package still scaffolded a plugin missing the required `state` field, matching the FN-6435 release-gate signature.**
 
-- released `@runfusion/fusion` version tested by FN-6437,
-- `dist.integrity` recorded by FN-6437,
-- exact commands run by FN-6437,
-- captured evidence, including `fn plugin list` enabled-state output,
-- the verbatim `VERDICT:` line, and
-- any linked gap/follow-up task IDs.
+Provenance: FN-6449 restored this reference from FN-6437's surviving `task_document_revisions` (`notes`, revisions 1–3; latest revision 3) plus the archived FN-6437 task row. FN-6449's `proof-point-report` / `docs` task document is the canonical restored report; this section transcribes its supported values only.
+
+### Released package tested
+
+- Package: `@runfusion/fusion@0.43.0`
+- Release URL: `https://registry.npmjs.org/@runfusion/fusion/-/fusion-0.43.0.tgz`
+- `dist.integrity`: `sha512-kvxicT+e8ulc7FDhBVP9NsgaioZv6NDW81N8cXNS/X8M32Eo3Y33xT6JFW2DrSiFXsJmAaib/GnpQE0nYQYApQ==`
+- Changeset consumption check: `.changeset/fn-5844-external-plugin-authoring.md` present in repo: `no`
+
+### Environment
+
+- node: `v26.3.0`
+- pnpm: `10.33.0`
+- npm: `11.16.0`
+- os: `Darwin fusionstudio-8339.local 25.1.0 Darwin Kernel Version 25.1.0: Mon Oct 20 19:30:01 PDT 2025; root:xnu-12377.41.6~2/RELEASE_ARM64_T6031 arm64`
+- scratch workspace: `/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/tmp.zLiu2nRpx8`
+- scratch workspace under repo tree: `no`
+
+### Commands and outcomes
+
+```bash
+npm view @runfusion/fusion version
+npm view @runfusion/fusion dist.integrity
+npx @runfusion/fusion@latest --help
+npx @runfusion/fusion@latest plugin --help
+npx @runfusion/fusion@latest plugin new proof-point-plugin
+cd proof-point-plugin
+pnpm install
+pnpm build
+# pnpm test was not attempted after the blocking compile failure.
+```
+
+- `npm view @runfusion/fusion version` returned `0.43.0`.
+- `npm view @runfusion/fusion dist.integrity` returned `sha512-kvxicT+e8ulc7FDhBVP9NsgaioZv6NDW81N8cXNS/X8M32Eo3Y33xT6JFW2DrSiFXsJmAaib/GnpQE0nYQYApQ==`.
+- `npx @runfusion/fusion@latest --help` and `npx @runfusion/fusion@latest plugin --help` passed and showed the expected plugin subcommands, including `list`, `install`, `enable`, `new`, and `dev`.
+- `npx @runfusion/fusion@latest plugin new proof-point-plugin` generated `fusion-plugin-proof-point-plugin@0.1.0`.
+- `pnpm install` passed.
+- `pnpm build` failed with the FN-6435 release-gate signature below.
+- `pnpm test` was not attempted after the released scaffold failed to compile.
+- Install/enable/load-run and `fn plugin list` were not attempted because the plugin never built.
+
+### Scaffold evidence
+
+The generated `package.json` used the published package and did not show monorepo-only dependency leakage:
+
+```json
+{
+  "name": "fusion-plugin-proof-point-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A standalone Fusion plugin",
+  "keywords": [
+    "fusion-plugin"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@runfusion/fusion": "^0.43.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}
+```
+
+The generated `src/index.ts` imported the public SDK path but omitted the required `state` field:
+
+```ts
+import { definePlugin } from "@runfusion/fusion/plugin-sdk";
+
+export default definePlugin({
+  manifest: {
+    id: "proof-point-plugin",
+    name: "Proof Point Plugin",
+    version: "0.1.0",
+    description: "A standalone Fusion plugin",
+  },
+  hooks: {
+    onLoad: async (ctx) => {
+      ctx.logger.info("Proof Point Plugin plugin loaded");
+    },
+  },
+});
+```
+
+Dependency checks recorded by FN-6437:
+
+- `@fusion/*` imports in scaffolded source: `none observed`
+- `workspace:*` dependency ranges in scaffolded `package.json`: `none observed`
+- SDK import surface: `@runfusion/fusion/plugin-sdk` as expected
+
+### Blocking failure transcript
+
+```text
+> fusion-plugin-proof-point-plugin@0.1.0 build /private/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/tmp.zLiu2nRpx8/proof-point-plugin
+> tsc
+
+src/index.ts(3,29): error TS2345: Argument of type '{ manifest: { id: string; name: string; version: string; description: string; }; hooks: { onLoad: (ctx: PluginContext) => Promise<void>; }; }' is not assignable to parameter of type 'FusionPlugin'.
+  Property 'state' is missing in type '{ manifest: { id: string; name: string; version: string; description: string; }; hooks: { onLoad: (ctx: PluginContext) => Promise<void>; }; }' but required in type 'FusionPlugin'.
+ ELIFECYCLE  Command failed with exit code 2.
+```
+
+### Gaps and follow-up
+
+- Release-gate blocker: FN-6435 (the scaffold `state` fix had not reached released `@runfusion/fusion@0.43.0`).
+- `fn plugin list` enabled-state proof: **not produced — VERDICT NOT MET (blocked at `pnpm build` by the unreleased FN-6435 scaffold-`state` fix)**.
+- FN-6409 and FN-6410 remained known checks for released SDK typing and CLI dependency resolution, but FN-6437 did not reach those later surfaces after the FN-6435 compile failure.
