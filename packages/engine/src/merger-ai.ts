@@ -1053,7 +1053,7 @@ export async function runAiMerge(
     const tipSha = await git(["rev-parse", "--verify", `refs/heads/${integrationBranch}`], projectRootDir);
 
     // 1. Clean-room worktree at the integration tip.
-    const mergeRoot = await mkdtemp(join(resolveAiMergeRoot(projectRootDir, settings), `fusion-ai-merge-${taskId.toLowerCase()}-`));
+    let mergeRoot: string | undefined;
     let worktreeAdded = false;
     const registeredMergePaths = new Set<string>();
     const registerMergeRoot = (pathToRegister: string): void => {
@@ -1061,12 +1061,17 @@ export async function runAiMerge(
       activeSessionRegistry.registerPath(pathToRegister, { taskId, kind: "ai-merge", ownerKey: `ai-merge:${taskId}` });
       registeredMergePaths.add(pathToRegister);
     };
-    // Register the repo-local clean-room path as soon as it exists, before
-    // `git worktree add`, so self-healing/pre-merge sweeps cannot reap a
-    // just-created clean room in the small window before canonical registration
-    // is available.
-    registerMergeRoot(mergeRoot);
     try {
+      mergeRoot = await mkdtemp(join(resolveAiMergeRoot(projectRootDir, settings), `fusion-ai-merge-${taskId.toLowerCase()}-`));
+      /*
+       * FNXC:AIMerge 2026-06-14-16:36:
+       * The AI-merge clean-room directory must be created and registered inside the cleanup guard. Any terminal path or interrupt after `mkdtemp`, including active-session registration failure before `git worktree add`, must still unregister known paths and remove the `fusion-ai-merge-*` directory.
+       */
+      // Register the repo-local clean-room path as soon as it exists, before
+      // `git worktree add`, so self-healing/pre-merge sweeps cannot reap a
+      // just-created clean room in the small window before canonical registration
+      // is available.
+      registerMergeRoot(mergeRoot);
       await git(["worktree", "add", "--detach", mergeRoot, tipSha], projectRootDir);
       worktreeAdded = true;
       let canonicalMergeRoot = mergeRoot;
@@ -1146,7 +1151,9 @@ export async function runAiMerge(
       for (const registeredPath of registeredMergePaths) {
         activeSessionRegistry.unregisterPath(registeredPath);
       }
-      await cleanupAiMergeWorktree({ taskId, mergeRoot, projectRootDir, worktreeAdded, audit, log });
+      if (mergeRoot) {
+        await cleanupAiMergeWorktree({ taskId, mergeRoot, projectRootDir, worktreeAdded, audit, log });
+      }
     }
   }
 }
