@@ -176,7 +176,15 @@
   color: var(--text);
 }
 
+/*
+FNXC:TaskDetailMeta 2026-06-13-17:32:
+The task-detail modal metadata must keep priority, execution mode, provenance, PR context, and timestamps in one horizontal row that wraps as needed instead of stacking each child as a separate line.
+*/
 .detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: var(--space-lg);
@@ -186,8 +194,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  margin-top: var(--space-sm);
-  margin-bottom: var(--space-sm);
+  margin-top: 0;
+  margin-bottom: 0;
   color: var(--text-muted);
 }
 
@@ -231,7 +239,7 @@
   flex-wrap: nowrap;
   gap: var(--space-xs);
   color: var(--text-dim);
-  margin-top: var(--space-xs);
+  margin-top: 0;
 }
 
 .detail-timestamp-item {
@@ -257,8 +265,13 @@
     flex-shrink: 0;
   }
 
+  .detail-meta {
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
   .detail-provenance {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .detail-timestamps {

@@ -250,6 +250,59 @@ describe("TaskDetailModal", () => {
       expect(provenance?.compareDocumentPosition(timestamps as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it("keeps inline controls, provenance, and timestamps as direct detail-meta children", () => {
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({ sourceType: "task_refine", sourceParentTaskId: "FN-001" })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const meta = container.querySelector(".detail-meta");
+      const controls = container.querySelector(".detail-meta-inline-controls");
+      const provenance = screen.getByText(/Created via Refinement/).closest(".detail-provenance");
+      const timestamps = container.querySelector(".detail-timestamps");
+
+      expect(meta).toBeTruthy();
+      expect(controls?.parentElement).toBe(meta);
+      expect(provenance?.parentElement).toBe(meta);
+      expect(timestamps?.parentElement).toBe(meta);
+    });
+
+    it("keeps the optional PR link row in the same detail-meta row as provenance and timestamps", () => {
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({
+            sourceType: "dashboard_ui",
+            prInfo: { number: 42, url: "https://github.com/owner/repo/pull/42" },
+          })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const meta = container.querySelector(".detail-meta");
+      const controls = container.querySelector(".detail-meta-inline-controls");
+      const provenance = screen.getByText("Created via Dashboard").closest(".detail-provenance");
+      const prRow = container.querySelector(".detail-pr-link-row");
+      const timestamps = container.querySelector(".detail-timestamps");
+
+      expect(meta).toBeTruthy();
+      expect(controls?.parentElement).toBe(meta);
+      expect(provenance?.parentElement).toBe(meta);
+      expect(prRow?.parentElement).toBe(meta);
+      expect(timestamps?.parentElement).toBe(meta);
+    });
+
     describe("compact timestamp metadata", () => {
       beforeEach(() => {
         vi.useFakeTimers();
