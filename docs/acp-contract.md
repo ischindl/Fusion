@@ -115,6 +115,9 @@ FN-6467 reran U9 in this worktree with `claude` 2.1.177 present, the pinned brid
 
 FNXC:ACPRoute 2026-06-15-00:12:
 FN-6473 is the explicit authenticated-environment escalation for Route-A U9, so its OQ1 result must remain in committed docs even when task-local evidence ages out. This worktree had `claude` 2.1.177, the plugin-local pinned bridge 0.1.1, matching lockfile integrity, and the 62-tool `custom-tools` payload, but the bridge still reached an unauthenticated Claude session (`Not logged in · Please run /login`) before any forwarded tool call or permission callback.
+
+FNXC:ACPRoute 2026-06-15-00:45:
+FN-6475 captured the upstream sponsorship package in committed docs because Route A stays blocked until the bridge/ACP layer can pass `session/new.mcpServers` to authenticated Claude and route forwarded MCP tool calls through ACP `session/request_permission` or an equivalent MCP-layer hook. Keep this here so FN-6460 preflight and FN-6476 reruns do not reinterpret sponsorship as a GO verdict or fall back to `claude -p`.
 -->
 
 ### OQ1 — Route A MCP-over-ACP forwarding and permission-gate traversal
@@ -145,5 +148,7 @@ FN-6473 is the explicit authenticated-environment escalation for Route-A U9, so 
 2. **Do forwarded tool calls traverse ACP `session/request_permission`?** **UNPROVEN / BLOCKED (neither GATED nor BYPASSED observed).** The explicit request-permission instrumentation recorded zero callbacks because no forwarded tool call occurred.
 
 **Escalation path:** rerun U9 with an environment where the pinned bridge can reach an authenticated `claude`, the same non-empty `session/new.mcpServers` shape, and explicit `session/request_permission` instrumentation. Sponsor the missing bridge/ACP MCP permission-forwarding capability upstream: the bridge/ACP layer must forward `session/new.mcpServers` to the underlying Claude session and surface forwarded tool calls through ACP `session/request_permission` or an MCP-layer permission hook. If an authenticated rerun still ignores `mcpServers`, cannot invoke the forwarded tools, or bypasses the ACP permission gate without an MCP-layer permission hook or sensitive-tool exclusion, Route A remains blocked. A `claude -p` fallback is not an acceptable Route-A completion path.
+
+**FN-6475 sponsorship record (2026-06-15):** upstream sponsorship was authored in [`docs/upstream/claude-code-cli-acp-mcp-permission-forwarding.md`](upstream/claude-code-cli-acp-mcp-permission-forwarding.md) and filed as https://github.com/moabualruz/claude-code-cli-acp/issues/2. This records the requested MCP passthrough plus permission-gate traversal / MCP-layer hook contract only; OQ1 remains **UNRESOLVED / BLOCKED** and the combined Route A verdict remains **NOT GO** until a later authenticated rerun proves both required U9 answers.
 
 **U14 internal mechanisms:** GO for design, subject to U9. Route A should use a second `acp-claude` runtime posture rather than mutating the generic `acp` runtime; inject the ACP bridge client from the engine `registerExtensionProviders` seam into the vendored `@fusion/pi-claude-cli` provider options; and add `AgentRuntimeOptions.mcpServers` to both the engine runtime contract and the ACP plugin-local structural copy, with `newAcpSession` defaulting to `[]` for Route-B compatibility.
