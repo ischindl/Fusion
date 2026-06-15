@@ -4,16 +4,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-// Each test spins up a fresh temp workspace, mounts the full extension API,
-// registers tools, and exercises them through real TaskStore/MissionStore
-// machinery (atomic JSON writes, ID allocator with disk sync, async memory
-// flushes). Under heavy parallel FS load on a busy machine, individual
-// tests can occasionally cross 5s — and the same load also produces
-// ENOTEMPTY teardown races when async work outlives the test body. A
-// generous testTimeout absorbs both effects without masking real bugs:
-// any test that genuinely hangs will still trip the bump, and the suite
-// already runs well under the cap on a quiet machine.
-vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
+/*
+FNXC:CliTests 2026-06-14-01:22:
+FN-6430 rescues the extension suite by fixing shared HOME isolation and closing research stores in the active slice, not by preserving the older file-wide timeout bump.
+Keep this file on the default 5s Vitest timeout so future slow seams are narrowed or quarantined instead of hidden.
+*/
 
 vi.mock("@fusion/core/gh-cli", () => ({
   isGhAvailable: vi.fn(() => true),
@@ -3412,64 +3407,72 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("fn_research_run preserves fire-and-forget behavior when wait_for_completion is false", async () => {
-      await enableResearch(tmpDir);
-      const tool = api.tools.get("fn_research_run")!;
+      const store = await enableResearch(tmpDir);
+      try {
+        const tool = api.tools.get("fn_research_run")!;
 
-      const result = await tool.execute(
-        "research-run-ff",
-        { query: "test query", wait_for_completion: false },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
+        const result = await tool.execute(
+          "research-run-ff",
+          { query: "test query", wait_for_completion: false },
+          undefined,
+          undefined,
+          makeCtx(tmpDir),
+        );
 
-      expect(result.content[0].text).toContain("Start the project engine to process pending runs");
-      expect(result.details.status).toBe("queued");
+        expect(result.content[0].text).toContain("Start the project engine to process pending runs");
+        expect(result.details.status).toBe("queued");
+      } finally {
+        store.close();
+      }
     });
 
     it("fn_research_run waits and returns terminal run details when wait_for_completion is true", async () => {
       const store = await enableResearch(tmpDir);
-      const tool = api.tools.get("fn_research_run")!;
-      const researchStore = store.getResearchStore();
+      try {
+        const tool = api.tools.get("fn_research_run")!;
+        const researchStore = store.getResearchStore();
 
-      const settleRunToCompleted = () => {
-        const queuedRun = researchStore.listRuns({ limit: 1 })[0];
-        if (!queuedRun) {
-          return false;
-        }
-        if (queuedRun.status === "completed") {
-          return true;
-        }
-        if (queuedRun.status === "queued") {
-          researchStore.updateRun(queuedRun.id, { status: "running" });
-        }
-        researchStore.updateRun(queuedRun.id, {
-          status: "completed",
-          results: { summary: "done", findings: [{ heading: "h1", content: "f1", sources: [] }], citations: [] },
-        });
-        return true;
-      };
-
-      if (!settleRunToCompleted()) {
-        const interval = setInterval(() => {
-          if (settleRunToCompleted()) {
-            clearInterval(interval);
+        const settleRunToCompleted = () => {
+          const queuedRun = researchStore.listRuns({ limit: 1 })[0];
+          if (!queuedRun) {
+            return false;
           }
-        }, 25);
-        setTimeout(() => clearInterval(interval), 500);
+          if (queuedRun.status === "completed") {
+            return true;
+          }
+          if (queuedRun.status === "queued") {
+            researchStore.updateRun(queuedRun.id, { status: "running" });
+          }
+          researchStore.updateRun(queuedRun.id, {
+            status: "completed",
+            results: { summary: "done", findings: [{ heading: "h1", content: "f1", sources: [] }], citations: [] },
+          });
+          return true;
+        };
+
+        if (!settleRunToCompleted()) {
+          const interval = setInterval(() => {
+            if (settleRunToCompleted()) {
+              clearInterval(interval);
+            }
+          }, 25);
+          setTimeout(() => clearInterval(interval), 500);
+        }
+
+        const result = await tool.execute(
+          "research-run-wait",
+          { query: "terminal query", wait_for_completion: true, max_wait_ms: 4000 },
+          undefined,
+          undefined,
+          makeCtx(tmpDir),
+        );
+
+        expect(result.details.status).toBe("completed");
+        expect(result.details.summary).toBe("done");
+        expect(result.content[0].text).toContain("is completed");
+      } finally {
+        store.close();
       }
-
-      const result = await tool.execute(
-        "research-run-wait",
-        { query: "terminal query", wait_for_completion: true, max_wait_ms: 4000 },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
-
-      expect(result.details.status).toBe("completed");
-      expect(result.details.summary).toBe("done");
-      expect(result.content[0].text).toContain("is completed");
     });
   });
 

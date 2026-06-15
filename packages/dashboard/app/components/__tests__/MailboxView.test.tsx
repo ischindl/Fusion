@@ -27,10 +27,15 @@ vi.mock("../../api", () => ({
   decideApproval: vi.fn(),
 }));
 
-vi.mock("../../hooks/useViewportMode", () => ({
-  MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
-  useViewportMode: vi.fn(),
-}));
+vi.mock("../../hooks/useViewportMode", () => {
+  const useViewportMode = vi.fn();
+  return {
+    MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+    getViewportMode: () => useViewportMode(),
+    isMobileViewport: () => useViewportMode() === "mobile",
+    useViewportMode,
+  };
+});
 
 vi.mock("../../hooks/useMobileKeyboard", () => ({
   useMobileKeyboard: vi.fn(),

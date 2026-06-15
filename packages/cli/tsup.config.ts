@@ -316,9 +316,18 @@ const pluginSdkBuildConfig = {
   target: "node22",
   tsconfig: join(__dirname, "..", "plugin-sdk", "tsconfig.json"),
   dts: {
-    resolve: true,
+    /*
+     * FNXC:PluginSDK 2026-06-13-12:00:
+     * FN-6409 requires the published @runfusion/fusion/plugin-sdk declaration entry to be self-contained. External plugin authors cannot resolve private @fusion/core types from scaffolded projects, so leaving @fusion/* imports in dist/plugin-sdk/index.d.ts makes tsc fail with TS2307 before ctx parameters can typecheck.
+     */
+    resolve: [/^@fusion\//],
     compilerOptions: {
       rootDir: join(__dirname, ".."),
+      baseUrl: ".",
+      paths: {
+        "@fusion/core": ["../core/src/index.ts"],
+      },
+      removeComments: true,
     },
   },
   noExternal: [/^@fusion\//],

@@ -1,3 +1,7 @@
+/*
+FNXC:DashboardTests 2026-06-14-09:58:
+FN-6444 confirmed this ChatManager API-path suite is deterministic under dashboard-api, so it must run in backfill instead of remaining a curated skip-list orphan.
+*/
 /**
  * Tests for ChatManager - specifically text accumulation behavior
  * These tests verify the fix for FN-1857: Chat assistant messages not persisted after navigating away

@@ -4,6 +4,10 @@
 
 The Fusion dashboard is the main control plane for tasks, agents, missions, settings, logs, and repository operations.
 
+## Dashboard Updates
+
+When Fusion detects a newer `@runfusion/fusion` release, the Settings modal footer shows the available version with **Learn more** and **Update now** actions. **Update now** installs the latest global package with npm; after it succeeds, restart Fusion to apply the new version because the already-running dashboard server is unchanged until restart.
+
 ## Browser Navigation
 
 The dashboard now handles browser back navigation consistently on desktop and mobile.
@@ -53,10 +57,12 @@ Features:
 - Working-branch and base-branch filter selections are persisted per project and restored across refresh/navigation
 - Column visibility controls
 - Inline quick entry creation
+- The quick-entry GitHub icon is a per-task tracking override: leave it untouched to use the project default, turn it on to opt the next task into tracking when the default is off, or turn it off to opt the next task out when the default is on.
 - PR/issue badges with live updates
-- GitHub provenance marker on task cards imported from GitHub (`sourceType: github_import`), shown alongside existing footer metadata like timers
-- Agent-created provenance badge in task card headers for agent-originated tasks (`sourceType: agent_heartbeat` or `sourceType: automation`, or legacy tasks with `sourceAgentId`), with labels preferring `sourceMetadata.agentName` over raw agent IDs
+- GitHub provenance marker on task cards imported from GitHub (`sourceType: github_import`), shown in the footer with other external-source metadata
+- Task card header meta badges group priority, fast mode, agent-created provenance, and elapsed/created-time chips into one wrapping row; agent labels prefer `sourceMetadata.agentName` over raw agent IDs
 - Column ordering semantics: `todo` mirrors scheduler pickup order (priority descending, then oldest `createdAt`, then task ID); `triage`, `in-progress`, `in-review`, and `archived` remain priority-first with task-ID tie-breaks; `done` is ordered by most recent completion first (`columnMovedAt`, then `updatedAt`, then `createdAt` fallback)
+- On mobile, both default and workflow-mode boards fill the project viewport while the column strip remains the internal horizontal scroller with contained edge overscroll.
 
 ![Board view](./screenshots/dashboard-overview.png)
 
@@ -285,6 +291,9 @@ Quick Chat is an optional floating panel for fast, project-scoped assistant conv
 - Quick Chat now mirrors full Chat tail behavior: if you scroll up, live updates stop auto-following and a **Latest** jump control appears until you jump back down.
 - On mobile, Quick Chat re-anchors to the newest message whenever the panel is opened/reopened and when page visibility is restored, while still preserving the near-bottom gate so intentional scroll-away keeps **Latest** jump behavior.
 - On mobile, Quick Chat bubbles are slightly wider while keeping compact tool-call summary layout and full-screen/safe-area behavior intact.
+- On mobile, Quick Chat send reliability includes a delivery watchdog: if a queued message would otherwise stay stranded in the composer after a dropped or suspended stream, it is re-confirmed and delivered once no generation is in flight and no live stream is connected, so sends are not silently dropped.
+- On mobile, Quick Chat sends exactly once per tap even when the browser emits paired pointer and touch events; a stop tap immediately after send is still honored.
+- While a response is streaming, the Quick Chat stop control matches the send button's square dimensions (including on mobile) instead of collapsing toward its icon, so it stays an easy touch target.
 
 ## Mailbox View
 
@@ -371,7 +380,11 @@ Branch names are dynamic from merge/audit payloads; the banner is not hardcoded 
 
 ## OAuth Re-login Banner
 
-The global OAuth re-login banner now clears a provider row immediately after that provider successfully re-authenticates (from Settings → Authentication or Model Onboarding), instead of waiting for the next `GET /auth/status` poll interval.
+The global OAuth re-login banner clears a provider row immediately after that provider successfully re-authenticates (from Settings → Authentication or Model Onboarding), instead of waiting for the next `GET /auth/status` poll interval.
+
+For Claude/Anthropic OAuth credentials, the same `/auth/status` poll also attempts an automatic refresh when the stored OAuth credential has a refresh token and the access token is expired or within the refresh buffer. When that refresh succeeds, the banner clears for Claude without manual re-login and without waiting for a separate model request.
+
+If the OAuth credential has no refresh token, the refresh request fails, or the provider is not Anthropic, the provider stays expired and the banner remains visible. Re-authenticate with manual re-login from **Settings → Authentication** or Model Onboarding.
 
 ## Smart Pull
 
@@ -694,7 +707,7 @@ Inspect task definition, logs, review feedback, comments, documents, workflow ou
 - The priority chip in task metadata is an inline picker: you can change priority directly without entering full edit mode.
 - Execution mode has a read-mode inline lightning-bolt toggle for Fast mode on/off without opening the full edit form.
 - These two metadata controls share matched sizing/alignment in read mode (including mobile wrapping) so they behave like a single polished control group.
-- Task metadata also shows compact `Created` / `Updated` timestamps: recent values render as relative time (`just now`, `Xm`, `Xh`, `Xd`) and older values switch to short month/day dates; these stay grouped on one row across desktop and mobile widths for a compact metadata layout.
+- Task metadata keeps priority, execution mode, provenance, optional PR context, and compact `Created` / `Updated` timestamps in one wrapping row across desktop and mobile widths; recent timestamps render as relative time (`just now`, `Xm`, `Xh`, `Xd`) and older values switch to short month/day dates.
 - Eligible existing tasks (triage, todo, in-progress, in-review) expose a **GitHub tracking** section directly in Task Detail, even when tracking is currently disabled.
 - The GitHub tracking section now defaults to a compact summary row; use the disclosure arrow to expand linked-issue details plus tracking edit controls.
 - Backstop reconciliation runs every 15 minutes to close tracked GitHub issues for soft-deleted and archived tasks even after restart; the sweep is paginated so large archive backlogs are eventually drained.
@@ -702,7 +715,7 @@ Inspect task definition, logs, review feedback, comments, documents, workflow ou
 - From this section you can explicitly enable/disable tracking and manage a per-task repo override (`owner/repo`). Clearing the override saves `null` and falls back to project/global defaults.
 - In `in-review`, pull-request controls/status (including stall badges) are in a dedicated **Pull Request** tab instead of the Definition tab.
 - Task Detail and list split-pane PR affordances follow the live project auto-merge setting: when auto-merge is off, manual **Create PR** / merge actions are shown; when it is on, the tab shows the automatic auto-merge hint unless a per-task override changes the effective behavior.
-- The **Create Pull Request** modal now offers in-app remediation for every blocking preflight check. If `branchOnRemote` is false, use **Push branch to remote** and Fusion will publish `fusion/<task-id-lower>` to `origin` and refresh preflight. If `conflictsWithBase` is true, use **Resolve conflicts with AI** and Fusion will use an AI coding agent to resolve merge markers on the task branch, commit the result, push the branch, and refresh preflight so normal PR creation can continue once all checks pass.
+- The **Create Pull Request** modal now offers in-app remediation for every blocking preflight check. If `branchOnRemote` is false, use **Push branch to remote** and Fusion will publish `fusion/<task-id-lower>` to `origin` and refresh preflight. If `conflictsWithBase` is true, use **Resolve conflicts with AI** and Fusion will use an AI coding agent to resolve merge markers on the task branch, commit and push real merge changes, or report success without an empty commit when the selected base is already merged; preflight then refreshes so normal PR creation can continue once all checks pass.
 - The modal shell renders immediately: preflight checks and PR options load independently of AI-generated title/body metadata, so slow AI suggestions no longer block base-branch selection, diagnostics, or manual PR authoring.
 - AI title/body generation is bounded to 60 seconds and is canceled if the dialog request disconnects; on timeout/cancel, Fusion falls back to deterministic task-based PR title/body content instead of leaving the spinner stuck forever.
 - The **Review** tab is separate from **Comments**: Review shows actionable PR/reviewer feedback and same-task revision controls, while Comments remains the general collaboration thread.
@@ -735,7 +748,7 @@ Recommended workflow: ordinary chains stay as `Blocks N` so noise stays low, hig
 
 ### Logs → Agent Log view
 
-The **Chat** tab sits between Definition and Logs and presents a live, chat-styled transcript of task agent output. Consecutive entries are grouped by role and labeled as Planner, Executor, Reviewer, or Merger; legacy log rows without an agent role use the neutral Agent fallback. Consecutive text/message chunks inside a role group render as one continuous markdown bubble, while consecutive tool/tool-result/tool-error rows collapse into one expandable, compact tool-call summary that stays collapsed by default; the summary counts tool invocations, lists deduped tool names with overflow, and shows an error count when failures are present, while the expanded body pairs each call with its result or error in dense entry cards. Thinking entries render in a collapsible block that starts expanded. The transcript opens at the latest output whenever the tab loads or becomes active, then follows new live output when you are already near the bottom while preserving your scroll position when you review older messages. When you scroll away from the bottom of a populated transcript, a sticky **Latest** button appears inside the transcript so you can jump back to the newest message and resume live follow. For non-`done` tasks, the composer sends guidance through the same steering path used by comments, including active assigned `in-progress`/`in-review` sessions and messages queued when no session is currently live. On a `done` task, sending a Chat message starts a refinement task using the typed text as feedback and shows a success toast with the new task ID; the current task detail modal remains on the completed task. The task-detail Chat tab keeps the composer pinned and visible on mobile and desktop while the transcript scrolls internally; its textarea placeholder reads “Steer the currently executing agent” for steering mode and switches to refinement copy for completed tasks, with the same inline, icon-only send affordance to the right of the input at every breakpoint.
+The **Chat** tab sits between Definition and Logs and presents a live, chat-styled transcript of task agent output. Consecutive entries are grouped by role and labeled as Planner, Executor, Reviewer, or Merger; legacy log rows without an agent role use the neutral Agent fallback. Consecutive text/message chunks inside a role group render as one continuous markdown bubble, while consecutive tool/tool-result/tool-error rows collapse into one expandable, compact tool-call summary that stays collapsed by default; the summary counts tool invocations, lists deduped tool names with overflow, and shows an error count when failures are present, while the expanded body pairs each call with its result or error in dense entry cards. Thinking entries render in a collapsible block that starts expanded. The transcript opens at the latest output whenever the tab loads or becomes active, then follows new live output when you are already near the bottom while preserving your scroll position when you review older messages. When you scroll away from the bottom of a populated transcript, a sticky **Latest** button appears inside the transcript so you can jump back to the newest message and resume live follow. For non-`done` tasks, the composer sends guidance through the same steering path used by comments, including active assigned `in-progress`/`in-review` sessions and messages queued when no session is currently live. On a `done` task, sending a Chat message starts a refinement task using the typed text as feedback and shows a success toast with the new task ID; the current task detail modal remains on the completed task. The task-detail Chat tab keeps the composer pinned and visible on mobile and desktop while the transcript scrolls internally; its textarea placeholder reads “Steer the currently executing agent” for steering mode and switches to refinement copy for completed tasks, with the same inline, icon-only send affordance to the right of the input at every breakpoint. In the composer, plain **Enter** sends, **Shift+Enter** inserts a newline, and **Cmd/Ctrl+Enter** remains a supported send shortcut.
 
 The **Logs** tab includes an **Agent Log** subview designed for debugging long-running and tool-heavy sessions:
 

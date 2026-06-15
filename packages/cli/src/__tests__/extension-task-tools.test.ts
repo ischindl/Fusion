@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-
-vi.setConfig({ testTimeout: 20000, hookTimeout: 20000 });
+/*
+FNXC:CliTests 2026-06-14-01:25:
+FN-6430 requires rescued CLI suites to run on the default timeout after shared HOME isolation, not via the older file-wide 20s timeout.
+Keep this worktree-root regression slice fast by relying on module resets and bounded temp fixtures.
+*/
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

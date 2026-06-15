@@ -101,12 +101,24 @@
   flex-direction: column;
   min-height: 0;
   overflow-y: hidden;
+  /* FNXC:TaskDetailChat 2026-06-13-19:55: Chat box should sit in the chat view without excess vertical spacing around the composer (FN-6418), so only the chat body tightens vertical padding while shared detail tab padding remains unchanged. */
+  padding-block: var(--space-md);
 }
 
 .detail-title {
   font-size: 18px;
   font-weight: 600;
   margin-bottom: var(--space-md);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.detail-title--collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .detail-heading-row {
@@ -164,7 +176,15 @@
   color: var(--text);
 }
 
+/*
+FNXC:TaskDetailMeta 2026-06-13-17:32:
+The task-detail modal metadata must keep priority, execution mode, provenance, PR context, and timestamps in one horizontal row that wraps as needed instead of stacking each child as a separate line.
+*/
 .detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: var(--space-lg);
@@ -174,8 +194,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  margin-top: var(--space-sm);
-  margin-bottom: var(--space-sm);
+  margin-top: 0;
+  margin-bottom: 0;
   color: var(--text-muted);
 }
 
@@ -219,7 +239,7 @@
   flex-wrap: nowrap;
   gap: var(--space-xs);
   color: var(--text-dim);
-  margin-top: var(--space-xs);
+  margin-top: 0;
 }
 
 .detail-timestamp-item {
@@ -245,8 +265,13 @@
     flex-shrink: 0;
   }
 
+  .detail-meta {
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
   .detail-provenance {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .detail-timestamps {
@@ -725,7 +750,8 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  margin-top: var(--space-lg);
+  /* FNXC:TaskDetailChat 2026-06-13-19:55: Chat box should sit in the chat view without excess vertical spacing around the composer (FN-6418), so the chat section opts out of the shared top margin used by other detail tabs. */
+  margin-top: 0;
 }
 
 .task-detail-content--chat-expanded .detail-title-row {
@@ -978,11 +1004,13 @@
     flex-direction: column;
     min-height: 0;
     overflow-y: hidden;
+    padding-block: var(--space-sm);
   }
 
   .detail-section--chat {
     flex: 1;
     min-height: 0;
+    margin-top: 0;
   }
 
   .task-detail-content--chat-expanded .detail-body--chat {

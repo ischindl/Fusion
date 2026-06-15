@@ -9,6 +9,15 @@ import * as workspacesHook from "../../hooks/useWorkspaces";
 vi.mock("../../hooks/useWorkspaceFileBrowser");
 vi.mock("../../hooks/useWorkspaceFileEditor");
 vi.mock("../../hooks/useWorkspaces");
+vi.mock("../../hooks/useViewportMode", () => {
+  const mode = () => (window.innerWidth <= 768 ? "mobile" : "desktop");
+  return {
+    MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+    getViewportMode: mode,
+    isMobileViewport: () => mode() === "mobile",
+    useViewportMode: mode,
+  };
+});
 
 const mockUseWorkspaceFileBrowser = vi.mocked(workspaceBrowserHook.useWorkspaceFileBrowser);
 const mockUseWorkspaceFileEditor = vi.mocked(workspaceEditorHook.useWorkspaceFileEditor);

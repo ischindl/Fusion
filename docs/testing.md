@@ -45,6 +45,12 @@ pnpm --filter @fusion/dashboard test:build          # built client output contra
 
 Run `test:deep` when changing broad dashboard architecture, shared modal/view infrastructure, or route registration. Run `test:browser-smoke` for layout/responsive/navigation/modal/CSS changes. Run `test:build` for Vite output, lazy-loading, chunking, or client-dist changes.
 
+The shared mobile/tablet overflow-containment net lives at `packages/dashboard/app/__tests__/dashboard-overflow-containment.test.tsx`. It covers board/kanban columns, task-detail modal shell, workflow/simple workflow editors, and Activity Log modal at mobile, tablet, and landscape-phone breakpoints. Run it directly when touching dashboard viewport containment or shared modal/workflow CSS:
+
+```bash
+pnpm --filter @fusion/dashboard exec vitest run --project dashboard-app app/__tests__/dashboard-overflow-containment.test.tsx --silent=passed-only --reporter=dot --exclude '**/build-output.test.ts'
+```
+
 `pnpm --filter @fusion/dashboard test` runs the curated app/API quality gate through
 `packages/dashboard/scripts/run-quality-tests.mjs` (FN-6308). The orchestrator keeps
 the historical app/API quality split and the curated/backfill lane boundaries, but
@@ -95,6 +101,8 @@ every entry needs a non-empty `reason` (empty reasons are rejected). Skip-list p
   that is pre-existing-failing orphans (tests that were never executed in CI and
   fail in isolation) and `build-output.test.ts` (runs standalone via `test:build`
   after a Vite build). Each carries a one-line reason.
+- <!-- FNXC:DashboardTesting 2026-06-14-08:00: Skip-listed dashboard tests need actionable ownership; placeholder IDs block rescue/delete follow-through, so every non-standalone reason cites a concrete Fusion tracking task. --> Every skip-list `reason` for a pre-existing failing/orphaned test must reference a concrete `FN-NNNN` tracking task; if the test is rescued, remove the entry instead of leaving a tracking placeholder.
+- <!-- FNXC:DashboardTesting 2026-06-14-10:27: FN-6445 closes the useChatRooms.test.ts tracking drift from FN-6442: a skip-list entry that is already matched by any quality project is not a genuine ungated orphan and would overstate the orphan count. --> The guard rejects any skip-list entry whose file is already executed by a quality project. Remove the entry instead; the skip-list is only for genuinely non-executed files.
 - To remove a file from the skip-list: fix the test, confirm it passes under its
   project, delete the skip-list entry. The backfill lane then executes it.
 - The skip-list is shared verbatim with `vitest.config.ts`, which excludes the same
@@ -141,6 +149,16 @@ Flaky tests are quarantined ON SIGHT and deleted on a 2-week clock. This is writ
 **The clock:** an entry expires 14 days after `quarantinedAt`. Whoever touches the suite and finds an expired entry deletes the test file, its ledger entry, and its config exclude (git history is the archive). `scripts/check-test-inventory.mjs --diff` stays deliberately unwired in CI because it would fail on exactly these deletions.
 
 **Rescue** (before the clock runs out) requires both: evidence the test catches real regressions, and a root-cause fix for the flake. Stabilization passes — widened timeouts, retries, loosened assertions — are appeasement, not rescue, and are banned (for agents especially).
+
+### Vitest timeout-appeasement guard
+
+`scripts/check-no-test-timeout-appeasement.mjs` runs in the fast `pretest`, `pretest:full`, and `test:gate` paths. It scans tracked `packages/**/*.test.*` and `plugins/**/*.test.*` files for per-file or suite-level Vitest timeout bumps, including `vi.setConfig({ testTimeout: ... })`, `vi.setConfig({ hookTimeout: ... })`, and bare `testTimeout:` / `hookTimeout:` properties in test files. It deliberately ignores global `vitest.config.*` timeouts.
+
+Legitimate legacy exceptions must be recorded in `scripts/lib/test-timeout-appeasement-allowlist.json` as `{ "file": "<repo-relative test path>", "reason": "<owning cleanup/quarantine task and rationale>", "allowlistedAt": "YYYY-MM-DD" }`. Allowlisting is temporary: the real fix is to quarantine the flaky test or narrow the slow seam, then remove both the timeout bump and the allowlist entry.
+
+**CLI shared-fixture rescue pattern (FN-6430):** the 2026-06-14 `@runfusion/fusion` quarantine batch passed direct runs but timed out or bled state only under package/workspace load. The rescue fixed the shared isolation seam, not the timeout: sweep stale top-level `fn-test-home-*` roots with a bounded one-level prefix scan, reject inherited `HOME` values that do not live under the current `fusion-test-workers-*` root, recreate/remark the worker root before each `mkdtemp`, reset module/singleton fixture state in the affected suites, close real stores created by research helpers, and narrow slow real-store seams by moving package imports out of timed test bodies. When rescuing a similar CLI batch, prove it with repeated rescued-file runs plus `pnpm --filter @runfusion/fusion test`, audit rescued files for `vi.setConfig`/`testTimeout`/`hookTimeout` appeasement, and keep ledger/config removals in the same commit.
+
+**Non-CLI quarantine sweep pattern (FN-6433):** for engine/core/dashboard batches, first remove quarantine excludes only in temporary local configs and run the exact quarantined files together so suite-load coupling is visible before editing the ledger. Rescue is valid when the grouped package lane proves the invariant now holds (for example, FN-6433 fixed engine cross-file interference by replacing broad `activeSessionRegistry.clear()` cleanup with path-scoped unregistering) or when a prior shared-fixture fix is demonstrated under package load. Delete duplicate/low-value files under the ratchet when another deterministic suite owns the same invariant. Finish by making `scripts/lib/test-quarantine.json` and every package Vitest exclude array converge in one commit, then prove the empty/non-empty state with package lanes, `pnpm test:gate`, `pnpm test`, `pnpm build`, and the bounded temp-leak output from `pnpm test`.
 
 **Gate eviction:** a flake inside the merge gate cannot block all merges while red — it is evicted by removing its line from the `engine-core` allow-list (no quarantine entry needed unless it should also leave the non-blocking tier).
 

@@ -238,3 +238,25 @@ Keep this AGENTS inventory in sync with App lazy imports and `packages/dashboard
 - `PluginManager`
 - `PiExtensionsManager`
 - `AgentDetailView`
+
+## FNXC_LOG comments:
+   - Please whenever you're working on a codebase. I want you to add comments describing the date of the change (must be in this format yyyy-MM-dd-hh:mm) and describing the requirements or the change in requirements that made you implement certain functionality.
+   - I want you to write FNXC:Area-of-product in front of all your comments so they can be grepped.
+   - Most of this should be written as jsdocs but you can add short comments around for the important variables and more complex parts of the codebase.
+   - The idea is to encode the requiements of the system (especially software behavior, UX, and important technical decisions) into the code so it's clearer later why a certain piece of code was written.
+   - Always make sure to keep these comments updated as you work in the codebase and requirements change.
+   - Use technical writing principles to write non-verbose comments that convey the important info without fluff.
+   - Keep in mind that ALL of the important user facing requirements sent by the user must be written as comments somewhere in the codebase.
+   - There's no need to add line breaks in FNXC comments to stay under a certain character width. Just add line breaks normally at the ened of sentences.
+
+   Good Example for a FNXC Comment:
+   ```
+   /*
+   FNXC:SettingsNavigation 2026-05-13-08:05:
+   The Settings dialog needs enough horizontal room for a main-tab section sidebar while Ghostty settings live in their own second tab.
+   Use scoped CSS so the native modal host and Storybook share the same width without relying on newly generated utilities.
+
+   FNXC:SettingsNavigation 2026-05-13-08:11:
+   The modal should be 20% wider than the first section-sidebar layout and use a taller viewport so more settings remain visible without scrolling.
+   */
+   ```

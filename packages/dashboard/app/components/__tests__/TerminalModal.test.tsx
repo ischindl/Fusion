@@ -1,3 +1,7 @@
+/*
+FNXC:DashboardTests 2026-06-14-08:31:
+FN-6441 rescued this orphaned component test after standalone dashboard-app execution passed without assertion, timeout, or source-code changes. Keep the terminal modal coverage in app backfill because keyboard, session, and mobile terminal regressions are user-facing and should not remain skip-listed.
+*/
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { TerminalModal, _resetInitialViewportHeight, ctrlChar, altChar } from "../TerminalModal";
@@ -24,11 +28,15 @@ vi.mock("../../api", () => ({
 const mockFitAddonFit = vi.fn();
 
 let terminalKeyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
+let terminalDataHandler: ((data: string) => void) | null = null;
 
 const mockTerminalInstance = {
   loadAddon: vi.fn(),
   open: vi.fn(),
-  onData: vi.fn((_cb: (data: string) => void) => ({ dispose: vi.fn() })),
+  onData: vi.fn((cb: (data: string) => void) => {
+    terminalDataHandler = cb;
+    return { dispose: vi.fn() };
+  }),
   attachCustomKeyEventHandler: vi.fn((handler: (event: KeyboardEvent) => boolean) => {
     terminalKeyEventHandler = handler;
   }),
@@ -39,6 +47,7 @@ const mockTerminalInstance = {
   write: vi.fn(),
   clear: vi.fn(),
   focus: vi.fn(),
+  refresh: vi.fn(),
   options: { fontSize: 14 },
   cols: 80,
   rows: 24,
@@ -154,14 +163,24 @@ describe("TerminalModal", () => {
     } as never);
     vi.clearAllMocks();
     terminalKeyEventHandler = null;
+    terminalDataHandler = null;
+    mockTerminalInstance.onData.mockImplementation((cb: (data: string) => void) => {
+      terminalDataHandler = cb;
+      return { dispose: vi.fn() };
+    });
     mockFitAddonFit.mockClear();
     mockTerminalInstance.hasSelection.mockReturnValue(false);
     mockTerminalInstance.getSelection.mockReturnValue("");
+    mockTerminalInstance.refresh.mockClear();
     Object.defineProperty(navigator, "platform", {
       value: "Win32",
       configurable: true,
     });
     Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    });
+    Object.defineProperty(document, "fonts", {
       value: undefined,
       configurable: true,
     });
@@ -4040,9 +4059,25 @@ describe("TerminalModal — xterm focus initialization (FN-1602)", () => {
     ...overrides,
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    const fitAddonModule = await import("@xterm/addon-fit");
+    vi.mocked(fitAddonModule.FitAddon).mockImplementation(function FitAddonMock() {
+      return {
+        fit: mockFitAddonFit,
+        dispose: vi.fn(),
+      };
+    } as never);
     vi.clearAllMocks();
-    mockTerminalInstance.onData.mockImplementation(() => ({ dispose: vi.fn() }));
+    terminalKeyEventHandler = null;
+    terminalDataHandler = null;
+    mockTerminalInstance.onData.mockImplementation((cb: (data: string) => void) => {
+      terminalDataHandler = cb;
+      return { dispose: vi.fn() };
+    });
+    Object.defineProperty(document, "fonts", {
+      value: undefined,
+      configurable: true,
+    });
     mockCreateTerminalSession.mockResolvedValue({
       sessionId: "test-session-123",
       shell: "/bin/bash",
@@ -4202,31 +4237,96 @@ describe("TerminalModal — xterm focus initialization (FN-1602)", () => {
     expect(handled).toBe(true);
   });
 
-  it("pastes clipboard text into the active session on cmd+v", async () => {
-    const readText = vi.fn().mockResolvedValue("npm test\n");
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true,
+  it.each([
+    ["mac", "MacIntel", { metaKey: true }],
+    ["non-mac", "Win32", { ctrlKey: true }],
+  ] as const)(
+    "delivers keyboard paste exactly once via xterm native paste on %s",
+    async (_name, platform, modifier) => {
+      const readText = vi.fn().mockResolvedValue("npm test\n");
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+      Object.defineProperty(navigator, "clipboard", {
+        value: { readText },
+        configurable: true,
+      });
+
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      await waitFor(() => {
+        expect(terminalKeyEventHandler).not.toBeNull();
+        expect(terminalDataHandler).not.toBeNull();
+      });
+
+      const handled = terminalKeyEventHandler?.(
+        new KeyboardEvent("keydown", { key: "v", ...modifier }),
+      );
+      act(() => {
+        terminalDataHandler?.("npm test\n");
+      });
+
+      expect(handled).toBe(true);
+      expect(readText).not.toHaveBeenCalled();
+      expect(mockSendInput).toHaveBeenCalledTimes(1);
+      expect(mockSendInput).toHaveBeenCalledWith("npm test\n");
+    },
+  );
+
+  it("delivers native helper-textarea paste exactly once without the shortcut handler", async () => {
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(terminalDataHandler).not.toBeNull();
     });
-    Object.defineProperty(navigator, "clipboard", {
-      value: { readText },
+
+    act(() => {
+      terminalDataHandler?.("line one\nline two\n");
+    });
+
+    expect(mockSendInput).toHaveBeenCalledTimes(1);
+    expect(mockSendInput).toHaveBeenCalledWith("line one\nline two\n");
+  });
+
+  it("refits xterm after the async terminal font loads", async () => {
+    let resolveFontLoad: (value: FontFace[]) => void = () => {};
+    const load = vi.fn(
+      () =>
+        new Promise<FontFace[]>((resolve) => {
+          resolveFontLoad = resolve;
+        }),
+    );
+    Object.defineProperty(document, "fonts", {
+      value: {
+        load,
+        ready: Promise.resolve(),
+      },
       configurable: true,
     });
 
     render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
-      expect(terminalKeyEventHandler).not.toBeNull();
+      expect(mockTerminalInstance.open).toHaveBeenCalled();
+      expect(load).toHaveBeenCalledWith(
+        expect.stringContaining("Fusion Terminal Nerd Font Symbols"),
+      );
     });
 
-    const handled = terminalKeyEventHandler?.(
-      new KeyboardEvent("keydown", { key: "v", metaKey: true }),
-    );
+    const fitCallBaseline = mockFitAddonFit.mock.calls.length;
 
-    expect(handled).toBe(false);
+    await act(async () => {
+      resolveFontLoad([]);
+      await Promise.resolve();
+    });
+
     await waitFor(() => {
-      expect(readText).toHaveBeenCalled();
-      expect(mockSendInput).toHaveBeenCalledWith("npm test\n");
+      expect(mockFitAddonFit.mock.calls.length).toBeGreaterThan(fitCallBaseline);
+      expect(mockResize).toHaveBeenCalledWith(
+        mockTerminalInstance.cols,
+        mockTerminalInstance.rows,
+      );
     });
   });
 
@@ -4442,6 +4542,16 @@ describe("TerminalModal — project-context propagation (FN-1765)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
     mockTerminalInstance.open.mockClear();
     mockTerminalInstance.dispose.mockClear();
     mockTerminalInstance.clear.mockClear();

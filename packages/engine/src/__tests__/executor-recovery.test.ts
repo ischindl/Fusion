@@ -944,6 +944,289 @@ describe("TaskExecutor bounded recovery retries", () => {
     expect(store.handoffToReview).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:WorkflowLifecycle 2026-06-15-01:38:
+  FN-6478 established that a workflow graph exit while paused is benign only while the task remains in-progress. If the live row already advanced to in-review or another non-execution column, the executor must preserve explicit user pauses and autoMerge:false terminal review state while surfacing an operator-actionable workflow failure instead of the generic pause-preserved log.
+  */
+  it("surfaces an operator-actionable failure for user-paused in-review graph exits", async () => {
+    const store = createMockStore();
+    const steps = [
+      { name: "Preflight", status: "pending" },
+      { name: "Implement", status: "pending" },
+    ];
+    const task = {
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      status: undefined,
+      dependencies: [],
+      steps,
+      currentStep: 0,
+      log: [{ timestamp: new Date().toISOString(), action: "Resuming execution after unpause" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as Task;
+    store.getTask.mockResolvedValue({
+      ...task,
+      column: "in-review",
+      paused: true,
+      userPaused: true,
+      status: undefined,
+      error: null,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+
+    await (executor as any).handleGraphFailure(task, {
+      visitedNodeIds: ["execute"],
+    });
+
+    const messages = store.logEntry.mock.calls.map((call) => call[1]).join("\n");
+    expect(store.logEntry.mock.calls.map((call) => call[1])).toEqual([
+      "Workflow graph failure surfaced after paused explicit user pause in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task",
+    ]);
+    expect(messages).toContain("Workflow graph failure surfaced");
+    expect(messages).toContain("explicit user pause");
+    expect(messages).toContain("operator action required");
+    expect(messages).not.toContain("Workflow graph run ended while task is paused — pause state preserved");
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-001",
+      {
+        error: "Workflow graph failure surfaced after paused explicit user pause in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task",
+        status: "failed",
+      },
+      undefined,
+    );
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+  });
+
+  it("surfaces pausedAborted in-review graph exits as workflow failures", async () => {
+    const store = createMockStore();
+    const steps = [
+      { name: "Preflight", status: "pending" },
+      { name: "Implement", status: "pending" },
+    ];
+    const task = {
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      status: undefined,
+      dependencies: [],
+      steps,
+      currentStep: 0,
+      log: [{ timestamp: new Date().toISOString(), action: "Resuming execution after unpause" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as Task;
+    store.getTask.mockResolvedValue({
+      ...task,
+      column: "in-review",
+      paused: false,
+      status: undefined,
+      error: null,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+    (executor as any).pausedAborted.add("FN-001");
+
+    await (executor as any).handleGraphFailure(task, {
+      visitedNodeIds: ["execute"],
+    });
+
+    const messages = store.logEntry.mock.calls.map((call) => call[1]).join("\n");
+    expect(store.logEntry.mock.calls.map((call) => call[1])).toEqual([
+      "Workflow graph failure surfaced after paused engine abort during pause/resume in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task",
+    ]);
+    expect(messages).toContain("Workflow graph failure surfaced");
+    expect(messages).toContain("engine abort during pause/resume");
+    expect(messages).toContain("operator action required");
+    expect(messages).not.toContain("Workflow graph run ended while task is paused — pause state preserved");
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-001",
+      {
+        error: "Workflow graph failure surfaced after paused engine abort during pause/resume in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task",
+        status: "failed",
+      },
+      undefined,
+    );
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite an already-surfaced in-review failure during paused abort cleanup", async () => {
+    const store = createMockStore();
+    const task = {
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      status: undefined,
+      dependencies: [],
+      steps: [{ name: "Preflight", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as Task;
+    store.getTask.mockResolvedValue({
+      ...task,
+      column: "in-review",
+      paused: false,
+      status: "failed",
+      error: "Task reached in-review without calling fn_task_done",
+    });
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+    (executor as any).pausedAborted.add("FN-001");
+
+    await (executor as any).handleGraphFailure(task, {
+      visitedNodeIds: ["execute"],
+    });
+
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-001",
+      "Workflow graph failure surfaced after paused engine abort during pause/resume in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task",
+      undefined,
+      undefined,
+    );
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "FN-001",
+      expect.objectContaining({ status: "failed" }),
+      expect.anything(),
+    );
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+  });
+
+  it("keeps genuine in-progress user pauses benign even with partial step progress", async () => {
+    const store = createMockStore();
+    const task = {
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      status: undefined,
+      dependencies: [],
+      steps: [
+        { name: "Preflight", status: "done" },
+        { name: "Implement", status: "pending" },
+      ],
+      currentStep: 1,
+      log: [{ timestamp: new Date().toISOString(), action: "Started execution" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as Task;
+    store.getTask.mockResolvedValue({
+      ...task,
+      paused: true,
+      userPaused: true,
+      status: undefined,
+      error: null,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+
+    await (executor as any).handleGraphFailure(task, {
+      visitedNodeIds: ["execute"],
+    });
+
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-001",
+      "Workflow graph run ended while task is paused — pause state preserved",
+      undefined,
+      undefined,
+    );
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "FN-001",
+      expect.objectContaining({ status: "failed" }),
+      expect.anything(),
+    );
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("surfaces non-in-progress paused graph exits even after partial progress without requeueing autoMerge-off review", async () => {
+    const store = createMockStore();
+    const task = {
+      id: "FN-001",
+      title: "Test",
+      description: "Test",
+      column: "in-progress",
+      status: undefined,
+      dependencies: [],
+      steps: [
+        { name: "Preflight", status: "done" },
+        { name: "Implement", status: "pending" },
+      ],
+      currentStep: 1,
+      log: [{ timestamp: new Date().toISOString(), action: "Resuming execution after unpause" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as Task;
+    store.getTask.mockResolvedValue({
+      ...task,
+      column: "in-review",
+      paused: true,
+      userPaused: true,
+      status: undefined,
+      error: null,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+
+    await (executor as any).handleGraphFailure(task, {
+      visitedNodeIds: ["execute"],
+    });
+
+    const expectedMessage = "Workflow graph failure surfaced after paused explicit user pause in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task";
+    expect(store.logEntry).toHaveBeenCalledWith("FN-001", expectedMessage, undefined, undefined);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { error: expectedMessage, status: "failed" }, undefined);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.handoffToReview).not.toHaveBeenCalled();
+  });
+
+  it.each(["todo", "done"] as const)(
+    "surfaces paused graph exits in already-advanced %s column without lifecycle movement",
+    async (column) => {
+      const store = createMockStore();
+      const task = {
+        id: "FN-001",
+        title: "Test",
+        description: "Test",
+        column: "in-progress",
+        status: undefined,
+        dependencies: [],
+        steps: [{ name: "Preflight", status: "pending" }],
+        currentStep: 0,
+        log: [{ timestamp: new Date().toISOString(), action: "Resuming execution after unpause" }],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as Task;
+      store.getTask.mockResolvedValue({
+        ...task,
+        column,
+        paused: true,
+        status: undefined,
+        error: null,
+      });
+      const executor = new TaskExecutor(store, "/tmp/test", {});
+
+      await (executor as any).handleGraphFailure(task, {
+        visitedNodeIds: ["execute"],
+      });
+
+      const expectedMessage = `Workflow graph failure surfaced after paused task pause in '${column}' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task`;
+      expect(store.logEntry).toHaveBeenCalledWith("FN-001", expectedMessage, undefined, undefined);
+      if (column === "done") {
+        expect(store.updateTask).not.toHaveBeenCalledWith(
+          "FN-001",
+          expect.objectContaining({ status: "failed" }),
+          expect.anything(),
+        );
+      } else {
+        expect(store.updateTask).toHaveBeenCalledWith("FN-001", { error: expectedMessage, status: "failed" }, undefined);
+      }
+      expect(store.moveTask).not.toHaveBeenCalled();
+      expect(store.handoffToReview).not.toHaveBeenCalled();
+    },
+  );
+
   it("auto-retries a bounded transient resume-after-restart graph failure instead of parking", async () => {
     const store = createMockStore();
     const task = {

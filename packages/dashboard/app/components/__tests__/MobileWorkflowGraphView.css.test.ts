@@ -74,25 +74,24 @@ describe("MobileWorkflowGraphView CSS contract", () => {
 describe("WorkflowNodeEditor simple editor mobile CSS contract", () => {
   it("adds interactive states to mobile add and tab buttons", () => {
     const editorCss = readComponentCss("WorkflowNodeEditor.css");
-    const mobileBlocks = extractMediaBlocks(editorCss, "(max-width: 768px)");
 
-    const tabHoverRule = findRule(mobileBlocks, /\.wf-mobile-tab:hover\s*\{[^}]*\}/);
+    const tabHoverRule = findRule([editorCss], /\.wf-mobile-tab:hover\s*\{[^}]*\}/);
     expect(tabHoverRule).toMatch(/background\s*:\s*var\(--bg-tertiary\)\s*;/);
 
     const addHoverRule = findRule(
-      mobileBlocks,
+      [editorCss],
       /\.wf-mobile-add-option:hover,\s*\.wf-mobile-template-option:hover\s*\{[^}]*\}/,
     );
     expect(addHoverRule).toMatch(/background\s*:\s*var\(--bg-tertiary\)\s*;/);
 
     const addFocusRule = findRule(
-      mobileBlocks,
+      [editorCss],
       /\.wf-mobile-add-option:focus-visible,\s*\.wf-mobile-template-option:focus-visible\s*\{[^}]*\}/,
     );
     expect(addFocusRule).toMatch(/box-shadow\s*:\s*var\(--focus-ring-strong\)\s*;/);
 
     const addActiveRule = findRule(
-      mobileBlocks,
+      [editorCss],
       /\.wf-mobile-add-option:active,\s*\.wf-mobile-template-option:active\s*\{[^}]*\}/,
     );
     expect(addActiveRule).toMatch(/transform\s*:\s*scale\(0\.97\)\s*;/);

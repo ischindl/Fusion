@@ -1,5 +1,6 @@
 export { AgentLogger, type AgentLoggerOptions, summarizeToolArgs } from "./agent-logger.js";
 export { reloadExemptTools, addToExemptTools, getExemptToolNames } from "./agent-action-gate.js";
+export { createFusionAuthStorage } from "./auth-storage.js";
 export {
   createTaskCreateTool,
   createTaskDocumentReadTool,
@@ -610,7 +611,13 @@ export {
   type RunCodeNodeOptions,
 } from "./code-node-runner.js";
 // Agent runtime abstraction
-export { type AgentRuntime, type AgentRuntimeOptions, type AgentSessionResult } from "./agent-runtime.js";
+export {
+  type AgentPromptResult,
+  type AgentRuntime,
+  type AgentRuntimeOptions,
+  type AgentSessionResult,
+} from "./agent-runtime.js";
+export { askAcpOnce, type AskAcpOnceOptions, type AskAcpOnceResult } from "./cli-agent-ask.js";
 export {
   resolveRuntime,
   getDefaultPiRuntime,

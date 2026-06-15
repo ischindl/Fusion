@@ -45,6 +45,8 @@ vi.mock("../../hooks/useMobileKeyboard", () => ({
 
 vi.mock("../../hooks/useViewportMode", () => ({
   MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+  getViewportMode: () => "mobile",
+  isMobileViewport: () => true,
   useViewportMode: () => "mobile",
 }));
 

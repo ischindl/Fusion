@@ -20,6 +20,8 @@ const mockUseMobileKeyboard = vi.fn(() => ({
 
 vi.mock("../../hooks/useViewportMode", () => ({
   MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+  getViewportMode: () => mockUseViewportMode(),
+  isMobileViewport: () => mockUseViewportMode() === "mobile",
   useViewportMode: () => mockUseViewportMode(),
 }));
 
@@ -29,6 +31,8 @@ vi.mock("../../hooks/useMobileKeyboard", () => ({
 
 vi.mock("../../hooks/useMobileScrollLock", () => ({
   useMobileScrollLock: vi.fn(),
+  useMobileKeyboardViewportLock: vi.fn(),
+  useMobileViewportRestoreReset: vi.fn(),
 }));
 
 // Mock the API module with all functions

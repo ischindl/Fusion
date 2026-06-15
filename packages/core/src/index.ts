@@ -17,9 +17,18 @@ export type {
 } from "./branch-assignment.js";
 export { customProviderRegistryKey } from "./custom-provider-key.js";
 export { redactSecrets } from "./redact-secrets.js";
+export { isActiveNearDuplicateColumn, isNearDuplicateCanonicalInactive } from "./near-duplicate-canonical.js";
+export type { NearDuplicateCanonicalState } from "./near-duplicate-canonical.js";
 export * from "./frontend-ux-policy.js";
 export { MOCK_PROVIDER_ID } from "./mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./mock-provider-constants.js";
+export {
+  ZAI_PROVIDER_ID,
+  ZAI_PROVIDER_REGISTRATION,
+  mergeBuiltInZaiProviderModels,
+  registerBuiltInZaiProvider,
+} from "./zai-provider.js";
+export type { ZaiProviderRegistration } from "./zai-provider.js";
 export {
   resolveWorktrunkSettings,
   requiresWorktrunkInstallVerification,
@@ -485,6 +494,8 @@ export {
   type NoOpCompletionMarker,
   type NoOpCompletionMarkerKind,
 } from "./no-op-completion-marker.js";
+export { evaluateNoCommitsNoOpFinalize } from "./no-commits-finalize-guard.js";
+export type { NoCommitsNoOpFinalizeEvaluation } from "./no-commits-finalize-guard.js";
 export {
   __getDeterministicGuardMutexSize,
   deterministicGuardLocks,

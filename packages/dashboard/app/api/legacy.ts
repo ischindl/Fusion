@@ -724,6 +724,13 @@ export function retryTask(id: string, projectId?: string): Promise<Task> {
   return api<Task>(withProjectId(`/tasks/${id}/retry`, projectId), { method: "POST" });
 }
 
+export function relaunchCliSession(sessionId: string, projectId?: string): Promise<{ ok: boolean; taskId?: string }> {
+  return api<{ ok: boolean; taskId?: string }>(
+    withProjectId(`/cli-sessions/${encodeURIComponent(sessionId)}/relaunch`, projectId),
+    { method: "POST" },
+  );
+}
+
 export function recoverBranchBinding(id: string, projectId?: string): Promise<RecoverBranchBindingOutcome> {
   return api<RecoverBranchBindingOutcome>(withProjectId(`/tasks/${id}/recover-branch-binding`, projectId), { method: "POST" });
 }
@@ -808,6 +815,19 @@ export function checkForUpdate(projectId?: string): Promise<UpdateCheckResponse>
 
 export function refreshUpdateCheck(projectId?: string): Promise<UpdateCheckResponse> {
   return api<UpdateCheckResponse>(withProjectId("/update-check/refresh", projectId), {
+    method: "POST",
+  });
+}
+
+export interface UpdateInstallResponse {
+  currentVersion: string;
+  latestVersion: string | null;
+  updated: boolean;
+  error?: string;
+}
+
+export function installUpdate(projectId?: string): Promise<UpdateInstallResponse> {
+  return api<UpdateInstallResponse>(withProjectId("/update-check/install", projectId), {
     method: "POST",
   });
 }

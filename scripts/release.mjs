@@ -12,9 +12,11 @@
 //   - `npm login` already completed (publish uses the active npm token)
 //
 // Usage:
-//   pnpm release              # interactive: review changesets, accept or override version, confirm
-//   pnpm release --yes        # accept the proposed version, skip confirmation prompt
-//   pnpm release --dry-run    # preview only — exit before any file/git/npm changes
+//   pnpm release                  # interactive: review changesets, accept or override version, confirm
+//   pnpm release --yes            # accept the proposed version, skip confirmation prompt
+//   pnpm release --dry-run        # preview only; non-interactive by default; no file/git/npm changes
+//   pnpm release --dry-run --interactive
+//                                 # preview only, but exercise the version prompt override
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, writeFileSync, statSync, existsSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
@@ -24,10 +26,16 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
 import { extractVersionNotes } from "./lib/extract-version-notes.mjs";
+import { shouldPromptForVersion } from "./lib/release-prompt-gate.mjs";
 
 const args = new Set(process.argv.slice(2));
+/*
+ * FNXC:ReleaseScript 2026-06-14-23:08:
+ * `--dry-run` must not read stdin in the default agent-shell path; `--interactive` is the explicit maintainer override for prompt coverage while preserving real-release prompts.
+ */
 const DRY_RUN = args.has("--dry-run");
 const AUTO_YES = args.has("--yes") || args.has("-y");
+const INTERACTIVE = args.has("--interactive");
 
 const color = (c, s) => `\x1b[${c}m${s}\x1b[0m`;
 const info = (s) => console.log(color(36, "▶ ") + s);
@@ -506,7 +514,7 @@ console.log(`  Bumped packages : ${releases.map((r) => r.name).join(", ")}`);
 console.log("");
 
 let chosenVersion = proposedVersion;
-if (!AUTO_YES) {
+if (shouldPromptForVersion({ dryRun: DRY_RUN, autoYes: AUTO_YES, interactive: INTERACTIVE })) {
   while (true) {
     const answer = await ask(`Release version [${proposedVersion}]: `);
     if (answer === "") break;

@@ -24,6 +24,7 @@ import {
   resolveAgentMemoryInclusionMode,
   extractIntentSignature,
   findNearDuplicates,
+  isNearDuplicateCanonicalInactive,
   applyFrontendUxCriteria,
   type NearDuplicateCandidate,
 } from "@fusion/core";
@@ -2236,6 +2237,15 @@ export class TriageProcessor {
           const canonical = olderMatches[0] ?? matches[0];
           const canonicalTask = candidatesById.get(canonical.id);
           if (!canonicalTask) {
+            return;
+          }
+
+          /**
+           * FNXC:NearDuplicateDetection 2026-06-14-12:00:
+           * FN-6439 makes the triage backstop defense-in-depth: never persist a user-decision duplicate flag when the canonical is inactive, even if candidate filtering regresses or a stale snapshot slips through.
+           */
+          if (isNearDuplicateCanonicalInactive(canonicalTask)) {
+            planLog.log(`${task.id}: near-duplicate candidate ${canonical.id} is inactive; skipping near-duplicate flag`);
             return;
           }
 

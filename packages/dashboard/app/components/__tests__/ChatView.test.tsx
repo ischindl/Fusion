@@ -1489,6 +1489,39 @@ describe("ChatView", () => {
     expect(sendMessage).toHaveBeenCalledWith("Hello world", []);
   });
 
+  it("sends message on touch tap when the synthetic click is suppressed (mobile)", async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 375, configurable: true });
+    try {
+      const sendMessage = vi.fn();
+      setupMockChat({
+        activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        messages: [],
+        sendMessage,
+      });
+
+      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      const textarea = screen.getByTestId("chat-input");
+      await userEvent.type(textarea, "Touch hello");
+
+      const sendButton = screen.getByTestId("chat-send-btn");
+      // iOS suppresses the trailing synthetic click after preventDefault() in the
+      // touch sequence, so the send must fire from the touch handlers. Both
+      // pointerdown (touch) and touchstart fire for one tap; the result must be a
+      // single send, not zero (bug) and not two (double-fire).
+      await act(async () => {
+        fireEvent.pointerDown(sendButton, { pointerType: "touch" });
+        fireEvent.touchStart(sendButton);
+      });
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledWith("Touch hello", []);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: originalInnerWidth, configurable: true });
+    }
+  });
+
   it("clears room composer on Enter after successful room send", async () => {
     localStorage.setItem("fusion:chat-scope", "rooms");
     const sendRoomMessage = vi.fn().mockResolvedValue(undefined);

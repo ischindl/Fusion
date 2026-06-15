@@ -283,41 +283,65 @@ describe("TaskChatTab", () => {
     expect(screen.getByText(/No agent output yet/)).toBeTruthy();
   });
 
-  it("renders the collapsed expand toggle and calls the toggle handler", () => {
+  it("renders the collapsed icon-only expand toggle inside the chat view and calls the toggle handler", () => {
     const onToggleExpanded = vi.fn();
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} expanded={false} onToggleExpanded={onToggleExpanded} />);
 
     const toggle = screen.getByTestId("task-chat-expand-toggle");
+    const transcript = screen.getByTestId("task-chat-transcript");
+    expect(screen.getByTestId("task-chat-tab")).toContainElement(toggle);
+    expect(transcript).not.toContainElement(toggle);
+    expect(document.querySelector(".task-chat-toolbar")).toBeNull();
+    expect(toggle).toHaveClass("btn-icon");
+    expect(toggle).toHaveClass("task-chat-expand-toggle--overlay");
     expect(toggle).toHaveAttribute("aria-label", "Expand chat to full modal");
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(toggle).toHaveTextContent("Expand");
+    expect(toggle).not.toHaveTextContent("Expand");
+    expect(toggle).not.toHaveTextContent("Collapse");
 
     fireEvent.click(toggle);
     expect(onToggleExpanded).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the expanded collapse toggle", () => {
+  it("renders the expanded icon-only collapse toggle", () => {
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} expanded onToggleExpanded={vi.fn()} />);
 
     const toggle = screen.getByTestId("task-chat-expand-toggle");
     expect(toggle).toHaveAttribute("aria-label", "Collapse chat");
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(toggle).toHaveTextContent("Collapse");
+    expect(toggle).not.toHaveTextContent("Collapse");
+    expect(toggle).not.toHaveTextContent("Expand");
   });
 
-  it("renders the expand toggle while the transcript is loading", () => {
+  it("renders the icon-only expand toggle while the transcript is loading", () => {
     mockLogs([], true);
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} onToggleExpanded={vi.fn()} />);
 
-    expect(screen.getByTestId("task-chat-expand-toggle")).toBeInTheDocument();
+    const toggle = screen.getByTestId("task-chat-expand-toggle");
+    expect(screen.getByTestId("task-chat-tab")).toContainElement(toggle);
+    expect(toggle).not.toHaveTextContent("Expand");
     expect(screen.getByText("Loading agent output…")).toBeInTheDocument();
   });
 
-  it("renders the expand toggle in the empty transcript state", () => {
+  it("renders the icon-only expand toggle in the empty transcript state", () => {
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} onToggleExpanded={vi.fn()} />);
 
-    expect(screen.getByTestId("task-chat-expand-toggle")).toBeInTheDocument();
+    const toggle = screen.getByTestId("task-chat-expand-toggle");
+    expect(screen.getByTestId("task-chat-tab")).toContainElement(toggle);
+    expect(toggle).not.toHaveTextContent("Expand");
     expect(screen.getByText(/No agent output yet/)).toBeInTheDocument();
+  });
+
+  it("renders the icon-only expand toggle in the populated transcript state", () => {
+    mockLogs([makeEntry({ agent: "executor", text: "executor output" })]);
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} onToggleExpanded={vi.fn()} />);
+
+    const transcript = screen.getByTestId("task-chat-transcript");
+    const toggle = screen.getByTestId("task-chat-expand-toggle");
+    expect(screen.getByTestId("task-chat-tab")).toContainElement(toggle);
+    expect(transcript).not.toContainElement(toggle);
+    expect(toggle).not.toHaveTextContent("Expand");
+    expect(within(transcript).getByText("executor output")).toBeInTheDocument();
   });
 
   it("labels every agent role and the legacy undefined-agent fallback", () => {
@@ -794,6 +818,24 @@ describe("TaskChatTab", () => {
     expect(screen.getByRole("button", { name: "Jump to latest message" })).toBe(jumpButton);
   });
 
+  it("keeps the icon-only expand toggle accessible after transcript scrolling", () => {
+    const metrics = mockTranscriptMetrics({ scrollHeight: 1200, clientHeight: 240, initialScrollTop: 0 });
+    mockLogs([makeEntry({ agent: "executor", text: "scrollable output" })]);
+
+    render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} expanded={false} onToggleExpanded={vi.fn()} />);
+    const transcript = screen.getByTestId("task-chat-transcript");
+
+    metrics.scrollTop = 600;
+    fireEvent.scroll(transcript);
+
+    const toggle = screen.getByTestId("task-chat-expand-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toBeVisible();
+    expect(toggle).toHaveAccessibleName("Expand chat to full modal");
+    expect(toggle).not.toHaveTextContent("Expand");
+    expect(transcript).not.toContainElement(toggle);
+  });
+
   it("clicking the jump-to-bottom button snaps to the latest message and removes the control", async () => {
     const user = userEvent.setup();
     const metrics = mockTranscriptMetrics({ scrollHeight: 1200, clientHeight: 240, initialScrollTop: 0 });
@@ -885,6 +927,126 @@ describe("TaskChatTab", () => {
     expect(addToast).toHaveBeenCalledWith("Refinement task created: FN-222", "success");
     expect(onTaskUpdated).not.toHaveBeenCalledWith(refinementTask);
     expect(onTaskUpdated).not.toHaveBeenCalled();
+  });
+
+  it("sends an in-progress task steering message on plain Enter", async () => {
+    const onTaskUpdated = vi.fn();
+    const updatedTask = makeTask();
+    mockedAddSteeringComment.mockResolvedValue(updatedTask);
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} onTaskUpdated={onTaskUpdated} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "Plain Enter guidance" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).toHaveBeenCalledWith("FN-001", "Plain Enter guidance", "project-1");
+    });
+    expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1);
+    expect(mockedRefineTask).not.toHaveBeenCalled();
+    expect(onTaskUpdated).toHaveBeenCalledWith(updatedTask);
+  });
+
+  it("sends a done-task refinement on plain Enter", async () => {
+    const refinementTask = makeTask({ id: "FN-224", column: "todo" });
+    mockedRefineTask.mockResolvedValue(refinementTask);
+    render(<TaskChatTab task={makeTask({ column: "done" })} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "Plain Enter refinement" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(mockedRefineTask).toHaveBeenCalledWith("FN-001", "Plain Enter refinement", "project-1");
+    });
+    expect(mockedRefineTask).toHaveBeenCalledTimes(1);
+    expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+  });
+
+  it("keeps Shift+Enter as textarea newline input without sending", async () => {
+    const user = userEvent.setup();
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    await user.click(input);
+    await user.keyboard("Line one");
+    await user.keyboard("{Shift>}{Enter}{/Shift}Line two");
+
+    expect(input).toHaveValue("Line one\nLine two");
+    expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+    expect(mockedRefineTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "   \n  "])("does not send a %s draft on Enter", async (draft) => {
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: draft } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+      expect(mockedRefineTask).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not submit another Enter while a send is already in flight", async () => {
+    const send = deferred<Task>();
+    mockedAddSteeringComment.mockReturnValue(send.promise);
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "Only send once" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole("button", { name: "Sending" })).toBeDisabled();
+
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      send.resolve(makeTask());
+      await send.promise;
+    });
+  });
+
+  it.each([
+    ["isComposing", { isComposing: true }],
+    ["keyCode 229", { keyCode: 229 }],
+  ])("does not send Enter during IME composition signaled by %s", async (_label, eventPatch) => {
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "Composing text" } });
+    const event = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true });
+    for (const [key, value] of Object.entries(eventPatch)) {
+      Object.defineProperty(event, key, { value });
+    }
+    fireEvent(input, event);
+
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+      expect(mockedRefineTask).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    ["Cmd+Enter", { metaKey: true }],
+    ["Ctrl+Enter", { ctrlKey: true }],
+  ])("keeps %s sending for backward compatibility", async (_label, modifier) => {
+    mockedAddSteeringComment.mockResolvedValue(makeTask());
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "Shortcut guidance" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", ...modifier });
+
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).toHaveBeenCalledWith("FN-001", "Shortcut guidance", "project-1");
+    });
+    expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1);
   });
 
   it.each([undefined, null, "failed", "done"])("routes done-task sends to refineTask regardless of %s status", async (status) => {
@@ -1475,6 +1637,34 @@ describe("TaskChatTab", () => {
     expect(mobileTranscriptRule).not.toContain("max-height");
     expect(css).not.toContain("70vh");
     expect(css).not.toContain("62vh");
+  });
+
+  it("positions the icon-only expand toggle as a tokenized chat-view overlay with no toolbar shell", () => {
+    const css = readFileSync(resolve(__dirname, "../TaskChatTab.css"), "utf8");
+    const tabRule = getCssRuleBlock(css, ".task-chat-tab");
+    const transcriptRule = getCssRuleBlock(css, ".task-chat-transcript");
+    const toggleRule = getCssRuleBlock(css, ".task-chat-expand-toggle");
+    const overlayRule = getCssRuleBlock(css, ".task-chat-expand-toggle--overlay");
+    const mobileCss = getCssAfter(css, "@media (max-width: 768px)");
+    const mobileOverlayRule = getCssRuleBlock(mobileCss, ".task-chat-expand-toggle--overlay");
+
+    expect(css).not.toContain(".task-chat-toolbar");
+    expect(tabRule).toContain("position: relative");
+    expect(transcriptRule).toContain("position: relative");
+    expect(toggleRule).toContain("justify-content: center");
+    expect(toggleRule).toContain("min-inline-size: var(--space-2xl)");
+    expect(toggleRule).toContain("min-block-size: var(--space-2xl)");
+    expect(toggleRule).not.toContain("gap");
+    expect(overlayRule).toContain("position: absolute");
+    expect(overlayRule).toContain("top: var(--space-md)");
+    expect(overlayRule).toContain("right: var(--space-md)");
+    expect(overlayRule).toContain("background: var(--surface)");
+    expect(overlayRule).toContain("border-color: var(--border)");
+    expect(overlayRule).toContain("box-shadow: var(--shadow-sm)");
+    expect(mobileOverlayRule).toContain("top: var(--space-sm)");
+    expect(mobileOverlayRule).toContain("right: var(--space-sm)");
+    expect(mobileOverlayRule).toContain("min-inline-size");
+    expect(mobileOverlayRule).toContain("min-block-size");
   });
 
   it("keeps tokenized sticky styling for the jump-to-bottom control on desktop and mobile", () => {

@@ -231,10 +231,12 @@ const qualityAppComponentBatchBTests = buildComponentQualityInclude(batchedQuali
 const qualityAppAppOnlyTests = ["app/components/__tests__/App.test.tsx"];
 const qualityAppChatOnlyTests = ["app/components/__tests__/ChatView.test.tsx"];
 const qualityAppSettingsOnlyTests = ["app/components/__tests__/SettingsModal.test.tsx"];
-const quarantinedDashboardTests: string[] = [
-  "app/components/__tests__/QuickEntryBox.test.tsx",
-  "src/__tests__/routes-settings.test.ts",
-];
+/*
+FNXC:DashboardTestQuarantine 2026-06-14-17:01:
+FN-6454 applied the quarantine deletion ratchet to every dashboard test quarantined on 2026-06-14.
+Keep this list empty until a new flaky dashboard test is quarantined with a matching ledger entry.
+*/
+const quarantinedDashboardTests: string[] = [];
 
 const qualityApiTests = [
   // Critical HTTP/server behavior: auth, task/project/settings mutation,
@@ -388,6 +390,7 @@ export default defineConfig({
           name: "dashboard-app-quality",
           environment: "jsdom",
           include: qualityAppTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -397,6 +400,7 @@ export default defineConfig({
           name: "dashboard-app-quality-foundation-api",
           environment: "jsdom",
           include: qualityAppFoundationApiShardTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -406,6 +410,7 @@ export default defineConfig({
           name: "dashboard-app-quality-foundation-ui",
           environment: "jsdom",
           include: qualityAppFoundationUiShardTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -415,6 +420,7 @@ export default defineConfig({
           name: "dashboard-app-quality-foundation-hooks-utils",
           environment: "jsdom",
           include: qualityAppFoundationHooksAndUtilsTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -424,6 +430,7 @@ export default defineConfig({
           name: "dashboard-app-quality-components-a",
           environment: "jsdom",
           include: qualityAppComponentBatchATests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -433,6 +440,7 @@ export default defineConfig({
           name: "dashboard-app-quality-components-b",
           environment: "jsdom",
           include: qualityAppComponentBatchBTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -442,6 +450,7 @@ export default defineConfig({
           name: "dashboard-app-quality-app",
           environment: "jsdom",
           include: qualityAppAppOnlyTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -451,6 +460,7 @@ export default defineConfig({
           name: "dashboard-app-quality-chat",
           environment: "jsdom",
           include: qualityAppChatOnlyTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -460,6 +470,7 @@ export default defineConfig({
           name: "dashboard-app-quality-settings",
           environment: "jsdom",
           include: qualityAppSettingsOnlyTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [/app\//] },
         },
       },
@@ -469,6 +480,7 @@ export default defineConfig({
           name: "dashboard-api-quality",
           environment: "node",
           include: qualityApiTests,
+          exclude: quarantinedDashboardTests,
           css: { include: [] },
         },
       },
@@ -478,7 +490,7 @@ export default defineConfig({
           name: "dashboard-app-quality-backfill",
           environment: "jsdom",
           include: qualityAppBackfillTests,
-          exclude: backfillAppExclude,
+          exclude: [...backfillAppExclude, ...quarantinedDashboardTests],
           css: { include: [/app\//] },
         },
       },
@@ -488,7 +500,7 @@ export default defineConfig({
           name: "dashboard-api-quality-backfill",
           environment: "node",
           include: qualityApiBackfillTests,
-          exclude: backfillApiExclude,
+          exclude: [...backfillApiExclude, ...quarantinedDashboardTests],
           css: { include: [] },
         },
       },
@@ -498,6 +510,7 @@ export default defineConfig({
           name: "dashboard-app",
           environment: "jsdom",
           include: ["app/**/*.test.{ts,tsx}"],
+          exclude: quarantinedDashboardTests,
           // Process CSS imports only for jsdom tests that assert on
           // getComputedStyle. Node API tests do not need CSS transforms.
           css: { include: [/app\//] },
@@ -509,6 +522,7 @@ export default defineConfig({
           name: "dashboard-api",
           environment: "node",
           include: ["src/**/*.test.{ts,tsx}"],
+          exclude: quarantinedDashboardTests,
           css: { include: [] },
         },
       },

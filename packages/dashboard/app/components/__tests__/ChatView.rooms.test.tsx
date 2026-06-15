@@ -12,6 +12,7 @@ vi.mock("../../hooks/useChat");
 vi.mock("../../hooks/useMobileScrollLock", () => ({
   useMobileScrollLock: vi.fn(),
   useMobileKeyboardViewportLock: vi.fn(),
+  useMobileViewportRestoreReset: vi.fn(),
   isIOS: () => true,
   _resetLockState: vi.fn(),
 }));

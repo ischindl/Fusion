@@ -1,7 +1,12 @@
+/*
+FNXC:Terminal 2026-06-13-20:02:
+The symbols-only Nerd Font is listed first in the xterm font stack so powerline prompt glyphs resolve before platform monospace fonts. It must stay unicode-range-scoped to Nerd Font codepoints only; otherwise mobile DOM/canvas xterm can measure ASCII cells against the symbols font after font-display: swap and render commands like `pnpm build` with oversized inter-character spacing.
+*/
 @font-face {
   font-family: "Fusion Terminal Nerd Font Symbols";
   src: url("/fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
   font-display: swap;
+  unicode-range: U+23FB-23FE, U+2665, U+26A1, U+2B58, U+E000-E00A, U+E0A0-E0D7, U+E200-E2A9, U+E300-E3E3, U+E5FA-E6B7, U+E700-E8EF, U+EA60-EC1E, U+ED00-F2FF, U+F300-F533, U+F0001-F1AF0;
 }
 
 /* === Terminal Modal === */

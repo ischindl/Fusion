@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Agent } from "../../api";
 import type { ChatSession } from "@fusion/core";
 import * as apiModule from "../../api";
@@ -29,8 +29,15 @@ vi.mock("../../api", () => ({
 }));
 
 vi.mock("../../hooks/useAgents", () => ({ useAgents: vi.fn() }));
-vi.mock("../../hooks/useViewportMode", () => ({
-  MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)", useViewportMode: vi.fn() }));
+vi.mock("../../hooks/useViewportMode", () => {
+  const useViewportMode = vi.fn();
+  return {
+    MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+    getViewportMode: () => useViewportMode(),
+    isMobileViewport: () => useViewportMode() === "mobile",
+    useViewportMode,
+  };
+});
 vi.mock("../../hooks/useMobileKeyboard", () => ({ useMobileKeyboard: vi.fn() }));
 vi.mock("../../hooks/useAppSettings", () => ({ useAppSettings: vi.fn() }));
 vi.mock("../../hooks/useChatRooms", () => ({ useChatRooms: vi.fn() }));
@@ -843,6 +850,35 @@ describe("QuickChatFAB session-first UX", () => {
       expect(mockStreamChatResponse).toHaveBeenCalledWith("session-model", "Hello quick mobile", expect.any(Object), [], "proj-1");
       expect(await screen.findByTestId("quick-chat-stop")).toBeInTheDocument();
       expect(document.activeElement).toBe(input);
+    } finally {
+      isIOSSpy.mockRestore();
+    }
+  });
+
+  it("Android send fires exactly once for a full pointerdown+touchstart+click tap", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    window.dispatchEvent(new Event("resize"));
+    mockUseViewportMode.mockReturnValue("mobile");
+    const isIOSSpy = vi.spyOn(mobileScrollLock, "isIOS").mockReturnValue(false);
+    mockStreamChatResponse.mockImplementation(() => ({ close: vi.fn(), isConnected: () => true }));
+    try {
+      render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
+      fireEvent.click(screen.getByTestId("quick-chat-fab"));
+      const input = await screen.findByTestId("quick-chat-input") as HTMLTextAreaElement;
+      await waitFor(() => expect(input).not.toBeDisabled());
+      fireEvent.change(input, { target: { value: "Hello" } });
+
+      const sendButton = screen.getByTestId("quick-chat-send");
+      // Real Android tap dispatches pointerdown + touchstart + click within one
+      // task, with no React flush between them (unlike separate fireEvent calls).
+      // Dispatch them in a single act() so state batching mirrors the device.
+      await act(async () => {
+        sendButton.dispatchEvent(Object.assign(new Event("pointerdown", { bubbles: true, cancelable: true }), { pointerType: "touch" }));
+        sendButton.dispatchEvent(new Event("touchstart", { bubbles: true, cancelable: true }));
+        sendButton.dispatchEvent(new Event("click", { bubbles: true, cancelable: true }));
+      });
+
+      await waitFor(() => expect(mockStreamChatResponse).toHaveBeenCalledTimes(1));
     } finally {
       isIOSSpy.mockRestore();
     }

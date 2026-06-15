@@ -585,6 +585,9 @@ importers:
 
   packages/pi-claude-cli:
     dependencies:
+      '@agentclientprotocol/sdk':
+        specifier: 0.24.0
+        version: 0.24.0(zod@4.3.6)
       '@earendil-works/pi-ai':
         specifier: '*'
         version: 0.77.0(@modelcontextprotocol/sdk@1.28.0(zod@4.3.6))(ws@8.20.0)(zod@4.3.6)
@@ -715,6 +718,9 @@ importers:
       '@fusion/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+      claude-code-cli-acp:
+        specifier: 0.1.1
+        version: 0.1.1
     devDependencies:
       '@types/node':
         specifier: ^25.5.2
@@ -3707,6 +3713,53 @@ packages:
 
   classcat@5.0.5:
     resolution: {integrity: sha512-JhZUT7JFcQy/EzW605k/ktHtncoo9vnyW/2GspNYwFlN1C/WmjuV/xtS04e9SOkL2sTdw0VAZ2UGCcQ9lR6p6w==}
+
+  claude-code-cli-acp-darwin-arm64@0.1.1:
+    resolution: {integrity: sha512-FG+Y+SJsZo8SG0JsOxwpXopN1xdCFBUBF8ekFcgO/FbAljlaP5Z6uSzHYaa5WXgNy5DxKEKpJqg+NynnscHtyA==}
+    engines: {node: '>=18.0.0'}
+    cpu: [arm64]
+    os: [darwin]
+    hasBin: true
+
+  claude-code-cli-acp-darwin-x64@0.1.1:
+    resolution: {integrity: sha512-ekFa15FywMqxIh/w72RBJ2Beeu5b/0aF/T8hdI5tszcqYJXwoYjQxuLuo0LkA+bYXCeQT3WzGahvlRhTtVkzNQ==}
+    engines: {node: '>=18.0.0'}
+    cpu: [x64]
+    os: [darwin]
+    hasBin: true
+
+  claude-code-cli-acp-linux-arm64@0.1.1:
+    resolution: {integrity: sha512-PEN8qEQhowHSMk89ACGb5TWc1yrhLsSKHanArLiiBolOAkava4lPDOdev5OT3apeIYcae4B7O2RqawvijTswqQ==}
+    engines: {node: '>=18.0.0'}
+    cpu: [arm64]
+    os: [linux]
+    hasBin: true
+
+  claude-code-cli-acp-linux-x64@0.1.1:
+    resolution: {integrity: sha512-AGLZVigHSH/cq2uYqlqsJwIn6YwemHHIFI7gQOeD9+3j9uhPlMpZCSwNklU+m486mEiKpl0/FGfME0NSoVYa+w==}
+    engines: {node: '>=18.0.0'}
+    cpu: [x64]
+    os: [linux]
+    hasBin: true
+
+  claude-code-cli-acp-win32-arm64@0.1.1:
+    resolution: {integrity: sha512-I56PV4cDr1H+ouk+/8sETuFlG6ck4j0m9UepR2eX7oVwFiik9O9OKe67wfq9+CXnFtP9WstSPQwVoP1MEM+ftg==}
+    engines: {node: '>=18.0.0'}
+    cpu: [arm64]
+    os: [win32]
+    hasBin: true
+
+  claude-code-cli-acp-win32-x64@0.1.1:
+    resolution: {integrity: sha512-pFEm2UWT2CDsBAFTiCDUCnL4k9jz2LxsFdiCcUcq8MVZf5Eutg2q7+kt8+tRAGqLKrNUYme8aIFFlmn3iu1okw==}
+    engines: {node: '>=18.0.0'}
+    cpu: [x64]
+    os: [win32]
+    hasBin: true
+
+  claude-code-cli-acp@0.1.1:
+    resolution: {integrity: sha512-qpfRGOXkOs9mqI7oumsGistWisyXcCC0r7ng7wdLvGMIORdzHjmUUa+94Jftgr/NYAVnAUe6N7kimD8PaO3D5g==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
 
   cli-boxes@4.0.1:
     resolution: {integrity: sha512-5IOn+jcCEHEraYolBPs/sT4BxYCe2nHg374OPiItB1O96KZFseS2gthU4twyYzeDcFew4DaUM/xwc5BQf08JJw==}
@@ -10407,6 +10460,33 @@ snapshots:
   ci-info@4.4.0: {}
 
   classcat@5.0.5: {}
+
+  claude-code-cli-acp-darwin-arm64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp-darwin-x64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp-linux-arm64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp-linux-x64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp-win32-arm64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp-win32-x64@0.1.1:
+    optional: true
+
+  claude-code-cli-acp@0.1.1:
+    optionalDependencies:
+      claude-code-cli-acp-darwin-arm64: 0.1.1
+      claude-code-cli-acp-darwin-x64: 0.1.1
+      claude-code-cli-acp-linux-arm64: 0.1.1
+      claude-code-cli-acp-linux-x64: 0.1.1
+      claude-code-cli-acp-win32-arm64: 0.1.1
+      claude-code-cli-acp-win32-x64: 0.1.1
 
   cli-boxes@4.0.1: {}
 

@@ -164,7 +164,7 @@ describe("WorkflowNodeEditor mobile CSS contract", () => {
     expect(mobileEdgeDetailInspectorRule).toMatch(/flex\s*:\s*1 1 auto\s*;/);
     expect(mobileEdgeDetailInspectorRule).toMatch(/max-height\s*:\s*none\s*;/);
 
-    const mobileTabsRule = findRule(mobileBlocks, /\.wf-mobile-tabs\s*\{[^}]*\}/);
+    const mobileTabsRule = findRule([editorCss], /\.wf-mobile-tabs\s*\{[^}]*\}/);
     expect(mobileTabsRule).toMatch(/flex\s*:\s*0 0 auto\s*;/);
 
     const collapsedToggleRule = findRule([editorCss], /\.wf-inspector-toggle--collapsed\s*\{[^}]*\}/);
@@ -245,7 +245,7 @@ describe("WorkflowNodeEditor mobile CSS contract", () => {
     const editorCss = readComponentCss("WorkflowNodeEditor.css");
     const mobileBlocks = extractMediaBlocks(editorCss, "(max-width: 768px)");
 
-    const modalRule = findRule(mobileBlocks, /\.wf-editor-modal,\s*\.wf-create-modal\s*\{[^}]*\}/);
+    const modalRule = findRule([baseCss], /\.wf-editor-modal\s*\{[^}]*\}/);
     expect(modalRule).toMatch(/--wf-editor-touch-target\s*:\s*calc\(var\(--space-xl\) \+ var\(--space-lg\) \+ var\(--space-xs\)\)\s*;/);
 
     const listAndActionRule = findRule(

@@ -250,6 +250,59 @@ describe("TaskDetailModal", () => {
       expect(provenance?.compareDocumentPosition(timestamps as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it("keeps inline controls, provenance, and timestamps as direct detail-meta children", () => {
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({ sourceType: "task_refine", sourceParentTaskId: "FN-001" })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const meta = container.querySelector(".detail-meta");
+      const controls = container.querySelector(".detail-meta-inline-controls");
+      const provenance = screen.getByText(/Created via Refinement/).closest(".detail-provenance");
+      const timestamps = container.querySelector(".detail-timestamps");
+
+      expect(meta).toBeTruthy();
+      expect(controls?.parentElement).toBe(meta);
+      expect(provenance?.parentElement).toBe(meta);
+      expect(timestamps?.parentElement).toBe(meta);
+    });
+
+    it("keeps the optional PR link row in the same detail-meta row as provenance and timestamps", () => {
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({
+            sourceType: "dashboard_ui",
+            prInfo: { number: 42, url: "https://github.com/owner/repo/pull/42" },
+          })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const meta = container.querySelector(".detail-meta");
+      const controls = container.querySelector(".detail-meta-inline-controls");
+      const provenance = screen.getByText("Created via Dashboard").closest(".detail-provenance");
+      const prRow = container.querySelector(".detail-pr-link-row");
+      const timestamps = container.querySelector(".detail-timestamps");
+
+      expect(meta).toBeTruthy();
+      expect(controls?.parentElement).toBe(meta);
+      expect(provenance?.parentElement).toBe(meta);
+      expect(prRow?.parentElement).toBe(meta);
+      expect(timestamps?.parentElement).toBe(meta);
+    });
+
     describe("compact timestamp metadata", () => {
       beforeEach(() => {
         vi.useFakeTimers();
@@ -1300,264 +1353,168 @@ describe("TaskDetailModal", () => {
   });
 
   describe("description truncation", () => {
-    it("expands long triage title by default with Show less button", () => {
+    let titleScrollHeight = 0;
+    let titleClientHeight = 0;
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+
+    const setTitleLayout = ({ scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number }) => {
+      titleScrollHeight = scrollHeight;
+      titleClientHeight = clientHeight;
+    };
+
+    const renderDetail = (taskOverrides: Parameters<typeof makeTask>[0] = {}) => render(
+      <TaskDetailModal
+        task={makeTask(taskOverrides)}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    beforeEach(() => {
+      setTitleLayout({ scrollHeight: 120, clientHeight: 40 });
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+        configurable: true,
+        get() {
+          return this instanceof HTMLElement && this.classList.contains("detail-title") ? titleScrollHeight : 0;
+        },
+      });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+        configurable: true,
+        get() {
+          return this instanceof HTMLElement && this.classList.contains("detail-title") ? titleClientHeight : 0;
+        },
+      });
+    });
+
+    afterEach(() => {
+      if (originalScrollHeight) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", originalScrollHeight);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+      }
+    });
+
+    it("collapses long triage title by default with Show more button and expands on demand", async () => {
       const longTitle = "Triage title ".repeat(25);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            column: "triage",
-            title: longTitle,
-            description: "Triage planning context",
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
+      const { container } = renderDetail({
+        column: "triage",
+        title: longTitle,
+        description: "Triage planning context",
+      });
 
       const h2 = container.querySelector("h2.detail-title");
       expect(h2?.textContent).toBe(longTitle);
-      const toggle = container.querySelector(".detail-description-toggle");
-      expect(toggle?.textContent).toBe("Show less");
+      expect(h2).toHaveClass("detail-title--collapsed");
+      const toggle = await screen.findByRole("button", { name: "Show more" });
+      expect(toggle).toHaveClass("detail-description-toggle");
+
+      await userEvent.click(toggle);
+
+      expect(container.querySelector("h2.detail-title")?.textContent).toBe(longTitle);
+      expect(container.querySelector("h2.detail-title")).not.toHaveClass("detail-title--collapsed");
+      expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
     });
 
-    it("expands long triage description by default when title is missing", () => {
+    it("collapses long triage description by default when title is missing", async () => {
       const longDescription = "Triage description ".repeat(20);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            column: "triage",
-            title: undefined,
-            description: longDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
+      const { container } = renderDetail({
+        column: "triage",
+        title: undefined,
+        description: longDescription,
+      });
 
       const h2 = container.querySelector("h2.detail-title");
       expect(h2?.textContent).toBe(longDescription);
-      const toggle = container.querySelector(".detail-description-toggle");
-      expect(toggle?.textContent).toBe("Show less");
+      expect(h2).toHaveClass("detail-title--collapsed");
+      expect(await screen.findByRole("button", { name: "Show more" })).toHaveClass("detail-description-toggle");
     });
 
-    it("truncates description over 200 characters with Show more button", () => {
-      const longDescription = "A".repeat(250);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: undefined,
-            description: longDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe("A".repeat(200) + "…");
-      const toggle = container.querySelector(".detail-description-toggle");
-      expect(toggle?.textContent).toBe("Show more");
-    });
-
-    it("expands full description when Show more is clicked", async () => {
-      const longDescription = "B".repeat(250);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: undefined,
-            description: longDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      const toggle = container.querySelector(".detail-description-toggle") as HTMLButtonElement;
-      await act(async () => {
-        fireEvent.click(toggle);
+    it("uses the title, description, and id fallback chain for the clamped heading", async () => {
+      const { container: withTitle } = renderDetail({
+        title: "Title wins",
+        description: "Description loses",
       });
+      expect(withTitle.querySelector("h2.detail-title")?.textContent).toBe("Title wins");
+      expect(withTitle.querySelector("h2.detail-title")).toHaveClass("detail-title--collapsed");
+      expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
 
-      const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe("B".repeat(250));
-      expect(toggle.textContent).toBe("Show less");
-    });
-
-    it("lets Show less and Show more override the triage default for the current task", async () => {
-      const longDescription = "C".repeat(250);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            column: "triage",
-            title: undefined,
-            description: longDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      const toggle = container.querySelector(".detail-description-toggle") as HTMLButtonElement;
-      expect(container.querySelector("h2.detail-title")?.textContent).toBe("C".repeat(250));
-      expect(toggle.textContent).toBe("Show less");
-
-      await act(async () => {
-        fireEvent.click(toggle);
+      setTitleLayout({ scrollHeight: 40, clientHeight: 40 });
+      const { container: withDescription } = renderDetail({
+        title: undefined,
+        description: "Description fallback",
       });
+      expect(withDescription.querySelector("h2.detail-title")?.textContent).toBe("Description fallback");
+      expect(withDescription.querySelector(".detail-description-toggle")).toBeNull();
 
-      expect(container.querySelector("h2.detail-title")?.textContent).toBe("C".repeat(200) + "…");
-      expect(toggle.textContent).toBe("Show more");
-
-      await act(async () => {
-        fireEvent.click(toggle);
+      const { container: withId } = renderDetail({
+        id: "FN-FALLBACK",
+        title: undefined,
+        description: undefined,
       });
-
-      expect(container.querySelector("h2.detail-title")?.textContent).toBe("C".repeat(250));
-      expect(toggle.textContent).toBe("Show less");
+      expect(withId.querySelector("h2.detail-title")?.textContent).toBe("FN-FALLBACK");
+      expect(withId.querySelector(".detail-description-toggle")).toBeNull();
     });
 
-    it("collapses description when Show less is clicked", async () => {
-      const longDescription = "C".repeat(250);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: undefined,
-            description: longDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
+    it.each(["todo", "in-progress", "in-review", "done", "archived"] as const)(
+      "collapses overflowing non-triage %s title by default",
+      async (column) => {
+        const longTitle = `${column} title `.repeat(25);
+        const { container } = renderDetail({
+          column,
+          title: longTitle,
+        });
 
-      // First expand
-      const toggle = container.querySelector(".detail-description-toggle") as HTMLButtonElement;
-      await act(async () => {
-        fireEvent.click(toggle);
+        const h2 = container.querySelector("h2.detail-title");
+        expect(h2?.textContent).toBe(longTitle);
+        expect(h2).toHaveClass("detail-title--collapsed");
+        expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+      },
+    );
+
+    it("does not render an empty toggle shell when the title fits within two lines", () => {
+      setTitleLayout({ scrollHeight: 40, clientHeight: 40 });
+      const { container } = renderDetail({
+        title: "Short title",
+        description: "This is a longer description that is not shown as the heading while title is present",
       });
-
-      // Then collapse
-      await act(async () => {
-        fireEvent.click(toggle);
-      });
-
-      const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe("C".repeat(200) + "…");
-      expect(toggle.textContent).toBe("Show more");
-    });
-
-    it("does not show toggle for empty title and description fallback to task id", () => {
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            id: "FN-EMPTY",
-            column: "triage",
-            title: undefined,
-            description: undefined,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe("FN-EMPTY");
-      expect(container.querySelector(".detail-description-toggle")).toBeNull();
-    });
-
-    it("does not show toggle for description under 200 characters", () => {
-      const shortDescription = "Short description";
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: undefined,
-            description: shortDescription,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe(shortDescription);
-      expect(container.querySelector(".detail-description-toggle")).toBeNull();
-    });
-
-    it("does not show toggle when title is present and short", () => {
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: "Short title",
-            description: "This is a longer description that would be truncated if it were shown as the main text",
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
 
       const h2 = container.querySelector("h2.detail-title");
       expect(h2?.textContent).toBe("Short title");
+      expect(h2).toHaveClass("detail-title--collapsed");
       expect(container.querySelector(".detail-description-toggle")).toBeNull();
     });
 
-    it("shows toggle when title exceeds 200 characters", () => {
-      const longTitle = "D".repeat(250);
-      const { container } = render(
-        <TaskDetailModal
-          task={makeTask({
-            title: longTitle,
-            description: "Short description",
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
+    it("collapses again when Show less is clicked", async () => {
+      const longDescription = "C".repeat(250);
+      const { container } = renderDetail({
+        title: undefined,
+        description: longDescription,
+      });
+
+      const toggle = await screen.findByRole("button", { name: "Show more" });
+      await userEvent.click(toggle);
+      expect(container.querySelector("h2.detail-title")?.textContent).toBe(longDescription);
+      expect(container.querySelector("h2.detail-title")).not.toHaveClass("detail-title--collapsed");
+
+      await userEvent.click(screen.getByRole("button", { name: "Show less" }));
 
       const h2 = container.querySelector("h2.detail-title");
-      expect(h2?.textContent).toBe("D".repeat(200) + "…");
-      const toggle = container.querySelector(".detail-description-toggle");
-      expect(toggle?.textContent).toBe("Show more");
+      expect(h2?.textContent).toBe(longDescription);
+      expect(h2).toHaveClass("detail-title--collapsed");
+      expect(screen.getByRole("button", { name: "Show more" })).toBeInTheDocument();
     });
 
-    it("resets to expanded when switching from a non-triage task to a triage task", async () => {
+    it("resets to collapsed when switching from a non-triage task to a triage task", async () => {
       const todoDescription = "G".repeat(250);
       const triageDescription = "H".repeat(250);
       const { container, rerender } = render(
@@ -1577,8 +1534,8 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      expect(container.querySelector("h2.detail-title")?.textContent).toBe("G".repeat(200) + "…");
-      expect(container.querySelector(".detail-description-toggle")?.textContent).toBe("Show more");
+      await userEvent.click(await screen.findByRole("button", { name: "Show more" }));
+      expect(container.querySelector("h2.detail-title")).not.toHaveClass("detail-title--collapsed");
 
       rerender(
         <TaskDetailModal
@@ -1598,60 +1555,71 @@ describe("TaskDetailModal", () => {
       );
 
       await waitFor(() => {
-        expect(container.querySelector("h2.detail-title")?.textContent).toBe("H".repeat(250));
+        expect(container.querySelector("h2.detail-title")?.textContent).toBe(triageDescription);
       });
-      expect(container.querySelector(".detail-description-toggle")?.textContent).toBe("Show less");
+      expect(container.querySelector("h2.detail-title")).toHaveClass("detail-title--collapsed");
+      expect(screen.getByRole("button", { name: "Show more" })).toBeInTheDocument();
     });
 
-    it("resets expanded state when task changes", async () => {
-      const longDescription1 = "E".repeat(250);
-      const longDescription2 = "F".repeat(250);
-      const { container, rerender } = render(
-        <TaskDetailModal
-          task={makeTask({
-            id: "FN-001",
-            title: undefined,
-            description: longDescription1,
-          })}
-          onClose={noop}
-          onMoveTask={noopMove}
-          onDeleteTask={noopDelete}
-          onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
-          addToast={noop}
-        />,
-      );
-
-      // Expand the first task
-      const toggle = container.querySelector(".detail-description-toggle") as HTMLButtonElement;
-      await act(async () => {
-        fireEvent.click(toggle);
+    it("keeps the editing title form unaffected by the read-only clamp", async () => {
+      const longTitle = "Editable title ".repeat(25);
+      const { container } = renderDetail({
+        column: "todo",
+        title: longTitle,
+        description: "Editable description",
       });
 
-      // Verify expanded
-      const h2Before = container.querySelector("h2.detail-title");
-      expect(h2Before?.textContent).toBe("E".repeat(250));
+      expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Edit task" }));
 
-      // Change to a different task
-      rerender(
-        <TaskDetailModal
+      expect(container.querySelector("h2.detail-title")).toBeNull();
+      expect(container.querySelector(".detail-description-toggle")).toBeNull();
+      expect(screen.getByLabelText("Title")).toHaveValue(longTitle);
+    });
+
+    it("keeps the summarize-title affordance aligned next to the clamped title", async () => {
+      const { container } = renderDetail({
+        column: "todo",
+        title: "Summarize me ".repeat(25),
+        description: "Description available for summarization",
+      });
+
+      expect(container.querySelector(".detail-heading-row h2.detail-title--collapsed")).toBeInTheDocument();
+      expect(screen.getByTestId("summarize-title-btn")).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+    });
+
+    it("keeps the clamp available in chat-expanded layout", async () => {
+      const { container } = render(
+        <TaskDetailContent
           task={makeTask({
-            id: "FN-002",
-            title: undefined,
-            description: longDescription2,
+            column: "todo",
+            title: "Chat expanded title ".repeat(25),
+            description: "Description",
           })}
-          onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}
           addToast={noop}
+          initialTab="chat"
         />,
       );
 
-      // Should be collapsed again
-      const h2After = container.querySelector("h2.detail-title");
-      expect(h2After?.textContent).toBe("F".repeat(200) + "…");
+      await userEvent.click(screen.getByRole("button", { name: "Expand chat to full modal" }));
+
+      expect(container.querySelector(".task-detail-content--chat-expanded")).toBeInTheDocument();
+      expect(container.querySelector("h2.detail-title")).toHaveClass("detail-title--collapsed");
+      expect(await screen.findByRole("button", { name: "Show more" })).toBeInTheDocument();
+    });
+
+    it("has desktop and mobile CSS rules that preserve the two-line title clamp", () => {
+      const css = readDashboardStylesSource();
+      expect(css).toContain(".detail-title--collapsed");
+      expectBaseRule(css, ".detail-title--collapsed", "-webkit-line-clamp: 2");
+      expectBaseRule(css, ".detail-title--collapsed", "line-clamp: 2");
+      expect(css).toContain("@media (max-width: 768px)");
+      expectBaseRule(css, ".detail-title", "font-size: 16px");
     });
   });
 
@@ -2069,6 +2037,7 @@ describe("TaskDetailModal", () => {
     render(
       <TaskDetailModal
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
+        tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
@@ -2090,6 +2059,7 @@ describe("TaskDetailModal", () => {
     render(
       <TaskDetailModal
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234", nearDuplicateDismissed: true } })}
+        tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
@@ -2102,6 +2072,29 @@ describe("TaskDetailModal", () => {
     expect(screen.queryByText("Potential duplicate detected")).toBeNull();
   });
 
+  it.each([
+    ["archived", makeTask({ id: "FN-1234", column: "archived" })],
+    ["done", makeTask({ id: "FN-1234", column: "done" })],
+    ["missing", undefined],
+  ])("hides near-duplicate decision banner when canonical is %s", (_label, canonical) => {
+    render(
+      <TaskDetailModal
+        task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
+        tasks={canonical ? [canonical] : []}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.queryByText("Potential duplicate detected")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
+  });
+
   it("archives from near-duplicate banner when confirmed", async () => {
     const onArchiveTask = vi.fn().mockResolvedValue(makeTask({ column: "archived" }));
     mockConfirm.mockResolvedValueOnce(true);
@@ -2109,6 +2102,7 @@ describe("TaskDetailModal", () => {
     render(
       <TaskDetailModal
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
+        tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}

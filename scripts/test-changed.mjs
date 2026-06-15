@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, renameSync, mkdtempSync, rmSync, realpathSync, globSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, renameSync, mkdtempSync, rmSync, realpathSync, globSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cpus, tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { ensureTestArtifacts } from "./ensure-test-artifacts.mjs";
@@ -178,13 +178,32 @@ const PRUNE_REMOVE_RETRIES = 3;
 const PRUNE_REMOVE_DELAY_MS = 75;
 const PRUNE_DIAGNOSTIC_CHILD_LIMIT = 8;
 const FUSION_WORKER_ROOT_OWNER_FILE = ".fusion-test-worker-root-owner";
+const FUSION_TEST_RUN_TOKEN_ENV = "FUSION_TEST_RUN_TOKEN";
+const LEGACY_MARKERLESS_ACTIVE_ROOT_MAX_AGE_MS = 30_000;
+
+function ensureFusionTestRunToken(env = process.env) {
+  const existing = env[FUSION_TEST_RUN_TOKEN_ENV];
+  if (typeof existing === "string" && existing.trim().length > 0) return existing;
+  const token = randomUUID();
+  env[FUSION_TEST_RUN_TOKEN_ENV] = token;
+  return token;
+}
+
+ensureFusionTestRunToken();
 
 function isEnoentError(err) {
   return Boolean(err && typeof err === "object" && "code" in err && err.code === "ENOENT");
 }
 
+let processAliveForTests = null;
+
+export function __setProcessAliveForTests(nextProcessAlive) {
+  processAliveForTests = typeof nextProcessAlive === "function" ? nextProcessAlive : null;
+}
+
 function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (processAliveForTests) return Boolean(processAliveForTests(pid));
   try {
     process.kill(pid, 0);
     return true;
@@ -193,28 +212,61 @@ function isProcessAlive(pid) {
   }
 }
 
-function readWorkerRootOwnerPid(rootPath) {
+function readWorkerRootOwnerInfo(rootPath) {
   try {
     const raw = readFileSync(path.join(rootPath, FUSION_WORKER_ROOT_OWNER_FILE), "utf8").trim();
-    const pid = Number.parseInt(raw, 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const pid = Number.parseInt(lines[0] ?? "", 10);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    const info = { pid, runToken: null };
+    for (const line of lines.slice(1)) {
+      const match = /^runToken=(.+)$/.exec(line);
+      if (match) info.runToken = match[1];
+    }
+    return info;
   } catch {
     return null;
   }
 }
 
-function isActiveFusionWorkerRoot(rootPath) {
-  const ownerPid = readWorkerRootOwnerPid(rootPath);
-  if (ownerPid !== null && isProcessAlive(ownerPid)) return true;
+function hasCurrentRunToken(ownerInfo) {
+  const currentToken = process.env[FUSION_TEST_RUN_TOKEN_ENV];
+  return Boolean(ownerInfo?.runToken && currentToken && ownerInfo.runToken === currentToken);
+}
 
-  // Backward-compatible guard for worker roots created before the owner marker
-  // landed, or marker writes that failed: an alive redir-<pid> child means a
-  // Vitest worker still owns temp workspaces beneath this root.
+function isFreshLegacyMarkerlessRoot(rootPath) {
+  try {
+    return Date.now() - statSync(rootPath).mtimeMs <= LEGACY_MARKERLESS_ACTIVE_ROOT_MAX_AGE_MS;
+  } catch {
+    return false;
+  }
+}
+
+function isActiveFusionWorkerRoot(rootPath) {
+  const ownerInfo = readWorkerRootOwnerInfo(rootPath);
+  if (ownerInfo !== null && isProcessAlive(ownerInfo.pid)) {
+    if (ownerInfo.pid === process.pid || hasCurrentRunToken(ownerInfo)) return true;
+    // FN-6396/FN-6360 recurrence: bare pid liveness is not enough evidence.
+    // macOS can recycle a dead Vitest owner's pid to an unrelated process, so
+    // the pnpm-test prune must require the same-run token before preserving the
+    // root. Otherwise stale fusion-test-workers-* shells survive to the after
+    // check-test-isolation pass and fail the merge gate.
+  }
+
+  // Backward-compatible guard for markerless roots. New roots are marked by
+  // globalSetup or by vitest-setup's self-minted fallback path; old markerless
+  // redir roots are only considered active while very fresh, preventing stale
+  // redir-<pid> pid reuse from keeping orphans alive forever.
   try {
     for (const child of readdirSync(rootPath, { withFileTypes: true })) {
       if (!child.isDirectory()) continue;
       const match = /^redir-(\d+)$/.exec(child.name);
-      if (match && isProcessAlive(Number.parseInt(match[1], 10))) return true;
+      if (!match) continue;
+      const redirPid = Number.parseInt(match[1], 10);
+      if (!isProcessAlive(redirPid)) continue;
+      if (redirPid === process.pid || (ownerInfo && hasCurrentRunToken(ownerInfo)) || isFreshLegacyMarkerlessRoot(rootPath)) {
+        return true;
+      }
     }
   } catch {
     // If we cannot inspect it, fall through to normal best-effort pruning.
@@ -321,7 +373,11 @@ async function runWatchedTest(command, commandArgs, { env, budgetMs, label } = {
 
 async function runMaybeIsolated(command, commandArgs, options = {}) {
   const enabled = shouldRunIsolationGuard();
-  const env = options.env ?? process.env;
+  /*
+   * FNXC:TestInfrastructure 2026-06-15-12:12:
+   * Conflict resolution for PR #1669 must keep main's per-run temp-root token so cleanup can distinguish live roots while still passing watchdog budgets and labels into async test invocations.
+   */
+  const env = { ...(options.env ?? process.env), [FUSION_TEST_RUN_TOKEN_ENV]: ensureFusionTestRunToken(options.env ?? process.env) };
   const { onBeforeAfterCheck, budgetMs, label, ...spawnOptions } = options;
   void spawnOptions; // cwd/stdio defaults live in the watchdog/spawn path now
   if (enabled) runIsolationCheck(true, env, /* fastBefore */ true);

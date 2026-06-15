@@ -6,6 +6,7 @@ const mockTerm = {
   loadAddon: vi.fn(),
   open: vi.fn(),
   onData: vi.fn(),
+  attachCustomKeyEventHandler: vi.fn(),
   write: vi.fn((_data: string, cb?: () => void) => cb?.()),
   dispose: vi.fn(),
   unicode: { activeVersion: "6" },
@@ -56,6 +57,7 @@ beforeEach(() => {
   originalWebSocket = (globalThis as typeof globalThis & { WebSocket?: typeof WebSocket }).WebSocket;
   (globalThis as unknown as { WebSocket: typeof FakeWS }).WebSocket = FakeWS;
   mockTerm.onData.mockReset();
+  mockTerm.attachCustomKeyEventHandler.mockClear();
   mockTerm.write.mockClear();
   apiMock.mockReset();
   apiMock.mockResolvedValue({ ticket: "tkt-1", expiresAt: "", readOnly: false });
@@ -93,6 +95,35 @@ describe("SessionTerminal", () => {
     render(<SessionTerminal sessionId="s1" readOnly />);
     await waitFor(() => expect(FakeWS.instances.length).toBe(1));
     expect(mockTerm.onData).not.toHaveBeenCalled();
+  });
+
+  it("relies on native xterm paste with the system monospace font", async () => {
+    const { Terminal } = await import("@xterm/xterm");
+
+    render(<SessionTerminal sessionId="s1" />);
+
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1));
+    expect(Terminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fontFamily: expect.stringContaining("ui-monospace"),
+      }),
+    );
+    expect(Terminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fontFamily: expect.not.stringContaining("Fusion Terminal Nerd Font Symbols"),
+      }),
+    );
+    expect(mockTerm.attachCustomKeyEventHandler).not.toHaveBeenCalled();
+
+    const inputHandler = mockTerm.onData.mock.calls[0]?.[0] as
+      | ((data: string) => void)
+      | undefined;
+    expect(inputHandler).toBeDefined();
+    inputHandler?.("paste once\n");
+
+    expect(FakeWS.instances[0].sent).toEqual([
+      JSON.stringify({ type: "input", data: "paste once\n" }),
+    ]);
   });
 
   it("renders the Read-only badge when readOnly", async () => {

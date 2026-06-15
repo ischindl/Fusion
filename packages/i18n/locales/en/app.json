@@ -4981,6 +4981,13 @@
       "learnMore": "Learn more",
       "settingsSaved": "Settings saved",
       "updateAvailablePrefix": "v{{version}} available",
+      "updateCheckFailed": "Failed to check for updates",
+      "updateFailed": "Update failed",
+      "updateFailedWithMessage": "Update failed: {{message}}",
+      "updateNow": "Update now",
+      "updateSuccess": "Updated to v{{version}} — restart Fusion to apply",
+      "updateSuccessToast": "Update installed. Restart Fusion to apply it.",
+      "updating": "Updating…",
       "upToDate": "You're up to date ✓"
     },
     "header": {
@@ -6622,7 +6629,12 @@
     "dismissLabel": "Dismiss update notice",
     "learnMore": "Learn more",
     "message": "Update available: v{{latestVersion}} (current: v{{currentVersion}}). Run fn update for an installed CLI, or pull this source checkout.",
-    "releaseNotes": "Release notes"
+    "releaseNotes": "Release notes",
+    "updateFailed": "Update failed",
+    "updateFailedWithMessage": "Update failed: {{message}}",
+    "updateNow": "Update now",
+    "updateSuccess": "Updated to v{{version}} — restart Fusion to apply",
+    "updating": "Updating…"
   },
   "usage": {
     "configureAuthHint": "Configure authentication in Settings to see usage data.",

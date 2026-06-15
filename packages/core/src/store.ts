@@ -158,6 +158,7 @@ import { createDistributedTaskIdAllocator, reconcileTaskIdState, resolveLocalNod
 import { detectStalledReview } from "./stalled-review-detector.js";
 import { computeRetrySummary } from "./retry-summary.js";
 import { archiveAsSameAgentDuplicate, findSameAgentDuplicates } from "./duplicate-intake.js";
+import { isNearDuplicateCanonicalInactive } from "./near-duplicate-canonical.js";
 import {
   detectTaskIdIntegrityAnomalies,
   type TaskIdIntegrityReport,
@@ -6178,6 +6179,78 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     return rows.map((row) => this.rowToTask(row));
   }
 
+  /**
+   * FNXC:NearDuplicateDetection 2026-06-14-12:00:
+   * FN-6439 requires the store to reconcile persisted duplicate flags after a canonical becomes inactive.
+   * sourceMetadataPatch only merges, so this reverse lookup performs a bounded read-modify-write that strips stale near-duplicate keys without pausing or failing the referencing tasks.
+   */
+  private async clearNearDuplicateReferencesTo(
+    canonicalId: string,
+    inactiveState: { column?: ColumnId | null; deletedAt?: string | null; reason: string },
+  ): Promise<Task[]> {
+    if (!isNearDuplicateCanonicalInactive(inactiveState)) {
+      return [];
+    }
+
+    const selectClause = this.getTaskSelectClause(false, "t");
+    const rows = this.db.prepare(`
+      SELECT ${selectClause}
+      FROM tasks t
+      WHERE t."deletedAt" IS NULL
+        AND t."column" != 'archived'
+        AND t."column" != 'done'
+        AND json_extract(t.sourceMetadata, '$.nearDuplicateOf') = ?
+      ORDER BY t.createdAt ASC
+    `).all(canonicalId) as TaskRow[];
+
+    const updatedTasks: Task[] = [];
+    for (const row of rows) {
+      const task = this.rowToTask(row);
+      const nextSourceMetadata = { ...(task.sourceMetadata ?? {}) };
+      delete nextSourceMetadata.nearDuplicateOf;
+      delete nextSourceMetadata.nearDuplicateScore;
+      delete nextSourceMetadata.nearDuplicateSharedTokens;
+      delete nextSourceMetadata.nearDuplicateDismissed;
+
+      task.sourceMetadata = Object.keys(nextSourceMetadata).length > 0 ? nextSourceMetadata : undefined;
+      const updatedAt = new Date().toISOString();
+      task.updatedAt = updatedAt;
+      task.log = [
+        ...(task.log ?? []),
+        {
+          timestamp: updatedAt,
+          action: `Near-duplicate canonical ${canonicalId} is now inactive (${inactiveState.reason}); cleared duplicate flag (informational, no decision required)`,
+        },
+      ];
+
+      this.db.transactionImmediate(() => {
+        this.upsertTaskWithFtsRecovery(task);
+        this.db.bumpLastModified();
+      });
+      await this.writeTaskJsonFile(this.taskDir(task.id), task);
+      if (this.isWatching) this.taskCache.set(task.id, { ...task });
+      this.emit("task:updated", task);
+      updatedTasks.push(task);
+    }
+
+    return updatedTasks;
+  }
+
+  private async clearNearDuplicateReferencesToFailSoft(
+    canonicalId: string,
+    inactiveState: { column?: ColumnId | null; deletedAt?: string | null; reason: string },
+  ): Promise<void> {
+    try {
+      await this.clearNearDuplicateReferencesTo(canonicalId, inactiveState);
+    } catch (error) {
+      storeLog.warn("Failed to clear stale near-duplicate references (degraded)", {
+        taskId: canonicalId,
+        reason: inactiveState.reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async getTasksByAssignedAgent(
     agentId: string,
     options?: { pausedOnly?: boolean; excludeArchived?: boolean },
@@ -6690,6 +6763,12 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         await this.atomicWriteTaskJson(dir, task);
         if (this.isWatching) this.taskCache.set(id, { ...task });
         this.emit("task:updated", task);
+      }
+      if (toColumn === "done") {
+        await this.clearNearDuplicateReferencesToFailSoft(id, {
+          column: "done",
+          reason: "done",
+        });
       }
       return task;
     }
@@ -7223,6 +7302,12 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
 
     if (fromColumn !== toColumn) {
       this.emit("task:moved", { task, from: fromColumn, to: toColumn, source: moveSource });
+    }
+    if (toColumn === "done") {
+      await this.clearNearDuplicateReferencesToFailSoft(id, {
+        column: "done",
+        reason: "done",
+      });
     }
     return task;
   }
@@ -10141,7 +10226,7 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       auditContext?: { agentId: string; runId: string; sessionId?: string };
     },
   ): Promise<Task> {
-    return this.withTaskLock(id, async () => {
+    const deletedTask = await this.withTaskLock(id, async () => {
       // Flush buffered agent logs inside the lock so no new appends for this
       // task can sneak in between flush and soft-delete mutation.
       this.flushAgentLogBuffer();
@@ -10244,6 +10329,13 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       this.emit("task:deleted", task, { githubIssueAction: options?.githubIssueAction ?? "auto" });
       return task;
     });
+
+    await this.clearNearDuplicateReferencesToFailSoft(id, {
+      column: "archived",
+      deletedAt: deletedTask.deletedAt ?? new Date().toISOString(),
+      reason: "deleted",
+    });
+    return deletedTask;
   }
 
   private deleteTaskById(taskId: string): void {
@@ -10812,7 +10904,7 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     id: string,
     optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean } = true,
   ): Promise<Task> {
-    return this.withTaskLock(id, async () => {
+    const archivedTask = await this.withTaskLock(id, async () => {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
@@ -10898,6 +10990,12 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       this.emit("task:moved", { task, from: fromColumn, to: "archived" as Column, source: "engine" });
       return this.archiveEntryToTask(entry, false);
     });
+
+    await this.clearNearDuplicateReferencesToFailSoft(id, {
+      column: "archived",
+      reason: "archived",
+    });
+    return archivedTask;
   }
 
   /**

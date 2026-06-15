@@ -732,7 +732,7 @@ describe("buildReducedStepPrompt", () => {
 - [ ] Write unit tests
 `;
 
-  it("includes one-line attachment reference when attachments exist", () => {
+  it("includes compact attachment location and read instruction when attachments exist", () => {
     const task = makeTaskDetail({
       id: "FN-123",
       prompt: reducedPrompt,
@@ -754,11 +754,35 @@ describe("buildReducedStepPrompt", () => {
       ],
     });
 
-    const result = buildReducedStepPrompt(task, 1);
+    const result = buildReducedStepPrompt(task, 1, "/repo/project");
 
     expect(result).toContain(
-      "2 attachment(s) available at .fusion/tasks/FN-123/attachments/ — ask for context if needed.",
+      "2 attachment(s) available at `/repo/project/.fusion/tasks/FN-123/attachments/` — read the files there for context.",
     );
+    expect(result).toContain("They live at the project root and are readable even when working in a worktree.");
+    expect(result).not.toContain("ask for context");
+  });
+
+  it("falls back to project-relative attachment location when rootDir is omitted", () => {
+    const task = makeTaskDetail({
+      id: "FN-123",
+      prompt: reducedPrompt,
+      attachments: [
+        {
+          filename: "abc-shot.png",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          size: 1024,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const result = buildReducedStepPrompt(task, 1);
+
+    expect(result).toContain("1 attachment(s) available at `.fusion/tasks/FN-123/attachments/`");
+    expect(result).toContain("read the files there for context");
+    expect(result).not.toContain("ask for context");
   });
 
   it("places the attachment reference after the step and before the important block", () => {
@@ -775,9 +799,8 @@ describe("buildReducedStepPrompt", () => {
       ],
     });
 
-    const result = buildReducedStepPrompt(task, 1);
-    const attachmentReference =
-      "1 attachment(s) available at .fusion/tasks/FN-001/attachments/ — ask for context if needed.";
+    const result = buildReducedStepPrompt(task, 1, "/repo/project");
+    const attachmentReference = "1 attachment(s) available at `/repo/project/.fusion/tasks/FN-001/attachments/`";
 
     expect(result.indexOf(attachmentReference)).toBeGreaterThan(result.indexOf("Add exports"));
     expect(result.indexOf(attachmentReference)).toBeLessThan(result.indexOf("IMPORTANT:"));
@@ -803,18 +826,49 @@ describe("buildReducedStepPrompt", () => {
     expect(result).not.toContain("shot.png");
   });
 
+  it("verifies context-limit recovery symptom is gone for image and non-image attachments", () => {
+    const task = makeTaskDetail({
+      id: "FN-456",
+      prompt: reducedPrompt,
+      attachments: [
+        {
+          filename: "abc-shot.png",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          size: 1024,
+          createdAt: new Date().toISOString(),
+        },
+        {
+          filename: "def-config.json",
+          originalName: "config.json",
+          mimeType: "application/json",
+          size: 256,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const result = buildReducedStepPrompt(task, 1, "/repo/project");
+
+    expect(result).not.toContain("ask for context");
+    expect(result).toContain(".fusion/tasks/FN-456/attachments/");
+    expect(result).toContain("/repo/project/.fusion/tasks/FN-456/attachments/");
+  });
+
   it("omits attachment reference when attachments is undefined", () => {
     const task = makeTaskDetail({ prompt: reducedPrompt, attachments: undefined });
-    const result = buildReducedStepPrompt(task, 1);
+    const result = buildReducedStepPrompt(task, 1, "/repo/project");
 
     expect(result).not.toContain("attachment(s) available");
+    expect(result).not.toContain(".fusion/tasks/FN-001/attachments/");
   });
 
   it("omits attachment reference when attachments is empty", () => {
     const task = makeTaskDetail({ prompt: reducedPrompt, attachments: [] });
-    const result = buildReducedStepPrompt(task, 1);
+    const result = buildReducedStepPrompt(task, 1, "/repo/project");
 
     expect(result).not.toContain("attachment(s) available");
+    expect(result).not.toContain(".fusion/tasks/FN-001/attachments/");
   });
 });
 

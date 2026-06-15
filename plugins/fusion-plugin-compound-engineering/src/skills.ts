@@ -76,4 +76,31 @@ export const COMPOUND_ENGINEERING_SKILLS: PluginSkillContribution[] = [
     enabled: true,
     triggerPatterns: ["compound this", "document this learning", "capture this solution"],
   },
+  {
+    skillId: "ce-commit",
+    name: "ce-commit",
+    description:
+      "Create a git commit with a clear, value-communicating message following repo conventions.",
+    skillFiles: ["skills/ce-commit/SKILL.md"],
+    enabled: true,
+    triggerPatterns: ["commit", "commit this", "save my changes", "create a commit"],
+  },
+  {
+    skillId: "ce-commit-push-pr",
+    name: "ce-commit-push-pr",
+    description:
+      "Commit, push, and open a PR with an adaptive, value-first description that scales with the change.",
+    skillFiles: ["skills/ce-commit-push-pr/SKILL.md"],
+    enabled: true,
+    triggerPatterns: ["commit and PR", "ship this", "create a PR", "open a pull request"],
+  },
+  {
+    skillId: "ce-resolve-pr-feedback",
+    name: "ce-resolve-pr-feedback",
+    description:
+      "Resolve PR review feedback by evaluating validity and fixing issues in parallel.",
+    skillFiles: ["skills/ce-resolve-pr-feedback/SKILL.md"],
+    enabled: true,
+    triggerPatterns: ["resolve PR feedback", "address review comments", "fix review feedback"],
+  },
 ];

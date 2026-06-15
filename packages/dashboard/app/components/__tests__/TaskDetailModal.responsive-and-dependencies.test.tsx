@@ -22,6 +22,16 @@ setupTaskDetailModalHooks();
 
 describe("TaskDetailModal", () => {
   describe("mobile responsive structure", () => {
+    it("keeps detail metadata as a single wrapping flex row without mobile column fallbacks", () => {
+      const css = readDashboardStylesSource();
+
+      expectBaseRule(css, ".detail-meta", "display: flex;");
+      expectBaseRule(css, ".detail-meta", "flex-wrap: wrap;");
+      expect(css).not.toMatch(/@media[^{]*\(max-width: 768px\)[^{]*\{[\s\S]*?\.detail-meta\s*\{[^}]*flex-direction:\s*column;/);
+      expect(css).not.toMatch(/@media[^{]*\(max-width: 768px\)[^{]*\{[\s\S]*?\.detail-meta-inline-controls\s*\{[^}]*flex-direction:\s*column;/);
+      expect(css).not.toMatch(/@media[^{]*\(max-width: 768px\)[^{]*\{[\s\S]*?\.detail-timestamps\s*\{[^}]*flex-direction:\s*column;/);
+    });
+
     it("keeps inline metadata controls in a single row without a narrow-screen column fallback", () => {
       const css = readDashboardStylesSource();
 

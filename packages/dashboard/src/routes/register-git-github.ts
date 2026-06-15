@@ -388,12 +388,14 @@ async function computePrPreflight(task: Task, repoRoot: string, requestedBase?: 
   ).catch(() => "0");
   response.commitsPresent = Number.parseInt(commitCountOutput, 10) > 0;
 
-  const mergeTreeOutput = await prRouteCommandRunner.run(
+  const mergeTreeResult = await prRouteCommandRunner.tryRun(
     `git merge-tree --write-tree --name-only ${shellQuote(baseRef)} ${shellQuote(safeHead)}`,
     repoRoot,
     PR_PREFLIGHT_TIMEOUT_MS,
-  ).catch(() => "");
-  response.conflictsWithBase = mergeTreeOutput.trim().length > 0;
+  );
+  // `git merge-tree --write-tree` exits 0 for clean merges and 1 for real conflicts;
+  // stdout can be non-empty in both cases, so conflict state must come from the exit code.
+  response.conflictsWithBase = !mergeTreeResult.ok && mergeTreeResult.code === 1;
 
   const [commitLogOutput, numstatOutput, nameStatusOutput] = await Promise.all([
     prRouteCommandRunner.run(

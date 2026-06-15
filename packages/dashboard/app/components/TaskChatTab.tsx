@@ -606,28 +606,33 @@ export function TaskChatTab({ task, projectId, active, addToast, sessionLive, on
     }
   }, [addToast, draft, isDoneTask, onTaskUpdated, projectId, sending, task.id]);
 
+  /**
+   * FNXC:TaskDetailChat 2026-06-13-19:05:
+   * Task-detail chat follows chat composer keyboard expectations: Enter sends, Shift+Enter keeps textarea newline entry, Cmd/Ctrl+Enter remains supported for existing users, and IME composition Enter is ignored so CJK candidate selection is not submitted mid-composition.
+   */
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      void handleSubmit();
-    }
+    if (event.key !== "Enter") return;
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.shiftKey) return;
+
+    event.preventDefault();
+    void handleSubmit();
   }, [handleSubmit]);
 
   return (
     <div className="task-chat-tab" data-testid="task-chat-tab">
       {onToggleExpanded ? (
-        <div className="task-chat-toolbar">
-          <button
-            type="button"
-            className="btn btn-sm task-chat-expand-toggle"
-            onClick={onToggleExpanded}
-            aria-label={expanded ? "Collapse chat" : "Expand chat to full modal"}
-            aria-pressed={expanded}
-            data-testid="task-chat-expand-toggle"
-          >
-            {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-            <span>{expanded ? "Collapse" : "Expand"}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          className="btn btn-icon btn-sm task-chat-expand-toggle task-chat-expand-toggle--overlay"
+          onClick={onToggleExpanded}
+          aria-label={expanded ? "Collapse chat" : "Expand chat to full modal"}
+          aria-pressed={expanded}
+          data-testid="task-chat-expand-toggle"
+        >
+          {/* FNXC:TaskChat 2026-06-13-00:00: FN-6425 refines FN-6405 by keeping the task-chat expand affordance icon-only and pinned to the chat view corner so transcript scrolling never removes access to expansion controls. */}
+          {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+        </button>
       ) : null}
       <div
         className="task-chat-transcript"

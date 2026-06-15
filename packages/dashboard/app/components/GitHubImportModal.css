@@ -146,22 +146,38 @@
 }
 
 .github-import-workspace__resize-handle {
-  flex: 0 0 var(--space-xs);
+  position: relative;
+  flex: 0 0 var(--space-sm);
   align-self: stretch;
   cursor: col-resize;
   touch-action: none;
+  border-radius: var(--radius-sm);
+}
+
+.github-import-workspace__resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: var(--space-xs);
+  transform: translateX(-50%);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--border) 35%, transparent);
   transition: background var(--transition-fast);
 }
 
-.github-import-workspace__resize-handle:hover {
+.github-import-workspace__resize-handle:hover::before,
+.github-import-workspace__resize-handle:active::before {
   background: color-mix(in srgb, var(--todo) 50%, transparent);
 }
 
 .github-import-workspace__resize-handle:focus-visible {
   outline: var(--focus-ring-strong);
   outline-offset: 0;
+}
+
+.github-import-workspace__resize-handle:focus-visible::before {
   background: color-mix(in srgb, var(--todo) 60%, transparent);
 }
 

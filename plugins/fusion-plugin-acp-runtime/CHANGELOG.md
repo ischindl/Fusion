@@ -1,5 +1,25 @@
 # @fusion-plugin-examples/acp-runtime
 
+## Next
+
+### Minor Changes
+
+- Pin the bundled `claude-code-cli-acp@0.1.1` bridge for Route-B readonly Claude asks, add setup/probe guidance, and surface ACP `stopReason` for validator no-silent-pass enforcement.
+
+## 0.1.6
+
+### Patch Changes
+
+- @fusion/core@0.43.1
+- @fusion/plugin-sdk@0.43.1
+
+## 0.1.5
+
+### Patch Changes
+
+- @fusion/core@0.43.0
+- @fusion/plugin-sdk@0.43.0
+
 ## 0.1.4
 
 ### Patch Changes

@@ -953,7 +953,28 @@ const spawnAgentParams = Type.Object({
     Type.Literal("custom"),
   ], { description: "Role for the child agent" }),
   task: Type.String({ description: "Task description for the child agent to execute" }),
+  systemPromptOverride: Type.Optional(
+    Type.String({
+      description:
+        "Optional persona/system-prompt for the child agent. When provided (non-empty), it replaces the generic child base prompt so the child runs as a specific persona (e.g. a compound-engineering reviewer). Executor instructions are still appended.",
+    }),
+  ),
 });
+
+/**
+ * Sentinel a skill running in a Fusion workflow step emits when it needs to ask
+ * the user a blocking question (it has no synchronous question tool — see the CE
+ * skills' "Running inside Fusion" sections). The executor detects this in the
+ * step's output and parks the task `awaiting-user-input`, reusing the same
+ * pause/resume machinery as an `awaitInput` node (U6). Returns the question text,
+ * or null when no well-formed sentinel is present.
+ */
+export function parseAwaitInputSentinel(output: string | undefined): string | null {
+  if (!output) return null;
+  const m = output.match(/===FUSION_AWAIT_INPUT===\s*([\s\S]*?)\s*===END_FUSION_AWAIT_INPUT===/);
+  const question = m?.[1]?.trim();
+  return question ? question : null;
+}
 
 /** Result returned from fn_spawn_agent tool */
 interface SpawnAgentResult {
@@ -5841,6 +5862,43 @@ export class TaskExecutor {
       return this.runAwaitInputNode(node, live);
     }
 
+    // Skill-emitted await-input resume (U6): a prior run of THIS node may have
+    // paused the task because its skill asked the user a blocking question via
+    // the ===FUSION_AWAIT_INPUT=== sentinel. Mirror runAwaitInputNode's resume:
+    // when the user has replied (a steering comment at/after the pause
+    // watermark), clear the marker and fall through to RE-RUN the skill so it
+    // continues with the answer; otherwise keep the task parked and halt.
+    const skillAwaitMarker = `workflow-input:${node.id}`;
+    const skillPausedReason = live.pausedReason ?? "";
+    if (skillPausedReason.startsWith(skillAwaitMarker)) {
+      // Mirror runAwaitInputNode: only inspect replies once the task is actually
+      // unpaused. While `live.paused` is still true the user has added a comment
+      // but not released the task — keep it parked and never consume that reply,
+      // so a still-paused task can't short-circuit straight back into the skill.
+      if (live.paused) {
+        return { outcome: "failure", value: "awaiting-user-input" };
+      }
+      const watermark = (() => {
+        const mm = skillPausedReason.slice(skillAwaitMarker.length).match(/^@(\d+)/);
+        const t = mm ? Number(mm[1]) : NaN;
+        return Number.isFinite(t) ? t : undefined;
+      })();
+      const steering = Array.isArray(live.steeringComments) ? live.steeringComments : [];
+      const replies = watermark === undefined
+        ? steering
+        : steering.filter((c) => {
+            const created = Date.parse((c as { createdAt?: string }).createdAt ?? "");
+            return Number.isFinite(created) ? created >= watermark : false;
+          });
+      if (replies.length === 0) {
+        // Unpaused without a post-watermark reply — re-park and keep waiting.
+        await this.store.updateTask(live.id, { status: "awaiting-user-input", paused: true }, this.getRunContextFor(live.id));
+        return { outcome: "failure", value: "awaiting-user-input" };
+      }
+      await this.store.updateTask(live.id, { status: null, pausedReason: null }, this.getRunContextFor(live.id));
+      await this.store.logEntry(live.id, `Workflow input received for step '${node.id}' — resuming`, undefined, this.getRunContextFor(live.id));
+    }
+
     const executorKind = typeof cfg.executor === "string" ? cfg.executor : "model";
 
     // CLI Agent Executor (U7): a `cli-agent` node drives an engine-owned CLI
@@ -6046,6 +6104,27 @@ export class TaskExecutor {
       ? await this.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv)
       : await this.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv);
 
+    // Skill-emitted await-input (U6): if the skill asked the user a blocking
+    // question via the ===FUSION_AWAIT_INPUT=== sentinel, park the task
+    // awaiting-user-input with the question (dashboard / task card surfaces it)
+    // and halt the walk. On resume this node re-runs and the resume check above
+    // consumes the user's steering reply.
+    const awaitQuestion = parseAwaitInputSentinel((outcome as { output?: string }).output);
+    if (awaitQuestion) {
+      await this.store.logEntry(
+        live.id,
+        `Workflow step '${node.id}' is waiting for your input: ${awaitQuestion}`,
+        undefined,
+        this.getRunContextFor(live.id),
+      );
+      await this.store.updateTask(
+        live.id,
+        { status: "awaiting-user-input", paused: true, pausedReason: `${skillAwaitMarker}@${Date.now()}: ${awaitQuestion}` },
+        this.getRunContextFor(live.id),
+      );
+      return { outcome: "failure", value: "awaiting-user-input" };
+    }
+
     const blocking = step.gateMode === "gate";
     // Script-mode outcomes carry no structured verdict; prompt-mode may.
     const verdict = (outcome as { verdict?: string }).verdict;
@@ -6238,11 +6317,33 @@ export class TaskExecutor {
     this.options.stuckTaskDetector?.untrackTask(task.id);
     try {
       const live = await this.store.getTask(task.id);
-      // A paused/aborted implementation is not a graph failure — leave the
-      // pause machinery in charge instead of parking the task in review.
-      if (live.paused || this.pausedAborted.has(task.id)) {
+      // A paused/aborted implementation is not a graph failure while the task
+      // is still in-progress — leave the pause machinery in charge instead of
+      // parking the task in review.
+      const pausedAborted = this.pausedAborted.has(task.id);
+      if (live.paused || pausedAborted) {
+        /*
+        FNXC:WorkflowLifecycle 2026-06-15-01:45:
+        FN-6478: a graph exit during an in-progress pause is recoverable by explicit unpause, but the same exit after the task has already left in-progress strands the workflow graph. Preserve userPaused and autoMerge:false review parking; surface non-in-progress paused exits as operator-actionable failures without moving the task backward or re-enqueueing execution.
+        */
+        const pauseProvenance = live.userPaused
+          ? "explicit user pause"
+          : pausedAborted
+            ? "engine abort during pause/resume"
+            : "task pause";
+        if (live.column !== "in-progress") {
+          const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
+          const message = `Workflow graph failure surfaced after paused ${pauseProvenance} in '${live.column}' at node '${failedNode}' — operator action required; retry or explicitly unpause/resume after inspecting the task`;
+          executorLog.warn(`${task.id}: ${message}`);
+          await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
+          if (live.column !== "done" && live.column !== "archived" && live.status == null && live.error == null) {
+            await this.store.updateTask(task.id, { error: message, status: "failed" }, this.getRunContextFor(task.id));
+          }
+          await this.persistTokenUsage(task.id);
+          return;
+        }
         const benignMessage = "Workflow graph run ended while task is paused — pause state preserved";
-        executorLog.log(`${task.id}: ${benignMessage}`);
+        executorLog.log(`${task.id}: ${benignMessage} (${pauseProvenance})`);
         await this.store.logEntry(task.id, benignMessage, undefined, this.getRunContextFor(task.id));
         return;
       }
@@ -11946,6 +12047,16 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
         ? await this.options.agentStore.getAgent(task.assignedAgentId).catch(() => null)
         : null;
       const workflowRuntimeHint = extractRuntimeHint(workflowAgent?.runtimeConfig);
+      // Signal to skills running in this step (e.g. compound-engineering ce-plan /
+      // ce-work) that they are inside a Fusion autonomous workflow step, NOT an
+      // interactive Claude Code session. There is no synchronous blocking-question
+      // tool here, so a skill must surface user questions via the await-input
+      // convention (which the dashboard / task card renders) instead of calling
+      // AskUserQuestion into the void. Scoped to the step session — the main
+      // executor session deliberately does not carry it.
+      // (FUSION_HEADLESS is reserved for a future genuinely-unattended run signal —
+      // LFG/pipeline — where no human can answer even asynchronously.)
+      const stepEnv: NodeJS.ProcessEnv = { ...(taskEnv ?? process.env), FUSION_WORKFLOW_STEP: "1" };
       const readonlyCustomTools = toolMode === "readonly"
         ? filterCustomToolsForReadonly([])
         : { allowed: [] as ToolDefinition[], denied: [] as string[] };
@@ -11970,7 +12081,7 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
         defaultThinkingLevel: settings.defaultThinkingLevel,
         runAuditor: createRunAuditor(this.store, this.getRunContextFor(task.id)),
         settings,
-        taskEnv,
+        taskEnv: stepEnv,
         // Skill selection: use assigned agent skills if available, otherwise role fallback
         ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
         ...(readonlyCustomTools.allowed.length > 0 ? { customTools: readonlyCustomTools.allowed } : {}),
@@ -14471,7 +14582,7 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
         "When you end (fn_task_done), all spawned children are terminated.",
       parameters: spawnAgentParams,
       execute: async (_id: string, params: Static<typeof spawnAgentParams>) => {
-        const { name, role, task: taskPrompt } = params;
+        const { name, role, task: taskPrompt, systemPromptOverride } = params;
 
         // Check if AgentStore is available
         if (!this.options.agentStore) {
@@ -14522,7 +14633,16 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
 
           // Child agents inherit executor instructions
           const childInstructions = await this.resolveInstructionsForRole("executor", settings);
-          const childBasePrompt = `You are a child agent spawned by a parent task executor.
+          // A non-empty systemPromptOverride lets the caller run the child as a
+          // specific persona (e.g. a compound-engineering reviewer) instead of the
+          // generic child executor. Executor instructions are still appended below.
+          const personaOverride = systemPromptOverride?.trim();
+          const childBasePrompt = personaOverride
+            ? `${personaOverride}
+
+Parent task: ${taskId}
+Child agent: ${agent.id} (${name})`
+            : `You are a child agent spawned by a parent task executor.
 
 Your role:
 - Complete the delegated task in your own worktree.

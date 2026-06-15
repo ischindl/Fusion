@@ -59,6 +59,9 @@ describe("compound engineering plugin manifest", () => {
       "ce-work",
       "ce-code-review",
       "ce-compound",
+      "ce-commit",
+      "ce-commit-push-pr",
+      "ce-resolve-pr-feedback",
     ];
     expect(COMPOUND_ENGINEERING_SKILLS.map((s) => s.skillId)).toEqual(expectedIds);
     expect(plugin.skills).toBe(COMPOUND_ENGINEERING_SKILLS);

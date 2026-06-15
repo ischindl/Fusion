@@ -79,8 +79,13 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 | [Memory Plugin Contract](./memory-plugin-contract.md) | Pluggable memory backend architecture, interface contract, and migration strategy |
 | [Compound Engineering Plugin](./plugins/compound-engineering.md) | CE workflow dashboard surface: artifact hub, interactive sessions, work→board bridge, and bidirectional sync |
 | [External Plugin Authoring](./plugins/external-authoring.md) | Step-by-step guide for authoring plugins using an installed `fn` CLI (no monorepo access needed) |
+| [External Plugin Proof-Point Runbook](./plugins/external-proof-point-runbook.md) | Repeatable release-validation runbook for proving an external plugin runs against a published Fusion CLI build |
 
 ### Audit Reports
+<!--
+FNXC:DocsIndex 2026-06-15-01:35:
+docs/upstream/ artifacts are indexed under Audit Reports for FN-6479 instead of treating docs/upstream/ as an intentional-orphan directory.
+-->
 | Report | Description |
 |---|---|
 | [UX Audit Report](./ux-audit-report.md) | Comprehensive UX audit with prioritized recommendations for dashboard improvements |
@@ -118,6 +123,7 @@ For a full walkthrough (installation, onboarding, first task, and daily workflow
 | [Workflow Policy Ownership Map](./workflow-policy-ownership-map.md) | U1 characterization map classifying production merge, retry, scheduling, and recovery policy branches before workflow-policy migration cutover |
 | [Test-Speed Baseline (2026-06-03)](./test-speed-baseline-2026-06-03.md) | Measured per-file test timing baseline and optimization targets (successor to FN-5048 audit) |
 | [ACP Runtime Contract](./acp-contract.md) | Agent Client Protocol plugin launch/readiness contract and failure taxonomy |
+| [ACP MCP Passthrough & Permission Forwarding Upstream Sponsorship (FN-6475)](./upstream/claude-code-cli-acp-mcp-permission-forwarding.md) | Ready-to-file upstream sponsorship for `claude-code-cli-acp` ACP `session/new.mcpServers` passthrough and permission-gate traversal; Route A remains NOT GO until proven |
 | [Mission Completion Gate Contract](./missions-completion-contract.md) | Decision record for mission completion gate invariants and acceptance flow |
 
 | [Lost-Work Tasks Incident (2026-05-23)](./incidents/2026-05-23-lost-work-tasks.md) | Incident catalog of 9 lost-work tasks from no-op finalize and reuse-handoff bugs |

@@ -36,6 +36,16 @@
   background: color-mix(in srgb, var(--todo) 8%, transparent);
 }
 
+/*
+FNXC:TaskCardMobilePan 2026-06-13-19:51:
+Mobile board cards must allow horizontal kanban panning from every visible card surface, not only from gaps or progress-count text.
+The global mobile touch-action reset applies to descendants, and browsers intersect touch-action along the touched element's ancestor chain, so the whole non-editing card subtree must opt back into pan-x.
+*/
+.card:not(.card-editing),
+.card:not(.card-editing) * {
+  touch-action: pan-x pan-y;
+}
+
 /* Agent-active glow: animated border glow when an agent is actively working on a task.
    Uses the in-progress column color to stay consistent with the theme. */
 .card.agent-active {
@@ -64,10 +74,19 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-xs);
   row-gap: var(--space-xs);
   min-width: 0;
   margin-bottom: var(--space-xs);
+}
+
+.card-meta-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  row-gap: var(--space-xs);
+  min-width: 0;
 }
 
 .card-id {
@@ -751,10 +770,10 @@
   align-items: center;
 }
 
-.card-footer-row > .card-time-indicator:first-of-type {
-  margin-left: auto;
-}
-
+/*
+FNXC:TaskCardTimingBadge 2026-06-13-17:26:
+The execution-time badge is part of the footer's bottom-right chip cluster, so it inherits the same height, padding, font, and responsive sizing as retry and GitHub tracking badges instead of using the old meta-row placement.
+*/
 .card-time-indicator,
 .card-github-tracking-chip,
 .card-retry-badge,
@@ -1170,6 +1189,31 @@
     color var(--transition-fast);
 }
 
+/* Prominent affordance to answer an agent's blocking planning question.
+   Always visible (not hover-gated) — the task is parked waiting on the user. */
+.card-answer-questions-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: var(--font-size-xs, 11px);
+  font-weight: 600;
+  background: var(--todo);
+  color: var(--background, #fff);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+
+.card-answer-questions-btn:hover {
+  filter: brightness(1.1);
+}
+
+.card-answer-questions-btn:focus {
+  outline: 1px solid var(--todo);
+  outline-offset: 1px;
+}
+
 .card:hover .card-edit-btn {
   opacity: 1;
 }
@@ -1471,6 +1515,11 @@
     min-height: var(--card-chip-height-mobile);
   }
 
+
+  .card-meta-badges {
+    gap: calc(var(--space-xs) / 2);
+    row-gap: var(--space-xs);
+  }
 
   /* Card: smaller status badges for 280px width */
   .card-status-badge,

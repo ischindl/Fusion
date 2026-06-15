@@ -784,6 +784,20 @@
   cursor: not-allowed;
 }
 
+/* The quick chat stop button reuses .chat-input-stop for its red appearance,
+   but that class sizes itself with --chat-input-control-size, a variable scoped
+   to ChatView's .chat-input-row and undefined in this DOM — which collapsed the
+   button toward its icon width. Pin it to the send button's square dimensions
+   using globally-scoped spacing tokens. The compound selector outranks the
+   single-class base and mobile rules from both stylesheets. */
+.quick-chat-send-btn.chat-input-stop {
+  width: calc(var(--space-lg) + var(--space-xl));
+  min-width: calc(var(--space-lg) + var(--space-xl));
+  height: calc(var(--space-lg) + var(--space-xl));
+  min-height: calc(var(--space-lg) + var(--space-xl));
+  border-radius: var(--radius-sm);
+}
+
 .quick-chat-attachment-previews {
   display: flex;
   gap: var(--space-xs);

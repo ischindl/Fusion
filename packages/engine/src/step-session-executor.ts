@@ -555,14 +555,16 @@ function escapeRegex(str: string): string {
  *
  * @param taskDetail - The task to build a prompt for.
  * @param stepIndex - The 0-based step index.
+ * @param rootDir - Optional project root directory used to render absolute attachment paths.
  * @returns A reduced prompt string focused on the current step only.
  */
-export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number): string {
+export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number, rootDir?: string): string {
   const { prompt, id, title, attachments } = taskDetail;
 
   // Extract the step-specific section
   const stepSection = extractStepSection(prompt, stepIndex);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
+  const attachmentDir = rootDir ? `${rootDir}/.fusion/tasks/${id}/attachments/` : `.fusion/tasks/${id}/attachments/`;
 
   // Build a minimal prompt that focuses on the step without excessive context
   const parts: string[] = [
@@ -574,7 +576,7 @@ export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number
     stepSection,
     "",
     hasAttachments
-      ? `${attachments?.length ?? 0} attachment(s) available at .fusion/tasks/${id}/attachments/ — ask for context if needed.`
+      ? `${attachments?.length ?? 0} attachment(s) available at \`${attachmentDir}\` — read the files there for context. They live at the project root and are readable even when working in a worktree.`
       : "",
     "",
     "IMPORTANT: Your previous attempt hit the context window limit.",
@@ -937,7 +939,7 @@ export class StepSessionExecutor {
     const stepPrompt = buildStepPrompt(taskDetail, stepIndex, this.options.rootDir, settings, worktreePath);
 
     // Build reduced step prompt for context-limit recovery (simpler, shorter)
-    const reducedStepPrompt = buildReducedStepPrompt(taskDetail, stepIndex);
+    const reducedStepPrompt = buildReducedStepPrompt(taskDetail, stepIndex, this.options.rootDir);
 
     // Acquire semaphore if provided
     if (semaphore) {

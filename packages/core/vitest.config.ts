@@ -4,6 +4,16 @@ import { computeMaxWorkers } from "./src/__test-utils__/vitest-workers";
 
 const maxWorkers = computeMaxWorkers();
 
+const quarantinedCoreTests = [
+  /*
+  FNXC:CoreTests 2026-06-13-17:43:
+  The full workspace suite must not fail on suite-load-sensitive tests that pass standalone or only fail after excessive wall time. Quarantine observed core offenders after package-lane hook timeouts instead of appeasing them with wider hook timeouts.
+
+  FNXC:CoreTests 2026-06-14-02:14:
+  FN-6433 re-ran the core quarantine batch after FN-6430's shared fixture cleanup and rescued all five files without timeout or assertion changes. Keep this array empty unless a future quarantine is mirrored in scripts/lib/test-quarantine.json in the same commit.
+  */
+];
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -14,7 +24,7 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts"],
-    exclude: [],
+    exclude: quarantinedCoreTests,
     setupFiles: [
       "./src/__test-utils__/vitest-setup.ts",
     ],

@@ -479,6 +479,51 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
     }
   }, [resize]);
 
+  const remeasureAfterTerminalFontLoad = useCallback(
+    async (
+      expectedSessionId: string,
+      terminal: XTerm,
+      fitAddon: InstanceType<typeof import("@xterm/addon-fit").FitAddon>,
+    ) => {
+      if (typeof document === "undefined" || !document.fonts?.load) {
+        return;
+      }
+
+      try {
+        await document.fonts.load(`${fontSizeRef.current}px ${XTERM_FONT_FAMILY}`);
+        await document.fonts.ready;
+      } catch {
+        // Font loading support is best-effort; keep the terminal usable if the
+        // browser rejects due to permissions, syntax, or unsupported APIs.
+        return;
+      }
+
+      if (
+        xtermInitializedRef.current !== expectedSessionId ||
+        xtermRef.current !== terminal ||
+        fitAddonRef.current !== fitAddon
+      ) {
+        return;
+      }
+
+      try {
+        // xterm measures cell geometry at open() time. The terminal Nerd Font
+        // is loaded with font-display: swap, so a cold load can replace the
+        // fallback font after open(); re-applying font options and fitting after
+        // FontFaceSet resolution forces the DOM/canvas and WebGL renderers to
+        // remeasure against the actual glyph metrics.
+        terminal.options.fontFamily = XTERM_FONT_FAMILY;
+        terminal.options.fontSize = fontSizeRef.current;
+        fitAddon.fit();
+        resizeRef.current?.(terminal.cols, terminal.rows);
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      } catch {
+        // Ignore fit/refresh errors during teardown or viewport transitions.
+      }
+    },
+    [],
+  );
+
   // Initialize xterm.js when session is ready.
   // Keying this effect by active session id (not full activeTab object) avoids
   // tearing down xterm lifecycle wiring during unrelated tab metadata updates
@@ -638,6 +683,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
         xtermRef.current = terminal;
         fitAddonRef.current = fitAddon;
         xtermInitializedRef.current = currentSessionId;
+        void remeasureAfterTerminalFontLoad(currentSessionId, terminal, fitAddon);
 
         // If the virtual keyboard opened while xterm was still in async
         // initialization for this tab, force a post-init fit so this new
@@ -693,14 +739,10 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
           }
 
           if (key === "v") {
-            navigator.clipboard?.readText().then((text) => {
-              if (text) {
-                sendInputRef.current(text);
-              }
-            }).catch(() => {
-              // Ignore clipboard permission/errors so terminal input stays responsive.
-            });
-            return false;
+            // Let xterm's helper textarea handle paste natively. Reading the
+            // clipboard here and also allowing the browser paste path causes
+            // duplicate PTY input on Cmd/Ctrl+V.
+            return true;
           }
 
           return true;
@@ -753,7 +795,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, projectId }: Te
       // Don't dispose xterm here - it should persist across tab switches
       // Only dispose when the modal is fully closed
     };
-  }, [fitAndResizeForSession, isOpen, isReady, activeTab?.sessionId, projectId]);
+  }, [fitAndResizeForSession, isOpen, isReady, activeTab?.sessionId, projectId, remeasureAfterTerminalFontLoad]);
 
   // (Input forwarding + window resize listener are wired inside initTerminal
   // so they share the xterm instance's lifetime — see comment there.)

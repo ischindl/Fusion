@@ -6,55 +6,67 @@ import {
   type InteractiveAgentResult,
   type InteractiveAgentSession,
 } from "../interactive-ai-session.js";
-import type {
-  OneShotResult,
-  RunOneShotOptions,
-} from "../cli-agent/one-shot-session.js";
+import type { AgentRuntime, AgentRuntimeOptions, AgentSessionResult } from "../agent-runtime.js";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
-describe("runCliAgentPlanning (U9 one-shot planning seam)", () => {
-  const baseOpts = {
-    manager: {} as RunOneShotOptions["manager"],
-    adapterId: "claude-code",
-    projectId: "p",
-    prompt: "plan it",
-    cwd: "/tmp",
+function planningRuntime(text: string, options: { throwCreate?: Error; throwPrompt?: Error } = {}) {
+  const createOptions: AgentRuntimeOptions[] = [];
+  const session = { dispose: vi.fn() } as unknown as AgentSession;
+  const runtime: AgentRuntime = {
+    id: "acp",
+    name: "ACP Runtime",
+    async createSession(opts: AgentRuntimeOptions): Promise<AgentSessionResult> {
+      createOptions.push(opts);
+      if (options.throwCreate) throw options.throwCreate;
+      return { session };
+    },
+    async promptWithFallback(): Promise<void> {
+      if (options.throwPrompt) throw options.throwPrompt;
+      createOptions[0]?.onText?.(text);
+    },
+    describeModel() {
+      return "acp/test";
+    },
   };
+  return { runtime, createOptions };
+}
 
-  it("maps one-shot output to the SAME PlanningResponse shape a model run produces", async () => {
-    let seenPurpose: string | undefined;
-    const fakeRun = async (opts: RunOneShotOptions): Promise<OneShotResult> => {
-      seenPurpose = opts.purpose;
-      const summary = {
-        title: "Do X",
-        description: "Plan to do X",
-        suggestedSize: "M",
-        suggestedDependencies: [],
-        keyDeliverables: ["X"],
-      };
-      return {
-        ok: true,
-        sessionId: "s1",
-        parsed: {},
-        text: JSON.stringify({ type: "complete", data: summary }),
-        rawOutput: "",
-      };
+describe("runCliAgentPlanning (ACP planning seam)", () => {
+  it("maps ACP prose with complete JSON to the SAME PlanningResponse shape a model run produces", async () => {
+    const summary = {
+      title: "Do X",
+      description: "Plan to do X",
+      suggestedSize: "M",
+      suggestedDependencies: [],
+      keyDeliverables: ["X"],
     };
-    const resp: PlanningResponse = await runCliAgentPlanning(baseOpts, fakeRun as never);
-    expect(seenPurpose).toBe("planning");
+    const { runtime, createOptions } = planningRuntime(`Here is the plan:\n${JSON.stringify({ type: "complete", data: summary })}`);
+    const resp: PlanningResponse = await runCliAgentPlanning(runtime, {
+      prompt: "plan it",
+      cwd: "/tmp",
+      settings: { model: "claude-sonnet-4" },
+    });
     expect(resp.type).toBe("complete");
     if (resp.type === "complete") expect(resp.data.title).toBe("Do X");
+    expect(createOptions[0]).toMatchObject({ tools: "readonly", defaultModelId: "claude-sonnet-4" });
   });
 
-  it("throws on a failed one-shot (never returns a fabricated plan)", async () => {
-    const fakeRun = async (): Promise<OneShotResult> => ({
-      ok: false,
-      reason: "unparseable",
-      sessionId: "s1",
-      exitCode: 0,
-      stderr: "",
-      message: "no result",
-    });
-    await expect(runCliAgentPlanning(baseOpts, fakeRun as never)).rejects.toThrow(/planning/i);
+  it("maps ACP prose with question JSON to a PlanningResponse question", async () => {
+    const question: PlanningQuestion = { id: "q1", type: "text", question: "What is the goal?" };
+    const { runtime } = planningRuntime(`Need input: ${JSON.stringify({ type: "question", data: question })}`);
+    const resp = await runCliAgentPlanning(runtime, { prompt: "plan it", cwd: "/tmp" });
+    expect(resp.type).toBe("question");
+    if (resp.type === "question") expect(resp.data.id).toBe("q1");
+  });
+
+  it("throws on a failed ACP ask (never returns a fabricated plan)", async () => {
+    const { runtime } = planningRuntime("", { throwPrompt: new Error("transport failed") });
+    await expect(runCliAgentPlanning(runtime, { prompt: "plan it", cwd: "/tmp" })).rejects.toThrow(/planning ACP ask failed/i);
+  });
+
+  it("throws when ACP prose has no decodable planning JSON", async () => {
+    const { runtime } = planningRuntime("no structured answer");
+    await expect(runCliAgentPlanning(runtime, { prompt: "plan it", cwd: "/tmp" })).rejects.toThrow(/no valid JSON/i);
   });
 });
 

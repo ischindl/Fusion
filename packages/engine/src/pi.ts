@@ -34,7 +34,18 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { customProviderRegistryKey, getEnabledPiExtensionPaths, getFusionAgentDir, getLegacyPiAgentDir, getProjectRootFromWorktree, reconcileClaudeCliPaths, reconcileDroidCliPaths, resolvePiExtensionProjectRoot } from "@fusion/core";
+import {
+  customProviderRegistryKey,
+  getEnabledPiExtensionPaths,
+  getFusionAgentDir,
+  getLegacyPiAgentDir,
+  getProjectRootFromWorktree,
+  reconcileClaudeCliPaths,
+  reconcileDroidCliPaths,
+  mergeBuiltInZaiProviderModels,
+  registerBuiltInZaiProvider,
+  resolvePiExtensionProjectRoot,
+} from "@fusion/core";
 import type {
   AgentPermissionPolicyActionCategory,
   PermanentAgentActionCategory,
@@ -1353,6 +1364,8 @@ function resolveVendoredDroidCliEntry(): string | null {
 }
 
 async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegistry): Promise<void> {
+  registerBuiltInZaiProvider(modelRegistry, (message) => extensionsLog.warn(message));
+
   try {
     const agentDir = getPackageManagerAgentDir();
     const packageManager = new DefaultPackageManager({
@@ -1405,6 +1418,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
     }
 
     extensionsResult.runtime.pendingProviderRegistrations = [];
+    mergeBuiltInZaiProviderModels(modelRegistry, (message) => extensionsLog.warn(message));
     modelRegistry.refresh();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

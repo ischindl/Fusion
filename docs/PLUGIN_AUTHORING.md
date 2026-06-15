@@ -1547,6 +1547,7 @@ const traits: PluginTraitContribution[] = [
 
 export default definePlugin({
   manifest: { id: "my-plugin", name: "My Plugin", version: "1.0.0" },
+  state: "installed",
   hooks: {},
   traits,
 });
@@ -1666,6 +1667,7 @@ const workflowExtensions: WorkflowExtensionContribution[] = [
 
 export default definePlugin({
   manifest: { id: "my-plugin", name: "My Plugin", version: "1.0.0" },
+  state: "installed",
   workflowExtensions,
 });
 ```

@@ -1987,8 +1987,8 @@ export class Database {
       return { status: "failed", errors: check.errors };
     }
 
+    const corruptBackupPath = `${dbPath}.corrupt-${ts}`;
     try {
-      const corruptBackupPath = `${dbPath}.corrupt-${ts}`;
       renameSync(dbPath, corruptBackupPath);
       // Stale WAL/SHM belong to the corrupt file; SQLite must not replay them
       // onto the rebuilt database.
@@ -1998,7 +1998,20 @@ export class Database {
       return { status: "recovered", corruptBackupPath, errors: check.errors };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { status: "failed", errors: [...(check.errors ?? []), message] };
+      const restoreErrors: string[] = [];
+      /*
+      FNXC:DatabaseRecovery 2026-06-13-17:43:
+      A failed startup recovery must preserve the original corrupt database at fusion.db, even when the swap fails after the corrupt file was renamed to a backup path. Restore the backup before returning "failed" so manual repair still sees the documented database location.
+      */
+      if (!existsSync(dbPath) && existsSync(corruptBackupPath)) {
+        try {
+          renameSync(corruptBackupPath, dbPath);
+        } catch (restoreError) {
+          restoreErrors.push(restoreError instanceof Error ? restoreError.message : String(restoreError));
+        }
+      }
+      try { rmSync(recoveredPath, { force: true }); } catch { /* ignore */ }
+      return { status: "failed", errors: [...(check.errors ?? []), message, ...restoreErrors] };
     }
   }
 

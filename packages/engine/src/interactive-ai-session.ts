@@ -21,6 +21,8 @@ import type {
   PlanningQuestion,
   PlanningResponse,
 } from "@fusion/core";
+import type { AgentRuntime } from "./agent-runtime.js";
+import { askAcpOnce } from "./cli-agent-ask.js";
 
 /** Minimal shape of an agent session we depend on (subset of pi's AgentSession). */
 export interface InteractiveAgentSession {
@@ -203,22 +205,31 @@ export function parseAgentResponse(text: string): PlanningResponse {
  * loop's executor resolution remains TODO when planning gains a CLI executor
  * selector.
  */
+export interface CliAgentPlanningOptions {
+  prompt: string;
+  cwd: string;
+  settings?: { model?: string };
+  systemPrompt?: string;
+  timeoutMs?: number;
+}
+
 export async function runCliAgentPlanning(
-  opts: Omit<
-    import("./cli-agent/one-shot-session.js").RunOneShotOptions,
-    "purpose"
-  >,
-  run: typeof import("./cli-agent/one-shot-session.js").runOneShotSession,
+  runtime: AgentRuntime,
+  opts: CliAgentPlanningOptions,
 ): Promise<PlanningResponse> {
-  const result = await run({ ...opts, purpose: "planning" });
+  const result = await askAcpOnce(runtime, {
+    prompt: opts.prompt,
+    cwd: opts.cwd,
+    model: opts.settings?.model,
+    systemPrompt: opts.systemPrompt,
+    timeoutMs: opts.timeoutMs,
+  });
   if (!result.ok) {
-    throw new Error(
-      `CLI-agent planning one-shot failed (${result.reason}): ${result.message}`,
-    );
+    throw new Error(`CLI-agent planning ACP ask failed (${result.reason}): ${result.message}`);
   }
   // Map to the planning flow's shape exactly as a model run would: parse the
-  // adapter's textual result through the canonical planning parser.
-  return parseAgentResponse(result.text || result.rawOutput);
+  // ACP prose through the canonical planning parser.
+  return parseAgentResponse(result.text);
 }
 
 /** Extract text from the last assistant message (string | text blocks | thinking fallback). */

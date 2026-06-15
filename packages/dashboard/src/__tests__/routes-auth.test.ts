@@ -544,6 +544,7 @@ function createMockAuthStorage(overrides: Partial<AuthStorageLike> = {}): AuthSt
     ]),
     hasAuth: vi.fn().mockReturnValue(false),
     get: vi.fn().mockReturnValue(undefined),
+    getApiKey: vi.fn().mockResolvedValue(undefined),
     login: vi.fn().mockImplementation((_provider: string, callbacks: any) => {
       // Simulate onAuth callback with a URL, then resolve
       callbacks.onAuth({ url: "https://auth.example.com/login", instructions: "Open in browser" });
@@ -604,6 +605,7 @@ describe("GET /auth/status", () => {
     vi.mocked(authStorage.getOAuthProviders).mockReset();
     vi.mocked(authStorage.hasAuth).mockReset();
     vi.mocked(authStorage.get).mockReset();
+    vi.mocked(authStorage.getApiKey).mockReset();
     vi.mocked(authStorage.login).mockReset();
     vi.mocked(authStorage.getApiKeyProviders).mockReset();
     vi.mocked(authStorage.hasApiKey).mockReset();
@@ -614,6 +616,7 @@ describe("GET /auth/status", () => {
     vi.mocked(authStorage.getOAuthProviders).mockReturnValue([{ id: "github-copilot", name: "GitHub Copilot" }]);
     vi.mocked(authStorage.hasAuth).mockReturnValue(false);
     vi.mocked(authStorage.get).mockReturnValue(undefined);
+    vi.mocked(authStorage.getApiKey).mockResolvedValue(undefined);
     vi.mocked(authStorage.login).mockImplementation((_provider: string, callbacks: any) => {
       callbacks.onAuth({ url: "https://auth.example.com/login", instructions: "Open in browser" });
       return Promise.resolve();
@@ -758,6 +761,54 @@ describe("GET /auth/status", () => {
     expect(githubCopilot).toMatchObject({ authenticated: true, expired: false });
     expect(claude).toMatchObject({ authenticated: false, expired: true });
     expect(geminiOauth).toMatchObject({ authenticated: false, expired: false });
+  });
+
+  it("attempts async refresh for expired oauth before reporting status", async () => {
+    const now = Date.now();
+    let refreshed = false;
+    (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "anthropic", name: "Anthropic" },
+    ]);
+    (authStorage.hasAuth as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "anthropic");
+    (authStorage.get as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      type: "oauth",
+      access: refreshed ? "refreshed-token" : "expired-token",
+      refresh: "refresh",
+      expires: refreshed ? now + 3_600_000 : now - 1_000,
+    }));
+    (authStorage.getApiKey as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      refreshed = true;
+      return "refreshed-token";
+    });
+
+    const res = await GET(app, "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    const anthropic = res.body.providers.find((p: any) => p.id === "anthropic");
+    expect(authStorage.getApiKey).toHaveBeenCalledWith("anthropic");
+    expect(anthropic).toMatchObject({ authenticated: true, expired: false });
+  });
+
+  it("keeps expired oauth status when async refresh fails", async () => {
+    const now = Date.now();
+    (authStorage.getOAuthProviders as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "anthropic", name: "Anthropic" },
+    ]);
+    (authStorage.hasAuth as ReturnType<typeof vi.fn>).mockImplementation((provider: string) => provider === "anthropic");
+    (authStorage.get as ReturnType<typeof vi.fn>).mockReturnValue({
+      type: "oauth",
+      access: "expired-token",
+      refresh: "refresh",
+      expires: now - 1_000,
+    });
+    (authStorage.getApiKey as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("refresh failed"));
+
+    const res = await GET(app, "/api/auth/status");
+
+    expect(res.status).toBe(200);
+    const anthropic = res.body.providers.find((p: any) => p.id === "anthropic");
+    expect(authStorage.getApiKey).toHaveBeenCalledWith("anthropic");
+    expect(anthropic).toMatchObject({ authenticated: false, expired: true });
   });
 
   it("reports loginInProgress for oauth providers with active logins", async () => {

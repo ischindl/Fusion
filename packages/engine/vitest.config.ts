@@ -102,9 +102,10 @@ export default defineConfig({
             "src/**/*.slow.test.ts",
             "node_modules/**",
             "dist/**",
-            "src/__tests__/merger-ai-cleanup-active-session.test.ts",
-            "src/__tests__/merger-ai-cleanup.test.ts",
-            "src/__tests__/merger-ai.test.ts",
+            /*
+            FNXC:EngineTests 2026-06-14-02:11:
+            FN-6433 rescued the AI-merge suites by replacing broad activeSessionRegistry cleanup with path-scoped cleanup, so the default engine lane should execute them again. The soft-delete blocker residue suite was deleted under the ratchet because deterministic soft-delete deadlock coverage already owns that invariant.
+            */
           ],
         },
       },
@@ -117,7 +118,10 @@ export default defineConfig({
           // also tier into engine-slow.
           exclude: [
             "src/**/*.slow.test.ts",
-            "src/__tests__/reliability-interactions/soft-delete-blocker-residue.test.ts",
+            /*
+            FNXC:EngineTests 2026-06-14-02:12:
+            FN-6433 removed the reliability-interactions quarantine after deleting the duplicate soft-delete blocker residue file under the deletion ratchet; keep this project exclude list ledger-free unless a new flake is quarantined in lockstep.
+            */
           ],
           // These tests assert event ordering across real worktrees. Parallel
           // execution under merger load caused subprocess-guard timeouts and

@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { __fusionWorkerRootCleanupTestHooks } from "../__test-utils__/vitest-setup";
 import setup, {
   __setWorkerRootRmSyncForTests,
   __setWorkerRootSleepMsSyncForTests,
+  removeLegacyTopLevelHomeRoots,
 } from "../__test-utils__/vitest-teardown";
 
 const createdPaths: string[] = [];
@@ -82,6 +85,35 @@ describe("vitest global teardown worker-root cleanup", () => {
     rmSync(workerRoot, { recursive: true, force: true });
 
     await teardown();
+
+    expect(existsSync(workerRoot)).toBe(false);
+  });
+
+  it("sweeps legacy top-level temp HOME roots without walking unrelated temp entries", () => {
+    const tempRoot = remember(mkdtempSync(join(tmpdir(), "fusion-test-home-sweep-root-")));
+    const legacyHome = join(tempRoot, "fn-test-home-stale");
+    const unrelated = join(tempRoot, "fusion-test-workers-current");
+    mkdirSync(legacyHome, { recursive: true });
+    mkdirSync(unrelated, { recursive: true });
+    writeFileSync(join(legacyHome, "payload.txt"), "legacy home state");
+
+    removeLegacyTopLevelHomeRoots(tempRoot);
+
+    expect(existsSync(legacyHome)).toBe(false);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("removes a self-minted fallback worker root during exit cleanup", () => {
+    const workerRoot = remember(mkdtempSync(join(tmpdir(), "fusion-test-workers-self-minted-")));
+    const workerDir = join(workerRoot, `w-${process.pid}-fallback`);
+    const redirDir = join(workerRoot, `redir-${process.pid}`);
+    mkdirSync(workerDir, { recursive: true });
+    mkdirSync(redirDir, { recursive: true });
+    writeFileSync(join(workerDir, "payload.txt"), "worker temp payload");
+    writeFileSync(join(redirDir, "payload.txt"), "redirect temp payload");
+    __fusionWorkerRootCleanupTestHooks.writeWorkerRootOwnerMarker(workerRoot);
+
+    __fusionWorkerRootCleanupTestHooks.removeSelfMintedWorkerRootWithRetry(workerRoot, true, 0);
 
     expect(existsSync(workerRoot)).toBe(false);
   });

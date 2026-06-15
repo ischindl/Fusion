@@ -12,6 +12,42 @@ function findHelperTextareaRule(): string {
   return match?.[1] ?? "";
 }
 
+function findTerminalSymbolsFontFaceRule(): string {
+  const fontFaceRules = css.match(/@font-face\s*\{[^}]*\}/g) ?? [];
+  return (
+    fontFaceRules.find((rule) =>
+      /font-family\s*:\s*["']Fusion Terminal Nerd Font Symbols["']/.test(rule),
+    ) ?? ""
+  );
+}
+
+function parseUnicodeRangeValues(ruleBody: string): string[] {
+  const match = ruleBody.match(/unicode-range\s*:\s*([^;}]*)/i);
+  return match?.[1]
+    .split(",")
+    .map((range) => range.trim().toUpperCase())
+    .filter(Boolean) ?? [];
+}
+
+function unicodeRangeIncludesAsciiPrintable(range: string): boolean {
+  const normalized = range.toUpperCase();
+  const rangeMatch = normalized.match(/^U\+([0-9A-F?]+)(?:-([0-9A-F]+))?$/);
+  if (!rangeMatch) {
+    return false;
+  }
+
+  const [, startRaw, endRaw] = rangeMatch;
+  if (startRaw.includes("?")) {
+    const start = Number.parseInt(startRaw.replace(/\?/g, "0"), 16);
+    const end = Number.parseInt(startRaw.replace(/\?/g, "F"), 16);
+    return start <= 0x007e && end >= 0x0020;
+  }
+
+  const start = Number.parseInt(startRaw, 16);
+  const end = endRaw ? Number.parseInt(endRaw, 16) : start;
+  return start <= 0x007e && end >= 0x0020;
+}
+
 describe("terminal helper textarea CSS contract", () => {
   it("defines the xterm helper textarea rule", () => {
     const ruleBody = findHelperTextareaRule();
@@ -38,5 +74,18 @@ describe("terminal helper textarea CSS contract", () => {
   it("keeps the helper textarea effectively invisible", () => {
     const ruleBody = findHelperTextareaRule();
     expect(ruleBody).toMatch(/opacity:\s*0\.01\b/);
+  });
+});
+
+describe("FN-6424 terminal symbols font CSS contract", () => {
+  it("scopes the symbols-only Nerd Font away from ASCII cell measurement", () => {
+    const ruleBody = findTerminalSymbolsFontFaceRule();
+    expect(ruleBody).not.toBe("");
+
+    const unicodeRanges = parseUnicodeRangeValues(ruleBody);
+    expect(unicodeRanges).toEqual(
+      expect.arrayContaining(["U+E0A0-E0D7", "U+E700-E8EF", "U+F0001-F1AF0"]),
+    );
+    expect(unicodeRanges.some(unicodeRangeIncludesAsciiPrintable)).toBe(false);
   });
 });

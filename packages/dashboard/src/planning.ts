@@ -2026,18 +2026,19 @@ export async function submitResponse(
     };
 
     session.error = undefined;
+    /*
+    FNXC:DashboardSessionPersistence 2026-06-14-09:09:
+    Persist the user's answered planning turn before the agent generates the next question or errors. AiSessionStore snapshots happen inside continueAgentConversation, so history must already include the submitted answer for retry replay and SQLite round-trip tests to observe durable state.
+    */
+    session.history.push(historyEntry);
     persistSession(session, "generating");
 
     if (!session.agent) {
-      await ensureSessionAgent(session, rootDir, session.history, promptOverrides, store);
+      await ensureSessionAgent(session, rootDir, session.history.slice(0, -1), promptOverrides, store);
     }
 
     const message = formatResponseForAgent(currentQuestion, responses);
     await continueAgentConversation(session, message);
-
-    if (!session.error) {
-      session.history.push(historyEntry);
-    }
   }
 
   // Return the current state (will be updated via SSE)

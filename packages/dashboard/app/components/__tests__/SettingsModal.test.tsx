@@ -46,6 +46,7 @@ const mockFetchGitRemotesDetailed = vi.fn();
 const mockFetchProjects = vi.fn();
 const mockFetchDashboardHealth = vi.fn();
 const mockCheckForUpdates = vi.fn();
+const mockInstallUpdate = vi.fn();
 const mockFetchRemoteSettings = vi.fn();
 const mockUpdateRemoteSettings = vi.fn();
 const mockFetchRemoteStatus = vi.fn();
@@ -107,6 +108,7 @@ vi.mock("../../api", async (importOriginal) => {
     fetchProjects: (...args: unknown[]) => mockFetchProjects(...args),
     fetchDashboardHealth: (...args: unknown[]) => mockFetchDashboardHealth(...args),
     checkForUpdates: (...args: unknown[]) => mockCheckForUpdates(...args),
+    installUpdate: (...args: unknown[]) => mockInstallUpdate(...args),
     fetchRemoteSettings: (...args: unknown[]) => mockFetchRemoteSettings(...args),
     updateRemoteSettings: (...args: unknown[]) => mockUpdateRemoteSettings(...args),
     fetchRemoteStatus: (...args: unknown[]) => mockFetchRemoteStatus(...args),
@@ -144,6 +146,8 @@ vi.mock("../../hooks/useConfirm", () => ({
 
 vi.mock("../../hooks/useViewportMode", () => ({
   MOBILE_MEDIA_QUERY: "(max-width: 768px), (max-height: 480px)",
+  getViewportMode: () => "mobile",
+  isMobileViewport: () => true,
   useViewportMode: () => "mobile",
 }));
 vi.mock("lucide-react", async (importOriginal) => {
@@ -636,6 +640,7 @@ describe("SettingsModal", () => {
     }));
     mockFetchDashboardHealth.mockResolvedValue({ status: "ok", version: "1.2.3", uptime: 123 });
     mockCheckForUpdates.mockResolvedValue(undefined);
+    mockInstallUpdate.mockResolvedValue({ currentVersion: "1.2.3", latestVersion: "2.0.0", updated: true });
     mockFetchRemoteSettings.mockResolvedValue({
       settings: {
         remoteActiveProvider: null,
@@ -1801,6 +1806,82 @@ describe("SettingsModal", () => {
 
       expect(await screen.findByText(/v2.0.0 available/i)).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Learn more" })).toHaveAttribute("href", "https://runfusion.ai");
+      expect(screen.getByRole("button", { name: "Update now" })).toBeInTheDocument();
+    });
+
+    it("hides update-now when update check is up-to-date or errored", async () => {
+      mockCheckForUpdates.mockResolvedValueOnce({
+        currentVersion: "1.2.3",
+        latestVersion: "1.2.3",
+        updateAvailable: false,
+      });
+
+      const { unmount } = renderModal();
+      await waitForSettingsModalReady();
+      await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+      expect(await screen.findByText("You're up to date ✓")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Update now" })).not.toBeInTheDocument();
+
+      unmount();
+      mockCheckForUpdates.mockResolvedValueOnce({
+        currentVersion: "1.2.3",
+        latestVersion: null,
+        updateAvailable: false,
+        error: "registry unavailable",
+      });
+
+      renderModal();
+      await waitForSettingsModalReady();
+      await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+      expect(await screen.findByText("registry unavailable")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Update now" })).not.toBeInTheDocument();
+    });
+
+    it("installs update from the footer and renders restart hint", async () => {
+      mockCheckForUpdates.mockResolvedValueOnce({
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
+      });
+      mockInstallUpdate.mockResolvedValueOnce({ currentVersion: "1.0.0", latestVersion: "2.0.0", updated: true });
+
+      renderModal();
+      await waitForSettingsModalReady();
+      await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Update now" }));
+
+      await waitFor(() => expect(mockInstallUpdate).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText("Updated to v2.0.0 — restart Fusion to apply")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Update now" })).not.toBeInTheDocument();
+    });
+
+    it("disables update-now and shows inline errors while installing", async () => {
+      mockCheckForUpdates.mockResolvedValueOnce({
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
+      });
+      let resolveInstall: ((result: { currentVersion: string; latestVersion: string; updated: boolean; error?: string }) => void) | undefined;
+      mockInstallUpdate.mockReturnValueOnce(new Promise((resolve) => {
+        resolveInstall = resolve;
+      }));
+
+      renderModal();
+      await waitForSettingsModalReady();
+      await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+
+      const updateNow = await screen.findByRole("button", { name: "Update now" });
+      fireEvent.click(updateNow);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Updating…" })).toBeDisabled();
+      });
+      expect(screen.getByRole("button", { name: "Updating…" }).querySelector(".spinning")).not.toBeNull();
+
+      resolveInstall?.({ currentVersion: "1.0.0", latestVersion: "2.0.0", updated: false, error: "install failed" });
+
+      expect(await screen.findByText("Update failed: install failed")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Update now" })).not.toBeDisabled();
     });
 
     it("disables button while checking", async () => {
