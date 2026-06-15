@@ -165,4 +165,12 @@ describe("KTD10 — onLoad publishes the bundled bridge path (Route A)", () => {
     plugin.hooks?.onLoad?.(fakeCtx() as never);
     expect(process.env.FUSION_CLAUDE_ACP_BRIDGE).toBe("/custom/bridge/path");
   });
+
+  it("is idempotent — a second onLoad keeps the first published path and does not throw", () => {
+    delete process.env.FUSION_CLAUDE_ACP_BRIDGE;
+    plugin.hooks?.onLoad?.(fakeCtx() as never);
+    const first = process.env.FUSION_CLAUDE_ACP_BRIDGE;
+    expect(() => plugin.hooks?.onLoad?.(fakeCtx() as never)).not.toThrow();
+    expect(process.env.FUSION_CLAUDE_ACP_BRIDGE).toBe(first);
+  });
 });

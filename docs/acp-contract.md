@@ -229,3 +229,8 @@ pi-known tools is SAFE. Also validated: the bridged `claude` authenticates only
 with the richer env allow-list (HOME/PATH + USER/SHELL/LANG/XDG_*) that
 `streamViaAcp` forwards — a thin {HOME,PATH} env fails with "Not logged in".
 The Route A enablement gate is CLEARED. Harness: /tmp/acp-toolflow/verify2.mjs.
+
+### Route A architecture notes (2026-06-15, from review)
+
+- **Two parallel MCP-forwarding paths, by design.** U10 wires `mcpServers` through the engine `AgentRuntimeOptions` → ACP plugin adapter `newAcpSession` (for the engine-driven `acp` runtime). U11's `pi-claude-cli` provider does NOT consume that field — `streamViaAcp` drives its OWN inline ACP client and builds `mcpServers` locally via `buildAcpMcpServers` (KTD10: the provider speaks ACP directly via the published bridge path, never through the plugin adapter). The two intersect only at the shared schema-only MCP server shape. Do not "wire U10 into U11" — that would double-forward.
+- **Known residual: ACP-path token usage/cost reads zero.** `streamViaAcp` synthesizes pi events via `createEventBridge` from ACP `session/update`s, which carry no token-usage frames, so `output.usage` stays zero on the ACP path. Cost telemetry undercounts when the kill-switch is enabled. The U12 status surface should not treat zero-usage as a bug; wiring usage (if the bridge ever exposes it) is deferred.
