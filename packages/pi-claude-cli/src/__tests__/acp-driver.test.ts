@@ -5,6 +5,9 @@ import { PassThrough } from "node:stream";
 // Synthetic ACP session/update sequence the mocked prompt() will replay.
 let scriptedUpdates: Array<Record<string, unknown>> = [];
 
+// Driver validates the bridge path with existsSync — make the fake path "exist".
+vi.mock("node:fs", () => ({ existsSync: () => true }));
+
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => {
     const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
@@ -94,6 +97,26 @@ describe("streamViaAcp — ACP→pi translation (U11)", () => {
     // break-early: the post-tool text delta must not have been translated
     const deltas = eventsOf(stream).filter((e) => e.type === "text_delta").map((e) => e.delta);
     expect(deltas.join("")).not.toContain("SHOULD NOT APPEAR");
+  });
+
+  it("does NOT break early on an internal ToolSearch; breaks on the real fn_* tool (U9 sequence)", async () => {
+    // Claude emits ToolSearch (not pi-known) to load the deferred MCP tool FIRST,
+    // then the real mcp__custom-tools__fn_task_list. The old code aborted on
+    // ToolSearch; the gated code must wait for the real tool (P0 fix).
+    scriptedUpdates = [
+      { sessionUpdate: "tool_call", toolCallId: "ts1", _meta: { claudeCode: { toolName: "ToolSearch" } }, rawInput: { query: "x" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "found it, calling" } },
+      { sessionUpdate: "tool_call", toolCallId: "real", _meta: { claudeCode: { toolName: "mcp__custom-tools__fn_task_list" } }, rawInput: {} },
+    ];
+    const stream = streamViaAcp(MODEL, CTX, OPTS) as unknown as { _events: Array<Record<string, unknown>> };
+    await flush();
+    // The text AFTER ToolSearch must have been processed (we didn't abort on ToolSearch)
+    const deltas = eventsOf(stream).filter((e) => e.type === "text_delta").map((e) => e.delta);
+    expect(deltas.join("")).toContain("found it");
+    // And we broke on the real tool
+    expect(eventsOf(stream).some((e) => e.type === "toolcall_start")).toBe(true);
+    const done = eventsOf(stream).find((e) => e.type === "done");
+    expect(done!.reason).toBe("toolUse");
   });
 
   it("ends with done even when the turn produces no content", async () => {
