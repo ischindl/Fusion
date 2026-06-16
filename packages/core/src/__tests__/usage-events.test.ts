@@ -175,15 +175,18 @@ describe("usage_events", () => {
     expect(rows[0].agentId).toBe("A-chat");
   });
 
-  // Migration: seed a DB at the PREVIOUS schema version, run migrate, assert
-  // the table exists and SCHEMA_VERSION equals the highest migration target.
-  // Fresh-DB tests cannot catch the early-return bug this guards.
+  // Migration: seed a DB at the version JUST BEFORE usage_events was introduced
+  // (117 — usage_events is the v118 migration), run migrate, assert the table
+  // exists and SCHEMA_VERSION reaches the highest migration target. Pinned to
+  // 117 (not SCHEMA_VERSION-1) so it keeps exercising usage_events' own
+  // migration as later migrations are added. Fresh-DB tests cannot catch the
+  // migrate-loop early-return bug this guards.
   it("creates usage_events when migrating from the previous schema version", () => {
     db.exec("DROP INDEX IF EXISTS idxUsageEventsTs");
     db.exec("DROP INDEX IF EXISTS idxUsageEventsTaskId");
     db.exec("DROP INDEX IF EXISTS idxUsageEventsAgentId");
     db.exec("DROP TABLE IF EXISTS usage_events");
-    db.prepare("UPDATE __meta SET value = ? WHERE key = 'schemaVersion'").run(String(SCHEMA_VERSION - 1));
+    db.prepare("UPDATE __meta SET value = ? WHERE key = 'schemaVersion'").run("117");
 
     (db as unknown as { migrate: () => void }).migrate();
 

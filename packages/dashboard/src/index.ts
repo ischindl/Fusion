@@ -37,6 +37,23 @@ export { rateLimit, RATE_LIMITS, type RateLimitOptions } from "./rate-limit.js";
 export { GitHubPollingService, type GitHubPollingServiceOptions, type TaskWatchInput, type WatchedBadgeType } from "./github-poll.js";
 export { GitHubIssueCommentService, DEFAULT_COMMENT_TEMPLATE } from "./github-issue-comment.js";
 export { GitHubSourceIssueCloseService } from "./github-source-issue-close.js";
+export {
+  upsertKnowledgePage,
+  queryKnowledgePages,
+  getKnowledgePage,
+  countKnowledgePages,
+  refreshKnowledgeForTask,
+  renderTaskPage,
+  buildSearchText,
+  tokenizeQuery,
+  KNOWLEDGE_QUERY_DEFAULT_LIMIT,
+  KNOWLEDGE_QUERY_MAX_LIMIT,
+  type KnowledgePage,
+  type KnowledgePageInput,
+  type KnowledgeSourceKind,
+  type KnowledgeQueryOptions,
+} from "./knowledge-index.js";
+export { KnowledgeIndexRefreshService } from "./knowledge-index-refresh.js";
 export { GitHubTrackingCommentService, formatTrackingComment } from "./github-tracking-comments.js";
 export { GitHubTrackingStateService, decideIssueAction } from "./github-tracking-state.js";
 export { GitHubTrackingReconciler, RECONCILE_CONCURRENCY_LIMIT, RECONCILE_SCAN_LIMIT } from "./github-tracking-reconciler.js";

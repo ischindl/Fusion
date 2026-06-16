@@ -43,6 +43,7 @@ import { GitHubTrackingCommentService } from "../github-tracking-comments.js";
 import { GitHubTrackingStateService } from "../github-tracking-state.js";
 import { GitHubTrackingReconciler, RECONCILE_SCAN_LIMIT } from "../github-tracking-reconciler.js";
 import { GitHubSourceIssueCloseService } from "../github-source-issue-close.js";
+import { KnowledgeIndexRefreshService } from "../knowledge-index-refresh.js";
 import { githubRateLimiter } from "../github-poll.js";
 import * as projectStoreResolver from "../project-store-resolver.js";
 import { generatePrMetadata } from "../pr-metadata-generator.js";
@@ -2484,6 +2485,12 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
     const githubSourceIssueCloseService = new GitHubSourceIssueCloseService(store);
     githubSourceIssueCloseService.start();
     ctx.registerDispose(() => githubSourceIssueCloseService.stop());
+
+    // U14 — incremental knowledge-index refresh on task completion. Listens for
+    // task:moved → done and re-indexes just that task as a knowledge page.
+    const knowledgeIndexRefreshService = new KnowledgeIndexRefreshService(store);
+    knowledgeIndexRefreshService.start();
+    ctx.registerDispose(() => knowledgeIndexRefreshService.stop());
 
     const githubTrackingStateService = new GitHubTrackingStateService(store);
     const githubTrackingReconciler = new GitHubTrackingReconciler();

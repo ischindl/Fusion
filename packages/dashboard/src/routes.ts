@@ -169,6 +169,7 @@ import { registerModelRoutes } from "./routes/register-model-routes.js";
 import { registerCustomProviderRoutes } from "./routes/register-custom-provider-routes.js";
 import { registerUsageRoutes } from "./routes/register-usage-routes.js";
 import { registerCommandCenterRoutes } from "./routes/register-command-center-routes.js";
+import { registerKnowledgeRoutes } from "./routes/register-knowledge-routes.js";
 import { registerSignalRoutes } from "./routes/register-signal-routes.js";
 import { registerAuthRoutes } from "./routes/register-auth-routes.js";
 import { registerRuntimeProviderRoutes } from "./routes/register-runtime-provider-routes.js";
@@ -1994,6 +1995,11 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   // U9 — Command Center analytics + live snapshot endpoints. Thin adapters over
   // the core aggregators; inherit standard auth + getScopedStore project scoping.
   registerCommandCenterRoutes(routeContext);
+  // U14 — persistent knowledge index query + incremental-refresh endpoints.
+  // Inherit standard auth + getScopedStore project scoping (same as U9); the
+  // index holds sensitive repo/PR content so no endpoint is unauthenticated or
+  // cross-project readable.
+  registerKnowledgeRoutes(routeContext);
   // U11 — inbound external signal webhooks (Sentry/Datadog/PagerDuty/generic).
   // Each route HMAC-verifies against a per-provider secret; never an
   // unauthenticated task-creation endpoint.

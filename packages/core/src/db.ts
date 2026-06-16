@@ -162,7 +162,7 @@ export function isFts5CorruptionError(error: unknown): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 118;
+const SCHEMA_VERSION = 119;
 
 const TASKS_FTS_AUTOMERGE = 8;
 const TASKS_FTS_CRISISMERGE = 16;
@@ -1230,6 +1230,31 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS idxUsageEventsTs ON usage_events(ts);
 CREATE INDEX IF NOT EXISTS idxUsageEventsTaskId ON usage_events(taskId);
 CREATE INDEX IF NOT EXISTS idxUsageEventsAgentId ON usage_events(agentId);
+
+-- Persistent, incrementally-refreshed knowledge index (U14). One row per
+-- knowledge page (currently one page per completed task; PR-history pages
+-- share the same shape). Downstream agents query it through the dashboard's
+-- scoped knowledge-index endpoint. searchText is a denormalized lowercased
+-- concatenation of the page's title/summary/content + tags used for keyword
+-- LIKE matching, so the index works without requiring SQLite FTS5 (which is
+-- not available on every build -- see probeFts5 above). Refresh is per-source
+-- (upsert by sourceKey), never a full re-index, so unaffected pages keep their
+-- timestamps.
+CREATE TABLE IF NOT EXISTS knowledge_pages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sourceKind TEXT NOT NULL,
+  sourceId TEXT NOT NULL,
+  sourceKey TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT,
+  content TEXT NOT NULL,
+  tags TEXT,
+  searchText TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idxKnowledgePagesSourceKind ON knowledge_pages(sourceKind);
+CREATE INDEX IF NOT EXISTS idxKnowledgePagesUpdatedAt ON knowledge_pages(updatedAt);
 `;
 
 const TABLE_LEVEL_CONSTRAINT_PREFIXES = new Set([
@@ -4769,6 +4794,36 @@ export class Database {
         `);
         this.db.exec(`
           CREATE INDEX IF NOT EXISTS idxUsageEventsAgentId ON usage_events(agentId)
+        `);
+      });
+    }
+
+    // Migration 119: Persistent knowledge index (U14). One queryable page per
+    // completed task / PR-history entry, refreshed incrementally (upsert by
+    // sourceKey) on task completion. Mirrors the SCHEMA_SQL definition above so
+    // a fresh-from-SCHEMA_SQL DB and a migrated DB converge on the same table.
+    if (version < 119) {
+      this.applyMigration(119, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS knowledge_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sourceKind TEXT NOT NULL,
+            sourceId TEXT NOT NULL,
+            sourceKey TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            summary TEXT,
+            content TEXT NOT NULL,
+            tags TEXT,
+            searchText TEXT NOT NULL,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxKnowledgePagesSourceKind ON knowledge_pages(sourceKind)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxKnowledgePagesUpdatedAt ON knowledge_pages(updatedAt)
         `);
       });
     }
