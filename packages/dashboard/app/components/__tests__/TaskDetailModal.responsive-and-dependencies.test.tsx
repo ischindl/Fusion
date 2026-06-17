@@ -1,3 +1,7 @@
+/*
+FNXC:TaskDetailTabs 2026-06-17-08:20:
+FN-6532 made Chat the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Chat landing state.
+*/
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -147,6 +151,7 @@ describe("TaskDetailModal", () => {
     it("modal-actions contains Delete and Pause buttons for non-done tasks (via Actions dropdown)", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-progress" as Column })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -175,6 +180,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             githubTracking: {
               enabled: true,
@@ -212,6 +218,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -238,6 +245,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -262,6 +270,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask()}
           onClose={noop}
           onMoveTask={noopMove}
@@ -300,6 +309,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -361,6 +371,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask()}
           onClose={noop}
           onMoveTask={noopMove}
@@ -397,6 +408,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -433,6 +445,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask()}
           onClose={noop}
           onMoveTask={noopMove}
@@ -475,6 +488,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ githubTracking: { enabled: true, issue: { owner: "owner", repo: "repo", number: 42, url: "https://github.com/owner/repo/issues/42", createdAt: "2026-01-01T00:00:00.000Z" } } })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -504,6 +518,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "todo" as any })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -540,6 +555,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "done" as any })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -573,6 +589,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "done" as any })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -596,6 +613,7 @@ describe("TaskDetailModal", () => {
     it("in-review modal-actions contains Merge & Close and Back to In Progress buttons", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -625,6 +643,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -654,6 +673,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -700,6 +720,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -749,6 +770,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -795,6 +817,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             column: "in-review" as Column,
             prInfo: {
@@ -823,6 +846,7 @@ describe("TaskDetailModal", () => {
     it("shows linked PR number in detail metadata for in-review tasks", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column, prInfo: {
             url: "https://github.com/owner/repo/pull/42",
             number: 42,
@@ -847,6 +871,7 @@ describe("TaskDetailModal", () => {
     it("shows linked PR number in merge details for done tasks", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             column: "done" as Column,
             prInfo: {
@@ -877,6 +902,7 @@ describe("TaskDetailModal", () => {
     it("shows PR automation waiting label instead of Merge & Close when awaiting PR checks", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column, status: "awaiting-pr-checks", prInfo: {
             url: "https://github.com/owner/repo/pull/42",
             number: 42,
@@ -903,6 +929,7 @@ describe("TaskDetailModal", () => {
     it("shows Creating PR label while PR-first automation is creating a PR", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" as Column, status: "creating-pr" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -930,6 +957,7 @@ describe("TaskDetailModal", () => {
     function renderWithSearch(taskOverrides: Partial<TaskDetail> = {}) {
       return render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask(taskOverrides)}
           tasks={searchTasks}
           onClose={noop}
@@ -1024,6 +1052,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001", "FN-002"] })}
           tasks={allTasks}
           onClose={noop}
@@ -1058,6 +1087,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           tasks={allTasks}
           onClose={noop}
@@ -1077,6 +1107,7 @@ describe("TaskDetailModal", () => {
     it("renders dependency ID as label when no title or description available", () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           // No tasks prop - dependency not found
           onClose={noop}
@@ -1103,6 +1134,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           tasks={allTasks}
           onClose={noop}
@@ -1129,6 +1161,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           tasks={allTasks}
           onClose={noop}
@@ -1158,6 +1191,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           onOpenDetail={onOpenDetail}
           onClose={noop}
@@ -1186,6 +1220,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           onOpenDetail={onOpenDetail}
           onClose={noop}
@@ -1214,6 +1249,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ dependencies: ["FN-001"] })}
           onOpenDetail={onOpenDetail}
           onClose={noop}
@@ -1246,6 +1282,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={tasks[0]}
           tasks={tasks}
           onOpenDetail={noopOpenDetail}

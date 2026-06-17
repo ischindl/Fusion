@@ -1,3 +1,7 @@
+/*
+FNXC:TaskDetailTabs 2026-06-17-08:20:
+FN-6532 made Chat the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Chat landing state.
+*/
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -27,6 +31,7 @@ describe("TaskDetailModal", () => {
     render(
       <FileBrowserProvider openFile={openFile}>
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             column: "done",
             summary: "See `packages/dashboard/app/App.tsx:12` for context.",
@@ -59,6 +64,7 @@ describe("TaskDetailModal", () => {
     ] as const)("renders provenance text for %s", (sourceType, sourceAgentId, expectedText) => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ sourceType, sourceAgentId })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -78,6 +84,7 @@ describe("TaskDetailModal", () => {
     it("renders parent task link for refinement provenance", async () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ sourceType: "task_refine", sourceParentTaskId: "FN-001" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -100,6 +107,7 @@ describe("TaskDetailModal", () => {
     it("renders compact github issue link for github import provenance", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "github_import",
             sourceMetadata: { issueUrl: "https://github.com/owner/repo/issues/42" },
@@ -128,6 +136,7 @@ describe("TaskDetailModal", () => {
     it("falls back to 'Open issue' label for unparseable github import URL", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "github_import",
             sourceMetadata: { issueUrl: "https://example.com/something" },
@@ -151,6 +160,7 @@ describe("TaskDetailModal", () => {
     it("renders github import provenance with no issue URL as plain label", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "github_import",
             sourceMetadata: {},
@@ -171,6 +181,7 @@ describe("TaskDetailModal", () => {
     it("renders finding label for research provenance", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "research",
             sourceMetadata: {
@@ -195,6 +206,7 @@ describe("TaskDetailModal", () => {
     it("falls back to run id for research provenance context", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "research",
             sourceMetadata: { runId: "RR-456" },
@@ -216,6 +228,7 @@ describe("TaskDetailModal", () => {
     it.each(["unknown", undefined] as const)("omits provenance for %s source", (sourceType) => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ sourceType })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -232,6 +245,7 @@ describe("TaskDetailModal", () => {
     it("FN-3755 renders provenance before created-updated timestamps", () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ sourceType: "dashboard_ui" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -253,6 +267,7 @@ describe("TaskDetailModal", () => {
     it("keeps inline controls, provenance, and timestamps as direct detail-meta children", () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ sourceType: "task_refine", sourceParentTaskId: "FN-001" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -277,6 +292,7 @@ describe("TaskDetailModal", () => {
     it("keeps the optional PR link row in the same detail-meta row as provenance and timestamps", () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             sourceType: "dashboard_ui",
             prInfo: { number: 42, url: "https://github.com/owner/repo/pull/42" },
@@ -316,6 +332,7 @@ describe("TaskDetailModal", () => {
       it("renders compact relative timestamps for recent tasks", () => {
         render(
           <TaskDetailModal
+            initialTab="definition"
             task={makeTask({
               sourceType: "dashboard_ui",
               createdAt: "2026-05-09T12:00:00.000Z",
@@ -344,6 +361,7 @@ describe("TaskDetailModal", () => {
       it("renders short calendar date for older timestamps", () => {
         render(
           <TaskDetailModal
+            initialTab="definition"
             task={makeTask({
               sourceType: "dashboard_ui",
               createdAt: "2026-05-01T12:00:00.000Z",
@@ -368,6 +386,7 @@ describe("TaskDetailModal", () => {
   it("shows active file scope overlap blocker in Dependencies section", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER" })}
         tasks={[
           makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER" }),
@@ -389,6 +408,7 @@ describe("TaskDetailModal", () => {
   it("renders clear overlap blocker button only when overlapBlockedBy is present", () => {
     const { rerender } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -403,6 +423,7 @@ describe("TaskDetailModal", () => {
 
     rerender(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: undefined })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -423,6 +444,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER", status: "queued" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -451,6 +473,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER", status: "planning" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -478,6 +501,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-T", column: "todo", overlapBlockedBy: "FN-OVER", status: "queued" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -499,6 +523,7 @@ describe("TaskDetailModal", () => {
   it("shows overlap blockedBy summary in Blocking section", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ id: "FN-B", column: "in-progress" })}
         tasks={[
           makeTask({ id: "FN-B", column: "in-progress" }),
@@ -520,6 +545,7 @@ describe("TaskDetailModal", () => {
   it("renders modal wrapper structure and default close control", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask()}
         onClose={noop}
         onMoveTask={noopMove}
@@ -539,6 +565,7 @@ describe("TaskDetailModal", () => {
   it("renders mobile back control variant when requested", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask()}
         onClose={noop}
         onMoveTask={noopMove}
@@ -597,6 +624,7 @@ describe("TaskDetailModal", () => {
   it("renders markdown-body without detail-prompt class when prompt exists", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ prompt: "# Hello\n\nSome **bold** text" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -615,6 +643,7 @@ describe("TaskDetailModal", () => {
   it("strips the leading heading from prompt and renders remaining markdown", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ prompt: "# Hello\n\nSome **bold** text" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -633,6 +662,7 @@ describe("TaskDetailModal", () => {
   it("renders (no prompt) with detail-prompt class when prompt is absent", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ prompt: undefined })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -652,6 +682,7 @@ describe("TaskDetailModal", () => {
   it("does not render a PROMPT.md heading", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ prompt: "# Some prompt content" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -668,6 +699,7 @@ describe("TaskDetailModal", () => {
   it("renders Review and Comments tabs", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask()}
         onClose={noop}
         onMoveTask={noopMove}
@@ -685,6 +717,7 @@ describe("TaskDetailModal", () => {
   it("shows non-PR review shell message in Review tab", async () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ reviewState: { source: "reviewer-agent", items: [], addressing: [] } })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -733,6 +766,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ reviewState: { source: "pull-request", summary: { reviewDecision: "REVIEW_REQUIRED", reviewers: [], blockingReasons: [], checks: [] }, items: [], addressing: [] } })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -771,6 +805,7 @@ describe("TaskDetailModal", () => {
     });
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ reviewState: { source: "pull-request", summary: { reviewDecision: "CHANGES_REQUESTED", reviewers: [{ login: "octocat", state: "CHANGES_REQUESTED" }], blockingReasons: ["changes requested review is active"], checks: [] }, items: [], addressing: [] } })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -790,6 +825,7 @@ describe("TaskDetailModal", () => {
     it("keeps inline priority and execution controls aligned with shared sizing and gap", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "todo", priority: "high", executionMode: "fast" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -818,6 +854,7 @@ describe("TaskDetailModal", () => {
     it("renders standard mode as an unpressed toggle", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "triage", executionMode: "standard" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -837,6 +874,7 @@ describe("TaskDetailModal", () => {
     it("renders fast mode as a pressed toggle", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "todo", executionMode: "fast" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -870,6 +908,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({
           attachments: [
             {
@@ -904,6 +943,7 @@ describe("TaskDetailModal", () => {
   it("leaves attachment href/src URLs unchanged when no daemon token is present", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({
           attachments: [
             {
@@ -934,6 +974,7 @@ describe("TaskDetailModal", () => {
   it("renders Retry button when task status is 'failed' (in Actions dropdown)", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ status: "failed" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -955,6 +996,7 @@ describe("TaskDetailModal", () => {
   it("does NOT render Retry button when task status is not 'failed'", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ status: "executing" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -975,6 +1017,7 @@ describe("TaskDetailModal", () => {
   it("does NOT render Retry button when onRetryTask is not provided", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ status: "failed" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -992,6 +1035,7 @@ describe("TaskDetailModal", () => {
     it("shows exactly one Retry button when task is in-review AND failed (in Actions dropdown)", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "failed" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1014,6 +1058,7 @@ describe("TaskDetailModal", () => {
     it("shows exactly one Retry button when task is in-review AND stuck-killed (in Actions dropdown)", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "stuck-killed" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1036,6 +1081,7 @@ describe("TaskDetailModal", () => {
     it("shows Retry for a stranded planning triage task", () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "triage", status: "planning", stuckKillCount: 6 })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1060,6 +1106,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "failed" })}
           onClose={onClose}
           onMoveTask={noopMove}
@@ -1095,6 +1142,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "failed" })}
           onClose={onClose}
           onMoveTask={noopMove}
@@ -1134,6 +1182,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "failed" })}
           onClose={onClose}
           onMoveTask={noopMove}
@@ -1167,6 +1216,7 @@ describe("TaskDetailModal", () => {
     it("shows in-review split button with primary action and secondary move option", () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1194,6 +1244,7 @@ describe("TaskDetailModal", () => {
     it("in-review failed task shows both Retry action and secondary move option", async () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-review", status: "failed" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1223,6 +1274,7 @@ describe("TaskDetailModal", () => {
     it("split-button renders with chevron when multiple transitions exist", async () => {
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-progress" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1258,6 +1310,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-progress" })}
           onClose={noop}
           onMoveTask={onMoveTask}
@@ -1279,6 +1332,7 @@ describe("TaskDetailModal", () => {
     it("chevron dropdown includes only secondary transitions", async () => {
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({ column: "in-progress" })}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1306,6 +1360,7 @@ describe("TaskDetailModal", () => {
   it("shows description exactly once for a task without title", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({
           title: undefined,
           description: "Fix the login bug",
@@ -1335,6 +1390,7 @@ describe("TaskDetailModal", () => {
   it("shows the title in <h2> when task.title is set", () => {
     const { container } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({
           title: "Implement dark mode",
           description: "Add dark mode toggle to the settings page",
@@ -1365,6 +1421,7 @@ describe("TaskDetailModal", () => {
 
     const renderDetail = (taskOverrides: Parameters<typeof makeTask>[0] = {}) => render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask(taskOverrides)}
         onClose={noop}
         onMoveTask={noopMove}
@@ -1519,6 +1576,7 @@ describe("TaskDetailModal", () => {
       const triageDescription = "H".repeat(250);
       const { container, rerender } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             id: "FN-TODO",
             column: "todo",
@@ -1539,6 +1597,7 @@ describe("TaskDetailModal", () => {
 
       rerender(
         <TaskDetailModal
+          initialTab="definition"
           task={makeTask({
             id: "FN-TRIAGE",
             column: "triage",
@@ -1627,6 +1686,7 @@ describe("TaskDetailModal", () => {
     // With title
     const { container: withTitle } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ title: "Some title" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -1641,6 +1701,7 @@ describe("TaskDetailModal", () => {
     // Without title
     const { container: withoutTitle } = render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ title: undefined, description: "A description" })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -1688,6 +1749,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={task}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1733,6 +1795,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={task}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1767,6 +1830,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={detail}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1806,6 +1870,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={task}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1881,6 +1946,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={task}
           onClose={noop}
           onMoveTask={noopMove}
@@ -1955,6 +2021,7 @@ describe("TaskDetailModal", () => {
 
       const { container } = render(
         <TaskDetailModal
+          initialTab="definition"
           task={strippedTask}
           onClose={noop}
           onMoveTask={noopMove}
@@ -2004,6 +2071,7 @@ describe("TaskDetailModal", () => {
 
       render(
         <TaskDetailModal
+          initialTab="definition"
           task={task}
           onClose={noop}
           onMoveTask={noopMove}
@@ -2036,6 +2104,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
         tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
@@ -2058,6 +2127,7 @@ describe("TaskDetailModal", () => {
   it("hides near-duplicate banner once dismissed", () => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234", nearDuplicateDismissed: true } })}
         tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
@@ -2079,6 +2149,7 @@ describe("TaskDetailModal", () => {
   ])("hides near-duplicate decision banner when canonical is %s", (_label, canonical) => {
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
         tasks={canonical ? [canonical] : []}
         onClose={noop}
@@ -2101,6 +2172,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={makeTask({ sourceMetadata: { nearDuplicateOf: "FN-1234" } })}
         tasks={[makeTask({ id: "FN-1234" })]}
         onClose={noop}
@@ -2155,6 +2227,7 @@ describe("TaskDetailModal", () => {
 
     render(
       <TaskDetailModal
+        initialTab="definition"
         task={task}
         onClose={noop}
         onMoveTask={noopMove}

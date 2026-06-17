@@ -17,6 +17,10 @@ import {
 } from "./TaskDetailModal.test-helpers";
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 
+/*
+FNXC:TaskDetailTabs 2026-06-17-08:20:
+FN-6532 made Chat the default TaskDetailModal tab. Definition-tab regression coverage must prove both the no-`initialTab` Chat landing state and the explicit `initialTab="definition"` Definition surface for prompt, GitHub tracking, and dependency sections.
+*/
 setupTaskDetailModalHooks();
 
 describe("TaskDetailModal", () => {
@@ -986,6 +990,35 @@ describe("TaskDetailModal", () => {
       expect(screen.getByRole("button", { name: "Logs" })).toHaveClass("detail-tab-active");
       expect(screen.getByRole("button", { name: "Chat" })).not.toHaveClass("detail-tab-active");
       expect(container.querySelector(".detail-section--chat")).toBeNull();
+    });
+
+    it("FN-6574 renders Definition-only content when initialTab requests definition", () => {
+      const blocker = makeTask({ id: "FN-6574", title: "Definition task", prompt: "# Spec\n\nDefinition body unique text.", dependencies: ["FN-100"], githubTracking: { enabled: true } });
+      const dependency = makeTask({ id: "FN-100", title: "Dependency task" });
+      const dependent = makeTask({ id: "FN-200", title: "Dependent task", dependencies: ["FN-6574"] });
+      const { container } = render(
+        <TaskDetailModal
+          task={blocker}
+          tasks={[blocker, dependency, dependent]}
+          initialTab="definition"
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "Definition" })).toHaveClass("detail-tab-active");
+      expect(screen.getByRole("button", { name: "Chat" })).not.toHaveClass("detail-tab-active");
+      expect(container.querySelector(".detail-section--chat")).toBeNull();
+      expect(screen.getByText("Definition body unique text.")).toBeInTheDocument();
+      expect(screen.getByText("GitHub tracking")).toBeInTheDocument();
+      expect(screen.getByText("Dependencies")).toBeInTheDocument();
+      expect(screen.getByText("Blocking")).toBeInTheDocument();
+      expect(container).toHaveTextContent("FN-100");
+      expect(container).toHaveTextContent("FN-200");
     });
 
     it("FN-6347 applies chat modifiers only while the Chat tab is active", () => {
