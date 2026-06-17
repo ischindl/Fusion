@@ -77,6 +77,7 @@ export interface UseChatReturn {
     input: { agentId: string; title?: string; modelProvider?: string; modelId?: string },
   ) => Promise<ChatSessionInfo>;
   archiveSession: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
 
   // Message operations
@@ -797,6 +798,52 @@ export function useChat(
     [activeSession, projectId],
   );
 
+  /**
+   * FNXC:Chat 2026-06-16-22:01:
+   * Users can rename regular and quick chat sessions through existing PATCH title plumbing; update the list and active header optimistically so every visible session title reflects the new value immediately while rolling back on API failure.
+   */
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      const normalizedTitle = title.trim() || null;
+      const previousSessions = sessions;
+      const previousActiveSession = activeSession;
+
+      setSessions((prev) => prev.map((session) => (session.id === id ? { ...session, title: normalizedTitle } : session)));
+      setActiveSession((prev) => (prev?.id === id ? { ...prev, title: normalizedTitle } : prev));
+
+      try {
+        const data = await updateChatSession(id, { title: normalizedTitle }, projectId);
+        const updatedSession = data.session;
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === id
+              ? {
+                  ...session,
+                  title: updatedSession.title,
+                  updatedAt: updatedSession.updatedAt,
+                }
+              : session,
+          ),
+        );
+        setActiveSession((prev) =>
+          prev?.id === id
+            ? {
+                ...prev,
+                title: updatedSession.title,
+                updatedAt: updatedSession.updatedAt,
+              }
+            : prev,
+        );
+      } catch (error) {
+        setSessions(previousSessions);
+        setActiveSession(previousActiveSession);
+        addToast?.("Failed to rename conversation", "error");
+        throw error;
+      }
+    },
+    [activeSession, addToast, projectId, sessions],
+  );
+
   // Delete a session
   const deleteSession = useCallback(
     async (id: string) => {
@@ -1320,6 +1367,7 @@ export function useChat(
     selectSession,
     createSession,
     archiveSession,
+    renameSession,
     deleteSession,
     sendMessage,
     stopStreaming,

@@ -85,6 +85,16 @@ function makeMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id" | 
   };
 }
 
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 const setDocumentVisibilityState = (state: DocumentVisibilityState) => {
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
@@ -749,6 +759,104 @@ describe("useChat", () => {
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(0);
     });
+  });
+
+  it("renames a session optimistically, trims the API title, and updates the active header state", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: "Old title" });
+    const renamedSession = makeSession({
+      id: "session-001",
+      agentId: "agent-001",
+      title: "New title",
+      updatedAt: "2026-04-09T00:00:00.000Z",
+    });
+    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
+
+    const { result } = renderHook(() => useChat("proj-123"));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    act(() => {
+      result.current.selectSession("session-001", session);
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+
+    await act(async () => {
+      void result.current.renameSession("session-001", "  New title  ");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: "New title" }, "proj-123");
+    expect(result.current.sessions[0]?.title).toBe("New title");
+    expect(result.current.activeSession?.title).toBe("New title");
+
+    await act(async () => {
+      deferred.resolve({ session: renamedSession });
+      await deferred.promise;
+    });
+
+    expect(result.current.sessions[0]?.updatedAt).toBe("2026-04-09T00:00:00.000Z");
+    expect(result.current.activeSession?.updatedAt).toBe("2026-04-09T00:00:00.000Z");
+  });
+
+  it("renames an untitled session to a named title optimistically", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: null });
+    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
+
+    const { result } = renderHook(() => useChat("proj-123"));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    act(() => {
+      result.current.selectSession("session-001", session);
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.title).toBeNull());
+
+    await act(async () => {
+      void result.current.renameSession("session-001", "Named title");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: "Named title" }, "proj-123");
+    expect(result.current.sessions[0]?.title).toBe("Named title");
+    expect(result.current.activeSession?.title).toBe("Named title");
+
+    await act(async () => {
+      deferred.resolve({ session: makeSession({ ...session, title: "Named title" }) });
+      await deferred.promise;
+    });
+  });
+
+  it("renames a session to Untitled for whitespace and rolls back with a toast on failure", async () => {
+    const addToast = vi.fn();
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: "Keep me" });
+    mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockUpdateChatSession.mockRejectedValueOnce(new Error("rename failed"));
+
+    const { result } = renderHook(() => useChat("proj-123", addToast));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    act(() => {
+      result.current.selectSession("session-001", session);
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.title).toBe("Keep me"));
+
+    await act(async () => {
+      await expect(result.current.renameSession("session-001", "   ")).rejects.toThrow("rename failed");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: null }, "proj-123");
+    expect(result.current.sessions[0]?.title).toBe("Keep me");
+    expect(result.current.activeSession?.title).toBe("Keep me");
+    expect(addToast).toHaveBeenCalledWith("Failed to rename conversation", "error");
   });
 
   it("deletes a session", async () => {

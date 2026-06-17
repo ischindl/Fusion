@@ -239,6 +239,7 @@ Chat view provides project-scoped conversations with agents.
 - Chat message lists now track near-bottom scroll state: while you are reading older messages, live streaming/new replies do not force-scroll; a **Latest** jump control appears until you return to the tail.
 - On mobile direct-chat threads, entering a thread and restoring Chat after tab/page visibility returns re-anchors to the newest message (`scrollTop = scrollHeight`) so the view always opens at the live tail.
 - On mobile direct-chat threads, tapping the active title/identity in the thread header opens a lightweight conversation dropdown so you can switch to another direct session without backing out to the sidebar list first; long conversation titles now stay readable in the dropdown via wrapped option text and taller touch-friendly rows.
+- Direct chat sessions can be renamed from the desktop conversation context menu and from the mobile session switcher; blank rename submissions clear the custom title so the default session label is shown again.
 - On mobile (`max-width: 768px`), chat bubbles are slightly wider in full Chat for improved readability while preserving header/composer gutters.
 - Full Chat tool-call summaries now use a denser mobile layout: grouped and single-call collapsed rows keep icon + label + status on one line (Quick Chat-style scanability) while expanded details remain unchanged.
 - Assistant question tool calls now render as a shared in-chat response card instead of a generic tool-call disclosure. The card supports select, multi-select, text, and yes/no prompts, sends the formatted answer back into the same direct or room thread, and renders historical answered questions read-only.
@@ -284,6 +285,7 @@ Quick Chat is an optional floating panel for fast, project-scoped assistant conv
 - Uses the same model/provider infrastructure as full Chat view
 - On small screens, compact tool-call summaries in the floating panel intentionally stay single-line (count + tool names + status) to preserve message density
 - The panel header uses a session-first flow: the main dropdown lists persisted sessions (preferring `session.title`, then falling back to deterministic `Session N` labels)
+- Quick Chat sessions can be renamed from the session dropdown, and the active title is shown in the header so custom names remain visible after the dropdown closes.
 - Selecting a session from that dropdown resumes the persisted conversation; this keeps `switchSession()` resume-oriented rather than forcing a new thread
 - Entering `/new` or `/clear` (exact match after trimming) in the Quick Chat composer clears the active thread target: direct/model targets use `startFreshSession(...)`, while room targets call `rooms.clearRoom(activeRoom.id)`.
 - The `+` action opens an inline new-session chooser (inside the panel, not a modal) with `Model` selected by default and optional switch to `Agent`

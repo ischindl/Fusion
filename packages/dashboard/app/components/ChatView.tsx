@@ -11,6 +11,7 @@ import {
   Search,
   Trash2,
   Archive,
+  Pencil,
   ChevronLeft,
   Bot,
   Square,
@@ -1009,6 +1010,7 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     selectSession,
     createSession,
     archiveSession,
+    renameSession,
     deleteSession,
     sendMessage,
     stopStreaming,
@@ -1048,6 +1050,8 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     return getPersistedChatDraft(initialDraftKey);
   });
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+  const [renameDialog, setRenameDialog] = useState<{ sessionId: string; title: string } | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmDeleteRoomId, setConfirmDeleteRoomId] = useState<string | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -2466,6 +2470,33 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
     [archiveSession, addToast],
   );
 
+  const openRenameDialog = useCallback(
+    (id: string) => {
+      const session = filteredSessions.find((item) => item.id === id) ?? (activeSession?.id === id ? activeSession : null);
+      setContextMenu(null);
+      setMobileSessionMenuOpen(false);
+      setRenameTitle(session?.title ?? "");
+      setRenameDialog({ sessionId: id, title: session?.title ?? "" });
+    },
+    [activeSession, filteredSessions],
+  );
+
+  /**
+   * FNXC:Chat 2026-06-16-22:08:
+   * Regular chat exposes rename from the desktop context menu and mobile session switcher; saving delegates to the shared hook so the sidebar list and active thread header update from one optimistic state path.
+   */
+  const handleRename = useCallback(async () => {
+    if (!renameDialog) return;
+    try {
+      await renameSession(renameDialog.sessionId, renameTitle);
+      setRenameDialog(null);
+      setRenameTitle("");
+      addToast(t("chat.conversationRenamed", "Conversation renamed"), "success");
+    } catch {
+      // useChat owns rollback and error toast so both regular-chat rename surfaces share failure behavior.
+    }
+  }, [addToast, renameDialog, renameSession, renameTitle, t]);
+
   // Handle delete
   const handleDelete = useCallback(
     async (id: string) => {
@@ -3358,6 +3389,13 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
           onClick={(e) => e.stopPropagation()}
         >
           <button
+            onClick={() => openRenameDialog(contextMenu.sessionId)}
+            data-testid="chat-context-rename"
+          >
+            <Pencil size={14} />
+            {t("chat.rename", "Rename")}
+          </button>
+          <button
             onClick={() => handleArchive(contextMenu.sessionId)}
             data-testid="chat-context-archive"
           >
@@ -3374,6 +3412,49 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
             <Trash2 size={14} />
             {t("chat.delete", "Delete")}
           </button>
+        </div>
+      )}
+
+      {/* Rename Dialog */}
+      {renameDialog && (
+        <div className="chat-new-dialog-backdrop chat-view-dialog-backdrop" onClick={() => setRenameDialog(null)}>
+          <div className="chat-new-dialog chat-view-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("chat.renameConversationTitle", "Rename Conversation")}</h3>
+            <p className="chat-view-delete-dialog-copy">
+              {t("chat.renameConversationBody", "Choose a new name for this conversation. Leave it blank to show Untitled.")}
+            </p>
+            <label className="chat-rename-label" htmlFor="chat-rename-input">
+              {t("chat.conversationName", "Conversation name")}
+            </label>
+            <input
+              id="chat-rename-input"
+              className="input chat-rename-input"
+              type="text"
+              value={renameTitle}
+              placeholder={t("chat.renamePlaceholder", "Untitled")}
+              data-testid="chat-rename-input"
+              onChange={(event) => setRenameTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleRename();
+                }
+              }}
+              autoFocus
+            />
+            <div className="chat-new-dialog-actions">
+              <button className="btn btn-sm" onClick={() => setRenameDialog(null)}>
+                {t("chat.cancel", "Cancel")}
+              </button>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => void handleRename()}
+                data-testid="chat-rename-save"
+              >
+                {t("chat.save", "Save")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3650,16 +3731,30 @@ export function ChatView({ projectId, addToast, experimentalFeatures }: ChatView
                   {mobileSessionMenuOpen && (
                     <div className="chat-mobile-session-dropdown" role="menu" data-testid="chat-mobile-session-dropdown">
                       {filteredSessions.map((session) => (
-                        <button
+                        <div
                           key={session.id}
-                          type="button"
-                          role="menuitem"
-                          className={`chat-mobile-session-option${activeSession?.id === session.id ? " chat-mobile-session-option--active" : ""}`}
-                          data-testid={`chat-mobile-session-option-${session.id}`}
-                          onClick={() => handleSessionClick(session.id)}
+                          className={`chat-mobile-session-option-row${activeSession?.id === session.id ? " chat-mobile-session-option-row--active" : ""}`}
+                          role="none"
                         >
-                          <span className="chat-mobile-session-option-title">{session.title || t("chat.untitledSession", "Untitled")}</span>
-                        </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={`chat-mobile-session-option${activeSession?.id === session.id ? " chat-mobile-session-option--active" : ""}`}
+                            data-testid={`chat-mobile-session-option-${session.id}`}
+                            onClick={() => handleSessionClick(session.id)}
+                          >
+                            <span className="chat-mobile-session-option-title">{session.title || t("chat.untitledSession", "Untitled")}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-icon chat-mobile-session-rename"
+                            data-testid={`chat-mobile-session-rename-${session.id}`}
+                            aria-label={t("chat.renameConversationAria", "Rename conversation {{title}}", { title: session.title || t("chat.untitledSession", "Untitled") })}
+                            onClick={() => openRenameDialog(session.id)}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   )}

@@ -12,6 +12,7 @@ vi.mock("../../api", () => ({
   fetchChatSession: vi.fn(),
   createChatSession: vi.fn(),
   fetchChatMessages: vi.fn(),
+  updateChatSession: vi.fn(),
   streamChatResponse: vi.fn(),
   attachChatStream: vi.fn(),
   cancelChatResponse: vi.fn(),
@@ -22,6 +23,7 @@ const mockFetchChatSessions = vi.mocked(apiModule.fetchChatSessions);
 const mockFetchChatSession = vi.mocked(apiModule.fetchChatSession);
 const mockCreateChatSession = vi.mocked(apiModule.createChatSession);
 const mockFetchChatMessages = vi.mocked(apiModule.fetchChatMessages);
+const mockUpdateChatSession = vi.mocked(apiModule.updateChatSession);
 const mockStreamChatResponse = vi.mocked(apiModule.streamChatResponse);
 const mockAttachChatStream = vi.mocked(apiModule.attachChatStream);
 const mockCancelChatResponse = vi.mocked(apiModule.cancelChatResponse);
@@ -38,6 +40,16 @@ function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | 
     createdAt: overrides.createdAt ?? new Date().toISOString(),
     updatedAt: overrides.updatedAt ?? new Date().toISOString(),
   };
+}
+
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function makeMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id" | "sessionId" | "role" | "content">): ChatMessage {
@@ -73,6 +85,9 @@ describe("useQuickChat", () => {
     mockFetchChatSession.mockResolvedValue({
       session: { ...makeSession({ id: "session-001", agentId: "agent-001" }), isGenerating: false },
     });
+    mockUpdateChatSession.mockResolvedValue({
+      session: makeSession({ id: "session-001", agentId: "agent-001", title: "Renamed" }),
+    });
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
     mockAttachChatStream.mockReturnValue({ close: vi.fn(), isConnected: () => true });
     mockCancelChatResponse.mockResolvedValue({ success: true });
@@ -81,6 +96,100 @@ describe("useQuickChat", () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+  });
+
+  it("renames the active quick chat session optimistically and trims the API title", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: "Old quick title" });
+    const renamedSession = makeSession({
+      id: "session-001",
+      agentId: "agent-001",
+      title: "New quick title",
+      updatedAt: "2026-04-09T00:00:00.000Z",
+    });
+    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    mockFetchResumeChatSession.mockResolvedValue({ session });
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
+
+    const { result } = renderHook(() => useQuickChat("proj-123"));
+
+    await act(async () => {
+      await result.current.refreshSessions();
+      await result.current.switchSession("agent-001");
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.id).toBe("session-001"));
+
+    await act(async () => {
+      void result.current.renameSession("session-001", "  New quick title  ");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: "New quick title" }, "proj-123");
+    expect(result.current.sessions.find((item) => item.id === "session-001")?.title).toBe("New quick title");
+    expect(result.current.activeSession?.title).toBe("New quick title");
+
+    await act(async () => {
+      deferred.resolve({ session: renamedSession });
+      await deferred.promise;
+    });
+
+    expect(result.current.activeSession?.updatedAt).toBe("2026-04-09T00:00:00.000Z");
+  });
+
+  it("renames an untitled quick chat session to a named title optimistically", async () => {
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: null });
+    const deferred = createDeferredPromise<{ session: ChatSession }>();
+    mockFetchResumeChatSession.mockResolvedValue({ session });
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockUpdateChatSession.mockReturnValueOnce(deferred.promise);
+
+    const { result } = renderHook(() => useQuickChat("proj-123"));
+
+    await act(async () => {
+      await result.current.refreshSessions();
+      await result.current.switchSession("agent-001");
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.title).toBeNull());
+
+    await act(async () => {
+      void result.current.renameSession("session-001", "Named quick title");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: "Named quick title" }, "proj-123");
+    expect(result.current.sessions.find((item) => item.id === "session-001")?.title).toBe("Named quick title");
+    expect(result.current.activeSession?.title).toBe("Named quick title");
+
+    await act(async () => {
+      deferred.resolve({ session: makeSession({ ...session, title: "Named quick title" }) });
+      await deferred.promise;
+    });
+  });
+
+  it("renames a quick chat session to Untitled for whitespace and rolls back with a toast on failure", async () => {
+    const addToast = vi.fn();
+    const session = makeSession({ id: "session-001", agentId: "agent-001", title: "Keep quick title" });
+    mockFetchResumeChatSession.mockResolvedValue({ session });
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockUpdateChatSession.mockRejectedValueOnce(new Error("rename failed"));
+
+    const { result } = renderHook(() => useQuickChat("proj-123", addToast));
+
+    await act(async () => {
+      await result.current.refreshSessions();
+      await result.current.switchSession("agent-001");
+    });
+
+    await waitFor(() => expect(result.current.activeSession?.title).toBe("Keep quick title"));
+
+    await act(async () => {
+      await expect(result.current.renameSession("session-001", "   ")).rejects.toThrow("rename failed");
+    });
+
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-001", { title: null }, "proj-123");
+    expect(result.current.sessions.find((item) => item.id === "session-001")?.title).toBe("Keep quick title");
+    expect(result.current.activeSession?.title).toBe("Keep quick title");
+    expect(addToast).toHaveBeenCalledWith("Failed to rename conversation", "error");
   });
 
   it("queues first send made before session init completes and streams once ready", async () => {

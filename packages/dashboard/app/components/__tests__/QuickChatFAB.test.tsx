@@ -19,6 +19,7 @@ vi.mock("../../api", () => ({
   fetchChatSessions: vi.fn(),
   createChatSession: vi.fn(),
   fetchChatMessages: vi.fn(),
+  updateChatSession: vi.fn(),
   streamChatResponse: vi.fn(),
   cancelChatResponse: vi.fn(),
   fetchModels: vi.fn(),
@@ -46,6 +47,7 @@ const mockFetchResumeChatSession = vi.mocked(apiModule.fetchResumeChatSession);
 const mockFetchChatSessions = vi.mocked(apiModule.fetchChatSessions);
 const mockCreateChatSession = vi.mocked(apiModule.createChatSession);
 const mockFetchChatMessages = vi.mocked(apiModule.fetchChatMessages);
+const mockUpdateChatSession = vi.mocked(apiModule.updateChatSession);
 const mockFetchModels = vi.mocked(apiModule.fetchModels);
 const mockFetchDiscoveredSkills = vi.mocked(apiModule.fetchDiscoveredSkills);
 const mockStreamChatResponse = vi.mocked(apiModule.streamChatResponse);
@@ -188,6 +190,7 @@ describe("QuickChatFAB session-first UX", () => {
     mockFetchChatMessages.mockResolvedValue({ messages: [] });
     mockFetchChatSessions.mockResolvedValue({ sessions: [modelSession, agentSession] });
     mockCreateChatSession.mockResolvedValue({ session: { ...modelSession, id: "session-new" } });
+    mockUpdateChatSession.mockResolvedValue({ session: { ...modelSession, title: "Renamed model thread" } });
     mockCancelChatResponse.mockResolvedValue({ success: true });
     mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
       handlers.onDone?.({ messageId: "msg-stream" });
@@ -282,6 +285,28 @@ describe("QuickChatFAB session-first UX", () => {
     fireEvent.click(screen.getByTestId("quick-chat-session-dropdown-trigger"));
     expect(screen.getByTestId("quick-chat-session-option-session-model")).toHaveClass("quick-chat-session-option--active");
     expect(screen.getByTestId("quick-chat-session-option-session-agent")).toBeInTheDocument();
+  });
+
+  it("renames a quick chat session from the dropdown and updates the panel title", async () => {
+    mockUpdateChatSession.mockResolvedValueOnce({ session: { ...modelSession, title: "Renamed model thread" } });
+
+    render(<QuickChatFAB addToast={vi.fn()} projectId="proj-1" />);
+    fireEvent.click(screen.getByTestId("quick-chat-fab"));
+
+    expect(await screen.findByTestId("quick-chat-active-session-title")).toHaveTextContent("Model thread");
+    fireEvent.click(screen.getByTestId("quick-chat-session-dropdown-trigger"));
+    expect(screen.getByTestId("quick-chat-session-rename-session-model")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("quick-chat-session-rename-session-model"));
+
+    const input = screen.getByTestId("quick-chat-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("Model thread");
+    fireEvent.change(input, { target: { value: "Renamed model thread" } });
+    fireEvent.click(screen.getByTestId("quick-chat-rename-save"));
+
+    await waitFor(() => {
+      expect(mockUpdateChatSession).toHaveBeenCalledWith("session-model", { title: "Renamed model thread" }, "proj-1");
+      expect(screen.getByTestId("quick-chat-active-session-title")).toHaveTextContent("Renamed model thread");
+    });
   });
 
   it("renders unread dots for unread sessions and hides active session dot", async () => {

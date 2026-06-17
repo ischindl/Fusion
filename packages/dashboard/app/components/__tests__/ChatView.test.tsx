@@ -56,6 +56,7 @@ vi.mock("lucide-react", async (importOriginal) => {
     Search: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-search"} {...props} />,
     Trash2: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-trash"} {...props} />,
     Archive: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-archive"} {...props} />,
+    Pencil: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-pencil"} {...props} />,
     ChevronLeft: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-chevron-left"} {...props} />,
     Bot: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-bot"} {...props} />,
     Square: ({ "data-testid": testId, ...props }: any) => <svg data-testid={testId || "icon-square"} {...props} />,
@@ -137,6 +138,7 @@ const defaultChatState: UseChatReturn = {
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ id: "session-new", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo),
   archiveSession: vi.fn(),
+  renameSession: vi.fn(),
   deleteSession: vi.fn(),
   sendMessage: vi.fn(),
   stopStreaming: vi.fn(),
@@ -2875,6 +2877,112 @@ describe("Chat Session Delete Button", () => {
     await userEvent.click(deleteButton);
 
     expect(selectSession).not.toHaveBeenCalled();
+  });
+
+  it("renames from the desktop context menu with the current title prefilled", async () => {
+    const renameSession = vi.fn().mockResolvedValue(undefined);
+    const renamedSession: ChatSessionInfo = { id: "session-001", agentId: "agent-001", status: "active", title: "Renamed Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+    setupMockChat({
+      activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+      sessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
+      filteredSessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Test Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
+      renameSession,
+    });
+
+    const view = await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    fireEvent.contextMenu(screen.getByTestId("chat-session-session-001"));
+    expect(screen.getByTestId("chat-context-rename")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("chat-context-rename"));
+
+    const input = screen.getByTestId("chat-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("Test Chat");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Renamed Chat");
+    await userEvent.click(screen.getByTestId("chat-rename-save"));
+
+    expect(renameSession).toHaveBeenCalledWith("session-001", "Renamed Chat");
+
+    setupMockChat({
+      activeSession: renamedSession,
+      sessions: [renamedSession],
+      filteredSessions: [renamedSession],
+      renameSession,
+    });
+    await act(async () => {
+      view.rerender(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    });
+
+    expect(screen.getByTestId("chat-session-session-001")).toHaveTextContent("Renamed Chat");
+    const headerTitle = document.querySelector(".chat-thread-header-title") as HTMLElement | null;
+    expect(headerTitle).toHaveTextContent("Renamed Chat");
+  });
+
+  it("prefills rename as empty for an untitled session and names it", async () => {
+    const renameSession = vi.fn().mockResolvedValue(undefined);
+    const untitledSession: ChatSessionInfo = { id: "session-001", agentId: "agent-001", status: "active", title: null, createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+    setupMockChat({
+      activeSession: untitledSession,
+      sessions: [untitledSession],
+      filteredSessions: [untitledSession],
+      renameSession,
+    });
+
+    await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    fireEvent.contextMenu(screen.getByTestId("chat-session-session-001"));
+    await userEvent.click(screen.getByTestId("chat-context-rename"));
+
+    const input = screen.getByTestId("chat-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("");
+    await userEvent.type(input, "Named from Untitled");
+    await userEvent.click(screen.getByTestId("chat-rename-save"));
+
+    expect(renameSession).toHaveBeenCalledWith("session-001", "Named from Untitled");
+  });
+
+  it("renames from the mobile session switcher and preserves the active header title surface", async () => {
+    const restoreMatchMedia = mockViewportMode("mobile");
+    const renameSession = vi.fn().mockResolvedValue(undefined);
+    try {
+      setupMockChat({
+        activeSession: { id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" },
+        sessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
+        filteredSessions: [{ id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Chat", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }],
+        renameSession,
+      });
+
+      const view = await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+      expect(screen.getByTestId("chat-mobile-session-trigger")).toHaveTextContent("Mobile Chat");
+      await userEvent.click(screen.getByTestId("chat-mobile-session-trigger"));
+      await userEvent.click(screen.getByTestId("chat-mobile-session-rename-session-001"));
+
+      const input = screen.getByTestId("chat-rename-input") as HTMLInputElement;
+      expect(input.value).toBe("Mobile Chat");
+      await userEvent.clear(input);
+      await userEvent.type(input, "Mobile Renamed");
+      await userEvent.click(screen.getByTestId("chat-rename-save"));
+
+      expect(renameSession).toHaveBeenCalledWith("session-001", "Mobile Renamed");
+
+      const renamedSession: ChatSessionInfo = { id: "session-001", agentId: "agent-001", status: "active", title: "Mobile Renamed", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" };
+      setupMockChat({
+        activeSession: renamedSession,
+        sessions: [renamedSession],
+        filteredSessions: [renamedSession],
+        renameSession,
+      });
+      await act(async () => {
+        view.rerender(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+      });
+
+      expect(screen.getByTestId("chat-mobile-session-trigger")).toHaveTextContent("Mobile Renamed");
+      const headerTitle = document.querySelector(".chat-thread-header-title") as HTMLElement | null;
+      expect(headerTitle).toHaveTextContent("Mobile Renamed");
+    } finally {
+      restoreMatchMedia.mockRestore();
+    }
   });
 
   it("confirming delete calls deleteSession", async () => {

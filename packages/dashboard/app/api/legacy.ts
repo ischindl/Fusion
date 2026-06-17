@@ -9485,7 +9485,7 @@ export function fetchChatSession(id: string, projectId?: string): Promise<ChatSe
 /** Update a chat session (title, status) */
 export function updateChatSession(
   id: string,
-  updates: { title?: string; status?: string },
+  updates: { title?: string | null; status?: string },
   projectId?: string,
 ): Promise<ChatSessionResponse> {
   return api<ChatSessionResponse>(withProjectId(`/chat/sessions/${encodeURIComponent(id)}`, projectId), {

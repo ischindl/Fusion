@@ -573,6 +573,17 @@
   overflow-y: auto;
 }
 
+/*
+FNXC:Chat 2026-06-16-22:12:
+Mobile chat session switching needs a dedicated rename tap target beside each session without nesting buttons, so the row owns layout while the title and rename controls remain independently keyboard accessible.
+*/
+.chat-mobile-session-option-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+
 .chat-mobile-session-option {
   width: 100%;
   display: flex;
@@ -586,6 +597,17 @@
   text-align: left;
   padding: var(--space-sm) var(--space-md);
   line-height: normal;
+}
+
+.chat-mobile-session-rename {
+  flex-shrink: 0;
+  align-self: stretch;
+  color: var(--text-muted);
+}
+
+.chat-mobile-session-rename:hover {
+  color: var(--text);
+  background: var(--card-hover);
 }
 
 .chat-mobile-session-option:hover {
@@ -611,6 +633,28 @@
 
 .chat-thread-header-new-chat {
   flex-shrink: 0;
+}
+
+.chat-rename-label {
+  display: block;
+  margin-bottom: var(--space-xs);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.chat-rename-input {
+  width: 100%;
+  margin-bottom: var(--space-md);
+}
+
+@media (max-width: 768px) {
+  .chat-mobile-session-option-row {
+    align-items: stretch;
+  }
+
+  .chat-mobile-session-rename {
+    min-width: calc(var(--space-lg) * 2.25);
+  }
 }
 
 /* Single thread-wide markdown / plain-text toggle, anchored to the right of

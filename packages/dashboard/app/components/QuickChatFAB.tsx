@@ -15,7 +15,7 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import { ChevronDown, Eye, EyeOff, Hash, MessageSquare, Paperclip, Plus, Send, Square, Wrench, X } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Hash, MessageSquare, Paperclip, Pencil, Plus, Send, Square, Wrench, X } from "lucide-react";
 import { attachmentBaseUrlForRoom, type Agent, type ModelInfo } from "../api";
 import type { DiscoveredSkill } from "@fusion/dashboard";
 import { CustomModelDropdown } from "./CustomModelDropdown";
@@ -1001,6 +1001,8 @@ export function QuickChatFAB({
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [newSessionChooserOpen, setNewSessionChooserOpen] = useState(false);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [renameDialog, setRenameDialog] = useState<{ sessionId: string; title: string } | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
   const [newSessionMode, setNewSessionMode] = useState<"agent" | "model">("model");
   const [newSessionAgentId, setNewSessionAgentId] = useState<string>("");
   const [newSessionModel, setNewSessionModel] = useState<string>("");
@@ -1094,6 +1096,7 @@ export function QuickChatFAB({
     selectSession,
     startModelChat,
     startFreshSession,
+    renameSession,
     refreshSessions,
     skipNextSessionInitRef,
   } = useQuickChat(projectId, addToast);
@@ -1939,6 +1942,32 @@ export function QuickChatFAB({
     setSessionMenuOpen(false);
   }, [markRead, roomThreadActive, roomsState, selectSession, sessions]);
 
+  const openRenameDialog = useCallback(
+    (sessionId: string) => {
+      const selectedSession = sessions.find((session) => session.id === sessionId) ?? (activeSession?.id === sessionId ? activeSession : null);
+      setRenameTitle(selectedSession?.title ?? "");
+      setRenameDialog({ sessionId, title: selectedSession?.title ?? "" });
+      setSessionMenuOpen(false);
+    },
+    [activeSession, sessions],
+  );
+
+  /**
+   * FNXC:Chat 2026-06-16-22:24:
+   * Quick chat session rows need an inline rename affordance that preserves unread-dot layout and updates the active panel title through the hook's optimistic session-title state.
+   */
+  const handleRenameSession = useCallback(async () => {
+    if (!renameDialog) return;
+    try {
+      await renameSession(renameDialog.sessionId, renameTitle);
+      setRenameDialog(null);
+      setRenameTitle("");
+      addToast(t("chat.conversationRenamed", "Conversation renamed"), "success");
+    } catch {
+      // The hook rolls back and reports the failure so regular and quick chat share error behavior.
+    }
+  }, [addToast, renameDialog, renameSession, renameTitle, t]);
+
   const handleRoomSwitch = useCallback((roomId: string) => {
     const selectedRoom = roomsState.rooms.find((room) => room.id === roomId);
     markRead("room", roomId, selectedRoom?.updatedAt);
@@ -2759,6 +2788,11 @@ export function QuickChatFAB({
           <div className="quick-chat-panel-header">
             <div className="quick-chat-panel-title-wrap">
               <h3>{t("chat.quickChatTitle", "Quick Chat")}</h3>
+              {!roomThreadActive && activeSession ? (
+                <span className="quick-chat-session-title-tag" data-testid="quick-chat-active-session-title" title={activeSessionLabel}>
+                  {activeSessionLabel}
+                </span>
+              ) : null}
               {roomThreadActive && roomsState.activeRoom ? (
                 <span className="quick-chat-model-tag" data-testid="quick-chat-room-tag" title={`#${roomsState.activeRoom.name}`}>
                   #{roomsState.activeRoom.name}
@@ -2879,29 +2913,80 @@ export function QuickChatFAB({
                     const session = sessions.find((item) => item.id === sessionOption.id);
                     const showUnreadDot = !isActiveSession && isUnread("direct", sessionOption.id, session?.lastMessageAt ?? session?.updatedAt);
                     return (
-                    <button
+                    <div
                       key={sessionOption.id}
-                      type="button"
-                      role="menuitem"
-                      data-testid={`quick-chat-session-option-${sessionOption.id}`}
-                      className={`quick-chat-session-option${isActiveSession ? " quick-chat-session-option--active" : ""}`}
-                      onClick={() => handleSessionSwitch(sessionOption.id)}
+                      className={`quick-chat-session-option-row${isActiveSession ? " quick-chat-session-option-row--active" : ""}`}
+                      role="none"
                     >
-                      <span>{sessionOption.label}</span>
-                      {showUnreadDot ? (
-                        <span
-                          className="chat-unread-dot quick-chat-session-unread-dot"
-                          data-testid={`quick-chat-unread-dot-${sessionOption.id}`}
-                          aria-label={t("chat.unreadMessages", "Unread messages")}
-                        />
-                      ) : null}
-                    </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        data-testid={`quick-chat-session-option-${sessionOption.id}`}
+                        className={`quick-chat-session-option${isActiveSession ? " quick-chat-session-option--active" : ""}`}
+                        onClick={() => handleSessionSwitch(sessionOption.id)}
+                      >
+                        <span>{sessionOption.label}</span>
+                        {showUnreadDot ? (
+                          <span
+                            className="chat-unread-dot quick-chat-session-unread-dot"
+                            data-testid={`quick-chat-unread-dot-${sessionOption.id}`}
+                            aria-label={t("chat.unreadMessages", "Unread messages")}
+                          />
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-icon quick-chat-session-rename"
+                        data-testid={`quick-chat-session-rename-${sessionOption.id}`}
+                        aria-label={t("chat.renameConversationAria", "Rename conversation {{title}}", { title: sessionOption.label })}
+                        onClick={() => openRenameDialog(sessionOption.id)}
+                      >
+                        <Pencil size={14} />
+                      </button>
+                    </div>
                     );
                   })}
                 </div>
               )}
             </div>
           </div>
+
+          {renameDialog && (
+            <div className="quick-chat-rename-dialog" data-testid="quick-chat-rename-dialog">
+              <label className="quick-chat-rename-label" htmlFor="quick-chat-rename-input">
+                {t("chat.renameConversationTitle", "Rename Conversation")}
+              </label>
+              <input
+                id="quick-chat-rename-input"
+                className="input quick-chat-rename-input"
+                type="text"
+                value={renameTitle}
+                placeholder={t("chat.renamePlaceholder", "Untitled")}
+                data-testid="quick-chat-rename-input"
+                onChange={(event) => setRenameTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleRenameSession();
+                  }
+                }}
+                autoFocus
+              />
+              <div className="quick-chat-rename-actions">
+                <button type="button" className="btn" onClick={() => setRenameDialog(null)}>
+                  {t("chat.cancelButton", "Cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  data-testid="quick-chat-rename-save"
+                  onClick={() => void handleRenameSession()}
+                >
+                  {t("chat.save", "Save")}
+                </button>
+              </div>
+            </div>
+          )}
 
           {newSessionChooserOpen && (
             <div className="quick-chat-new-session-chooser" data-testid="quick-chat-new-session-chooser">

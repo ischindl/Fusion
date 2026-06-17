@@ -7,6 +7,7 @@ import {
   fetchChatSession,
   createChatSession,
   fetchChatMessages,
+  updateChatSession,
   attachChatStream,
   streamChatResponse,
   cancelChatResponse,
@@ -64,6 +65,7 @@ export interface UseQuickChatReturn {
   selectSession: (session: EnrichedChatSession) => Promise<void>;
   startModelChat: (modelProvider: string, modelId: string) => Promise<void>;
   startFreshSession: (agentId?: string, modelProvider?: string, modelId?: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
   loadMessages: () => Promise<void>;
   reloadMessages: () => Promise<void>;
@@ -1176,6 +1178,52 @@ export function useQuickChat(
     };
   }, [activeSession?.id, pendingMessage, projectId, flushPendingMessage]);
 
+  /**
+   * FNXC:Chat 2026-06-16-22:20:
+   * Quick chat shares the backend session-title PATCH path with regular chat; optimistic session-list and active-session updates keep the dropdown trigger and panel title synchronized immediately after rename.
+   */
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      const normalizedTitle = title.trim() || null;
+      const previousSessions = sessions;
+      const previousActiveSession = activeSession;
+
+      setSessions((prev) => prev.map((session) => (session.id === id ? { ...session, title: normalizedTitle } : session)));
+      setActiveSession((prev) => (prev?.id === id ? { ...prev, title: normalizedTitle } : prev));
+
+      try {
+        const response = await updateChatSession(id, { title: normalizedTitle }, projectId);
+        const updatedSession = response.session;
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === id
+              ? {
+                  ...session,
+                  title: updatedSession.title,
+                  updatedAt: updatedSession.updatedAt,
+                }
+              : session,
+          ),
+        );
+        setActiveSession((prev) =>
+          prev?.id === id
+            ? {
+                ...prev,
+                title: updatedSession.title,
+                updatedAt: updatedSession.updatedAt,
+              }
+            : prev,
+        );
+      } catch (error) {
+        setSessions(previousSessions);
+        setActiveSession(previousActiveSession);
+        addToast?.(t("chat.failedToRenameConversation", "Failed to rename conversation"), "error");
+        throw error;
+      }
+    },
+    [activeSession, addToast, projectId, sessions, t],
+  );
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1205,6 +1253,7 @@ export function useQuickChat(
     selectSession,
     startModelChat,
     startFreshSession,
+    renameSession,
     refreshSessions,
     loadMessages,
     reloadMessages,
@@ -1227,6 +1276,7 @@ export function useQuickChat(
     selectSession,
     startModelChat,
     startFreshSession,
+    renameSession,
     refreshSessions,
     loadMessages,
     reloadMessages,
