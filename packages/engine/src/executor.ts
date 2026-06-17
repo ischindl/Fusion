@@ -1446,6 +1446,11 @@ export class TaskExecutor {
   private activeSubagentSessions = new Map<string, Set<AgentSession>>();
   /** Tasks that were paused mid-execution (to avoid marking them as "failed"). */
   private pausedAborted = new Set<string>();
+  /**
+   * FNXC:WorkflowLifecycle 2026-06-17-03:42:
+   * FN-6568 separates pause provenance from the legacy pausedAborted hard-cancel bit. Merge-seam/internal aborts caused FN-6528/FN-6531/FN-6534/FN-6537 to look like pause/resume aborts and left mergeRetries=NULL, so handleGraphFailure must know whether the abort came from global pause, the merge seam, or a generic hard cancel before choosing operator-action parking.
+   */
+  private pausedAbortProvenance = new Map<string, "global-pause" | "merge-seam" | "hard-cancel">();
   /** Tasks that had a dependency added mid-execution (abort + discard worktree). */
   private depAborted = new Set<string>();
   /** Tasks killed by stuck task detector. Value = shouldRequeue (budget not exhausted). */
@@ -1468,6 +1473,16 @@ export class TaskExecutor {
   private workflowRerunWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
   /** Set of ephemeral spawned agent IDs with in-flight cleanup (prevents duplicate deletion attempts). */
   private pendingEphemeralDeletions = new Set<string>();
+
+  private markPausedAborted(taskId: string, provenance: "global-pause" | "merge-seam" | "hard-cancel" = "hard-cancel"): void {
+    this.pausedAborted.add(taskId);
+    this.pausedAbortProvenance.set(taskId, provenance);
+  }
+
+  private clearPausedAborted(taskId: string): void {
+    this.pausedAborted.delete(taskId);
+    this.pausedAbortProvenance.delete(taskId);
+  }
 
   private setActiveSession(taskId: string, sessionState: ActiveExecutorSessionState, worktreePath: string): void {
     this.activeSessions.set(taskId, sessionState);
@@ -2040,7 +2055,7 @@ export class TaskExecutor {
     if (options.userCanceled) {
       this.userCanceledTaskIds.add(taskId);
     }
-    this.pausedAborted.add(taskId);
+    this.markPausedAborted(taskId, "hard-cancel");
     this.options.stuckTaskDetector?.untrackTask(taskId);
     this.clearWorkflowRerunWatchdog(taskId);
     this.clearCompletedTaskWatchdog(taskId);
@@ -2695,7 +2710,7 @@ export class TaskExecutor {
       if (settings.globalPause && !previous.globalPause) {
         for (const [taskId, controllers] of this.activeConfiguredCommandControllers) {
           executorLog.log(`Global pause — aborting configured command(s) for ${taskId}`);
-          this.pausedAborted.add(taskId);
+          this.markPausedAborted(taskId, "global-pause");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           for (const controller of controllers) {
             controller.abort();
@@ -2713,7 +2728,7 @@ export class TaskExecutor {
         }
         for (const [taskId, { session }] of this.activeSessions) {
           executorLog.log(`Global pause — terminating agent session for ${taskId}`);
-          this.pausedAborted.add(taskId);
+          this.markPausedAborted(taskId, "global-pause");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           // abort() interrupts any in-flight LLM stream / tool call;
           // dispose() then releases session resources.
@@ -2731,7 +2746,7 @@ export class TaskExecutor {
         }
         for (const [taskId, stepExecutor] of this.activeStepExecutors) {
           executorLog.log(`Global pause — terminating step sessions for ${taskId}`);
-          this.pausedAborted.add(taskId);
+          this.markPausedAborted(taskId, "global-pause");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           stepExecutor.terminateAllSessions().catch(err =>
             executorLog.warn(`Failed to terminate step sessions for global pause ${taskId}: ${err}`)
@@ -2743,7 +2758,7 @@ export class TaskExecutor {
         }
         for (const [taskId, workflowSession] of this.activeWorkflowStepSessions) {
           executorLog.log(`Global pause — terminating workflow step session for ${taskId}`);
-          this.pausedAborted.add(taskId);
+          this.markPausedAborted(taskId, "global-pause");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           const sessionWithAbort = workflowSession as AgentSession & { abort?: () => Promise<void> };
           if (typeof sessionWithAbort.abort === "function") {
@@ -3444,7 +3459,7 @@ export class TaskExecutor {
           const workflowResult = await this.runWorkflowSteps(task, task.worktree, settings, undefined);
           if (workflowResult === "deferred-paused") {
             if (this.pausedAborted.has(task.id)) {
-              this.pausedAborted.delete(task.id);
+              this.clearPausedAborted(task.id);
             }
             return false;
           }
@@ -5074,9 +5089,9 @@ export class TaskExecutor {
         const workflowResult = await this.runWorkflowSteps(live, worktreePath, settings, undefined);
         if (workflowResult === "deferred-paused") {
           if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-            this.pausedAborted.delete(task.id);
+            this.clearPausedAborted(task.id);
           } else if (this.pausedAborted.has(task.id)) {
-            this.pausedAborted.delete(task.id);
+            this.clearPausedAborted(task.id);
           }
           return { outcome: "success", value: "deferred-paused", data: { allPassed: false } };
         }
@@ -5175,7 +5190,7 @@ export class TaskExecutor {
       },
       abortRun: async (_ctx, task, input) => {
         if (input.hardCancel) {
-          this.pausedAborted.add(task.id);
+          this.markPausedAborted(task.id, "merge-seam");
         }
         await this.store.updateTask(task.id, {
           paused: true,
@@ -5241,9 +5256,9 @@ export class TaskExecutor {
         const workflowResult = await this.runWorkflowSteps(live, worktreePath, settings, undefined);
         if (workflowResult === "deferred-paused") {
           if (await this.parkTaskAfterWorkflowStepPause(seamTask.id)) {
-            this.pausedAborted.delete(seamTask.id);
+            this.clearPausedAborted(seamTask.id);
           } else if (this.pausedAborted.has(seamTask.id)) {
-            this.pausedAborted.delete(seamTask.id);
+            this.clearPausedAborted(seamTask.id);
           }
           return { outcome: "success", value: "deferred-paused" };
         }
@@ -6330,6 +6345,29 @@ export class TaskExecutor {
     return value === "awaiting-user-input" || value === "awaiting-cli-approval";
   }
 
+  private isMergeGraphFailure(failedNode: string | undefined): boolean {
+    return failedNode === "merge" || failedNode === "requestMerge";
+  }
+
+  private async routeGraphMergeFailureToRetry(
+    live: TaskDetail,
+    result: WorkflowGraphTaskRunResult,
+    abortProvenance: "global-pause" | "merge-seam" | "hard-cancel" | undefined,
+  ): Promise<boolean> {
+    if (!this.mergeRequester) return false;
+    const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
+    const message = `Workflow graph merge failure at node '${failedNode}' routed to bounded auto-merge retry${abortProvenance === "merge-seam" ? " after merge-seam abort" : ""}`;
+    executorLog.warn(`${live.id}: ${message}`);
+    await this.store.logEntry(live.id, message, undefined, this.getRunContextFor(live.id));
+    try {
+      await this.mergeRequester(live.id);
+    } catch (error) {
+      executorLog.warn(`${live.id}: bounded auto-merge retry request failed after graph merge failure: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await this.persistTokenUsage(live.id);
+    return true;
+  }
+
   /** Terminal failure of a graph run: record the error and park the task in
    *  review so a human can act — never leave it invisible in in-progress. */
   private async handleGraphFailure(task: Task, result: WorkflowGraphTaskRunResult): Promise<void> {
@@ -6341,16 +6379,29 @@ export class TaskExecutor {
       // is still in-progress — leave the pause machinery in charge instead of
       // parking the task in review.
       const pausedAborted = this.pausedAborted.has(task.id);
-      if (live.paused || pausedAborted) {
+      const abortProvenance = this.pausedAbortProvenance.get(task.id);
+      const mergeSeamAborted = abortProvenance === "merge-seam";
+      const genuinePauseAbort = Boolean(
+        live.userPaused
+          || abortProvenance === "global-pause"
+          || (live.paused && !mergeSeamAborted)
+          || (pausedAborted && !mergeSeamAborted),
+      );
+      if (genuinePauseAbort) {
         /*
         FNXC:WorkflowLifecycle 2026-06-15-01:45:
         FN-6478: a graph exit during an in-progress pause is recoverable by explicit unpause, but the same exit after the task has already left in-progress strands the workflow graph. Preserve userPaused and autoMerge:false review parking; surface non-in-progress paused exits as operator-actionable failures without moving the task backward or re-enqueueing execution.
+
+        FNXC:WorkflowLifecycle 2026-06-17-03:48:
+        FN-6568: merge-seam aborts are not pause provenance. A non-paused merge-node failure must bypass this operator-action pause branch so FN-6528/FN-6531/FN-6534/FN-6537-style failures route to bounded auto-merge retry instead of being parked failed with mergeRetries=NULL.
         */
         const pauseProvenance = live.userPaused
           ? "explicit user pause"
-          : pausedAborted
-            ? "engine abort during pause/resume"
-            : "task pause";
+          : abortProvenance === "global-pause"
+            ? "global pause"
+            : pausedAborted
+              ? "engine abort during pause/resume"
+              : "task pause";
         if (live.column !== "in-progress") {
           const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
           const message = `Workflow graph failure surfaced after paused ${pauseProvenance} in '${live.column}' at node '${failedNode}' — operator action required; retry or explicitly unpause/resume after inspecting the task`;
@@ -6367,13 +6418,16 @@ export class TaskExecutor {
         await this.store.logEntry(task.id, benignMessage, undefined, this.getRunContextFor(task.id));
         return;
       }
+      const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1];
+      if (this.isMergeGraphFailure(failedNode) && await this.routeGraphMergeFailureToRetry(live, result, abortProvenance)) {
+        return;
+      }
       if (live.column !== "in-progress") {
         const benignMessage = `Workflow graph run ended after task already advanced to '${live.column}' — no further action needed`;
         executorLog.log(`${task.id}: ${benignMessage}`);
         await this.store.logEntry(task.id, benignMessage, undefined, this.getRunContextFor(task.id));
         return;
       }
-      const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1];
       const failureValue = this.graphFailureValue(result);
       if (this.isAwaitingGraphFailureValue(failureValue)) {
         /*
@@ -7150,13 +7204,13 @@ export class TaskExecutor {
           }
           if (this.pausedAborted.has(task.id)) {
             if (this.userCanceledTaskIds.has(task.id)) {
-              this.pausedAborted.delete(task.id);
+              this.clearPausedAborted(task.id);
               this.stuckAborted.delete(task.id);
               this.userCanceledTaskIds.delete(task.id);
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
-            this.pausedAborted.delete(task.id);
+            this.clearPausedAborted(task.id);
             await this.store.logEntry(task.id, "Execution paused — step sessions terminated, moved to todo", undefined, this.getRunContextFor(task.id));
             await this.store.moveTask(task.id, "todo", { preserveResumeState: true });
             return;
@@ -7322,11 +7376,11 @@ export class TaskExecutor {
               const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
               if (workflowResult === "deferred-paused") {
                 if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                  this.pausedAborted.delete(task.id);
+                  this.clearPausedAborted(task.id);
                   return;
                 }
                 if (this.pausedAborted.has(task.id)) {
-                  this.pausedAborted.delete(task.id);
+                  this.clearPausedAborted(task.id);
                 }
                 return;
               }
@@ -7397,13 +7451,13 @@ export class TaskExecutor {
             await this.handleDepAbortCleanup(task.id, worktreePath);
           } else if (this.pausedAborted.has(task.id)) {
             if (this.userCanceledTaskIds.has(task.id)) {
-              this.pausedAborted.delete(task.id);
+              this.clearPausedAborted(task.id);
               this.stuckAborted.delete(task.id);
               this.userCanceledTaskIds.delete(task.id);
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
-            this.pausedAborted.delete(task.id);
+            this.clearPausedAborted(task.id);
             await this.store.logEntry(task.id, "Execution paused during step-session", undefined, this.getRunContextFor(task.id));
             await this.store.moveTask(task.id, "todo", { preserveResumeState: true });
           } else if (this.stuckAborted.has(task.id)) {
@@ -8006,13 +8060,13 @@ export class TaskExecutor {
           // prompt to resolve gracefully instead of throwing.
           if (this.pausedAborted.has(task.id)) {
             if (this.userCanceledTaskIds.has(task.id)) {
-              this.pausedAborted.delete(task.id);
+              this.clearPausedAborted(task.id);
               this.stuckAborted.delete(task.id);
               this.userCanceledTaskIds.delete(task.id);
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
               return;
             }
-            this.pausedAborted.delete(task.id);
+            this.clearPausedAborted(task.id);
             wasPaused = true;
             if (await this.shouldFinalizeCompletedTask(task.id, taskDone)) {
               if (await this.shouldDeferCompletionForGlobalPause(task.id, "paused after completion")) {
@@ -8038,7 +8092,7 @@ export class TaskExecutor {
           // scheduler re-dispatches while the old execution guard is still set.
           if (this.stuckAborted.has(task.id)) {
             if (this.userCanceledTaskIds.has(task.id)) {
-              this.pausedAborted.delete(task.id);
+              this.clearPausedAborted(task.id);
               this.stuckAborted.delete(task.id);
               this.userCanceledTaskIds.delete(task.id);
               await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
@@ -8100,12 +8154,12 @@ export class TaskExecutor {
               const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
               if (workflowResult === "deferred-paused") {
                 if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                  this.pausedAborted.delete(task.id);
+                  this.clearPausedAborted(task.id);
                   wasPaused = true;
                   return;
                 }
                 if (this.pausedAborted.has(task.id)) {
-                  this.pausedAborted.delete(task.id);
+                  this.clearPausedAborted(task.id);
                   wasPaused = true;
                 }
                 return;
@@ -8371,12 +8425,12 @@ export class TaskExecutor {
                 const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
                 if (workflowResult === "deferred-paused") {
                   if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                    this.pausedAborted.delete(task.id);
+                    this.clearPausedAborted(task.id);
                     wasPaused = true;
                     return;
                   }
                   if (this.pausedAborted.has(task.id)) {
-                    this.pausedAborted.delete(task.id);
+                    this.clearPausedAborted(task.id);
                     wasPaused = true;
                   }
                   return;
@@ -8538,13 +8592,13 @@ export class TaskExecutor {
       } else if (this.pausedAborted.has(task.id)) {
         // Task was paused mid-execution — clean up worktree and move to todo
         if (this.userCanceledTaskIds.has(task.id)) {
-          this.pausedAborted.delete(task.id);
+          this.clearPausedAborted(task.id);
           this.stuckAborted.delete(task.id);
           this.userCanceledTaskIds.delete(task.id);
           await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
           return;
         }
-        this.pausedAborted.delete(task.id);
+        this.clearPausedAborted(task.id);
         const latestTask = await this.store.getTask(task.id);
         if (
           latestTask?.column === "todo" &&
@@ -8598,7 +8652,7 @@ export class TaskExecutor {
         // Task was killed by stuck task detector — defer requeue to finally block
         // (after this.executing is cleared) to prevent re-dispatch race.
         if (this.userCanceledTaskIds.has(task.id)) {
-          this.pausedAborted.delete(task.id);
+          this.clearPausedAborted(task.id);
           this.stuckAborted.delete(task.id);
           this.userCanceledTaskIds.delete(task.id);
           await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
@@ -9155,7 +9209,7 @@ export class TaskExecutor {
       // task in "in-progress" with no active session or worktree.
       if (stuckRequeue === true) {
         if (this.userCanceledTaskIds.has(task.id)) {
-          this.pausedAborted.delete(task.id);
+          this.clearPausedAborted(task.id);
           this.stuckAborted.delete(task.id);
           this.userCanceledTaskIds.delete(task.id);
           await this.store.logEntry(task.id, "Execution canceled by user — leaving task in todo");
@@ -14335,7 +14389,7 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
           // awaitAbortInFlightTaskWork marks pausedAborted as a generic hard-cancel
           // signal. The force-requeue path has already handled the task move, so
           // clear it to prevent a later subprocess unwind from logging/moving as a pause.
-          this.pausedAborted.delete(taskId);
+          this.clearPausedAborted(taskId);
 
           if (!preserveProgress) {
             await this.resetStepsIfWorkLost(latestTask);
