@@ -770,6 +770,32 @@ For real-time PR/issue badge updates, configure a GitHub App instead of relying 
 **Fallback Behavior:**
 When webhook delivery is unavailable, the 5-minute refresh endpoints (`/api/tasks/:id/pr/status`, `/api/tasks/:id/issue/status`) continue to work as the fallback path. Staleness is computed from persisted `lastCheckedAt` timestamps only (no in-memory poller state).
 
+### External Signal Ingestion (Sentry / Datadog / PagerDuty / generic webhook)
+
+Inbound signals from error trackers and alerting tools are ingested into triage
+tasks via `POST /api/signals/:provider`. Every endpoint requires a valid HMAC
+signature against a per-provider secret — there is no unauthenticated
+task-creation endpoint. Secrets come from the environment and are never
+source-controlled:
+
+- `FUSION_SIGNAL_WEBHOOK_SECRET` — generic webhook (`POST /api/signals/webhook`).
+  Sign the raw body with HMAC-SHA256 in `X-Fusion-Signature` (hex, optional
+  `sha256=` prefix) and send `X-Fusion-Timestamp` (epoch ms) for the replay
+  window. Payload: `{ id, title, body?, severity?, link?, groupingKey?, timestamp?, meta? }`.
+  If `groupingKey` is omitted it falls back to `source + normalized-title`.
+- `FUSION_SIGNAL_SENTRY_SECRET` — Sentry (`POST /api/signals/sentry`), verifies
+  `Sentry-Hook-Signature`; `groupingKey` = Sentry `issue.id`.
+- `FUSION_SIGNAL_DATADOG_SECRET` — Datadog (`POST /api/signals/datadog`),
+  verifies `X-Datadog-Signature`; `groupingKey` = monitor `aggreg_key`/`alert_id`.
+- `FUSION_SIGNAL_PAGERDUTY_SECRET` — PagerDuty (`POST /api/signals/pagerduty`),
+  verifies `X-PagerDuty-Signature` (`v1=<hex>`); `groupingKey` = `incident.id`.
+
+**Security:** mandatory HMAC (401 on missing/invalid secret or signature),
+replay window (±5 min) + delivery-id nonce dedup, persistent external-id dedup,
+~1 MB body cap (413), per-source rate limit (429), field-length caps on
+normalized fields, and SSRF-untrusted handling of payload URLs (stored as data,
+never fetched). The `meta` JSON is stored as data and never rendered as raw HTML.
+
 ### Multi-Instance Deployments
 
 When running the dashboard on multiple instances behind a load balancer, badge updates can be shared across instances using Redis pub/sub. This ensures that a PR/issue badge change detected on instance A is delivered to subscribed WebSocket clients on instance B.

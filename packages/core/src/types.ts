@@ -2816,6 +2816,22 @@ export interface GlobalSettings {
    *  of per-task or per-lane overrides. No network calls, zero token cost.
    *  Project `testMode` takes precedence over the global value. */
   testMode?: boolean;
+  /** Fusion Model Router opt-in (U17/KTD9). When true, a conservative selection
+   *  layer may down-route an allowlist of mechanical steps (dependabot bumps,
+   *  lint-only fixes) to a cheap model tier before a session starts; everything
+   *  else resolves to the configured default pair. OFF by default — when unset or
+   *  false, model resolution is byte-identical to its non-router behavior.
+   *  Selection is governed: it never returns a pair the model controls forbid and
+   *  always defers to a column-agent override. */
+  modelRouterEnabled?: boolean;
+  /** Provider for the Model Router's cheap tier (U17). Used only when
+   *  `modelRouterEnabled` is true and a step is allowlisted for down-routing.
+   *  Must be set together with `modelRouterCheapModelId`; if either is unset the
+   *  router falls back to the configured default pair. */
+  modelRouterCheapProvider?: string;
+  /** Model ID for the Model Router's cheap tier (U17). See
+   *  `modelRouterCheapProvider`. */
+  modelRouterCheapModelId?: string;
   /** Phase-1 FN-5741 write-only shadow seam toggle.
    *  When true, executor/self-healing/merger persist additive merge-request contract
    *  records and completion-handoff markers without changing merge authority.
@@ -3384,6 +3400,13 @@ export interface ProjectSettings {
    *  be enforced server-side. Only applies when `mergeStrategy === "pull-request"`.
    *  Default: false. */
   requirePrApproval?: boolean;
+  /** When true (default), the Review-response loop automatically acts on PR review
+   *  threads (human + bot): it dispatches an agent that fixes + pushes + replies, or
+   *  disagrees with reasoning. When false, the loop is inert — review threads are left
+   *  untouched for a human to handle. Independent of `autoMerge`: with auto-resolution
+   *  on but auto-merge off, threads are still resolved but the PR is NOT merged (the
+   *  human checkpoint remains merge). U18, R15. Default: true. */
+  autoResolveReviewComments?: boolean;
   /** Direct-merge commit routing mode.
    *  - "auto": squash single-substantive branches, preserve history for multi-substantive branches
    *  - "always-squash": always use the legacy squash path for direct merges

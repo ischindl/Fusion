@@ -1,0 +1,128 @@
+/* Command Center historical analytics areas (U5).
+ * Animation durations use --duration-* tokens only (never --transition-*).
+ */
+
+.cc-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 1rem);
+}
+
+.cc-area-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.cc-area-section-title {
+  margin: 0;
+  font-size: var(--font-size-sm, 0.85rem);
+  font-weight: 600;
+  color: var(--text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Reuse the shell's stat-grid/stat-card look. */
+.cc-area .cc-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--space-3, 0.75rem);
+}
+
+.cc-stat-sub {
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-secondary, #888);
+}
+
+/* ---- Tables ---- */
+.cc-table-wrap {
+  overflow-x: auto;
+}
+
+.cc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm, 0.85rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-table th,
+.cc-table td {
+  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+  text-align: right;
+  border-bottom: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  white-space: nowrap;
+}
+
+.cc-table th:first-child,
+.cc-table td:first-child {
+  text-align: left;
+}
+
+.cc-table thead th {
+  color: var(--text-secondary, #888);
+  font-weight: 600;
+}
+
+.cc-table th.cc-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.cc-table th.cc-sortable:hover {
+  color: var(--text-primary, #ddd);
+}
+
+.cc-table tbody tr {
+  cursor: pointer;
+}
+
+.cc-table tbody tr.cc-row-selected {
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+}
+
+.cc-table tbody tr.cc-row-selected td {
+  color: var(--text-primary, #ddd);
+}
+
+.cc-sort-caret {
+  margin-left: var(--space-1, 0.25rem);
+  font-size: 0.7em;
+  color: var(--color-accent, #4f8cff);
+}
+
+/* Unavailable sentinel ("—") with a help cursor for its tooltip. */
+.cc-unavailable {
+  color: var(--text-secondary, #888);
+  cursor: help;
+  border-bottom: 1px dotted var(--border-subtle, rgba(127, 127, 127, 0.4));
+}
+
+.cc-loading-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  padding: var(--space-4, 1rem);
+  color: var(--text-secondary, #888);
+}
+
+.cc-area-empty,
+.cc-area-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  padding: var(--space-6, 2rem);
+  color: var(--text-secondary, #888);
+  text-align: center;
+}
+
+.cc-area-error {
+  color: var(--color-error, #e5484d);
+}
+
+.cc-pricing-note {
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text-secondary, #888);
+}

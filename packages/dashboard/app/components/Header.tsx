@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Settings, Pause, Play, Square, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Monitor, Server, Workflow, Bot, Target, ChevronRight, FileCode, Loader2, Grid3X3, Mail, MessageSquare, ChevronDown, Check, Zap, Sparkles, FileText, Brain, CheckSquare, Lock } from "lucide-react";
+import { Settings, Pause, Play, Square, LayoutGrid, List, Terminal, Lightbulb, Search, X, Activity, MoreHorizontal, Clock, Folder, History, GitBranch, Monitor, Server, Workflow, Bot, Target, ChevronRight, FileCode, Loader2, Grid3X3, Mail, MessageSquare, ChevronDown, Check, Zap, Sparkles, FileText, Brain, CheckSquare, Lock, Gauge } from "lucide-react";
 import "./Header.css";
 // ProjectSelector styles used by the imported standalone component.
 import "./ProjectSelector.css";
@@ -1092,7 +1092,7 @@ export function Header({
               <>
                 <button
                   ref={viewOverflowTriggerRef}
-                  className={`view-toggle-btn${["research", "skills", "insights", "memory", "secrets", "reliability", "dev-server", "devserver", "graph", "stash-recovery"].includes(view) || (experimentalFeatures?.evalsView && view === "evals") || (experimentalFeatures?.goalsView && view === "goalsView") || (todosEnabled && todosOpen) || isPluginViewId(view) ? " active" : ""}`}
+                  className={`view-toggle-btn${["research", "skills", "insights", "memory", "secrets", "reliability", "command-center", "dev-server", "devserver", "graph", "stash-recovery"].includes(view) || (experimentalFeatures?.evalsView && view === "evals") || (experimentalFeatures?.goalsView && view === "goalsView") || (todosEnabled && todosOpen) || isPluginViewId(view) ? " active" : ""}`}
                   onClick={() => setIsViewOverflowOpen((prev) => !prev)}
                   title={t("header.moreViews", "More views")}
                   aria-label={t("header.moreViews", "More views")}
@@ -1231,6 +1231,18 @@ export function Header({
                     >
                       <Activity size={14} />
                       <span>{t("header.reliabilityView", "Reliability")}</span>
+                    </button>
+                    <button
+                      className={`view-toggle-overflow-item${view === "command-center" ? " active" : ""}`}
+                      onClick={() => {
+                        onChangeView("command-center");
+                        setIsViewOverflowOpen(false);
+                      }}
+                      role="menuitem"
+                      data-testid="view-overflow-command-center"
+                    >
+                      <Gauge size={14} />
+                      <span>{t("header.commandCenterView", "Command Center")}</span>
                     </button>
                     {experimentalFeatures?.devServerView && (
                       <button

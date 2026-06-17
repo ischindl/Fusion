@@ -142,6 +142,7 @@ import {
   readAgentLogEntriesByTimeRange,
 } from "./agent-log-file-store.js";
 import { truncateAgentLogDetail } from "./agent-log-constants.js";
+import { emitUsageEvent as emitUsageEventToDb, type UsageEventInput } from "./usage-events.js";
 import { validateNodeOverrideChange } from "./node-override-guard.js";
 import { sanitizeTitle, summarizeTitle } from "./ai-summarize.js";
 import { extractTaskIdTokens, normalizeTitleForTaskId } from "./task-title-id-drift.js";
@@ -11677,6 +11678,22 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
       );
       this.agentLogFlushTimer.unref();
     }
+  }
+
+  /**
+   * Append a normalized telemetry row to `usage_events` (tool calls, messages,
+   * session lifecycle) for the Command Center analytics layer. Callers in the
+   * executor/session layer pass `model`/`provider`/`nodeId`/`category` from the
+   * session context (see usage-events.ts / KTD3).
+   *
+   * **Fail-soft**: the underlying helper swallows malformed events and write
+   * errors, so this never throws and never aborts the agent-log write or the
+   * agent hot path.
+   *
+   * @returns `true` if a row was inserted, `false` if the event was skipped.
+   */
+  emitUsageEvent(event: UsageEventInput): boolean {
+    return emitUsageEventToDb(this.db, event);
   }
 
   /**

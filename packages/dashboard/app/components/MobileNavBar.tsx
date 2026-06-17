@@ -10,6 +10,7 @@ import {
   FileCode,
   FileText,
   Folder,
+  Gauge,
   GitBranch,
   Grid3X3,
   History,
@@ -290,6 +291,7 @@ export function MobileNavBar({
   const isMoreActive =
     view === "documents"
     || view === "reliability"
+    || view === "command-center"
     || (Boolean(experimentalFeatures?.evalsView) && view === "evals")
     || (Boolean(experimentalFeatures?.goalsView) && view === "goalsView")
     || view === "research"
@@ -679,6 +681,16 @@ export function MobileNavBar({
             >
               <Activity />
               <span>{t("nav.reliability", "Reliability")}</span>
+            </button>
+
+            <button
+              type="button"
+              className="mobile-more-item"
+              data-testid="mobile-more-item-command-center"
+              onClick={() => handleMoreAction(() => onChangeView("command-center"))}
+            >
+              <Gauge />
+              <span>{t("nav.commandCenter", "Command Center")}</span>
             </button>
             {experimentalFeatures?.evalsView && (
               <button

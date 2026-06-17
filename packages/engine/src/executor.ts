@@ -7777,6 +7777,17 @@ export class TaskExecutor {
         const executorFallbackModelId = settings.fallbackModelId;
         const executorThinkingLevel = detail.thinkingLevel ?? settings.defaultThinkingLevel;
 
+        // U1 telemetry: now that the session model/provider/node are resolved,
+        // give the agent logger the context it needs to emit usage_events tool
+        // rows (KTD3). nodeId is sourced from the routed/effective node, null
+        // when the task has no node context.
+        agentLogger.setUsageContext({
+          model: executorModelId ?? null,
+          provider: executorProvider ?? null,
+          nodeId: detail.effectiveNodeId ?? detail.nodeId ?? null,
+          agentId: engineRunContext.agentId ?? null,
+        });
+
         // Determine whether we're resuming a previous session (pause/resume)
         // or starting fresh. Use file-based sessions so conversation state
         // persists across pause/unpause cycles. Resume is allowed only when

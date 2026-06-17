@@ -1,0 +1,55 @@
+.cc-date-range {
+  position: relative;
+  display: inline-block;
+}
+
+.cc-date-range-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1, 0.25rem);
+}
+
+.cc-date-range-popover {
+  position: absolute;
+  top: calc(100% + var(--space-1, 0.25rem));
+  right: 0;
+  z-index: 20;
+  min-width: 16rem;
+  padding: var(--space-3, 0.75rem);
+  background: var(--surface-1, #1c1c1c);
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+  border-radius: var(--radius-md, 8px);
+  box-shadow: var(--shadow-md, 0 6px 24px rgba(0, 0, 0, 0.35));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 0.75rem);
+}
+
+.cc-date-range-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 0.5rem);
+}
+
+.cc-date-range-custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.cc-date-range-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 0.5rem);
+  font-size: var(--font-size-sm, 0.85rem);
+  color: var(--text-secondary, #888);
+}
+
+.cc-date-range-field input {
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-primary, #ddd);
+  padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+}

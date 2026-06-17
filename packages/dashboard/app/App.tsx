@@ -116,6 +116,7 @@ const SkillsView = lazy(() => import("./components/SkillsView").then((m) => ({ d
 const MemoryView = lazy(() => import("./components/MemoryView").then((m) => ({ default: m.MemoryView })));
 const SecretsView = lazy(() => import("./components/SecretsView").then((m) => ({ default: m.SecretsView })));
 const ReliabilityView = lazy(() => import("./components/ReliabilityView").then((m) => ({ default: m.ReliabilityView })));
+const CommandCenter = lazy(() => import("./components/command-center/CommandCenter").then((m) => ({ default: m.CommandCenter })));
 const DevServerView = lazy(() => import("./components/DevServerView").then((m) => ({ default: m.DevServerView })));
 const _TodoView = lazy(() => import("./components/TodoView").then((m) => ({ default: m.TodoView })));
 const GoalsView = lazy(() => import("./components/GoalsView").then((m) => ({ default: m.GoalsView })));
@@ -146,6 +147,7 @@ function prefetchLazyViews() {
     void import("./components/MemoryView");
     void import("./components/SecretsView");
     void import("./components/ReliabilityView");
+    void import("./components/command-center/CommandCenter");
     void import("./components/DevServerView");
     void import("./components/TodoView");
     void import("./components/GoalsView");
@@ -1825,6 +1827,16 @@ function AppInner() {
         <PageErrorBoundary>
           <Suspense fallback={null}>
             <ReliabilityView />
+          </Suspense>
+        </PageErrorBoundary>
+      );
+    }
+
+    if (taskView === "command-center") {
+      return (
+        <PageErrorBoundary>
+          <Suspense fallback={null}>
+            <CommandCenter />
           </Suspense>
         </PageErrorBoundary>
       );

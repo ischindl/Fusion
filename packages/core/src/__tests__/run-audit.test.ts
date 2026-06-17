@@ -583,8 +583,8 @@ describe("Run Audit", () => {
       expect(indexNames).toContain("idxRunAuditEventsTimestamp");
     });
 
-    it("schema version is bumped to 117", () => {
-      expect(db.getSchemaVersion()).toBe(117);
+    it("schema version is bumped to 119", () => {
+      expect(db.getSchemaVersion()).toBe(120);
     });
   });
 });

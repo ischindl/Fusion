@@ -519,6 +519,77 @@ export { RetryStormError, serializeRetryStormError } from "./retry-storm-error.j
 export { aggregateAgentTokenUsage } from "./agent-token-usage.js";
 export type { AgentTokenUsageSummary, AgentTokenUsageWindowSummary } from "./agent-token-usage.js";
 export {
+  emitUsageEvent,
+  queryUsageEvents,
+  countUsageEventsBy,
+  categorizeToolName,
+  USAGE_EVENT_META_MAX_BYTES,
+} from "./usage-events.js";
+export type {
+  UsageEvent,
+  UsageEventInput,
+  UsageEventKind,
+  UsageEventRangeQuery,
+} from "./usage-events.js";
+export {
+  costFor,
+  lookupPricing,
+  MODEL_PRICING,
+  pricingAsOf,
+  PRICING_STALE_AFTER_MS,
+} from "./model-pricing.js";
+export type {
+  ModelPricing,
+  ModelRef,
+  UsageForCost,
+  CostResult,
+} from "./model-pricing.js";
+export { aggregateTokenAnalytics } from "./token-analytics.js";
+export type {
+  TokenAnalytics,
+  TokenAnalyticsQuery,
+  TokenGroupBy,
+  TokenGroupSummary,
+  TokenTotals,
+} from "./token-analytics.js";
+export { aggregateToolAnalytics, countInterventions } from "./tool-analytics.js";
+export type {
+  ToolAnalytics,
+  ToolAnalyticsQuery,
+  ToolCategoryCount,
+  InterventionBreakdown,
+} from "./tool-analytics.js";
+export { aggregateActivityAnalytics, aggregateMonitorMetrics } from "./activity-analytics.js";
+export type {
+  ActivityAnalytics,
+  ActivityAnalyticsQuery,
+  DailyActivity,
+  MttrSummary,
+  MonitorMetrics,
+} from "./activity-analytics.js";
+export { aggregateProductivityAnalytics } from "./productivity-analytics.js";
+export type {
+  ProductivityAnalytics,
+  ProductivityAnalyticsQuery,
+  LanguageCount,
+  LocSummary,
+} from "./productivity-analytics.js";
+export { composeLiveSnapshot } from "./command-center-live.js";
+export type {
+  LiveSnapshot,
+  LiveSession,
+  LiveRun,
+  ColumnCount,
+} from "./command-center-live.js";
+export { mapAnalyticsToOtlp, OTEL_METRIC_PREFIX } from "./otel-metrics.js";
+export type {
+  OtelMappingInput,
+  OtlpExportPayload,
+  OtlpMetric,
+  OtlpNumberDataPoint,
+  OtlpAttribute,
+} from "./otel-metrics.js";
+export {
   STALLED_REVIEW_REENQUEUE_THRESHOLD,
   STALLED_REVIEW_INVALID_TRANSITION_THRESHOLD,
   STALLED_REVIEW_WINDOW_MS,
@@ -662,6 +733,8 @@ export {
   isPrEntityActionable,
   isPrEntityAutoMergeReady,
   autoMergeGateReason,
+  summarizePrThreadActivity,
+  type PrThreadActivity,
 } from "./pr-entity.js";
 export {
   findVitestProcessIds,
@@ -1058,8 +1131,26 @@ export {
   resolveTitleSummarizerSettingsModel,
   resolveValidatorSettingsModel,
   TEST_MODE_RESOLVED,
+  routeTaskExecutionModel,
+  routeTaskPlanningModel,
+  routeTaskValidatorModel,
 } from "./model-resolution.js";
-export type { ResolvedModelSelection } from "./model-resolution.js";
+export type { ResolvedModelSelection, RouterLaneOptions } from "./model-resolution.js";
+export {
+  routeModel,
+  routeModelAndEmit,
+  isMechanicalRoutableContext,
+} from "./model-router.js";
+export type {
+  RouterLane,
+  RouterReason,
+  RouterPair,
+  RouterTaskContext,
+  RouteModelInput,
+  RouterDecision,
+  RouterEscalation,
+  ModelGovernancePredicate,
+} from "./model-router.js";
 
 // ── Memory Compaction ─────────────────────────────────────────────────
 

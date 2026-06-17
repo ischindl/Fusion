@@ -1,0 +1,98 @@
+/*
+ * Mission-Control live panel (U6b). Component-local styles.
+ * Animation durations use --duration-* tokens only (never --transition-*).
+ */
+
+.cc-mission-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.cc-mc-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4, 16px);
+}
+
+.cc-mc-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+}
+
+.cc-mc-muted {
+  color: var(--text-secondary, #888);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.cc-mc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.cc-mc-session,
+.cc-mc-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-1, rgba(255, 255, 255, 0.02));
+  min-width: 0;
+}
+
+.cc-mc-node.inactive {
+  opacity: 0.55;
+}
+
+.cc-mc-session-purpose,
+.cc-mc-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.cc-mc-session-meta,
+.cc-mc-node-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  flex-shrink: 0;
+}
+
+.cc-mc-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-2, rgba(59, 130, 246, 0.15));
+  color: var(--text-primary, #ddd);
+}
+
+.cc-mc-badge.inactive {
+  background: var(--surface-2, rgba(255, 255, 255, 0.06));
+  color: var(--text-secondary, #999);
+}
+
+.cc-mc-task,
+.cc-mc-node-count {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #999);
+}
+
+@media (max-width: 768px), (max-height: 480px) {
+  .cc-mc-columns {
+    grid-template-columns: 1fr;
+  }
+}

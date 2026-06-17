@@ -382,6 +382,58 @@ export class SubtaskStreamManager extends EventEmitter {
 
 export const subtaskStreamManager = new SubtaskStreamManager();
 
+/**
+ * U12 reuse seam: a one-shot decomposition for the triage trait. Reuses the same
+ * agent (`createFnAgent`), system prompt, JSON parsing, and deterministic
+ * fallback as the streaming subtask-breakdown flow, but returns the parsed
+ * {@link SubtaskItem}[] directly (no session/stream machinery). When the engine
+ * agent is unavailable, falls back to the deterministic 3-item breakdown so
+ * triage always yields ≥1 item (a too-small item is then routed as a single
+ * passthrough by the caller).
+ *
+ * Throws on a genuine generation/parse failure so the triage caller can PARK the
+ * item in triage with a diagnostic rather than silently dropping it.
+ */
+export async function decomposeForTriage(
+  description: string,
+  rootDir?: string,
+  promptOverrides?: PromptOverrideMap,
+): Promise<SubtaskItem[]> {
+  await ensureEngineReady();
+  const cwd = rootDir ?? process.cwd();
+  const systemPrompt = resolvePrompt("subtask-breakdown-system", promptOverrides) || SUBTASK_BREAKDOWN_PROMPT;
+
+  if (!createFnAgent) {
+    return generateFallbackSubtasks(description);
+  }
+
+  const agent: SubtaskAgent = await createFnAgent({ cwd, systemPrompt, tools: "readonly" });
+  try {
+    await agent.session.prompt(description);
+    const messages = agent.session.state.messages as Array<{
+      role: string;
+      content?: string | Array<{ type: string; text: string }>;
+    }>;
+    const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
+    let responseText = "";
+    if (typeof lastAssistant?.content === "string") {
+      responseText = lastAssistant.content;
+    } else if (Array.isArray(lastAssistant?.content)) {
+      responseText = lastAssistant.content
+        .filter((item): item is { type: "text"; text: string } => item.type === "text")
+        .map((item) => item.text)
+        .join("");
+    }
+    return parseSubtasks(responseText);
+  } finally {
+    try {
+      agent.session.dispose?.();
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}
+
 export async function createSubtaskSession(
   initialDescription: string,
   _store?: TaskStore,

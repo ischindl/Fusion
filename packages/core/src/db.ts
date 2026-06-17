@@ -162,7 +162,7 @@ export function isFts5CorruptionError(error: unknown): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 117;
+const SCHEMA_VERSION = 120;
 
 const TASKS_FTS_AUTOMERGE = 8;
 const TASKS_FTS_CRISISMERGE = 16;
@@ -1207,6 +1207,98 @@ CREATE TABLE IF NOT EXISTS todo_items (
 CREATE INDEX IF NOT EXISTS idxTodoListsProjectId ON todo_lists(projectId);
 CREATE INDEX IF NOT EXISTS idxTodoItemsListId ON todo_items(listId);
 CREATE INDEX IF NOT EXISTS idxTodoItemsSortOrder ON todo_items(listId, sortOrder);
+
+-- Normalized, queryable telemetry of agent activity (tool calls, messages,
+-- session lifecycle). Fed by emitUsageEvent from the executor/session layer so
+-- analytics never has to parse per-task JSONL agent logs at query time.
+-- The meta column carries only non-sensitive descriptors (error code,
+-- category, duration) -- never tool arguments/content/credentials -- and is
+-- capped at write (see usage-events.ts).
+CREATE TABLE IF NOT EXISTS usage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  taskId TEXT,
+  agentId TEXT,
+  nodeId TEXT,
+  model TEXT,
+  provider TEXT,
+  toolName TEXT,
+  category TEXT,
+  meta TEXT
+);
+CREATE INDEX IF NOT EXISTS idxUsageEventsTs ON usage_events(ts);
+CREATE INDEX IF NOT EXISTS idxUsageEventsTaskId ON usage_events(taskId);
+CREATE INDEX IF NOT EXISTS idxUsageEventsAgentId ON usage_events(agentId);
+-- FNXC:Database 2026-06-16-14:30:
+-- Command Center tool analytics (aggregateToolAnalytics in tool-analytics.ts) filters usage_events by 'kind' (e.g. 'tool_call', 'session_start') with optional 'ts' bounds on every tool/session count. The (kind, ts) composite index keeps that path from scanning unrelated event kinds as telemetry grows. Added in the same unreleased PR (#1683) that introduces usage_events, so it ships inside migration 118 rather than a new version bump; mirrored there so fresh-init and migrated DBs converge.
+CREATE INDEX IF NOT EXISTS idxUsageEventsKindTs ON usage_events(kind, ts);
+
+-- Persistent, incrementally-refreshed knowledge index (U14). One row per
+-- knowledge page (currently one page per completed task; PR-history pages
+-- share the same shape). Downstream agents query it through the dashboard's
+-- scoped knowledge-index endpoint. searchText is a denormalized lowercased
+-- concatenation of the page's title/summary/content + tags used for keyword
+-- LIKE matching, so the index works without requiring SQLite FTS5 (which is
+-- not available on every build -- see probeFts5 above). Refresh is per-source
+-- (upsert by sourceKey), never a full re-index, so unaffected pages keep their
+-- timestamps.
+CREATE TABLE IF NOT EXISTS knowledge_pages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sourceKind TEXT NOT NULL,
+  sourceId TEXT NOT NULL,
+  sourceKey TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT,
+  content TEXT NOT NULL,
+  tags TEXT,
+  searchText TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idxKnowledgePagesSourceKind ON knowledge_pages(sourceKind);
+CREATE INDEX IF NOT EXISTS idxKnowledgePagesUpdatedAt ON knowledge_pages(updatedAt);
+
+-- Monitor stage: deployments + incidents (U13). Deployments are recorded from
+-- CI/Ship events; incidents are opened from U11 signals and resolved when the
+-- underlying signal clears. MTTR = mean(resolvedAt - openedAt) over resolved
+-- incidents in range (aggregated in activity-analytics.ts). Both ingest through
+-- the authenticated monitor-routes endpoint and feed the Command Center.
+CREATE TABLE IF NOT EXISTS deployments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deploymentId TEXT NOT NULL UNIQUE,
+  service TEXT,
+  environment TEXT,
+  version TEXT,
+  status TEXT,
+  deployedAt TEXT NOT NULL,
+  link TEXT,
+  meta TEXT,
+  createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idxDeploymentsDeployedAt ON deployments(deployedAt);
+CREATE INDEX IF NOT EXISTS idxDeploymentsService ON deployments(service);
+
+CREATE TABLE IF NOT EXISTS incidents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  incidentId TEXT NOT NULL UNIQUE,
+  groupingKey TEXT NOT NULL,
+  title TEXT NOT NULL,
+  severity TEXT,
+  status TEXT NOT NULL,
+  source TEXT,
+  fixTaskId TEXT,
+  openedAt TEXT NOT NULL,
+  resolvedAt TEXT,
+  link TEXT,
+  meta TEXT,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idxIncidentsGroupingKey ON incidents(groupingKey);
+CREATE INDEX IF NOT EXISTS idxIncidentsStatus ON incidents(status);
+CREATE INDEX IF NOT EXISTS idxIncidentsOpenedAt ON incidents(openedAt);
+CREATE INDEX IF NOT EXISTS idxIncidentsResolvedAt ON incidents(resolvedAt);
 `;
 
 const TABLE_LEVEL_CONSTRAINT_PREFIXES = new Set([
@@ -4715,6 +4807,141 @@ export class Database {
     if (version < 117) {
       this.applyMigration(117, () => {
         this.addColumnIfMissing("tasks", "autoMergeProvenance", "TEXT");
+      });
+    }
+
+    // Migration 118: Queryable usage_events telemetry table (tool calls,
+    // messages, session lifecycle). Mirrors the SCHEMA_SQL definition above so
+    // a fresh-from-SCHEMA_SQL DB and a migrated DB converge on the same table.
+    // FNXC:Database 2026-06-16-14:30:
+    // The (kind, ts) composite index (idxUsageEventsKindTs) backs the Command
+    // Center analytics path: aggregateToolAnalytics filters usage_events by kind
+    // with optional ts bounds for every tool/session count, and would otherwise
+    // scan unrelated event kinds as telemetry grows. Folded into this migration
+    // (rather than a new SCHEMA_VERSION bump) because usage_events itself is
+    // unreleased — every DB that runs migration 118 runs it from this PR's code,
+    // so no migrated DB can be stuck at v118+ without the index. The IF NOT
+    // EXISTS body stays re-runnable.
+    if (version < 118) {
+      this.applyMigration(118, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            taskId TEXT,
+            agentId TEXT,
+            nodeId TEXT,
+            model TEXT,
+            provider TEXT,
+            toolName TEXT,
+            category TEXT,
+            meta TEXT
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxUsageEventsTs ON usage_events(ts)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxUsageEventsTaskId ON usage_events(taskId)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxUsageEventsAgentId ON usage_events(agentId)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxUsageEventsKindTs ON usage_events(kind, ts)
+        `);
+      });
+    }
+
+    // Migration 119: Persistent knowledge index (U14). One queryable page per
+    // completed task / PR-history entry, refreshed incrementally (upsert by
+    // sourceKey) on task completion. Mirrors the SCHEMA_SQL definition above so
+    // a fresh-from-SCHEMA_SQL DB and a migrated DB converge on the same table.
+    if (version < 119) {
+      this.applyMigration(119, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS knowledge_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sourceKind TEXT NOT NULL,
+            sourceId TEXT NOT NULL,
+            sourceKey TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            summary TEXT,
+            content TEXT NOT NULL,
+            tags TEXT,
+            searchText TEXT NOT NULL,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxKnowledgePagesSourceKind ON knowledge_pages(sourceKind)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxKnowledgePagesUpdatedAt ON knowledge_pages(updatedAt)
+        `);
+      });
+    }
+
+    // Migration 120: Monitor stage — deployments + incidents tables (U13).
+    // Deployments are recorded from CI/Ship events; incidents are opened from
+    // U11 signals and resolved when the signal clears. MTTR is computed over
+    // resolved incidents in activity-analytics.ts. Mirrors the SCHEMA_SQL
+    // definition above so a fresh-from-SCHEMA_SQL DB and a migrated DB converge
+    // on the same tables.
+    if (version < 120) {
+      this.applyMigration(120, () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS deployments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            deploymentId TEXT NOT NULL UNIQUE,
+            service TEXT,
+            environment TEXT,
+            version TEXT,
+            status TEXT,
+            deployedAt TEXT NOT NULL,
+            link TEXT,
+            meta TEXT,
+            createdAt TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxDeploymentsDeployedAt ON deployments(deployedAt)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxDeploymentsService ON deployments(service)
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incidentId TEXT NOT NULL UNIQUE,
+            groupingKey TEXT NOT NULL,
+            title TEXT NOT NULL,
+            severity TEXT,
+            status TEXT NOT NULL,
+            source TEXT,
+            fixTaskId TEXT,
+            openedAt TEXT NOT NULL,
+            resolvedAt TEXT,
+            link TEXT,
+            meta TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          )
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxIncidentsGroupingKey ON incidents(groupingKey)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxIncidentsStatus ON incidents(status)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxIncidentsOpenedAt ON incidents(openedAt)
+        `);
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idxIncidentsResolvedAt ON incidents(resolvedAt)
+        `);
       });
     }
 

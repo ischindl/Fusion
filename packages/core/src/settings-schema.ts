@@ -70,6 +70,9 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   defaultProvider: undefined,
   defaultModelId: undefined,
   testMode: undefined,
+  modelRouterEnabled: undefined,
+  modelRouterCheapProvider: undefined,
+  modelRouterCheapModelId: undefined,
   mergeRequestContractShadowEnabled: false,
   fallbackProvider: undefined,
   fallbackModelId: undefined,
@@ -253,6 +256,9 @@ export const DEFAULT_PROJECT_SETTINGS = {
   groupOverlappingFiles: true,
   overlapIgnorePaths: [],
   autoMerge: true,
+  // U18 (R15): the Review-response loop is default-on. Independent of `autoMerge` —
+  // with this on but auto-merge off, review threads are resolved but the PR is not merged.
+  autoResolveReviewComments: true,
   testMode: undefined,
   mergeRequestContractShadowEnabled: false,
   mergeStrategy: "direct",
