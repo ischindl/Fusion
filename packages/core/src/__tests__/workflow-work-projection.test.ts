@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { projectWorkflowWorkStatus } from "../workflow-work-projection.js";
 import type { Task, WorkflowWorkItem } from "../types.js";
 
+/*
+FNXC:WorkflowProjections 2026-06-17-08:42:
+These tests pin the user-facing workflow status surfaced for a task by projectWorkflowWorkStatus, which
+dashboard, API, and CLI all read. Requirements encoded here:
+- A single workflow status is derived from a task's work items by priority (recovery > manual-hold >
+  running > retrying > merge > other), so the most operator-relevant state wins when several items coexist.
+- When no item is still active, the task projects as "complete" from the deterministic earliest succeeded
+  item; if there is no workflow item at all it falls back to the "legacy" task status.
+- The projected workItemId must be stable for identical logical state regardless of work-item array order,
+  so the same task never flips between ids across callers.
+*/
+
 const task = { id: "FN-PROJECT", mergeRetries: 4, status: "legacy status" } as Task;
 
 function item(input: Partial<WorkflowWorkItem> & Pick<WorkflowWorkItem, "id" | "kind" | "state">): WorkflowWorkItem {

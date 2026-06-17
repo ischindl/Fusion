@@ -28,7 +28,17 @@ export function projectWorkflowWorkStatus(
     item.state !== "succeeded" && item.state !== "cancelled",
   );
   if (!active) {
-    const completed = workItems.find((item) => item.state === "succeeded");
+    /*
+    FNXC:WorkflowProjections 2026-06-17-08:42:
+    When no work item is still active, the projection must report a stable "complete" status for the task.
+    If several succeeded items exist for the same task, the chosen workItemId must be deterministic so the
+    same logical state always projects to the same id regardless of incoming array order (otherwise dashboard,
+    API, and CLI callers can disagree on which work item represents completion). Order succeeded items by
+    createdAt ascending — matching the tiebreaker in compareWorkItemsForProjection — and take the earliest.
+    */
+    const completed = [...workItems]
+      .filter((item) => item.state === "succeeded")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
     if (completed) {
       return { status: "complete", source: "workflow", taskId: task.id, workItemId: completed.id };
     }
