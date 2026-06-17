@@ -1,4 +1,4 @@
-import type { Settings, TaskDetail, WorkflowIr, WorkflowIrNode, WorkflowWorkItem, WorkflowWorkItemState } from "@fusion/core";
+import type { Settings, TaskDetail, WorkflowIr, WorkflowIrArtifact, WorkflowIrNode, WorkflowWorkItem, WorkflowWorkItemState } from "@fusion/core";
 import {
   BUILTIN_CODING_WORKFLOW_IR,
   getBuiltinWorkflow,
@@ -35,6 +35,7 @@ export interface WorkflowTaskRuntimeResult {
 export interface WorkflowTaskRuntimeDeps extends Omit<WorkflowGraphExecutorDeps, "seams" | "runCustomNode"> {
   store: WorkflowIrResolverStore & {
     getTask?: (taskId: string) => Promise<TaskDetail>;
+    getTaskDocument?: (taskId: string, key: string) => Promise<unknown | null>;
     transitionWorkflowWorkItem?: (
       id: string,
       state: WorkflowWorkItemState,
@@ -113,6 +114,25 @@ export class WorkflowTaskRuntime {
         reason,
       };
     }
+    if (result.outcome === "success") {
+      const missingArtifactKeys = await this.findMissingRequiredArtifacts(task.id, target.ir);
+      if (missingArtifactKeys.length > 0) {
+        const reason = `workflow-required-artifacts-missing:${missingArtifactKeys.join(",")}`;
+        const context = {
+          ...result.context,
+          "workflow:required-artifacts:missing": missingArtifactKeys,
+        };
+        this.emit("terminal", task.id, `failed:${reason}`);
+        return {
+          disposition: "failed",
+          outcome: "failure",
+          visitedNodeIds: result.visitedNodeIds,
+          context,
+          reason,
+        };
+      }
+    }
+
     const disposition: WorkflowTaskRuntimeDisposition = result.outcome === "success" ? "completed" : "failed";
     this.emit("terminal", task.id, disposition);
     return {
@@ -230,6 +250,25 @@ export class WorkflowTaskRuntime {
       context: {},
       reason,
     };
+  }
+
+  /**
+   * FNXC:WorkflowGates 2026-06-17-18:20:
+   * Custom workflow success criteria require every declared task-document artifact key to exist before terminal success. Evaluate this at the runtime terminal seam so graph paths cannot falsely complete after nodes pass while required deliverables are absent. Empty document content still satisfies the requirement because the IR contract currently requires key existence, not non-empty content.
+   */
+  private async findMissingRequiredArtifacts(taskId: string, ir: WorkflowIr): Promise<string[]> {
+    const declaredArtifacts: WorkflowIrArtifact[] = "artifacts" in ir && Array.isArray(ir.artifacts) ? ir.artifacts : [];
+    if (declaredArtifacts.length === 0) return [];
+    if (!this.deps.store.getTaskDocument) {
+      return declaredArtifacts.map((artifact) => artifact.key);
+    }
+
+    const missing: string[] = [];
+    for (const artifact of declaredArtifacts) {
+      const document = await this.deps.store.getTaskDocument(taskId, artifact.key);
+      if (!document) missing.push(artifact.key);
+    }
+    return missing;
   }
 
   private async resolveRuntimeTarget(taskId: string): Promise<WorkflowRuntimeTarget> {

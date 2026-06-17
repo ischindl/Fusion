@@ -1060,6 +1060,38 @@ export function inferWorkflowStepVerdictFromProse(rawOutput: string): { verdict:
   return null;
 }
 
+/**
+ * FNXC:WorkflowGates 2026-06-17-18:22:
+ * Gate-class workflow steps must emit a parseable JSON or prose verdict before they can approve pre-merge completion. A fully malformed response is surfaced explicitly so blocking gates fail while advisory gates can record a non-blocking advisory failure.
+ */
+export function parseWorkflowStepOutput(rawOutput: string): {
+  output: string;
+  verdict?: "APPROVE" | "APPROVE_WITH_NOTES" | "REVISE";
+  notes?: string;
+  malformed?: boolean;
+} {
+  const trimmed = rawOutput.trim();
+  const parsed = parseWorkflowStepVerdict(trimmed);
+  if (parsed) {
+    return {
+      output: parsed.notes || "",
+      verdict: parsed.verdict,
+      notes: parsed.notes,
+    };
+  }
+
+  const inferred = inferWorkflowStepVerdictFromProse(trimmed);
+  if (inferred) {
+    return {
+      output: inferred.notes || trimmed,
+      verdict: inferred.verdict,
+      notes: inferred.notes,
+    };
+  }
+
+  return { output: trimmed, malformed: true };
+}
+
 const reviewStepParams = Type.Object({
   step: Type.Number({ description: "Step number to review" }),
   type: Type.Union(
@@ -12007,26 +12039,7 @@ ${failureFeedback}
     notes?: string;
     malformed?: boolean;
   } {
-    const trimmed = rawOutput.trim();
-    const parsed = parseWorkflowStepVerdict(trimmed);
-    if (parsed) {
-      return {
-        output: parsed.notes || "",
-        verdict: parsed.verdict,
-        notes: parsed.notes,
-      };
-    }
-
-    const inferred = inferWorkflowStepVerdictFromProse(trimmed);
-    if (inferred) {
-      return {
-        output: inferred.notes || trimmed,
-        verdict: inferred.verdict,
-        notes: inferred.notes,
-      };
-    }
-
-    return { output: trimmed, malformed: true };
+    return parseWorkflowStepOutput(rawOutput);
   }
 
   /**
@@ -12297,9 +12310,15 @@ Backward compat fallback: if JSON is unavailable, you may still begin output wit
         if (parsed.malformed) {
           await this.store.logEntry(
             task.id,
-            `[pre-merge] Workflow step '${workflowStep.name}' produced malformed output — treating as skipped`,
+            `[pre-merge] Workflow step '${workflowStep.name}' produced malformed output — blocking gate success`,
           );
-          return { success: true, output: parsed.output, notes: undefined, malformed: true };
+          return {
+            success: false,
+            output: parsed.output,
+            error: "malformed output — no verdict extracted",
+            notes: undefined,
+            malformed: true,
+          };
         }
 
         return { success: true, output: parsed.output };

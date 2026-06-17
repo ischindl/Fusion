@@ -375,7 +375,7 @@ For new workflow step prompts, prefer the structured JSON contract.
 
 #### Malformed Output
 
-If output matches neither structured JSON nor known prose fallback patterns, Fusion records the step output as `malformed`. Operationally, this means no workflow verdict could be inferred from that response.
+If output matches neither structured JSON nor known prose fallback patterns, Fusion records the step output as `malformed`. Operationally, this means no workflow verdict could be inferred from that response. A malformed `gateMode: "gate"` prompt step is a blocking failure rather than an approval; a malformed `gateMode: "advisory"` step is recorded as `advisory_failure` and does not block completion.
 
 ### Behavior
 
@@ -531,7 +531,7 @@ Prompt-mode workflow agents should emit a trailing JSON object:
 - `verdict` and `notes` are persisted on `WorkflowStepResult` when present.
 - Script-mode steps do not populate these fields.
 - Backward compatibility remains for legacy prose-only responses via heuristic fallback (`REQUEST REVISION` and approval keywords).
-- If neither structured JSON nor fallback prose can be interpreted, output is recorded as `malformed` (no inferable verdict) instead of hard-failing the task.
+- If neither structured JSON nor fallback prose can be interpreted, output is recorded as `malformed` (no inferable verdict). Malformed blocking gates fail closed; advisory gates record `advisory_failure` without blocking.
 
 ## Workflow Graph Executor
 
@@ -548,6 +548,7 @@ Traversal semantics:
 - `outcome:<value>` routes when the node result value matches exactly
 - unsupported conditions throw `WorkflowIrError`
 - per-node retries are bounded and deterministic
+- terminal success requires every workflow-declared task-document artifact key (`ir.artifacts[].key`) to exist. No-artifact workflows keep the implicit `PROMPT.md` parse-step default and do not require a task document.
 
 Coverage includes lifecycle ordering, primitive invocation, merge/file-scope failure routing, and downstream halt behavior for hard-cancel/recovery style failures.
 
