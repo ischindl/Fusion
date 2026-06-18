@@ -1487,6 +1487,11 @@ export class TaskExecutor {
    * FN-6625 adds completion-finalize provenance for the FN-6614 symptom where a completed/no-commit execution already handed off to in-review, then a trailing graph abort looked like a pause/resume engine abort and re-parked the task failed. Completion-finalize is sibling provenance to FN-6568 merge-seam, not operator pause intent.
    */
   private pausedAbortProvenance = new Map<string, "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize">();
+  /**
+   * FNXC:WorkflowLifecycle 2026-06-18-10:56:
+   * FN-6644 makes completed/no-commit finalize-to-review state durable beyond volatile pause provenance. FN-6641 showed FN-6625 was incomplete because teardown can re-mark `completion-finalize` as `hard-cancel`; this marker keeps the already-finalized handoff from being re-parked as an operator-action pause abort while preserving genuine live pauses and active hard-cancels.
+   */
+  private completionFinalizedTaskIds = new Set<string>();
   /** Tasks that had a dependency added mid-execution (abort + discard worktree). */
   private depAborted = new Set<string>();
   /** Tasks killed by stuck task detector. Value = shouldRequeue (budget not exhausted). */
@@ -1515,9 +1520,15 @@ export class TaskExecutor {
     this.pausedAbortProvenance.set(taskId, provenance);
   }
 
+  private markCompletionFinalized(taskId: string): void {
+    this.markPausedAborted(taskId, "completion-finalize");
+    this.completionFinalizedTaskIds.add(taskId);
+  }
+
   private clearPausedAborted(taskId: string): void {
     this.pausedAborted.delete(taskId);
     this.pausedAbortProvenance.delete(taskId);
+    this.completionFinalizedTaskIds.delete(taskId);
   }
 
   private setActiveSession(taskId: string, sessionState: ActiveExecutorSessionState, worktreePath: string): void {
@@ -6440,12 +6451,26 @@ export class TaskExecutor {
       const abortProvenance = this.pausedAbortProvenance.get(task.id);
       const mergeSeamAborted = abortProvenance === "merge-seam";
       const completionFinalizeAborted = abortProvenance === "completion-finalize";
-      // FNXC:WorkflowLifecycle 2026-06-17-23:39: A real live pause still parks even if stale provenance says completion-finalize; completed handoff rows are expected to be unpaused.
+      const completionFinalized = completionFinalizeAborted || this.completionFinalizedTaskIds.has(task.id);
+      /*
+      FNXC:WorkflowLifecycle 2026-06-17-23:39: A real live pause still parks even if stale provenance says completion-finalize; completed handoff rows are expected to be unpaused.
+
+      FNXC:WorkflowLifecycle 2026-06-18-10:57:
+      FN-6644: a completed/no-commit execution that already finalized to in-review must not be re-parked as an operator-action pause abort when later teardown overwrites FN-6625 `completion-finalize` provenance with `hard-cancel` (FN-6641). Only suppress the pause-abort branch for already-finalized, non-in-progress rows with no live user/global pause; active execution hard-cancel and genuine pause/global-pause still park or preserve exactly as before.
+      */
+      const suppressFinalizedCompletionAbort = Boolean(
+        completionFinalized
+          && live.column !== "in-progress"
+          && !live.userPaused
+          && live.paused !== true
+          && abortProvenance !== "global-pause"
+          && !mergeSeamAborted,
+      );
       const genuinePauseAbort = Boolean(
         live.userPaused
           || abortProvenance === "global-pause"
           || (live.paused && !mergeSeamAborted)
-          || (pausedAborted && !mergeSeamAborted && !completionFinalizeAborted),
+          || (pausedAborted && !mergeSeamAborted && !completionFinalizeAborted && !suppressFinalizedCompletionAbort),
       );
       if (genuinePauseAbort) {
         /*
@@ -6671,6 +6696,7 @@ export class TaskExecutor {
   }
 
   async execute(task: Task): Promise<void> {
+    this.completionFinalizedTaskIds.delete(task.id);
     // Workflow graph interpreter routing (cutover M-C): graph-selected tasks
     // are orchestrated by the interpreter. The execute seam re-enters this
     // method with a completion interceptor registered (which claims the task
@@ -8154,8 +8180,11 @@ export class TaskExecutor {
               /*
               FNXC:WorkflowLifecycle 2026-06-17-23:33:
               FN-6625: the completed/no-commit handoff may dispose graph execution after the task is already in-review. Mark that abort as completion-finalize so a trailing FN-6614-style graph failure resolves benignly instead of looking like a user/global pause; FN-6568 uses the same provenance seam for merge aborts.
+
+              FNXC:WorkflowLifecycle 2026-06-18-10:58:
+              FN-6644/FN-6641: the graceful-session-exit handoff must also record durable completed-finalize state because a later teardown can re-mark the abort as `hard-cancel`. The classifier uses that durable handoff marker, not the volatile provenance alone, to keep completed no-commit tasks from being re-parked failed.
               */
-              this.markPausedAborted(task.id, "completion-finalize");
+              this.markCompletionFinalized(task.id);
               await this.handoffTaskToReview(task, "paused-after-completion");
               this.clearCompletedTaskWatchdog(task.id);
               this.options.onComplete?.(task);
@@ -8705,8 +8734,11 @@ export class TaskExecutor {
           /*
           FNXC:WorkflowLifecycle 2026-06-17-23:33:
           FN-6625: the completed/no-commit handoff may dispose graph execution after the task is already in-review. Mark that abort as completion-finalize so a trailing FN-6614-style graph failure resolves benignly instead of looking like a user/global pause; FN-6568 uses the same provenance seam for merge aborts.
+
+          FNXC:WorkflowLifecycle 2026-06-18-10:59:
+          FN-6644/FN-6641: the finally-block handoff must record durable completed-finalize state because a later teardown can overwrite provenance to `hard-cancel`. The classifier must still resolve that completed no-commit tail failure benignly without weakening genuine pause or active hard-cancel behavior.
           */
-          this.markPausedAborted(task.id, "completion-finalize");
+          this.markCompletionFinalized(task.id);
           await this.handoffTaskToReview(task, "paused-after-completion");
           this.options.onComplete?.(task);
         } else {
