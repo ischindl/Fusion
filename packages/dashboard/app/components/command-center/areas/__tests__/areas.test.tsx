@@ -2,7 +2,7 @@
 FNXC:CommandCenter 2026-06-16-09:42:
 Command Center area component tests (PR #1683). Pin loading/error/unavailable-vs-zero rendering for each analytics area against mocked fixtures so the "—" sentinel and cost-unavailable contracts can't regress.
 */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 
 // Mock the api() helper so the areas fetch deterministic fixtures.
@@ -15,6 +15,7 @@ import { TokensArea } from "../TokensArea";
 import { ToolsArea } from "../ToolsArea";
 import { ProductivityArea } from "../ProductivityArea";
 import { SignalsArea } from "../SignalsArea";
+import { ActivityArea } from "../ActivityArea";
 import type { DateRange } from "../DateRangePicker";
 
 const range7d: DateRange = { from: "2026-06-08", to: null, preset: "7d" };
@@ -59,8 +60,120 @@ function tokenFixture() {
   };
 }
 
+function activityFixture() {
+  return {
+    from: "2026-06-08",
+    to: null,
+    sessions: 4,
+    messages: 12,
+    activeNodes: 3,
+    activeAgents: 2,
+    daily: [
+      { day: "2026-06-08", messages: 2, activeNodes: 1, activeAgents: 1 },
+      { day: "2026-06-09", messages: 4, activeNodes: 2, activeAgents: 1 },
+      { day: "2026-06-10", messages: 6, activeNodes: 3, activeAgents: 2 },
+    ],
+    stickiness: 0.5,
+    mttr: { value: null, unavailable: true, sampleCount: 0 },
+    monitor: {
+      mttr: { value: null, unavailable: true, sampleCount: 0 },
+      incidentsOpened: 0,
+      incidentsResolved: 0,
+      openIncidents: 0,
+      deployments: 0,
+    },
+    funnel: {
+      stages: [],
+      enteredInRange: 0,
+      doneInRange: 0,
+      completionRate: null,
+      throughputPerDay: 0,
+      rangeDays: 7,
+    },
+  };
+}
+
 beforeEach(() => {
   apiMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("ActivityArea", () => {
+  it("renders summary stats and the live line chart sections for populated daily activity", async () => {
+    apiMock.mockResolvedValue(activityFixture());
+    render(<ActivityArea range={range7d} />);
+
+    await screen.findByTestId("cc-area-activity");
+    expect(screen.getByTestId("cc-activity-sessions").textContent).toContain("4");
+    expect(screen.getByTestId("cc-activity-messages").textContent).toContain("12");
+    expect(screen.getByTestId("cc-activity-nodes").textContent).toContain("3");
+    expect(screen.getByTestId("cc-activity-agents").textContent).toContain("2");
+    expect(screen.getByTestId("cc-activity-stickiness").textContent).toContain("50%");
+    expect(screen.getByTestId("cc-activity-line-messages")).toBeTruthy();
+    expect(screen.getByTestId("cc-activity-line-agents")).toBeTruthy();
+    expect(screen.getByTestId("cc-activity-line-nodes")).toBeTruthy();
+    expect(screen.getByTestId("cc-activity-line-throughput")).toBeTruthy();
+  });
+
+  it("renders the empty state for zero activity without empty chart shells", async () => {
+    apiMock.mockResolvedValue({
+      ...activityFixture(),
+      sessions: 0,
+      messages: 0,
+      activeNodes: 0,
+      activeAgents: 0,
+      daily: [],
+      stickiness: 0,
+    });
+    render(<ActivityArea range={range7d} />);
+
+    await screen.findByTestId("cc-area-activity-empty");
+    expect(screen.queryByTestId("cc-activity-line-messages")).toBeNull();
+    expect(screen.queryByTestId("cc-activity-line-agents")).toBeNull();
+    expect(screen.queryByTestId("cc-activity-line-nodes")).toBeNull();
+    expect(screen.queryByTestId("cc-activity-line-throughput")).toBeNull();
+  });
+
+  it("polls activity while mounted, keeps content during refresh, and clears the interval on unmount", async () => {
+    vi.useFakeTimers();
+    apiMock.mockResolvedValue(activityFixture());
+    const { unmount } = render(<ActivityArea range={range7d} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("cc-area-activity")).toBeTruthy();
+    expect(apiMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+    });
+    expect(apiMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("cc-area-activity")).toBeTruthy();
+    expect(screen.queryByTestId("cc-area-activity-loading")).toBeNull();
+
+    unmount();
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      await Promise.resolve();
+    });
+    expect(apiMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not poll or fetch for an inverted custom activity range", async () => {
+    vi.useFakeTimers();
+    render(<ActivityArea range={customRange("2026-06-10", "2026-06-01")} />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    expect(apiMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("TokensArea", () => {

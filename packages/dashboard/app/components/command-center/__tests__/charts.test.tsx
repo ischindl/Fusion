@@ -7,6 +7,7 @@ import { StackedBar } from "../charts/StackedBar";
 import { Sparkline } from "../charts/Sparkline";
 import { Funnel } from "../charts/Funnel";
 import { RadialGauge } from "../charts/RadialGauge";
+import { LineChart } from "../charts/LineChart";
 
 function widthOf(el: HTMLElement): string {
   return el.style.width;
@@ -97,6 +98,46 @@ describe("Sparkline", () => {
     const bars = screen.getByRole("img", { name: "empty" }).querySelectorAll<HTMLElement>(".cc-sparkline-bar");
     expect(heightOf(bars[0])).toBe("0%");
     expect(heightOf(bars[1])).toBe("0%");
+  });
+});
+
+describe("LineChart", () => {
+  it("renders a populated finite SVG line with an accessible label", () => {
+    render(<LineChart ariaLabel="activity trend" series={[{ label: "messages", values: [2, 4, 1] }]} />);
+
+    const chart = screen.getByRole("img", { name: "activity trend" });
+    const line = chart.querySelector(".cc-line-chart-path");
+    const points = line?.getAttribute("points") ?? "";
+
+    expect(line).toBeTruthy();
+    expect(points).not.toBe("");
+    expect(points).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("renders all-zero values as valid baseline geometry without NaN", () => {
+    render(<LineChart ariaLabel="zero trend" series={[{ label: "zero", values: [0, 0] }]} />);
+
+    const points = screen.getByRole("img", { name: "zero trend" }).querySelector(".cc-line-chart-path")?.getAttribute("points") ?? "";
+    expect(points).toBe("0,100 100,100");
+    expect(points).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("renders a single-point series as a visible point without a malformed line", () => {
+    render(<LineChart ariaLabel="single trend" series={[{ label: "single", values: [5] }]} />);
+
+    const chart = screen.getByRole("img", { name: "single trend" });
+    expect(chart.querySelector(".cc-line-chart-path")).toBeNull();
+    const point = chart.querySelector(".cc-line-chart-point");
+    expect(point?.getAttribute("cx")).toBe("50");
+    expect(point?.getAttribute("cy")).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("renders an empty series as an empty valid SVG without throwing", () => {
+    render(<LineChart ariaLabel="empty line" series={[{ label: "empty", values: [] }]} />);
+
+    const chart = screen.getByRole("img", { name: "empty line" });
+    expect(chart.querySelector(".cc-line-chart-path")).toBeNull();
+    expect(chart.querySelector(".cc-line-chart-point")).toBeNull();
   });
 });
 

@@ -118,6 +118,68 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
   transition: height var(--transition-normal);
 }
 
+/* ---- LineChart ---- */
+/*
+FNXC:CommandCenterStyling 2026-06-18-14:29:
+Line-chart motion is decorative, token-timed, and disabled for reduced-motion users; sizing and stroke colors stay on design tokens so the Activity area remains readable across desktop and mobile without chart-specific hardcoded colors or lengths.
+*/
+.cc-line-chart {
+  display: block;
+  inline-size: 100%;
+  block-size: clamp(var(--space-16), 22vw, calc(var(--space-20) * 2));
+  aspect-ratio: 5 / 2;
+  color: var(--color-accent);
+  overflow: visible;
+}
+
+.cc-line-chart-series {
+  color: var(--color-accent);
+}
+
+.cc-line-chart-series:nth-child(2n) {
+  color: var(--color-success);
+}
+
+.cc-line-chart-series:nth-child(3n) {
+  color: var(--color-warning);
+}
+
+.cc-line-chart-path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--border-width-thick, var(--border-width));
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: cc-line-chart-draw calc(var(--duration-slow) * 4) ease-out forwards;
+}
+
+.cc-line-chart-point {
+  fill: var(--surface-1);
+  stroke: currentColor;
+  stroke-width: var(--border-width-thick, var(--border-width));
+}
+
+@keyframes cc-line-chart-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-line-chart-path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .cc-line-chart {
+    block-size: clamp(var(--space-14), 34vw, calc(var(--space-20) + var(--space-12)));
+  }
+}
+
 /* ---- RadialGauge ---- */
 .cc-radial-gauge {
   display: grid;
