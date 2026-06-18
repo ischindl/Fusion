@@ -97,6 +97,28 @@ function getCssAfter(css: string, marker: string): string {
   return markerIndex >= 0 ? css.slice(markerIndex) : "";
 }
 
+function getCssDeclaration(rule: string, propertyName: string): string {
+  const declarationMatch = new RegExp(`${propertyName}\\s*:\\s*([^;]+);`).exec(rule);
+  return declarationMatch?.[1]?.trim() ?? "";
+}
+
+function getRootTokenPxValues(css: string): Record<string, number> {
+  const rootRule = getCssRuleBlock(css, ":root");
+  const tokenValues: Record<string, number> = {};
+  for (const match of rootRule.matchAll(/(--(?:space|icon-size)-[\w-]+)\s*:\s*(\d+)px;/g)) {
+    tokenValues[match[1]] = Number(match[2]);
+  }
+  return tokenValues;
+}
+
+function resolveCssPxToken(value: string, tokenValues: Record<string, number>): number {
+  const tokenName = /^var\((--[\w-]+)\)$/.exec(value.trim())?.[1];
+  if (!tokenName || tokenValues[tokenName] === undefined) {
+    throw new Error(`Unable to resolve CSS token value: ${value}`);
+  }
+  return tokenValues[tokenName];
+}
+
 function mockLogs(
   entries: AgentLogEntry[] = [],
   loading = false,
@@ -2037,17 +2059,22 @@ describe("TaskChatTab", () => {
 
   it("scales the task chat send glyph without shrinking the desktop or mobile touch target", () => {
     const css = readFileSync(resolve(__dirname, "../TaskChatTab.css"), "utf8");
+    const sharedStyles = readFileSync(resolve(__dirname, "../../styles.css"), "utf8");
     const sendRule = getCssRuleBlock(css, ".task-chat-send");
     const mobileCss = getCssAfter(css, "@media (max-width: 768px)");
     const mobileSendRule = getCssRuleBlock(mobileCss, ".task-chat-send");
+    const tokenValues = getRootTokenPxValues(sharedStyles);
+    const defaultIconSizePx = tokenValues["--icon-size-md"];
+    const desktopIconSizePx = resolveCssPxToken(getCssDeclaration(sendRule, "--btn-icon-size"), tokenValues);
+    const mobileIconSizePx = resolveCssPxToken(getCssDeclaration(mobileSendRule, "--btn-icon-size"), tokenValues);
 
-    expect(sendRule).toContain("--btn-icon-size: var(--space-lg)");
-    expect(sendRule).not.toContain("--btn-icon-size: var(--icon-size-md)");
+    expect(defaultIconSizePx).toBe(16);
+    expect(desktopIconSizePx).toBeGreaterThan(defaultIconSizePx);
+    expect(mobileIconSizePx).toBeGreaterThan(defaultIconSizePx);
     expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("min-inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("min-block-size: calc(var(--space-2xl) + var(--space-sm))");
-    expect(mobileSendRule).toContain("--btn-icon-size: var(--space-lg)");
     expect(mobileSendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(mobileSendRule).toContain("min-inline-size: calc(var(--space-2xl) + var(--space-sm))");
   });
@@ -2085,12 +2112,14 @@ describe("TaskChatTab", () => {
     expect(css).toContain(".task-chat-transcript");
     expect(css).toContain(".task-chat-jump-to-bottom");
     expect(css).toContain(".task-chat-composer-row");
+    expect(sendRule).toContain("--btn-icon-size: var(--space-xl)");
     expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).not.toContain("gap");
     expect(mobileComposerRule).toContain("align-items: flex-end");
     expect(mobileComposerRule).not.toContain("flex-direction: column");
     expect(mobileComposerRule).not.toContain("align-items: stretch");
+    expect(mobileSendRule).toContain("--btn-icon-size: var(--space-xl)");
     expect(mobileSendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(css).toContain(".task-chat-tool-group-summary");
     expect(css).toContain(".task-chat-tool-group-names");

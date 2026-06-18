@@ -371,9 +371,12 @@ FN-6425 requires the chat expand control to stay inside the chat view as an icon
 /*
 FNXC:TaskDetailChat 2026-06-16-19:45:
 FN-6507 requires the Task Detail chat send glyph to scale with the larger square touch target on desktop and mobile. Override only this button's global .btn-icon size so Send and Loader2 stay visually proportional without changing the tap box or sibling chat send buttons.
+
+FNXC:TaskDetailChat 2026-06-17-18:05:
+FN-6604 corrects the FN-6507 no-op where var(--space-lg) resolved to the same 16px value as the global --icon-size-md default. Use var(--space-xl) so the glyph resolves to 24px and fills the 40px desktop and mobile send button proportionally while preserving the tap box.
 */
 .task-chat-send {
-  --btn-icon-size: var(--space-lg);
+  --btn-icon-size: var(--space-xl);
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -474,7 +477,7 @@ FN-6507 requires the Task Detail chat send glyph to scale with the larger square
   }
 
   .task-chat-send {
-    --btn-icon-size: var(--space-lg);
+    --btn-icon-size: var(--space-xl);
     inline-size: calc(var(--space-2xl) + var(--space-sm));
     min-inline-size: calc(var(--space-2xl) + var(--space-sm));
   }
