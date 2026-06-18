@@ -1,3 +1,8 @@
+/*
+FNXC:CommandCenterStyling 2026-06-17-18:46:
+Chart labels and legends must use --text-muted so command-center CSS stays aligned with the FN-4286 canonical text-token guard and avoids raw color fallbacks.
+*/
+
 /* Command Center hand-rolled CSS-bar chart primitives.
  *
  * Animation durations MUST use --duration-* tokens (bare durations).
@@ -24,7 +29,7 @@
 
 .cc-bar-label {
   font-size: var(--font-size-sm, 0.85rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -86,7 +91,7 @@
   align-items: center;
   gap: var(--space-1, 0.25rem);
   font-size: var(--font-size-sm, 0.85rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
 }
 
 .cc-stacked-swatch {
@@ -133,7 +138,7 @@
   display: flex;
   justify-content: space-between;
   font-size: var(--font-size-sm, 0.85rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
 }
 
 .cc-funnel-conversion {

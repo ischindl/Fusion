@@ -1,3 +1,8 @@
+/*
+FNXC:CommandCenterStyling 2026-06-17-18:46:
+Area headings, table metadata, and empty states use --text-muted so the analytics surfaces satisfy the canonical text-token guard without raw color fallbacks.
+*/
+
 /* Command Center historical analytics areas (U5).
  * Animation durations use --duration-* tokens only (never --transition-*).
  */
@@ -18,7 +23,7 @@
   margin: 0;
   font-size: var(--font-size-sm, 0.85rem);
   font-weight: 600;
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -32,7 +37,7 @@
 
 .cc-stat-sub {
   font-size: var(--font-size-xs, 0.75rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
 }
 
 /* ---- Tables ---- */
@@ -61,7 +66,7 @@
 }
 
 .cc-table thead th {
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
   font-weight: 600;
 }
 
@@ -94,7 +99,7 @@
 
 /* Unavailable sentinel ("—") with a help cursor for its tooltip. */
 .cc-unavailable {
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
   cursor: help;
   border-bottom: 1px dotted var(--border-subtle, rgba(127, 127, 127, 0.4));
 }
@@ -104,7 +109,7 @@
   align-items: center;
   gap: var(--space-2, 0.5rem);
   padding: var(--space-4, 1rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
 }
 
 .cc-area-empty,
@@ -114,7 +119,7 @@
   align-items: center;
   gap: var(--space-2, 0.5rem);
   padding: var(--space-6, 2rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -124,5 +129,5 @@
 
 .cc-pricing-note {
   font-size: var(--font-size-xs, 0.75rem);
-  color: var(--text-secondary, #888);
+  color: var(--text-muted);
 }
