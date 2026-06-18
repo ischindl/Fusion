@@ -47,6 +47,15 @@ export function createEngineMock(overrides: AnyModule = {}): AnyModule {
   return withFallbackFunctions(actual, {
     createFnAgent: vi.fn(),
     promptWithFallback: vi.fn(),
+    /*
+    FNXC:TestSkills 2026-06-17-19:33:
+    Dashboard route tests mock @fusion/engine wholesale, so skill-aware planning lanes need a shaped session-skill helper result instead of the fallback vi.fn() returning undefined.
+    */
+    buildSessionSkillContextSync: vi.fn(() => ({
+      skillSelectionContext: undefined,
+      resolvedSkillNames: [],
+      skillSource: "none" as const,
+    })),
     // Returns an iterable tool list; dashboard code spreads its result
     // (`...createWorkflowAuthoringTools(...)`), so it must not be undefined.
     createWorkflowAuthoringTools: vi.fn(() => []),

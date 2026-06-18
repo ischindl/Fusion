@@ -40,6 +40,12 @@ const { mockCreateFnAgent } = vi.hoisted(() => ({
 vi.mock("@fusion/engine", () => ({
   listCliAdapterDescriptors: () => [],
   createWorkflowAuthoringTools: vi.fn(() => []),
+  // FNXC:DashboardSessionTests 2026-06-17-19:33: planning and mission-interview sessions now request skills through the shared helper; focused engine mocks must return the shaped helper result so lifecycle tests do not crash before createFnAgent is captured.
+  buildSessionSkillContextSync: vi.fn(() => ({
+    skillSelectionContext: undefined,
+    resolvedSkillNames: [],
+    skillSource: "none" as const,
+  })),
   createFnAgent: mockCreateFnAgent,
 }));
 

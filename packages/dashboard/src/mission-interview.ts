@@ -29,11 +29,12 @@ import {
 } from "./ai-session-diagnostics.js";
 import { GenerationGuard, isAbortError } from "./ai-session-timeout.js";
 
-import { createFnAgent as engineCreateFnAgent } from "@fusion/engine";
+import { buildSessionSkillContextSync, createFnAgent as engineCreateFnAgent } from "@fusion/engine";
 import { createPlanningBoardTools } from "./planning-board-tools.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AgentResult = any;
+type SkillPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
 const MISSION_INTERVIEW_BUILTIN_WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createFnAgent: any = engineCreateFnAgent;
@@ -271,6 +272,8 @@ interface MissionInterviewSession {
    */
   store?: TaskStore;
   rootDir?: string;
+  /** Plugin runner captured while the server is alive so rebuilt mission interview agents keep plugin-contributed skills. */
+  pluginRunner?: SkillPluginRunner;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -813,9 +816,10 @@ async function initializeAgent(
   rootDir: string,
   store: TaskStore,
   promptOverrides?: PromptOverrideMap,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<void> {
   try {
-    session.agent = await createMissionInterviewAgent(session, rootDir, store, promptOverrides);
+    session.agent = await createMissionInterviewAgent(session, rootDir, store, promptOverrides, pluginRunner);
     session.updatedAt = new Date();
 
     // Send initial message to get first question
@@ -841,15 +845,22 @@ async function createMissionInterviewAgent(
   rootDir: string,
   store: TaskStore,
   promptOverrides?: PromptOverrideMap,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<AgentResult> {
   await ensureEngineReady();
 
   const effectivePrompt = resolvePrompt("mission-interview-system", promptOverrides);
+  const skillContext = buildSessionSkillContextSync(null, "executor", rootDir, pluginRunner);
 
+  /*
+  FNXC:MissionInterviewSkills 2026-06-17-19:33:
+  Mission interview sessions are agent-acting planning lanes, so they request executor role fallback skills plus enabled plugin skills to keep ce-debug-style skills available outside task execution.
+  */
   return createFnAgent({
     cwd: rootDir,
     systemPrompt: effectivePrompt,
     tools: "readonly",
+    ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
     builtinToolsAllowlist: [...MISSION_INTERVIEW_BUILTIN_WEB_TOOLS],
     customTools: [...createPlanningBoardTools(store)],
     ...(session.modelProvider && session.modelId
@@ -931,7 +942,7 @@ async function ensureMissionInterviewAgent(
     );
   }
 
-  session.agent = await createMissionInterviewAgent(session, effectiveRootDir, effectiveStore, promptOverrides);
+  session.agent = await createMissionInterviewAgent(session, effectiveRootDir, effectiveStore, promptOverrides, session.pluginRunner);
 
   if (historyForReplay.length === 0) {
     return;
@@ -1147,6 +1158,7 @@ export async function createMissionInterviewSession(
   modelProvider?: string,
   modelId?: string,
   projectId?: string | null,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<string> {
   if (!checkRateLimit(ip)) {
     const resetTime = getRateLimitResetTime(ip);
@@ -1171,6 +1183,7 @@ export async function createMissionInterviewSession(
     modelId,
     store,
     rootDir,
+    pluginRunner,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -1179,7 +1192,7 @@ export async function createMissionInterviewSession(
   persistMissionSession(session, "generating");
 
   // Initialize AI agent in background
-  initializeAgent(session, rootDir, store, promptOverrides).catch((err) => {
+  initializeAgent(session, rootDir, store, promptOverrides, pluginRunner).catch((err) => {
     diagnostics.errorFromException("Failed to initialize agent for session", err, { sessionId, operation: "initialize-agent" });
     persistMissionSession(session, "error", err.message || "Failed to initialize AI agent");
     missionInterviewStreamManager.broadcast(sessionId, {
@@ -1254,6 +1267,7 @@ export async function retryMissionInterviewSession(
   rootDir: string,
   store?: TaskStore,
   promptOverrides?: PromptOverrideMap,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<void> {
   const session = getMissionInterviewSession(sessionId);
   if (!session) {
@@ -1262,6 +1276,7 @@ export async function retryMissionInterviewSession(
 
   if (store && !session.store) session.store = store;
   if (rootDir && !session.rootDir) session.rootDir = rootDir;
+  session.pluginRunner = pluginRunner ?? session.pluginRunner;
 
   const persisted = _aiSessionStore?.get(sessionId);
   if (persisted && persisted.type !== "mission_interview") {

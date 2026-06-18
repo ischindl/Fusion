@@ -279,6 +279,7 @@ export function createMissionRouter(
     isRunning(): boolean;
   },
   engineManager?: import("@fusion/engine").ProjectEngineManager,
+  pluginRunner?: Parameters<typeof import("@fusion/engine").buildSessionSkillContextSync>[3],
 ): Router {
   const router = Router();
   const requestContext = new AsyncLocalStorage<TaskStore>();
@@ -557,6 +558,7 @@ export function createMissionRouter(
           resolvedProvider,
           resolvedModelId,
           projectId ?? null,
+          pluginRunner,
         );
         res.status(201).json({ sessionId });
       } catch (err: unknown) {
@@ -665,7 +667,7 @@ export function createMissionRouter(
 
         const { retryMissionInterviewSession } = await import("./mission-interview.js");
 
-        await retryMissionInterviewSession(sessionId, rootDir, scopedStore, settings.promptOverrides);
+        await retryMissionInterviewSession(sessionId, rootDir, scopedStore, settings.promptOverrides, pluginRunner);
         res.json({ success: true, sessionId });
       } catch (err: unknown) {
         const errName = err instanceof Error ? err.name : "";

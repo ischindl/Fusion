@@ -1,9 +1,11 @@
 import type { WorkflowDefinition, WorkflowDefinitionKind, WorkflowIr, WorkflowIrNode, WorkflowSettingDefinition, TaskStore } from "@fusion/core";
 import { ColumnTraitValidationError, OccupiedColumnsError, InvalidRehomeTargetError, WorkflowCompileError, WorkflowIrError, ColumnAgentBindingError, WorkflowSettingRejectionError, SCHEMA_VERSION, assertColumnTraitsValid, compileWorkflowToSteps, layoutForIr, listTraits, listStepParsers, parseWorkflowIr, resolvePlanningSettingsModel, stripApprovalBypassFlags, resolveWorkflowIrById, resolveEffectiveSettingValues, findOrphanedSettingValues, isBuiltinWorkflowId, BUILTIN_WORKFLOW_SETTINGS, AgentStore, validateColumnAgentBindings, resolveWorkflowOptionalSteps } from "@fusion/core";
-import { createFnAgent as engineCreateFnAgent, validateCodeNodeSources } from "@fusion/engine";
+import { buildSessionSkillContextSync, createFnAgent as engineCreateFnAgent, validateCodeNodeSources } from "@fusion/engine";
 import { ApiError, badRequest, conflict, notFound, rateLimited } from "../api-error.js";
 import { emitWorkflowSseEvent } from "../sse.js";
 import type { ApiRoutesContext } from "./types.js";
+
+type SkillPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
 
 // ── AI design route DI seam + rate limiter (U7/R11/KTD-6) ─────────────────────
 //
@@ -131,7 +133,7 @@ at this boundary regardless.`;
  * through @fusion/core's TaskStore; none touch the engine's scheduler/executor.
  */
 export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
-  const { router, getProjectContext, rethrowAsApiError } = ctx;
+  const { router, getProjectContext, rethrowAsApiError, options } = ctx;
 
   function requireIr(body: unknown): WorkflowIr {
     const ir = (body as { ir?: unknown })?.ir;
@@ -839,10 +841,18 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       // One-shot, tool-less design turn on the planning lane.
       const settings = await store.getSettings();
       const planningModel = resolvePlanningSettingsModel(settings);
+      const rootDir = store.getRootDir();
+      const skillContext = buildSessionSkillContextSync(null, "executor", rootDir, options?.pluginRunner as SkillPluginRunner);
+
+      /*
+      FNXC:WorkflowDesignSkills 2026-06-17-19:33:
+      Workflow design is an agent-acting planning lane, so it requests executor fallback skills plus enabled plugin skills when creating the design session.
+      */
       const { session } = await createFnAgentForDesign({
-        cwd: store.getRootDir(),
+        cwd: rootDir,
         systemPrompt: WORKFLOW_DESIGN_SYSTEM_PROMPT,
         tools: "readonly",
+        ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
         defaultProvider: planningModel.provider,
         defaultModelId: planningModel.modelId,
         defaultThinkingLevel: settings.defaultThinkingLevel,

@@ -33,6 +33,7 @@ import {
   nonfatal,
 } from "./ai-session-diagnostics.js";
 import {
+  buildSessionSkillContextSync,
   createFnAgent as engineCreateFnAgent,
   createWorkflowAuthoringTools,
 } from "@fusion/engine";
@@ -45,6 +46,7 @@ const PLANNING_NO_AMBIENT_TASK_ID = "";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AgentResult = any;
+type SkillPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
 
 const PLANNING_BUILTIN_WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -336,6 +338,8 @@ interface Session {
   store?: TaskStore;
   /** Project root captured at session creation; mirrors `store` for agent rebuild. */
   rootDir?: string;
+  /** Plugin runner captured while the server is alive so rebuilt planning agents keep plugin-contributed skills. */
+  pluginRunner?: SkillPluginRunner;
   /** Callback for streaming events to SSE clients */
   streamCallback?: PlanningStreamCallback;
   /** Accumulated thinking output for display */
@@ -795,6 +799,7 @@ export async function createSession(
   promptOverrides?: PromptOverrideMap,
   planningDepth?: PlanningDepth,
   customQuestionCount?: number,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<{ sessionId: string; firstQuestion: PlanningQuestion }> {
   // Check rate limit
   if (!checkRateLimit(ip)) {
@@ -826,6 +831,7 @@ export async function createSession(
     updatedAt: new Date(),
     store,
     rootDir,
+    pluginRunner,
   };
 
   sessions.set(sessionId, session);
@@ -842,10 +848,17 @@ export async function createSession(
     await ensureEngineReady();
   }
 
+  const skillContext = buildSessionSkillContextSync(null, "executor", rootDir, pluginRunner);
+
+  /*
+  FNXC:PlanningSkills 2026-06-17-19:33:
+  Planning sessions are agent-acting lanes with planning and workflow tools, so they must request the same executor role fallback plus enabled plugin skills (for example ce-debug) as task execution sessions.
+  */
   const agentResult = await createFnAgent({
     cwd: rootDir,
     systemPrompt,
     tools: "readonly",
+    ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
     builtinToolsAllowlist: [...PLANNING_BUILTIN_WEB_TOOLS],
     customTools: [
       ...createPlanningBoardTools(store),
@@ -1148,6 +1161,7 @@ export async function startExistingSession(
   modelProvider?: string,
   modelId?: string,
   promptOverrides?: PromptOverrideMap,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<void> {
   let session = sessions.get(sessionId);
 
@@ -1230,7 +1244,8 @@ export async function startExistingSession(
 
   persistSession(session, "generating");
   planningStreamManager.registerInitialTurn(sessionId, () => {
-    initializeAgent(session, rootDir, store, modelProvider, modelId, promptOverrides).catch((err) => {
+    session.pluginRunner = pluginRunner;
+    initializeAgent(session, rootDir, store, modelProvider, modelId, promptOverrides, undefined, undefined, pluginRunner).catch((err) => {
       diagnostics.errorFromException("Failed to initialize agent for session", err, { sessionId, operation: "initialize-agent" });
       persistSession(session, "error", err.message || "Failed to initialize AI agent");
       planningStreamManager.broadcast(sessionId, {
@@ -1266,6 +1281,7 @@ export async function createSessionWithAgent(
     ntfyConfig?: PlanningNtfyConfig;
     planningDepth?: PlanningDepth;
     customQuestionCount?: number;
+    pluginRunner?: SkillPluginRunner;
   },
 ): Promise<string> {
   // Check rate limit
@@ -1299,6 +1315,7 @@ export async function createSessionWithAgent(
     lastGeneratedThinking: "",
     createdAt: new Date(),
     updatedAt: new Date(),
+    pluginRunner: options?.pluginRunner,
   };
 
   sessions.set(sessionId, session);
@@ -1314,6 +1331,7 @@ export async function createSessionWithAgent(
       promptOverrides,
       options?.planningDepth,
       options?.customQuestionCount,
+      options?.pluginRunner,
     ).catch((err) => {
       diagnostics.errorFromException("Failed to initialize agent for session", err, { sessionId, operation: "initialize-agent" });
       persistSession(session, "error", err.message || "Failed to initialize AI agent");
@@ -1339,6 +1357,7 @@ async function initializeAgent(
   promptOverrides?: PromptOverrideMap,
   planningDepth?: PlanningDepth,
   customQuestionCount?: number,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<void> {
   try {
     await runGenerationWithTimeout(session, async (abortSignal) => {
@@ -1355,6 +1374,7 @@ async function initializeAgent(
         promptOverrides,
         planningDepth,
         customQuestionCount,
+        pluginRunner,
       );
 
       void agentPromise.then((lateAgent) => {
@@ -1410,6 +1430,7 @@ async function createPlanningAgent(
   promptOverrides?: PromptOverrideMap,
   planningDepth?: PlanningDepth,
   customQuestionCount?: number,
+  pluginRunner?: SkillPluginRunner,
 ): Promise<AgentResult> {
   // Ensure engine is loaded before using createFnAgent
   await ensureEngineReady();
@@ -1419,10 +1440,17 @@ async function createPlanningAgent(
   const depthPromptSuffix = buildDepthPromptSuffix(planningDepth, customQuestionCount);
   const systemPrompt = depthPromptSuffix ? `${baseSystemPrompt}\n\n${depthPromptSuffix}` : baseSystemPrompt;
 
+  const skillContext = buildSessionSkillContextSync(null, "executor", rootDir, pluginRunner);
+
+  /*
+  FNXC:PlanningSkills 2026-06-17-19:33:
+  Streaming planning sessions share the executor skill contract because custom planning/workflow tools can benefit from agent-declared skills and enabled plugin skills exactly like task execution.
+  */
   return createFnAgent({
     cwd: rootDir,
     systemPrompt,
     tools: "readonly",
+    ...(skillContext.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
     builtinToolsAllowlist: [...PLANNING_BUILTIN_WEB_TOOLS],
     customTools: [
       ...createPlanningBoardTools(store),
@@ -1499,7 +1527,7 @@ async function ensureSessionAgent(
     );
   }
 
-  session.agent = await createPlanningAgent(session, effectiveRootDir, effectiveStore, undefined, undefined, promptOverrides);
+  session.agent = await createPlanningAgent(session, effectiveRootDir, effectiveStore, undefined, undefined, promptOverrides, undefined, undefined, session.pluginRunner);
 
   if (historyForReplay.length === 0) {
     return;
