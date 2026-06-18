@@ -374,9 +374,12 @@ FN-6507 requires the Task Detail chat send glyph to scale with the larger square
 
 FNXC:TaskDetailChat 2026-06-17-18:05:
 FN-6604 corrects the FN-6507 no-op where var(--space-lg) resolved to the same 16px value as the global --icon-size-md default. Use var(--space-xl) so the glyph resolves to 24px and fills the 40px desktop and mobile send button proportionally while preserving the tap box.
+
+FNXC:TaskDetailChat 2026-06-18-06:36:
+FN-6639 corrects the FN-6604 sizing because var(--space-xl) rendered a 24px glyph that filled only about 60% of the 40px button and still looked too small on mobile. Use var(--space-2xl) so Send and Loader2 render at 32px, about 80% fill, on desktop and mobile while preserving the tap box alignment.
 */
 .task-chat-send {
-  --btn-icon-size: var(--space-xl);
+  --btn-icon-size: var(--space-2xl);
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -477,7 +480,7 @@ FN-6604 corrects the FN-6507 no-op where var(--space-lg) resolved to the same 16
   }
 
   .task-chat-send {
-    --btn-icon-size: var(--space-xl);
+    --btn-icon-size: var(--space-2xl);
     inline-size: calc(var(--space-2xl) + var(--space-sm));
     min-inline-size: calc(var(--space-2xl) + var(--space-sm));
   }

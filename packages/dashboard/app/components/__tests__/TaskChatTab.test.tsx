@@ -119,6 +119,15 @@ function resolveCssPxToken(value: string, tokenValues: Record<string, number>): 
   return tokenValues[tokenName];
 }
 
+function resolveCssCalcSumPx(value: string, tokenValues: Record<string, number>): number {
+  const calcBody = /^calc\((var\(--[\w-]+\)(?:\s*\+\s*var\(--[\w-]+\))+)\)$/.exec(value.trim())?.[1];
+  const tokenNames = [...(calcBody?.matchAll(/var\((--[\w-]+)\)/g) ?? [])].map((match) => match[1]);
+  if (tokenNames.length === 0 || tokenNames.some((tokenName) => tokenValues[tokenName] === undefined)) {
+    throw new Error(`Unable to resolve CSS calc sum: ${value}`);
+  }
+  return tokenNames.reduce((sum, tokenName) => sum + tokenValues[tokenName], 0);
+}
+
 function mockLogs(
   entries: AgentLogEntry[] = [],
   loading = false,
@@ -2067,10 +2076,14 @@ describe("TaskChatTab", () => {
     const defaultIconSizePx = tokenValues["--icon-size-md"];
     const desktopIconSizePx = resolveCssPxToken(getCssDeclaration(sendRule, "--btn-icon-size"), tokenValues);
     const mobileIconSizePx = resolveCssPxToken(getCssDeclaration(mobileSendRule, "--btn-icon-size"), tokenValues);
+    const desktopBoxSizePx = resolveCssCalcSumPx(getCssDeclaration(sendRule, "inline-size"), tokenValues);
+    const mobileBoxSizePx = resolveCssCalcSumPx(getCssDeclaration(mobileSendRule, "inline-size"), tokenValues);
 
     expect(defaultIconSizePx).toBe(16);
     expect(desktopIconSizePx).toBeGreaterThan(defaultIconSizePx);
     expect(mobileIconSizePx).toBeGreaterThan(defaultIconSizePx);
+    expect(desktopIconSizePx / desktopBoxSizePx).toBeGreaterThanOrEqual(0.75);
+    expect(mobileIconSizePx / mobileBoxSizePx).toBeGreaterThanOrEqual(0.75);
     expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("min-inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
@@ -2112,14 +2125,14 @@ describe("TaskChatTab", () => {
     expect(css).toContain(".task-chat-transcript");
     expect(css).toContain(".task-chat-jump-to-bottom");
     expect(css).toContain(".task-chat-composer-row");
-    expect(sendRule).toContain("--btn-icon-size: var(--space-xl)");
+    expect(sendRule).toContain("--btn-icon-size: var(--space-2xl)");
     expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).not.toContain("gap");
     expect(mobileComposerRule).toContain("align-items: flex-end");
     expect(mobileComposerRule).not.toContain("flex-direction: column");
     expect(mobileComposerRule).not.toContain("align-items: stretch");
-    expect(mobileSendRule).toContain("--btn-icon-size: var(--space-xl)");
+    expect(mobileSendRule).toContain("--btn-icon-size: var(--space-2xl)");
     expect(mobileSendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(css).toContain(".task-chat-tool-group-summary");
     expect(css).toContain(".task-chat-tool-group-names");
