@@ -6,6 +6,9 @@ Keep this worktree-root regression slice fast by relying on module resets and bo
 
 FNXC:CliTests 2026-06-15-07:44:
 FN-6486 rescues this load-only timeout by closing each real TaskStore before removing its temp root and by using non-hoisted mock cleanup. The suite keeps the worktree-root regression coverage without widening timeouts, adding retries, or changing package worker settings.
+
+FNXC:CliTests 2026-06-17-23:58:
+FN-6626 requires these canonical-project-root tool tests to close the extension module's cached TaskStore instances after every case, because fixture-store cleanup alone does not close the second store opened by fn_task_show/fn_task_list.
 */
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,8 +20,11 @@ function makeCtx(cwd: string) {
   return { cwd } as any;
 }
 
+let closeLoadedExtensionStores: (() => void) | undefined;
+
 async function loadExtension() {
   const mod = await import("../extension.js");
+  closeLoadedExtensionStores = mod.closeCachedStores;
   return mod.default;
 }
 
@@ -32,6 +38,8 @@ describe("extension task tools resolve repo root from worktrees", () => {
   });
 
   afterEach(() => {
+    closeLoadedExtensionStores?.();
+    closeLoadedExtensionStores = undefined;
     vi.restoreAllMocks();
     vi.doUnmock("@fusion/core");
   });
