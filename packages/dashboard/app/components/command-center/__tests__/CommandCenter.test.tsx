@@ -118,6 +118,47 @@ function githubFixture(filed = 0, fixed = 0) {
   };
 }
 
+function teamFixture(agents: unknown[] = [
+  {
+    agentId: "agent-alpha",
+    agentName: "Alpha Agent",
+    role: "executor",
+    state: "running",
+    tokens: { inputTokens: 900, outputTokens: 450, cachedTokens: 150, cacheWriteTokens: 0, totalTokens: 1500, nTasks: 2 },
+    cost: { usd: 4.25, unavailable: false, stale: false },
+    filesChanged: 7,
+    tasksCompleted: 3,
+    tasksInProgress: 1,
+    tasksInReview: 0,
+  },
+  {
+    agentId: "agent-beta",
+    agentName: "Beta Agent",
+    role: "reviewer",
+    state: "idle",
+    tokens: { inputTokens: 100, outputTokens: 50, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 150, nTasks: 1 },
+    cost: { usd: null, unavailable: true, stale: false },
+    filesChanged: 2,
+    tasksCompleted: 1,
+    tasksInProgress: 0,
+    tasksInReview: 1,
+  },
+]) {
+  return {
+    from: "2026-06-08",
+    to: null,
+    totals: {
+      tokens: { inputTokens: 1000, outputTokens: 500, cachedTokens: 150, cacheWriteTokens: 0, totalTokens: 1650, nTasks: 3 },
+      cost: { usd: 4.25, unavailable: true, stale: false },
+      filesChanged: 9,
+      tasksCompleted: 4,
+      tasksInProgress: 1,
+      tasksInReview: 1,
+    },
+    agents,
+  };
+}
+
 function signalsFixture(open = 2) {
   return {
     totalSignals: open,
@@ -146,6 +187,7 @@ function mockOverviewApi({
   tools = toolsFixture(),
   activity = activityFixture(),
   github = githubFixture(),
+  team = teamFixture([]),
   signals = signalsFixture(),
   live = liveFixture(),
 }: {
@@ -153,6 +195,7 @@ function mockOverviewApi({
   tools?: unknown;
   activity?: unknown;
   github?: unknown;
+  team?: unknown;
   signals?: unknown;
   live?: unknown;
 } = {}) {
@@ -161,6 +204,7 @@ function mockOverviewApi({
     if (path.startsWith("/command-center/tools")) return Promise.resolve(tools);
     if (path.startsWith("/command-center/activity")) return Promise.resolve(activity);
     if (path.startsWith("/command-center/github")) return Promise.resolve(github);
+    if (path.startsWith("/command-center/team")) return team instanceof Error ? Promise.reject(team) : Promise.resolve(team);
     if (path.startsWith("/command-center/signals")) {
       return signals instanceof Error ? Promise.reject(signals) : Promise.resolve(signals);
     }
@@ -476,8 +520,8 @@ describe("CommandCenter shell", () => {
     render(<CommandCenter />);
     const tablist = screen.getByRole("tablist");
     const tabs = within(tablist).getAllByRole("tab");
-    // Overview, Tokens, Tools, Activity, Productivity, Ecosystem, GitHub, Signals, Mission Control.
-    expect(tabs.length).toBe(9);
+    // Overview, Tokens, Tools, Activity, Productivity, Team, Ecosystem, GitHub, Signals, Mission Control.
+    expect(tabs.length).toBe(10);
     // roving tabindex: exactly one tab is focusable.
     const focusable = tabs.filter((tab) => tab.getAttribute("tabindex") === "0");
     expect(focusable.length).toBe(1);
@@ -503,6 +547,106 @@ describe("CommandCenter shell", () => {
     await screen.findByTestId("cc-area-github");
     expect(screen.getByTestId("cc-github-filed").textContent).toContain("4");
     expect(screen.getByTestId("cc-github-fixed").textContent).toContain("2");
+  });
+
+  it("renders the Team tab with sortable per-agent stats and charts", async () => {
+    mockOverviewApi({ team: teamFixture() });
+    render(<CommandCenter />);
+
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+
+    await screen.findByTestId("cc-area-team");
+    expect(screen.getByTestId("command-center-tab-team").getAttribute("aria-selected")).toBe("true");
+    const alphaRow = screen.getByTestId("cc-team-row-agent-alpha");
+    expect(alphaRow).toBeTruthy();
+    expect(within(alphaRow).getByText("Alpha Agent")).toBeTruthy();
+    expect(within(alphaRow).getByText("executor")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-table").textContent).toContain("1,500");
+    expect(screen.getByTestId("cc-team-table").textContent).toContain("3");
+    expect(screen.getByTestId("cc-team-tokens-chart")).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Tokens by agent" })).toBeTruthy();
+    expect(screen.getByTestId("cc-team-completed-chart")).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Tasks done by agent" })).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("cc-team-sort-agent"));
+    const rows = within(screen.getByTestId("cc-team-table")).getAllByRole("row").slice(1);
+    expect(rows[0].getAttribute("data-testid")).toBe("cc-team-row-agent-alpha");
+  });
+
+  it("renders the Team empty state for zero agents without an empty chart shell", async () => {
+    mockOverviewApi({ team: teamFixture([]) });
+    render(<CommandCenter />);
+
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+
+    await screen.findByTestId("cc-area-team-empty");
+    expect(screen.queryByTestId("cc-area-team")).toBeNull();
+    expect(screen.queryByTestId("cc-team-tokens-chart")).toBeNull();
+  });
+
+  it("renders Team loading and error states through AreaShell", async () => {
+    let resolveTeam: (value: unknown) => void = () => undefined;
+    mockOverviewApi({ team: new Promise((resolve) => { resolveTeam = resolve; }) });
+    const { unmount } = render(<CommandCenter />);
+
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+    expect(screen.getByTestId("cc-area-team-loading")).toBeTruthy();
+    await act(async () => {
+      resolveTeam(teamFixture([]));
+    });
+    await screen.findByTestId("cc-area-team-empty");
+    unmount();
+
+    mockOverviewApi({ team: new Error("team failed") });
+    render(<CommandCenter />);
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+    await screen.findByTestId("cc-area-team-error");
+    expect(screen.getByTestId("cc-area-team-error").textContent).toContain("team failed");
+  });
+
+  it("keeps Team charts safe for zero-valued agents", async () => {
+    mockOverviewApi({
+      team: teamFixture([
+        {
+          agentId: "agent-zero",
+          agentName: "Zero Agent",
+          role: "executor",
+          state: "idle",
+          tokens: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 0, nTasks: 0 },
+          cost: { usd: null, unavailable: false, stale: false },
+          filesChanged: 0,
+          tasksCompleted: 0,
+          tasksInProgress: 0,
+          tasksInReview: 0,
+        },
+      ]),
+    });
+    render(<CommandCenter />);
+
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+
+    await screen.findByTestId("cc-area-team");
+    expect(screen.getByTestId("cc-team-tokens-chart").textContent).toContain("No non-zero values");
+    expect(screen.getByTestId("cc-team-completed-chart").textContent).toContain("No non-zero values");
+    expect(screen.getByTestId("cc-area-team").textContent).not.toContain("NaN");
+  });
+
+  it("keeps existing Command Center tab test ids after adding Team", () => {
+    render(<CommandCenter />);
+    for (const id of [
+      "overview",
+      "tokens",
+      "tools",
+      "activity",
+      "productivity",
+      "ecosystem",
+      "github",
+      "signals",
+      "mission-control",
+      "team",
+    ]) {
+      expect(screen.getByTestId(`command-center-tab-${id}`)).toBeTruthy();
+    }
   });
 
   it("supports arrow-key navigation between tabs (roving tabindex)", () => {

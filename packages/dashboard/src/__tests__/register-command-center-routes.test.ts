@@ -60,6 +60,29 @@ function seedAgentRun(db: Database, opts: { id: string; agentId: string; started
   ).run(opts.id, opts.agentId, opts.startedAt, opts.status);
 }
 
+function seedTeamMetrics(db: Database, opts: { agentId: string; name: string; tokens: number; taskId: string }): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO agents (id, name, role, state, createdAt, updatedAt)
+     VALUES (?, ?, 'executor', 'running', '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z')`,
+  ).run(opts.agentId, opts.name);
+  db.prepare(
+    `INSERT INTO tasks
+       (id, description, "column", assignedAgentId, modelProvider, modelId,
+        tokenUsageInputTokens, tokenUsageOutputTokens, tokenUsageTotalTokens,
+        tokenUsageLastUsedAt, modifiedFiles, columnMovedAt, createdAt, updatedAt)
+     VALUES (?, 'desc', 'done', ?, 'anthropic', 'claude-sonnet-4-5', ?, ?, ?,
+             '2026-03-01T00:00:00.000Z', ?, '2026-03-02T00:00:00.000Z',
+             '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')`,
+  ).run(
+    opts.taskId,
+    opts.agentId,
+    opts.tokens,
+    opts.tokens,
+    opts.tokens * 2,
+    JSON.stringify([`src/${opts.taskId}.ts`]),
+  );
+}
+
 function seedGithubIssueMetrics(db: Database, opts: { prefix: string; repo: string; filed: number; fixed: number }): void {
   for (let i = 0; i < opts.filed; i += 1) {
     db.prepare(
@@ -211,6 +234,35 @@ describe("register-command-center-routes", () => {
     expect(res.body as Record<string, unknown>).not.toHaveProperty("series");
   });
 
+  it("returns the team aggregator shape for a fixture DB", async () => {
+    seedTeamMetrics(dbA, { agentId: "agent-route-a", name: "Route Alpha", tokens: 321, taskId: "FN-A-team" });
+
+    const res = await request(
+      app,
+      "GET",
+      "/api/command-center/team?from=2026-02-01T00:00:00.000Z&to=2026-04-01T00:00:00.000Z&projectId=proj-a",
+    );
+
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      totals: { tokens: { totalTokens: number }; filesChanged: number; tasksCompleted: number };
+      agents: Array<{ agentId: string; agentName: string; tokens: { totalTokens: number }; filesChanged: number }>;
+    };
+    expect(body).toHaveProperty("totals");
+    expect(body).toHaveProperty("agents");
+    expect(body.totals.tokens.totalTokens).toBe(642);
+    expect(body.totals.filesChanged).toBe(1);
+    expect(body.totals.tasksCompleted).toBe(1);
+    expect(body.agents).toContainEqual(
+      expect.objectContaining({
+        agentId: "agent-route-a",
+        agentName: "Route Alpha",
+        tokens: expect.objectContaining({ totalTokens: 642 }),
+        filesChanged: 1,
+      }),
+    );
+  });
+
   it("returns the tools / activity / productivity aggregator shapes", async () => {
     const range = "from=2026-02-01T00:00:00.000Z&to=2026-04-01T00:00:00.000Z";
     seedAgentRun(dbA, { id: "run-a1", agentId: "agent-route", startedAt: "2026-03-02T00:00:00.000Z", status: "active" });
@@ -283,6 +335,22 @@ describe("register-command-center-routes", () => {
     // A's task had 100 input tokens (total 200); B's had 999 (total 1998).
     expect((a.body as { totals: { totalTokens: number } }).totals.totalTokens).toBe(200);
     expect((b.body as { totals: { totalTokens: number } }).totals.totalTokens).toBe(1998);
+  });
+
+  it("team endpoint stays project scoped", async () => {
+    seedTeamMetrics(dbA, { agentId: "agent-a-only", name: "Project A Agent", tokens: 111, taskId: "FN-A-team" });
+    seedTeamMetrics(dbB, { agentId: "agent-b-only", name: "Project B Agent", tokens: 999, taskId: "FN-B-team" });
+    const range = "from=2026-02-01T00:00:00.000Z&to=2026-04-01T00:00:00.000Z";
+
+    const a = await request(app, "GET", `/api/command-center/team?${range}&projectId=proj-a`);
+    const b = await request(app, "GET", `/api/command-center/team?${range}&projectId=proj-b`);
+
+    const aAgents = (a.body as { agents: Array<{ agentId: string; agentName: string; tokens: { totalTokens: number } }> }).agents;
+    const bAgents = (b.body as { agents: Array<{ agentId: string; agentName: string; tokens: { totalTokens: number } }> }).agents;
+    expect(aAgents.some((agent) => agent.agentId === "agent-a-only" && agent.tokens.totalTokens === 222)).toBe(true);
+    expect(aAgents.some((agent) => agent.agentId === "agent-b-only" || agent.agentName === "Project B Agent")).toBe(false);
+    expect(bAgents.some((agent) => agent.agentId === "agent-b-only" && agent.tokens.totalTokens === 1998)).toBe(true);
+    expect(bAgents.some((agent) => agent.agentId === "agent-a-only" || agent.agentName === "Project A Agent")).toBe(false);
   });
 
   it("github endpoint defaults invalid ranges and stays project scoped", async () => {
@@ -483,6 +551,7 @@ describe("vite /api proxy negative-lookahead (proxy verification)", () => {
 
   it("proxies the real command-center endpoints to the backend", () => {
     expect(PROXY_RE.test("/api/command-center/tokens")).toBe(true);
+    expect(PROXY_RE.test("/api/command-center/team")).toBe(true);
     expect(PROXY_RE.test("/api/command-center/live")).toBe(true);
     expect(PROXY_RE.test("/api/command-center/github")).toBe(true);
     expect(PROXY_RE.test("/api/command-center/activity?from=x&to=y")).toBe(true);

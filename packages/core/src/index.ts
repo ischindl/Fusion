@@ -576,6 +576,13 @@ export type {
   LanguageCount,
   LocSummary,
 } from "./productivity-analytics.js";
+export { aggregateTeamAnalytics } from "./team-analytics.js";
+export type {
+  TeamAnalytics,
+  TeamAnalyticsQuery,
+  TeamAgentSummary,
+  TeamMetricTotals,
+} from "./team-analytics.js";
 export { aggregateGithubIssueAnalytics } from "./github-issue-analytics.js";
 export type {
   GithubIssueAnalytics,

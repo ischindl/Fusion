@@ -188,3 +188,92 @@ The Tokens area needs a real hour/day/week control and live token-number motion.
   font-size: var(--font-size-xs, 0.75rem);
   color: var(--text-muted);
 }
+
+/*
+FNXC:CommandCenterStyling 2026-06-18-16:57:
+The Team view must use dashboard design tokens only, preserve .cc-tabpanel as the scroll owner on mobile, reuse the shared .status-dot convention for live state, and keep any decorative motion duration-token based with reduced-motion disabled.
+*/
+.cc-team-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.cc-team-chart-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  animation: cc-team-panel-reveal var(--duration-fast) ease-out both;
+}
+
+.cc-team-spark-panel {
+  grid-column: 1 / -1;
+}
+
+.cc-muted-hint,
+.cc-team-agent-role {
+  color: var(--text-muted);
+}
+
+.cc-muted-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.cc-team-agent-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cc-team-agent-name,
+.cc-team-agent-role {
+  display: block;
+}
+
+.cc-team-agent-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.cc-team-agent-role {
+  font-size: var(--font-size-xs);
+  text-transform: capitalize;
+}
+
+@keyframes cc-team-panel-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-1));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-team-chart-panel {
+    animation: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .cc-team-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-team-spark-panel {
+    grid-column: auto;
+  }
+
+  .cc-team-chart-panel {
+    padding: var(--space-2);
+  }
+}

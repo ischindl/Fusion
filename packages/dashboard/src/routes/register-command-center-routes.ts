@@ -3,6 +3,7 @@ import {
   aggregateToolAnalytics,
   aggregateActivityAnalytics,
   aggregateProductivityAnalytics,
+  aggregateTeamAnalytics,
   aggregateGithubIssueAnalytics,
   composeLiveSnapshot,
   type TokenGroupBy,
@@ -237,6 +238,29 @@ export const registerCommandCenterRoutes: ApiRouteRegistrar = (ctx) => {
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err, "Failed to aggregate productivity analytics");
+    }
+  });
+
+  /**
+   * GET /api/command-center/team
+   * Per-agent store-derived tokens/cost, files changed, task counts, and live identity.
+   *
+   * FNXC:CommandCenter 2026-06-18-16:57:
+   * The Team endpoint must inherit Command Center auth and resolve getScopedStore(req) before aggregation so project-A callers cannot read project-B agent rows or task metrics. It intentionally omits GitHub issue stats; FN-6653 owns that overlay.
+   */
+  router.get("/command-center/team", async (req, res) => {
+    try {
+      const store = await getScopedStore(req);
+      const range = resolveRange(req.query);
+      const result = aggregateTeamAnalytics(store.getDatabase(), {
+        from: range.from,
+        to: range.to,
+        now: Date.now(),
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to aggregate team analytics");
     }
   });
 

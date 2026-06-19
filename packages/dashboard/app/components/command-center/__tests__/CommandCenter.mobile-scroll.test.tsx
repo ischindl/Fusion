@@ -89,6 +89,22 @@ function emptyGithubFixture() {
   return { filed: 0, fixed: 0, net: 0, daily: [], byRepo: [] };
 }
 
+function emptyTeamFixture() {
+  return {
+    from: null,
+    to: null,
+    totals: {
+      tokens: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 0, nTasks: 0 },
+      cost: { usd: null, unavailable: false, stale: false },
+      filesChanged: 0,
+      tasksCompleted: 0,
+      tasksInProgress: 0,
+      tasksInReview: 0,
+    },
+    agents: [],
+  };
+}
+
 function populatedActivityFixture() {
   return {
     ...emptyActivityFixture(),
@@ -118,6 +134,7 @@ function mockOverviewApi({ populated = false }: { populated?: boolean } = {}) {
     if (path.startsWith("/command-center/tools")) return Promise.resolve(populated ? populatedToolsFixture() : emptyToolsFixture());
     if (path.startsWith("/command-center/activity")) return Promise.resolve(populated ? populatedActivityFixture() : emptyActivityFixture());
     if (path.startsWith("/command-center/github")) return Promise.resolve(emptyGithubFixture());
+    if (path.startsWith("/command-center/team")) return Promise.resolve(emptyTeamFixture());
     if (path.startsWith("/command-center/signals")) return Promise.resolve({ totalSignals: 0, open: 0, resolved: 0, mttr: { value: null, unavailable: true }, bySource: [], bySeverity: [] });
     if (path === "/command-center/live") {
       return Promise.resolve({
@@ -197,6 +214,11 @@ describe("CommandCenter mobile scroll regression (FN-6595)", () => {
     const tokensPanel = screen.getByTestId("command-center-panel-tokens");
     expect(tokensPanel).toBe(screen.getByRole("tabpanel"));
     assertScrollOwnerContract(tokensPanel);
+
+    fireEvent.click(screen.getByTestId("command-center-tab-team"));
+    const teamPanel = screen.getByTestId("command-center-panel-team");
+    expect(teamPanel).toBe(screen.getByRole("tabpanel"));
+    assertScrollOwnerContract(teamPanel);
 
     fireEvent.click(screen.getByTestId("command-center-tab-github"));
     const githubPanel = screen.getByTestId("command-center-panel-github");
