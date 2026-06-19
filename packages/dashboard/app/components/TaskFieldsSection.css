@@ -41,7 +41,7 @@
   border: 1px solid var(--border-color, #2a2d34);
   border-radius: 6px;
   background: var(--input-bg, #16181d);
-  color: var(--text-primary, #e6e6e6);
+  color: var(--text);
   font-size: 13px;
   font-family: inherit;
 }
@@ -103,7 +103,7 @@
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: var(--text-primary, #e6e6e6);
+  color: var(--text);
   cursor: pointer;
 }
 

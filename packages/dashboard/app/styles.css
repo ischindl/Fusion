@@ -1258,7 +1258,7 @@ body {
 }
 
 .modal-send-to-background:hover {
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .modal-send-to-background:focus-visible {

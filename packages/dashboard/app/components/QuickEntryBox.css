@@ -236,7 +236,7 @@
   background: none;
   border: none;
   border-radius: 6px;
-  color: var(--text-primary);
+  color: var(--text);
   cursor: pointer;
   text-align: left;
   font-size: 0.8125rem;
@@ -289,13 +289,13 @@
 }
 
 .model-submenu-back:hover {
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .model-submenu-header {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text);
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }

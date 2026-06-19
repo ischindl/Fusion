@@ -1257,6 +1257,8 @@ The `index.html` shell is templated server-side: the server injects a per-user `
 
 Command Center chart surfaces are a stricter token-only zone: `CommandCenter.css`, `areas/areas.css`, and `charts/charts.css` should avoid raw color fallbacks and hardcoded dimensions in component rules, keep secondary copy on `--text-muted`, use canonical `--accent` / `--text` for generic accent and primary text styling, use `--duration-*` for animation durations, and encode mobile chart invariants with shared classes rather than one-off area styles. The undefined `--color-accent` / `--text-primary` aliases are forbidden under `components/command-center/**` and guarded by `command-center-css-token-canonicalization.test.ts`.
 
+Non-Command-Center dashboard CSS uses `--text` as the canonical primary text token. The undefined `--text-primary` alias is forbidden outside `components/command-center/**` and guarded by `packages/dashboard/app/__tests__/text-token-canonicalization.test.ts`.
+
 ### Theme system
 
 Dark/light modes via `data-theme`; 54 color themes via `data-color-theme` (lazy-loaded from `app/public/theme-data.css`).

@@ -1,3 +1,8 @@
+/*
+FNXC:DashboardStyling 2026-06-19-00:00:
+Non-Command-Center dashboard CSS must use the canonical --text token. The legacy primary-text alias was undefined, so it made primary text inherit fallback/parent colors or hardcoded hex colors that ignored the active theme (FN-6688).
+*/
+
 /* === Scripts Modal === */
 .scripts-modal {
   display: flex;
@@ -258,7 +263,7 @@
 .schedule-empty-state h4 {
   margin: 0;
   font-size: 16px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .schedule-empty-state p {
@@ -317,7 +322,7 @@
 .schedule-card-name {
   font-weight: 600;
   font-size: 14px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .schedule-type-badge {
@@ -441,7 +446,7 @@
 }
 
 .schedule-history-toggle:hover {
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .schedule-history-list {
@@ -597,7 +602,7 @@
 
 .schedule-step-result-name {
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .schedule-step-result-error {
@@ -695,7 +700,7 @@
   flex: 1;
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -865,7 +870,7 @@
 .routine-empty-state h4 {
   margin: 0;
   font-size: 16px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .routine-empty-state p {
@@ -934,7 +939,7 @@
 .routine-card-name {
   font-weight: 600;
   font-size: 14px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .routine-trigger-badge {
@@ -1113,7 +1118,7 @@
 .routine-trigger-btn:hover {
   border-color: var(--border-hover, var(--border));
   background: var(--bg-secondary);
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .routine-trigger-btn.active {

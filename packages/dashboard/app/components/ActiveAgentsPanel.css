@@ -79,7 +79,7 @@
 .live-agent-card-status {
   font-style: normal;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text);
   opacity: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -153,7 +153,7 @@
 
 .live-agent-card-logs-btn:hover {
   background: var(--bg-hover);
-  color: var(--text-primary);
+  color: var(--text);
   border-color: var(--border-strong, var(--border));
 }
 

@@ -25,7 +25,7 @@
   border: 1px solid var(--border-color, #333);
   border-radius: 6px;
   background: var(--bg-secondary, transparent);
-  color: var(--text-primary, inherit);
+  color: var(--text);
   font-size: 0.875rem;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;

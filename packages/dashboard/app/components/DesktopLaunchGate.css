@@ -5,7 +5,7 @@
   align-items: center;
   justify-content: center;
   background: var(--bg-primary, #0f1117);
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text);
   z-index: 9999;
   padding: 1.5rem;
 }
