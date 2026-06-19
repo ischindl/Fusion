@@ -10,13 +10,19 @@ Area headings, table metadata, and empty states use --text-muted so the analytic
 .cc-area {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4, 1rem);
+  gap: var(--space-4);
+  min-inline-size: 0;
 }
 
+/*
+FNXC:CommandCenterStyling 2026-06-18-00:00:
+Chart-bearing Command Center areas use one tokenized section rhythm and logical shrink bounds so mobile charts stay inside .cc-tabpanel without scroll-steal (FN-6664).
+*/
 .cc-area-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-3);
+  min-inline-size: 0;
 }
 
 .cc-area-section-header {
@@ -28,7 +34,7 @@ Area headings, table metadata, and empty states use --text-muted so the analytic
 
 .cc-area-section-title {
   margin: 0;
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -39,11 +45,11 @@ Area headings, table metadata, and empty states use --text-muted so the analytic
 .cc-area .cc-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
-  gap: var(--space-3, 0.75rem);
+  gap: var(--space-3);
 }
 
 .cc-stat-sub {
-  font-size: var(--font-size-xs, 0.75rem);
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -98,22 +104,31 @@ The Tokens area needs a real hour/day/week control and live token-number motion.
 }
 
 /* ---- Tables ---- */
+/*
+FNXC:CommandCenterStyling 2026-06-18-00:00:
+Command Center table-heavy chart areas share the same border/radius rhythm as chart cards while keeping horizontal table overflow scoped to the table wrapper, not the mobile tabpanel vertical scroll owner (FN-6664).
+*/
 .cc-table-wrap {
+  max-inline-size: 100%;
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .cc-table {
-  width: 100%;
+  inline-size: 100%;
   border-collapse: collapse;
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .cc-table th,
 .cc-table td {
-  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+  padding: var(--space-2) var(--space-3);
   text-align: right;
-  border-bottom: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+  border-bottom: var(--border-width) solid var(--border-subtle);
   white-space: nowrap;
 }
 
@@ -133,7 +148,7 @@ The Tokens area needs a real hour/day/week control and live token-number motion.
 }
 
 .cc-table th.cc-sortable:hover {
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 .cc-table tbody tr {
@@ -141,31 +156,31 @@ The Tokens area needs a real hour/day/week control and live token-number motion.
 }
 
 .cc-table tbody tr.cc-row-selected {
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  background: var(--surface-2);
 }
 
 .cc-table tbody tr.cc-row-selected td {
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 .cc-sort-caret {
-  margin-left: var(--space-1, 0.25rem);
+  margin-inline-start: var(--space-1);
   font-size: 0.7em;
-  color: var(--color-accent, #4f8cff);
+  color: var(--color-accent);
 }
 
 /* Unavailable sentinel ("—") with a help cursor for its tooltip. */
 .cc-unavailable {
   color: var(--text-muted);
   cursor: help;
-  border-bottom: 1px dotted var(--border-subtle, rgba(127, 127, 127, 0.4));
+  border-bottom: var(--border-width) dotted var(--border-subtle);
 }
 
 .cc-loading-inline {
   display: flex;
   align-items: center;
-  gap: var(--space-2, 0.5rem);
-  padding: var(--space-4, 1rem);
+  gap: var(--space-2);
+  padding: var(--space-4);
   color: var(--text-muted);
 }
 
@@ -174,18 +189,18 @@ The Tokens area needs a real hour/day/week control and live token-number motion.
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-2, 0.5rem);
-  padding: var(--space-6, 2rem);
+  gap: var(--space-2);
+  padding: var(--space-6);
   color: var(--text-muted);
   text-align: center;
 }
 
 .cc-area-error {
-  color: var(--color-error, #e5484d);
+  color: var(--color-error);
 }
 
 .cc-pricing-note {
-  font-size: var(--font-size-xs, 0.75rem);
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -202,8 +217,8 @@ The Team view must use dashboard design tokens only, preserve .cc-tabpanel as th
 .cc-team-chart-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
+  gap: var(--space-3);
+  min-inline-size: 0;
   padding: var(--space-3);
   border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -229,7 +244,7 @@ The Team view must use dashboard design tokens only, preserve .cc-tabpanel as th
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-width: 0;
+  min-inline-size: 0;
 }
 
 .cc-team-agent-name,

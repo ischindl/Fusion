@@ -11,10 +11,10 @@ The FN-4286 dashboard text-token guard requires command-center secondary copy to
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: var(--space-4, 1rem);
+  gap: var(--space-4);
   min-height: 0;
-  width: 100%;
-  padding: var(--space-4, 1rem);
+  inline-size: 100%;
+  padding: var(--space-4);
 }
 
 /*
@@ -26,15 +26,15 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3, 0.75rem);
+  gap: var(--space-3);
 }
 
 .cc-title {
   display: flex;
   align-items: center;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
   margin: 0;
-  font-size: var(--font-size-lg, 1.1rem);
+  font-size: var(--font-size-lg);
 }
 
 /* ---- Tabs ---- */
@@ -42,34 +42,36 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
   display: flex;
   flex-shrink: 0;
   flex-wrap: wrap;
-  gap: var(--space-1, 0.25rem);
-  border-bottom: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.25));
+  gap: var(--space-1);
+  border-bottom: var(--border-width) solid var(--border-subtle);
 }
 
 .cc-tab {
   appearance: none;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: var(--border-width-thick) solid transparent;
   color: var(--text-muted);
-  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+  padding: var(--space-2) var(--space-3);
   cursor: pointer;
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .cc-tab:hover {
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 .cc-tab.active {
-  color: var(--text-primary, #ddd);
-  border-bottom-color: var(--color-accent, #4f8cff);
+  color: var(--text-primary);
+  border-bottom-color: var(--color-accent);
 }
 
 .cc-tabpanel {
   flex: 1;
   min-height: 0;
+  min-inline-size: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   outline: none;
@@ -78,39 +80,48 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
 
 @media (max-width: 768px) {
   .cc-tabpanel {
-    padding-bottom: calc(var(--space-4, 1rem) + env(safe-area-inset-bottom, 0px) + var(--standalone-bottom-gap));
+    padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0) + var(--standalone-bottom-gap));
   }
 }
 
 /* ---- Overview ---- */
 .cc-overview {
+  min-inline-size: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-4, 1rem);
+  gap: var(--space-4);
 }
 
 .cc-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
-  gap: var(--space-3, 0.75rem);
+  gap: var(--space-3);
 }
 
+/*
+FNXC:CommandCenterStyling 2026-06-18-00:00:
+Command Center chart/stat surfaces share one tokenized card rhythm so new chart areas do not drift in border, radius, or spacing when Team/System/agent-runs render together (FN-6664).
+*/
 .cc-stat-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1, 0.25rem);
-  padding: var(--space-3, 0.75rem);
+  gap: var(--space-2);
+  min-inline-size: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
 }
 
 .cc-stat-label {
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
 .cc-stat-value {
-  font-size: var(--font-size-xl, 1.5rem);
+  font-size: var(--font-size-xl);
   font-variant-numeric: tabular-nums;
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 .cc-stat-card--gauge {
@@ -118,21 +129,25 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
   text-align: center;
 }
 
+/*
+FNXC:CommandCenterStyling 2026-06-18-00:00:
+Command Center live/chart containers must shrink inside the mobile tabpanel without creating a second scroll owner or clipping chart height (FN-6664).
+*/
 .cc-live-strip {
   position: relative;
   display: grid;
   grid-template-columns: minmax(10rem, 1fr) minmax(16rem, 2fr) minmax(10rem, 1fr);
   align-items: center;
-  gap: var(--space-3, 0.75rem);
-  padding: var(--space-3, 0.75rem);
-  border: var(--border-width, 0.0625rem) solid color-mix(in srgb, var(--color-accent) 35%, var(--border-subtle));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-md);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent),
     var(--surface-1);
   box-shadow: 0 0 var(--space-4) color-mix(in srgb, var(--color-accent) 18%, transparent);
   overflow: hidden;
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
 }
 
 .cc-live-strip::before {
@@ -149,6 +164,7 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
 .cc-live-strip-heading,
 .cc-live-strip-metrics,
 .cc-live-trend {
+  min-inline-size: 0;
   position: relative;
   z-index: 1;
 }
@@ -156,7 +172,7 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
 .cc-live-strip-heading {
   display: flex;
   align-items: center;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-live-strip-label {
@@ -165,17 +181,19 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
 }
 
 .cc-live-strip-metrics {
+  min-inline-size: 0;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-live-metric {
+  min-inline-size: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1, 0.25rem);
-  min-width: 0;
-  padding: var(--space-2, 0.5rem);
+  gap: var(--space-1);
+  min-inline-size: 0;
+  padding: var(--space-2);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--surface-2) 70%, transparent);
   animation: cc-live-signal-pulse calc(var(--duration-slow) * 6) ease-in-out infinite;
@@ -183,7 +201,7 @@ The Command Center must remain scrollable on mobile inside the overflow-hidden .
 
 .cc-live-metric-value {
   color: var(--text-primary);
-  font-size: var(--font-size-lg, 1.1rem);
+  font-size: var(--font-size-lg);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -210,19 +228,20 @@ Overview token totals now live-poll and should visibly count up on change in bot
 .cc-live-metric-label,
 .cc-live-trend-label {
   color: var(--text-muted);
-  font-size: var(--font-size-xs, 0.75rem);
+  font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .cc-live-trend {
+  min-inline-size: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-live-trend .cc-sparkline {
-  height: 2.5rem;
+  block-size: var(--space-10);
 }
 
 .cc-live-trend .cc-sparkline-bar {
@@ -263,6 +282,7 @@ FNXC:CommandCenterStyling 2026-06-18-00:00:
 Overview charts must use dashboard tokens only and keep motion decorative; animations use --duration-* values and are disabled for reduced-motion users so the graph-rich snapshot does not violate accessibility or the mobile scroll contract.
 */
 .cc-overview-charts {
+  min-inline-size: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
@@ -270,13 +290,15 @@ Overview charts must use dashboard tokens only and keep motion decorative; anima
 }
 
 .cc-overview-chart-card {
+  min-inline-size: 0;
   position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  min-width: 0;
+  min-inline-size: 0;
   padding: var(--space-3);
-  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--border-subtle));
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent),
     var(--surface-1);
@@ -320,7 +342,7 @@ Overview charts must use dashboard tokens only and keep motion decorative; anima
 }
 
 .cc-overview-chart-card .cc-sparkline {
-  height: var(--space-16);
+  block-size: var(--space-16);
 }
 
 .cc-overview-chart-card .cc-bar-fill,
@@ -367,10 +389,12 @@ Overview charts must use dashboard tokens only and keep motion decorative; anima
   }
 
   .cc-live-strip-metrics {
+    min-inline-size: 0;
     grid-template-columns: 1fr;
   }
 
   .cc-overview-charts {
+    min-inline-size: 0;
     grid-template-columns: 1fr;
   }
 
@@ -387,20 +411,20 @@ Overview charts must use dashboard tokens only and keep motion decorative; anima
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2, 0.5rem);
-  padding: var(--space-6, 2rem);
+  gap: var(--space-2);
+  padding: var(--space-6);
   color: var(--text-muted);
   text-align: center;
 }
 
 .cc-error {
-  color: var(--color-error, #e5484d);
+  color: var(--color-error);
 }
 
 .cc-loading .cc-chart-skeleton {
-  height: 1rem;
-  border-radius: var(--radius-sm, 4px);
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  block-size: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   animation: cc-shell-pulse var(--duration-slow) ease-in-out infinite;
 }
 

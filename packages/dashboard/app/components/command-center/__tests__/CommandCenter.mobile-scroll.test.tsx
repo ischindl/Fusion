@@ -78,6 +78,10 @@ function populatedTokenFixture() {
         cost: { usd: 9, unavailable: false, stale: false },
       },
     ],
+    series: [
+      { bucket: "2026-06-17T00:00:00.000Z", totalTokens: 250 },
+      { bucket: "2026-06-18T00:00:00.000Z", totalTokens: 750 },
+    ],
   };
 }
 
@@ -89,6 +93,65 @@ function populatedToolsFixture() {
     sessions: 2,
     autonomyRatio: 6,
     fullyAutonomous: false,
+  };
+}
+
+function populatedProductivityFixture() {
+  return {
+    modifiedFiles: 6,
+    commits: 2,
+    pullRequests: 1,
+    loc: { value: 42, unavailable: false },
+    byLanguage: [{ language: "TypeScript", count: 6 }],
+  };
+}
+
+function emptyProductivityFixture() {
+  return {
+    modifiedFiles: 0,
+    commits: 0,
+    pullRequests: 0,
+    loc: { value: null, unavailable: true },
+    byLanguage: [],
+  };
+}
+
+function populatedTeamFixture() {
+  return {
+    ...emptyTeamFixture(),
+    totals: {
+      tokens: { inputTokens: 900, outputTokens: 450, cachedTokens: 150, cacheWriteTokens: 0, totalTokens: 1500, nTasks: 2 },
+      cost: { usd: 4.25, unavailable: false, stale: false },
+      filesChanged: 7,
+      tasksCompleted: 3,
+      tasksInProgress: 1,
+      tasksInReview: 0,
+    },
+    agents: [
+      {
+        agentId: "agent-alpha",
+        agentName: "Alpha Agent",
+        role: "executor",
+        state: "running",
+        tokens: { inputTokens: 900, outputTokens: 450, cachedTokens: 150, cacheWriteTokens: 0, totalTokens: 1500, nTasks: 2 },
+        cost: { usd: 4.25, unavailable: false, stale: false },
+        filesChanged: 7,
+        tasksCompleted: 3,
+        tasksInProgress: 1,
+        tasksInReview: 0,
+      },
+    ],
+  };
+}
+
+function populatedSignalsFixture() {
+  return {
+    totalSignals: 3,
+    open: 2,
+    resolved: 1,
+    mttr: { value: 30, unavailable: false },
+    bySource: [{ source: "sentry", count: 2 }],
+    bySeverity: [{ severity: "high", count: 1 }],
   };
 }
 
@@ -171,9 +234,10 @@ function mockOverviewApi({ populated = false }: { populated?: boolean } = {}) {
     if (path.startsWith("/command-center/tokens")) return Promise.resolve(populated ? populatedTokenFixture() : emptyTokenFixture());
     if (path.startsWith("/command-center/tools")) return Promise.resolve(populated ? populatedToolsFixture() : emptyToolsFixture());
     if (path.startsWith("/command-center/activity")) return Promise.resolve(populated ? populatedActivityFixture() : emptyActivityFixture());
-    if (path.startsWith("/command-center/github")) return Promise.resolve(emptyGithubFixture());
-    if (path.startsWith("/command-center/team")) return Promise.resolve(emptyTeamFixture());
-    if (path.startsWith("/command-center/signals")) return Promise.resolve({ totalSignals: 0, open: 0, resolved: 0, mttr: { value: null, unavailable: true }, bySource: [], bySeverity: [] });
+    if (path.startsWith("/command-center/productivity")) return Promise.resolve(populated ? populatedProductivityFixture() : emptyProductivityFixture());
+    if (path.startsWith("/command-center/github")) return Promise.resolve(populated ? { filed: 3, fixed: 1, net: 2, daily: [{ date: "2026-06-18", filed: 3, fixed: 1 }], byRepo: [{ repo: "acme/repo", filed: 3, fixed: 1 }] } : emptyGithubFixture());
+    if (path.startsWith("/command-center/team")) return Promise.resolve(populated ? populatedTeamFixture() : emptyTeamFixture());
+    if (path.startsWith("/command-center/signals")) return Promise.resolve(populated ? populatedSignalsFixture() : { totalSignals: 0, open: 0, resolved: 0, mttr: { value: null, unavailable: true }, bySource: [], bySeverity: [] });
     if (path === "/system-stats") return Promise.resolve(systemStatsFixture());
     if (path === "/settings/global") return Promise.resolve({ vitestAutoKillEnabled: true, vitestKillThresholdPct: 90 });
     if (path === "/command-center/live") {
@@ -198,6 +262,9 @@ function injectCommandCenterCss() {
   style.textContent = [
     loadStylesCss(),
     readFileSync(join(__dirname, "..", "CommandCenter.css"), "utf-8"),
+    readFileSync(join(__dirname, "..", "charts", "charts.css"), "utf-8"),
+    readFileSync(join(__dirname, "..", "areas", "areas.css"), "utf-8"),
+    readFileSync(join(__dirname, "..", "areas", "SystemStatsArea.css"), "utf-8"),
   ].join("\n");
   document.head.appendChild(style);
 }
@@ -233,6 +300,28 @@ function assertScrollOwnerContract(panel: HTMLElement) {
   expect(panelStyle.overflowY).toBe("auto");
   expect(window.getComputedStyle(header).flexShrink).toBe("0");
   expect(window.getComputedStyle(tablist).flexShrink).toBe("0");
+}
+
+function assertNoChartScrollSteal(panel: HTMLElement) {
+  const chartContainers = panel.querySelectorAll<HTMLElement>(
+    ".cc-bar-chart, .cc-bar-row, .cc-sparkline, .cc-line-chart, .cc-radial-gauge, .cc-funnel, .cc-token-series, .cc-token-series-plot, .cc-overview-chart-card, .cc-team-chart-panel, .cc-stat-card",
+  );
+  expect(chartContainers.length).toBeGreaterThan(0);
+  for (const container of chartContainers) {
+    const style = window.getComputedStyle(container);
+    expect(style.overflowY === "auto" || style.overflowY === "scroll").toBe(false);
+    expect(style.maxInlineSize === "100%" || style.maxWidth === "100%" || style.overflowX === "hidden" || style.display.length > 0).toBe(true);
+  }
+}
+
+async function openChartTab(tab: string) {
+  fireEvent.click(screen.getByTestId(`command-center-tab-${tab}`));
+  const panel = screen.getByTestId(`command-center-panel-${tab}`);
+  expect(panel).toBe(screen.getByRole("tabpanel"));
+  await vi.waitFor(() => {
+    expect(screen.queryByTestId(`cc-area-${tab}-loading`)).toBeNull();
+  });
+  return panel;
 }
 
 describe("CommandCenter mobile scroll regression (FN-6595)", () => {
@@ -280,6 +369,39 @@ describe("CommandCenter mobile scroll regression (FN-6595)", () => {
     expect(screen.getByTestId("command-center-overview-chart-tokens")).toBeTruthy();
     expect(screen.getByTestId("command-center-live-tasks-in-progress")).toBeTruthy();
     assertScrollOwnerContract(screen.getByTestId("command-center-panel-overview"));
+  });
+
+  it("keeps every populated chart-bearing tab inside the mobile tabpanel scroll owner", async () => {
+    mockOverviewApi({ populated: true });
+    render(<CommandCenter />);
+
+    const overviewPanel = screen.getByTestId("command-center-panel-overview");
+    await screen.findByTestId("command-center-overview-charts");
+    assertScrollOwnerContract(overviewPanel);
+    assertNoChartScrollSteal(overviewPanel);
+
+    for (const tab of ["tokens", "tools", "activity", "productivity", "team", "ecosystem", "github", "signals", "system"]) {
+      const panel = await openChartTab(tab);
+      if (tab === "system") await screen.findByTestId("cc-area-system");
+      assertScrollOwnerContract(panel);
+      assertNoChartScrollSteal(panel);
+      expect(panel.textContent).not.toContain("NaN");
+    }
+  });
+
+  it("encodes the mobile chart CSS fixes for the discovered overflow primitives", () => {
+    const styles = Array.from(document.head.querySelectorAll("style"))
+      .map((style) => style.textContent ?? "")
+      .join("\n");
+
+    expect(styles).toContain(".cc-tabpanel");
+    expect(styles).toContain("overflow-x: hidden");
+    expect(styles).toContain("grid-template-columns: minmax(0, 1fr) minmax(var(--space-12), 2fr)");
+    expect(styles).toContain(".cc-line-chart");
+    expect(styles).toContain("aspect-ratio: auto");
+    expect(styles).toContain(".cc-radial-gauge-ring");
+    expect(styles).toContain("inline-size: clamp(var(--space-20), 44vw, var(--space-32))");
+    expect(styles).toContain("min-inline-size: 0");
   });
 
   it("keeps the same flex-fill scroll-owner contract outside the mobile breakpoint", () => {

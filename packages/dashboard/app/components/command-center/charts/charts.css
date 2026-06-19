@@ -10,6 +10,22 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
  * invalidate animation declarations (see animation-duration-tokens.css.test.ts).
  */
 
+/*
+FNXC:CommandCenterStyling 2026-06-18-00:00:
+Command Center charts must render within the mobile tabpanel without overflow scroll-steal, zero-height collapse, or stretch; every primitive opts into logical shrink bounds before area layouts compose it (FN-6664).
+*/
+.cc-bar-chart,
+.cc-stacked-bar,
+.cc-sparkline,
+.cc-token-series,
+.cc-token-series-plot,
+.cc-line-chart,
+.cc-radial-gauge,
+.cc-funnel {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
 /* ---- Bar ---- */
 .cc-bar-chart {
   list-style: none;
@@ -17,18 +33,18 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-bar-row {
   display: grid;
-  grid-template-columns: minmax(6rem, 12rem) 1fr auto;
+  grid-template-columns: minmax(var(--space-20), 32%) minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-bar-label {
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -37,43 +53,43 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
 
 .cc-bar-track {
   position: relative;
-  height: 0.75rem;
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
-  border-radius: var(--radius-sm, 4px);
+  block-size: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .cc-bar-fill {
-  height: 100%;
-  background: var(--color-accent, #4f8cff);
-  border-radius: var(--radius-sm, 4px);
+  block-size: 100%;
+  background: var(--color-accent);
+  border-radius: var(--radius-sm);
   transition: width var(--transition-normal);
 }
 
 .cc-bar-value {
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 /* ---- StackedBar ---- */
 .cc-stacked-bar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-stacked-track {
   display: flex;
-  height: 0.75rem;
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
-  border-radius: var(--radius-sm, 4px);
+  block-size: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .cc-stacked-segment {
-  height: 100%;
-  background: var(--color-accent, #4f8cff);
+  block-size: 100%;
+  background: var(--color-accent);
   transition: width var(--transition-normal);
 }
 
@@ -83,22 +99,22 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3, 0.75rem);
+  gap: var(--space-3);
 }
 
 .cc-stacked-legend-item {
   display: flex;
   align-items: center;
-  gap: var(--space-1, 0.25rem);
-  font-size: var(--font-size-sm, 0.85rem);
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
 .cc-stacked-swatch {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 2px;
-  background: var(--color-accent, #4f8cff);
+  inline-size: var(--space-2);
+  block-size: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
   display: inline-block;
 }
 
@@ -106,15 +122,15 @@ Chart labels and legends must use --text-muted so command-center CSS stays align
 .cc-sparkline {
   display: flex;
   align-items: flex-end;
-  gap: 1px;
-  height: 2rem;
+  gap: var(--border-width);
+  block-size: var(--space-8);
 }
 
 .cc-sparkline-bar {
   flex: 1 1 0;
-  min-width: 1px;
-  background: var(--color-accent, #4f8cff);
-  border-radius: 1px;
+  min-inline-size: var(--border-width);
+  background: var(--color-accent);
+  border-radius: var(--border-width);
   transition: height var(--transition-normal);
 }
 
@@ -205,7 +221,7 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   block-size: clamp(var(--space-16), 22vw, calc(var(--space-20) * 2));
   aspect-ratio: 5 / 2;
   color: var(--color-accent);
-  overflow: visible;
+  overflow: hidden;
 }
 
 .cc-line-chart-series {
@@ -252,7 +268,8 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
 
 @media (max-width: 768px) {
   .cc-line-chart {
-    block-size: clamp(var(--space-14), 34vw, calc(var(--space-20) + var(--space-12)));
+    block-size: clamp(var(--space-16), 44vw, calc(var(--space-20) + var(--space-12)));
+    aspect-ratio: auto;
   }
 }
 
@@ -268,7 +285,7 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   position: relative;
   display: grid;
   place-items: center;
-  width: clamp(6rem, 32vw, 9rem);
+  inline-size: clamp(var(--space-24), 32vw, var(--space-36));
   aspect-ratio: 1;
   border-radius: 50%;
   background:
@@ -284,7 +301,7 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   position: absolute;
   inset: var(--space-2);
   border-radius: inherit;
-  border: var(--border-width, 0.0625rem) solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border: var(--border-width) solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   box-shadow: inset 0 0 var(--space-3) color-mix(in srgb, var(--color-accent) 22%, transparent);
   animation: cc-radial-gauge-sweep calc(var(--duration-slow) * 8) linear infinite;
 }
@@ -294,7 +311,7 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 58%;
+  inline-size: 58%;
   aspect-ratio: 1;
   background: var(--surface-1);
   border-radius: 50%;
@@ -346,19 +363,19 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-2);
 }
 
 .cc-funnel-stage {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1, 0.25rem);
+  gap: var(--space-1);
 }
 
 .cc-funnel-header {
   display: flex;
   justify-content: space-between;
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
@@ -367,30 +384,30 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
 }
 
 .cc-funnel-track {
-  height: 1rem;
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
-  border-radius: var(--radius-sm, 4px);
+  block-size: var(--space-4);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .cc-funnel-fill {
-  height: 100%;
-  background: var(--color-accent, #4f8cff);
-  border-radius: var(--radius-sm, 4px);
+  block-size: 100%;
+  background: var(--color-accent);
+  border-radius: var(--radius-sm);
   transition: width var(--transition-normal);
 }
 
 .cc-funnel-value {
-  font-size: var(--font-size-sm, 0.85rem);
+  font-size: var(--font-size-sm);
   font-variant-numeric: tabular-nums;
-  color: var(--text-primary, #ddd);
+  color: var(--text-primary);
 }
 
 /* ---- Loading shimmer (used by chart skeletons) ---- */
 .cc-chart-skeleton {
-  height: 0.75rem;
-  border-radius: var(--radius-sm, 4px);
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  block-size: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   animation: cc-chart-pulse var(--duration-slow) ease-in-out infinite;
 }
 
@@ -401,5 +418,25 @@ Line-chart motion is decorative, token-timed, and disabled for reduced-motion us
   }
   50% {
     opacity: 0.9;
+  }
+}
+
+
+@media (max-width: 768px) {
+  .cc-bar-row {
+    grid-template-columns: minmax(0, 1fr) minmax(var(--space-12), 2fr);
+  }
+
+  .cc-bar-value {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
+  .cc-radial-gauge-ring {
+    inline-size: clamp(var(--space-20), 44vw, var(--space-32));
+  }
+
+  .cc-sparkline {
+    block-size: clamp(var(--space-8), 18vw, var(--space-14));
   }
 }

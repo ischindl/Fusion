@@ -676,6 +676,10 @@ Features:
 - **Mission Control** shows live active sessions/runs/nodes, current sessions and nodes, an animated live activity snapshot, and a live SDLC funnel; when idle it reports that live updates resume when work starts. Motion-heavy accents respect reduced-motion preferences.
 - CSV exports are available from the analytics endpoints with `?format=csv`. The Activity CSV includes daily `agentRuns` values plus summary rows for `(agentRuns.total)`, `(agentRuns.active)`, `(agentRuns.completed)`, and `(agentRuns.failed)`.
 
+Rendering invariants:
+- On mobile (`max-width: 768px`), `.cc-tabpanel` remains the sole vertical scroll owner for every chart-bearing tab. Shared chart primitives (`Bar`, `StackedBar`, `Sparkline`, `LineChart`, `RadialGauge`, `Funnel`, and `TokenSeriesChart`) must shrink within the tabpanel, keep non-zero usable height, avoid stretch/clipping artifacts, and never introduce a competing vertical overflow container.
+- Command Center stat cards, overview chart cards, live strips, table wrappers, Team chart panels, token-series plots, and gauge/chart cards share the same tokenized rhythm: `--border-width` borders, `--radius-md` radii, and `--space-*` gaps/padding. Area-specific accents may use `color-mix(...)`, but layout, border, radius, text color, and motion must stay on design tokens.
+
 Data states:
 - Overview shows a loading state while core analytics settle, then shows `No usage data yet. Run some agents to populate the Command Center.` only after the selected range has settled with no core usage data.
 - GitHub issue analytics is local and additive: empty filed/fixed totals render the GitHub area's empty state; malformed historical `githubTracking` JSON is skipped instead of breaking the Command Center.
@@ -1248,6 +1252,8 @@ The `index.html` shell is templated server-side: the server injects a per-user `
 `styles.css` is the source of truth for tokens (`--space-*`, `--radius-*`, `--shadow-*`, `--duration-*`, `--transition-*`, `--font-*`, `--header-height`, `--mobile-nav-height`, `--standalone-bottom-gap`, `--overlay-padding-top`) and color variables (`--bg`, `--surface`, `--card`, `--text`, `--text-muted`, status colors `--triage`/`--todo`/`--in-progress`/`--in-review`/`--done`, semantic `--color-success`/`--color-error`/`--color-warning`/`--color-info`, status backgrounds `--status-*-bg`).
 
 **Always reference tokens. Never hardcode pixels, hex, or `rgba()` in component CSS** — global/theme token CSS is also covered by `global-theme-css-no-raw-rgba.test.ts`, so raw `rgba()` belongs only in explicit `var(--token, rgba(...))` fallbacks. For translucent backgrounds use `color-mix(in srgb, var(--color) X%, transparent)`, not `rgba()`.
+
+Command Center chart surfaces are a stricter token-only zone: `CommandCenter.css`, `areas/areas.css`, and `charts/charts.css` should avoid raw color fallbacks and hardcoded dimensions in component rules, keep secondary copy on `--text-muted`, use `--duration-*` for animation durations, and encode mobile chart invariants with shared classes rather than one-off area styles.
 
 ### Theme system
 

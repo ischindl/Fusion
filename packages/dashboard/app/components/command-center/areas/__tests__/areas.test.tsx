@@ -17,6 +17,7 @@ import { ProductivityArea } from "../ProductivityArea";
 import { GithubArea } from "../GithubArea";
 import { SignalsArea } from "../SignalsArea";
 import { ActivityArea } from "../ActivityArea";
+import { EcosystemArea } from "../EcosystemArea";
 import { useAnalyticsArea } from "../useAnalyticsArea";
 import type { DateRange } from "../DateRangePicker";
 
@@ -492,7 +493,7 @@ describe("ToolsArea", () => {
 });
 
 describe("ProductivityArea", () => {
-  it("renders unavailable LOC as the dash sentinel, never 0", async () => {
+  it("renders unavailable LOC as the dash sentinel, never 0 and keeps chart geometry finite", async () => {
     apiMock.mockResolvedValue({
       from: "2026-06-08",
       to: null,
@@ -509,6 +510,50 @@ describe("ProductivityArea", () => {
     expect(loc.getAttribute("title")).toBeTruthy();
     // The commits outcome counter still shows a real number.
     expect(screen.getByTestId("cc-productivity-commits").textContent).toContain("4");
+    expect(screen.getByRole("list", { name: "Files by language" })).toBeTruthy();
+    expect(screen.getByTestId("cc-area-productivity").textContent).not.toContain("NaN");
+  });
+
+  it("renders empty, loading, and error states without empty chart shells", async () => {
+    apiMock.mockResolvedValueOnce({
+      from: null,
+      to: null,
+      modifiedFiles: 0,
+      byLanguage: [],
+      commits: 0,
+      pullRequests: 0,
+      loc: { value: null, unavailable: true },
+    });
+    const { unmount } = render(<ProductivityArea range={range7d} />);
+    await screen.findByTestId("cc-area-productivity-empty");
+    expect(screen.queryByRole("list", { name: "Files by language" })).toBeNull();
+    unmount();
+
+    apiMock.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = render(<ProductivityArea range={range7d} />);
+    expect(screen.getByTestId("cc-area-productivity-loading")).toBeTruthy();
+    pending.unmount();
+
+    apiMock.mockRejectedValueOnce(new Error("productivity failed"));
+    render(<ProductivityArea range={range7d} />);
+    await screen.findByTestId("cc-area-productivity-error");
+    expect(screen.getByTestId("cc-area-productivity-error").textContent).toContain("productivity failed");
+  });
+});
+
+describe("EcosystemArea", () => {
+  it("renders populated and empty model chart states without NaN or empty chart shells", async () => {
+    apiMock.mockResolvedValueOnce(tokenFixture());
+    const { unmount } = render(<EcosystemArea range={range7d} />);
+    await screen.findByTestId("cc-area-ecosystem");
+    expect(screen.getByRole("list", { name: "Tasks per model" })).toBeTruthy();
+    expect(screen.getByTestId("cc-area-ecosystem").textContent).not.toContain("NaN");
+    unmount();
+
+    apiMock.mockResolvedValueOnce({ ...tokenFixture(), groups: [], totals: { ...tokenFixture().totals, totalTokens: 0, nTasks: 0 } });
+    render(<EcosystemArea range={range7d} />);
+    await screen.findByTestId("cc-area-ecosystem-empty");
+    expect(screen.queryByRole("list", { name: "Tasks per model" })).toBeNull();
   });
 });
 
