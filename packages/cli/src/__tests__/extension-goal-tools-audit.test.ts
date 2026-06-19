@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TaskStore, collectCitedGoalIdsFromAudit } from "@fusion/core";
-import kbExtension from "../extension.js";
+import kbExtension, { closeCachedStores } from "../extension.js";
 import { GOAL_RETRIEVAL_INVOKED } from "@fusion/engine";
 
 interface RegisteredTool {
@@ -32,6 +32,7 @@ describe("extension goal tools retrieval audit", () => {
   });
 
   afterEach(async () => {
+    closeCachedStores();
     await rm(tmpDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });

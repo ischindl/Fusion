@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import kbExtension from "../extension.js";
+import kbExtension, { closeCachedStores } from "../extension.js";
 import { TaskStore } from "@fusion/core";
 
 interface RegisteredTool {
@@ -45,6 +45,7 @@ describe("fn insight extension tools", () => {
   });
 
   afterEach(async () => {
+    closeCachedStores();
     await rm(tmpDir, { recursive: true, force: true });
   });
 

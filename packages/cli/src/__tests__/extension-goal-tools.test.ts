@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import kbExtension from "../extension.js";
+import kbExtension, { closeCachedStores } from "../extension.js";
 
 interface RegisteredTool {
   name: string;
@@ -59,6 +59,7 @@ describe("extension goal retrieval tools", () => {
   });
 
   afterEach(async () => {
+    closeCachedStores();
     await rm(tmpDir, { recursive: true, force: true });
   });
 

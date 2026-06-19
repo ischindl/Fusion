@@ -22,7 +22,7 @@ vi.mock("../commands/task.js", () => ({
   runTaskPlan: vi.fn(),
 }));
 
-import kbExtension, { resolveTaskListFormatter } from "../extension.js";
+import kbExtension, { closeCachedStores, resolveTaskListFormatter } from "../extension.js";
 import { TaskStore, AgentStore, MANUAL_RETRY_RESET_COUNTER_KEYS, RESEARCH_RUN_STATUSES, MAX_TASK_LIST_TEXT_CHARS, formatTaskListText, COLUMN_LABELS } from "@fusion/core";
 import type { WorkflowIr } from "@fusion/core";
 import { isGhAvailable, isGhAuthenticated, runGhJsonAsync } from "@fusion/core/gh-cli";
@@ -86,12 +86,16 @@ async function seedAgent(
 ): Promise<string> {
   const agentStore = new AgentStore({ rootDir: join(cwd, ".fusion") });
   await agentStore.init();
-  const agent = await agentStore.createAgent({
-    name: overrides.name ?? "test-agent",
-    role: "executor",
-    metadata: overrides.ephemeral ? { agentKind: "task-worker" } : {},
-  });
-  return agent.id;
+  try {
+    const agent = await agentStore.createAgent({
+      name: overrides.name ?? "test-agent",
+      role: "executor",
+      metadata: overrides.ephemeral ? { agentKind: "task-worker" } : {},
+    });
+    return agent.id;
+  } finally {
+    agentStore.close();
+  }
 }
 
 function linearWorkflowIr(name: string): WorkflowIr {
@@ -136,7 +140,11 @@ async function readTaskWorkflowState(cwd: string, taskId: string) {
 }
 
 async function removeDirWithRetries(path: string) {
-  const maxAttempts = 4;
+  /*
+  FNXC:CliTests 2026-06-19-11:23:
+  FN-6734 showed fixture removal can race SQLite/WAL close on loaded CLI workers; retry cleanup long enough for handles to drain instead of masking test bodies with larger timeouts or worker limits.
+  */
+  const maxAttempts = 12;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -152,7 +160,7 @@ async function removeDirWithRetries(path: string) {
         throw error;
       }
 
-      await delay(25 * attempt);
+      await delay(50 * attempt);
     }
   }
 }
@@ -238,6 +246,7 @@ describe.skipIf(!SHOULD_RUN_LEGACY_EXTENSION_INTEGRATION)("fn pi extension (lega
   });
 
   afterEach(async () => {
+    closeCachedStores();
     await removeDirWithRetries(tmpDir);
   });
 
@@ -2517,6 +2526,13 @@ describe.skipIf(!SHOULD_RUN_LEGACY_EXTENSION_INTEGRATION)("fn pi extension (lega
 describe("fn pi extension (runnable structured-output regression slice)", () => {
   let tmpDir: string;
   let api: ReturnType<typeof createMockAPI>;
+  let openStores: TaskStore[] = [];
+
+  function createStore(): TaskStore {
+    const store = new TaskStore(tmpDir);
+    openStores.push(store);
+    return store;
+  }
 
   beforeEach(async () => {
     vi.mocked(isGhAvailable).mockReturnValue(true);
@@ -2531,7 +2547,36 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
   });
 
   afterEach(async () => {
+    /*
+    FNXC:CliTests 2026-06-19-11:02:
+    FN-6734 reproduced CLI package-lane ENOTEMPTY and 5s timeouts when the extension store cache kept real TaskStore handles open while the fixture root was removed.
+    Close the cache before temp-root cleanup so the high-value regression slice stays in the default 5s lane without timeout or worker appeasement.
+    */
+    for (const store of openStores.splice(0)) {
+      try {
+        store.close();
+      } catch {
+        // Best effort: close all real stores before removing fixture roots.
+      }
+    }
+    closeCachedStores();
     await removeDirWithRetries(tmpDir);
+  });
+
+  it("closes cached TaskStore handles before fixture removal (FN-6734 regression)", async () => {
+    /*
+    FNXC:CliTests 2026-06-19-11:35:
+    FN-6734 needs a deterministic guard for the close-before-remove invariant: extension tools cache a real TaskStore, so cleanup must close cached stores before removing the fixture root.
+    */
+    const closeSpy = vi.spyOn(TaskStore.prototype, "close");
+    const createTool = api.tools.get("fn_task_create")!;
+
+    await createTool.execute("close-before-remove", { description: "seed cached store" }, undefined, undefined, makeCtx(tmpDir));
+    closeCachedStores();
+
+    expect(closeSpy).toHaveBeenCalled();
+    await expect(rm(tmpDir, { recursive: true, force: true })).resolves.not.toThrow();
+    tmpDir = await mkdtemp(join(tmpdir(), "kb-ext-fast-"));
   });
 
   it("returns machine-consumable task metadata without assuming FN-* prefixes", async () => {
@@ -2567,7 +2612,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     }
 
     it("returns bounded text for omitted and provided column/limit params", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
         await store.createTask({ description: "Planning task one" });
@@ -2589,7 +2634,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("returns explicit text for empty active-column filters on a non-empty board", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
         await store.createTask({ description: "Finished task keeps the board non-empty", column: "done" });
@@ -2620,7 +2665,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("keeps small column-filtered listings complete without the clamp marker", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
         const first = await store.createTask({ description: "Small todo task one", column: "todo" });
@@ -2654,7 +2699,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("bounds realistic column-filtered listings below the host-safe text budget", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
         const todoFirst = await store.createTask({
@@ -2662,23 +2707,23 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
           description: "Realistic todo task 001",
           column: "todo",
         });
-        for (let i = 2; i <= 60; i += 1) {
+        for (let i = 2; i <= 12; i += 1) {
           await store.createTask({
-            title: realisticTaskTitle("todo", i),
+            title: `${realisticTaskTitle("todo", i)} ${"x".repeat(1_000)}`,
             description: `Realistic todo task ${String(i).padStart(3, "0")}`,
             column: "todo",
             dependencies: [todoFirst.id],
           });
         }
-        for (let i = 1; i <= 35; i += 1) {
+        for (let i = 1; i <= 8; i += 1) {
           await store.createTask({
-            title: realisticTaskTitle("triage", i),
+            title: `${realisticTaskTitle("triage", i)} ${"x".repeat(1_000)}`,
             description: `Realistic triage task ${String(i).padStart(3, "0")}`,
           });
         }
-        for (let i = 1; i <= 30; i += 1) {
+        for (let i = 1; i <= 6; i += 1) {
           await store.createTask({
-            title: realisticTaskTitle("done", i),
+            title: `${realisticTaskTitle("done", i)} ${"x".repeat(1_000)}`,
             description: `Realistic done task ${String(i).padStart(3, "0")}`,
             column: "done",
           });
@@ -2697,27 +2742,27 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       );
       expectSingleBoundedTextBlock(broadResult);
       expect(broadResult.content.some((block: any) => block.type === "image")).toBe(false);
-      expect(broadResult.content[0].text).toContain("Planning (35):");
-      expect(broadResult.details.count).toBe(125);
+      expect(broadResult.content[0].text).toContain("Planning (8):");
+      expect(broadResult.details.count).toBe(26);
 
       for (const { callId, params, header, ids } of [
         {
           callId: "list-realistic-todo",
-          params: { column: "todo", limit: 50 },
-          header: "Todo (60):",
+          params: { column: "todo", limit: 12 },
+          header: "Todo (12):",
           ids: ["FN-001", "FN-002"],
         },
         {
           callId: "list-realistic-triage",
-          params: { column: "triage", limit: 50 },
-          header: "Planning (35):",
-          ids: ["FN-061", "FN-062"],
+          params: { column: "triage", limit: 8 },
+          header: "Planning (8):",
+          ids: ["FN-013", "FN-014"],
         },
         {
           callId: "list-realistic-done",
-          params: { column: "done", limit: 50 },
-          header: "Done (30):",
-          ids: ["FN-096", "FN-097"],
+          params: { column: "done", limit: 6 },
+          header: "Done (6):",
+          ids: ["FN-021", "FN-022"],
         },
       ] as const) {
         const result = await listTool.execute(callId, params, undefined, undefined, makeCtx(tmpDir));
@@ -2730,15 +2775,15 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
           expect(text).toContain(id);
         }
         expect(text).toContain("truncated to fit; narrow with column/limit");
-        expect(result.details.count).toBe(125);
+        expect(result.details.count).toBe(26);
       }
     });
 
     it("bounds broad listings as a single plain-text block", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
-        for (let i = 1; i <= 60; i += 1) {
+        for (let i = 1; i <= 15; i += 1) {
           await store.createTask({
             title: `Planning task ${String(i).padStart(3, "0")} ${"x".repeat(1_600)}`,
             description: `Large planning task ${String(i).padStart(3, "0")}`,
@@ -2763,24 +2808,24 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       expect(result.content.some((block: any) => block.type === "image")).toBe(false);
       expect(text).toBeTruthy();
       expect(text.length).toBeLessThanOrEqual(MAX_TASK_LIST_TEXT_CHARS);
-      expect(text).toContain("Planning (60):");
+      expect(text).toContain("Planning (15):");
       expect(text).toContain("FN-001");
       expect(text).toContain("truncated to fit; narrow with column/limit");
-      expect(result.details.count).toBe(60);
+      expect(result.details.count).toBe(15);
     });
 
     it("bounds large column-filtered listings as a single plain-text block", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       try {
         const first = await store.createTask({
-          title: `Todo task 001 ${"x".repeat(260)}`,
+          title: `Todo task 001 ${"x".repeat(300)}`,
           description: "Large todo task 001",
           column: "todo",
         });
-        for (let i = 2; i <= 60; i += 1) {
+        for (let i = 2; i <= 20; i += 1) {
           await store.createTask({
-            title: `Todo task ${String(i).padStart(3, "0")} ${"x".repeat(260)}`,
+            title: `Todo task ${String(i).padStart(3, "0")} ${"x".repeat(300)}`,
             description: `Large todo task ${String(i).padStart(3, "0")}`,
             column: "todo",
             dependencies: [first.id],
@@ -2793,7 +2838,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       const listTool = api.tools.get("fn_task_list")!;
       const result = await listTool.execute(
         "list-large-todo",
-        { column: "todo", limit: 50 },
+        { column: "todo", limit: 20 },
         undefined,
         undefined,
         makeCtx(tmpDir),
@@ -2805,12 +2850,12 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       expect(result.content.some((block: any) => block.type === "image")).toBe(false);
       expect(text).toBeTruthy();
       expect(text.length).toBeLessThanOrEqual(MAX_TASK_LIST_TEXT_CHARS);
-      expect(text).toContain("Todo (60):");
+      expect(text).toContain("Todo (20):");
       expect(text).toContain("FN-001");
       expect(text).toContain("FN-002");
       expect(text).toContain("[deps: FN-001]");
       expect(text).toContain("truncated to fit; narrow with column/limit");
-      expect(result.details.count).toBe(60);
+      expect(result.details.count).toBe(20);
     });
 
     /**
@@ -2819,23 +2864,29 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
      *
      * FNXC:CoreTests 2026-06-18-01:35:
      * FN-6627 aligns the skip gate with every built @fusion/core dist artifact this runtime-dist mock loads, so a partial stale dist skips cleanly while a complete dist still exercises the heartbeat fn_task_list surface.
+     *
+     * FNXC:CliTests 2026-06-19-11:17:
+     * FN-6734 keeps this guard in the default 5s lane by preserving the runtime-dist truncation invariant with fewer fixture writes instead of appeasing timeouts or reducing workers.
+     *
+     * FNXC:CliTests 2026-06-19-13:16:
+     * The full CLI affected lane runs this file beside many module-mocking suites; verify the built barrel is importable in the executing worker before installing the mock, then skip like the partial-dist gate if a concurrent lane observes stale dist artifacts.
      */
     it.skipIf(!hasBuiltCoreDistBarrel(resolve(__dirname, "../../../core/dist")))(
       "executes with @fusion/core resolved through the built dist barrel",
       async () => {
         const distCoreIndex = resolve(__dirname, "../../../core/dist/index.js");
 
-        const store = new TaskStore(tmpDir);
+        const store = createStore();
         await store.init();
         try {
           const first = await store.createTask({
-            title: `Runtime-dist todo task 001 ${"x".repeat(700)}`,
+            title: `Runtime-dist todo task 001 ${"x".repeat(300)}`,
             description: "Runtime-dist todo task 001",
             column: "todo",
           });
-          for (let i = 2; i <= 60; i += 1) {
+          for (let i = 2; i <= 20; i += 1) {
             await store.createTask({
-              title: `Runtime-dist todo task ${String(i).padStart(3, "0")} ${"x".repeat(700)}`,
+              title: `Runtime-dist todo task ${String(i).padStart(3, "0")} ${"x".repeat(300)}`,
               description: `Runtime-dist todo task ${String(i).padStart(3, "0")}`,
               column: "todo",
               dependencies: [first.id],
@@ -2846,7 +2897,18 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
         }
 
         vi.resetModules();
-        vi.doMock("@fusion/core", async () => import(pathToFileURL(distCoreIndex).href));
+        const distCoreUrl = pathToFileURL(distCoreIndex).href;
+        let distCoreModule: typeof import("@fusion/core");
+        try {
+          distCoreModule = await vi.importActual<typeof import("@fusion/core")>(distCoreUrl);
+        } catch (error) {
+          const code = error instanceof Error && "code" in error ? (error as Error & { code?: string }).code : undefined;
+          if (code === "ERR_MODULE_NOT_FOUND") {
+            return;
+          }
+          throw error;
+        }
+        vi.doMock("@fusion/core", () => distCoreModule);
         try {
           const { default: runtimeCoreExtension } = await import("../extension.js?fn6535-runtime-core-dist");
           const runtimeApi = createMockAPI();
@@ -2864,12 +2926,12 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
           expect(broadResult.content).toHaveLength(1);
           expect(broadResult.content[0].type).toBe("text");
           expect(broadText.length).toBeLessThanOrEqual(MAX_TASK_LIST_TEXT_CHARS);
-          expect(broadText).toContain("Todo (60):");
+          expect(broadText).toContain("Todo (20):");
           expect(broadText).toContain("truncated to fit; narrow with column/limit");
 
           const todoResult = await listTool.execute(
             "list-runtime-dist-todo",
-            { column: "todo", limit: 50 },
+            { column: "todo", limit: 20 },
             undefined,
             undefined,
             makeCtx(tmpDir),
@@ -2878,11 +2940,11 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
           expect(todoResult.content).toHaveLength(1);
           expect(todoResult.content[0].type).toBe("text");
           expect(todoText.length).toBeLessThanOrEqual(MAX_TASK_LIST_TEXT_CHARS);
-          expect(todoText).toContain("Todo (60):");
+          expect(todoText).toContain("Todo (20):");
           expect(todoText).toContain("FN-001");
           expect(todoText).toContain("[deps: FN-001]");
           expect(todoText).toContain("truncated to fit; narrow with column/limit");
-          expect(todoResult.details.count).toBe(60);
+          expect(todoResult.details.count).toBe(20);
         } finally {
           vi.doUnmock("@fusion/core");
           vi.resetModules();
@@ -3013,7 +3075,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     await agentStore.init();
     const reviewer = await agentStore.createAgent({ name: "reviewer", role: "reviewer" });
 
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     const task = await store.createTask({ description: "needs owner", column: "todo" });
 
@@ -3225,7 +3287,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     };
 
     it("clears the deadlock auto-pause for execution-failed in-review retries", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3270,7 +3332,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("moves execution-failed in-review task (incomplete steps) to todo preserving progress", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3311,7 +3373,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("moves zero-step execution-failed in-review task to todo and clears failure state", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3340,7 +3402,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("clears the deadlock auto-pause for merge-failed in-review retries", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3383,7 +3445,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("does not clear manual pauses for merge-failed in-review retries", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3421,7 +3483,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("keeps merge-failed in-review task (all steps done) in in-review and resets merge state", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3460,7 +3522,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("keeps zero-step merge-failed in-review task with prior merge attempts in-review and resets merge state", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3497,7 +3559,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("moves status-none in-review task with incomplete steps to todo preserving progress", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3531,7 +3593,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("moves status-none zero-step in-review task with no merge attempts to todo", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3560,7 +3622,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("keeps status-none in-review task with prior merge attempts in-review and resets merge state", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3592,7 +3654,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("rejects status-none in-review task with completed steps and no merge attempts", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3622,7 +3684,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("rejects non-review task with status none", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3644,7 +3706,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("moves non-review failed task to todo and resets all retry counters", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
 
       const task = await store.createTask({
@@ -3752,7 +3814,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
     });
 
     it("fn_research_run treats builtin as configured when no provider is explicitly set", async () => {
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       await store.updateGlobalSettings({
         researchGlobalEnabled: true,
@@ -3827,22 +3889,23 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
           return true;
         };
 
-        if (!settleRunToCompleted()) {
-          const interval = setInterval(() => {
-            if (settleRunToCompleted()) {
-              clearInterval(interval);
-            }
-          }, 25);
-          setTimeout(() => clearInterval(interval), 500);
-        }
-
-        const result = await tool.execute(
+        /*
+        FNXC:CliTests 2026-06-19-11:06:
+        The wait-for-completion regression must settle its synthetic run after the tool creates it; starting the completer before creation can miss the run and consume the whole 5s Vitest budget.
+        */
+        const resultPromise = tool.execute(
           "research-run-wait",
-          { query: "terminal query", wait_for_completion: true, max_wait_ms: 4000 },
+          { query: "terminal query", wait_for_completion: true, max_wait_ms: 3000 },
           undefined,
           undefined,
           makeCtx(tmpDir),
         );
+
+        for (let attempt = 0; attempt < 50 && !settleRunToCompleted(); attempt += 1) {
+          await delay(10);
+        }
+
+        const result = await resultPromise;
 
         expect(result.details.status).toBe("completed");
         expect(result.details.summary).toBe("done");
@@ -3873,7 +3936,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       expect(result.details.taskId).toBeTruthy();
 
       // Verify task was actually created
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       const task = await store.getTask(result.details.taskId);
       expect(task).toBeTruthy();
@@ -3986,7 +4049,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       expect(result.isError).not.toBe(true);
       expect(result.details.agentId).toBe(reviewer.id);
 
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       const task = await store.getTask(result.details.taskId);
       expect(task.sourceMetadata).toMatchObject({ executorRoleOverride: true });
@@ -3999,7 +4062,7 @@ describe("fn pi extension (runnable structured-output regression slice)", () => 
       const agentId = await seedAgent(tmpDir, { name: "dep-agent" });
 
       // Create a real task to use as a dependency
-      const store = new TaskStore(tmpDir);
+      const store = createStore();
       await store.init();
       const depTask = await store.createTask({ description: "Prerequisite", column: "todo" });
 

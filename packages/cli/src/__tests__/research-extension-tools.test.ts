@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import kbExtension from "../extension.js";
+import kbExtension, { closeCachedStores } from "../extension.js";
 import { TaskStore } from "@fusion/core";
 
 interface RegisteredTool {
@@ -37,6 +37,13 @@ function makeCtx(cwd: string) {
 describe("research extension tools", () => {
   let tmpDir: string;
   let api: ReturnType<typeof createMockAPI>;
+  let openStores: TaskStore[] = [];
+
+  function createStore(): TaskStore {
+    const store = new TaskStore(tmpDir);
+    openStores.push(store);
+    return store;
+  }
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), "kb-ext-research-test-"));
@@ -45,6 +52,19 @@ describe("research extension tools", () => {
   });
 
   afterEach(async () => {
+    /*
+    FNXC:CliTests 2026-06-19-10:58:
+    FN-6734 reproduced research-extension-tools timeouts with ENOTEMPTY while removing per-test `.fusion` dirs because real TaskStore handles stayed open past fixture cleanup.
+    Close both manually-created stores and the extension store cache before deleting temp roots; do not hide the load-only race with timeout or worker changes.
+    */
+    for (const store of openStores.splice(0)) {
+      try {
+        store.close();
+      } catch {
+        // Best effort: cleanup must continue so the temp root can be removed.
+      }
+    }
+    closeCachedStores();
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -57,7 +77,7 @@ describe("research extension tools", () => {
   });
 
   it("returns feature-disabled response when experimental research flag is off", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateSettings({ researchSettings: { enabled: true }, experimentalFeatures: { researchView: false } as Record<string, boolean> });
 
@@ -69,7 +89,7 @@ describe("research extension tools", () => {
   });
 
   it("returns feature-disabled contract for list/get/cancel/retry when flag is off", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateSettings({ researchSettings: { enabled: true }, experimentalFeatures: { researchView: false } as Record<string, boolean> });
 
@@ -89,7 +109,7 @@ describe("research extension tools", () => {
   });
 
   it("treats builtin as configured when no provider is explicitly set", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -107,7 +127,7 @@ describe("research extension tools", () => {
   });
 
   it("returns actionable missing-credentials response", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -127,7 +147,7 @@ describe("research extension tools", () => {
   });
 
   it("creates, reads, lists, and cancels runs", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -160,7 +180,7 @@ describe("research extension tools", () => {
   });
 
   it("returns structured missing-run details for get and cancel", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -187,7 +207,7 @@ describe("research extension tools", () => {
   });
 
   it("returns completed-run structured findings and citations", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -221,7 +241,7 @@ describe("research extension tools", () => {
   });
 
   it("retries failed run and returns retry linkage metadata", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,
@@ -261,7 +281,7 @@ describe("research extension tools", () => {
   });
 
   it("returns INVALID_TRANSITION for cancel on terminal run", async () => {
-    const store = new TaskStore(tmpDir);
+    const store = createStore();
     await store.init();
     await store.updateGlobalSettings({
       experimentalFeatures: { researchView: true } as Record<string, boolean>,

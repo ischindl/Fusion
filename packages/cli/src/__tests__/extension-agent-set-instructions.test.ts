@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentStore } from "@fusion/core";
-import kbExtension from "../extension.js";
+import kbExtension, { closeCachedStores } from "../extension.js";
 
 function createMockAPI() {
   const tools = new Map<string, any>();
@@ -58,6 +58,7 @@ async function withOrg(
       ids: { manager: manager.id, middle: middle.id, leaf: leaf.id, peer: peer.id },
     });
   } finally {
+    closeCachedStores();
     agentStore.close();
     await rm(cwd, { recursive: true, force: true });
   }
