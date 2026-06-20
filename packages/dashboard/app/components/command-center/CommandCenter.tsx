@@ -516,7 +516,7 @@ export function CommandCenter({
       case "productivity":
         return <ProductivityArea range={range} />;
       case "team":
-        return <TeamArea range={range} />;
+        return <TeamArea range={range} projectId={projectId} />;
       case "ecosystem":
         return <EcosystemArea range={range} />;
       case "github":

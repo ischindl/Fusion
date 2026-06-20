@@ -117,7 +117,7 @@ function populatedProductivityFixture() {
     commits: 2,
     pullRequests: 1,
     loc: { value: 42, unavailable: false },
-    hoursSaved: { value: 2.8, unavailable: false },
+    hoursSaved: { value: 1, unavailable: false },
     taskDuration: {
       completedTasks: 2,
       averageMs: 1_800_000,
@@ -338,7 +338,7 @@ function assertScrollOwnerContract(panel: HTMLElement) {
 function assertNoChartScrollSteal(panel: HTMLElement) {
   // FN-6680: jsdom does not compute real flex/grid layout, so this guards rule presence and scroll-owner structure only; the CSS-string regression plus Blink audit cover actual mobile pixel layout.
   const chartContainers = panel.querySelectorAll<HTMLElement>(
-    ".cc-bar-chart, .cc-bar-row, .cc-sparkline, .cc-line-chart, .cc-recharts-chart, .cc-recharts-empty, .cc-radial-gauge, .cc-funnel, .cc-token-series, .cc-token-series-plot, .cc-overview-chart-card, .cc-team-chart-panel, .cc-stat-card",
+    ".cc-bar-chart, .cc-bar-row, .cc-sparkline, .cc-line-chart, .cc-recharts-chart, .cc-recharts-empty, .cc-radial-gauge, .cc-funnel, .cc-token-series, .cc-token-series-plot, .cc-overview-chart-card, .cc-team-ops-card, .cc-team-chart-panel, .cc-stat-card",
   );
   expect(chartContainers.length).toBeGreaterThan(0);
   for (const container of chartContainers) {
@@ -373,6 +373,8 @@ describe("CommandCenter mobile scroll regression (FN-6595)", () => {
     await screen.findByTestId("command-center-empty");
     expect(screen.getByTestId("command-center-controls")).toBeTruthy();
     expect(screen.getByTestId("cc-controls-concurrency")).toBeTruthy();
+    expect(screen.queryByTestId("cc-controls-org-chart")).toBeNull();
+    expect(screen.queryByTestId("cc-controls-heartbeat")).toBeNull();
     assertScrollOwnerContract(overviewPanel);
 
     fireEvent.click(screen.getByTestId("command-center-tab-tokens"));
@@ -383,6 +385,8 @@ describe("CommandCenter mobile scroll regression (FN-6595)", () => {
     fireEvent.click(screen.getByTestId("command-center-tab-team"));
     const teamPanel = screen.getByTestId("command-center-panel-team");
     expect(teamPanel).toBe(screen.getByRole("tabpanel"));
+    expect(screen.getByTestId("cc-team-org-chart")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-heartbeat")).toBeTruthy();
     assertScrollOwnerContract(teamPanel);
 
     fireEvent.click(screen.getByTestId("command-center-tab-github"));

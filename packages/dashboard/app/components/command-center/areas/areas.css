@@ -218,7 +218,168 @@ FN-6680 keeps table-heavy chart areas on the same --border-width/--border-subtle
 /*
 FNXC:CommandCenterStyling 2026-06-18-22:38:
 The Team view must use dashboard design tokens only, preserve .cc-tabpanel as the scroll owner on mobile, and match the shared card rhythm (--space-md gap/padding, 1px solid --border-subtle, --radius-md, --surface-1) while keeping decorative motion duration-token based with reduced-motion disabled.
+
+FNXC:CommandCenter 2026-06-19-13:45:
+Team owns the Agent org chart and Heartbeat control. Org nodes must be self-styled Command Center cards so they render correctly before lazy AgentsView.css is loaded, and the moved controls must stay usable above Team analytics loading/error/empty states.
 */
+.cc-team-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  min-inline-size: 0;
+}
+
+.cc-team-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-md);
+  min-inline-size: 0;
+}
+
+.cc-team-ops-card {
+  min-inline-size: 0;
+  padding: var(--space-md);
+  border: thin solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.cc-team-ops-card--org {
+  grid-column: 1 / -1;
+}
+
+.cc-team-ops-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-block-end: var(--space-md);
+}
+
+.cc-team-ops-card-header h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9375rem;
+}
+
+.cc-team-ops-card-header p,
+.cc-team-muted {
+  margin: var(--space-xs) 0 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.cc-team-error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: 0.8125rem;
+}
+
+.cc-team-status-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.cc-team-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+  margin: 0 0 var(--space-md);
+}
+
+.cc-team-facts div {
+  min-inline-size: 0;
+}
+
+.cc-team-facts dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.cc-team-facts dd {
+  margin: var(--space-xs) 0 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.cc-team-action {
+  gap: var(--space-xs);
+}
+
+.cc-team-org-scroll {
+  max-block-size: calc(var(--space-2xl) * 10);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.cc-team-org-roots,
+.cc-team-org-children {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cc-team-org-children {
+  margin-block-start: var(--space-sm);
+  margin-inline-start: var(--space-xl);
+  padding-inline-start: var(--space-md);
+  border-inline-start: thin solid var(--border-subtle);
+}
+
+.cc-team-org-item {
+  min-inline-size: max-content;
+}
+
+.cc-team-org-card {
+  display: inline-flex;
+  min-inline-size: calc(var(--space-2xl) * 5);
+  max-inline-size: calc(var(--space-2xl) * 10);
+  padding: var(--space-sm);
+  border: thin solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.cc-team-org-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-inline-size: 0;
+}
+
+.cc-team-org-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.cc-team-org-name {
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-team-org-badge {
+  flex: 0 0 auto;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-1));
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: capitalize;
+}
+
 .cc-team-chart-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -310,16 +471,36 @@ Tablet Command Center areas share the FN-6679 overflow fix with the shell: area 
 }
 
 @media (max-width: 768px) {
+  .cc-team-ops-grid,
   .cc-team-chart-grid {
     min-inline-size: 0;
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .cc-team-ops-card--org,
   .cc-team-spark-panel {
     grid-column: auto;
   }
 
+  .cc-team-ops-card,
   .cc-team-chart-panel {
     padding: var(--space-sm);
+  }
+
+  .cc-team-ops-card-header {
+    flex-direction: column;
+  }
+
+  .cc-team-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cc-team-action {
+    justify-content: center;
+    inline-size: 100%;
+  }
+
+  .cc-team-org-scroll {
+    max-block-size: calc(var(--space-2xl) * 8);
   }
 }

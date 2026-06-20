@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pause, Play, Power } from "lucide-react";
-import type { ColorTheme, OrgTreeNode, ThemeMode } from "@fusion/core";
-import { fetchConfig, fetchExecutorStats, fetchOrgTree, fetchSettings, updateSettings } from "../../api/legacy";
+import { Power } from "lucide-react";
+import type { ColorTheme, ThemeMode } from "@fusion/core";
+import { fetchConfig, fetchSettings, updateSettings } from "../../api/legacy";
 import { useAppSettings } from "../../hooks/useAppSettings";
-import { AgentAvatar } from "../AgentAvatar";
 import { ThemeDropdown } from "../ThemeDropdown";
 import "./CommandCenterControls.css";
 
@@ -21,20 +20,12 @@ type AsyncState<T> =
   | { status: "loaded"; data: T; error: null }
   | { status: "error"; data: T | null; error: string };
 
-type ExecutorStats = {
-  globalPause: boolean;
-  enginePaused: boolean;
-  maxConcurrent: number;
-  lastActivityAt?: string;
-};
-
 type ConcurrencyValues = {
   maxConcurrent: number;
   maxTriageConcurrent: number;
   maxWorktrees: number;
 };
 
-const EXECUTOR_STATUS_POLL_MS = 10_000;
 const CONCURRENCY_SAVE_DEBOUNCE_MS = 500;
 const DEFAULT_CONCURRENCY_VALUES: ConcurrencyValues = {
   maxConcurrent: 2,
@@ -42,49 +33,12 @@ const DEFAULT_CONCURRENCY_VALUES: ConcurrencyValues = {
   maxWorktrees: 5,
 };
 
-function formatAgentMeta(node: OrgTreeNode) {
-  const title = node.agent.title?.trim();
-  return title ? `${node.agent.role} · ${title}` : node.agent.role;
-}
-
-function OrgChartNode({ node }: { node: OrgTreeNode }) {
-  const hasChildren = node.children.length > 0;
-  return (
-    <li className="cc-controls-org-item">
-      <div className="org-chart-node cc-controls-org-node">
-        <div className="org-chart-node__header">
-          <span className="org-chart-node__icon"><AgentAvatar agent={node.agent} size={20} /></span>
-          <span className="org-chart-node__name">{node.agent.name}</span>
-        </div>
-        <div className="org-chart-node__meta">
-          <span className="org-chart-node__badge">{node.agent.state}</span>
-          <span>{formatAgentMeta(node)}</span>
-        </div>
-      </div>
-      {hasChildren ? (
-        <ul className="org-chart-children cc-controls-org-children">
-          {node.children.map((child) => (
-            <OrgChartNode key={child.agent.id} node={child} />
-          ))}
-        </ul>
-      ) : null}
-    </li>
-  );
-}
-
 /*
-FNXC:CommandCenter 2026-06-19-12:20:
-FN-6727 makes the Command Center Overview the operator controls dashboard: org chart, heartbeat, engine, concurrency, and theme controls must live above the existing throughput and analytics surfaces without introducing new backend routes.
+FNXC:CommandCenter 2026-06-19-13:45:
+Overview controls keep only global AI engine, Theme, and Concurrency controls. Agent org chart and Heartbeat control belong to the Team tab so team-specific hierarchy and scheduler heartbeat affordances are not duplicated across Command Center sections.
 */
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
-}
-
-function formatLastActivity(value: string | undefined, fallback: string) {
-  if (!value) return fallback;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return fallback;
-  return date.toLocaleString();
 }
 
 function StatusPill({ paused, label }: { paused: boolean; label: string }) {
@@ -100,71 +54,12 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, onColo
   const { t } = useTranslation("app");
   const {
     globalPaused,
-    enginePaused,
     toggleGlobalPause,
-    toggleEnginePause,
     refresh,
   } = useAppSettings(projectId);
-  const [orgTreeState, setOrgTreeState] = useState<AsyncState<OrgTreeNode[]>>({ status: "loading", data: null, error: null });
-  const [executorStatsState, setExecutorStatsState] = useState<AsyncState<ExecutorStats>>({ status: "loading", data: null, error: null });
   const [concurrencyState, setConcurrencyState] = useState<AsyncState<ConcurrencyValues>>({ status: "loading", data: null, error: null });
   const [concurrencyDirty, setConcurrencyDirty] = useState(false);
   const [concurrencySaveState, setConcurrencySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-
-  useEffect(() => {
-    let cancelled = false;
-    setOrgTreeState({ status: "loading", data: null, error: null });
-    void (async () => {
-      try {
-        const result = await fetchOrgTree(projectId);
-        if (!cancelled) {
-          setOrgTreeState({ status: "loaded", data: result, error: null });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setOrgTreeState({
-            status: "error",
-            data: null,
-            error: error instanceof Error ? error.message : t("commandCenter.controls.orgChart.error", "Unable to load org chart"),
-          });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, t]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const loadExecutorStats = async () => {
-      try {
-        const result = await fetchExecutorStats(projectId);
-        if (!cancelled) {
-          setExecutorStatsState({ status: "loaded", data: result, error: null });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setExecutorStatsState({
-            status: "error",
-            data: null,
-            error: error instanceof Error ? error.message : t("commandCenter.controls.status.error", "Unable to load live scheduler status"),
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          timeoutId = setTimeout(loadExecutorStats, EXECUTOR_STATUS_POLL_MS);
-        }
-      }
-    };
-    setExecutorStatsState({ status: "loading", data: null, error: null });
-    void loadExecutorStats();
-    return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [projectId, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,12 +124,7 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, onColo
     setConcurrencySaveState("idle");
   };
 
-  const effectiveGlobalPaused = executorStatsState.data?.globalPause ?? globalPaused;
-  const effectiveEnginePaused = executorStatsState.data?.enginePaused ?? enginePaused;
-  const lastActivityLabel = formatLastActivity(
-    executorStatsState.data?.lastActivityAt,
-    t("commandCenter.controls.status.noActivity", "No recent activity"),
-  );
+  const effectiveGlobalPaused = globalPaused;
   const concurrencyValues = concurrencyState.data ?? DEFAULT_CONCURRENCY_VALUES;
 
   /*
@@ -242,75 +132,11 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, onColo
   The Command Center concurrency sliders mutate live scheduler limits through the existing /api/settings path; after each debounced save, refresh useAppSettings so the running dashboard reflects the new scheduler capacity without local shadow state drifting.
 
   FNXC:CommandCenter 2026-06-19-12:30:
-  Heartbeat controls pause/resume the scheduling heartbeat via the existing enginePaused setting, while engine controls stop/start all AI work via globalPause. Both controls intentionally reuse useAppSettings toggles so Command Center does not add backend routes or competing scheduler state.
+  Engine controls stop/start all AI work via globalPause. Heartbeat pause/resume moved to TeamArea but still reuses useAppSettings there so Command Center does not add backend routes or competing scheduler state.
   */
   return (
     <section className="cc-controls" data-testid="command-center-controls" aria-label={t("commandCenter.controls.title", "Operator controls")}>
       <div className="cc-controls-grid">
-        <section className="card cc-controls-card cc-controls-card--org" data-testid="cc-controls-org-chart">
-          <div className="cc-controls-card-header">
-            <div>
-              <h3>{t("commandCenter.controls.orgChart.title", "Agent org chart")}</h3>
-              <p>{t("commandCenter.controls.orgChart.description", "Read-only view of the running agent hierarchy.")}</p>
-            </div>
-          </div>
-          <div className="cc-controls-org-scroll" aria-live="polite">
-            {orgTreeState.status === "loading" ? (
-              <p className="cc-controls-muted">{t("commandCenter.controls.orgChart.loading", "Loading org chart…")}</p>
-            ) : orgTreeState.status === "error" ? (
-              <p className="cc-controls-error" role="alert">{orgTreeState.error}</p>
-            ) : orgTreeState.data.length === 0 ? (
-              <p className="cc-controls-muted">{t("commandCenter.controls.orgChart.empty", "No agents are reporting in yet.")}</p>
-            ) : (
-              <ul className="cc-controls-org-roots">
-                {orgTreeState.data.map((node) => (
-                  <OrgChartNode key={node.agent.id} node={node} />
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        <section className="card cc-controls-card" data-testid="cc-controls-heartbeat">
-          <div className="cc-controls-card-header">
-            <div>
-              <h3>{t("commandCenter.controls.heartbeat.title", "Heartbeat control")}</h3>
-              <p>{t("commandCenter.controls.heartbeat.description", "Pause or resume the scheduling heartbeat.")}</p>
-            </div>
-            <StatusPill
-              paused={effectiveEnginePaused}
-              label={effectiveEnginePaused ? t("commandCenter.controls.status.paused", "Paused") : t("commandCenter.controls.status.running", "Running")}
-            />
-          </div>
-          <dl className="cc-controls-facts">
-            <div>
-              <dt>{t("commandCenter.controls.status.lastActivity", "Last activity")}</dt>
-              <dd>{executorStatsState.status === "loading" ? t("commandCenter.controls.status.loading", "Loading…") : lastActivityLabel}</dd>
-            </div>
-            <div>
-              <dt>{t("commandCenter.controls.status.maxConcurrent", "Max concurrent")}</dt>
-              <dd>{executorStatsState.data?.maxConcurrent ?? "—"}</dd>
-            </div>
-          </dl>
-          {executorStatsState.status === "error" ? <p className="cc-controls-error" role="alert">{executorStatsState.error}</p> : null}
-          <button
-            type="button"
-            className="btn btn-secondary cc-controls-action"
-            onClick={() => void toggleEnginePause()}
-            disabled={effectiveGlobalPaused}
-          >
-            {effectiveEnginePaused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
-            <span>
-              {effectiveEnginePaused
-                ? t("commandCenter.controls.heartbeat.resume", "Resume heartbeat")
-                : t("commandCenter.controls.heartbeat.pause", "Pause heartbeat")}
-            </span>
-          </button>
-          {effectiveGlobalPaused ? (
-            <p className="cc-controls-muted">{t("commandCenter.controls.heartbeat.disabledByStop", "Start the AI engine before resuming the heartbeat.")}</p>
-          ) : null}
-        </section>
-
         <section className="card cc-controls-card" data-testid="cc-controls-engine">
           <div className="cc-controls-card-header">
             <div>

@@ -357,6 +357,8 @@ describe("CommandCenter shell", () => {
     expect(overviewTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("command-center-panel-overview")).toBeTruthy();
     expect(screen.getByTestId("command-center-controls")).toBeTruthy();
+    expect(screen.queryByTestId("cc-controls-org-chart")).toBeNull();
+    expect(screen.queryByTestId("cc-controls-heartbeat")).toBeNull();
   });
 
   it("renders throughput last while the Overview branch is loading", () => {
@@ -813,6 +815,8 @@ describe("CommandCenter shell", () => {
 
     await screen.findByTestId("cc-area-team");
     expect(screen.getByTestId("command-center-tab-team").getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("cc-team-org-chart")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-heartbeat")).toBeTruthy();
     const alphaRow = screen.getByTestId("cc-team-row-agent-alpha");
     expect(alphaRow).toBeTruthy();
     expect(within(alphaRow).getByText("Alpha Agent")).toBeTruthy();

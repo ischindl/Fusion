@@ -1,11 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { OrgTreeNode } from "@fusion/core";
 import { CommandCenterControls } from "../CommandCenterControls";
 
 const mocks = vi.hoisted(() => ({
-  fetchOrgTree: vi.fn(),
-  fetchExecutorStats: vi.fn(),
   fetchSettings: vi.fn(),
   fetchConfig: vi.fn(),
   updateSettings: vi.fn(),
@@ -19,8 +16,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../api/legacy", () => ({
-  fetchOrgTree: mocks.fetchOrgTree,
-  fetchExecutorStats: mocks.fetchExecutorStats,
   fetchSettings: mocks.fetchSettings,
   fetchConfig: mocks.fetchConfig,
   updateSettings: mocks.updateSettings,
@@ -48,21 +43,6 @@ function renderControls(projectId?: string) {
   );
 }
 
-function agentNode(id: string, name: string, children: OrgTreeNode[] = []): OrgTreeNode {
-  return {
-    agent: {
-      id,
-      name,
-      role: "executor",
-      state: "idle",
-      createdAt: "2026-06-19T00:00:00.000Z",
-      updatedAt: "2026-06-19T00:00:00.000Z",
-      metadata: {},
-    },
-    children,
-  };
-}
-
 async function flushPromises() {
   await act(async () => {
     await Promise.resolve();
@@ -74,13 +54,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.appSettings.globalPaused = false;
   mocks.appSettings.enginePaused = false;
-  mocks.fetchOrgTree.mockResolvedValue([]);
-  mocks.fetchExecutorStats.mockResolvedValue({
-    globalPause: false,
-    enginePaused: false,
-    maxConcurrent: 2,
-    lastActivityAt: "2026-06-19T12:00:00.000Z",
-  });
   mocks.fetchSettings.mockResolvedValue({ maxConcurrent: 2, maxTriageConcurrent: 1, maxWorktrees: 5 });
   mocks.fetchConfig.mockResolvedValue({ maxConcurrent: 2, rootDir: "/repo" });
   mocks.updateSettings.mockResolvedValue({});
@@ -92,77 +65,25 @@ afterEach(() => {
 });
 
 describe("CommandCenterControls", () => {
-  it("renders org chart loading, empty, and populated states", async () => {
-    let resolveOrgTree: (value: OrgTreeNode[]) => void = () => {};
-    mocks.fetchOrgTree.mockReturnValueOnce(new Promise<OrgTreeNode[]>((resolve) => { resolveOrgTree = resolve; }));
-
-    const { rerender } = renderControls("project-a");
-    expect(screen.getByText("Loading org chart…")).toBeDefined();
-
-    await act(async () => resolveOrgTree([]));
-    expect(screen.getByText("No agents are reporting in yet.")).toBeDefined();
-    expect(mocks.fetchOrgTree).toHaveBeenCalledWith("project-a");
-
-    mocks.fetchOrgTree.mockResolvedValueOnce([agentNode("agent-lead", "Lead Agent", [agentNode("agent-child", "Child Agent")])]);
-    rerender(
-      <CommandCenterControls
-        projectId="project-b"
-        colorTheme="default"
-        themeMode="dark"
-        onColorThemeChange={vi.fn()}
-        onThemeModeChange={vi.fn()}
-      />,
-    );
-
-    await flushPromises();
-    expect(screen.getByText("Lead Agent")).toBeDefined();
-    expect(screen.getByText("Child Agent")).toBeDefined();
-    expect(mocks.fetchOrgTree).toHaveBeenLastCalledWith("project-b");
-  });
-
-  it("renders org chart error state without crashing", async () => {
-    mocks.fetchOrgTree.mockRejectedValueOnce(new Error("fetch failed"));
-
-    renderControls("project-a");
-
-    await flushPromises();
-    const orgSection = screen.getByTestId("cc-controls-org-chart");
-    expect(within(orgSection).getByRole("alert")).toHaveTextContent("fetch failed");
-  });
-
-  it("supports undefined project ids and renders status sections", async () => {
+  it("renders only overview controls after team affordances move", async () => {
     renderControls(undefined);
 
     await flushPromises();
     expect(screen.getByTestId("command-center-controls")).toBeDefined();
-    expect(screen.getByTestId("cc-controls-heartbeat")).toBeDefined();
+    expect(screen.queryByTestId("cc-controls-org-chart")).toBeNull();
+    expect(screen.queryByTestId("cc-controls-heartbeat")).toBeNull();
     expect(screen.getByTestId("cc-controls-engine")).toBeDefined();
     expect(screen.getByTestId("cc-controls-concurrency")).toBeDefined();
     expect(screen.getByTestId("cc-controls-theme")).toBeDefined();
-    expect(mocks.fetchOrgTree).toHaveBeenCalledWith(undefined);
-    expect(mocks.fetchExecutorStats).toHaveBeenCalledWith(undefined);
   });
 
-  it("heartbeat and engine controls call the existing settings toggles", async () => {
+  it("engine controls call the existing settings toggle", async () => {
     renderControls("project-a");
 
     await flushPromises();
-    fireEvent.click(screen.getByRole("button", { name: /pause heartbeat/i }));
-    expect(mocks.toggleEnginePause).toHaveBeenCalledTimes(1);
-
     fireEvent.click(screen.getByRole("button", { name: /stop ai engine/i }));
     expect(mocks.toggleGlobalPause).toHaveBeenCalledTimes(1);
-  });
-
-  it("disables heartbeat toggle when the AI engine is stopped", async () => {
-    mocks.appSettings.globalPaused = true;
-    mocks.fetchExecutorStats.mockResolvedValue({ globalPause: true, enginePaused: true, maxConcurrent: 2 });
-
-    renderControls("project-a");
-
-    await flushPromises();
-    const heartbeatButton = screen.getByRole("button", { name: /resume heartbeat/i });
-    expect(heartbeatButton).toBeDisabled();
+    expect(mocks.toggleEnginePause).not.toHaveBeenCalled();
   });
 
   it("persists bounded concurrency slider changes and refreshes settings", async () => {

@@ -109,7 +109,7 @@ function populatedProductivityFixture() {
     commits: 2,
     pullRequests: 1,
     loc: { value: 42, unavailable: false },
-    hoursSaved: { value: 2.8, unavailable: false },
+    hoursSaved: { value: 1, unavailable: false },
     taskDuration: {
       completedTasks: 2,
       averageMs: 1_800_000,

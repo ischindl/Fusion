@@ -4,7 +4,11 @@ Team tab shows each agent's tokens/cost/files-changed/tasks-completed with live 
 */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { CostResult, TeamAgentSummary, TeamAnalytics } from "@fusion/core";
+import { Pause, Play } from "lucide-react";
+import type { CostResult, OrgTreeNode, TeamAgentSummary, TeamAnalytics } from "@fusion/core";
+import { fetchExecutorStats, fetchOrgTree } from "../../../api/legacy";
+import { useAppSettings } from "../../../hooks/useAppSettings";
+import { AgentAvatar } from "../../AgentAvatar";
 import type { DateRange } from "../DateRangePicker";
 import { Bar, type BarDatum } from "../charts/Bar";
 import { Sparkline } from "../charts/Sparkline";
@@ -14,7 +18,20 @@ import { useAnalyticsArea } from "./useAnalyticsArea";
 import { formatCost, formatCount } from "./areaShared";
 
 const TEAM_LIVE_REFRESH_MS = 15_000;
+const EXECUTOR_STATUS_POLL_MS = 10_000;
 type SortKey = "agent" | "tokens" | "cost" | "filesChanged" | "tasksCompleted" | "tasksInProgress";
+
+type AsyncState<T> =
+  | { status: "loading"; data: T | null; error: null }
+  | { status: "loaded"; data: T; error: null }
+  | { status: "error"; data: T | null; error: string };
+
+type ExecutorStats = {
+  globalPause: boolean;
+  enginePaused: boolean;
+  maxConcurrent: number;
+  lastActivityAt?: string;
+};
 
 function costSortValue(cost: CostResult): number {
   return cost.unavailable || cost.usd === null ? -1 : cost.usd;
@@ -85,12 +102,115 @@ function buildBarData(
     });
 }
 
-/** Render per-agent team analytics from the project-scoped `/command-center/team` endpoint. */
-export function TeamArea({ range }: { range: DateRange }) {
+function formatLastActivity(value: string | undefined, fallback: string) {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleString();
+}
+
+function TeamStatusPill({ paused, label }: { paused: boolean; label: string }) {
+  return (
+    <span className="cc-team-status-pill">
+      <span className={`status-dot ${paused ? "status-dot--pending" : "status-dot--online"}`} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function TeamOrgChartNode({ node }: { node: OrgTreeNode }) {
+  const hasChildren = node.children.length > 0;
+  return (
+    <li className="cc-team-org-item">
+      <div className="cc-team-org-card">
+        <div className="cc-team-org-card-header">
+          <span className="cc-team-org-avatar"><AgentAvatar agent={node.agent} size={20} /></span>
+          <span className="cc-team-org-name">{node.agent.name}</span>
+          <span className="cc-team-org-badge">{node.agent.state}</span>
+        </div>
+      </div>
+      {hasChildren ? (
+        <ul className="cc-team-org-children">
+          {node.children.map((child) => (
+            <TeamOrgChartNode key={child.agent.id} node={child} />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * FNXC:CommandCenter 2026-06-19-13:45:
+ * Org chart and heartbeat control are Team-tab responsibilities, not Overview controls. Keep them outside AreaShell so project-level team operations remain visible while analytics load, error, or return empty, remove org-node role/title descriptions, and style org cards locally so Command Center never depends on lazy AgentsView.css.
+ */
+export function TeamArea({ range, projectId }: { range: DateRange; projectId?: string }) {
   const { t } = useTranslation("app");
+  const {
+    globalPaused,
+    enginePaused,
+    toggleEnginePause,
+  } = useAppSettings(projectId);
+  const [orgTreeState, setOrgTreeState] = useState<AsyncState<OrgTreeNode[]>>({ status: "loading", data: null, error: null });
+  const [executorStatsState, setExecutorStatsState] = useState<AsyncState<ExecutorStats>>({ status: "loading", data: null, error: null });
   const { data, isLoading, error } = useAnalyticsArea<TeamAnalytics>("/command-center/team", range, {
     pollMs: TEAM_LIVE_REFRESH_MS,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    setOrgTreeState({ status: "loading", data: null, error: null });
+    void (async () => {
+      try {
+        const result = await fetchOrgTree(projectId);
+        if (!cancelled) {
+          setOrgTreeState({ status: "loaded", data: result, error: null });
+        }
+      } catch (orgError) {
+        if (!cancelled) {
+          setOrgTreeState({
+            status: "error",
+            data: null,
+            error: orgError instanceof Error ? orgError.message : t("commandCenter.controls.orgChart.error", "Unable to load org chart"),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const loadExecutorStats = async () => {
+      try {
+        const result = await fetchExecutorStats(projectId);
+        if (!cancelled) {
+          setExecutorStatsState({ status: "loaded", data: result, error: null });
+        }
+      } catch (statsError) {
+        if (!cancelled) {
+          setExecutorStatsState({
+            status: "error",
+            data: null,
+            error: statsError instanceof Error ? statsError.message : t("commandCenter.controls.status.error", "Unable to load live scheduler status"),
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = setTimeout(loadExecutorStats, EXECUTOR_STATUS_POLL_MS);
+        }
+      }
+    };
+    setExecutorStatsState({ status: "loading", data: null, error: null });
+    void loadExecutorStats();
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [projectId, t]);
   const agents = useMemo(() => data?.agents ?? [], [data?.agents]);
   const unknownAgent = t("commandCenter.team.unknownAgent", "(unknown agent)");
   const unknownRole = t("commandCenter.team.unknownRole", "Unknown role");
@@ -154,8 +274,81 @@ export function TeamArea({ range }: { range: DateRange }) {
     return <span className="cc-sort-caret">{sortDir === 1 ? "▲" : "▼"}</span>;
   }
 
+  const effectiveGlobalPaused = executorStatsState.data?.globalPause ?? globalPaused;
+  const effectiveEnginePaused = executorStatsState.data?.enginePaused ?? enginePaused;
+  const lastActivityLabel = formatLastActivity(
+    executorStatsState.data?.lastActivityAt,
+    t("commandCenter.controls.status.noActivity", "No recent activity"),
+  );
+
   return (
-    <AreaShell
+    <div className="cc-team-area">
+      <div className="cc-team-ops-grid" data-testid="cc-team-ops">
+        <section className="card cc-team-ops-card cc-team-ops-card--org" data-testid="cc-team-org-chart">
+          <div className="cc-team-ops-card-header">
+            <div>
+              <h3>{t("commandCenter.controls.orgChart.title", "Agent org chart")}</h3>
+            </div>
+          </div>
+          <div className="cc-team-org-scroll" aria-live="polite">
+            {orgTreeState.status === "loading" ? (
+              <p className="cc-team-muted">{t("commandCenter.controls.orgChart.loading", "Loading org chart…")}</p>
+            ) : orgTreeState.status === "error" ? (
+              <p className="cc-team-error" role="alert">{orgTreeState.error}</p>
+            ) : orgTreeState.data.length === 0 ? (
+              <p className="cc-team-muted">{t("commandCenter.controls.orgChart.empty", "No agents are reporting in yet.")}</p>
+            ) : (
+              <ul className="cc-team-org-roots">
+                {orgTreeState.data.map((node) => (
+                  <TeamOrgChartNode key={node.agent.id} node={node} />
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+
+        <section className="card cc-team-ops-card" data-testid="cc-team-heartbeat">
+          <div className="cc-team-ops-card-header">
+            <div>
+              <h3>{t("commandCenter.controls.heartbeat.title", "Heartbeat control")}</h3>
+              <p>{t("commandCenter.controls.heartbeat.description", "Pause or resume the scheduling heartbeat.")}</p>
+            </div>
+            <TeamStatusPill
+              paused={effectiveEnginePaused}
+              label={effectiveEnginePaused ? t("commandCenter.controls.status.paused", "Paused") : t("commandCenter.controls.status.running", "Running")}
+            />
+          </div>
+          <dl className="cc-team-facts">
+            <div>
+              <dt>{t("commandCenter.controls.status.lastActivity", "Last activity")}</dt>
+              <dd>{executorStatsState.status === "loading" ? t("commandCenter.controls.status.loading", "Loading…") : lastActivityLabel}</dd>
+            </div>
+            <div>
+              <dt>{t("commandCenter.controls.status.maxConcurrent", "Max concurrent")}</dt>
+              <dd>{executorStatsState.data?.maxConcurrent ?? "—"}</dd>
+            </div>
+          </dl>
+          {executorStatsState.status === "error" ? <p className="cc-team-error" role="alert">{executorStatsState.error}</p> : null}
+          <button
+            type="button"
+            className="btn btn-secondary cc-team-action"
+            onClick={() => void toggleEnginePause()}
+            disabled={effectiveGlobalPaused}
+          >
+            {effectiveEnginePaused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
+            <span>
+              {effectiveEnginePaused
+                ? t("commandCenter.controls.heartbeat.resume", "Resume heartbeat")
+                : t("commandCenter.controls.heartbeat.pause", "Pause heartbeat")}
+            </span>
+          </button>
+          {effectiveGlobalPaused ? (
+            <p className="cc-team-muted">{t("commandCenter.controls.heartbeat.disabledByStop", "Start the AI engine before resuming the heartbeat.")}</p>
+          ) : null}
+        </section>
+      </div>
+
+      <AreaShell
       testId="team"
       isLoading={isLoading}
       error={error}
@@ -275,6 +468,7 @@ export function TeamArea({ range }: { range: DateRange }) {
           </table>
         </div>
       </div>
-    </AreaShell>
+      </AreaShell>
+    </div>
   );
 }

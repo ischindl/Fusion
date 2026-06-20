@@ -4,14 +4,37 @@ Command Center area component tests (PR #1683). Pin loading/error/unavailable-vs
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act, renderHook } from "@testing-library/react";
+import type { OrgTreeNode } from "@fusion/core";
 
 // Mock the api() helper so the areas fetch deterministic fixtures.
-const apiMock = vi.fn();
-const backfillGithubSourceIssueClosedAtMock = vi.fn();
+const mocks = vi.hoisted(() => ({
+  api: vi.fn(),
+  backfillGithubSourceIssueClosedAt: vi.fn(),
+  fetchOrgTree: vi.fn(),
+  fetchExecutorStats: vi.fn(),
+  toggleEnginePause: vi.fn(),
+  appSettings: { globalPaused: false, enginePaused: false },
+}));
+const apiMock = mocks.api;
+const backfillGithubSourceIssueClosedAtMock = mocks.backfillGithubSourceIssueClosedAt;
+const fetchOrgTreeMock = mocks.fetchOrgTree;
+const fetchExecutorStatsMock = mocks.fetchExecutorStats;
+const toggleEnginePauseMock = mocks.toggleEnginePause;
+const appSettingsMock = mocks.appSettings;
 vi.mock("../../../../api/legacy", () => ({
-  api: (path: string, opts?: RequestInit) => apiMock(path, opts),
+  api: (path: string, opts?: RequestInit) => mocks.api(path, opts),
   apiBackfillGithubSourceIssueClosedAt: (options?: { offset?: number; limit?: number }, projectId?: string) =>
-    backfillGithubSourceIssueClosedAtMock(options, projectId),
+    mocks.backfillGithubSourceIssueClosedAt(options, projectId),
+  fetchOrgTree: mocks.fetchOrgTree,
+  fetchExecutorStats: mocks.fetchExecutorStats,
+}));
+
+vi.mock("../../../../hooks/useAppSettings", () => ({
+  useAppSettings: () => ({
+    globalPaused: mocks.appSettings.globalPaused,
+    enginePaused: mocks.appSettings.enginePaused,
+    toggleEnginePause: mocks.toggleEnginePause,
+  }),
 }));
 
 import { TokensArea } from "../TokensArea";
@@ -104,6 +127,22 @@ function githubFixture() {
       { repo: "acme/alpha", filed: 4, fixed: 1 },
       { repo: "acme/beta", filed: 1, fixed: 2 },
     ],
+  };
+}
+
+function agentNode(id: string, name: string, children: OrgTreeNode[] = [], title = "Team Lead"): OrgTreeNode {
+  return {
+    agent: {
+      id,
+      name,
+      title,
+      role: "executor",
+      state: "idle",
+      createdAt: "2026-06-19T00:00:00.000Z",
+      updatedAt: "2026-06-19T00:00:00.000Z",
+      metadata: {},
+    },
+    children,
   };
 }
 
@@ -202,6 +241,18 @@ function activityFixture() {
 beforeEach(() => {
   apiMock.mockReset();
   backfillGithubSourceIssueClosedAtMock.mockReset();
+  fetchOrgTreeMock.mockReset();
+  fetchOrgTreeMock.mockResolvedValue([]);
+  fetchExecutorStatsMock.mockReset();
+  fetchExecutorStatsMock.mockResolvedValue({
+    globalPause: false,
+    enginePaused: false,
+    maxConcurrent: 2,
+    lastActivityAt: "2026-06-19T12:00:00.000Z",
+  });
+  toggleEnginePauseMock.mockReset();
+  appSettingsMock.globalPaused = false;
+  appSettingsMock.enginePaused = false;
 });
 
 afterEach(() => {
@@ -918,6 +969,70 @@ describe("ProductivityArea", () => {
 });
 
 describe("TeamArea", () => {
+  it("renders relocated org chart and heartbeat outside analytics gating", async () => {
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockResolvedValueOnce([
+      agentNode("agent-lead", "Lead Agent", [agentNode("agent-child", "Child Agent", [], "Child Title")]),
+    ]);
+
+    render(<TeamArea range={range7d} projectId="project-a" />);
+
+    const orgSection = await screen.findByTestId("cc-team-org-chart");
+    const heartbeatSection = screen.getByTestId("cc-team-heartbeat");
+    expect(screen.getByTestId("cc-area-team-empty")).toBeTruthy();
+    expect(within(orgSection).getByText("Lead Agent")).toBeTruthy();
+    expect(within(orgSection).getByText("Child Agent")).toBeTruthy();
+    expect(within(orgSection).queryByText("executor · Team Lead")).toBeNull();
+    expect(within(orgSection).queryByText("executor · Child Title")).toBeNull();
+    expect(orgSection.querySelector(".cc-team-org-card")).toBeTruthy();
+    expect(orgSection.querySelector(".org-chart-node-card")).toBeNull();
+    expect(within(heartbeatSection).getByRole("button", { name: /pause heartbeat/i })).toBeEnabled();
+    expect(fetchOrgTreeMock).toHaveBeenCalledWith("project-a");
+    expect(fetchExecutorStatsMock).toHaveBeenCalledWith("project-a");
+  });
+
+  it("keeps relocated team controls visible for loading, empty, error, and undefined-project states", async () => {
+    apiMock.mockImplementationOnce(() => new Promise(() => undefined));
+    fetchOrgTreeMock.mockResolvedValueOnce([]);
+    const loading = render(<TeamArea range={range7d} />);
+    expect(await screen.findByTestId("cc-team-org-chart")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-heartbeat")).toBeTruthy();
+    expect(screen.getByText("No agents are reporting in yet.")).toBeTruthy();
+    expect(fetchOrgTreeMock).toHaveBeenCalledWith(undefined);
+    expect(fetchExecutorStatsMock).toHaveBeenCalledWith(undefined);
+    loading.unmount();
+
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockRejectedValueOnce(new Error("org failed"));
+    const empty = render(<TeamArea range={range7d} />);
+    expect(await screen.findByTestId("cc-area-team-empty")).toBeTruthy();
+    expect(within(screen.getByTestId("cc-team-org-chart")).getByRole("alert")).toHaveTextContent("org failed");
+    empty.unmount();
+
+    apiMock.mockRejectedValueOnce(new Error("team failed"));
+    fetchOrgTreeMock.mockResolvedValueOnce([agentNode("agent-one", "One Agent")]);
+    render(<TeamArea range={range7d} />);
+    expect(await screen.findByTestId("cc-area-team-error")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-org-chart")).toBeTruthy();
+    expect(screen.getByTestId("cc-team-heartbeat")).toBeTruthy();
+  });
+
+  it("toggles heartbeat and disables it when the AI engine is stopped", async () => {
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchExecutorStatsMock.mockResolvedValueOnce({ globalPause: false, enginePaused: false, maxConcurrent: 3 });
+    const running = render(<TeamArea range={range7d} projectId="project-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: /pause heartbeat/i }));
+    expect(toggleEnginePauseMock).toHaveBeenCalledTimes(1);
+    running.unmount();
+
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchExecutorStatsMock.mockResolvedValueOnce({ globalPause: true, enginePaused: true, maxConcurrent: 3 });
+    render(<TeamArea range={range7d} projectId="project-a" />);
+    const resume = await screen.findByRole("button", { name: /resume heartbeat/i });
+    expect(resume).toBeDisabled();
+    expect(screen.getByText("Start the AI engine before resuming the heartbeat.")).toBeTruthy();
+  });
+
   it("renders the per-agent pie for populated team analytics", async () => {
     apiMock.mockResolvedValue({
       ...populatedTeamFixture(),
