@@ -52,6 +52,24 @@ describe("CentralDatabase", () => {
       expect(Object.values(busyTimeout)[0]).toBe(5000);
     });
 
+    it("should bound WAL growth and durability like the per-project DB", () => {
+      db.init();
+
+      const synchronous = db.prepare("PRAGMA synchronous").get() as { synchronous: number };
+      const autoCheckpoint = db
+        .prepare("PRAGMA wal_autocheckpoint")
+        .get() as { wal_autocheckpoint: number };
+      const journalSizeLimit = db
+        .prepare("PRAGMA journal_size_limit")
+        .get() as { journal_size_limit: number };
+
+      expect(synchronous.synchronous).toBe(2); // FULL
+      expect(autoCheckpoint.wal_autocheckpoint).toBe(1000);
+      // Previously unset (-1 / unbounded), which let the central WAL bloat and
+      // slow every reader. Now capped at 4 MB to match db.ts.
+      expect(journalSizeLimit.journal_size_limit).toBe(4_194_304);
+    });
+
     it("should seed lastModified on init", () => {
       db.init();
       const lastModified = db.getLastModified();

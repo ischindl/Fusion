@@ -2158,16 +2158,46 @@ export class Database {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Database vacuum maintenance failed during VACUUM (dbPath=${this.dbPath}): ${message}`);
       }
-
-      const afterBytes = existsSync(this.dbPath) ? statSync(this.dbPath).size : 0;
-      return {
-        beforeBytes,
-        afterBytes,
-        durationMs: Date.now() - startedAt,
-      };
     } finally {
-      this.db.exec("PRAGMA locking_mode=NORMAL");
+      // FNXC:Database 2026-06-20-12:30:
+      // Switching locking_mode back to NORMAL does NOT drop the EXCLUSIVE file
+      // lock immediately — in WAL mode SQLite keeps holding it until the
+      // connection performs an operation that re-establishes the shared WAL
+      // index. Until then every OTHER process is locked out of reads
+      // (SQLITE_BUSY), so a vacuum's read-contention blast radius would extend
+      // well past the vacuum itself, until some unrelated write happens to run.
+      // A plain SELECT is NOT enough (it keeps running in exclusive mode); a
+      // checkpoint or write is what forces the downgrade. Run a PASSIVE
+      // checkpoint here — it releases the lock, is non-blocking, and keeps the
+      // (already tiny, post-vacuum) WAL trimmed.
+      //
+      // Guard the locking_mode reset independently: if it threw, it would both
+      // mask the original VACUUM/checkpoint error AND skip the lock-releasing
+      // checkpoint below, leaving the EXCLUSIVE lock held — the exact failure
+      // this method exists to prevent. Best-effort by design.
+      try {
+        this.db.exec("PRAGMA locking_mode=NORMAL");
+      } catch (error) {
+        console.warn("[fusion:db] vacuum: failed to reset locking_mode=NORMAL", error);
+      }
+      try {
+        this.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+      } catch (error) {
+        // Lock release is best-effort (the next write drops it anyway), but log
+        // it: a swallowed failure here means other processes stay locked out.
+        console.warn("[fusion:db] vacuum: passive checkpoint failed; EXCLUSIVE lock may linger until the next write", error);
+      }
     }
+
+    // Sample the file size AFTER the lock-release checkpoint above so afterBytes
+    // reflects the final on-disk size (the passive checkpoint can fold a WAL
+    // page back into the main db file).
+    const afterBytes = existsSync(this.dbPath) ? statSync(this.dbPath).size : 0;
+    return {
+      beforeBytes,
+      afterBytes,
+      durationMs: Date.now() - startedAt,
+    };
   }
 
   /**

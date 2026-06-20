@@ -11,6 +11,7 @@ import {
   MIGRATION_ONLY_TABLE_SCHEMAS,
   SCHEMA_VERSION,
 } from "../db.js";
+import { DatabaseSync } from "../sqlite-adapter.js";
 import { DEFAULT_PROJECT_SETTINGS } from "../types.js";
 import { TaskStore } from "../store.js";
 import { mkdtempSync, existsSync, readFileSync, rmSync, statSync, openSync, writeSync, closeSync } from "node:fs";
@@ -689,6 +690,32 @@ describe("Database", () => {
       expect(stored?.id).toBe("FN-VACUUM");
       const expectedAfterBytes = existsSync(dbFile) ? statSync(dbFile).size : 0;
       expect(result.afterBytes).toBe(expectedAfterBytes);
+    });
+
+    it("releases the EXCLUSIVE lock so other connections can read immediately after", () => {
+      const now = new Date().toISOString();
+      db.prepare(
+        "INSERT INTO tasks (id, description, \"column\", createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)",
+      ).run("FN-VACUUM-LOCK", "vacuum lock task", "todo", now, now);
+
+      db.vacuum();
+
+      // vacuum() runs under PRAGMA locking_mode=EXCLUSIVE. Resetting to NORMAL
+      // does not drop the file lock until the connection next touches the DB, so
+      // without the forced post-vacuum read every OTHER connection would be
+      // locked out (SQLITE_BUSY) until some unrelated query happened to run.
+      // Probe with a second connection whose busy_timeout is 0 so a lingering
+      // exclusive lock fails fast instead of blocking for the default 5s.
+      const probe = new DatabaseSync(join(fusionDir, "fusion.db"));
+      try {
+        probe.exec("PRAGMA busy_timeout = 0");
+        const row = probe
+          .prepare("SELECT id FROM tasks WHERE id = ?")
+          .get("FN-VACUUM-LOCK") as { id: string } | undefined;
+        expect(row?.id).toBe("FN-VACUUM-LOCK");
+      } finally {
+        probe.close();
+      }
     });
 
     it("throws a descriptive error when checkpointing fails", () => {

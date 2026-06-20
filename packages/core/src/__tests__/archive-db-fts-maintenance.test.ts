@@ -219,3 +219,35 @@ describe("ArchiveDatabase FTS maintenance", () => {
     }
   });
 });
+
+describe("ArchiveDatabase WAL durability PRAGMAs", () => {
+  let dir: string;
+  let archive: ArchiveDatabase;
+
+  beforeEach(() => {
+    dir = makeTmpDir("kb-archive-pragma-");
+    archive = new ArchiveDatabase(dir);
+  });
+
+  afterEach(async () => {
+    archive.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("bounds WAL growth and durability like the per-project DB", () => {
+    const rawDb = (archive as unknown as { db: { prepare(sql: string): { get(): unknown } } }).db;
+    const synchronous = rawDb.prepare("PRAGMA synchronous").get() as { synchronous: number };
+    const autoCheckpoint = rawDb
+      .prepare("PRAGMA wal_autocheckpoint")
+      .get() as { wal_autocheckpoint: number };
+    const journalSizeLimit = rawDb
+      .prepare("PRAGMA journal_size_limit")
+      .get() as { journal_size_limit: number };
+
+    expect(synchronous.synchronous).toBe(2); // FULL
+    expect(autoCheckpoint.wal_autocheckpoint).toBe(1000);
+    // Previously unset (-1 / unbounded), which let the archive WAL bloat and
+    // slow every reader. Now capped at 4 MB to match db.ts/central-db.ts.
+    expect(journalSizeLimit.journal_size_limit).toBe(4_194_304);
+  });
+});

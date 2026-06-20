@@ -73,6 +73,16 @@ export class ArchiveDatabase {
     this.db.exec("PRAGMA busy_timeout = 5000");
     if (!inMemory) {
       this.db.exec("PRAGMA journal_mode = WAL");
+      // FNXC:Database 2026-06-20-12:30:
+      // Mirror the per-project DB durability/maintenance PRAGMAs (db.ts). Without
+      // journal_size_limit the archive WAL defaults to -1 (unbounded) and never
+      // truncates back down after a checkpoint, so every reader pays an
+      // ever-growing WAL-index scan — the same read-contention source bounded in
+      // db.ts/central-db.ts. synchronous=FULL/wal_autocheckpoint=1000 are already
+      // SQLite's defaults; set explicitly so the durability posture is intentional.
+      this.db.exec("PRAGMA synchronous = FULL");
+      this.db.exec("PRAGMA wal_autocheckpoint = 1000");
+      this.db.exec("PRAGMA journal_size_limit = 4194304");
     }
     this._fts5Available = probeFts5(this.db);
   }
