@@ -91,6 +91,9 @@ was SIGKILLed by heap pressure under workspace worker budgeting. The top-level
 `pretest` artifact bootstrap runs once before the orchestrator; lane subprocesses must
 not re-run `scripts/ensure-test-artifacts.mjs`.
 
+<!-- FNXC:TestInfrastructure 2026-06-21-12:21: FN-6854 applies the dashboard heap-runner pattern to the engine affected-package lane because a wide `vitest --changed` fan-out selected hundreds of real-git-heavy engine files and could be OS-SIGKILLed by heap pressure before Vitest returned a verdict. Keep the engine lane isolated, heap-capped, and lower-worker rather than raising concurrency or widening timeouts. -->
+When `scripts/test-changed.mjs` runs affected-package `vitest --changed` scopes, `@fusion/engine` is split out from other scopable packages and gets a dedicated memory envelope: `NODE_OPTIONS=--max-old-space-size=6144` plus `FUSION_TEST_TOTAL_WORKERS=1`, `FUSION_TEST_CONCURRENCY=1`, and `VITEST_MAX_WORKERS=1`. This mirrors the dashboard heap-managed precedent while preserving the `runWithWatchdog` changed-class wall-clock budget. Re-measure with a wide changed selection (for example a dirty `packages/core/src/index.ts` boundary edit) before changing this envelope; the expected failure mode after the fix is a normal Vitest pass/fail verdict, not raw pnpm `SIGKILL`.
+
 Concurrency knobs:
 
 - `FUSION_DASHBOARD_TEST_CONCURRENCY` controls dashboard quality lane process

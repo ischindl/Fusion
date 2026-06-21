@@ -1311,6 +1311,38 @@ export function packageHasVitestConfig(pkgDir, projectRoot = rootDir) {
   return VITEST_CONFIG_BASENAMES.some((name) => existsSync(path.join(projectRoot, pkgDir, name)));
 }
 
+export const ENGINE_SCOPED_AFFECTED_PACKAGE = "@fusion/engine";
+export const ENGINE_SCOPED_AFFECTED_HEAP_MB = "6144";
+export const ENGINE_SCOPED_AFFECTED_WORKERS = "1";
+
+export function prependNodeOption(currentOptions, option) {
+  return [option, currentOptions || ""].join(" ").trim();
+}
+
+export function createEngineScopedAffectedEnv(env = process.env) {
+  /*
+  FNXC:TestInfrastructure 2026-06-21-11:24:
+  The engine affected lane can select hundreds of real-git-heavy files when `vitest --changed` sees a widely imported boundary. Run that scoped lane in its own memory envelope: cap Node old-space like the dashboard heap runner and lower Vitest worker fan-out to one process so the lane returns a real pass/fail verdict instead of an OS OOM SIGKILL. Keep watchdog timing outside this env so hangs still fail through `runWithWatchdog`.
+  */
+  return {
+    ...env,
+    NODE_OPTIONS: prependNodeOption(env.NODE_OPTIONS, `--max-old-space-size=${ENGINE_SCOPED_AFFECTED_HEAP_MB}`),
+    FUSION_TEST_TOTAL_WORKERS: ENGINE_SCOPED_AFFECTED_WORKERS,
+    FUSION_TEST_CONCURRENCY: ENGINE_SCOPED_AFFECTED_WORKERS,
+    VITEST_MAX_WORKERS: ENGINE_SCOPED_AFFECTED_WORKERS,
+  };
+}
+
+export function partitionScopedAffectedPackages(packages) {
+  const regularPackages = packages.filter((pkg) => pkg !== ENGINE_SCOPED_AFFECTED_PACKAGE);
+  const groups = [];
+  if (regularPackages.length > 0) groups.push({ packages: regularPackages, engineMemoryEnvelope: false });
+  if (packages.includes(ENGINE_SCOPED_AFFECTED_PACKAGE)) {
+    groups.push({ packages: [ENGINE_SCOPED_AFFECTED_PACKAGE], engineMemoryEnvelope: true });
+  }
+  return groups;
+}
+
 export function normalizeForwardedArgs(argv) {
   const normalized = [];
 
@@ -1524,8 +1556,8 @@ export async function main(argv = process.argv.slice(2)) {
     : [];
   const fallbackPkgs = activePackages.filter((pkg) => !scopable.includes(pkg));
 
-  for (const { packages, mode } of [
-    { packages: scopable, mode: "scoped" },
+  for (const { packages, mode, engineMemoryEnvelope = false } of [
+    ...partitionScopedAffectedPackages(scopable).map((group) => ({ ...group, mode: "scoped" })),
     { packages: fallbackPkgs, mode: "full" },
   ]) {
     if (packages.length === 0) continue;
@@ -1548,11 +1580,11 @@ export async function main(argv = process.argv.slice(2)) {
         : [...filterArgs, `--workspace-concurrency=${workspaceConcurrency}`, "test", ...forwardedArgs];
     console.log(
       mode === "scoped"
-        ? `[test-changed] scoped (vitest --changed) run for: ${packages.join(", ")}`
+        ? `[test-changed] scoped (vitest --changed) run for: ${packages.join(", ")}${engineMemoryEnvelope ? " (engine memory envelope)" : ""}`
         : `[test-changed] full package-suite run for: ${packages.join(", ")} (no vitest config / no base)`,
     );
     await runMaybeIsolated("pnpm", commandArgs, {
-      env: isolatedHomeEnv,
+      env: engineMemoryEnvelope ? createEngineScopedAffectedEnv(isolatedHomeEnv) : isolatedHomeEnv,
       onBeforeAfterCheck: cleanupIsolatedHome,
       // Scoped runs are proportional to the diff, so the tight "changed" ceiling
       // applies; a hang fails fast instead of blocking the 60-min full backstop.

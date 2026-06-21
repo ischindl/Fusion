@@ -34,7 +34,14 @@ import {
   buildForwardDependencyMap,
   collectTransitiveDependencies,
   computeOwnHash,
+  createEngineScopedAffectedEnv,
+  ENGINE_SCOPED_AFFECTED_HEAP_MB,
+  ENGINE_SCOPED_AFFECTED_PACKAGE,
+  ENGINE_SCOPED_AFFECTED_WORKERS,
+  partitionScopedAffectedPackages,
 } from "../test-changed.mjs";
+
+import { deriveBudgetMs } from "../lib/run-vitest-watchdog.mjs";
 
 import { mkdirSync, writeFileSync, mkdtempSync, rmSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -251,6 +258,44 @@ test("buildPackageDirByName: uses canonical workspace dirs instead of package al
   assert.equal(result.get("@fusion/core"), "packages/core");
   assert.equal(result.get("@fusion-plugin-examples/cursor-runtime"), "plugins/fusion-plugin-cursor-runtime");
   assert.notEqual(result.get("@fusion/engine"), "engine");
+});
+
+// ---------------------------------------------------------------------------
+// engine scoped affected memory envelope
+// ---------------------------------------------------------------------------
+
+test("partitionScopedAffectedPackages: isolates engine from other scoped vitest lanes", () => {
+  const groups = partitionScopedAffectedPackages([
+    "@fusion/core",
+    ENGINE_SCOPED_AFFECTED_PACKAGE,
+    "@fusion/dashboard",
+  ]);
+
+  assert.deepEqual(groups, [
+    { packages: ["@fusion/core", "@fusion/dashboard"], engineMemoryEnvelope: false },
+    { packages: [ENGINE_SCOPED_AFFECTED_PACKAGE], engineMemoryEnvelope: true },
+  ]);
+});
+
+test("createEngineScopedAffectedEnv: caps heap, lowers workers, and leaves watchdog budget finite", () => {
+  const env = createEngineScopedAffectedEnv({
+    NODE_OPTIONS: "--trace-warnings",
+    FUSION_TEST_TOTAL_WORKERS: "8",
+    FUSION_TEST_CONCURRENCY: "4",
+    VITEST_MAX_WORKERS: "4",
+    HOME: "/tmp/fusion-home",
+  });
+
+  assert.match(env.NODE_OPTIONS, new RegExp(`--max-old-space-size=${ENGINE_SCOPED_AFFECTED_HEAP_MB}`));
+  assert.match(env.NODE_OPTIONS, /--trace-warnings/);
+  assert.equal(env.FUSION_TEST_TOTAL_WORKERS, ENGINE_SCOPED_AFFECTED_WORKERS);
+  assert.equal(env.FUSION_TEST_CONCURRENCY, ENGINE_SCOPED_AFFECTED_WORKERS);
+  assert.equal(env.VITEST_MAX_WORKERS, ENGINE_SCOPED_AFFECTED_WORKERS);
+  assert.equal(env.HOME, "/tmp/fusion-home");
+
+  const budgetMs = deriveBudgetMs({ klass: "changed" });
+  assert.equal(Number.isFinite(budgetMs), true);
+  assert.equal(budgetMs > 0, true);
 });
 
 // ---------------------------------------------------------------------------
