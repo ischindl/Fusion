@@ -9096,6 +9096,27 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
         task.currentStep = stepIndex;
       }
 
+      /*
+      FNXC:SelfHealing 2026-06-21-12:45:
+      Forward progress clears the stuck-kill streak. stuckKillCount is otherwise a lifetime
+      counter — incremented by self-healing on each stuck-kill (checkStuckBudget) and reset
+      ONLY by a manual retry (manual-retry-reset) — so a long task that genuinely advances
+      between intermittent stalls could still be terminalized by accumulation toward
+      maxStuckKills (default 6). Resetting when a step reaches a terminal forward status
+      (done/skipped) makes only CONSECUTIVE stalls count toward the budget. This does NOT
+      rescue a task wedged re-running the same failing step (no step completes between those
+      kills, so the streak keeps climbing and the task still terminalizes as designed); it
+      bounds the budget to consecutive no-progress stalls. Complements the FN-5048
+      verification-fan-out cap that keeps verification from being slow in the first place.
+      */
+      if ((status === "done" || status === "skipped") && (task.stuckKillCount ?? 0) > 0) {
+        task.stuckKillCount = undefined;
+        task.log.push({
+          timestamp: task.updatedAt,
+          action: `Reset stuck-kill streak (forward progress: step ${stepIndex} (${task.steps[stepIndex].name}) → ${status})`,
+        });
+      }
+
       // Log it
       task.log.push({
         timestamp: task.updatedAt,
