@@ -131,6 +131,10 @@ function githubFixture() {
   };
 }
 
+function installElementClientWidth(width: number) {
+  return vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(width);
+}
+
 function agentNode(id: string, name: string, children: OrgTreeNode[] = [], title = "Team Lead"): OrgTreeNode {
   return {
     agent: {
@@ -1005,6 +1009,79 @@ describe("ProductivityArea", () => {
 });
 
 describe("TeamArea", () => {
+  it("applies horizontal org-chart layout when the measured container is wide enough", async () => {
+    const widthSpy = installElementClientWidth(1_400);
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockResolvedValueOnce([
+      agentNode("agent-root-a", "Root A", [
+        agentNode("agent-child-a", "Child A", [agentNode("agent-grandchild-a", "Grandchild A")]),
+        agentNode("agent-child-b", "Child B"),
+      ]),
+      agentNode("agent-root-b", "Root B"),
+    ]);
+
+    render(<TeamArea range={range7d} projectId="project-a" />);
+
+    const orgSection = await screen.findByTestId("cc-team-org-chart");
+    const orgScroll = orgSection.querySelector(".cc-team-org-scroll");
+    await waitFor(() => expect(orgScroll).toHaveAttribute("data-layout", "horizontal"));
+    expect(orgSection.querySelectorAll(".cc-team-org-card")).toHaveLength(5);
+    for (const name of ["Root A", "Child A", "Grandchild A", "Child B", "Root B"]) {
+      expect(within(orgSection).getByText(name)).toBeTruthy();
+    }
+    widthSpy.mockRestore();
+  });
+
+  it("keeps multi-root org charts vertical for narrow and zero-width containers", async () => {
+    for (const [width, projectId] of [[320, "project-narrow"], [0, "project-zero"]] as const) {
+      const widthSpy = installElementClientWidth(width);
+      apiMock.mockResolvedValueOnce(emptyTeamFixture());
+      fetchOrgTreeMock.mockResolvedValueOnce([
+        agentNode(`${projectId}-root-a`, `${projectId} Root A`, [agentNode(`${projectId}-child`, `${projectId} Child`)]),
+        agentNode(`${projectId}-root-b`, `${projectId} Root B`),
+      ]);
+
+      const { unmount } = render(<TeamArea range={range7d} projectId={projectId} />);
+      const orgSection = await screen.findByTestId("cc-team-org-chart");
+      const orgScroll = orgSection.querySelector(".cc-team-org-scroll");
+      await waitFor(() => expect(orgScroll).toHaveAttribute("data-layout", "vertical"));
+      expect(orgSection.querySelectorAll(".cc-team-org-card")).toHaveLength(3);
+      unmount();
+      widthSpy.mockRestore();
+    }
+  });
+
+  it("keeps loading, error, empty, and single-root org-chart states stable while measuring width", async () => {
+    const widthSpy = installElementClientWidth(0);
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockImplementationOnce(() => new Promise(() => undefined));
+    const loading = render(<TeamArea range={range7d} projectId="project-loading" />);
+    const loadingOrg = await screen.findByTestId("cc-team-org-chart");
+    expect(within(loadingOrg).getByText("Loading org chart…")).toBeTruthy();
+    expect(loadingOrg.querySelector(".cc-team-org-scroll")).toHaveAttribute("data-layout", "vertical");
+    loading.unmount();
+
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockRejectedValueOnce(new Error("org failed"));
+    const error = render(<TeamArea range={range7d} projectId="project-error" />);
+    expect(await within(await screen.findByTestId("cc-team-org-chart")).findByRole("alert")).toHaveTextContent("org failed");
+    error.unmount();
+
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockResolvedValueOnce([]);
+    const empty = render(<TeamArea range={range7d} projectId="project-empty" />);
+    expect(await within(await screen.findByTestId("cc-team-org-chart")).findByText("No agents are reporting in yet.")).toBeTruthy();
+    empty.unmount();
+
+    apiMock.mockResolvedValueOnce(emptyTeamFixture());
+    fetchOrgTreeMock.mockResolvedValueOnce([agentNode("agent-single", "Single Root")]);
+    render(<TeamArea range={range7d} projectId="project-single" />);
+    const singleOrg = await screen.findByTestId("cc-team-org-chart");
+    await waitFor(() => expect(singleOrg.querySelector(".cc-team-org-scroll")).toHaveAttribute("data-layout", "horizontal"));
+    expect(singleOrg.querySelectorAll(".cc-team-org-card")).toHaveLength(1);
+    widthSpy.mockRestore();
+  });
+
   it("renders relocated org chart and heartbeat outside analytics gating", async () => {
     apiMock.mockResolvedValueOnce(emptyTeamFixture());
     fetchOrgTreeMock.mockResolvedValueOnce([

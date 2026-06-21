@@ -320,22 +320,48 @@ Team owns the Agent org chart and Heartbeat control. Org nodes must be self-styl
 .cc-team-org-roots,
 .cc-team-org-children {
   display: flex;
-  flex-direction: column;
   gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.cc-team-org-children {
+.cc-team-org-scroll[data-layout="vertical"] .cc-team-org-roots,
+.cc-team-org-scroll[data-layout="vertical"] .cc-team-org-children {
+  flex-direction: column;
+}
+
+.cc-team-org-scroll[data-layout="vertical"] .cc-team-org-children {
   margin-block-start: var(--space-sm);
   margin-inline-start: var(--space-xl);
   padding-inline-start: var(--space-md);
   border-inline-start: thin solid var(--border-subtle);
 }
 
+/*
+FNXC:CommandCenter 2026-06-21-00:00:
+The Team tab org chart should use a horizontal top-down tree when the shared Agents-view width resolver says the container can fit it, while vertical connector/indent styles remain scoped to vertical mode so they do not leave visual shells in horizontal mode.
+*/
+.cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-roots,
+.cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-children {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-md);
+}
+
+.cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-children {
+  margin-block-start: var(--space-md);
+}
+
 .cc-team-org-item {
   min-inline-size: max-content;
+}
+
+.cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .cc-team-org-card {
@@ -502,5 +528,11 @@ Tablet Command Center areas share the FN-6679 overflow fix with the shell: area 
 
   .cc-team-org-scroll {
     max-block-size: calc(var(--space-2xl) * 8);
+  }
+
+  .cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-roots,
+  .cc-team-org-scroll[data-layout="horizontal"] .cc-team-org-children {
+    justify-content: flex-start;
+    gap: var(--space-sm);
   }
 }

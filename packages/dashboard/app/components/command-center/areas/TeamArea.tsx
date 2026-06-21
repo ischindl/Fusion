@@ -14,6 +14,7 @@ import type { DateRange } from "../DateRangePicker";
 import { Bar, type BarDatum } from "../charts/Bar";
 import { Sparkline } from "../charts/Sparkline";
 import { PieChart } from "../charts/recharts";
+import { resolveOrgChartLayoutMode, type OrgChartLayoutMode } from "../../agentsOrgChartLayout";
 import { AreaShell } from "./AreaShell";
 import { useAnalyticsArea } from "./useAnalyticsArea";
 import { formatCost, formatCount } from "./areaShared";
@@ -154,6 +155,8 @@ export function TeamArea({ range, projectId }: { range: DateRange; projectId?: s
   } = useAppSettings(projectId);
   const [orgTreeState, setOrgTreeState] = useState<AsyncState<OrgTreeNode[]>>({ status: "loading", data: null, error: null });
   const [executorStatsState, setExecutorStatsState] = useState<AsyncState<ExecutorStats>>({ status: "loading", data: null, error: null });
+  const orgChartViewportRef = useRef<HTMLDivElement | null>(null);
+  const [orgChartViewportWidth, setOrgChartViewportWidth] = useState(0);
   const { data, isLoading, error } = useAnalyticsArea<TeamAnalytics>("/command-center/team", range, {
     pollMs: TEAM_LIVE_REFRESH_MS,
   });
@@ -181,6 +184,25 @@ export function TeamArea({ range, projectId }: { range: DateRange; projectId?: s
       cancelled = true;
     };
   }, [projectId, t]);
+
+  useEffect(() => {
+    const viewport = orgChartViewportRef.current;
+    if (!viewport) return;
+
+    const updateWidth = () => {
+      setOrgChartViewportWidth(viewport.clientWidth);
+    };
+
+    updateWidth();
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateWidth) : null;
+    resizeObserver?.observe(viewport);
+    window.addEventListener("resize", updateWidth);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateWidth);
+    };
+  }, [orgTreeState.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -275,6 +297,20 @@ export function TeamArea({ range, projectId }: { range: DateRange; projectId?: s
     return <span className="cc-sort-caret">{sortDir === 1 ? "▲" : "▼"}</span>;
   }
 
+  /*
+  FNXC:CommandCenter 2026-06-21-00:00:
+  Team org charts should become top-down horizontal trees only when the visible org container is wide enough; use the shared Agents view layout resolver so both surfaces agree on breakpoints and fallback to the established vertical list for unmeasured multi-root charts.
+  */
+  const orgChartLayoutMode: OrgChartLayoutMode = useMemo(() => {
+    if (orgTreeState.status !== "loaded") return "vertical";
+    if (orgChartViewportWidth <= 0 && orgTreeState.data.length > 1) return "vertical";
+    return resolveOrgChartLayoutMode({
+      tree: orgTreeState.data,
+      availableWidth: orgChartViewportWidth,
+      preference: "auto",
+    });
+  }, [orgChartViewportWidth, orgTreeState]);
+
   const effectiveGlobalPaused = executorStatsState.data?.globalPause ?? globalPaused;
   const effectiveEnginePaused = executorStatsState.data?.enginePaused ?? enginePaused;
   const lastActivityLabel = formatLastActivity(
@@ -291,7 +327,7 @@ export function TeamArea({ range, projectId }: { range: DateRange; projectId?: s
               <h3>{t("commandCenter.controls.orgChart.title", "Agent org chart")}</h3>
             </div>
           </div>
-          <div className="cc-team-org-scroll" aria-live="polite">
+          <div className="cc-team-org-scroll" data-layout={orgChartLayoutMode} ref={orgChartViewportRef} aria-live="polite">
             {orgTreeState.status === "loading" ? (
               <p className="cc-team-muted"><LoadingSpinner label={t("commandCenter.controls.orgChart.loading", "Loading org chart…")} /></p>
             ) : orgTreeState.status === "error" ? (
