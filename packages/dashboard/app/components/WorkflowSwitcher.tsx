@@ -32,6 +32,10 @@ function getCounts(counts: Map<string, WorkflowStatusCounts>, workflowId: string
  * FNXC:WorkflowSwitcher 2026-06-20-00:09:
  * The board/list workflow switcher must be a fully rendered themed dropdown rather than a native select so each workflow option can include compact inline Todo, In Progress, and Done counts.
  * The component owns only presentation and accessible dropdown behavior; all status-bucket semantics stay in computeWorkflowStatusCounts so Board and ListView cannot drift.
+ *
+ * FNXC:WorkflowSwitcher 2026-06-20-00:31:
+ * Counts are contextual detail, so the collapsed trigger must stay visually and accessibly scoped to the active workflow name plus chevron.
+ * Render Todo, In Progress, and Done counts only while the dropdown is expanded; option rows keep their count text because the listbox is the comparison surface.
  */
 export function WorkflowSwitcher({ workflows, value, onChange, counts, label: labelProp }: WorkflowSwitcherProps) {
   const { t } = useTranslation("app");
@@ -259,8 +263,8 @@ export function WorkflowSwitcher({ workflows, value, onChange, counts, label: la
       >
         <span className="workflow-switcher-trigger-main">
           <span className="workflow-switcher-current-name">{selectedWorkflow.name}</span>
-          {renderCountBadges(selectedCounts, "trigger")}
-          {renderAccessibleCounts(selectedCounts)}
+          {isOpen ? renderCountBadges(selectedCounts, "trigger") : null}
+          {isOpen ? renderAccessibleCounts(selectedCounts) : null}
         </span>
         <ChevronDown className="workflow-switcher-chevron" aria-hidden="true" />
       </button>

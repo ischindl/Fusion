@@ -747,8 +747,9 @@ describe("ListView", () => {
 
     const desktopTrigger = await screen.findByTestId("workflow-switcher");
     expect(desktopTrigger).toHaveTextContent("Coding");
-    expect(desktopTrigger).toHaveTextContent("1");
+    expect(desktopTrigger.querySelector(".workflow-switcher-counts")).toBeNull();
     await openWorkflowSwitcher();
+    expect(desktopTrigger).toHaveTextContent("1");
     expect(screen.getByTestId("workflow-switcher-option-wf-custom")).toHaveTextContent("1");
     fireEvent.keyDown(desktopTrigger, { key: "Escape" });
     desktop.unmount();
@@ -765,6 +766,8 @@ describe("ListView", () => {
 
     const mobileTrigger = await screen.findByTestId("workflow-switcher");
     expect(mobileTrigger).toHaveTextContent("Coding");
+    expect(mobileTrigger.querySelector(".workflow-switcher-counts")).toBeNull();
+    await openWorkflowSwitcher();
     expect(mobileTrigger).toHaveTextContent("1");
     mobileSpy.mockRestore();
   });

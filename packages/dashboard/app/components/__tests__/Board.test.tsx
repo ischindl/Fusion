@@ -1114,8 +1114,9 @@ describe("Board", () => {
       });
       const selector = await screen.findByTestId("workflow-switcher");
       expect(selector).toHaveTextContent("Coding");
-      expect(selector).toHaveTextContent("1");
+      expect(selector.querySelector(".workflow-switcher-counts")).toBeNull();
       await openWorkflowSwitcher();
+      expect(selector).toHaveTextContent("1");
       expect(screen.getByTestId("workflow-switcher-option-wf-custom")).toHaveTextContent("2");
       fireEvent.keyDown(selector, { key: "Escape" });
       expect(workflowToolbarActionNames()).toEqual(["Edit workflows", "New workflow"]);

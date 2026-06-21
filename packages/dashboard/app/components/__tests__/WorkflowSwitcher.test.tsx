@@ -22,7 +22,7 @@ function countMap(entries: Array<[string, WorkflowStatusCounts]> = []) {
 }
 
 describe("WorkflowSwitcher", () => {
-  it("renders the active workflow with compact inline counts", () => {
+  it("renders the active workflow without compact counts while collapsed", () => {
     render(
       <WorkflowSwitcher
         workflows={workflows}
@@ -34,9 +34,10 @@ describe("WorkflowSwitcher", () => {
 
     const trigger = screen.getByTestId("workflow-switcher");
     expect(trigger).toHaveTextContent("Coding");
-    expect(trigger).toHaveTextContent("3");
-    expect(trigger).toHaveTextContent("1");
-    expect(trigger).toHaveTextContent("5");
+    expect(within(trigger).queryByText("3", { selector: ".workflow-switcher-count--todo" })).not.toBeInTheDocument();
+    expect(within(trigger).queryByText("1", { selector: ".workflow-switcher-count--in-progress" })).not.toBeInTheDocument();
+    expect(within(trigger).queryByText("5", { selector: ".workflow-switcher-count--done" })).not.toBeInTheDocument();
+    expect(trigger.querySelector(".workflow-switcher-counts--trigger")).toBeNull();
     expect(trigger).toHaveAccessibleName("Select workflow. Current workflow: Coding");
   });
 
@@ -79,12 +80,31 @@ describe("WorkflowSwitcher", () => {
     expect(screen.queryByRole("listbox", { name: "Workflow" })).not.toBeInTheDocument();
   });
 
-  it("renders zero counts for workflows absent from the counts map", () => {
-    render(<WorkflowSwitcher workflows={workflows} value="coding" onChange={vi.fn()} counts={countMap()} />);
+  it("renders populated and zero counts only after the dropdown expands", () => {
+    render(
+      <WorkflowSwitcher
+        workflows={workflows}
+        value="coding"
+        onChange={vi.fn()}
+        counts={countMap([["coding", { todo: 3, inProgress: 1, done: 5 }]])}
+      />,
+    );
 
-    fireEvent.click(screen.getByTestId("workflow-switcher"));
+    const trigger = screen.getByTestId("workflow-switcher");
+    expect(trigger.querySelector(".workflow-switcher-counts")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(within(trigger).getByText("3", { selector: ".workflow-switcher-count--todo" })).toBeInTheDocument();
+    expect(within(trigger).getByText("1", { selector: ".workflow-switcher-count--in-progress" })).toBeInTheDocument();
+    expect(within(trigger).getByText("5", { selector: ".workflow-switcher-count--done" })).toBeInTheDocument();
+
+    const codingOption = screen.getByTestId("workflow-switcher-option-coding");
+    expect(within(codingOption).getByText("3", { selector: ".workflow-switcher-count--todo" })).toBeInTheDocument();
+    expect(within(codingOption).getByText("1", { selector: ".workflow-switcher-count--in-progress" })).toBeInTheDocument();
+    expect(within(codingOption).getByText("5", { selector: ".workflow-switcher-count--done" })).toBeInTheDocument();
+
     const designOption = screen.getByTestId("workflow-switcher-option-design");
-
     expect(within(designOption).getByText("0", { selector: ".workflow-switcher-count--todo" })).toBeInTheDocument();
     expect(within(designOption).getByText("0", { selector: ".workflow-switcher-count--in-progress" })).toBeInTheDocument();
     expect(within(designOption).getByText("0", { selector: ".workflow-switcher-count--done" })).toBeInTheDocument();
