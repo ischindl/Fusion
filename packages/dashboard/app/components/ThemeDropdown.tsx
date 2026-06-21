@@ -105,7 +105,7 @@ export function ThemeDropdown({ colorTheme, onColorThemeChange, themeMode, onThe
   };
 
   return (
-    <div className="theme-dropdown" ref={rootRef}>
+    <div className={`theme-dropdown${open ? " open" : ""}`} ref={rootRef}>
       <button
         type="button"
         className="theme-dropdown-trigger btn"

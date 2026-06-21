@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { COLOR_THEMES } from "../themeOptions";
@@ -72,5 +73,44 @@ describe("ThemeDropdown", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /light/i }));
     expect(onThemeModeChange).toHaveBeenCalledWith("light");
+  });
+
+  it.each([
+    ["without mode controls", undefined, undefined],
+    ["with mode controls", "dark" as const, vi.fn()],
+  ])("elevates the open popover above Command Center sibling cards %s", (_label, themeMode, onThemeModeChange) => {
+    render(
+      <ThemeDropdown
+        colorTheme="default"
+        themeMode={themeMode}
+        onColorThemeChange={vi.fn()}
+        onThemeModeChange={onThemeModeChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: /default/i });
+    const root = trigger.closest(".theme-dropdown");
+    expect(root).toBeTruthy();
+    expect(root?.classList.contains("open")).toBe(false);
+    expect(getComputedStyle(root!).zIndex).not.toBe("40");
+
+    fireEvent.click(trigger);
+
+    const popover = document.querySelector<HTMLElement>(".theme-dropdown-popover");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(root?.classList.contains("open")).toBe(true);
+    expect(getComputedStyle(root!).position).toBe("relative");
+    expect(getComputedStyle(root!).zIndex).toBe("40");
+    expect(popover).toBeTruthy();
+    expect(getComputedStyle(popover!).position).toBe("absolute");
+    expect(getComputedStyle(popover!).zIndex).toBe("40");
+  });
+
+  it("preserves the mobile static in-flow popover branch without dropdown elevation", () => {
+    const css = readFileSync("app/components/ThemeDropdown.css", "utf8");
+
+    expect(css).toMatch(
+      /@media \(max-width: 768px\) \{[\s\S]*?\.theme-dropdown\.open \{[\s\S]*?z-index: auto;[\s\S]*?\.theme-dropdown-popover \{[\s\S]*?position: static;[\s\S]*?z-index: auto;/,
+    );
   });
 });

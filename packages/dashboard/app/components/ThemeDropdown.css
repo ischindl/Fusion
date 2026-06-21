@@ -6,6 +6,14 @@
   min-inline-size: 0;
 }
 
+/*
+FNXC:Theme 2026-06-20-00:00:
+FN-6826 requires the Command Center theme dropdown to paint on top of all sibling Command Center cards/views only while open. Use a local dropdown-tier z-index above DateRangePicker's 20 and below app chrome/mobile nav tiers, then reset it in the mobile in-flow branch so closed or static content never floats above unrelated chrome.
+*/
+.theme-dropdown.open {
+  z-index: 40;
+}
+
 .theme-dropdown-trigger {
   justify-content: space-between;
   gap: var(--space-sm);
@@ -43,7 +51,7 @@
 
 .theme-dropdown-popover {
   position: absolute;
-  z-index: 10;
+  z-index: 40;
   inset-block-start: calc(100% + var(--space-xs));
   inset-inline: 0;
   padding: var(--space-sm);
@@ -85,8 +93,13 @@
 }
 
 @media (max-width: 768px) {
+  .theme-dropdown.open {
+    z-index: auto;
+  }
+
   .theme-dropdown-popover {
     position: static;
+    z-index: auto;
     margin-block-start: var(--space-xs);
   }
 
