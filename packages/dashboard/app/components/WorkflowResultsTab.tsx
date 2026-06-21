@@ -15,6 +15,7 @@ import type { AgentLogEntry, Settings, Task, TaskDetail, WorkflowDefinition, Wor
 import { getErrorMessage, resolveTaskExecutionModel, resolveTaskPlanningModel, resolveTaskValidatorModel } from "@fusion/core";
 import { approveTaskWorkflowCli, fetchWorkflow, fetchWorkflows, fetchWorkflowSteps, fetchTaskWorkflow, fetchWorkflowOptionalSteps, selectTaskWorkflow, submitTaskWorkflowInput } from "../api";
 import { WorkflowSelector } from "./WorkflowSelector";
+import { phaseBadge } from "./workflow-phase-badge";
 import { useAgentLogs } from "../hooks/useAgentLogs";
 import { ProviderIcon } from "./ProviderIcon";
 import { irToFlow } from "./workflow-flow-mapping";
@@ -134,17 +135,8 @@ function getOutputPreview(output: string): string {
   return `${lines.length} lines`;
 }
 
-function phaseBadge(phase: "pre-merge" | "post-merge", id: string, prefix: string, t: ReturnType<typeof useTranslation>["t"]): ReactNode {
-  const phaseClass = phase === "post-merge" ? "phase-badge--post-merge" : "phase-badge--pre-merge";
-  return (
-    <span
-      className={`phase-badge ${phaseClass}`}
-      data-testid={`${prefix}-${id}`}
-    >
-      {phase === "post-merge" ? t("app:workflow.postMerge", "Post-merge") : t("app:workflow.preMerge", "Pre-merge")}
-    </span>
-  );
-}
+// phaseBadge moved to ./workflow-phase-badge (shared with the optional-steps panel
+// and the optional-steps dropdown). Imported above.
 
 function getWorkflowName(
   selectedWorkflowId: string | null,

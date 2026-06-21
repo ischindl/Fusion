@@ -17,7 +17,7 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, Plus, Trash2, Save, MessageSquare, Terminal, Shield, GitMerge, Loader2, HelpCircle, PauseCircle, Split, Merge, Repeat, ClipboardCheck, ListChecks, Code2, Bell, LayoutGrid, Workflow, Download, Upload, ChevronDown, ChevronRight, ChevronLeft, Library, Sparkles, Maximize2, Minimize2 } from "lucide-react";
-import type { WorkflowDefinition, WorkflowIrColumn, TraitViolation, WorkflowStepTemplate } from "@fusion/core";
+import type { WorkflowDefinition, WorkflowIrColumn, TraitViolation, WorkflowStepTemplate, WorkflowOptionalStep } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
   fetchWorkflows,
@@ -64,6 +64,7 @@ import {
   columnsOf,
   fieldsOf,
   settingsOf,
+  optionalStepsOf,
   columnsToBandNodes,
   reconcileNodeColumns,
   strictColumnForY,
@@ -87,6 +88,7 @@ import { fetchTraits, fetchStepParsers, type TraitCatalogEntry } from "../api";
 import { WorkflowColumnPanel } from "./WorkflowColumnPanel";
 import { WorkflowFieldsPanel } from "./WorkflowFieldsPanel";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel";
+import { WorkflowOptionalStepsPanel } from "./WorkflowOptionalStepsPanel";
 import type { WorkflowFieldDefinition, WorkflowSettingDefinition } from "../api";
 import { CustomModelDropdown } from "./CustomModelDropdown";
 import { MobileWorkflowGraphView } from "./MobileWorkflowGraphView";
@@ -98,7 +100,7 @@ import {
 } from "./workflow-mobile-graph";
 
 type ExecutorKind = "model" | "agent" | "skill" | "cli" | "cli-agent";
-type MobileWorkflowPanel = "graph" | "add" | "settings" | "fields" | "columns" | "actions";
+type MobileWorkflowPanel = "graph" | "add" | "settings" | "fields" | "optional-steps" | "columns" | "actions";
 
 function builtinSeamPrompt(config: Record<string, unknown> | undefined): string {
   const seam = typeof config?.seam === "string" ? config.seam : "";
@@ -165,6 +167,7 @@ function serializeGraph(
   columns: WorkflowIrColumn[],
   fields: WorkflowFieldDefinition[],
   settings: WorkflowSettingDefinition[],
+  optionalSteps: WorkflowOptionalStep[],
 ): string {
   const { ir, layout } = flowToIr(
     name,
@@ -173,6 +176,7 @@ function serializeGraph(
     columns.length ? columns : undefined,
     fields.length ? fields : undefined,
     settings.length ? settings : undefined,
+    optionalSteps.length ? optionalSteps : undefined,
   );
   return JSON.stringify({ name, description, ir, layout });
 }
@@ -740,6 +744,7 @@ function InnerEditor({
   // VALUES live per-project in the workflow_settings table (KTD-2) and are
   // managed by the panel's Values tab, not this declaration array.
   const [settings, setSettings] = useState<WorkflowSettingDefinition[]>([]);
+  const [optionalSteps, setOptionalSteps] = useState<WorkflowOptionalStep[]>([]);
   // Ref to the settings panel so a `?panel=settings` deep link can scroll it
   // into view on mount (U6/U9 redirect stubs).
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -778,6 +783,7 @@ function InnerEditor({
   const columnsCollapsedStorageKey = "fusion:wf-sidebar-columns-collapsed";
   const fieldsCollapsedStorageKey = "fusion:wf-sidebar-fields-collapsed";
   const settingsCollapsedStorageKey = "fusion:wf-sidebar-settings-collapsed";
+  const optionalStepsCollapsedStorageKey = "fusion:wf-sidebar-optional-steps-collapsed";
   const [columnsCollapsed, setColumnsCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(columnsCollapsedStorageKey) === "1";
@@ -795,6 +801,13 @@ function InnerEditor({
   const [settingsCollapsed, setSettingsCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(settingsCollapsedStorageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [optionalStepsCollapsed, setOptionalStepsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(optionalStepsCollapsedStorageKey) === "1";
     } catch {
       return false;
     }
@@ -820,6 +833,13 @@ function InnerEditor({
       // localStorage unavailable (private mode / SSR): non-fatal.
     }
   }, [settingsCollapsed]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(optionalStepsCollapsedStorageKey, optionalStepsCollapsed ? "1" : "0");
+    } catch {
+      // localStorage unavailable (private mode / SSR): non-fatal.
+    }
+  }, [optionalStepsCollapsed]);
   // React Flow instance for programmatic viewport control (auto-layout on load).
   const { setViewport } = useReactFlow();
   // Wrapper around <ReactFlow> so keyboard deletion can return focus to the
@@ -1009,10 +1029,10 @@ function InnerEditor({
     if (isBuiltin) return false;
     if (!activeWorkflow || loadedSnapshotRef.current === null) return false;
     return (
-      serializeGraph(name, description, nodes, edges, columns, fields, settings) !==
+      serializeGraph(name, description, nodes, edges, columns, fields, settings, optionalSteps) !==
       loadedSnapshotRef.current
     );
-  }, [isBuiltin, activeWorkflow, name, description, nodes, edges, columns, fields, settings]);
+  }, [isBuiltin, activeWorkflow, name, description, nodes, edges, columns, fields, settings, optionalSteps]);
 
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
@@ -1160,6 +1180,7 @@ function InnerEditor({
       setColumns([]);
       setFields([]);
       setSettings([]);
+      setOptionalSteps([]);
       setName("");
       setDescription("");
       loadedSnapshotRef.current = null;
@@ -1169,6 +1190,7 @@ function InnerEditor({
     const loadedColumns = columnsOf(activeWorkflow);
     const loadedFields = fieldsOf(activeWorkflow);
     const loadedSettings = settingsOf(activeWorkflow);
+    const loadedOptionalSteps = optionalStepsOf(activeWorkflow);
     // Auto-layout on load: compute tidy positions and apply them before the
     // first render so nodes are visible in the top-left viewport.
     const layoutPositions = autoLayout(flow.nodes, flow.edges, loadedColumns);
@@ -1178,6 +1200,7 @@ function InnerEditor({
     setColumns(loadedColumns);
     setFields(loadedFields);
     setSettings(loadedSettings);
+    setOptionalSteps(loadedOptionalSteps);
     setName(activeWorkflow.name);
     setDescription(activeWorkflow.description ?? "");
     setEditingName(false);
@@ -1192,6 +1215,7 @@ function InnerEditor({
       loadedColumns,
       loadedFields,
       loadedSettings,
+      loadedOptionalSteps,
     );
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
@@ -1495,6 +1519,11 @@ function InnerEditor({
       setEdges(flow.edges);
       setColumns(columnsOf({ ...targetWorkflow, ir: result.ir }));
       setFields(fieldsOf({ ...targetWorkflow, ir: result.ir }));
+      // Hydrate settings + optionalSteps on the fragment/generate path too — it
+      // previously dropped both, which silently lost the declarations on the next
+      // save (the round-trip data loss U2 fixes for the primary load path).
+      setSettings(settingsOf({ ...targetWorkflow, ir: result.ir }));
+      setOptionalSteps(optionalStepsOf({ ...targetWorkflow, ir: result.ir }));
       setSelectedNodeId(null);
       setSelectedEdgeId(null);
       setValidationError(null);
@@ -1806,6 +1835,7 @@ function InnerEditor({
         columns.length ? columns : undefined,
         fields.length ? fields : undefined,
         settings.length ? settings : undefined,
+        optionalSteps.length ? optionalSteps : undefined,
       );
       // Include name/description in the PATCH only when they changed from the
       // loaded workflow (KTD-10 inline rename/description persist here).
@@ -1823,6 +1853,7 @@ function InnerEditor({
           columns,
           fields,
           settings,
+          optionalSteps,
         );
         setName(updated.name);
         setDescription(updated.description ?? "");
@@ -1892,7 +1923,7 @@ function InnerEditor({
     } finally {
       setSaving(false);
     }
-  }, [activeWorkflow, name, description, nodes, edges, columns, fields, settings, unplaced, blockingViolationCount, projectId, addToast, t]);
+  }, [activeWorkflow, name, description, nodes, edges, columns, fields, settings, optionalSteps, unplaced, blockingViolationCount, projectId, addToast, t]);
 
   // Stamp the shared error-state badge onto offending nodes: unplaced step
   // nodes and any node the server flagged (seam-in-branch). One component
@@ -2454,6 +2485,26 @@ function InnerEditor({
                     </div>
                   )}
                 </section>
+
+                <section className="wf-sidebar-section" data-testid="wf-sidebar-optional-steps-section">
+                  <button
+                    type="button"
+                    className="wf-sidebar-section-toggle"
+                    aria-expanded={!optionalStepsCollapsed}
+                    data-testid="wf-sidebar-optional-steps-toggle"
+                    onClick={() => setOptionalStepsCollapsed((c) => !c)}
+                  >
+                    {optionalStepsCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    <span>{t("workflowOptionalSteps.title", "Optional steps")}</span>
+                  </button>
+                  {!optionalStepsCollapsed && (
+                    <WorkflowOptionalStepsPanel
+                      optionalSteps={optionalSteps}
+                      onChange={setOptionalSteps}
+                      readOnly={isBuiltin}
+                    />
+                  )}
+                </section>
               </div>
             )}
           </aside>
@@ -2576,6 +2627,7 @@ function InnerEditor({
                         ["add", t("workflowNodes.mobileAdd", "Add")],
                         ["settings", t("workflowSettings.title", "Settings")],
                         ["fields", t("workflowFields.title", "Fields")],
+                        ["optional-steps", t("workflowOptionalSteps.title", "Optional steps")],
                         ["columns", t("workflowColumns.title", "Columns")],
                         ["actions", t("workflowNodes.mobileActions", "Actions")],
                       ] as Array<[MobileWorkflowPanel, string]>).map(([panel, label]) => (
@@ -2750,6 +2802,16 @@ function InnerEditor({
                             onChange={setFields}
                             readOnly={isBuiltin}
                             addToast={addToast}
+                          />
+                        </div>
+                      )}
+
+                      {mobilePanel === "optional-steps" && (
+                        <div className="wf-mobile-destination">
+                          <WorkflowOptionalStepsPanel
+                            optionalSteps={optionalSteps}
+                            onChange={setOptionalSteps}
+                            readOnly={isBuiltin}
                           />
                         </div>
                       )}

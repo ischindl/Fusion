@@ -164,6 +164,14 @@ function v2Def(): WorkflowDefinition {
   };
 }
 
+function v2DefWithOptional(): WorkflowDefinition {
+  const base = v2Def();
+  return {
+    ...base,
+    ir: { ...(base.ir as object), optionalSteps: [{ templateId: "browser-verification" }] } as WorkflowDefinition["ir"],
+  };
+}
+
 function builtinDef(): WorkflowDefinition {
   return {
     id: "builtin:coding",
@@ -740,6 +748,34 @@ describe("WorkflowNodeEditor", () => {
     const ir = (updates as { ir: WorkflowDefinition["ir"] }).ir;
     const start = ir.nodes.find((node) => node.kind === "start");
     expect(start?.column).toBe("done");
+  });
+
+  it("hydrates declared optional steps and preserves them through a dirty save (round-trip)", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2DefWithOptional()]);
+    vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({
+      ...v2DefWithOptional(),
+      ...(updates as object),
+    }));
+    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+
+    await screen.findByText("Save");
+    // The declared optional step is hydrated into the panel (optionalStepsOf).
+    const row = await screen.findByTestId("wf-optional-step-browser-verification");
+    expect(within(row).getByText("Browser Verification")).toBeTruthy();
+
+    // Toggling defaultOn must mark the editor dirty (serializeGraph threading) so
+    // the Save button enables and persists the change.
+    fireEvent.click(within(row).getByRole("checkbox"));
+    fireEvent.click(screen.getByText("Save").closest("button")!);
+
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalled());
+    const [, updates] = vi.mocked(updateWorkflow).mock.calls[0];
+    const ir = (updates as { ir: WorkflowDefinition["ir"] }).ir as {
+      optionalSteps?: { templateId: string; defaultOn?: boolean }[];
+    };
+    expect(ir.optionalSteps).toEqual([{ templateId: "browser-verification", defaultOn: true }]);
   });
 
   it("renders the start inspector without the entry-column select for v1 workflows", async () => {
