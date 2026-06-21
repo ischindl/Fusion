@@ -69,4 +69,13 @@ export const COLOR_THEMES: { value: ColorTheme; label: string; className: string
   { value: "neon-bloom", label: "Neon Bloom", className: "theme-swatch-neon-bloom" },
   { value: "sepia", label: "Sepia", className: "theme-swatch-sepia" },
   { value: "shadcn", label: "Shadcn", className: "theme-swatch-shadcn" },
+  { value: "shadcn-blue", label: "Shadcn Blue", className: "theme-swatch-shadcn-blue" },
+  { value: "shadcn-green", label: "Shadcn Green", className: "theme-swatch-shadcn-green" },
+  { value: "shadcn-red", label: "Shadcn Red", className: "theme-swatch-shadcn-red" },
+  { value: "shadcn-purple", label: "Shadcn Purple", className: "theme-swatch-shadcn-purple" },
+  { value: "shadcn-pink", label: "Shadcn Pink", className: "theme-swatch-shadcn-pink" },
+  { value: "shadcn-orange", label: "Shadcn Orange", className: "theme-swatch-shadcn-orange" },
+  { value: "shadcn-yellow", label: "Shadcn Yellow", className: "theme-swatch-shadcn-yellow" },
+  { value: "shadcn-mono", label: "Shadcn Mono", className: "theme-swatch-shadcn-mono" },
+  { value: "shadcn-black", label: "Shadcn Black", className: "theme-swatch-shadcn-black" },
 ];

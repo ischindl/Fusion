@@ -3645,6 +3645,7 @@ export function createTaskFromPlanning(
       branchName?: string;
       baseBranch?: string;
     };
+    workflowId?: string | null;
   },
 ): Promise<Task> {
   return api<Task>(withProjectId("/planning/create-task", projectId), {
@@ -3654,6 +3655,7 @@ export function createTaskFromPlanning(
       ...(options?.branch !== undefined ? { branch: options.branch } : {}),
       ...(options?.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
       ...(options?.branchSelection ? { branchSelection: options.branchSelection } : {}),
+      ...(options?.workflowId !== undefined ? { workflowId: options.workflowId } : {}),
     }),
   });
 }
@@ -3687,6 +3689,7 @@ export function createTasksFromPlanning(
     branchAssignment?: {
       mode: "shared" | "per-task-derived";
     };
+    workflowId?: string | null;
   },
 ): Promise<{ tasks: Task[] }> {
   return api<{ tasks: Task[] }>(withProjectId("/planning/create-tasks", projectId), {
@@ -3696,6 +3699,7 @@ export function createTasksFromPlanning(
       subtasks,
       ...(options?.branchSelection ? { branchSelection: options.branchSelection } : {}),
       ...(options?.branchAssignment ? { branchAssignment: options.branchAssignment } : {}),
+      ...(options?.workflowId !== undefined ? { workflowId: options.workflowId } : {}),
     }),
   });
 }
@@ -5670,6 +5674,7 @@ export function createTasksFromBreakdown(
       baseBranch?: string;
     };
     branchAssignment?: { mode: "shared" | "per-task-derived" };
+    workflowId?: string | null;
   },
 ): Promise<{ tasks: Task[]; parentTaskClosed?: boolean }> {
   return api<{ tasks: Task[]; parentTaskClosed?: boolean }>(withProjectId("/subtasks/create-tasks", projectId), {
@@ -5681,6 +5686,7 @@ export function createTasksFromBreakdown(
       ...(options?.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
       ...(options?.branchSelection ? { branchSelection: options.branchSelection } : {}),
       ...(options?.branchAssignment ? { branchAssignment: options.branchAssignment } : {}),
+      ...(options?.workflowId !== undefined ? { workflowId: options.workflowId } : {}),
       subtasks: subtasks.map((subtask) => ({
         tempId: subtask.id,
         title: subtask.title,

@@ -8132,16 +8132,34 @@ export class SelfHealingManager {
         typeof t.error === "string" &&
         t.error.includes(PAUSE_ABORT_PARK_OPERATOR_MARKER) &&
         t.error.includes(PAUSE_ABORT_PARK_ERROR_MARKER);
+      const isTerminalMergePark = (t: Task): boolean => {
+        const text = typeof t.error === "string" ? t.error.toLowerCase() : "";
+        return text.includes("conflict")
+          || text.includes("contamination")
+          || text.includes("foreign")
+          || text.includes("retry-exhausted")
+          || text.includes("retries exhausted")
+          || text.includes("max retries");
+      };
+      const isRecoverableInReviewPauseAbortPark = (t: Task): boolean => {
+        /*
+        FNXC:WorkflowLifecycle 2026-06-20-00:00:
+        FN-6796 defense-in-depth: executor memory that distinguishes benign engine aborts from user hard-cancel is gone after restart, so self-healing may recover only persisted clean `in-review` pause-abort parks: non-paused, not executing, auto-merge eligible, completed steps, no terminal/confirmed merge evidence. User hard-cancel rows rest in `todo`; global/user pauses and autoMerge:false review rows remain operator-controlled.
+        */
+        return t.column === "in-review"
+          && allowsAutoMergeProcessing(t, settings)
+          && t.mergeDetails?.mergeConfirmed !== true
+          && !isTerminalMergePark(t)
+          && t.steps.length > 0
+          && t.steps.every((step) => step.status === "done" || step.status === "skipped");
+      };
 
       const parked = tasks.filter((t) =>
         isPausedAbortPark(t) &&
         !t.paused &&
         !t.userPaused &&
         !executingIds.has(t.id) &&
-        // Only recover columns that are safe to requeue. done/archived parks are
-        // terminal and in-review parks may carry merge state — leave those for
-        // the existing review recoverers / operator inspection.
-        (t.column === "todo" || t.column === "in-progress"),
+        (t.column === "todo" || t.column === "in-progress" || isRecoverableInReviewPauseAbortPark(t)),
       );
 
       if (parked.length === 0) return 0;
@@ -8165,13 +8183,13 @@ export class SelfHealingManager {
             fresh.paused ||
             fresh.userPaused ||
             latestExecutingIds.has(fresh.id) ||
-            !(fresh.column === "todo" || fresh.column === "in-progress")
+            !(fresh.column === "todo" || fresh.column === "in-progress" || isRecoverableInReviewPauseAbortPark(fresh))
           ) {
             continue;
           }
 
           await this.store.updateTask(task.id, { status: null, error: null });
-          if (fresh.column !== "todo") {
+          if (fresh.column !== "todo" && fresh.column !== "in-review") {
             await this.store.moveTask(task.id, "todo", {
               preserveProgress: true,
               moveSource: "engine",
@@ -8187,7 +8205,9 @@ export class SelfHealingManager {
 
           await this.store.logEntry(
             task.id,
-            "Auto-recovered: pause-abort park cleared — requeued for normal scheduling",
+            fresh.column === "in-review"
+              ? "Auto-recovered: in-review pause-abort park cleared — preserved for normal review progression"
+              : "Auto-recovered: pause-abort park cleared — requeued for normal scheduling",
           );
           // FNXC:WorkflowLifecycle 2026-06-20-00:00: audit emission is strictly
           // best-effort — an audit throw AFTER the successful state mutation must
@@ -8201,7 +8221,7 @@ export class SelfHealingManager {
               domain: "database",
               mutationType: "task:auto-recover-paused-abort-park",
               target: task.id,
-              metadata: { fromColumn: fresh.column },
+              metadata: { fromColumn: fresh.column, preservedInReview: fresh.column === "in-review" },
             });
           } catch (auditErr: unknown) {
             log.warn(`Pause-abort park audit emission failed for ${task.id}: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`);
@@ -8214,7 +8234,7 @@ export class SelfHealingManager {
       }
 
       if (recovered > 0) {
-        log.log(`Recovered ${recovered} pause-abort park(s) → requeued to todo`);
+        log.log(`Recovered ${recovered} pause-abort park(s) → requeued to todo or preserved in review`);
       }
       return recovered;
     } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);

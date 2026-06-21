@@ -3,6 +3,7 @@ import { COLUMNS, DEFAULT_COLUMN, isColumn } from "@fusion/core";
 import { sortTasksForDisplayColumn } from "./taskSorting";
 import { Column } from "./Column";
 import "./Lane.css";
+import "./Board.css";
 import type { ToastType } from "../hooks/useToast";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -15,6 +16,7 @@ import { subscribeSse } from "../sse-bus";
 import { getBoardCanDropTaskRejection } from "./boardCanDropTask";
 import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
+import { readBoardWorkflowsCache, writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 
 interface BoardProps {
   tasks: Task[];
@@ -50,11 +52,11 @@ interface BoardProps {
   /**
    * Called when the user clicks the "Plan" button in the inline create card.
    */
-  onPlanningMode?: (initialPlan: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
   /**
    * Called when the user clicks the "Subtask" button in the inline create card.
    */
-  onSubtaskBreakdown?: (description: string) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "changes" | "retries" | "workflow") => void;
   favoriteProviders?: string[];
   favoriteModels?: string[];
@@ -74,6 +76,10 @@ interface BoardProps {
   onOpenWorkflowEditor?: (workflowId?: string) => void;
   /** Opens the workflow editor to create a new workflow. */
   onCreateWorkflow?: () => void;
+  /** Already-resolved app setting for whether workflow lanes should be used. */
+  workflowColumnsEnabled?: boolean;
+  /** Whether app settings have loaded; false gates the legacy board until the workflow flag is known. */
+  settingsLoaded?: boolean;
 }
 
 
@@ -124,7 +130,21 @@ function areWorkflowNameLookupsEqual(previous: ReadonlyMap<string, string>, next
   return true;
 }
 
-export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow }: BoardProps) {
+function BoardWorkflowSkeleton({ empty = false }: { empty?: boolean }) {
+  return (
+    <main className="board board-workflows-skeleton" id="board" aria-busy={!empty} aria-label={empty ? "No workflow lanes available" : "Loading workflow lanes"} data-testid={empty ? "board-workflows-empty" : "board-workflows-skeleton"}>
+      {[0, 1, 2].map((index) => (
+        <section className="board-workflows-skeleton__column card" key={index} aria-hidden="true">
+          <div className="board-workflows-skeleton__header" />
+          <div className="board-workflows-skeleton__card" />
+          <div className="board-workflows-skeleton__card board-workflows-skeleton__card--short" />
+        </section>
+      ))}
+    </main>
+  );
+}
+
+export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowColumnsEnabled, settingsLoaded }: BoardProps) {
   const { t } = useTranslation("app");
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   const archivedLoadedRef = useRef(false);
@@ -330,9 +350,18 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
   }, []);
 
   // ── U9 multi-lane board (flag-gated) ──────────────────────────────────────
+  /*
+  FNXC:BoardWorkflows 2026-06-20-08:58:
+  Workflow-columns-enabled users must never see the legacy single-lane board while board-workflows metadata is still loading. Hydrate metadata from the project-scoped session cache, reset it on project switches, and show a neutral skeleton while settings or uncached workflow metadata are unknown.
+  */
   // Fetch board-workflows metadata. When the flag is OFF the server returns
   // { flagEnabled: false } and we render the legacy single-lane board below.
-  const [boardWorkflows, setBoardWorkflows] = useState<BoardWorkflowsPayload | null>(null);
+  const shouldHydrateBoardWorkflowsCache = workflowColumnsEnabled === true || settingsLoaded === false;
+  const [boardWorkflowsState, setBoardWorkflowsState] = useState<{ projectId?: string; payload: BoardWorkflowsPayload } | null>(() => {
+    const cached = shouldHydrateBoardWorkflowsCache ? readBoardWorkflowsCache(projectId) : null;
+    return cached ? { projectId, payload: cached } : null;
+  });
+  const boardWorkflows = boardWorkflowsState?.projectId === projectId && boardWorkflowsState ? boardWorkflowsState.payload : null;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const draggingTaskIdRef = useRef<string | null>(null);
 
@@ -345,15 +374,23 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
   // refetch below is retained as a stopgap for missed events / reconnects.
   const boardWorkflowsFetchSeqRef = useRef(0);
   useEffect(() => {
+    const cached = shouldHydrateBoardWorkflowsCache ? readBoardWorkflowsCache(projectId) : null;
+    setBoardWorkflowsState(cached ? { projectId, payload: cached } : null);
+  }, [projectId, shouldHydrateBoardWorkflowsCache]);
+
+  useEffect(() => {
     const runFetch = () => {
       const seq = ++boardWorkflowsFetchSeqRef.current;
       fetchBoardWorkflows(projectId)
         .then((payload) => {
-          if (seq === boardWorkflowsFetchSeqRef.current) setBoardWorkflows(payload);
+          if (seq === boardWorkflowsFetchSeqRef.current) {
+            setBoardWorkflowsState({ projectId, payload });
+            writeBoardWorkflowsCache(projectId, payload);
+          }
         })
         .catch(() => {
           if (seq === boardWorkflowsFetchSeqRef.current) {
-            setBoardWorkflows({ flagEnabled: false, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} });
+            setBoardWorkflowsState({ projectId, payload: { flagEnabled: false, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} } });
           }
         });
     };
@@ -508,6 +545,14 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
   // FN-4380: GitHub badge state comes from persisted task fields (`task.prInfo`,
   // `task.issueInfo`, `task.githubTracking.issue`) and live WebSocket `badge:updated`
   // messages. We do NOT eagerly call `/api/github/batch-status` on board load.
+
+  const shouldGateLegacyBoard = boardWorkflows === null
+    ? (workflowColumnsEnabled === true || settingsLoaded === false)
+    : boardWorkflows.flagEnabled === true && boardWorkflows.workflows.length === 0;
+
+  if (shouldGateLegacyBoard) {
+    return <BoardWorkflowSkeleton empty={boardWorkflows?.flagEnabled === true} />;
+  }
 
   if (workflowMode && selectedWorkflow) {
     return (

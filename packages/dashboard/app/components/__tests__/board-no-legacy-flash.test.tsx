@@ -1,0 +1,326 @@
+import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { Board } from "../Board";
+import { ListView } from "../ListView";
+import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
+import type { BoardWorkflowsPayload } from "../../api";
+import type { Task } from "@fusion/core";
+
+const apiMocks = vi.hoisted(() => ({
+  fetchBoardWorkflows: vi.fn(),
+  fetchWorkflowSteps: vi.fn(),
+  fetchNodes: vi.fn(),
+  fetchTaskDetail: vi.fn(),
+  batchUpdateTaskModels: vi.fn(),
+  promoteTask: vi.fn(),
+  fetchModels: vi.fn(),
+  fetchSettings: vi.fn(),
+  fetchGlobalSettings: vi.fn(),
+  api: vi.fn(),
+}));
+
+vi.mock("../../api", () => ({
+  fetchBoardWorkflows: apiMocks.fetchBoardWorkflows,
+  fetchWorkflowSteps: apiMocks.fetchWorkflowSteps,
+  fetchNodes: apiMocks.fetchNodes,
+  fetchTaskDetail: apiMocks.fetchTaskDetail,
+  batchUpdateTaskModels: apiMocks.batchUpdateTaskModels,
+  promoteTask: apiMocks.promoteTask,
+  fetchModels: apiMocks.fetchModels,
+  fetchSettings: apiMocks.fetchSettings,
+  fetchGlobalSettings: apiMocks.fetchGlobalSettings,
+  api: apiMocks.api,
+}));
+
+vi.mock("../../hooks/useBlockerFanout", () => ({
+  useBlockerFanout: () => new Map(),
+}));
+
+vi.mock("../../sse-bus", () => ({
+  subscribeSse: vi.fn(() => () => {}),
+}));
+
+vi.mock("../Column", () => ({
+  Column: React.memo(({ column, workflowMode }: { column: string; workflowMode?: boolean }) => (
+    <div className="column" data-testid={`column-${column}`} data-workflow-mode={workflowMode ? "true" : "false"} />
+  )),
+}));
+
+const workflowPayload: BoardWorkflowsPayload = {
+  flagEnabled: true,
+  defaultWorkflowId: "workflow-a",
+  workflows: [
+    {
+      id: "workflow-a",
+      name: "Workflow A",
+      columns: [
+        { id: "todo", name: "Todo", flags: { intake: true } },
+        { id: "done", name: "Done", flags: { complete: true } },
+        { id: "archived", name: "Archived", flags: { archived: true } },
+      ],
+    },
+    {
+      id: "workflow-b",
+      name: "Workflow B",
+      columns: [
+        { id: "doing", name: "Doing", flags: { countsTowardWip: true } },
+        { id: "shipped", name: "Shipped", flags: { complete: true } },
+      ],
+    },
+  ],
+  taskWorkflowIds: {},
+};
+
+const emptyWorkflowPayload: BoardWorkflowsPayload = {
+  flagEnabled: true,
+  defaultWorkflowId: "workflow-a",
+  workflows: [],
+  taskWorkflowIds: {},
+};
+
+const flagOffPayload: BoardWorkflowsPayload = {
+  flagEnabled: false,
+  defaultWorkflowId: "builtin:coding",
+  workflows: [],
+  taskWorkflowIds: {},
+};
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function mockViewport(width: number) {
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn((query: string) => ({
+      matches: query.includes("768px") ? width <= 768 : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
+const tasks: Task[] = [];
+
+const boardProps = {
+  tasks,
+  maxConcurrent: 2,
+  onMoveTask: vi.fn(async () => ({} as Task)),
+  onOpenDetail: vi.fn(),
+  addToast: vi.fn(),
+  onNewTask: vi.fn(),
+  autoMerge: true,
+  onToggleAutoMerge: vi.fn(),
+};
+
+const listProps = {
+  tasks,
+  onMoveTask: vi.fn(async () => ({} as Task)),
+  onDeleteTask: vi.fn(async () => ({} as Task)),
+  onMergeTask: vi.fn(async () => ({} as never)),
+  onOpenDetail: vi.fn(),
+  addToast: vi.fn(),
+  onCreateWorkflow: vi.fn(),
+};
+
+type Surface = "Board" | "ListView";
+type Breakpoint = "desktop" | "mobile";
+
+function renderSurface(surface: Surface, projectId = "project-a") {
+  if (surface === "Board") {
+    return render(<Board {...boardProps} projectId={projectId} workflowColumnsEnabled settingsLoaded />);
+  }
+  return render(<ListView {...listProps} projectId={projectId} workflowColumnsEnabled settingsLoaded />);
+}
+
+function expectWorkflowLayout(surface: Surface) {
+  if (surface === "Board") {
+    expect(document.querySelector(".board-workflow-columns")).not.toBeNull();
+    expect(document.querySelector(".board-workflows-skeleton")).toBeNull();
+    expect(document.querySelectorAll('.column[data-workflow-mode="true"]').length).toBeGreaterThan(0);
+    return;
+  }
+
+  expect(screen.getByTestId("workflow-switcher")).toBeInTheDocument();
+  expect(screen.queryByTestId("list-workflows-skeleton")).toBeNull();
+}
+
+function expectLegacyLayout(surface: Surface) {
+  if (surface === "Board") {
+    expect(document.querySelector(".board-workflow-columns")).toBeNull();
+    expect(document.querySelector(".board-workflows-skeleton")).toBeNull();
+    expect(document.querySelectorAll('.column[data-workflow-mode="false"]').length).toBeGreaterThan(0);
+    return;
+  }
+
+  expect(screen.queryByTestId("list-workflows-skeleton")).toBeNull();
+  expect(screen.queryByTestId("workflow-switcher")).toBeNull();
+  expect(screen.getByTestId("list-split-layout")).toBeInTheDocument();
+}
+
+function expectSkeleton(surface: Surface, empty = false) {
+  if (surface === "Board") {
+    expect(screen.getByTestId(empty ? "board-workflows-empty" : "board-workflows-skeleton")).toBeInTheDocument();
+    expect(document.querySelector(".board-workflow-columns")).toBeNull();
+    expect(document.querySelectorAll(".column")).toHaveLength(0);
+    return;
+  }
+
+  expect(screen.getByTestId(empty ? "list-workflows-empty" : "list-workflows-skeleton")).toBeInTheDocument();
+  expect(screen.queryByTestId("workflow-switcher")).toBeNull();
+}
+
+describe("no legacy-board flash before workflow lanes load (FN-6776)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMocks.fetchWorkflowSteps.mockResolvedValue([]);
+    apiMocks.fetchNodes.mockResolvedValue([]);
+    apiMocks.fetchTaskDetail.mockResolvedValue(null);
+    apiMocks.promoteTask.mockResolvedValue({});
+    apiMocks.fetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
+    apiMocks.fetchSettings.mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {} });
+    apiMocks.fetchGlobalSettings.mockResolvedValue({});
+    apiMocks.api.mockResolvedValue({ sessions: [] });
+    window.sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    window.sessionStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s renders legacy immediately when workflowColumns is known off", (surface) => {
+    mockViewport(1024);
+    apiMocks.fetchBoardWorkflows.mockReturnValue(new Promise(() => {}));
+
+    if (surface === "Board") {
+      render(<Board {...boardProps} projectId="project-a" workflowColumnsEnabled={false} settingsLoaded />);
+    } else {
+      render(<ListView {...listProps} projectId="project-a" workflowColumnsEnabled={false} settingsLoaded />);
+    }
+
+    expectLegacyLayout(surface);
+  });
+
+  it.each<[Surface, Breakpoint]>([
+    ["Board", "desktop"],
+    ["Board", "mobile"],
+    ["ListView", "desktop"],
+    ["ListView", "mobile"],
+  ])("%s at %s renders skeleton, not legacy, while uncached workflow payload is pending", async (surface, breakpoint) => {
+    mockViewport(breakpoint === "mobile" ? 390 : 1200);
+    const deferred = createDeferred<BoardWorkflowsPayload>();
+    apiMocks.fetchBoardWorkflows.mockReturnValue(deferred.promise);
+
+    renderSurface(surface);
+
+    expectSkeleton(surface);
+
+    await act(async () => {
+      deferred.resolve(workflowPayload);
+      await deferred.promise;
+    });
+
+    await waitFor(() => expectWorkflowLayout(surface));
+  });
+
+  it.each<[Surface, Breakpoint]>([
+    ["Board", "desktop"],
+    ["Board", "mobile"],
+    ["ListView", "desktop"],
+    ["ListView", "mobile"],
+  ])("%s at %s renders cached workflow lanes on first paint", (surface, breakpoint) => {
+    mockViewport(breakpoint === "mobile" ? 390 : 1200);
+    writeBoardWorkflowsCache("project-a", workflowPayload);
+    apiMocks.fetchBoardWorkflows.mockReturnValue(new Promise(() => {}));
+
+    renderSurface(surface);
+
+    expectWorkflowLayout(surface);
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s keeps legacy hidden when the enabled payload has no workflows", async (surface) => {
+    mockViewport(1024);
+    apiMocks.fetchBoardWorkflows.mockResolvedValue(emptyWorkflowPayload);
+
+    renderSurface(surface);
+
+    await waitFor(() => expectSkeleton(surface, true));
+    expectLegacyLayoutHiddenForEmpty(surface);
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s renders skeleton while settings are not loaded", (surface) => {
+    mockViewport(1024);
+    apiMocks.fetchBoardWorkflows.mockReturnValue(new Promise(() => {}));
+
+    if (surface === "Board") {
+      render(<Board {...boardProps} projectId="project-a" workflowColumnsEnabled={false} settingsLoaded={false} />);
+    } else {
+      render(<ListView {...listProps} projectId="project-a" workflowColumnsEnabled={false} settingsLoaded={false} />);
+    }
+
+    expectSkeleton(surface);
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s fetch error exits the skeleton to a terminal legacy layout", async (surface) => {
+    mockViewport(1024);
+    apiMocks.fetchBoardWorkflows.mockRejectedValue(new Error("network"));
+
+    renderSurface(surface);
+    expectSkeleton(surface);
+
+    await waitFor(() => expectLegacyLayout(surface));
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s does not leak cached workflow layouts across project switches", async (surface) => {
+    mockViewport(1024);
+    writeBoardWorkflowsCache("project-a", workflowPayload);
+    apiMocks.fetchBoardWorkflows.mockReturnValue(new Promise(() => {}));
+
+    const view = renderSurface(surface, "project-a");
+    expectWorkflowLayout(surface);
+
+    if (surface === "Board") {
+      view.rerender(<Board {...boardProps} projectId="project-b" workflowColumnsEnabled settingsLoaded />);
+    } else {
+      view.rerender(<ListView {...listProps} projectId="project-b" workflowColumnsEnabled settingsLoaded />);
+    }
+
+    expectSkeleton(surface);
+  });
+
+  it.each<Surface>(["Board", "ListView"])("%s ignores another project's cache when flag-off payload is cached locally", (surface) => {
+    mockViewport(1024);
+    writeBoardWorkflowsCache("project-b", workflowPayload);
+    writeBoardWorkflowsCache("project-a", flagOffPayload);
+    apiMocks.fetchBoardWorkflows.mockReturnValue(new Promise(() => {}));
+
+    renderSurface(surface, "project-a");
+
+    expectLegacyLayout(surface);
+  });
+});
+
+function expectLegacyLayoutHiddenForEmpty(surface: Surface) {
+  if (surface === "Board") {
+    expect(document.querySelector(".board-workflow-columns")).toBeNull();
+    expect(document.querySelectorAll(".column")).toHaveLength(0);
+    return;
+  }
+
+  expect(screen.queryByTestId("workflow-switcher")).toBeNull();
+}

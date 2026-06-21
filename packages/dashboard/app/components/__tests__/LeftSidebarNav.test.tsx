@@ -50,7 +50,9 @@ const pluginViews: PluginDashboardViewEntry[] = [
 ];
 
 function expectNoSidebarBrandOrProjectAffordances(container: HTMLElement) {
+  expect(screen.queryByTestId("sidebar-nav-brand")).toBeNull();
   expect(screen.queryByTestId("sidebar-nav-project-selector")).toBeNull();
+  expect(container.querySelector(".left-sidebar-nav__brand")).toBeNull();
   expect(container.querySelector(".left-sidebar-nav__logo-mark")).toBeNull();
   expect(container.querySelector(".left-sidebar-nav__wordmark")).toBeNull();
 }
@@ -247,6 +249,28 @@ describe("LeftSidebarNav", () => {
     },
   );
 
+  it("removes the brand-row shell while keeping the floating toggle reachable in expanded and collapsed states", () => {
+    const { container } = renderSidebar();
+    const sidebar = screen.getByTestId("left-sidebar-nav");
+    const expandedToggle = screen.getByTestId("sidebar-nav-collapse-toggle");
+
+    expectNoSidebarBrandOrProjectAffordances(container);
+    expect(expandedToggle).toHaveClass("left-sidebar-nav__collapse-toggle--floating");
+    expect(expandedToggle).toHaveAttribute("aria-pressed", "false");
+    expect(expandedToggle).toHaveAccessibleName("Collapse sidebar");
+    expect(expandedToggle).toHaveAttribute("title", "Collapse sidebar");
+
+    fireEvent.click(expandedToggle);
+
+    const collapsedToggle = screen.getByTestId("sidebar-nav-collapse-toggle");
+    expect(sidebar.className).toContain("left-sidebar-nav--collapsed");
+    expectNoSidebarBrandOrProjectAffordances(container);
+    expect(collapsedToggle).toHaveClass("left-sidebar-nav__collapse-toggle--floating");
+    expect(collapsedToggle).toHaveAttribute("aria-pressed", "true");
+    expect(collapsedToggle).toHaveAccessibleName("Expand sidebar");
+    expect(collapsedToggle).toHaveAttribute("title", "Expand sidebar");
+  });
+
   it("toggles collapsed rail mode, keeps bottom settings reachable, and restores it on remount", () => {
     const firstRender = renderSidebar();
     const sidebar = screen.getByTestId("left-sidebar-nav");
@@ -264,6 +288,9 @@ describe("LeftSidebarNav", () => {
     firstRender.unmount();
     renderSidebar();
     expect(screen.getByTestId("left-sidebar-nav").className).toContain("left-sidebar-nav--collapsed");
+    expect(screen.getByTestId("sidebar-nav-collapse-toggle")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("sidebar-nav-collapse-toggle")).toHaveAccessibleName("Expand sidebar");
+    expect(screen.getByTestId("sidebar-nav-collapse-toggle")).toHaveAttribute("title", "Expand sidebar");
     expect(screen.getByTestId("sidebar-nav-settings")).toBeDefined();
     expect(screen.getByTestId("sidebar-nav-board")).toBeDefined();
   });

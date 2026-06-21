@@ -78,8 +78,13 @@
 FNXC:MobileNav 2026-06-20-02:04:
 Every mobile nav tab must be an equal-width column with a centered icon so inter-icon spacing stays uniform across tab counts, long labels, active state, badges, and status dots.
 Use a zero flex basis plus min-width:0 so intrinsic label width cannot bias flex distribution; badges and status dots stay absolutely positioned and out of flow.
+
+FNXC:MobileNav 2026-06-20-16:11:
+Real-browser geometry showed the SVG centers were uniform after FN-6766, but status dots protruded past Chat/Mailbox icon boxes and made those icon clusters optically right-heavy.
+Wrap every tab icon in the same token-sized icon slot and keep unread/pending dots inside that slot so icon centering and perceived inter-icon spacing stay identical across tab count, label length, badge, status-dot, and active variants.
 */
 .mobile-nav-tab {
+  --mobile-nav-icon-size: calc(var(--space-lg) + var(--space-sm) - (var(--space-xs) / 2));
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -87,7 +92,7 @@ Use a zero flex basis plus min-width:0 so intrinsic label width cannot bias flex
   align-items: center;
   justify-content: center;
   gap: calc(var(--space-xs) / 2);
-  min-height: 36px;
+  min-height: calc(var(--space-xl) + var(--space-md));
   padding: calc(var(--space-sm) - (var(--space-xs) / 2)) 0;
   background: none;
   border: none;
@@ -109,19 +114,24 @@ Use a zero flex basis plus min-width:0 so intrinsic label width cannot bias flex
 }
 
 .mobile-nav-tab svg {
-  width: 22px;
-  height: 22px;
+  width: var(--mobile-nav-icon-size);
+  height: var(--mobile-nav-icon-size);
 }
 
 .mobile-nav-tab-icon-wrapper {
   position: relative;
-  display: inline-flex;
+  display: flex;
+  flex: 0 0 var(--mobile-nav-icon-size);
+  align-items: center;
+  justify-content: center;
+  width: var(--mobile-nav-icon-size);
+  height: var(--mobile-nav-icon-size);
 }
 
 .mobile-nav-chat-unread-dot {
   position: absolute;
-  top: calc(var(--space-xs) * -1);
-  right: calc(var(--space-xs) * -1);
+  top: 0;
+  right: 0;
 }
 
 .mobile-nav-tab-label {

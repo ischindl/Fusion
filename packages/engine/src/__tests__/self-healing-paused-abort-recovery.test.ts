@@ -29,6 +29,9 @@ import type { Settings, Task, TaskStore } from "@fusion/core";
 
 const PARK_ERROR =
   "Workflow graph failure surfaced after paused engine abort during pause/resume in 'todo' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task";
+const IN_REVIEW_PARK_ERROR =
+  "Workflow graph failure surfaced after paused engine abort during pause/resume in 'in-review' at node 'execute' — operator action required; retry or explicitly unpause/resume after inspecting the task";
+const DONE_STEPS = [{ status: "done" }, { status: "done" }];
 
 function createMockStore(tasks: Task[]): TaskStore & EventEmitter {
   const emitter = new EventEmitter();
@@ -114,11 +117,45 @@ describe("recoverPausedAbortFailures", () => {
     );
   });
 
-  it("skips paused, executing, in-review, and non-pause-abort failures", async () => {
+  it("clears a completed in-review pause-abort park without moving it backward", async () => {
+    const store = createMockStore([parkTask({
+      id: "FN-7002",
+      column: "in-review",
+      error: IN_REVIEW_PARK_ERROR,
+      steps: DONE_STEPS,
+      autoMerge: true,
+    })]);
+    const clearBinding = vi.fn().mockReturnValue(true);
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      getExecutingTaskIds: () => new Set<string>(),
+      clearPhantomExecutorBinding: clearBinding as (taskId: string) => boolean | void,
+    });
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered).toBe(1);
+    expect(store.updateTask).toHaveBeenCalledWith("FN-7002", { status: null, error: null });
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(clearBinding).toHaveBeenCalledWith("FN-7002");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-7002",
+      "Auto-recovered: in-review pause-abort park cleared — preserved for normal review progression",
+    );
+    expect(store.recordRunAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mutationType: "task:auto-recover-paused-abort-park",
+        target: "FN-7002",
+        metadata: { fromColumn: "in-review", preservedInReview: true },
+      }),
+    );
+  });
+
+  it("skips paused, executing, incomplete in-review, and non-pause-abort failures", async () => {
     const store = createMockStore([
       parkTask({ id: "FN-A", paused: true }),
       parkTask({ id: "FN-B", column: "in-progress" }), // executing (below)
-      parkTask({ id: "FN-C", column: "in-review" }), // in-review park left for operator
+      parkTask({ id: "FN-C", column: "in-review", error: IN_REVIEW_PARK_ERROR }), // incomplete in-review park left for operator
       parkTask({ id: "FN-D", error: "some other failure", status: "failed" }),
     ]);
     const manager = new SelfHealingManager(store, {
@@ -130,6 +167,55 @@ describe("recoverPausedAbortFailures", () => {
 
     expect(recovered).toBe(0);
     expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("leaves guarded in-review pause-abort parks untouched", async () => {
+    const candidates = [
+      parkTask({ id: "FN-U", column: "in-review", error: IN_REVIEW_PARK_ERROR, steps: DONE_STEPS, userPaused: true, autoMerge: true }),
+      parkTask({ id: "FN-X", column: "in-review", error: IN_REVIEW_PARK_ERROR, steps: DONE_STEPS, autoMerge: true }),
+      parkTask({ id: "FN-M", column: "in-review", error: IN_REVIEW_PARK_ERROR, steps: DONE_STEPS, autoMerge: true, mergeDetails: { mergeConfirmed: true } as any }),
+      parkTask({ id: "FN-T", column: "in-review", error: `${IN_REVIEW_PARK_ERROR} merge-conflict`, steps: DONE_STEPS, autoMerge: true }),
+      parkTask({ id: "FN-A", column: "in-review", error: IN_REVIEW_PARK_ERROR, steps: DONE_STEPS, autoMerge: undefined }),
+    ];
+    const store = createMockStore(candidates);
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      autoMerge: false,
+      globalPause: false,
+      enginePaused: false,
+      maintenanceIntervalMs: 0,
+    } as unknown as Settings);
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      getExecutingTaskIds: () => new Set<string>(["FN-X"]),
+    });
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered).toBe(0);
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("revalidates in-review recovery against fresh state before clearing the park", async () => {
+    const initial = parkTask({
+      id: "FN-STALE",
+      column: "in-review",
+      error: IN_REVIEW_PARK_ERROR,
+      steps: DONE_STEPS,
+      autoMerge: true,
+    });
+    const store = createMockStore([initial]);
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...initial, paused: true });
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      getExecutingTaskIds: () => new Set<string>(),
+    });
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered).toBe(0);
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
   });
 
   // FNXC:WorkflowLifecycle greptile P1 (PR #1687): the method self-guards on

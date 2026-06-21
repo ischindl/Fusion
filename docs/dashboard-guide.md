@@ -25,7 +25,7 @@ Enable **Left Sidebar Navigation** from **Settings → Experimental Features** t
 
 When enabled on desktop or tablet project screens, the sidebar contains the primary destinations (Board, List, Agents, Command Center, Missions, Chat, Documents, Mailbox, and plugin primary views), Header overflow destinations as regular entries (Research, Insights, Skills, Memory, Secrets, Stash Recovery, Evals, Goals, Dev Server, Todos, and plugin overflow views when their flags/plugins are enabled), and a Settings button pinned to the bottom. The Header retains the Fusion brand and project selector, keeps its non-navigation controls, and hides the view-toggle row and **More views** trigger so there is only one canonical navigation surface.
 
-The sidebar can be collapsed to an icon-only rail with accessible labels/titles preserved, and the expanded width can be resized from the right-edge separator. Collapsed state and expanded width are saved in browser `localStorage` (`fusion:left-sidebar-collapsed` and `fusion:left-sidebar-width`) and restored on reload.
+A small right-border toggle collapses or expands the sidebar without consuming a navigation row; collapsed rail mode keeps accessible labels/titles preserved, and the expanded width can be resized from the right-edge separator. Collapsed state and expanded width are saved in browser `localStorage` (`fusion:left-sidebar-collapsed` and `fusion:left-sidebar-width`) and restored on reload.
 
 On mobile viewports (`<=768px`), the sidebar is not rendered even when the experiment is enabled. The existing bottom `MobileNavBar` remains the navigation surface.
 
@@ -78,6 +78,7 @@ Features:
 - Column ordering semantics: `todo` mirrors scheduler pickup order (priority descending, then oldest `createdAt`, then task ID); `triage`, `in-progress`, `in-review`, and `archived` remain priority-first with task-ID tie-breaks; `done` is ordered by most recent completion first (`columnMovedAt`, then `updatedAt`, then `createdAt` fallback)
 - On mobile, both default and workflow-mode boards fill the project viewport while the column strip remains the internal horizontal scroller with contained edge overscroll.
 - Board and List workflow switchers use a themed dropdown instead of a native select. The closed trigger and each workflow option show compact Todo / In Progress / Done counts derived from workflow column flags, excluding archived columns.
+- When workflow columns are enabled, Board and List hydrate the last successful workflow-lane payload from a per-project session cache; cold loads show a neutral skeleton until settings and workflow metadata are known, avoiding a legacy single-lane flash.
 
 ![Board view](./screenshots/dashboard-overview.png)
 
@@ -222,6 +223,8 @@ Planning Mode now includes branch controls on the summary screen before you crea
 - **Description** supports a `Markdown`/`Plain` toggle in the summary header row: `Plain` keeps the editable textarea, while `Markdown` renders formatted preview (`react-markdown` + GFM) in the same footprint for easier review before task creation.
 
 These values are sent with the Planning Mode create-task request as `branchSelection`, so created tasks persist branch/base-branch settings consistently with other branch-aware task creation flows.
+
+When Planning Mode or Subtask Breakdown is opened from a workflow-filtered board lane, the create request also carries that active workflow selection. Single-task planning saves, planning breakdown saves, and subtask-breakdown saves create their tasks directly on the selected workflow lane instead of briefly landing on the default board.
 
 Completed single-task planning sessions remain in the Planning Mode history after you create the task, and selecting one restores the completed summary instead of restarting the composer. History rows are deduplicated by session id even if the initial load and live session updates arrive out of order, and deleting a history entry now waits for the server delete to persist (failures keep the row visible and surface an error instead of silently disappearing until refresh).
 
@@ -1279,7 +1282,7 @@ Non-Command-Center dashboard CSS uses `--text` as the canonical primary text tok
 
 ### Theme system
 
-Dark/light modes via `data-theme`; 57 color themes via `data-color-theme` (lazy-loaded from `app/public/theme-data.css`), including the Shadcn zinc-neutral theme with an orange default highlight/accent. Air is the minimal, borderless, paper-like preset with near-monochrome tokens and CSS-only chrome flattening.
+Dark/light modes via `data-theme`; 66 color themes via `data-color-theme` (lazy-loaded from `app/public/theme-data.css`), including the Shadcn zinc-neutral theme with an orange default highlight/accent and its color family: Shadcn Blue/Green/Red/Purple/Pink/Orange/Yellow, Shadcn Mono (grayscale with red accent), and Shadcn Black (pure black and white). Air is the minimal, borderless, paper-like preset with near-monochrome tokens and CSS-only chrome flattening.
 
 - **Base tokens** (`--bg`, `--surface`, etc.) — redefine in `:root`, `[data-theme="light"]`, and every theme block.
 - **Semantic tokens** (`--autopilot-pulse`, `--event-error-text`, `--badge-mission-*`, `--fab-*`) — `:root` + `[data-theme="light"]` only; no per-color-theme overrides.

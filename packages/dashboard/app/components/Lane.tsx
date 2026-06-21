@@ -55,8 +55,8 @@ export interface LaneProps {
     githubIssueAction?: GithubIssueAction;
   }) => Promise<Task>;
   availableModels?: ModelInfo[];
-  onPlanningMode?: (initialPlan: string) => void;
-  onSubtaskBreakdown?: (description: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "changes" | "retries" | "workflow") => void;
   favoriteProviders?: string[];
   favoriteModels?: string[];

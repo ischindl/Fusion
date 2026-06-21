@@ -328,7 +328,9 @@ export function MobileNavBar({
             }
           }}
         >
-          <LayoutGrid />
+          <span className="mobile-nav-tab-icon-wrapper">
+            <LayoutGrid />
+          </span>
           <span className="mobile-nav-tab-label">{t("nav.tasks", "Tasks")}</span>
         </button>
 
@@ -340,7 +342,9 @@ export function MobileNavBar({
           aria-selected={view === "agents"}
           onClick={() => onChangeView("agents")}
         >
-          <Bot />
+          <span className="mobile-nav-tab-icon-wrapper">
+            <Bot />
+          </span>
           <span className="mobile-nav-tab-label">{t("nav.agents", "Agents")}</span>
         </button>
 
@@ -352,7 +356,9 @@ export function MobileNavBar({
           aria-selected={view === "missions"}
           onClick={() => onChangeView("missions")}
         >
-          <Target />
+          <span className="mobile-nav-tab-icon-wrapper">
+            <Target />
+          </span>
           <span className="mobile-nav-tab-label">{t("nav.missions", "Missions")}</span>
         </button>
 
@@ -407,7 +413,9 @@ export function MobileNavBar({
           aria-selected={view === "command-center"}
           onClick={() => onChangeView("command-center")}
         >
-          <Gauge />
+          <span className="mobile-nav-tab-icon-wrapper">
+            <Gauge />
+          </span>
           <span className="mobile-nav-tab-label">{t("nav.commandCenter", "Command Center")}</span>
         </button>
 
@@ -420,7 +428,9 @@ export function MobileNavBar({
             aria-selected={view === "skills"}
             onClick={() => onChangeView("skills")}
           >
-            <Zap />
+            <span className="mobile-nav-tab-icon-wrapper">
+              <Zap />
+            </span>
             <span className="mobile-nav-tab-label">{t("nav.skills", "Skills")}</span>
           </button>
         )}
@@ -439,7 +449,9 @@ export function MobileNavBar({
               aria-selected={view === pluginTaskView || (view === "graph" && entry.pluginId === "fusion-plugin-dependency-graph" && entry.view.viewId === "graph")}
               onClick={() => onChangeView(entry.pluginId === "fusion-plugin-dependency-graph" && entry.view.viewId === "graph" ? "graph" : pluginTaskView)}
             >
-              <PluginIcon />
+              <span className="mobile-nav-tab-icon-wrapper">
+                <PluginIcon />
+              </span>
               <span className="mobile-nav-tab-label">{entry.view.label}</span>
             </button>
           );
@@ -453,7 +465,9 @@ export function MobileNavBar({
           aria-selected={false}
           onClick={() => setIsMoreOpen((prev) => !prev)}
         >
-          <MoreHorizontal />
+          <span className="mobile-nav-tab-icon-wrapper">
+            <MoreHorizontal />
+          </span>
           <span className="mobile-nav-tab-label">{t("nav.more", "More")}</span>
         </button>
       </nav>

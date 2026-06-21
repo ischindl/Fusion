@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
@@ -82,6 +82,51 @@ describe("pause-abort benign requeue-to-todo (FN-6782)", () => {
     expect((executor as any).pausedAborted.has(task.id)).toBe(false);
     // FNXC:WorkflowLifecycle the leaked worktree slot must be released to avoid board-wide concurrency blockage.
     expect((executor as any).activeWorktrees.has(task.id)).toBe(false);
+    // FNXC:WorkflowLifecycle 2026-06-20-19:58 a clean todo row (no stale status/error)
+    // must NOT trigger the reconciliation write — the `live.status != null ||
+    // live.error != null` guard skips it so the common benign re-queue stays a no-op.
+    const clearedClean = store.updateTask.mock.calls.some(
+      (call: unknown[]) => {
+        const patch = call[1] as { status?: unknown; error?: unknown } | undefined;
+        return patch?.status === null && patch?.error === null;
+      },
+    );
+    expect(clearedClean).toBe(false);
+  });
+
+  it("clears a stale failed status when reclassifying a todo pause-abort as benign (no lingering failure notification)", async () => {
+    // FNXC:WorkflowLifecycle 2026-06-20-19:58 a pause-abort parked status:"failed"
+    // on an earlier non-todo observation stays dispatchable (scheduler filters
+    // column+paused, not status) and re-enters this branch in todo. The benign
+    // reclassification must reconcile the row to status:null/error:null —
+    // otherwise the persisted failure survives, the board shows it failed, and
+    // the deferred failure notification fires despite the benign log.
+    const { store, task, executor } = makeHarness({
+      column: "todo",
+      status: "failed",
+      error: "Workflow graph failure surfaced after paused engine abort during pause/resume",
+    });
+    (executor as any).activeWorktrees.set(task.id, task.worktree);
+
+    await invokeGraphFailure(executor, task);
+
+    const clearedFailure = store.updateTask.mock.calls.some(
+      (call: unknown[]) => {
+        const patch = call[1] as { status?: unknown; error?: unknown } | undefined;
+        return patch?.status === null && patch?.error === null;
+      },
+    );
+    expect(clearedFailure).toBe(true);
+    const reParkedFailed = store.updateTask.mock.calls.some(
+      (call: unknown[]) => (call[1] as { status?: string } | undefined)?.status === "failed",
+    );
+    expect(reParkedFailed).toBe(false);
+    expect(logText(store)).toContain("benign, cleared for normal scheduling");
+    // FNXC:WorkflowLifecycle 2026-06-20-19:58 the clear path must emit an
+    // `Auto-recovered:`-prefixed log so NotificationService proactively cancels
+    // the pending failure timer (recoveredStatus path), not just suppress it at
+    // fire time. Prefix is the documented self-healing recovery contract.
+    expect(logText(store)).toContain("Auto-recovered: cleared stale pause-abort failure on todo re-queue");
   });
 
   it("STILL parks a non-todo (in-review) pause-abort as operator-action failed", async () => {

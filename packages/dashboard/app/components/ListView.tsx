@@ -23,6 +23,7 @@ import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from ".
 import { subscribeSse } from "../sse-bus";
 import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
+import { readBoardWorkflowsCache, writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 
 const COLUMN_COLOR_MAP: Record<Column, string> = {
   triage: "var(--triage)",
@@ -218,11 +219,11 @@ interface ListViewProps {
   /**
    * Called when the user clicks the "Plan" button in the quick entry box.
    */
-  onPlanningMode?: (initialPlan: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
   /**
    * Called when the user clicks the "Subtask" button in the quick entry box.
    */
-  onSubtaskBreakdown?: (description: string) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   /**
    * Called when tasks are updated (e.g., after bulk model update).
    * Allows parent to refresh task list or handle optimistically.
@@ -241,6 +242,8 @@ interface ListViewProps {
   prAuthAvailable?: boolean;
   autoMerge?: boolean;
   onCreateWorkflow?: () => void;
+  workflowColumnsEnabled?: boolean;
+  settingsLoaded?: boolean;
 }
 
 const LEGACY_LIST_COLUMNS: BoardWorkflowColumn[] = COLUMNS.map((column) => ({
@@ -305,6 +308,8 @@ export function ListView({
   prAuthAvailable,
   autoMerge,
   onCreateWorkflow,
+  workflowColumnsEnabled,
+  settingsLoaded,
 }: ListViewProps) {
   const { t } = useTranslation("app");
   const columnLabel = useColumnLabel();
@@ -313,7 +318,16 @@ export function ListView({
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<ColumnId | null>(null);
   const [selectedColumn, setSelectedColumn] = useState<ColumnId | null>(null);
-  const [boardWorkflows, setBoardWorkflows] = useState<BoardWorkflowsPayload | null>(null);
+  /*
+  FNXC:BoardWorkflows 2026-06-20-09:07:
+  ListView shares the board-workflows first-paint invariant with Board: hydrate per-project workflow metadata from sessionStorage and gate legacy list columns while workflowColumns settings or uncached lane metadata are still unknown.
+  */
+  const shouldHydrateBoardWorkflowsCache = workflowColumnsEnabled === true || settingsLoaded === false;
+  const [boardWorkflowsState, setBoardWorkflowsState] = useState<{ projectId?: string; payload: BoardWorkflowsPayload } | null>(() => {
+    const cached = shouldHydrateBoardWorkflowsCache ? readBoardWorkflowsCache(projectId) : null;
+    return cached ? { projectId, payload: cached } : null;
+  });
+  const boardWorkflows = boardWorkflowsState?.projectId === projectId && boardWorkflowsState ? boardWorkflowsState.payload : null;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const viewportMode = useViewportMode();
   const isMobile = viewportMode === "mobile";
@@ -394,15 +408,23 @@ export function ListView({
   }, [projectId, tasks]);
 
   useEffect(() => {
+    const cached = shouldHydrateBoardWorkflowsCache ? readBoardWorkflowsCache(projectId) : null;
+    setBoardWorkflowsState(cached ? { projectId, payload: cached } : null);
+  }, [projectId, shouldHydrateBoardWorkflowsCache]);
+
+  useEffect(() => {
     const runFetch = () => {
       const seq = ++boardWorkflowsFetchSeqRef.current;
       fetchBoardWorkflows(projectId)
         .then((payload) => {
-          if (seq === boardWorkflowsFetchSeqRef.current) setBoardWorkflows(payload);
+          if (seq === boardWorkflowsFetchSeqRef.current) {
+            setBoardWorkflowsState({ projectId, payload });
+            writeBoardWorkflowsCache(projectId, payload);
+          }
         })
         .catch(() => {
           if (seq === boardWorkflowsFetchSeqRef.current) {
-            setBoardWorkflows({ flagEnabled: false, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} });
+            setBoardWorkflowsState({ projectId, payload: { flagEnabled: false, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} } });
           }
         });
     };
@@ -1689,6 +1711,22 @@ export function ListView({
     </div>
   );
 
+  const renderListWorkflowSkeleton = (empty = false) => (
+    <div className="list-view list-view--workflow-skeleton" aria-busy={!empty} aria-label={empty ? t("listView.noWorkflowLanes", "No workflow lanes available") : t("listView.loadingWorkflowLanes", "Loading workflow lanes")} data-testid={empty ? "list-workflows-empty" : "list-workflows-skeleton"}>
+      <div className="list-view-header">
+        <div>
+          <h2>{t("listView.title", "List View")}</h2>
+          <p className="list-subtitle">{empty ? t("listView.noWorkflowLanes", "No workflow lanes available") : t("listView.loadingWorkflowLanes", "Loading workflow lanes")}</p>
+        </div>
+      </div>
+      <div className="list-workflow-skeleton card" aria-hidden="true">
+        <div className="list-workflow-skeleton__row list-workflow-skeleton__row--header" />
+        <div className="list-workflow-skeleton__row" />
+        <div className="list-workflow-skeleton__row list-workflow-skeleton__row--short" />
+      </div>
+    </div>
+  );
+
   const renderBulkEditToolbars = () => (
     <>
       <div className="bulk-edit-toolbar">
@@ -1769,6 +1807,14 @@ export function ListView({
       ) : null}
     </>
   );
+
+  const shouldGateLegacyList = boardWorkflows === null
+    ? (workflowColumnsEnabled === true || settingsLoaded === false)
+    : boardWorkflows.flagEnabled === true && boardWorkflows.workflows.length === 0;
+
+  if (shouldGateLegacyList) {
+    return renderListWorkflowSkeleton(boardWorkflows?.flagEnabled === true);
+  }
 
   return (
     <div className="list-view">

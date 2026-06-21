@@ -1802,6 +1802,40 @@ describe("TaskChatTab", () => {
     expectComposerSendableAfterDraft();
   });
 
+  it.each([undefined, "planning", "merging", "merging-fix"])(
+    "treats an actively-executing in-progress task as an active session even without an assignment (ephemeral mode): %s status",
+    (status) => {
+      // In the default ephemeral-agents mode the scheduler never writes
+      // assignedAgentId/checkedOutBy, so a running in-progress task has no
+      // assignment field yet IS being worked. It must NOT show the idle
+      // "no agent is working" hint.
+      render(
+        <TaskChatTab
+          task={makeTask({ column: "in-progress", status, assignedAgentId: undefined, checkedOutBy: undefined })}
+          active
+          addToast={vi.fn()}
+          sessionLive={false}
+        />,
+      );
+
+      expectActiveSessionCopy();
+      expect(screen.getByLabelText("Message active agent session")).not.toBeDisabled();
+    },
+  );
+
+  it("keeps a queued (waiting) unassigned in-progress task idle in ephemeral mode", () => {
+    render(
+      <TaskChatTab
+        task={makeTask({ column: "in-progress", status: "queued", assignedAgentId: undefined, checkedOutBy: undefined })}
+        active
+        addToast={vi.fn()}
+        sessionLive={false}
+      />,
+    );
+
+    expectIdleSessionHint();
+  });
+
   it.each(["busy", "ready", "starting", "waitingOnInput"] as const)("treats %s CLI sessions as live", (agentState) => {
     expect(isCliSessionLive(makeCliSession(agentState))).toBe(true);
   });
@@ -1942,7 +1976,9 @@ describe("TaskChatTab", () => {
     ["in-progress task without an assigned or checked-out agent", makeTask({ column: "in-progress", status: "queued", assignedAgentId: undefined, checkedOutBy: undefined })],
     ["paused in-progress task", makeTask({ column: "in-progress", status: "queued", paused: true })],
     ["user-paused in-progress task", makeTask({ column: "in-progress", status: "queued", userPaused: true })],
-    ["in-review task without an assigned or checked-out agent", makeTask({ column: "in-review", status: "reviewing", assignedAgentId: undefined, checkedOutBy: undefined })],
+    // Paused early-return must win over the ephemeral executionImpliesActiveAgent path:
+    // a paused/unassigned in-progress task in an otherwise-active status stays idle.
+    ["paused unassigned in-progress task in an active status", makeTask({ column: "in-progress", status: "planning", paused: true, assignedAgentId: undefined, checkedOutBy: undefined })],
     ["paused in-review task", makeTask({ column: "in-review", status: "reviewing", paused: true })],
     ["user-paused in-review task", makeTask({ column: "in-review", status: "reviewing", userPaused: true })],
   ])("keeps the composer sendable with idle guidance for %s", (_label, task) => {
@@ -1950,6 +1986,39 @@ describe("TaskChatTab", () => {
 
     expectIdleSessionHint();
     expectComposerSendableAfterDraft();
+  });
+
+  it.each(["reviewing", "merging", "merging-fix", "fixing"])(
+    "treats an actively-reviewing in-review task as an active session even without an assignment (ephemeral mode): %s status",
+    (status) => {
+      // A reviewer/merger runs ephemerally with no assignedAgentId/checkedOutBy,
+      // so an in-review task in an active review/merge status must NOT show the
+      // idle "no agent is working" hint.
+      render(
+        <TaskChatTab
+          task={makeTask({ column: "in-review", status, assignedAgentId: undefined, checkedOutBy: undefined })}
+          active
+          addToast={vi.fn()}
+          sessionLive={false}
+        />,
+      );
+
+      expectActiveSessionCopy();
+      expect(screen.getByLabelText("Message active agent session")).not.toBeDisabled();
+    },
+  );
+
+  it("keeps a null-status in-review task (awaiting human review) idle without an assignment", () => {
+    render(
+      <TaskChatTab
+        task={makeTask({ column: "in-review", status: undefined, assignedAgentId: undefined, checkedOutBy: undefined })}
+        active
+        addToast={vi.fn()}
+        sessionLive={false}
+      />,
+    );
+
+    expectIdleSessionHint();
   });
 
   it.each([

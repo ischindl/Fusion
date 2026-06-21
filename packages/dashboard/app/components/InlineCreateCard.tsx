@@ -39,11 +39,11 @@ interface InlineCreateCardProps {
   /**
    * Called when the user clicks the "Plan" button to open planning mode.
    */
-  onPlanningMode?: (initialPlan: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
   /**
    * Called when the user clicks the "Subtask" button to trigger subtask breakdown.
    */
-  onSubtaskBreakdown?: (description: string) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
 }
 
 function getNodeStatusLabel(status: NodeInfo["status"], t?: (key: string, defaultValue: string) => string): string {
@@ -693,7 +693,11 @@ export function InlineCreateCard({
       addToast(t("inline.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    onPlanningMode?.(trimmed);
+    if (selectedWorkflowId !== null) {
+      onPlanningMode?.(trimmed, selectedWorkflowId);
+    } else {
+      onPlanningMode?.(trimmed);
+    }
     // Clear the input after triggering planning mode
     setDescription("");
     setSelectedWorkflowId(null);
@@ -713,7 +717,7 @@ export function InlineCreateCard({
     setIsModelModalOpen(false);
     setShowPresets(false);
     setIsExpanded(false);
-  }, [description, onPlanningMode, addToast]);
+  }, [description, onPlanningMode, selectedWorkflowId, addToast]);
 
   const handleSubtaskClick = useCallback(() => {
     const trimmed = description.trim();
@@ -721,7 +725,11 @@ export function InlineCreateCard({
       addToast(t("inline.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    onSubtaskBreakdown?.(trimmed);
+    if (selectedWorkflowId !== null) {
+      onSubtaskBreakdown?.(trimmed, selectedWorkflowId);
+    } else {
+      onSubtaskBreakdown?.(trimmed);
+    }
     // Clear the input after triggering subtask breakdown
     setDescription("");
     setSelectedWorkflowId(null);
@@ -741,7 +749,7 @@ export function InlineCreateCard({
     setIsModelModalOpen(false);
     setShowPresets(false);
     setIsExpanded(false);
-  }, [description, onSubtaskBreakdown, addToast]);
+  }, [description, onSubtaskBreakdown, selectedWorkflowId, addToast]);
 
   const truncate = (s: string, len: number) =>
     s.length > len ? s.slice(0, len) + "…" : s;

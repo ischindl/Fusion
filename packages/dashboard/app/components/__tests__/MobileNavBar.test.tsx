@@ -45,11 +45,25 @@ function expectUniformMobileNavColumns(container: HTMLElement, expectedTabCount:
   expect(tabs).toHaveLength(expectedTabCount);
 
   const tabRule = extractRuleBlock(mobileNavCss, ".mobile-nav-tab");
+  expect(tabRule).toContain("--mobile-nav-icon-size: calc(var(--space-lg) + var(--space-sm) - (var(--space-xs) / 2))");
   expect(tabRule).toContain("flex: 1 1 0");
   expect(tabRule).toContain("min-width: 0");
   expect(tabRule).toContain("align-items: center");
   expect(tabRule).toMatch(/padding:\s*[^;]+\s+0;/);
   expect(tabRule).not.toMatch(/margin-left|margin-right/);
+
+  const iconRule = extractRuleBlock(mobileNavCss, ".mobile-nav-tab svg");
+  expect(iconRule).toContain("width: var(--mobile-nav-icon-size)");
+  expect(iconRule).toContain("height: var(--mobile-nav-icon-size)");
+
+  const iconWrapperRule = extractRuleBlock(mobileNavCss, ".mobile-nav-tab-icon-wrapper");
+  expect(iconWrapperRule).toContain("position: relative");
+  expect(iconWrapperRule).toContain("display: flex");
+  expect(iconWrapperRule).toContain("flex: 0 0 var(--mobile-nav-icon-size)");
+  expect(iconWrapperRule).toContain("align-items: center");
+  expect(iconWrapperRule).toContain("justify-content: center");
+  expect(iconWrapperRule).toContain("width: var(--mobile-nav-icon-size)");
+  expect(iconWrapperRule).toContain("height: var(--mobile-nav-icon-size)");
 
   const labelRule = extractRuleBlock(mobileNavCss, ".mobile-nav-tab-label");
   expect(labelRule).toContain("width: 100%");
@@ -59,6 +73,10 @@ function expectUniformMobileNavColumns(container: HTMLElement, expectedTabCount:
   for (const tab of tabs) {
     expect(tab.className).toContain("mobile-nav-tab");
     expect(tab.querySelector(".mobile-nav-tab-label")).toBeInTheDocument();
+    const iconSlots = tab.querySelectorAll(":scope > .mobile-nav-tab-icon-wrapper");
+    expect(iconSlots).toHaveLength(1);
+    expect(tab.querySelector(":scope > svg")).toBeNull();
+    expect(iconSlots[0].querySelector("svg")).toBeInTheDocument();
   }
 
   if (container.querySelector(".mobile-nav-tab-badge")) {
@@ -66,7 +84,11 @@ function expectUniformMobileNavColumns(container: HTMLElement, expectedTabCount:
   }
 
   if (container.querySelector(".mobile-nav-chat-unread-dot")) {
-    expect(extractRuleBlock(mobileNavCss, ".mobile-nav-chat-unread-dot")).toContain("position: absolute");
+    const dotRule = extractRuleBlock(mobileNavCss, ".mobile-nav-chat-unread-dot");
+    expect(dotRule).toContain("position: absolute");
+    expect(dotRule).toContain("top: 0");
+    expect(dotRule).toContain("right: 0");
+    expect(dotRule).not.toContain("*-1");
   }
 }
 

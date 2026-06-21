@@ -217,7 +217,7 @@ describe("FN-4811: active worktree removal liveness gate", () => {
       expect(execCalls.some((c) => c.includes('git branch -D "fusion/fn-9999"'))).toBe(true);
       // Must have logged the stale-path cleanup outcome — NOT the generic failure log.
       const logCalls = store.logEntry.mock.calls.map((c: any[]) => String(c[1] ?? ""));
-      expect(logCalls.some((m: string) => m.includes("Cleaned up stale conflicting worktree admin entry"))).toBe(true);
+      expect(logCalls.some((m: string) => m.includes("Cleaned up stale conflicting worktree"))).toBe(true);
       expect(logCalls.some((m: string) => m === "Failed to clean up conflicting worktree")).toBe(false);
     });
   });

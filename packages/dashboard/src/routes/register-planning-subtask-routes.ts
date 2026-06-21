@@ -22,6 +22,27 @@ interface PlanningSubtaskRouteDeps {
   replayBufferedSSE: (res: import("express").Response, bufferedEvents: SessionBufferedEvent[]) => boolean;
 }
 
+function rethrowPlanningWorkflowCreateError(
+  err: unknown,
+  fallbackMessage: string,
+  rethrowAsApiError: ApiRoutesContext["rethrowAsApiError"],
+): never {
+  if (err instanceof ApiError) {
+    throw err;
+  }
+
+  const message = err instanceof Error ? err.message : String(err || fallbackMessage);
+  const isWorkflowClientError =
+    /^Workflow '.*' not found$/.test(message)
+    || /is a fragment and cannot be selected/.test(message);
+
+  if (isWorkflowClientError) {
+    throw new ApiError(400, message);
+  }
+
+  rethrowAsApiError(err, fallbackMessage);
+}
+
 export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: PlanningSubtaskRouteDeps): void {
   const { router, getProjectContext, planningLogger, rethrowAsApiError } = ctx;
   const { aiSessionStore, checkSessionLock, parseLastEventId, replayBufferedSSE } = deps;
@@ -173,7 +194,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
   router.post("/subtasks/create-tasks", async (req, res) => {
     try {
-      const { sessionId, subtasks, parentTaskId, branch, baseBranch, branchSelection, branchAssignment } = req.body as {
+      const { sessionId, subtasks, parentTaskId, branch, baseBranch, branchSelection, branchAssignment, workflowId } = req.body as {
         sessionId?: string;
         subtasks?: Array<{ tempId: string; title: string; description: string; size?: "S" | "M" | "L"; dependsOn?: string[] }>;
         parentTaskId?: string;
@@ -181,6 +202,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         baseBranch?: unknown;
         branchSelection?: unknown;
         branchAssignment?: unknown;
+        workflowId?: unknown;
       };
 
       if (!sessionId || typeof sessionId !== "string") {
@@ -189,6 +211,10 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
       if (!Array.isArray(subtasks) || subtasks.length === 0) {
         throw badRequest("subtasks must be a non-empty array");
+      }
+
+      if (workflowId !== undefined && workflowId !== null && typeof workflowId !== "string") {
+        throw badRequest("workflowId must be a string or null");
       }
 
       const { store: scopedStore } = await getProjectContext(req);
@@ -271,6 +297,11 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           branch: taskBranch,
           baseBranch: resolvedBaseBranch,
           branchContext: planningBranchContext,
+          /*
+          FNXC:WorkflowSelection 2026-06-20-16:48:
+          Tasks created from a workflow lane via subtask breakdown must stay on that active workflow instead of falling back to the project default board.
+          */
+          ...(workflowId !== undefined ? { workflowId: workflowId as string | null } : {}),
         });
 
         tempIdToTaskId.set(item.tempId, task.id);
@@ -362,10 +393,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         droppedDependencies,
       });
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        throw err;
-      }
-      rethrowAsApiError(err, "Failed to create tasks from breakdown");
+      rethrowPlanningWorkflowCreateError(err, "Failed to create tasks from breakdown", rethrowAsApiError);
     }
   });
 
@@ -1025,16 +1053,21 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
    */
   router.post("/planning/create-task", async (req, res) => {
     try {
-      const { sessionId, summary: summaryInput, branch, baseBranch, branchSelection } = req.body as {
+      const { sessionId, summary: summaryInput, branch, baseBranch, branchSelection, workflowId } = req.body as {
         sessionId?: unknown;
         summary?: unknown;
         branch?: unknown;
         baseBranch?: unknown;
         branchSelection?: unknown;
+        workflowId?: unknown;
       };
 
       if (!sessionId || typeof sessionId !== "string") {
         throw badRequest("sessionId is required");
+      }
+
+      if (workflowId !== undefined && workflowId !== null && typeof workflowId !== "string") {
+        throw badRequest("workflowId must be a string or null");
       }
 
       const summaryOverride = parsePlanningSummaryOverride(summaryInput);
@@ -1135,6 +1168,11 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         source: { sourceType: "api" },
         branch: resolvedBranch,
         baseBranch: resolvedBaseBranch,
+        /*
+        FNXC:WorkflowSelection 2026-06-20-16:48:
+        Planning Mode creates tasks from the board context, so an active workflow lane must be materialized at create time when the client supplies it.
+        */
+        ...(workflowId !== undefined ? { workflowId: workflowId as string | null } : {}),
       });
 
       // Update task with suggested size if provided.
@@ -1164,10 +1202,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
       res.status(201).json(task);
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        throw err;
-      }
-      rethrowAsApiError(err, "Failed to create task");
+      rethrowPlanningWorkflowCreateError(err, "Failed to create task", rethrowAsApiError);
     }
   });
 
@@ -1229,7 +1264,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
    */
   router.post("/planning/create-tasks", async (req, res) => {
     try {
-      const { planningSessionId, subtasks, branch, baseBranch, branchSelection, branchAssignment } = req.body as {
+      const { planningSessionId, subtasks, branch, baseBranch, branchSelection, branchAssignment, workflowId } = req.body as {
         planningSessionId?: string;
         subtasks?: Array<{
           id: string;
@@ -1243,6 +1278,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         baseBranch?: unknown;
         branchSelection?: unknown;
         branchAssignment?: unknown;
+        workflowId?: unknown;
       };
 
       if (!planningSessionId || typeof planningSessionId !== "string") {
@@ -1251,6 +1287,10 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
       if (!Array.isArray(subtasks) || subtasks.length === 0) {
         throw badRequest("subtasks must be a non-empty array");
+      }
+
+      if (workflowId !== undefined && workflowId !== null && typeof workflowId !== "string") {
+        throw badRequest("workflowId must be a string or null");
       }
 
       const { store: scopedStore } = await getProjectContext(req);
@@ -1364,6 +1404,11 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           branch: taskBranch,
           baseBranch: resolvedBaseBranch,
           branchContext: planningBranchContext,
+          /*
+          FNXC:WorkflowSelection 2026-06-20-16:48:
+          Multi-task Planning Mode creation must apply the selected workflow to every generated child so saved tasks do not jump to the main board first.
+          */
+          ...(workflowId !== undefined ? { workflowId: workflowId as string | null } : {}),
         });
 
         tempIdToTaskId.set(item.id, task.id);
@@ -1411,10 +1456,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
       res.status(201).json({ tasks: createdTasks });
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        throw err;
-      }
-      rethrowAsApiError(err, "Failed to create tasks from planning");
+      rethrowPlanningWorkflowCreateError(err, "Failed to create tasks from planning", rethrowAsApiError);
     }
   });
 

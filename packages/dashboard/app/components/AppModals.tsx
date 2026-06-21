@@ -359,6 +359,7 @@ export function AppModals({
           tasks={tasks}
           initialPlan={modalManager.planningInitialPlan ?? undefined}
           projectId={projectId}
+          workflowId={modalManager.planningWorkflowId}
           resumeSessionId={modalManager.planningResumeSessionId}
         />
       </ModalErrorBoundary>
@@ -370,6 +371,7 @@ export function AppModals({
           initialDescription={modalManager.subtaskInitialDescription ?? ""}
           onTasksCreated={taskHandlers.handleSubtaskTasksCreated}
           projectId={projectId}
+          workflowId={modalManager.subtaskWorkflowId}
           resumeSessionId={modalManager.subtaskResumeSessionId}
           onOpenGroupModal={openGroupModalWithNav}
         />

@@ -121,11 +121,11 @@ interface ColumnProps {
   /**
    * Called when the user clicks the "Plan" button in the inline create card.
    */
-  onPlanningMode?: (initialPlan: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
   /**
    * Called when the user clicks the "Subtask" button in the inline create card.
    */
-  onSubtaskBreakdown?: (description: string) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "changes" | "retries" | "workflow") => void;
   favoriteProviders?: string[];
   favoriteModels?: string[];
@@ -689,6 +689,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
               availableModels={availableModels}
               onPlanningMode={onPlanningMode}
               onSubtaskBreakdown={onSubtaskBreakdown}
+              workflowId={workflowMode ? workflowId : undefined}
               projectId={projectId}
               autoExpand={false}
               favoriteProviders={favoriteProviders}

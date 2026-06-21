@@ -16,18 +16,23 @@ The experimental sidebar is a persistent desktop/tablet navigation replacement f
   color: var(--text);
 }
 
-.left-sidebar-nav__brand {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border-bottom: 1px solid var(--border);
-  min-height: calc(var(--space-2xl) + var(--space-xl));
-}
-
 .left-sidebar-nav__collapse-toggle {
   flex-shrink: 0;
+}
+
+.left-sidebar-nav__collapse-toggle--floating {
+  position: absolute;
+  top: var(--space-sm);
+  right: calc((var(--space-lg) + var(--space-xs)) * -1);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(var(--space-lg) + var(--space-md));
+  min-height: calc(var(--space-lg) + var(--space-md));
+  padding: var(--space-xs);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-sm);
 }
 
 .left-sidebar-nav__list {
@@ -166,15 +171,10 @@ The experimental sidebar is a persistent desktop/tablet navigation replacement f
   display: none;
 }
 
-.left-sidebar-nav--collapsed .left-sidebar-nav__brand,
 .left-sidebar-nav--collapsed .left-sidebar-nav__item {
   justify-content: center;
   padding-right: 0;
   padding-left: 0;
-}
-
-.left-sidebar-nav--collapsed .left-sidebar-nav__collapse-toggle {
-  width: auto;
 }
 
 @media (max-width: 768px) {

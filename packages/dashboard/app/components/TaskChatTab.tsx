@@ -53,6 +53,11 @@ const STEERING_BLOCKED_STATUSES = new Set([
   "needs-replan",
 ]);
 const REVIEW_STEERABLE_STATUSES = new Set(["reviewing", "merging", "merging-fix", "fixing"]);
+// The scheduler's waiting/blocked marker for a not-yet-dispatched task
+// (self-healing.ts documents `status: "queued"` as the blocked marker). A queued
+// in-progress row has no agent executing yet, so it stays assignment-gated rather
+// than counting as an implied active session.
+const SCHEDULER_WAITING_STATUS = "queued";
 const BOTTOM_FOLLOW_THRESHOLD = 48;
 const TOP_LOAD_THRESHOLD = 48;
 
@@ -172,8 +177,24 @@ function isActiveAgentSession(task: Task | TaskDetail, opts: { sessionLive?: boo
   const statusAllowsReviewSteering = !task.status || REVIEW_STEERABLE_STATUSES.has(task.status);
   const columnAllowsSteering = (task.column === "in-progress" && statusAllowsProgressSteering)
     || (task.column === "in-review" && statusAllowsReviewSteering);
+  // FNXC:TaskDetailChat 2026-06-20-20:10:
+  // In the default ephemeral-agents mode the scheduler never writes
+  // `assignedAgentId`/`checkedOutBy` — those are only set when
+  // `ephemeralAgentsEnabled === false` (scheduler.ts). An actively-executing
+  // task therefore has no assignment field yet IS being worked, so requiring
+  // `hasAssignedAgent` made the chat always show "no agent is working" for
+  // default-mode tasks. Treat assignment as sufficient-but-not-necessary:
+  // - in-progress with a non-blocked, non-`queued` status is an executing run
+  //   (`queued` is the documented waiting marker, self-healing.ts — it stays
+  //   assignment-gated);
+  // - in-review with an active review/merge status (REVIEW_STEERABLE_STATUSES)
+  //   has a reviewer/merger running. A null-status in-review row is awaiting
+  //   human review, not actively worked, so it stays assignment-gated and idle.
+  const executionImpliesActiveAgent =
+    (task.column === "in-progress" && statusAllowsProgressSteering && task.status !== SCHEDULER_WAITING_STATUS)
+    || (task.column === "in-review" && task.status != null && REVIEW_STEERABLE_STATUSES.has(task.status));
   return columnAllowsSteering
-    && hasAssignedAgent;
+    && (hasAssignedAgent || executionImpliesActiveAgent);
 }
 
 function isToolLikeEntry(entry: AgentLogEntry): boolean {

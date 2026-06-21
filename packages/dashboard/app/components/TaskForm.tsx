@@ -127,8 +127,8 @@ export interface TaskFormProps {
   onGithubRepoOverrideChange?: (value: string) => void;
 
   // AI-assisted creation callbacks (create mode only)
-  onPlanningMode?: (initialPlan: string) => void;
-  onSubtaskBreakdown?: (description: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   onClose?: () => void;
 
   /** Optional content to render between the primary section and the "More options" toggle. */

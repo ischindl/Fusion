@@ -396,22 +396,20 @@ export function LeftSidebarNav({
       style={isCollapsed ? undefined : { width: sidebarWidth, minWidth: sidebarWidth }}
     >
       {/*
-      FNXC:Navigation 2026-06-20-00:00:
-      The sidebar no longer renders its own Fusion logo, wordmark, or project dropdown because those affordances already live in the top Header. Keep this brand row as the collapse control host so expanded and rail states retain a reachable toggle without leaving empty logo/project shells.
+      FNXC:Navigation 2026-06-20-12:00:
+      The sidebar collapse affordance must not consume a dedicated brand row now that logo, wordmark, and project controls live in Header. Float the single toggle on the resize border so expanded and rail states retain the same reachable click target without an empty header shell.
       */}
-      <div className="left-sidebar-nav__brand" data-testid="sidebar-nav-brand">
-        <button
-          type="button"
-          className="btn-icon left-sidebar-nav__collapse-toggle"
-          aria-label={isCollapsed ? t("nav.expandSidebar", "Expand sidebar") : t("nav.collapseSidebar", "Collapse sidebar")}
-          title={isCollapsed ? t("nav.expandSidebar", "Expand sidebar") : t("nav.collapseSidebar", "Collapse sidebar")}
-          aria-pressed={isCollapsed}
-          data-testid="sidebar-nav-collapse-toggle"
-          onClick={toggleCollapsed}
-        >
-          {isCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
-      </div>
+      <button
+        type="button"
+        className="btn btn-icon left-sidebar-nav__collapse-toggle left-sidebar-nav__collapse-toggle--floating"
+        aria-label={isCollapsed ? t("nav.expandSidebar", "Expand sidebar") : t("nav.collapseSidebar", "Collapse sidebar")}
+        title={isCollapsed ? t("nav.expandSidebar", "Expand sidebar") : t("nav.collapseSidebar", "Collapse sidebar")}
+        aria-pressed={isCollapsed}
+        data-testid="sidebar-nav-collapse-toggle"
+        onClick={toggleCollapsed}
+      >
+        {isCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+      </button>
 
       <nav className="left-sidebar-nav__list" aria-label={t("nav.primaryNavAriaLabel", "Primary navigation")}>
         <div className="left-sidebar-nav__section">{primaryEntries.map(renderEntry)}</div>

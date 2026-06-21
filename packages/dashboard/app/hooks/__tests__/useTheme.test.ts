@@ -551,6 +551,47 @@ describe("useTheme", () => {
     document.head.removeChild(style);
   });
 
+  it("applies representative shadcn color-family design tokens with neutralized glow effects", () => {
+    const style = document.createElement("style");
+    const baseCss = readFileSync(resolve(PACKAGE_ROOT, "app/styles.css"), "utf8");
+    const themeDataCss = readFileSync(resolve(PACKAGE_ROOT, "app/public/theme-data.css"), "utf8");
+    const shadcnVariants = [
+      { id: "shadcn-blue", accent: "#3b82f6" },
+      { id: "shadcn-mono", accent: "#ef4444" },
+      { id: "shadcn-black", accent: "#fafafa" },
+    ] as const;
+    style.textContent = `${baseCss}\n${themeDataCss}`;
+    document.head.appendChild(style);
+
+    for (const variant of shadcnVariants) {
+      const block = themeDataCss.match(
+        new RegExp(`\\[data-color-theme="${variant.id}"\\] \\{(?<body>[\\s\\S]*?)\\n\\}`),
+      )?.groups?.body;
+      expect(block).toBeDefined();
+
+      localStorageMock[COLOR_THEME_STORAGE_KEY] = variant.id;
+      renderHook(() => useTheme());
+
+      expect(document.documentElement.getAttribute("data-color-theme")).toBe(variant.id);
+      expect(block).toContain("--btn-border-width: 1px;");
+      expect(block).toContain(`--accent: ${variant.accent};`);
+      expect(block).toContain("--shadow-glow: none;");
+      expect(block).toContain("--cta-glow: none;");
+      expect(block).not.toMatch(/--(?:shadow-glow|glow-success|glow-warning|glow-danger|cta-glow):\s*0 0/);
+    }
+
+    const blueBlock = themeDataCss.match(/\[data-color-theme="shadcn-blue"\] \{(?<body>[\s\S]*?)\n\}/)?.groups
+      ?.body;
+    const blackBlock = themeDataCss.match(/\[data-color-theme="shadcn-black"\] \{(?<body>[\s\S]*?)\n\}/)
+      ?.groups?.body;
+    expect(blueBlock).toContain("--todo: #60a5fa;");
+    expect(blackBlock).toContain("--todo: #d4d4d8;");
+    expect(blackBlock).toContain("--in-progress: #a1a1aa;");
+    expect(blackBlock).not.toContain("--todo: #60a5fa;");
+
+    document.head.removeChild(style);
+  });
+
   it("supports all valid theme modes", () => {
     const { result } = renderHook(() => useTheme());
 

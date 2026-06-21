@@ -32,9 +32,11 @@ export interface ModalManager {
   isPlanningOpen: boolean;
   planningInitialPlan: string | null;
   planningResumeSessionId: string | undefined;
+  planningWorkflowId: string | null | undefined;
   isSubtaskOpen: boolean;
   subtaskInitialDescription: string | null;
   subtaskResumeSessionId: string | undefined;
+  subtaskWorkflowId: string | null | undefined;
   // Can be Task (optimistic open) or TaskDetail (full data with prompt)
   detailTask: (Task | TaskDetail) | null;
   detailTaskInitialTab: DetailTaskTab;
@@ -74,12 +76,12 @@ export interface ModalManager {
   closeNewTask: () => void;
 
   openPlanning: () => void;
-  openPlanningWithInitialPlan: (initialPlan: string) => void;
+  openPlanningWithInitialPlan: (initialPlan: string, workflowId?: string | null) => void;
   resumePlanning: () => void;
   openPlanningWithSession: (sessionId: string) => void;
   closePlanning: () => void;
 
-  openSubtaskBreakdown: (description: string) => void;
+  openSubtaskBreakdown: (description: string, workflowId?: string | null) => void;
   openSubtaskWithSession: (sessionId: string) => void;
   closeSubtask: () => void;
 
@@ -158,9 +160,11 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
   const [isPlanningOpen, setIsPlanningOpen] = useState(false);
   const [planningInitialPlan, setPlanningInitialPlan] = useState<string | null>(null);
   const [planningResumeSessionId, setPlanningResumeSessionId] = useState<string | undefined>(undefined);
+  const [planningWorkflowId, setPlanningWorkflowId] = useState<string | null | undefined>(undefined);
   const [isSubtaskOpen, setIsSubtaskOpen] = useState(false);
   const [subtaskInitialDescription, setSubtaskInitialDescription] = useState<string | null>(null);
   const [subtaskResumeSessionId, setSubtaskResumeSessionId] = useState<string | undefined>(undefined);
+  const [subtaskWorkflowId, setSubtaskWorkflowId] = useState<string | null | undefined>(undefined);
   // Can be Task (optimistic open) or TaskDetail (full data with prompt)
   const [detailTask, setDetailTask] = useState<(Task | TaskDetail) | null>(null);
   /**
@@ -229,18 +233,33 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
     setNewTaskInitialDescription(null);
   }, []);
 
-  const openPlanning = useCallback(() => setIsPlanningOpen(true), []);
-  const openPlanningWithInitialPlan = useCallback((initialPlan: string) => {
+  const openPlanning = useCallback(() => {
+    // FNXC:PlanningModals 2026-06-20-20:10:
+    // A fresh planning open must clear any resume-session id / initial plan left
+    // by a prior resumePlanning/openPlanningWith* flow; otherwise the modal reopens
+    // into the stale session or pre-fills an old plan instead of starting blank.
+    setPlanningResumeSessionId(undefined);
+    setPlanningInitialPlan(null);
+    setPlanningWorkflowId(undefined);
+    setIsPlanningOpen(true);
+  }, []);
+  const openPlanningWithInitialPlan = useCallback((initialPlan: string, workflowId?: string | null) => {
+    // FNXC:PlanningModals 2026-06-20-20:10: clear a stale resume-session id so the
+    // supplied initial plan is honored rather than being overridden by an old session.
+    setPlanningResumeSessionId(undefined);
     setPlanningInitialPlan(initialPlan);
+    setPlanningWorkflowId(workflowId);
     setIsPlanningOpen(true);
   }, []);
   const resumePlanning = useCallback(() => {
     const session = planningSessions[0];
     if (!session) return;
+    setPlanningWorkflowId(undefined);
     setPlanningResumeSessionId(session.id);
     setIsPlanningOpen(true);
   }, [planningSessions]);
   const openPlanningWithSession = useCallback((sessionId: string) => {
+    setPlanningWorkflowId(undefined);
     setPlanningResumeSessionId(sessionId);
     setIsPlanningOpen(true);
   }, []);
@@ -248,13 +267,19 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
     setIsPlanningOpen(false);
     setPlanningInitialPlan(null);
     setPlanningResumeSessionId(undefined);
+    setPlanningWorkflowId(undefined);
   }, []);
 
-  const openSubtaskBreakdown = useCallback((description: string) => {
+  const openSubtaskBreakdown = useCallback((description: string, workflowId?: string | null) => {
+    // FNXC:PlanningModals 2026-06-20-20:10: clear a stale subtask resume-session id
+    // so a new breakdown starts fresh rather than reopening a prior session.
+    setSubtaskResumeSessionId(undefined);
     setSubtaskInitialDescription(description);
+    setSubtaskWorkflowId(workflowId);
     setIsSubtaskOpen(true);
   }, []);
   const openSubtaskWithSession = useCallback((sessionId: string) => {
+    setSubtaskWorkflowId(undefined);
     setSubtaskResumeSessionId(sessionId);
     setIsSubtaskOpen(true);
   }, []);
@@ -262,6 +287,7 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
     setIsSubtaskOpen(false);
     setSubtaskInitialDescription(null);
     setSubtaskResumeSessionId(undefined);
+    setSubtaskWorkflowId(undefined);
   }, []);
 
   /**
@@ -423,9 +449,11 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
     isPlanningOpen,
     planningInitialPlan,
     planningResumeSessionId,
+    planningWorkflowId,
     isSubtaskOpen,
     subtaskInitialDescription,
     subtaskResumeSessionId,
+    subtaskWorkflowId,
     detailTask,
     detailTaskInitialTab,
     detailTaskOrigin,

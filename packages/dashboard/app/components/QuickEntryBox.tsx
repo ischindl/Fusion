@@ -32,11 +32,13 @@ interface QuickEntryBoxProps {
   /**
    * Called when the user clicks the "Plan" button to open planning mode.
    */
-  onPlanningMode?: (initialPlan: string) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
   /**
    * Called when the user clicks the "Subtask" button to trigger subtask breakdown.
    */
-  onSubtaskBreakdown?: (description: string) => void;
+  onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
+  /** Selected workflow lane for AI-assisted create actions. Omit in legacy board mode to preserve project-default inheritance. */
+  workflowId?: string | null;
   /** Optional project context for API calls */
   projectId?: string;
   /**
@@ -88,7 +90,7 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
   };
 }
 
-export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, projectId, autoExpand = true, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
+export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, workflowId, projectId, autoExpand = true, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
   const { t } = useTranslation("app");
   const [description, setDescription] = useState(() => {
     if (typeof window !== "undefined") {
@@ -1343,10 +1345,14 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    onPlanningMode?.(trimmed);
+    if (workflowId !== undefined) {
+      onPlanningMode?.(trimmed, workflowId);
+    } else {
+      onPlanningMode?.(trimmed);
+    }
     // Clear the form after triggering planning mode
     resetForm();
-  }, [description, onPlanningMode, addToast, resetForm]);
+  }, [description, onPlanningMode, workflowId, addToast, resetForm]);
 
   const handleSubtaskClick = useCallback(() => {
     const trimmed = description.trim();
@@ -1354,10 +1360,14 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    onSubtaskBreakdown?.(trimmed);
+    if (workflowId !== undefined) {
+      onSubtaskBreakdown?.(trimmed, workflowId);
+    } else {
+      onSubtaskBreakdown?.(trimmed);
+    }
     // Clear the form after triggering subtask breakdown
     resetForm();
-  }, [description, onSubtaskBreakdown, addToast, resetForm]);
+  }, [description, onSubtaskBreakdown, workflowId, addToast, resetForm]);
 
   const handleSaveClick = useCallback(() => {
     // Save button now creates the task (same as Enter key)

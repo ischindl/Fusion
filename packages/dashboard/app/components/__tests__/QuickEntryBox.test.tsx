@@ -2332,6 +2332,40 @@ describe("QuickEntryBox", () => {
       expect((textarea as HTMLTextAreaElement).value).toBe("");
     });
 
+    it.each([
+      { label: "Plan", buttonId: "plan-button", callbackProp: "onPlanningMode" as const },
+      { label: "Subtask", buttonId: "subtask-button", callbackProp: "onSubtaskBreakdown" as const },
+    ])("passes selected workflow id through %s quick-entry handoff", async ({ buttonId, callbackProp }) => {
+      const onPlanningMode = vi.fn();
+      const onSubtaskBreakdown = vi.fn();
+      renderQuickEntryBox({ onPlanningMode, onSubtaskBreakdown, workflowId: "WF-123" });
+      expandQuickEntry();
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      fireEvent.change(textarea, { target: { value: "Create in custom workflow" } });
+      fireEvent.click(screen.getByTestId(buttonId));
+
+      await waitFor(() => {
+        expect(callbackProp === "onPlanningMode" ? onPlanningMode : onSubtaskBreakdown)
+          .toHaveBeenCalledWith("Create in custom workflow", "WF-123");
+      });
+    });
+
+    it("omits workflow id in legacy quick-entry handoff", async () => {
+      const onPlanningMode = vi.fn();
+      renderQuickEntryBox({ onPlanningMode });
+      expandQuickEntry();
+      const textarea = screen.getByTestId("quick-entry-input");
+
+      fireEvent.change(textarea, { target: { value: "Create with default workflow" } });
+      fireEvent.click(screen.getByTestId("plan-button"));
+
+      await waitFor(() => {
+        expect(onPlanningMode).toHaveBeenCalledWith("Create with default workflow");
+      });
+      expect(onPlanningMode.mock.calls[0]).toHaveLength(1);
+    });
+
     it("disables Plan and Subtask buttons when description is empty", () => {
       renderQuickEntryBox({});
       expandQuickEntry();
