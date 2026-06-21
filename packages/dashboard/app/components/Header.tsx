@@ -928,19 +928,6 @@ export function Header({
           </button>
         )}
 
-        {/* Desktop/Tablet Search Toggle - show icon when search is available but hidden */}
-        {canShowNonMobileSearchToggle && (
-          <button
-            className="btn-icon"
-            onClick={handleNonMobileSearchToggle}
-            title={t("header.openSearch", "Open search")}
-            aria-label={t("header.openSearch", "Open search")}
-            data-testid="desktop-header-search-btn"
-          >
-            <Search size={16} />
-          </button>
-        )}
-
         {/* Usage button on mobile when mobile bottom nav is active */}
         {isMobile && hideFullNav && onOpenUsage && (
           <button
@@ -959,6 +946,22 @@ export function Header({
             className="header-workflow-slot"
             data-testid="header-workflow-slot"
           />
+        )}
+
+        {/**
+         * FNXC:Header 2026-06-21-00:00:
+         * Desktop and tablet header search must render after the workflow portal slot so a populated WorkflowSwitcher appears left of the search icon while preserving the mobile search trigger's existing position and behavior.
+         */}
+        {canShowNonMobileSearchToggle && (
+          <button
+            className="btn-icon"
+            onClick={handleNonMobileSearchToggle}
+            title={t("header.openSearch", "Open search")}
+            aria-label={t("header.openSearch", "Open search")}
+            data-testid="desktop-header-search-btn"
+          >
+            <Search size={16} />
+          </button>
         )}
 
         {/* View Toggle - always inline, even on mobile */}

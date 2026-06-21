@@ -1076,6 +1076,39 @@ describe("Header", () => {
       expect(screen.getByTestId("desktop-header-search-btn")).toBeDefined();
     });
 
+    it("renders the desktop search toggle after the empty workflow portal slot", () => {
+      renderHeader({ onSearchChange: vi.fn(), onChangeView: noop, view: "board", leftSidebarNavActive: true }, "desktop");
+      const workflowSlot = screen.getByTestId("header-workflow-slot");
+      const searchToggle = screen.getByTestId("desktop-header-search-btn");
+
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
+      expect(workflowSlot.compareDocumentPosition(searchToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps the desktop search toggle after a populated workflow portal slot", () => {
+      renderHeader({ onSearchChange: vi.fn(), onChangeView: noop, view: "board", leftSidebarNavActive: true }, "desktop");
+      const workflowSlot = screen.getByTestId("header-workflow-slot");
+      const workflowSwitcher = document.createElement("button");
+      workflowSwitcher.type = "button";
+      workflowSwitcher.dataset.testid = "mock-workflow-switcher";
+      workflowSwitcher.textContent = "Coding workflow";
+      workflowSlot.appendChild(workflowSwitcher);
+      const searchToggle = screen.getByTestId("desktop-header-search-btn");
+
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
+      expect(workflowSlot.compareDocumentPosition(searchToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(workflowSwitcher.compareDocumentPosition(searchToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps the tablet search toggle after the workflow portal slot", () => {
+      renderHeader({ onSearchChange: vi.fn(), onChangeView: noop, view: "board", leftSidebarNavActive: true }, "tablet");
+      const workflowSlot = screen.getByTestId("header-workflow-slot");
+      const searchToggle = screen.getByTestId("desktop-header-search-btn");
+
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
+      expect(workflowSlot.compareDocumentPosition(searchToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it("does not render search toggle when view is 'agents'", () => {
       renderHeader({ onSearchChange: vi.fn(), view: "agents" });
       expect(screen.queryByTestId("desktop-header-search-btn")).toBeNull();
@@ -1371,9 +1404,14 @@ describe("Header", () => {
     it("can open mobile search when mobileNavEnabled is true", () => {
       renderHeader({ view: "board", searchQuery: "", onSearchChange: vi.fn(), onChangeView: noop }, "mobile");
       // Should show the trigger button
-      expect(screen.getByTestId("mobile-header-search-btn")).toBeDefined();
-      // Expanded search should not be visible initially
+      const mobileSearchTrigger = screen.getByTestId("mobile-header-search-btn");
+      expect(mobileSearchTrigger).toBeDefined();
+      expect(screen.queryByTestId("header-workflow-slot")).toBeNull();
+      expect(screen.queryByTestId("desktop-header-search-btn")).toBeNull();
+      // Expanded search should not be visible initially, then opens from the unchanged mobile trigger.
       expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+      fireEvent.click(mobileSearchTrigger);
+      expect(screen.getByPlaceholderText("Search tasks...")).toBeDefined();
     });
 
     it("closes mobile search and clears query when close button clicked with mobileNavEnabled", () => {
