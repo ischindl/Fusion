@@ -110,6 +110,10 @@ The active sidebar item must use the defined --status-todo-bg token so the dashb
   right: calc(var(--space-xs) * -1);
 }
 
+/*
+FNXC:Navigation 2026-06-21-00:00:
+The narrower resizable sidebar must preserve row rhythm by truncating labels instead of wrapping or pushing badges/toggles out of place. Rail mode still hides labels entirely through the collapsed sidebar rule.
+*/
 .left-sidebar-nav__label {
   flex: 1;
   min-width: 0;

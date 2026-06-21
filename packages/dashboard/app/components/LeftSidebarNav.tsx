@@ -57,9 +57,12 @@ interface SidebarNavEntry {
 /*
 FNXC:Navigation 2026-06-20-00:00:
 The experimental sidebar default is intentionally narrower than the original 256px layout so desktop/tablet navigation preserves more board content while keeping the existing resize clamps.
+
+FNXC:Navigation 2026-06-21-00:00:
+The minimum resizable width is lowered so users can recover board/content space without forcing full rail collapse. Keep the floor at the narrowest label-legible width; below this point users should switch to collapse/rail mode to preserve icons, badges, and labels.
 */
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 224;
-const LEFT_SIDEBAR_MIN_WIDTH = 192;
+const LEFT_SIDEBAR_MIN_WIDTH = 160;
 const LEFT_SIDEBAR_MAX_WIDTH = 384;
 const LEFT_SIDEBAR_WIDTH_STORAGE_KEY = "fusion:left-sidebar-width";
 const LEFT_SIDEBAR_COLLAPSED_STORAGE_KEY = "fusion:left-sidebar-collapsed";

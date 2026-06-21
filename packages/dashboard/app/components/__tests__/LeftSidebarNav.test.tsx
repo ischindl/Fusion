@@ -388,6 +388,21 @@ describe("LeftSidebarNav", () => {
     expect(window.localStorage.getItem("fusion:left-sidebar-width")).toBe("384");
   });
 
+  it("clamps and persists the narrower minimum drag resize width", () => {
+    renderSidebar();
+    const sidebar = screen.getByTestId("left-sidebar-nav");
+    const handle = screen.getByTestId("sidebar-nav-resize-handle");
+
+    expect(handle).toHaveAttribute("aria-valuemin", "160");
+
+    fireEvent.pointerDown(handle, { clientX: 224, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 0 });
+    fireEvent.pointerUp(document, { clientX: 0, pointerId: 1 });
+
+    expect(sidebar).toHaveStyle({ width: "160px", minWidth: "160px" });
+    expect(window.localStorage.getItem("fusion:left-sidebar-width")).toBe("160");
+  });
+
   it("restores persisted width and keyboard-resizes within clamps", () => {
     window.localStorage.setItem("fusion:left-sidebar-width", "999");
     renderSidebar();
@@ -399,6 +414,28 @@ describe("LeftSidebarNav", () => {
     fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
     expect(sidebar).toHaveStyle({ width: "336px", minWidth: "336px" });
     expect(window.localStorage.getItem("fusion:left-sidebar-width")).toBe("336");
+  });
+
+  it("restores below-minimum persisted width to the narrower minimum", () => {
+    window.localStorage.setItem("fusion:left-sidebar-width", "120");
+    renderSidebar();
+
+    expect(screen.getByTestId("left-sidebar-nav")).toHaveStyle({ width: "160px", minWidth: "160px" });
+    expect(screen.getByTestId("sidebar-nav-resize-handle")).toHaveAttribute("aria-valuenow", "160");
+  });
+
+  it("keyboard resizing clamps and persists the narrower minimum width", () => {
+    renderSidebar();
+
+    const sidebar = screen.getByTestId("left-sidebar-nav");
+    const handle = screen.getByTestId("sidebar-nav-resize-handle");
+
+    fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
+    fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
+
+    expect(sidebar).toHaveStyle({ width: "160px", minWidth: "160px" });
+    expect(handle).toHaveAttribute("aria-valuenow", "160");
+    expect(window.localStorage.getItem("fusion:left-sidebar-width")).toBe("160");
   });
 
   it("routes clicks to view changes, todos view, and settings callback", () => {
