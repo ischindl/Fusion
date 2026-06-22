@@ -109,6 +109,8 @@ export function PullRequestView(props: PullRequestViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const [confirmingMerge, setConfirmingMerge] = useState(false);
+  // FNXC:PullRequests 2026-06-23-00:45: `loading` is true ONLY while a fetch is in flight. Previously detail===null always rendered the spinner, so with no pullRequestId (nothing to load) the view hung on "Loading PR…" forever. Now no-id → empty state, and the fetch is time-bounded so a hung request surfaces an error instead of spinning indefinitely.
+  const [loading, setLoading] = useState(false);
 
   const load = loadPullRequest ?? defaultLoad(projectId);
   const dispatch = onAction ?? defaultAction(projectId);
@@ -118,12 +120,26 @@ export function PullRequestView(props: PullRequestViewProps) {
       setDetail(detailProp);
       return;
     }
-    if (!pullRequestId) return;
+    if (!pullRequestId) {
+      // Nothing to load — show the empty state, never an indefinite spinner.
+      setError(null);
+      setLoading(false);
+      setDetail(null);
+      return;
+    }
     try {
       setError(null);
-      setDetail(await load(pullRequestId));
+      setLoading(true);
+      // Time-bound the fetch (15s) so a hung request resolves into an error state.
+      const PR_LOAD_TIMEOUT_MS = 15000;
+      const timeout = new Promise<PrDetail>((_, reject) =>
+        setTimeout(() => reject(new Error("Timed out loading pull request")), PR_LOAD_TIMEOUT_MS),
+      );
+      setDetail(await Promise.race([load(pullRequestId), timeout]));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load PR");
+    } finally {
+      setLoading(false);
     }
   }, [detailProp, pullRequestId, load]);
 
@@ -167,9 +183,17 @@ export function PullRequestView(props: PullRequestViewProps) {
     );
   }
   if (!detail) {
+    // FNXC:PullRequests 2026-06-23-00:45: Only show the spinner while actually fetching; otherwise (no PR id / nothing to load / timed out) show the empty state so the view never hangs on an endless "Loading PR…".
+    if (loading) {
+      return (
+        <div className="pr-view pr-view--loading" data-testid="pr-view-loading">
+          {t("pr.view.loading", "Loading PR…")}
+        </div>
+      );
+    }
     return (
-      <div className="pr-view pr-view--loading" data-testid="pr-view-loading">
-        {t("pr.view.loading", "Loading PR…")}
+      <div className="pr-view pr-view--empty" data-testid="pr-view-empty">
+        <GitPullRequest size={16} /> {t("pr.view.empty", "No pull request to show.")}
       </div>
     );
   }
