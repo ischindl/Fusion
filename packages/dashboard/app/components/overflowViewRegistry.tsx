@@ -1,8 +1,10 @@
 import { Suspense, lazy, type ComponentType, type ReactNode } from "react";
 import {
   Activity,
+  CheckSquare,
   Folder,
   GitBranch,
+  GitPullRequest,
   History,
   Lock,
   Monitor,
@@ -27,6 +29,8 @@ Dev Server and Secrets are right-dock tools (moved off the left sidebar). They r
 */
 const DevServerView = lazy(() => import("./DevServerView").then((m) => ({ default: m.DevServerView })));
 const SecretsView = lazy(() => import("./SecretsView").then((m) => ({ default: m.SecretsView })));
+const TodoView = lazy(() => import("./TodoView").then((m) => ({ default: m.TodoView })));
+const PullRequestView = lazy(() => import("./PullRequestView").then((m) => ({ default: m.PullRequestView })));
 
 export type OverflowViewKey =
   | "usage"
@@ -35,6 +39,8 @@ export type OverflowViewKey =
   | "files"
   | "devserver"
   | "secrets"
+  | "todos"
+  | "pull-requests"
   | `plugin:${string}:${string}`;
 
 export interface OverflowViewFeatureState {
@@ -173,6 +179,28 @@ export const STATIC_OVERFLOW_VIEW_ENTRIES: readonly OverflowViewEntry[] = [
     icon: Lock,
     testId: "right-dock-tab-secrets",
     render: (props) => wrapOverflowView(<SecretsView addToast={props.addToast} />),
+  },
+  {
+    key: "todos",
+    label: "Todos",
+    icon: CheckSquare,
+    testId: "right-dock-tab-todos",
+    isVisible: (options) => options.todosEnabled === true,
+    render: (props) => wrapOverflowView(
+      <TodoView
+        projectId={props.projectId}
+        addToast={props.addToast}
+        onPlanningMode={props.onPlanningMode}
+        onTaskCreated={props.onTaskCreated}
+      />,
+    ),
+  },
+  {
+    key: "pull-requests",
+    label: "Pull Requests",
+    icon: GitPullRequest,
+    testId: "right-dock-tab-pull-requests",
+    render: (props) => wrapOverflowView(<PullRequestView projectId={props.projectId} />),
   },
 ];
 
