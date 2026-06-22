@@ -11,26 +11,31 @@
   flex: 0 0 auto;
 }
 
+/*
+FNXC:WorkflowSwitcher 2026-06-22-00:00:
+The workflow selector trigger must match the project selector trigger styling: transparent background, --radius-md border, muted text that brightens on hover with a --card-hover fill and --text-dim border, and content-driven width (no fixed min-width). Only the max-width clamp is kept so long workflow names stay bounded.
+*/
 .workflow-switcher-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
-  min-width: calc(var(--space-xl) * 7.5);
+  gap: var(--space-xs);
+  min-width: 0;
   max-width: calc(var(--space-xl) * 12);
-  min-height: calc(var(--space-lg) + var(--space-sm));
-  padding: var(--space-xs) var(--space-sm);
-  background: var(--bg-secondary);
+  padding: calc(var(--space-xs) + var(--space-xs) / 2) calc(var(--space-xs) + var(--space-xs) / 2);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
   font: inherit;
   text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .workflow-switcher-trigger:hover,
 .workflow-switcher-trigger[aria-expanded="true"] {
-  background: var(--bg-tertiary);
+  background: var(--card-hover);
+  color: var(--text);
   border-color: var(--text-dim);
 }
 
