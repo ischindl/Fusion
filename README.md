@@ -6,7 +6,9 @@
 
 ### From rough idea to production code — automatically.
 
-**Multi-node agent orchestrator** — tasks, agents, missions, git, files, and worktrees, with any model, local or cloud.
+### 🏭 A software factory, run by a multi-agent orchestrator.
+
+Describe what you want — a team of AI agents **plans, builds, reviews, and ships** it for you. Fusion is your software factory: an assembly line for code that runs across tasks, agents, missions, git, files, and worktrees, with any model, local or cloud.
 
 [**runfusion.ai →**](https://runfusion.ai) · [Docs](./docs/README.md) · [GitHub](https://github.com/Runfusion/Fusion) · [npm](https://www.npmjs.com/package/@runfusion/fusion) · [Discord](https://discord.gg/ksrfuy7WYR)
 
@@ -40,6 +42,72 @@ Describe a task in plain language. A planning agent reads your project, understa
 One board. Controlled from anywhere. Laptop, Mac mini, Linux server, cloud VM, phone — all connected.
 
 > Like Trello, but your tasks get specified, executed, and delivered by AI. Built on the great work of [dustinbyrne/kb](https://github.com/dustinbyrne/kb).
+
+---
+
+## Quick start
+
+**Zero install, straight from npm:**
+
+```bash
+npx runfusion.ai
+```
+
+That launches the dashboard. Subcommands forward through: `npx runfusion.ai task create "fix X"`, `npx runfusion.ai --help`, etc. (Or verbosely: `npx @runfusion/fusion dashboard`.)
+
+**One-line installer** (macOS & Linux — auto-picks Homebrew, falls back to npm):
+
+```bash
+curl -fsSL https://runfusion.ai/install.sh | sh
+fusion dashboard
+```
+
+**Homebrew** (macOS & Linux):
+
+```bash
+brew tap runfusion/fusion
+brew install fusion
+fusion dashboard            # or: fn dashboard
+```
+
+Or as a one-liner (auto-taps): `brew install runfusion/fusion/fusion`.
+
+**npm global**:
+
+```bash
+npm install -g @runfusion/fusion
+fn dashboard                # or: fusion dashboard
+```
+
+**From a clone** (for development):
+
+```bash
+pnpm dev dashboard
+```
+
+Then click the `Open:` URL printed in the terminal. It embeds a bearer token
+(`http://localhost:4040/?token=fn_...`) that the browser captures to
+`localStorage` on first visit and reuses automatically thereafter. On the
+server side, Fusion now persists the dashboard/daemon token in
+`~/.fusion/settings.json` on first authenticated run and reuses it on later
+starts unless you override it (`--token`, `FUSION_DASHBOARD_TOKEN`,
+`FUSION_DAEMON_TOKEN`) or disable auth with `--no-auth`. See
+[CLI reference → fn dashboard → Authentication](./docs/cli-reference.md#fn-dashboard)
+for full precedence and reset/revocation options.
+
+### First-run setup
+
+On first launch, Fusion opens the **onboarding wizard** with three guided steps:
+
+1. **AI Setup** — Use a simplified quick-start provider list (recommended providers plus any already-connected providers), then expand **Advanced provider settings** only if you need additional providers or setup details. You only need one provider to get started. Deprecated Google Gemini CLI / Antigravity provider entries are intentionally hidden; Google/Gemini API key, Google Generative AI, Vertex, and Cloud Code paths remain supported.
+2. **GitHub (Optional)** — Connect GitHub for issue import and PR management
+3. **First Task** — Create your first task or import from GitHub (if no project is active, onboarding first prompts you to register/select a project directory)
+
+The wizard is **dismissible and non-blocking** — click **Skip for now** to use the dashboard immediately. Re-trigger it later from **Settings → Authentication → Reopen onboarding guide**.
+
+### Mobile
+
+For Capacitor + PWA workflow, see [MOBILE.md](./MOBILE.md).
 
 ---
 
@@ -344,72 +412,6 @@ npx companies.sh add paperclipai/companies/gstack
 <br />
 
 > **Hermes**, **Paperclip**, and **OpenClaw** are **experimental** runtime plugins — APIs and wire formats may shift between minor releases.
-
----
-
-## Quick start
-
-**Zero install, straight from npm:**
-
-```bash
-npx runfusion.ai
-```
-
-That launches the dashboard. Subcommands forward through: `npx runfusion.ai task create "fix X"`, `npx runfusion.ai --help`, etc. (Or verbosely: `npx @runfusion/fusion dashboard`.)
-
-**One-line installer** (macOS & Linux — auto-picks Homebrew, falls back to npm):
-
-```bash
-curl -fsSL https://runfusion.ai/install.sh | sh
-fusion dashboard
-```
-
-**Homebrew** (macOS & Linux):
-
-```bash
-brew tap runfusion/fusion
-brew install fusion
-fusion dashboard            # or: fn dashboard
-```
-
-Or as a one-liner (auto-taps): `brew install runfusion/fusion/fusion`.
-
-**npm global**:
-
-```bash
-npm install -g @runfusion/fusion
-fn dashboard                # or: fusion dashboard
-```
-
-**From a clone** (for development):
-
-```bash
-pnpm dev dashboard
-```
-
-Then click the `Open:` URL printed in the terminal. It embeds a bearer token
-(`http://localhost:4040/?token=fn_...`) that the browser captures to
-`localStorage` on first visit and reuses automatically thereafter. On the
-server side, Fusion now persists the dashboard/daemon token in
-`~/.fusion/settings.json` on first authenticated run and reuses it on later
-starts unless you override it (`--token`, `FUSION_DASHBOARD_TOKEN`,
-`FUSION_DAEMON_TOKEN`) or disable auth with `--no-auth`. See
-[CLI reference → fn dashboard → Authentication](./docs/cli-reference.md#fn-dashboard)
-for full precedence and reset/revocation options.
-
-### First-run setup
-
-On first launch, Fusion opens the **onboarding wizard** with three guided steps:
-
-1. **AI Setup** — Use a simplified quick-start provider list (recommended providers plus any already-connected providers), then expand **Advanced provider settings** only if you need additional providers or setup details. You only need one provider to get started. Deprecated Google Gemini CLI / Antigravity provider entries are intentionally hidden; Google/Gemini API key, Google Generative AI, Vertex, and Cloud Code paths remain supported.
-2. **GitHub (Optional)** — Connect GitHub for issue import and PR management
-3. **First Task** — Create your first task or import from GitHub (if no project is active, onboarding first prompts you to register/select a project directory)
-
-The wizard is **dismissible and non-blocking** — click **Skip for now** to use the dashboard immediately. Re-trigger it later from **Settings → Authentication → Reopen onboarding guide**.
-
-### Mobile
-
-For Capacitor + PWA workflow, see [MOBILE.md](./MOBILE.md).
 
 ---
 
