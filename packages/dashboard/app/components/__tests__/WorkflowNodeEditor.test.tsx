@@ -1475,6 +1475,51 @@ function stepwiseDef(): WorkflowDefinition {
   };
 }
 
+/** A v2 workflow with an optional-group container (defaultOn:false) holding one
+ *  template child, so the editor's optional-group surfaces have something to
+ *  render, toggle, and delete. */
+function optionalGroupDef(): WorkflowDefinition {
+  return {
+    id: "WF-OPT",
+    kind: "workflow",
+    name: "Optional",
+    description: "",
+    ir: {
+      version: "v2",
+      name: "Optional",
+      columns: [
+        { id: "plan", name: "Plan", traits: [{ trait: "intake" }] },
+        { id: "in-progress", name: "In progress", traits: [] },
+        { id: "done", name: "Done", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [
+        { id: "start", kind: "start", column: "plan" },
+        {
+          id: "opt",
+          kind: "optional-group",
+          column: "in-progress",
+          config: {
+            defaultOn: false,
+            name: "Browser verification",
+            template: {
+              nodes: [{ id: "verify", kind: "prompt", config: { prompt: "verify in browser" } }],
+              edges: [],
+            },
+          },
+        },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "opt", condition: "success" },
+        { from: "opt", to: "end", condition: "success" },
+      ],
+    },
+    layout: {},
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+  };
+}
+
 describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   beforeEach(() => {
     vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
@@ -1529,6 +1574,80 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
     const template = foreach!.config!.template as { nodes: { config?: Record<string, unknown> }[] };
     expect(template.nodes).toHaveLength(1);
     expect(template.nodes[0].config?.seam).toBe("step-execute");
+  });
+
+  // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: An optional-group must be
+  // authorable like a foreach/loop — added from the palette as a registered group
+  // container (not react-flow__node-default), filled with nodes, named, toggled
+  // for defaultOn, and deleted with its children cascaded.
+  it("adds an optional-group from the palette and round-trips its template on save", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
+    vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...v2Def(), ...(updates as object) }));
+    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    await screen.findByText("Save");
+    expect(await screen.findByTestId("wf-column-panel")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Optional group").closest("button")!);
+    // Renders via the registered group component (wf-node-optional-group), NOT
+    // React Flow's default fallback.
+    await waitFor(() => expect(screen.getByTestId("wf-node-optional-group")).toBeInTheDocument(), { timeout: 5000 });
+    // No empty hint — the palette seeded an optional step inside.
+    expect(screen.queryByTestId("wf-optional-group-empty")).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getAllByLabelText(/Column name/i).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByText("Save").closest("button")!);
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalled());
+    const [, updates] = vi.mocked(updateWorkflow).mock.calls[0];
+    const ir = (updates as { ir: { nodes: { id: string; kind: string; config?: Record<string, unknown> }[] } }).ir;
+    const group = ir.nodes.find((n) => n.kind === "optional-group");
+    expect(group).toBeTruthy();
+    const template = group!.config!.template as { nodes: unknown[] };
+    expect(template.nodes).toHaveLength(1);
+  });
+
+  it("toggles optional-group defaultOn, marks the editor dirty, and persists on save", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([optionalGroupDef()]);
+    vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...optionalGroupDef(), ...(updates as object) }));
+    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
+
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    await screen.findByText("Save");
+    const group = await screen.findByTestId("wf-node-optional-group");
+    fireEvent.click(group);
+
+    const toggle = await screen.findByTestId("wf-optional-group-default-on");
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+
+    await waitFor(() => expect(screen.getAllByLabelText(/Column name/i).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByText("Save").closest("button")!);
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalled());
+    const [, updates] = vi.mocked(updateWorkflow).mock.calls[0];
+    const ir = (updates as { ir: { nodes: { kind: string; config?: Record<string, unknown> }[] } }).ir;
+    const opt = ir.nodes.find((n) => n.kind === "optional-group");
+    expect(opt!.config!.defaultOn).toBe(true);
+  });
+
+  it("deletes an optional-group and removes its parentId children (no orphans)", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([optionalGroupDef()]);
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    const group = await screen.findByTestId("wf-node-optional-group");
+    // The seeded template child renders as a parented flow node.
+    await waitFor(() =>
+      expect(
+        document.querySelector(`.react-flow__node[data-id="${foreachChildFlowId("opt", "verify")}"]`),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(group);
+    fireEvent.click(await screen.findByTestId("wf-delete-node"));
+    await waitFor(() => expect(screen.queryByTestId("wf-node-optional-group")).not.toBeInTheDocument());
+    // The template child is gone too (cascade) — no orphaned parentId node.
+    expect(
+      document.querySelector(`.react-flow__node[data-id="${foreachChildFlowId("opt", "verify")}"]`),
+    ).not.toBeInTheDocument();
   });
 
   it("edits foreach mode/isolation/concurrency/maxReworkCycles inspector fields", async () => {

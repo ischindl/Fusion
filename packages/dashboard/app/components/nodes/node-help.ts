@@ -141,6 +141,18 @@ const NODE_HELP: Record<string, NodeHelp> = {
     outputs: "The final iteration's result.",
     edges: "One outgoing edge (success) on exit. Exits on condition match, max iterations, or timeout.",
   },
+  // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: An optional-group is a container whose body runs once when the task enables it and is skipped otherwise. Enable state is the per-task `enabledWorkflowSteps` facet, seeded from the group's `defaultOn`.
+  "optional-group": {
+    title: "Optional group",
+    summary:
+      "Holds a group of steps that run only when the task has this group enabled. Enabled tasks run the group's steps once at this position; disabled tasks pass straight through. Renders as a group you drop step nodes into.",
+    configure:
+      "Set the group Name and whether it is Enabled by default for new tasks (defaultOn). A task can override the default per-task. Drop the optional steps inside the region.",
+    inputs: "The task arriving from upstream, plus prior context.",
+    outputs: "The group's result when enabled; an unchanged pass-through when disabled.",
+    edges:
+      "success once the group finishes (or is skipped). A template failure inside an enabled group routes the group's failure edge.",
+  },
   "step-review": {
     title: "Step review",
     summary:

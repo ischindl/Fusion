@@ -766,6 +766,104 @@ describe("workflow-flow-mapping foreach + rework round-trip", () => {
     expect(template.edges).toEqual([{ from: "try", to: "check", condition: "success" }]);
   });
 
+  // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: An optional-group's template
+  // subgraph must round-trip through the editor's parentId-child rendering exactly
+  // like foreach/loop — irToFlow renders the template as parented children;
+  // flowToIr reassembles them into config.template, preserving defaultOn/name.
+  it("round-trips an optional-group template (children partitioned by parentId) losslessly", () => {
+    const optionalIr: WorkflowDefinition["ir"] = {
+      version: "v2",
+      name: "optional",
+      columns: ir.columns,
+      nodes: [
+        { id: "start", kind: "start", column: "plan" },
+        {
+          id: "opt",
+          kind: "optional-group",
+          column: "in-progress",
+          config: {
+            defaultOn: true,
+            name: "Browser verification",
+            template: {
+              nodes: [
+                { id: "verify", kind: "prompt", config: { prompt: "verify in browser" } },
+                { id: "check", kind: "gate", config: { prompt: "ok?" } },
+              ],
+              edges: [{ from: "verify", to: "check", condition: "success" }],
+            },
+          },
+        },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "opt", condition: "success" },
+        { from: "opt", to: "end", condition: "success" },
+      ],
+    };
+    const def = makeDef(optionalIr);
+    const { nodes, edges } = irToFlow(def);
+    const columns = columnsOf(def);
+
+    // The optional-group renders via the registered group component (type
+    // "optional-group", NOT react-flow__node-default) with parented children.
+    const group = nodes.find((n) => n.id === "opt");
+    expect(group?.type).toBe("optional-group");
+    expect(group?.data.kind).toBe("optional-group");
+    // The group node keeps defaultOn/name; the template is stripped onto children.
+    expect(group?.data.config?.defaultOn).toBe(true);
+    expect((group?.data.config as Record<string, unknown>)?.template).toBeUndefined();
+    const children = nodes.filter((n) => n.parentId === "opt");
+    expect(children.map((c) => templateNodeIdFromChild("opt", c.id)).sort()).toEqual(["check", "verify"]);
+
+    const { ir: out } = flowToIr("optional", nodes, edges, columns);
+    if (out.version !== "v2") throw new Error("expected v2");
+    const opt = out.nodes.find((n) => n.id === "opt");
+    expect(opt?.kind).toBe("optional-group");
+    const cfg = opt?.config as Record<string, unknown>;
+    expect(cfg.defaultOn).toBe(true);
+    expect(cfg.name).toBe("Browser verification");
+    const template = cfg.template as { nodes: { id: string }[]; edges: { from: string; to: string }[] };
+    expect(template.nodes.map((n) => n.id)).toEqual(["verify", "check"]);
+    expect(template.edges).toEqual([{ from: "verify", to: "check", condition: "success" }]);
+    // Top-level edges exclude the intra-template ones.
+    expect(out.edges.map((e) => `${e.from}->${e.to}`)).toEqual(["start->opt", "opt->end"]);
+  });
+
+  // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: Deleting an optional-group must
+  // cascade its parentId children (no orphans) — same rule foreach/loop follow.
+  it("cascade-deletes an optional-group's template children", () => {
+    const optionalIr: WorkflowDefinition["ir"] = {
+      version: "v2",
+      name: "optional-del",
+      columns: ir.columns,
+      nodes: [
+        { id: "start", kind: "start", column: "plan" },
+        {
+          id: "opt",
+          kind: "optional-group",
+          column: "in-progress",
+          config: {
+            defaultOn: false,
+            template: {
+              nodes: [{ id: "verify", kind: "prompt", config: { prompt: "verify" } }],
+              edges: [],
+            },
+          },
+        },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "opt", condition: "success" },
+        { from: "opt", to: "end", condition: "success" },
+      ],
+    };
+    const { nodes, edges } = irToFlow(makeDef(optionalIr));
+    expect(nodes.some((n) => n.parentId === "opt")).toBe(true);
+    const result = cascadeDelete(nodes, edges, ["opt"]);
+    expect(result.nodes.some((n) => n.id === "opt")).toBe(false);
+    expect(result.nodes.some((n) => n.parentId === "opt")).toBe(false);
+  });
+
   it("inserts loop fragments with their template children intact", () => {
     const fragment: WorkflowDefinition["ir"] = {
       version: "v2",

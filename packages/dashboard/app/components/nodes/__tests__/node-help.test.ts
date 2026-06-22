@@ -16,6 +16,7 @@ const EDITOR_KINDS = [
   "join",
   "foreach",
   "loop",
+  "optional-group",
   "step-review",
   "parse-steps",
   "code",

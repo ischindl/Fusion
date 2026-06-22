@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { X, Plus, Trash2, Save, MessageSquare, Terminal, Shield, GitMerge, Loader2, HelpCircle, PauseCircle, Split, Merge, Repeat, ClipboardCheck, ListChecks, Code2, Bell, LayoutGrid, Workflow, Download, Upload, ChevronDown, ChevronRight, ChevronLeft, Library, Sparkles, Maximize2, Minimize2 } from "lucide-react";
+import { X, Plus, Trash2, Save, MessageSquare, Terminal, Shield, GitMerge, Loader2, HelpCircle, PauseCircle, Split, Merge, Repeat, ToggleRight, ClipboardCheck, ListChecks, Code2, Bell, LayoutGrid, Workflow, Download, Upload, ChevronDown, ChevronRight, ChevronLeft, Library, Sparkles, Maximize2, Minimize2 } from "lucide-react";
 import type { WorkflowDefinition, WorkflowIrColumn, TraitViolation, WorkflowStepTemplate, WorkflowOptionalStep } from "@fusion/core";
 import { getErrorMessage } from "@fusion/core";
 import {
@@ -236,6 +236,8 @@ const PALETTE: Array<{ kind: WorkflowEditorNodeKind; label: string; icon: typeof
   // Step-inversion (KTD-3/4/12/15).
   { kind: "foreach", label: "For-each step", icon: Repeat, presetConfig: { source: "task-steps" } },
   { kind: "loop", label: "Loop", icon: Repeat, presetConfig: { maxIterations: 3, exitWhen: { type: "output-contains", value: "DONE" } } },
+  // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: An optional-group container holds a template subgraph run once when the task enables it (per-task `enabledWorkflowSteps`, seeded from `defaultOn`) and skipped otherwise.
+  { kind: "optional-group", label: "Optional group", icon: ToggleRight, presetConfig: { defaultOn: false } },
   { kind: "step-review", label: "Step review", icon: ClipboardCheck, presetConfig: { type: "code" } },
   { kind: "parse-steps", label: "Parse steps", icon: ListChecks, presetConfig: { artifact: "PROMPT.md", parser: "step-headings" } },
   { kind: "code", label: "Code", icon: Code2, presetConfig: { source: "" } },
@@ -287,6 +289,7 @@ const USER_NODE_KINDS: ReadonlySet<WorkflowEditorNodeKind> = new Set<WorkflowEdi
   "join",
   "foreach",
   "loop",
+  "optional-group",
   "step-review",
   "parse-steps",
   "notify",
@@ -1356,16 +1359,19 @@ function InnerEditor({
       const baseConfig = kind === "gate" ? { gateMode: "gate" } : {};
       const config = presetConfig ? { ...baseConfig, ...presetConfig } : baseConfig;
 
-      if (kind === "foreach" || kind === "loop") {
+      if (kind === "foreach" || kind === "loop" || kind === "optional-group") {
         // Template groups render as React Flow group nodes. Foreach seeds the
-        // required step-execute seam; loop seeds a regular prompt so authors can
-        // wire the repeated body immediately. The group node must precede its
-        // child for React Flow's parent extent to apply.
+        // required step-execute seam; loop + optional-group seed a regular prompt
+        // so authors can wire the body immediately. The group node must precede
+        // its child for React Flow's parent extent to apply.
+        // FNXC:WorkflowOptionalGroup 2026-06-21-11:30: An optional-group is authored exactly like a foreach/loop region — drop nodes inside; the subgraph runs once when the task enables the group.
         const childId = foreachChildFlowId(id, newNodeId());
         const childLabel =
           kind === "foreach"
             ? t("workflowNodes.stepExecuteLabel", "Step execute")
-            : t("workflowNodes.loopStepLabel", "Loop step");
+            : kind === "optional-group"
+              ? t("workflowNodes.optionalGroupStepLabel", "Optional step")
+              : t("workflowNodes.loopStepLabel", "Loop step");
         const childConfig = kind === "foreach" ? { seam: "step-execute" } : { prompt: "" };
         setNodes((ns) => [
           ...ns,
@@ -1941,11 +1947,14 @@ function InnerEditor({
       let errorBadge: string | undefined;
       if (unplacedSet.has(n.id)) errorBadge = t("workflowColumns.nodeUnplaced", "Not placed in a column");
       if (serverNodeError?.nodeId === n.id) errorBadge = serverNodeError.message;
-      const isTemplateGroup = n.data.kind === "foreach" || n.data.kind === "loop";
+      const isTemplateGroup =
+        n.data.kind === "foreach" || n.data.kind === "loop" || n.data.kind === "optional-group";
       const emptyHint =
         n.data.kind === "loop"
           ? t("workflowNodes.loopEmptyHint", "Drag loop steps here")
-          : t("workflowNodes.foreachEmptyHint", "Drag a step-execute node here");
+          : n.data.kind === "optional-group"
+            ? t("workflowNodes.optionalGroupEmptyHint", "Drag optional steps here")
+            : t("workflowNodes.foreachEmptyHint", "Drag a step-execute node here");
       const templateEmpty = isTemplateGroup ? (childCount.get(n.id) ?? 0) === 0 : undefined;
       if (
         errorBadge === n.data.errorBadge &&
@@ -4106,6 +4115,27 @@ function InnerEditor({
                     </>
                   );
                 })()
+              ) : null}
+
+              {/* FNXC:WorkflowOptionalGroup 2026-06-21-11:30: The optional-group inspector exposes the workflow-author `defaultOn` default (whether new tasks enable the group). The group name reuses the shared Name field above; the body is authored by dropping nodes inside, identical to foreach/loop. */}
+              {selectedNode.data.kind === "optional-group" ? (
+                <>
+                  <label className="wf-field wf-field--checkbox">
+                    <input
+                      type="checkbox"
+                      data-testid="wf-optional-group-default-on"
+                      checked={Boolean(selectedNode.data.config?.defaultOn)}
+                      onChange={(e) => updateSelectedData({ config: { defaultOn: e.target.checked } })}
+                    />
+                    <span>{t("workflowNodes.optionalGroupDefaultOn", "Enabled by default for new tasks")}</span>
+                  </label>
+                  <p className="wf-inspector-note wf-inspector-note--info">
+                    {t(
+                      "workflowNodes.optionalGroupNote",
+                      "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
+                    )}
+                  </p>
+                </>
               ) : null}
 
               {selectedNode.data.kind === "step-review" ? (

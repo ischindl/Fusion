@@ -38,6 +38,16 @@ interface WorkflowLoopConfig {
   template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] };
 }
 
+/*
+FNXC:WorkflowOptionalGroup 2026-06-21-11:30:
+An `optional-group` is a third container kind alongside `foreach`/`loop`. It carries `defaultOn`/`name` plus a `template:{nodes,edges}` subgraph authored inline as React Flow `parentId` children (reusing the `foreachChildFlowId` namespacing). It is special-cased everywhere foreach/loop are: group-template detection, child reassembly in flowToIr, intra-template edge folding, cascade delete, and condition-editability. Single-pass, no rework/iteration — but the editor mapping treats its template identically to foreach/loop.
+*/
+interface WorkflowOptionalGroupConfig {
+  defaultOn?: boolean;
+  name?: string;
+  template: { nodes: WorkflowIrNode[]; edges: WorkflowIrEdge[] };
+}
+
 // WorkflowFieldDefinition is imported from @fusion/core above (KTD-13/14).
 // Re-exported so existing importers that reference WorkflowFieldDefinitionShape
 // can migrate; callers should prefer WorkflowFieldDefinition directly.
@@ -170,6 +180,7 @@ const SAME_KIND_EDITOR_NODE_KINDS = new Set<WorkflowIrNodeKind>([
   "join",
   "foreach",
   "loop",
+  "optional-group",
   "step-review",
   "parse-steps",
   "code",
@@ -263,10 +274,17 @@ function loopConfigOf(node: WorkflowIrNode): WorkflowLoopConfig | undefined {
   return cfg as WorkflowLoopConfig;
 }
 
+function optionalGroupConfigOf(node: WorkflowIrNode): WorkflowOptionalGroupConfig | undefined {
+  if (node.kind !== "optional-group") return undefined;
+  const cfg = node.config as Partial<WorkflowOptionalGroupConfig> | undefined;
+  if (!cfg || !cfg.template) return undefined;
+  return cfg as WorkflowOptionalGroupConfig;
+}
+
 function groupTemplateConfigOf(
   node: WorkflowIrNode,
-): WorkflowForeachConfig | WorkflowLoopConfig | undefined {
-  return foreachConfigOf(node) ?? loopConfigOf(node);
+): WorkflowForeachConfig | WorkflowLoopConfig | WorkflowOptionalGroupConfig | undefined {
+  return foreachConfigOf(node) ?? loopConfigOf(node) ?? optionalGroupConfigOf(node);
 }
 
 /** CSS class for an edge given its condition + rework kind. Rework takes
@@ -451,7 +469,9 @@ export function flowToIr(
     }
   }
   const groupIds = new Set(
-    topNodes.filter((n) => n.data.kind === "foreach" || n.data.kind === "loop").map((n) => n.id),
+    topNodes
+      .filter((n) => n.data.kind === "foreach" || n.data.kind === "loop" || n.data.kind === "optional-group")
+      .map((n) => n.id),
   );
   const hasFields = Array.isArray(fields) && fields.length > 0;
   const hasSettings = Array.isArray(settings) && settings.length > 0;
@@ -477,8 +497,19 @@ export function flowToIr(
       }
       return { id: localId, kind: "prompt", config: { ...(config ?? {}), seam: "merge" } };
     }
-    if (data.kind === "foreach" || data.kind === "loop" || originalKind === "retry-backoff") {
-      if (originalKind && originalKind !== "foreach" && originalKind !== "loop" && originalKind !== "retry-backoff") {
+    if (
+      data.kind === "foreach" ||
+      data.kind === "loop" ||
+      data.kind === "optional-group" ||
+      originalKind === "retry-backoff"
+    ) {
+      if (
+        originalKind &&
+        originalKind !== "foreach" &&
+        originalKind !== "loop" &&
+        originalKind !== "optional-group" &&
+        originalKind !== "retry-backoff"
+      ) {
         return { id: localId, kind: originalKind, config: config && Object.keys(config).length ? config : undefined };
       }
       // Reassemble the template from this group's children.
@@ -608,9 +639,10 @@ function isProtectedFromDelete(node: FlowNode<WorkflowFlowNodeData>): boolean {
  * Delete the requested node and/or edge ids from the flow graph, applying R6's
  * cascade rules:
  *   - Deleting a node removes ALL edges incident to it (no auto-bridging).
- *   - Deleting a `foreach`/`loop` group node also deletes its template children
- *     (nodes with `parentId === groupId`) and every edge incident to those
- *     children (React Flow does not cascade parents — handled explicitly).
+ *   - Deleting a `foreach`/`loop`/`optional-group` group node also deletes its
+ *     template children (nodes with `parentId === groupId`) and every edge
+ *     incident to those children (React Flow does not cascade parents — handled
+ *     explicitly).
  *   - `start`/`end` nodes and column band nodes are never deleted: they are
  *     filtered out of the requested ids up front (and their incident edges are
  *     therefore preserved).
@@ -633,7 +665,7 @@ export function cascadeDelete(
     const node = nodeById.get(id);
     if (!node || isProtectedFromDelete(node)) continue;
     deleteNodeIds.add(id);
-    if (node.data.kind === "foreach" || node.data.kind === "loop") {
+    if (node.data.kind === "foreach" || node.data.kind === "loop" || node.data.kind === "optional-group") {
       for (const child of nodes) {
         if (child.parentId === id) deleteNodeIds.add(child.id);
       }
@@ -660,7 +692,7 @@ export function cascadeDelete(
 
 /** Editor node kinds whose edges expose a success/failure condition select
  *  (KTD-2). step-review uses verdict controls; all other kinds are read-only. */
-const CONDITION_EDITABLE_KINDS = new Set<string>(["prompt", "script", "gate", "code", "foreach", "loop"]);
+const CONDITION_EDITABLE_KINDS = new Set<string>(["prompt", "script", "gate", "code", "foreach", "loop", "optional-group"]);
 
 /** Decide what the edge inspector renders for an edge sourced from `sourceKind`:
  *  - "verdicts": step-review verdict select + rework checkbox (existing);
