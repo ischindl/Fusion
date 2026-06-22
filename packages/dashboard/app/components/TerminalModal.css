@@ -30,8 +30,12 @@ FN-6887 turns desktop/tablet terminal into a bottom-docked panel above the foote
 FNXC:Terminal 2026-06-22-00:00:
 The docked/floating terminal must not blur or dim the page behind it, and the page must stay interactive. The base .modal-overlay applies backdrop-filter: blur(4px); override it to none here. background is already transparent and pointer-events:none lets clicks pass through to the page behind (the terminal panel itself re-enables pointer-events).
 */
-.terminal-modal-overlay--docked,
-.terminal-modal-overlay--floating {
+/*
+FNXC:Terminal 2026-06-22-00:45:
+The override MUST out-specify the base `.modal-overlay` (which sets a dimmed background + blur). Both are single-class selectors, so if styles.css loads after this file the dim/blur wins and the page still fades. Qualify with `.modal-overlay` (two classes) so the docked/floating terminal reliably keeps a transparent, non-blurring, click-through backdrop regardless of stylesheet order.
+*/
+.modal-overlay.terminal-modal-overlay--docked,
+.modal-overlay.terminal-modal-overlay--floating {
   align-items: stretch;
   justify-content: flex-end;
   padding: 0;
