@@ -92,6 +92,7 @@ import type {
   WorkflowSettingOption,
   WorkflowSettingRender,
   WorkflowSettingRejection,
+  CommitAssociationDiffBackfillReport,
 } from "@fusion/core";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import type { GithubIssueAction, ScheduledTask, ScheduledTaskCreateInput, ScheduledTaskUpdateInput, AutomationRunResult, Routine, RoutineCreateInput, RoutineUpdateInput, RoutineExecutionResult } from "@fusion/core";
@@ -113,6 +114,7 @@ export type FetchOptions = DedupeOptions;
 
 // Re-export skills types for use by hooks and components
 export type { DiscoveredSkill, CatalogEntry, CatalogFetchResult, ToggleSkillResult, SkillContent, SkillFileEntry };
+export type { CommitAssociationDiffBackfillReport };
 
 export class ApiRequestError extends Error {
   readonly status: number;
@@ -7666,6 +7668,20 @@ export function backfillMissionAssertions(
 ): Promise<MissionAssertionBackfillReport> {
   return api<MissionAssertionBackfillReport>(
     withProjectId(`/missions/${encodeURIComponent(missionId)}/backfill-assertions`, projectId),
+    {
+      method: "POST",
+      body: JSON.stringify({ dryRun: options?.dryRun ?? true }),
+    },
+  );
+}
+
+/** Backfill historical Command Center LOC stats for commit associations. Defaults to dry-run. */
+export function backfillCommitAssociationDiffStats(
+  options?: { dryRun?: boolean },
+  projectId?: string,
+): Promise<CommitAssociationDiffBackfillReport> {
+  return api<CommitAssociationDiffBackfillReport>(
+    withProjectId("/command-center/productivity/backfill-loc", projectId),
     {
       method: "POST",
       body: JSON.stringify({ dryRun: options?.dryRun ?? true }),
