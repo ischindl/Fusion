@@ -540,6 +540,18 @@ surfaces are enumerated:
 - Step→node projection (`workflow-steps-to-ir.ts`) reused to project add-ons (U5).
 
 ### Deferred to Follow-Up Work
+- **Full legacy-path retirement (U7) — deferred after execution-time scope discovery.** U1–U6 shipped and
+  the new model is the live path (built-ins migrated, resolver + executor on optional-group nodes). The
+  legacy declaration surface is now inert but **not removed**, because U7 turned out far larger than scoped:
+  (a) `workflow-step` is a shared `WorkflowSeam` union member woven through ~9 engine runtime files
+  (`runtime-primitives`, `step-session-executor`, `workflow-node-handlers`, `active-session-registry`,
+  `workflow-graph-task-runner`, `executor.runWorkflowSteps`, the compiler seam-anchor), not an
+  optional-steps-only node — excising it is its own refactor; and (b) the dashboard still carries the prior
+  declaration **authoring** surface (`WorkflowOptionalStepsPanel`/`WorkflowOptionalStepsDropdown`, the
+  `flowToIr` `optionalSteps` threading, `optionalStepsOf`) across ~10 files. Removing the core
+  `WorkflowOptionalStep` type without that dashboard cleanup breaks the build. Retire both surfaces in a
+  focused follow-up; until then the `WorkflowOptionalStepsPanel` authors declarations the resolver no longer
+  reads (a known dead-authoring UI to remove with it).
 - **Nested/conditional groups** (an optional-group inside a split/foreach, or gated by a workflow field
   rather than the per-task toggle) — single-level, per-task-toggle only for now.
 - **Plugin-contributed add-ons as optional-group presets** beyond inserting them as flat nodes.
