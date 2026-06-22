@@ -1987,6 +1987,7 @@ export function ListView({
                 onSubtaskBreakdown={onSubtaskBreakdown}
                 projectId={projectId}
                 autoExpand={false}
+                defaultExpanded={false}
                 favoriteProviders={favoriteProviders}
                 favoriteModels={favoriteModels}
                 onToggleFavorite={onToggleFavorite}

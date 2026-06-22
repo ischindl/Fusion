@@ -48,6 +48,11 @@ interface QuickEntryBoxProps {
    * Defaults to true for backward compatibility.
    */
   autoExpand?: boolean;
+  /*
+  FNXC:QuickEntry 2026-06-22-01:10:
+  Initial disclosure (expanded controls) state. List view passes false so quick-add starts COLLAPSED; Board/columns keep the default true so quick-add stays OPEN. This is independent of autoExpand (which only governs expand-on-focus).
+  */
+  defaultExpanded?: boolean;
   /**
    * Favorited provider IDs from shared app-level state.
    * When provided (alongside availableModels), the component uses these
@@ -91,7 +96,7 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
   };
 }
 
-export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, workflowId, projectId, autoExpand = true, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
+export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, workflowId, projectId, autoExpand = true, defaultExpanded = true, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
   const { t } = useTranslation("app");
   const [description, setDescription] = useState(() => {
     if (typeof window !== "undefined") {
@@ -105,7 +110,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const [isExpanded, setIsExpanded] = useState(true);
   // isDisclosureExpanded controls visibility of the controls panel (Deps, Models, etc.)
   // Starts expanded by default — controls visible immediately
-  const [isDisclosureExpanded, setIsDisclosureExpanded] = useState(true);
+  const [isDisclosureExpanded, setIsDisclosureExpanded] = useState(defaultExpanded);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchButtonRef = useRef<HTMLButtonElement | null>(null);
