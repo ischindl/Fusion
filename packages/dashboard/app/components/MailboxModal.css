@@ -652,12 +652,13 @@
   padding-top: var(--space-sm);
 }
 
+/* FNXC:MailboxView 2026-06-22-01:00: ViewHeader supplies the top padding, so the standalone-view scroll body drops its top inset to avoid doubling the gap under the header (keeps horizontal + bottom padding). */
 .mailbox-view .mailbox-content {
   flex: 1;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--space-xl);
+  padding: 0 var(--space-xl) var(--space-xl);
   max-height: none;
 }
 

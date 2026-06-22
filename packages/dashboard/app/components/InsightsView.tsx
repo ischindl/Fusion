@@ -27,6 +27,7 @@ import {
   Activity,
 } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
+import { ViewHeader } from "./ViewHeader";
 import { fetchModels, updateGlobalSettings, type ModelInfo } from "../api";
 import { useInsights, type InsightSection } from "../hooks/useInsights";
 import { BACKLOG_HEALTH_TITLE_PREFIXES, isBacklogHealthInsight } from "./backlog-health-filter";
@@ -480,16 +481,16 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
 
   return (
     <div className="insights-view" data-testid="insights-view">
-      <div className="insights-view-header">
-        <div className="insights-view-title">
-          <h2>
-            <Sparkles size={20} />
-            {t("insights.title", "Insights")}
-          </h2>
-          <span className="insights-view-count">{totalCount} {t("common.total", "total")}</span>
-        </div>
-
-        <div className="insights-view-actions">
+      {/*
+      FNXC:Insights 2026-06-22-01:00:
+      Migrated to the shared ViewHeader for consistency with other main-content views. The insight count and action buttons live in the actions slot; ViewHeader already provides the --space-lg side/top padding and --space-md bottom gap, so the view body must not repeat the top padding.
+      */}
+      <ViewHeader
+        icon={Sparkles}
+        title={t("insights.title", "Insights")}
+        actions={(
+          <>
+            <span className="insights-view-count">{totalCount} {t("common.total", "total")}</span>
           {backlogHealthCount > 0 && (
             <button
               className={`btn btn-sm insights-backlog-health-toggle${backlogHealthOnly ? " btn-icon--active" : ""}`}
@@ -564,8 +565,9 @@ export function InsightsView({ projectId, addToast, onClose, onCreateTask, model
               </>
             )}
           </button>
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       {showModelConfig && (
         <div className="insights-model-config" data-testid="model-config">

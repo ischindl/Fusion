@@ -149,11 +149,12 @@ The header row now comes from the shared .view-header (which supplies the --spac
   box-shadow: var(--focus-ring-strong);
 }
 
+/* FNXC:DocumentsView 2026-06-22-01:00: ViewHeader supplies the top padding, so the scrollable content body drops its top inset to avoid doubling the gap under the header (keeps horizontal + bottom padding). */
 .documents-view-content {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--space-lg);
+  padding: 0 var(--space-lg) var(--space-lg);
 }
 
 .documents-view-loading,

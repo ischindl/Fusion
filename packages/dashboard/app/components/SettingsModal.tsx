@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties, type MouseEvent } from "react";
-import { Globe, Folder, RefreshCw, Star, HelpCircle } from "lucide-react";
+import { Globe, Folder, RefreshCw, Star, HelpCircle, Settings as SettingsIcon } from "lucide-react";
 import {
   getErrorMessage,
   normalizeMergeIntegrationWorktreeMode,
@@ -2920,8 +2920,12 @@ export function SettingsModal({
         style={isEmbedded ? undefined : keyboardStyle}
       >
         <div className={isEmbedded ? "modal-header modal-header--embedded" : "modal-header"}>
+          {/* FNXC:Settings 2026-06-22-01:00: Embedded title gains a Settings icon (size 20, matching the sidebar nav and shared ViewHeader) so the embedded settings panel reads consistently with other main-content destinations; title is already 1.125rem. */}
           <div className="settings-modal-heading">
-            <h3>{t("settings.title", "Settings")}</h3>
+            <h3>
+              {isEmbedded && <SettingsIcon size={20} aria-hidden="true" />}
+              <span>{t("settings.title", "Settings")}</span>
+            </h3>
           </div>
           <div className="settings-header-actions">
             <a

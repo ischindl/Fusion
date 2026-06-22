@@ -139,13 +139,14 @@ Title metric matches the shared ViewHeader (1.125rem) so the Missions header rea
 }
 
 /* ── Body ── */
+/* FNXC:MissionManager 2026-06-22-01:00: The aligned .mission-manager__header supplies the top padding, so the scroll body drops its top inset to avoid doubling the gap under the header (keeps horizontal + bottom padding). */
 .mission-manager__body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  padding: var(--space-lg);
+  padding: 0 var(--space-lg) var(--space-lg);
   -webkit-overflow-scrolling: touch;
 }
 

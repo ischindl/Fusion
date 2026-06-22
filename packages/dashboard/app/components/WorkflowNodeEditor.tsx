@@ -2479,7 +2479,11 @@ function InnerEditor({
         }}
       >
         <header className="wf-editor-header">
-          <h2>{t("workflows.title", "Workflows")}</h2>
+          {/* FNXC:WorkflowEditorEmbedding 2026-06-22-01:00: Title row aligned to the shared ViewHeader/Command Center metric — a Workflow icon (size 20) + 1.125rem title — so the embedded workflows view reads consistently with other main-content destinations. */}
+          <h2>
+            <Workflow size={20} aria-hidden="true" />
+            <span>{t("workflows.title", "Workflows")}</span>
+          </h2>
           {/* FNXC:WorkflowEditorEmbedding 2026-06-22-00:00: embedded views keep a
               Command Center-style header title but drop the modal X close button. */}
           {!isEmbedded ? (

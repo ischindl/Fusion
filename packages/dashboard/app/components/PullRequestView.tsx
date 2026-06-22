@@ -13,6 +13,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { api } from "../api";
+import { ViewHeader } from "./ViewHeader";
 import "./PullRequestView.css";
 
 // Mirrors the route's serialized entity (register-pull-requests-routes.ts).
@@ -175,10 +176,17 @@ export function PullRequestView(props: PullRequestViewProps) {
 
   const { state, summary } = detail;
 
+  /*
+  FNXC:PullRequests 2026-06-22-01:00:
+  Added the shared ViewHeader (GitPullRequest icon, matching the left-sidebar nav) at the top of every populated PR state so the view reads consistently with other main-content views. The PR-specific identity row (repo/number/branch/state) stays below it. ViewHeader supplies the standard --space-lg top/side padding; the view body must not repeat the top padding.
+  */
+  const viewHeader = <ViewHeader icon={GitPullRequest} title={t("pr.view.title", "Pull Requests")} />;
+
   // ── creating ───────────────────────────────────────────────────────────────
   if (state === "creating") {
     return (
       <div className="pr-view" data-testid="pr-view" data-state="creating">
+        {viewHeader}
         <PrIdentityHeader detail={detail} />
         <div className="pr-placeholder" data-testid="pr-creating">
           <Clock size={16} /> {t("pr.view.creating", "Creating PR…")}
@@ -191,6 +199,7 @@ export function PullRequestView(props: PullRequestViewProps) {
   if (state === "failed") {
     return (
       <div className="pr-view" data-testid="pr-view" data-state="failed">
+        {viewHeader}
         <PrIdentityHeader detail={detail} />
         <div className="pr-error-reason" data-testid="pr-failed">
           <AlertTriangle size={16} className="pr-icon-failure" />
@@ -216,6 +225,7 @@ export function PullRequestView(props: PullRequestViewProps) {
   if (detail.unverified) {
     return (
       <div className="pr-view" data-testid="pr-view" data-state="unverified">
+        {viewHeader}
         <PrIdentityHeader detail={detail} />
         <div className="pr-notice pr-notice--unverified" data-testid="pr-unverified">
           <Clock size={16} /> {t("pr.view.verifyingGithub", "Verifying with GitHub…")}
@@ -240,6 +250,7 @@ export function PullRequestView(props: PullRequestViewProps) {
 
   return (
     <div className="pr-view" data-testid="pr-view" data-state={state}>
+      {viewHeader}
       <PrIdentityHeader detail={detail} />
 
       {/* responding banner */}

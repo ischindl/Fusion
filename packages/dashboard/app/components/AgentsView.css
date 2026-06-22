@@ -278,11 +278,12 @@ The base grid keeps a token-sized handle column as the no-JS fallback, while the
   background: var(--surface);
 }
 
+/* FNXC:AgentsView 2026-06-22-01:00: ViewHeader supplies the top padding, so the scrollable body drops its top inset to avoid doubling the gap under the header (keeps horizontal + bottom padding). */
 .agents-view-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: calc(var(--space-lg) + var(--space-xs));
+  padding: 0 calc(var(--space-lg) + var(--space-xs)) calc(var(--space-lg) + var(--space-xs));
 }
 
 

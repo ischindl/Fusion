@@ -13,7 +13,11 @@ FN-6829 mounts Todos as a flex child of .project-content like GoalsView; grow, z
   min-width: 0;
   width: 100%;
   overflow: hidden;
-  padding: var(--space-lg);
+  /*
+  FNXC:TodosStyling 2026-06-22-01:00:
+  Header migrated to the shared ViewHeader, which supplies the --space-lg top/side padding. The view drops its own top padding so the gap under the header is only ViewHeader's --space-md bottom; side and bottom padding remain.
+  */
+  padding: 0 var(--space-lg) var(--space-lg);
   /*
   FNXC:TodosStyling 2026-06-22-00:00:
   TodoView renders both in the wide main area and inside the narrow right dock (no width prop). Make it a query container so the layout switch is driven by the actual rendered width, not a viewport media query or a prop. Below the container breakpoint the two-panel split collapses into a single-panel navigation stack (see `@container todo-view (max-width: 520px)`).
@@ -30,26 +34,11 @@ The narrow-stack Back button is hidden by default (wide two-panel layout shows b
   display: none;
 }
 
-.todo-view-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-md);
-}
-
-.todo-view-title-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.todo-view-title-group h2 {
-  margin: 0;
-  color: var(--text);
-  font-size: calc(var(--space-lg) + var(--space-xs));
-}
-
-.todo-view-title-group p {
+/*
+FNXC:TodosStyling 2026-06-22-01:00:
+The descriptive subtitle renders inside ViewHeader's actions slot; mute it so it reads as secondary text alongside the title.
+*/
+.todo-view-subtitle {
   margin: 0;
   color: var(--text-muted);
 }
@@ -504,7 +493,7 @@ NARROW container (right dock): collapse the side-by-side split into a single-pan
 
 @media (max-width: 768px) {
   .todo-view {
-    padding: var(--space-md);
+    padding: 0 var(--space-md) var(--space-md);
     min-height: 0;
   }
 

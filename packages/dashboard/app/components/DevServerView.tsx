@@ -11,6 +11,7 @@ import type { ToastType } from "../hooks/useToast";
 import { DevServerLogViewer } from "./DevServerLogViewer";
 import { PreviewIframe } from "./PreviewIframe";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
+import { ViewHeader } from "./ViewHeader";
 
 interface DevServerViewProps {
   addToast: (msg: string, type?: ToastType) => void;
@@ -365,50 +366,58 @@ export function DevServerView({ addToast, projectId }: DevServerViewProps) {
 
   return (
     <div className="dev-server-view" data-testid="dev-server-view">
-      <section className="dev-server-header" aria-label={t("devserver.controlsHeaderLabel", "Dev server controls header")}>
-        <div className="dev-server-header-title">
-          <Monitor size={16} />
-          <h2>{t("devserver.title", "Dev Server")}</h2>
-          <span
-            className={`dev-server-status-badge ${statusBadge.className}`}
-            data-testid="dev-server-status-badge"
-          >
-            {statusBadge.label}
-          </span>
-        </div>
-        <div className="dev-server-header-actions">
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={handleStart}
-            disabled={startDisabled}
-            data-testid="dev-server-start-button"
-          >
-            <Play size={14} />
-            <span>{actionInFlight === "start" ? t("devserver.starting", "Starting...") : t("devserver.start", "Start")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            onClick={handleStop}
-            disabled={stopDisabled}
-            data-testid="dev-server-stop-button"
-          >
-            <Square size={14} />
-            <span>{actionInFlight === "stop" ? t("devserver.stopping", "Stopping...") : t("devserver.stop", "Stop")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={handleRestart}
-            disabled={restartDisabled}
-            data-testid="dev-server-restart-button"
-          >
-            <RotateCw size={14} />
-            <span>{actionInFlight === "restart" ? t("devserver.restarting", "Restarting...") : t("devserver.restart", "Restart")}</span>
-          </button>
-        </div>
-      </section>
+      {/*
+      FNXC:DevServer 2026-06-22-01:00:
+      Migrated to the shared ViewHeader for cross-view consistency. The status badge sits next to the title inside the actions slot (wrapped in .dev-server-header-title so the existing mobile flex-wrap rule still applies), and the Start/Stop/Restart controls follow in .dev-server-header-actions. ViewHeader supplies the standard view padding; the view body must not repeat the top padding.
+      */}
+      <ViewHeader
+        icon={Monitor}
+        title={t("devserver.title", "Dev Server")}
+        actions={(
+          <>
+            <span className="dev-server-header-title">
+              <span
+                className={`dev-server-status-badge ${statusBadge.className}`}
+                data-testid="dev-server-status-badge"
+              >
+                {statusBadge.label}
+              </span>
+            </span>
+            <div className="dev-server-header-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={handleStart}
+                disabled={startDisabled}
+                data-testid="dev-server-start-button"
+              >
+                <Play size={14} />
+                <span>{actionInFlight === "start" ? t("devserver.starting", "Starting...") : t("devserver.start", "Start")}</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={handleStop}
+                disabled={stopDisabled}
+                data-testid="dev-server-stop-button"
+              >
+                <Square size={14} />
+                <span>{actionInFlight === "stop" ? t("devserver.stopping", "Stopping...") : t("devserver.stop", "Stop")}</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleRestart}
+                disabled={restartDisabled}
+                data-testid="dev-server-restart-button"
+              >
+                <RotateCw size={14} />
+                <span>{actionInFlight === "restart" ? t("devserver.restarting", "Restarting...") : t("devserver.restart", "Restart")}</span>
+              </button>
+            </div>
+          </>
+        )}
+      />
 
       <section className="dev-server-panel dev-server-config" aria-label={t("devserver.configurationLabel", "Dev server configuration")}>
         <div className="dev-server-section-header">

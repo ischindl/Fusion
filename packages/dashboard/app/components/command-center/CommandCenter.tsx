@@ -562,8 +562,9 @@ export function CommandCenter({
   return (
     <section className="command-center" data-testid="command-center">
       <header className="cc-header">
+        {/* FNXC:CommandCenter 2026-06-22-01:00: Icon size aligned to 20 to match the shared ViewHeader (cc-header is the model for ViewHeader; title is already 1.125rem with --space-lg padding). */}
         <h2 className="cc-title">
-          <Gauge size={18} />
+          <Gauge size={20} />
           {t("commandCenter.heading", "Command Center")}
         </h2>
         <DateRangePicker value={range} onChange={setRange} />

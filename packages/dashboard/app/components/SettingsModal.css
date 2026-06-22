@@ -145,6 +145,9 @@ The embedded title reads like other embedded-view titles (Planning modal-header-
 }
 
 .settings-modal--embedded .modal-header--embedded .settings-modal-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   font-size: 1.125rem;
   letter-spacing: normal;
 }

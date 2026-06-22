@@ -1,3 +1,7 @@
+/*
+FNXC:PullRequests 2026-06-22-01:00:
+The view now renders the shared ViewHeader at the top, which supplies the --space-lg top/side padding. The view drops its own top padding so the gap under the header is just ViewHeader's --space-md bottom; side and bottom padding remain.
+*/
 .pr-view {
   display: flex;
   flex-direction: column;
@@ -6,7 +10,7 @@
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: var(--space-lg);
+  padding: 0 var(--space-lg) var(--space-lg);
   color: var(--text);
 }
 

@@ -8,46 +8,13 @@
 }
 
 /*
-FNXC:Insights 2026-06-22-00:00:
-The header title and action buttons must never overlap: allow the row to wrap so the actions drop to a new line when there is not enough horizontal room. The gap keeps spacing between the wrapped rows.
+FNXC:Insights 2026-06-22-01:00:
+Header migrated to the shared ViewHeader component (.view-header). The old .insights-view-header / .insights-view-title / .insights-view-actions rules were removed; the count badge and action toggles still render inside ViewHeader's actions slot, so their styling rules are retained below.
 */
-.insights-view-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-sm);
-  padding: var(--space-lg);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  flex-shrink: 0;
-}
-
-.insights-view-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.insights-view-title h2 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
 .insights-view-count {
   font-size: 0.8125rem;
   color: var(--text-muted);
   font-weight: normal;
-}
-
-.insights-view-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
 }
 
 /* Model configuration row — collapsible, below the action bar */
@@ -493,31 +460,6 @@ The header title and action buttons must never overlap: allow the row to wrap so
 
 /* Mobile responsive: stack panes vertically; sidebar becomes a horizontal scroller */
 @media (max-width: 768px) {
-  .insights-view-header {
-    flex-wrap: nowrap;
-    gap: var(--space-sm);
-    padding: var(--space-md);
-  }
-
-  .insights-view-title {
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-
-  .insights-view-title h2 {
-    font-size: 1rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .insights-view-actions {
-    flex-shrink: 0;
-    justify-content: flex-end;
-    flex-wrap: nowrap;
-    gap: var(--space-xs);
-  }
-
   .insights-body {
     flex-direction: column;
   }
@@ -591,6 +533,7 @@ The header title and action buttons must never overlap: allow the row to wrap so
     height: calc(var(--space-2xl) + var(--space-sm));
   }
 
+  .view-header__actions .insights-view-actions-btn,
   .insights-view-actions .btn {
     min-height: calc(var(--space-2xl) + var(--space-xs));
   }
@@ -631,19 +574,6 @@ Insights tablets at 769px–1024px were inheriting the desktop fixed category si
     min-inline-size: 0;
     min-block-size: 0;
     overflow: hidden;
-  }
-
-  .insights-view-header {
-    min-inline-size: 0;
-  }
-
-  .insights-view-title {
-    flex: 1 1 auto;
-    min-inline-size: 0;
-  }
-
-  .insights-view-actions {
-    flex-shrink: 0;
   }
 
   .insights-body {

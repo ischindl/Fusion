@@ -47,17 +47,22 @@ embedded view.
   --wf-editor-touch-target: calc(var(--space-xl) + var(--space-lg) + var(--space-xs));
 }
 
+/* FNXC:WorkflowEditorEmbedding 2026-06-22-01:00: Align the embedded workflows header to the shared ViewHeader metric — --space-lg padding, an icon + 1.125rem title — for cross-view consistency. */
 .wf-editor-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-md);
+  padding: var(--space-lg);
   border-bottom: 1px solid var(--border);
 }
 
 .wf-editor-header h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.125rem;
+  font-weight: 600;
   color: var(--text);
 }
 

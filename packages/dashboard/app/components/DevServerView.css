@@ -1,10 +1,14 @@
 /* === DevServerView === */
 
+/*
+FNXC:DevServer 2026-06-22-01:00:
+Header migrated to the shared ViewHeader (.view-header), which supplies the --space-lg top/side and --space-md bottom padding. The view no longer adds its own top padding (was causing a doubled gap under the header); only the side and bottom padding remain.
+*/
 .dev-server-view {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
-  padding: var(--space-lg);
+  padding: 0 var(--space-lg) var(--space-lg);
   min-height: 0;
   height: 100%;
   overflow-y: auto;
@@ -13,27 +17,13 @@
 }
 
 /*
-FNXC:DevServer 2026-06-22-00:00:
-The Dev Server view header must read like other embedded views (Command Center cc-header): a plain title row with actions, not a bordered card. Drop the card border/background/padding so the heading sits flush with the view padding; the title font already matches the shared 1.125rem embedded-title size.
+FNXC:DevServer 2026-06-22-01:00:
+.dev-server-header-title now wraps just the status badge inside ViewHeader's actions slot; the mobile flex-wrap rule keeps it from overflowing on narrow widths.
 */
-.dev-server-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-md);
-}
-
 .dev-server-header-title {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-}
-
-.dev-server-header-title h2 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text);
 }
 
 .dev-server-header-actions {
@@ -542,7 +532,7 @@ The Dev Server view header must read like other embedded views (Command Center c
     grid-template-rows: auto auto 1fr;
   }
 
-  .dev-server-header {
+  .dev-server-view > .view-header {
     grid-column: 1 / -1;
   }
 
@@ -572,12 +562,7 @@ The Dev Server view header must read like other embedded views (Command Center c
   .dev-server-view {
     display: flex;
     flex-direction: column;
-    padding: var(--space-md);
-  }
-
-  .dev-server-header {
-    flex-direction: column;
-    align-items: flex-start;
+    padding: 0 var(--space-md) var(--space-md);
   }
 
   .dev-server-header-title {
