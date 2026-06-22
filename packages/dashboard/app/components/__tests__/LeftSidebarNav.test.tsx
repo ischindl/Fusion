@@ -139,7 +139,6 @@ describe("LeftSidebarNav", () => {
       "sidebar-nav-insights",
       "sidebar-nav-skills",
       "sidebar-nav-memory",
-      "sidebar-nav-secrets",
       "sidebar-nav-devserver",
       "sidebar-nav-plugin-fusion-plugin-primary-primary-view",
       "sidebar-nav-plugin-fusion-plugin-overflow-overflow-view",
@@ -195,7 +194,6 @@ describe("LeftSidebarNav", () => {
     });
 
     expect(screen.getByTestId("sidebar-nav-board")).toBeDefined();
-    expect(screen.getByTestId("sidebar-nav-secrets")).toBeDefined();
     expect(screen.getByTestId("sidebar-nav-stash-recovery")).toBeDefined();
     expect(screen.queryByTestId("sidebar-nav-agents")).toBeNull();
     expect(screen.queryByTestId("sidebar-nav-research")).toBeNull();
@@ -438,7 +436,7 @@ describe("LeftSidebarNav", () => {
     expect(window.localStorage.getItem("fusion:left-sidebar-width")).toBe("160");
   });
 
-  it("routes clicks to view changes, todos view, and settings callback", () => {
+  it("routes clicks to view changes and settings callback without Secrets/Todos shortcuts", () => {
     const onOpenSettings = vi.fn();
     const { onChangeView } = renderSidebar({ todosEnabled: true, onOpenSettings });
 
@@ -448,8 +446,8 @@ describe("LeftSidebarNav", () => {
     fireEvent.click(screen.getByTestId("sidebar-nav-plugin-fusion-plugin-overflow-overflow-view"));
     expect(onChangeView).toHaveBeenCalledWith("plugin:fusion-plugin-overflow:overflow-view");
 
-    fireEvent.click(screen.getByTestId("sidebar-nav-todos"));
-    expect(onChangeView).toHaveBeenCalledWith("todos");
+    expect(screen.queryByTestId("sidebar-nav-secrets")).toBeNull();
+    expect(screen.queryByTestId("sidebar-nav-todos")).toBeNull();
 
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     expect(onOpenSettings).toHaveBeenCalledOnce();

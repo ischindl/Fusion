@@ -23,7 +23,7 @@ Task Detail modal opens from onboarding, activity log, and task-to-task navigati
 
 **Left Sidebar Navigation** is enabled by default for desktop/tablet project screens, moving project navigation out of the Header and into a persistent left sidebar. To opt out, open **Settings → Experimental Features** and turn **Left Sidebar Navigation** off (`leftSidebarNav: false`).
 
-When enabled on desktop or tablet project screens, the sidebar contains the primary destinations (Board, List, Agents, Command Center, Missions, Chat, Documents, Mailbox, and plugin primary views), Header overflow destinations as regular entries (Research, Insights, Skills, Memory, Secrets, Stash Recovery, Evals, Goals, Dev Server, Todos, and plugin overflow views when their flags/plugins are enabled), and a footer with the collapse toggle directly above the Settings button. The Header retains the Fusion brand and project selector, keeps its non-navigation controls, and hides the view-toggle row and **More views** trigger so there is only one canonical navigation surface.
+When enabled on desktop or tablet project screens, the sidebar contains the primary destinations (Board, List, Agents, Command Center, Missions, Chat, Documents, Mailbox, and plugin primary views), selected auxiliary destinations as regular entries (Research, Insights, Skills, Memory, Stash Recovery, Evals, Goals, Dev Server, and plugin overflow views when their flags/plugins are enabled), and a footer with the collapse toggle directly above the Settings button. Secrets and Todos are intentionally not listed in the left sidebar; use the Right Dock for those auxiliary views on desktop/tablet. The Header retains the Fusion brand and project selector, keeps its non-navigation controls, and hides the view-toggle row and **More views** trigger so there is only one canonical primary navigation surface.
 
 While the sidebar is active on desktop/tablet project screens, Board and List workflow controls move into the Header slot that replaces the hidden view toggle. Board and List share one workflow dropdown: each workflow row includes an inline edit action, and a persistent **New workflow** action remains at the bottom of the dropdown while the workflow list scrolls. The standalone workflow row above the board/list content is removed in this mode. When the flag is off, outside project screens, or on mobile, workflow controls remain inline with the same consolidated dropdown.
 
@@ -522,8 +522,8 @@ Todo View is an experimental full-height dashboard surface for managing per-proj
 > Available when `experimentalFeatures.todoView` is enabled.
 
 Navigation:
-- Desktop/tablet with Left Sidebar Navigation enabled: **Left sidebar → Todos**
-- Desktop/tablet without the left sidebar: **Header → More views → Todos**
+- Desktop/tablet with Right Dock enabled: **Right Dock → Todos**
+- Desktop/tablet without the right dock / with the left-sidebar opt-out layout: **Header → More views → Todos**
 - Mobile: **More** sheet → **Todos**
 
 For full behavior, API contracts, and storage details, use the canonical [Todo View guide](./todo-view.md).

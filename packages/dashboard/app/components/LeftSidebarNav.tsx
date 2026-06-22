@@ -11,13 +11,11 @@ import {
   Brain,
   ChevronLeft,
   ChevronRight,
-  CheckSquare,
   FileText,
   Gauge,
   History,
   LayoutGrid,
   List,
-  Lock,
   Mail,
   MessageSquare,
   Monitor,
@@ -151,7 +149,6 @@ export function LeftSidebarNav({
   view,
   onChangeView,
   onOpenSettings,
-  todosEnabled = false,
   mailboxUnreadCount = 0,
   mailboxPendingApprovalCount = 0,
   chatHasUnreadResponse = false,
@@ -324,6 +321,10 @@ export function LeftSidebarNav({
     }),
   ];
 
+  /*
+  FNXC:Navigation 2026-06-21-00:00:
+  Secrets and Todos are intentionally omitted from the left sidebar. They live in the right dock through RightDock/overflowViewRegistry, while mobile keeps its More-sheet entries and the Header opt-out layout keeps its overflow entries.
+  */
   const secondaryEntries: SidebarNavEntry[] = [
     ...(experimentalFeatures?.evalsView
       ? [{ id: "evals", label: t("header.evalsView", "Evals"), view: "evals" as TaskView, isActive: view === "evals", icon: Target, testId: "sidebar-nav-evals", onSelect: () => onChangeView("evals") }]
@@ -344,12 +345,8 @@ export function LeftSidebarNav({
     ...(experimentalFeatures?.memoryView
       ? [{ id: "memory", label: t("header.memoryView", "Memory"), view: "memory" as TaskView, isActive: view === "memory", icon: Brain, testId: "sidebar-nav-memory", onSelect: () => onChangeView("memory") }]
       : []),
-    { id: "secrets", label: t("header.secretsView", "Secrets"), view: "secrets", isActive: view === "secrets", icon: Lock, testId: "sidebar-nav-secrets", onSelect: () => onChangeView("secrets") },
     ...(experimentalFeatures?.devServerView
       ? [{ id: "devserver", label: t("header.devServerView", "Dev Server"), view: "devserver" as TaskView, isActive: view === "dev-server" || view === "devserver", icon: Monitor, testId: "sidebar-nav-devserver", onSelect: () => onChangeView("devserver") }]
-      : []),
-    ...(todosEnabled
-      ? [{ id: "todos", label: t("header.todosView", "Todos"), view: "todos" as TaskView, isActive: view === "todos", icon: CheckSquare, testId: "sidebar-nav-todos", onSelect: () => onChangeView("todos") }]
       : []),
     ...overflowPluginViews.map((entry): SidebarNavEntry => {
       const PluginIcon = getPluginNavIcon(entry.view.icon);
