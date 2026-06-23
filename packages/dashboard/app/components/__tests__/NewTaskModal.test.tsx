@@ -3,6 +3,9 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { NewTaskModal } from "../NewTaskModal";
 import type { Task, Column } from "@fusion/core";
+import { checkDuplicateTasks, type BoardWorkflowsPayload } from "../../api";
+import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
+import { writeLastSelectedWorkflowId } from "../../utils/lastSelectedWorkflow";
 
 // Mock lucide-react
 vi.mock("lucide-react", () => ({
@@ -23,6 +26,7 @@ vi.mock("lucide-react", () => ({
 // Mock the api module
 vi.mock("../../api", () => ({
   uploadAttachment: vi.fn().mockResolvedValue({}),
+  checkDuplicateTasks: vi.fn().mockResolvedValue([]),
   fetchModels: vi.fn().mockResolvedValue({ models: [
     { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", reasoning: true, contextWindow: 200000 },
     { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 128000 },
@@ -100,6 +104,7 @@ describe("NewTaskModal", () => {
     mockViewportMode = "mobile";
     mockConfirm.mockReset();
     mockConfirm.mockResolvedValue(true);
+    vi.mocked(checkDuplicateTasks).mockResolvedValue([]);
     mockUseMobileKeyboard.mockReturnValue({
       keyboardOpen: false,
       keyboardOverlap: 0,
@@ -722,6 +727,105 @@ describe("NewTaskModal", () => {
     });
   });
 
+  it("checks for duplicates and creates directly when none are found", async () => {
+    const { props } = renderNewTaskModal({ projectId: "project-alpha" });
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Unique task description" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    await waitFor(() => {
+      expect(checkDuplicateTasks).toHaveBeenCalledWith({ description: "Unique task description" }, "project-alpha");
+      expect(props.onCreateTask).toHaveBeenCalledWith(
+        expect.objectContaining({ description: "Unique task description" }),
+      );
+    });
+    expect(screen.queryByText("Possible duplicates")).not.toBeInTheDocument();
+  });
+
+  it("shows duplicate warning and does not create when matches are found", async () => {
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([
+      { id: "FN-301", title: "Title should not display", description: "Existing similar full-dialog task", column: "todo", score: 0.88 },
+    ]);
+    const { props } = renderNewTaskModal();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "New full-dialog task" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    expect(await screen.findByText("Possible duplicates")).toBeInTheDocument();
+    expect(screen.getByText("Existing similar full-dialog task")).toBeInTheDocument();
+    expect(screen.queryByText("Title should not display")).not.toBeInTheDocument();
+    expect(props.onCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("creates with acknowledged duplicate ids after Create anyway", async () => {
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([
+      { id: "FN-401", title: "Existing title", description: "Existing duplicate description", column: "todo", score: 0.93 },
+      { id: "FN-402", title: "Second title", description: "Second duplicate description", column: "in-progress", score: 0.82 },
+    ]);
+    const { props } = renderNewTaskModal();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Create anyway duplicate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create anyway" }));
+
+    await waitFor(() => {
+      expect(props.onCreateTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: "Create anyway duplicate",
+          acknowledgedDuplicates: ["FN-401", "FN-402"],
+        }),
+      );
+    });
+  });
+
+  it("dismisses duplicate warning on Cancel without creating", async () => {
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([
+      { id: "FN-501", title: "Existing title", description: "Cancel duplicate description", column: "todo", score: 0.9 },
+    ]);
+    const { props } = renderNewTaskModal();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Cancel duplicate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+    await screen.findByText("Possible duplicates");
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" }).at(-1)!);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Possible duplicates")).not.toBeInTheDocument();
+    });
+    expect(props.onCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("opens the selected duplicate task and closes the dialog", async () => {
+    vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([
+      { id: "FN-601", title: "Existing title", description: "Open duplicate description", column: "todo", score: 0.9 },
+    ]);
+    const { props } = renderNewTaskModal();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Open duplicate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Open" }))[0]);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/tasks/FN-601");
+      expect(props.onClose).toHaveBeenCalled();
+    });
+    expect(props.onCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("fails open and creates when duplicate check throws", async () => {
+    vi.mocked(checkDuplicateTasks).mockRejectedValueOnce(new Error("duplicate check unavailable"));
+    const { props } = renderNewTaskModal();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fail open duplicate check" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    await waitFor(() => {
+      expect(props.addToast).toHaveBeenCalledWith("Duplicate check failed; creating task anyway.", "error");
+      expect(props.onCreateTask).toHaveBeenCalledWith(
+        expect.objectContaining({ description: "Fail open duplicate check" }),
+      );
+    });
+  });
 
   it("disables Create Task when description is empty", () => {
     renderNewTaskModal();

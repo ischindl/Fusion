@@ -291,6 +291,10 @@ These values are sent with the Planning Mode create-task request as `branchSelec
 
 When inline quick-create, Planning Mode, or Subtask Breakdown is opened from a workflow-filtered board/list lane, the create request also carries that active workflow selection. Quick-created tasks appear on the selected workflow lane immediately while board-workflows metadata refreshes, and planning saves, planning breakdown saves, and subtask-breakdown saves create their tasks directly on the selected workflow lane instead of briefly landing on the default board.
 
+The **New Task** dialog's workflow selector also defaults to the current or last selected Board/List workflow lane for the current project. If no valid lane has been selected, or the remembered lane was deleted, the selector falls back to the project default workflow and task creation omits an explicit `workflowId`.
+
+Quick entry, inline quick-create, and the full **New Task** dialog all check for similar active tasks before creating. When possible duplicates exist, the warning lists each match by task description (falling back to title, then “No description”) and lets you open an existing task, cancel, or create anyway with the duplicates acknowledged.
+
 Completed single-task planning sessions remain in the Planning Mode history after you create the task, and selecting one restores the completed summary instead of restarting the composer. History rows are deduplicated by session id even if the initial load and live session updates arrive out of order, and deleting a history entry now waits for the server delete to persist (failures keep the row visible and surface an error instead of silently disappearing until refresh).
 
 ## New Task Modal Branch Strategy

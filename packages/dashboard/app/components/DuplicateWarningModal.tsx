@@ -18,6 +18,10 @@ export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: 
   const { t } = useTranslation("app");
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
 
+  // FNXC:DuplicateWarning 2026-06-22-02:14: Duplicate warnings must show the task description first so users compare the actual requested work, then fall back to title and an explicit empty-state label.
+  const getMatchDisplayText = (match: DuplicateMatch) =>
+    match.description.trim() || match.title.trim() || t("duplicateWarning.untitledTask", "No description");
+
   useEffect(() => {
     cancelButtonRef.current?.focus();
   }, []);
@@ -49,7 +53,7 @@ export function DuplicateWarningModal({ matches, onOpen, onProceed, onCancel }: 
                   <span className={`card-status-badge ${toStatusClass(match.column)}`}>{match.column}</span>
                   <span className="duplicate-warning-modal-score">{Math.round(match.score * 100)}%</span>
                 </div>
-                <div className="card-title duplicate-warning-modal-title">{match.title || t("duplicateWarning.untitledTask", "Untitled task")}</div>
+                <div className="card-title duplicate-warning-modal-title">{getMatchDisplayText(match)}</div>
                 <div className="duplicate-warning-modal-actions">
                   <button className="btn btn-sm" type="button" onClick={() => onOpen(match.id)}>{t("duplicateWarning.open", "Open")}</button>
                 </div>
