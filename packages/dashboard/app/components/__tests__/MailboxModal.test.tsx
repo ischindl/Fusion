@@ -133,6 +133,8 @@ describe("MailboxModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({}, "", "/");
+    Element.prototype.scrollIntoView = vi.fn();
     // Clear SWR cache between tests so prior runs don't pre-hydrate inbox/outbox
     // state and mask the loading/empty/error UI assertions.
     localStorage.clear();
@@ -511,6 +513,80 @@ describe("MailboxModal", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
       expect(screen.getByTestId("mailbox-inbox-list")).toBeDefined();
+    });
+  });
+
+  it("keeps a manually selected modal message after a stale deep link", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=msg-001#message-msg-001");
+    const clickedMessage: Message = {
+      ...mockReadMessage,
+      read: false,
+      content: "Modal clicked selection body",
+      fromId: mockMessage.fromId,
+      fromType: mockMessage.fromType,
+    };
+
+    mockFetchInbox.mockResolvedValue({ messages: [mockMessage, clickedMessage], total: 2, unreadCount: 2 });
+    mockFetchConversation.mockResolvedValue([mockMessage]);
+    mockMarkMessageRead.mockImplementation(async (messageId) => ({
+      ...(messageId === clickedMessage.id ? clickedMessage : mockMessage),
+      read: true,
+    }));
+
+    render(<MailboxModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent(mockMessage.content);
+    });
+
+    fireEvent.click(screen.getByTestId("mailbox-back-to-list"));
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-002")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId("mailbox-item-msg-002"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent("Modal clicked selection body");
+      expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", "message-msg-002");
+      expect(mockMarkMessageRead).toHaveBeenCalledWith("msg-002", undefined);
+    });
+  });
+
+  it("ignores unknown modal deep links and empty inboxes without selecting stale data", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=missing#message-missing");
+    mockFetchInbox.mockResolvedValue({ messages: [], total: 0, unreadCount: 0 });
+    mockFetchConversation.mockResolvedValue([]);
+
+    render(<MailboxModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-inbox-empty")).toBeDefined();
+    });
+
+    expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
+    expect(mockMarkMessageRead).not.toHaveBeenCalled();
+    expect(mockFetchConversation).not.toHaveBeenCalled();
+  });
+
+  it("keeps modal tab changes from restoring a consumed mailbox deep link", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=msg-001#message-msg-001");
+    mockFetchInbox.mockResolvedValue({ messages: [mockMessage], total: 1, unreadCount: 1 });
+    mockFetchOutbox.mockResolvedValue({ messages: [], total: 0 });
+    mockFetchConversation.mockResolvedValue([mockMessage]);
+    mockMarkMessageRead.mockResolvedValue({ ...mockMessage, read: true });
+
+    render(<MailboxModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", "message-msg-001");
+    });
+
+    fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-outbox-empty")).toBeDefined();
+      expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
     });
   });
 

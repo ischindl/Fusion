@@ -181,6 +181,8 @@ describe("MailboxView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({}, "", "/");
+    Element.prototype.scrollIntoView = vi.fn();
     window.localStorage.clear();
     sseSubscriptions.length = 0;
     mockUseViewportMode.mockReturnValue("desktop");
@@ -865,6 +867,134 @@ describe("MailboxView", () => {
       expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
       expect(screen.getByTestId("mailbox-inbox-list")).toBeDefined();
     });
+  });
+
+  it("keeps a manually selected mobile message after a stale deep link and refresh", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=msg-001#message-msg-001");
+    const clickedMessage: Message = {
+      ...mockReadMessage,
+      read: false,
+      content: "Newer mobile selection body",
+      fromId: mockMessage.fromId,
+      fromType: mockMessage.fromType,
+    };
+
+    mockFetchInbox
+      .mockResolvedValueOnce(makeInboxResponse([mockMessage, clickedMessage], 1))
+      .mockResolvedValue(makeInboxResponse([mockMessage, clickedMessage], 1));
+    const staleThread = [mockMessage];
+    mockFetchConversation.mockResolvedValue(staleThread);
+    mockMarkMessageRead.mockImplementation(async (messageId) => ({
+      ...(messageId === clickedMessage.id ? clickedMessage : mockMessage),
+      read: true,
+    }));
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent(mockMessage.content);
+      expect(mockMarkMessageRead).toHaveBeenCalledWith("msg-001", undefined);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-back-to-list"));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-item-msg-002")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-item-msg-002"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent("Newer mobile selection body");
+      expect(mockMarkMessageRead).toHaveBeenCalledWith("msg-002", undefined);
+      expect(mockFetchConversation).toHaveBeenLastCalledWith(clickedMessage.fromId, clickedMessage.fromType, undefined);
+    });
+
+    await act(async () => {
+      sseSubscriptions.at(-1)?.["message:received"]?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent("Newer mobile selection body");
+      expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", "mailbox-detail-message-msg-002");
+    });
+  });
+
+  it("lets desktop split-pane row selection override a stale deep link", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=msg-001#message-msg-001");
+    const clickedMessage: Message = {
+      ...mockReadMessage,
+      read: false,
+      content: "Desktop selected message body",
+      fromId: mockMessage.fromId,
+      fromType: mockMessage.fromType,
+    };
+
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([mockMessage, clickedMessage], 1));
+    mockFetchConversation.mockResolvedValue([mockMessage]);
+    mockMarkMessageRead.mockImplementation(async (messageId) => ({
+      ...(messageId === clickedMessage.id ? clickedMessage : mockMessage),
+      read: true,
+    }));
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent(mockMessage.content);
+      expect(screen.getByTestId("mailbox-inbox-list")).toBeDefined();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-item-msg-002"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-body")).toHaveTextContent("Desktop selected message body");
+      expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", "mailbox-detail-message-msg-002");
+    });
+  });
+
+  it("keeps tab changes from restoring a consumed mailbox deep link", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=msg-001#message-msg-001");
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([mockMessage], 1));
+    mockFetchOutbox.mockResolvedValue(makeOutboxResponse([]));
+    mockFetchConversation.mockResolvedValue([mockMessage]);
+    mockMarkMessageRead.mockResolvedValue({ ...mockMessage, read: true });
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-message-detail")).toHaveAttribute("id", "mailbox-detail-message-msg-001");
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-tab-outbox"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-outbox-empty")).toBeDefined();
+      expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
+    });
+  });
+
+  it("ignores unknown deep links and empty inboxes without fabricating a selected message", async () => {
+    window.history.replaceState({}, "", "?view=mailbox&mailbox-message=missing#message-missing");
+    mockFetchInbox.mockResolvedValue(makeInboxResponse([], 0));
+    mockFetchConversation.mockResolvedValue([]);
+
+    render(<MailboxView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mailbox-inbox-empty")).toBeDefined();
+    });
+
+    expect(screen.queryByTestId("mailbox-message-detail")).toBeNull();
+    expect(mockMarkMessageRead).not.toHaveBeenCalled();
+    expect(mockFetchConversation).not.toHaveBeenCalled();
   });
 
   it("shows agent names in message detail participant rows", async () => {

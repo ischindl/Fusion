@@ -198,6 +198,20 @@ export function MailboxModal({
   const [replyContextLoading, setReplyContextLoading] = useState<Record<string, boolean>>({});
   const [replyContextErrors, setReplyContextErrors] = useState<Record<string, string>>({});
   const [replyContextCache, setReplyContextCache] = useState<Map<string, Message>>(new Map());
+  const consumedDeepLinkedMessageIdRef = useRef<string | null>(null);
+  const highlightedDeepLinkedMessageIdRef = useRef<string | null>(null);
+
+  /*
+   * FNXC:MailboxMobile 2026-06-23-10:55:
+   * Modal mailbox deep links are one-shot initializers. Once the user taps Back, changes tabs, composes, deletes, or opens another row, the URL target is stale state and must not win over the explicit mobile selection.
+   */
+  const consumeCurrentDeepLink = useCallback(() => {
+    const deepLinkedMessageId = getDeepLinkedMessageId();
+    if (deepLinkedMessageId) {
+      consumedDeepLinkedMessageIdRef.current = deepLinkedMessageId;
+    }
+  }, []);
+
   const skipOpenSpinnerInboxRef = useRef(false);
   const skipOpenSpinnerOutboxRef = useRef(false);
   const agentNamesById = useMemo(() => {
@@ -383,7 +397,10 @@ export function MailboxModal({
 
   // ── Actions ───────────────────────────────────────────────────────────
 
-  const handleOpenMessage = useCallback(async (message: Message) => {
+  const handleOpenMessage = useCallback(async (message: Message, source: "deep-link" | "user" = "user") => {
+    if (source === "user") {
+      consumeCurrentDeepLink();
+    }
     setSelectedMessage(message);
     setReplyContextExpanded({});
     setReplyContextLoading({});
@@ -424,7 +441,7 @@ export function MailboxModal({
     } catch {
       setConversationMessages([message]);
     }
-  }, [activeTab, inboxCacheKey, projectId, unreadCountCacheKey]);
+  }, [activeTab, inboxCacheKey, projectId, unreadCountCacheKey, consumeCurrentDeepLink]);
 
   // Deep-link: open and highlight a specific message from URL params.
   useEffect(() => {
@@ -433,7 +450,7 @@ export function MailboxModal({
     }
 
     const deepLinkedMessageId = getDeepLinkedMessageId();
-    if (!deepLinkedMessageId) {
+    if (!deepLinkedMessageId || consumedDeepLinkedMessageIdRef.current === deepLinkedMessageId) {
       return;
     }
 
@@ -450,7 +467,8 @@ export function MailboxModal({
       return;
     }
 
-    void handleOpenMessage(message);
+    consumedDeepLinkedMessageIdRef.current = deepLinkedMessageId;
+    void handleOpenMessage(message, "deep-link");
   }, [isOpen, inbox, outbox, agentMailbox, allAgentsMailbox, conversationMessages, handleOpenMessage]);
 
   useEffect(() => {
@@ -459,7 +477,7 @@ export function MailboxModal({
     }
 
     const deepLinkedMessageId = getDeepLinkedMessageId();
-    if (!deepLinkedMessageId) {
+    if (!deepLinkedMessageId || selectedMessage?.id !== deepLinkedMessageId || highlightedDeepLinkedMessageIdRef.current === deepLinkedMessageId) {
       return;
     }
 
@@ -468,6 +486,7 @@ export function MailboxModal({
       return;
     }
 
+    highlightedDeepLinkedMessageIdRef.current = deepLinkedMessageId;
     element.scrollIntoView({ behavior: "smooth", block: "center" });
     element.classList.add("mailbox-message-highlight");
     const timer = window.setTimeout(() => {
@@ -480,12 +499,13 @@ export function MailboxModal({
   }, [isOpen, selectedMessage, conversationMessages]);
 
   const handleCloseMessage = useCallback(() => {
+    consumeCurrentDeepLink();
     setSelectedMessage(null);
     setConversationMessages([]);
     setReplyContextExpanded({});
     setReplyContextLoading({});
     setReplyContextErrors({});
-  }, []);
+  }, [consumeCurrentDeepLink]);
 
   const handleMarkAllRead = useCallback(async () => {
     try {
@@ -512,6 +532,7 @@ export function MailboxModal({
   }, [addToast, inboxCacheKey, projectId, unreadCountCacheKey, t]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {
+    consumeCurrentDeepLink();
     try {
       await deleteMessage(id, projectId);
       setSelectedMessage(null);
@@ -525,16 +546,17 @@ export function MailboxModal({
     } catch {
       addToast?.(t("mailbox.deleteFailed", "Failed to delete message"), "error");
     }
-  }, [projectId, activeTab, selectedAgentId, loadInbox, loadOutbox, loadAgentMailbox, loadAllAgentsMailbox, addToast, t]);
+  }, [projectId, activeTab, selectedAgentId, loadInbox, loadOutbox, loadAgentMailbox, loadAllAgentsMailbox, addToast, t, consumeCurrentDeepLink]);
 
   const handleReply = useCallback((message: Message) => {
+    consumeCurrentDeepLink();
     setComposeRecipient({ id: message.fromId, type: message.fromType });
     setComposeReplyContext({
       messageId: message.id,
       preview: messagePreview(message.content, 120),
     });
     setShowComposer(true);
-  }, []);
+  }, [consumeCurrentDeepLink]);
 
   const handleMessageSent = useCallback(() => {
     setShowComposer(false);
@@ -548,6 +570,7 @@ export function MailboxModal({
   }, [activeTab, loadOutbox, selectedAgentId, loadAgentMailbox, loadAllAgentsMailbox, addToast, t]);
 
   const handleOpenCompose = useCallback(() => {
+    consumeCurrentDeepLink();
     // Pre-fill recipient from selected agent if available
     if (activeTab === "agents" && selectedAgentId && selectedAgentId !== ALL_AGENTS_MAILBOX_ID) {
       setComposeRecipient({ id: selectedAgentId, type: "agent" });
@@ -556,13 +579,14 @@ export function MailboxModal({
     }
     setComposeReplyContext(null);
     setShowComposer(true);
-  }, [activeTab, selectedAgentId]);
+  }, [activeTab, selectedAgentId, consumeCurrentDeepLink]);
 
   const handleComposeCancel = useCallback(() => {
+    consumeCurrentDeepLink();
     setShowComposer(false);
     setComposeRecipient(null);
     setComposeReplyContext(null);
-  }, []);
+  }, [consumeCurrentDeepLink]);
 
   const threadMessages = selectedMessage ? buildReplyThread(conversationMessages, selectedMessage) : [];
 
@@ -751,7 +775,7 @@ export function MailboxModal({
         <div className="mailbox-tabs" data-testid="mailbox-tabs">
           <button
             className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "inbox" ? "active" : ""}`}
-            onClick={() => { setActiveTab("inbox"); setSelectedMessage(null); }}
+            onClick={() => { consumeCurrentDeepLink(); setActiveTab("inbox"); setSelectedMessage(null); }}
             data-testid="mailbox-tab-inbox"
           >
             <InboxIcon size={14} />
@@ -760,7 +784,7 @@ export function MailboxModal({
           </button>
           <button
             className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "outbox" ? "active" : ""}`}
-            onClick={() => { setActiveTab("outbox"); setSelectedMessage(null); }}
+            onClick={() => { consumeCurrentDeepLink(); setActiveTab("outbox"); setSelectedMessage(null); }}
             data-testid="mailbox-tab-outbox"
           >
             <Send size={14} />
@@ -768,7 +792,7 @@ export function MailboxModal({
           </button>
           <button
             className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "agents" ? "active" : ""}`}
-            onClick={() => { setActiveTab("agents"); setSelectedMessage(null); }}
+            onClick={() => { consumeCurrentDeepLink(); setActiveTab("agents"); setSelectedMessage(null); }}
             data-testid="mailbox-tab-agents"
           >
             <Bot size={14} />
@@ -993,7 +1017,7 @@ export function MailboxModal({
                           <select
                             className="message-composer-select mailbox-agent-select"
                             value={selectedAgentId}
-                            onChange={(e) => { setSelectedAgentId(e.target.value); setAgentSubTab("inbox"); }}
+                            onChange={(e) => { consumeCurrentDeepLink(); setSelectedAgentId(e.target.value); setAgentSubTab("inbox"); setSelectedMessage(null); }}
                             data-testid="mailbox-agent-select"
                           >
                             <option value={ALL_AGENTS_MAILBOX_ID}>{t("mailbox.allAgentsOption", "All agents")}</option>
@@ -1019,7 +1043,7 @@ export function MailboxModal({
                         <div className="mailbox-agent-subtabs" data-testid="mailbox-agent-subtabs">
                           <button
                             className={`btn btn-sm btn-secondary mailbox-agent-subtab ${agentSubTab === "inbox" ? "active" : ""}`}
-                            onClick={() => setAgentSubTab("inbox")}
+                            onClick={() => { consumeCurrentDeepLink(); setAgentSubTab("inbox"); setSelectedMessage(null); }}
                             data-testid="mailbox-agent-subtab-inbox"
                           >
                             <InboxIcon size={12} />
@@ -1030,7 +1054,7 @@ export function MailboxModal({
                           </button>
                           <button
                             className={`btn btn-sm btn-secondary mailbox-agent-subtab ${agentSubTab === "outbox" ? "active" : ""}`}
-                            onClick={() => setAgentSubTab("outbox")}
+                            onClick={() => { consumeCurrentDeepLink(); setAgentSubTab("outbox"); setSelectedMessage(null); }}
                             data-testid="mailbox-agent-subtab-outbox"
                           >
                             <Send size={12} />
