@@ -57,6 +57,13 @@ describe("FN-4114 worktree liveness assertion", () => {
   });
 
   it("FN-6861 aborts with structured audit when worktree realpath collides with repo root", async () => {
+    vi.spyOn(worktreeAcquisition, "acquireTaskWorktree").mockResolvedValue({
+      worktreePath: "/repo",
+      branch: "fusion/fn-4114",
+      source: "existing",
+      hydrated: true,
+      isResume: true,
+    });
     vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({ ok: true });
     vi.spyOn(worktreePool, "describeRegisteredWorktrees").mockResolvedValue({
       rawOutput: "worktree /repo\nworktree /repo/.worktrees/swift-falcon\n",
@@ -90,6 +97,34 @@ describe("FN-4114 worktree liveness assertion", () => {
         expectedPatternExcludesRepoRoot: true,
         terminalAction: "requeue-todo",
       }),
+    }));
+  });
+
+  it("FN-6922 proceeds when acquisition self-heals a repo-root assignment to a fresh worktree", async () => {
+    vi.spyOn(worktreeAcquisition, "acquireTaskWorktree").mockResolvedValue({
+      worktreePath: "/repo/.worktrees/fn-6922-fresh",
+      branch: "fusion/fn-4114",
+      source: "fresh",
+      hydrated: true,
+      isResume: false,
+    });
+    vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({ ok: false, classification: "repo-root", reason: "would have been root before acquisition guard" });
+    const store = createMockStore();
+    store.recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    store.getTask.mockResolvedValue(task({ worktree: "/repo", sessionFile: null }));
+
+    mockedCreateFnAgent.mockImplementation(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() },
+    }) as any);
+
+    const executor = new TaskExecutor(store as any, "/repo");
+    await executor.execute(task({ worktree: "/repo", sessionFile: null }) as any);
+
+    expect(mockedCreateFnAgent).toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4114", "todo", { preserveProgress: true });
+    expect(store.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "worktree:incomplete-detected",
+      metadata: expect.objectContaining({ classification: "repo-root", source: "executor-liveness-gate" }),
     }));
   });
 

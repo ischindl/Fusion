@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { writeSecretsEnvFile } = vi.hoisted(() => ({ writeSecretsEnvFile: vi.fn() }));
@@ -60,9 +62,12 @@ describe("worktree-acquisition secrets env hook", () => {
   });
 
   it("does not call writer for existing resume", async () => {
+    const existingWorktree = process.cwd();
+    const projectRoot = dirname(existingWorktree);
+
     await acquireTaskWorktree({
-      task: { ...task, branch: "fusion/fn-1", worktree: process.cwd() },
-      rootDir: process.cwd(),
+      task: { ...task, branch: "fusion/fn-1", worktree: existingWorktree },
+      rootDir: projectRoot,
       store,
       settings: { secretsEnv: { enabled: true } } as any,
       createWorktree: vi.fn(),

@@ -74,6 +74,10 @@ export function canonicalizePath(path: string): string {
   }
 }
 
+export function isRepoRootPath(rootDir: string, candidate: string): boolean {
+  return canonicalizePath(rootDir) === canonicalizePath(candidate);
+}
+
 function getExecStdout(result: unknown): string {
   if (typeof result === "string") return result;
   if (result && typeof result === "object" && "stdout" in result) {
@@ -268,13 +272,11 @@ export async function classifyTaskWorktree(rootDir: string, worktreePath: string
     return { ok: false, classification: "missing", reason: "worktree directory does not exist" };
   }
 
-  const canonicalRootDir = canonicalizePath(rootDir);
-  const canonicalWorktreePath = canonicalizePath(worktreePath);
   /*
    * FNXC:WorktreeLiveness 2026-06-21-11:10:
    * The project root is a legitimately registered git worktree, but it is never a usable task worktree. Tasks must execute inside the configured worktrees directory, so classification rejects root-equal paths here to stop the resume↔executor-gate requeue loop observed in FN-6861/FN-6709.
    */
-  if (canonicalWorktreePath === canonicalRootDir) {
+  if (isRepoRootPath(rootDir, worktreePath)) {
     return { ok: false, classification: "repo-root", reason: "worktree path is the project root, not a task worktree" };
   }
 

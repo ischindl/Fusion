@@ -11,6 +11,7 @@ import {
   type WorktreePool,
   classifyTaskWorktree,
   isInsideWorktreesDir,
+  isRepoRootPath,
   removeWorktree,
   RemovalReason,
   PoolDoubleLeaseError,
@@ -87,6 +88,13 @@ export interface AcquireTaskWorktreeResult {
 }
 
 type InitCommandResult = Awaited<ReturnType<NonNullable<AcquireTaskWorktreeOptions["runConfiguredCommand"]>>>;
+
+export class RepoRootWorktreeError extends Error {
+  constructor(public readonly taskId: string, public readonly rootDir: string, public readonly worktreePath: string, public readonly source: string) {
+    super(`Refusing to return repo root as task worktree for ${taskId}: ${worktreePath} (${source}) canonicalizes to ${rootDir}`);
+    this.name = "RepoRootWorktreeError";
+  }
+}
 
 const INIT_OUTCOME_MAX_CHARS = 2_000;
 
@@ -239,6 +247,9 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
   }
 
+  let acquiredFromPool = false;
+  let branch = branchName;
+
   const hydrate = async (path: string): Promise<boolean> => {
     if (rootDir === path) return false;
     try {
@@ -253,6 +264,155 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       logger?.warn(`${task.id}: worktree DB hydration failed: ${formatError(error)}`);
       return false;
     }
+  };
+
+  const createWorktreeImpl = createWorktree
+    ? createWorktree
+    : async (createBranch: string, createPath: string, createTaskId: string, startPoint?: string, allowRename?: boolean) => {
+      try {
+        const created = await backend.create({
+          rootDir,
+          branch: createBranch,
+          worktreePath: createPath,
+          startPoint,
+          taskId: createTaskId,
+          allowSiblingBranchRename: allowRename,
+        });
+        if (backend.kind === "worktrunk") {
+          await audit?.git({
+            type: "worktree:worktrunk-create",
+            target: created.path,
+            metadata: { branch: created.branch },
+          });
+        }
+        return created;
+      } catch (error) {
+        if (backend.kind === "worktrunk" && error instanceof WorktrunkOperationError) {
+          const nativeBackend = new NativeWorktreeBackend({ logger: logger ?? undefined });
+          const fallback = () => nativeBackend.create({
+            rootDir,
+            branch: createBranch,
+            worktreePath: createPath,
+            startPoint,
+            taskId: createTaskId,
+            allowSiblingBranchRename: allowRename,
+          });
+          return await handleWorktrunkFailure("create", error, fallback) as { path: string; branch: string };
+        }
+        throw error;
+      }
+    };
+
+  const emitRepoRootReturnGuardAudit = async (guardedPath: string, source: string) => {
+    await audit?.git({
+      type: "worktree:incomplete-detected",
+      target: guardedPath,
+      metadata: {
+        classification: "repo-root",
+        reason: "acquireTaskWorktree return path canonicalizes to the project root",
+        source: "acquire-return-guard",
+        returnSource: source,
+        taskId: task.id,
+      },
+    });
+  };
+
+  const finalizeCreatedWorktree = async (
+    created: { path: string; branch: string },
+    source: "fresh" | "pool",
+    logOrigin: "normal" | "return-guard",
+  ): Promise<AcquireTaskWorktreeResult> => {
+    /*
+     * FNXC:WorktreeLiveness 2026-06-22-18:30:
+     * FN-6861 fixed the resume classifier path, but FN-6888 showed the repo root can still reach the executor through another acquisition return branch. FN-6922 makes acquisition itself enforce a return-value invariant: no resume, pool, or fresh branch may return the repo root, so the executor's realpath_matches_repo_root gate remains defense-in-depth instead of a requeue loop source.
+     */
+    if (isRepoRootPath(rootDir, created.path)) {
+      await emitRepoRootReturnGuardAudit(created.path, source);
+      await store.updateTask(task.id, { worktree: null, branch: null, sessionFile: null });
+      throw new RepoRootWorktreeError(task.id, rootDir, created.path, `fresh-create:${logOrigin}`);
+    }
+
+    worktreePath = created.path;
+    branch = created.branch;
+    await store.updateTask(task.id, { worktree: created.path, branch: created.branch });
+    await audit?.git({ type: "worktree:create", target: created.path, metadata: { branch: created.branch, source: logOrigin === "return-guard" ? "acquire-return-guard" : undefined } });
+    await audit?.git({ type: "branch:create", target: created.branch });
+    if (created.branch !== branchName) {
+      logger?.log(`Branch conflict resolved: using ${created.branch} instead of ${branchName}`);
+      await store.logEntry(task.id, `Worktree created at ${worktreePath} (branch conflict: using ${created.branch})`, undefined, runContext);
+    } else if (baseBranch) {
+      await store.logEntry(task.id, `Worktree created at ${worktreePath} (based on ${baseBranch})`, undefined, runContext);
+    } else {
+      await store.logEntry(task.id, `Worktree created at ${worktreePath}`, undefined, runContext);
+    }
+
+    const cleanup = await removeDesktopBuildArtifacts(worktreePath, logger);
+    if (cleanup.removed.length > 0) {
+      await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
+    }
+
+    if (runInitCommand && settings.worktreeInitCommand && runConfiguredCommand) {
+      const initStartedAt = Date.now();
+      let initResult: InitCommandResult | undefined;
+      try {
+        initResult = await runConfiguredCommand(settings.worktreeInitCommand, worktreePath, 300_000, taskEnv);
+        if (initResult.spawnError || initResult.timedOut || initResult.exitCode !== 0) {
+          throw new Error(configuredCommandErrorMessage(initResult));
+        }
+        await store.logEntry(task.id, `[timing] Worktree init command completed in ${Date.now() - initStartedAt}ms`, settings.worktreeInitCommand, runContext);
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          throw err;
+        }
+        await store.logEntry(task.id, `[timing] Worktree init command failed after ${Date.now() - initStartedAt}ms`, undefined, runContext);
+        const message = err instanceof Error ? err.message : String(err);
+        const outcome = formatInitFailureOutcome(initResult, err);
+        logger?.error?.(`${task.id}: worktree init command failed — first test run will likely fail: ${message} (stderr captured in task log outcome)`);
+        await store.logEntry(task.id, `Worktree init command failed (first test run will likely fail): ${message}`, outcome, runContext);
+      }
+    }
+
+    await maybeWarnForeignTaskStartPoint({
+      baseBranch,
+      rootDir,
+      worktreePath,
+      taskId: task.id,
+      logger,
+      store,
+      runContext,
+    });
+    const hydrated = await hydrate(worktreePath);
+    try {
+      await writeSecretsEnvFile({
+        rootDir,
+        worktreePath,
+        taskId: task.id,
+        settings,
+        worktreeSource: "fresh",
+        secretsStore,
+        audit,
+        logger,
+      });
+    } catch (err) {
+      logger?.warn?.(`${task.id}: secrets-env write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { worktreePath, branch, source, hydrated, isResume: false };
+  };
+
+  const createFreshWorktreeFromReturnGuard = async (guardedPath: string, source: string): Promise<AcquireTaskWorktreeResult> => {
+    await emitRepoRootReturnGuardAudit(guardedPath, source);
+    logger?.warn(`${task.id}: acquisition ${source} returned repo root; clearing assignment and creating a fresh worktree`);
+    await store.logEntry(task.id, "Acquisition attempted to return the project root as a task worktree; creating a fresh worktree instead", guardedPath, runContext);
+    await store.updateTask(task.id, { worktree: null, branch: null, sessionFile: null });
+    const fallbackName = generateWorktreeName(rootDir, settings);
+    const fallbackPath = await resolveTaskWorktreePathForBackend(rootDir, fallbackName, settings, backend, branchName);
+    const created = await createWorktreeImpl(branchName, fallbackPath, task.id, baseBranch ?? undefined, allowSiblingBranchRename);
+    return finalizeCreatedWorktree(created, "fresh", "return-guard");
+  };
+
+  const guardAcquisitionReturn = async (result: AcquireTaskWorktreeResult): Promise<AcquireTaskWorktreeResult> => {
+    if (!isRepoRootPath(rootDir, result.worktreePath)) return result;
+    return createFreshWorktreeFromReturnGuard(result.worktreePath, result.source);
   };
 
   if (task.worktree && isResume) {
@@ -274,11 +434,8 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       runContext,
     });
     // FN-4912: resume path reuses the prior on-disk .env (and its fingerprint sidecar). Rewrite is owned by the next fresh acquisition.
-    return { worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true };
+    return guardAcquisitionReturn({ worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true });
   }
-
-  let acquiredFromPool = false;
-  let branch = branchName;
 
   if (!isResume && pool && settings.recycleWorktrees) {
     let pooled: string | null = null;
@@ -379,7 +536,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           } catch (err) {
             logger?.warn?.(`${task.id}: secrets-env write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           }
-          return {
+          return guardAcquisitionReturn({
             worktreePath,
             branch,
             source: "pool",
@@ -391,7 +548,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
                   strandedCommitCount: prepared.strandedCommitCount,
                 }
               : undefined,
-          };
+          });
         }
       } catch (poolErr) {
         pool.release(pooled, task.id);
@@ -407,112 +564,11 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
   }
 
-  const createWorktreeImpl = createWorktree
-    ? createWorktree
-    : async (branch: string, path: string, taskId: string, startPoint?: string, allowRename?: boolean) => {
-      try {
-        const created = await backend.create({
-          rootDir,
-          branch,
-          worktreePath: path,
-          startPoint,
-          taskId,
-          allowSiblingBranchRename: allowRename,
-        });
-        if (backend.kind === "worktrunk") {
-          await audit?.git({
-            type: "worktree:worktrunk-create",
-            target: created.path,
-            metadata: { branch: created.branch },
-          });
-        }
-        return created;
-      } catch (error) {
-        if (backend.kind === "worktrunk" && error instanceof WorktrunkOperationError) {
-          const nativeBackend = new NativeWorktreeBackend({ logger: logger ?? undefined });
-          const fallback = () => nativeBackend.create({
-            rootDir,
-            branch,
-            worktreePath: path,
-            startPoint,
-            taskId,
-            allowSiblingBranchRename: allowRename,
-          });
-          return await handleWorktrunkFailure("create", error, fallback) as { path: string; branch: string };
-        }
-        throw error;
-      }
-    };
-
   // Worktree removal in merger.ts, worktree-pool.ts, and self-healing.ts is now
   // backend-mediated via WorktreeBackend.remove(). executor.ts and
   // step-session-executor.ts remain native-only paths (tracked separately).
   const created = await createWorktreeImpl(branchName, worktreePath, task.id, baseBranch ?? undefined, allowSiblingBranchRename);
-  worktreePath = created.path;
-  branch = created.branch;
-  await store.updateTask(task.id, { worktree: created.path, branch: created.branch });
-  await audit?.git({ type: "worktree:create", target: created.path, metadata: { branch: created.branch } });
-  await audit?.git({ type: "branch:create", target: created.branch });
-  if (created.branch !== branchName) {
-    logger?.log(`Branch conflict resolved: using ${created.branch} instead of ${branchName}`);
-    await store.logEntry(task.id, `Worktree created at ${worktreePath} (branch conflict: using ${created.branch})`, undefined, runContext);
-  } else if (baseBranch) {
-    await store.logEntry(task.id, `Worktree created at ${worktreePath} (based on ${baseBranch})`, undefined, runContext);
-  } else {
-    await store.logEntry(task.id, `Worktree created at ${worktreePath}`, undefined, runContext);
-  }
-
-  const cleanup = await removeDesktopBuildArtifacts(worktreePath, logger);
-  if (cleanup.removed.length > 0) {
-    await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
-  }
-
-  if (runInitCommand && settings.worktreeInitCommand && runConfiguredCommand) {
-    const initStartedAt = Date.now();
-    let initResult: InitCommandResult | undefined;
-    try {
-      initResult = await runConfiguredCommand(settings.worktreeInitCommand, worktreePath, 300_000, taskEnv);
-      if (initResult.spawnError || initResult.timedOut || initResult.exitCode !== 0) {
-        throw new Error(configuredCommandErrorMessage(initResult));
-      }
-      await store.logEntry(task.id, `[timing] Worktree init command completed in ${Date.now() - initStartedAt}ms`, settings.worktreeInitCommand, runContext);
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        throw err;
-      }
-      await store.logEntry(task.id, `[timing] Worktree init command failed after ${Date.now() - initStartedAt}ms`, undefined, runContext);
-      const message = err instanceof Error ? err.message : String(err);
-      const outcome = formatInitFailureOutcome(initResult, err);
-      logger?.error?.(`${task.id}: worktree init command failed — first test run will likely fail: ${message} (stderr captured in task log outcome)`);
-      await store.logEntry(task.id, `Worktree init command failed (first test run will likely fail): ${message}`, outcome, runContext);
-    }
-  }
-
-  await maybeWarnForeignTaskStartPoint({
-    baseBranch,
-    rootDir,
-    worktreePath,
-    taskId: task.id,
-    logger,
-    store,
-    runContext,
-  });
-  const hydrated = await hydrate(worktreePath);
-  try {
-    await writeSecretsEnvFile({
-      rootDir,
-      worktreePath,
-      taskId: task.id,
-      settings,
-      worktreeSource: "fresh",
-      secretsStore,
-      audit,
-      logger,
-    });
-  } catch (err) {
-    logger?.warn?.(`${task.id}: secrets-env write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return { worktreePath, branch, source: acquiredFromPool ? "pool" : "fresh", hydrated, isResume: false };
+  return finalizeCreatedWorktree(created, acquiredFromPool ? "pool" : "fresh", "normal");
 }
 
 /**
