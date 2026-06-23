@@ -417,6 +417,30 @@ describe("AgentLogger", () => {
     expect(call[3]).toBe(longResult);
   });
 
+  it("bounds structured tool result previews before logging", async () => {
+    const store = createMockStore();
+    const logger = new AgentLogger({
+      store,
+      taskId: "FN-017B",
+      agent: "executor",
+    });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    circular.payload = "x".repeat(20_000);
+
+    logger.onToolEnd("Search", false, circular);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const call = (store.appendAgentLog as ReturnType<typeof vi.fn>).mock.calls[0];
+    /*
+     * FNXC:AgentLogging 2026-06-23-09:52:
+     * Tool-result logging must bound structured previews before persistence while preserving truncation and circular-reference evidence for execution-memory regression coverage.
+     */
+    expect(call[3].length).toBeLessThan(5_000);
+    expect(call[3]).toContain("[tool output truncated to keep dashboard log views responsive]");
+    expect(call[3]).toContain("[Circular]");
+  });
+
   it("handles undefined result in onToolEnd", async () => {
     const store = createMockStore();
     const logger = new AgentLogger({

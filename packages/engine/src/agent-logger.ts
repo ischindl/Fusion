@@ -24,6 +24,89 @@ const FLUSH_SIZE_BYTES = 1024;
 /** Default timer interval (ms) for periodic flush of small writes. */
 const FLUSH_INTERVAL_MS = 500;
 const ENTRY_BATCH_SIZE = 50;
+const TOOL_RESULT_DETAIL_LIMIT = 4_096;
+const TOOL_RESULT_DETAIL_TRUNCATION_NOTICE = "\n\n[tool output truncated to keep dashboard log views responsive]";
+const TOOL_RESULT_MAX_ARRAY_ITEMS = 25;
+const TOOL_RESULT_MAX_OBJECT_KEYS = 50;
+
+function truncateToolResultDetail(value: string): string {
+  if (value.length <= TOOL_RESULT_DETAIL_LIMIT) return value;
+  return `${value.slice(0, TOOL_RESULT_DETAIL_LIMIT)}${TOOL_RESULT_DETAIL_TRUNCATION_NOTICE}`;
+}
+
+function summarizeToolResultValue(value: unknown, state: { remainingChars: number; seen: WeakSet<object> }): unknown {
+  if (state.remainingChars <= 0) return "[truncated]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    const truncated = value.length > state.remainingChars
+      ? `${value.slice(0, state.remainingChars)}${TOOL_RESULT_DETAIL_TRUNCATION_NOTICE}`
+      : value;
+    state.remainingChars -= Math.min(value.length, state.remainingChars);
+    return truncated;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: summarizeToolResultValue(value.message, state),
+      ...(value.stack ? { stack: summarizeToolResultValue(value.stack, state) } : {}),
+    };
+  }
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return `<Buffer ${value.byteLength} bytes>`;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return `<${value.constructor.name} ${value.byteLength} bytes>`;
+  }
+  if (value instanceof ArrayBuffer) {
+    return `<ArrayBuffer ${value.byteLength} bytes>`;
+  }
+  if (typeof value !== "object") return String(value);
+  if (state.seen.has(value)) return "[Circular]";
+  state.seen.add(value);
+  if (Array.isArray(value)) {
+    const summarized = value
+      .slice(0, TOOL_RESULT_MAX_ARRAY_ITEMS)
+      .map((item) => summarizeToolResultValue(item, state));
+    if (value.length > TOOL_RESULT_MAX_ARRAY_ITEMS) summarized.push(`[${value.length - TOOL_RESULT_MAX_ARRAY_ITEMS} more items truncated]`);
+    return summarized;
+  }
+  const summarized: Record<string, unknown> = {};
+  let count = 0;
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    if (count >= TOOL_RESULT_MAX_OBJECT_KEYS) {
+      summarized.__truncatedKeys = true;
+      break;
+    }
+    summarized[key] = summarizeToolResultValue((value as Record<string, unknown>)[key], state);
+    count += 1;
+    if (state.remainingChars <= 0) {
+      summarized.__truncated = true;
+      break;
+    }
+  }
+  return summarized;
+}
+
+function summarizeToolResultDetail(result: unknown): string | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === "string") return truncateToolResultDetail(result);
+  /*
+   * FNXC:AgentLogging 2026-06-23-09:26:
+   * Execution memory can spike when tools return large structured payloads. Build a bounded preview before JSON serialization so logging cannot materialize multi-megabyte tool results after the dashboard-safe log detail limit would discard them anyway.
+   */
+  try {
+    const preview = summarizeToolResultValue(result, {
+      remainingChars: TOOL_RESULT_DETAIL_LIMIT,
+      seen: new WeakSet<object>(),
+    });
+    return truncateToolResultDetail(JSON.stringify(preview));
+  } catch {
+    return truncateToolResultDetail(String(result));
+  }
+}
 
 /**
  * Produce a human-readable summary from tool arguments.
@@ -269,10 +352,7 @@ export class AgentLogger {
    */
   onToolEnd(name: string, isError: boolean, result?: unknown): void {
     const type = isError ? "tool_error" : "tool_result";
-    let detail: string | undefined;
-    if (result !== undefined && result !== null) {
-      detail = typeof result === "string" ? result : JSON.stringify(result);
-    }
+    const detail = summarizeToolResultDetail(result);
     this.writeEntry(name, type, detail, `Failed to log tool end "${name}" (${type}) for ${this.taskId}`);
     // Record completion as tool_result/tool_error with a duration descriptor.
     // meta NEVER includes the tool result payload — only non-sensitive metrics.
