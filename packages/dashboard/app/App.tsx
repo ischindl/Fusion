@@ -100,8 +100,41 @@ import { NativeShellConnectionManager } from "./components/NativeShellConnection
 import { ShellConnectionStatus } from "./components/ShellConnectionStatus";
 import { getShellConnectionNativeResult, type ShellConnectionNativeResult } from "./shell-native";
 import type { AiSessionSummary, DashboardHealthResponse, PluginDashboardViewEntry } from "./api";
-import { api, fetchDashboardHealth, fetchUnreadCount, fetchTaskDetail, fetchWorkflowSteps, refreshDashboardHealth, relaunchCliSession } from "./api";
+import { api, fetchDashboardHealth, fetchUnreadCount, fetchTaskDetail, fetchWorkflowSteps, refreshDashboardHealth } from "./api";
 import { getScopedItem, removeScopedItem, setScopedItem } from "./utils/projectStorage";
+import {
+  SETUP_WARNING_DISMISSED_KEY,
+  WORKING_BRANCH_FILTER_STORAGE_KEY,
+  BASE_BRANCH_FILTER_STORAGE_KEY,
+  NO_BRANCH_FILTER_VALUE,
+  CAPACITY_RISK_DISMISSED_KEY,
+  RETRY_WARNING_RATIO,
+  parseDateMs,
+  loadApprovalBannerDismissals,
+  persistApprovalBannerDismissals,
+  buildRemoteDashboardUrl,
+  didEnterAwaitingApproval,
+  didEnterDone,
+  requiresNativeShellOnboarding,
+  shouldShowFirstEverBootLoader,
+  isSessionNeedingInputForBanner,
+  getCliActionDisabledReasonForBanner,
+  executeCliSessionBannerAction,
+  type ApprovalBannerCandidate,
+} from "./utils/appLifecycle";
+// Re-export the unit-tested lifecycle helpers so existing `from "./App"` /
+// `from "../../App"` imports keep resolving after the bodies moved to utils.
+export {
+  didEnterAwaitingApproval,
+  didEnterDone,
+  requiresNativeShellOnboarding,
+  shouldShowFirstEverBootLoader,
+  isSessionNeedingInputForBanner,
+  getCliActionDisabledReasonForBanner,
+  executeCliSessionBannerAction,
+  type ApprovalBannerCandidate,
+  type CliActionDeps,
+} from "./utils/appLifecycle";
 import { subscribeSse } from "./sse-bus";
 import { AUTH_TOKEN_RECOVERY_REQUIRED_EVENT } from "./auth";
 import { AuthTokenRecoveryDialog } from "./components/AuthTokenRecoveryDialog";
@@ -179,175 +212,6 @@ function prefetchLazyViews() {
 }
 
 registerBundledPluginViews();
-
-const SETUP_WARNING_DISMISSED_KEY = "kb-setup-warning-dismissed";
-const WORKING_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-working-branch-filter";
-const BASE_BRANCH_FILTER_STORAGE_KEY = "kb-dashboard-base-branch-filter";
-const NO_BRANCH_FILTER_VALUE = "__fusion:no-branch__";
-const APPROVAL_BANNER_DISMISSED_STORAGE_KEY = "fusion:approval-banner-dismissed";
-const CAPACITY_RISK_DISMISSED_KEY = "kb-capacity-risk-banner-dismissed";
-const RETRY_WARNING_RATIO = 0.8;
-
-interface ApprovalBannerCandidate {
-  dedupeKey: string;
-  updatedAtMs: number;
-}
-
-export function didEnterAwaitingApproval(nextStatus: string | undefined, previousStatus: string | undefined): boolean {
-  return nextStatus === "awaiting-approval" && previousStatus !== "awaiting-approval";
-}
-
-export function didEnterDone(nextStatus: string | undefined, previousStatus: string | undefined): boolean {
-  return nextStatus === "done" && previousStatus !== undefined && previousStatus !== "done";
-}
-
-function parseDateMs(value: string | undefined): number {
-  if (!value) return 0;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function loadApprovalBannerDismissals(): Map<string, number> {
-  if (typeof window === "undefined") return new Map();
-  try {
-    const raw = window.localStorage.getItem(APPROVAL_BANNER_DISMISSED_STORAGE_KEY);
-    if (!raw) return new Map();
-    const parsed = JSON.parse(raw) as Record<string, number>;
-    const map = new Map<string, number>();
-    for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === "number" && Number.isFinite(value)) {
-        map.set(key, value);
-      }
-    }
-    return map;
-  } catch {
-    return new Map();
-  }
-}
-
-function persistApprovalBannerDismissals(map: Map<string, number>): void {
-  if (typeof window === "undefined") return;
-  try {
-    const data: Record<string, number> = {};
-    for (const [key, value] of map) {
-      data[key] = value;
-    }
-    window.localStorage.setItem(APPROVAL_BANNER_DISMISSED_STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // no-op
-  }
-}
-
-function buildRemoteDashboardUrl(serverUrl: string, authToken?: string | null): string {
-  const url = new URL(serverUrl);
-  if (authToken) {
-    url.searchParams.set("rt", authToken);
-  }
-  return url.toString();
-}
-
-export function requiresNativeShellOnboarding(
-  shellState: { host: "web" | "mobile-shell" | "desktop-shell"; desktopMode?: "local" | "remote"; activeProfileId: string | null },
-  shellReady: boolean,
-  shellOnboardingComplete: boolean,
-): boolean {
-  if (!shellReady || shellOnboardingComplete || shellState.host === "web") {
-    return false;
-  }
-
-  if (shellState.host === "mobile-shell") {
-    return !shellState.activeProfileId;
-  }
-
-  if (shellState.desktopMode === "local") {
-    return false;
-  }
-
-  return !shellState.activeProfileId;
-}
-
-export function shouldShowFirstEverBootLoader(projectsLoading: boolean, projectCount: number): boolean {
-  return projectsLoading && projectCount === 0;
-}
-
-export function isSessionNeedingInputForBanner(session: AiSessionSummary): boolean {
-  return (
-    session.status === "awaiting_input" ||
-    session.status === "error" ||
-    session.status === "waiting_on_input" ||
-    session.status === "needs_attention"
-  );
-}
-
-export function getCliActionDisabledReasonForBanner(session: AiSessionSummary, action: CliActionId): string | null {
-  if ((action === "advance" || action === "relaunch") && !session.cliSessionId) {
-    return "CLI session id is missing.";
-  }
-  return null;
-}
-
-interface CliActionDeps {
-  currentProjectId?: string;
-  retryTask: (id: string) => Promise<unknown>;
-  moveTask: (id: string, column: "todo") => Promise<unknown>;
-  openAuthenticationSettings: () => void;
-  addToast: (message: string, type: "success" | "error") => void;
-  apiClient?: typeof api;
-  relaunchCliSessionClient?: typeof relaunchCliSession;
-}
-
-export async function executeCliSessionBannerAction(
-  session: AiSessionSummary,
-  action: CliActionId,
-  deps: CliActionDeps,
-): Promise<void> {
-  try {
-    /*
-     * FNXC:SessionBanner 2026-06-14-19:32:
-     * CLI banner verbs must either call an existing dashboard route/flow or be disabled by the banner. `advance` confirms the CLI session, `retry` and `cancel` reuse task operations keyed by the session id until summaries expose a distinct task id, and `reauthenticate` opens the existing authentication settings flow.
-     *
-     * FNXC:SessionBanner 2026-06-14-20:16:
-     * `relaunch` is now a supported route-backed action for resume-exhausted CLI sessions; if `cliSessionId` is absent the handler exits without firing a malformed API call, preserving the no-silent-no-op invariant through the banner disabled reason.
-     */
-    if (action === "advance") {
-      if (!session.cliSessionId) {
-        throw new Error("CLI session id is required to advance this session.");
-      }
-      await (deps.apiClient ?? api)(`/cli-sessions/${encodeURIComponent(session.cliSessionId)}/confirm-advance`, {
-        method: "POST",
-        body: JSON.stringify({ decision: "advance", ...(deps.currentProjectId ? { projectId: deps.currentProjectId } : {}) }),
-      });
-      return;
-    }
-
-    if (action === "relaunch") {
-      if (!session.cliSessionId) return;
-      await (deps.relaunchCliSessionClient ?? relaunchCliSession)(session.cliSessionId, deps.currentProjectId);
-      deps.addToast("CLI session relaunch requested", "success");
-      return;
-    }
-
-    if (action === "retry") {
-      await deps.retryTask(session.id);
-      return;
-    }
-
-    if (action === "cancel") {
-      await deps.moveTask(session.id, "todo");
-      return;
-    }
-
-    if (action === "reauthenticate") {
-      deps.openAuthenticationSettings();
-      return;
-    }
-
-    throw new Error("This CLI action is not supported yet.");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "CLI action failed";
-    deps.addToast(message, "error");
-  }
-}
 
 function AppInner() {
   const { t } = useTranslation("app");
