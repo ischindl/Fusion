@@ -106,6 +106,7 @@ import {
 import type { AutopilotState, MissionInterviewDraftSummary } from "./mission-types";
 import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
+import { getSessionTabId } from "../utils/getSessionTabId";
 
 const MISSION_SIDEBAR_DEFAULT_WIDTH = 300;
 const MISSION_SIDEBAR_MIN_WIDTH = 220;
@@ -616,6 +617,7 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
 export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
   const { t } = useTranslation("app");
   const { confirm } = useConfirm();
+  const sessionTabId = useMemo(() => getSessionTabId(), []);
   const isActive = isInline || isOpen;
   const cacheSuffix = projectId ?? "";
   const missionsCacheKey = `${SWR_CACHE_KEYS.MISSIONS_PREFIX}${cacheSuffix}`;
@@ -4232,7 +4234,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleDiscardInterviewSession = async (sessionId: string) => {
     try {
-      await discardMissionInterviewDraft(sessionId, projectId);
+      /*
+      FNXC:MissionDraftDiscard 2026-06-24-02:42:
+      The mission draft Discard confirmation must send the current browser tab id so a draft locked by this tab can be removed while a draft actively owned by another tab returns the lock warning and stays visible.
+      */
+      await discardMissionInterviewDraft(sessionId, projectId, sessionTabId);
       setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {

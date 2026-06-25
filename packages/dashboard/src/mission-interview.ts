@@ -1362,16 +1362,32 @@ export function listMissionInterviewDrafts(projectId?: string): MissionInterview
     });
 }
 
-export async function discardMissionInterviewSession(sessionId: string): Promise<{ removed: boolean }> {
-  try {
+function isMissionInterviewSessionInProjectScope(sessionProjectId: string | null | undefined, projectId?: string): boolean {
+  if (projectId) {
+    return sessionProjectId === projectId;
+  }
+  return sessionProjectId == null;
+}
+
+export async function discardMissionInterviewSession(sessionId: string, projectId?: string): Promise<{ removed: boolean }> {
+  const hotSession = sessions.get(sessionId);
+  if (hotSession) {
+    if (!isMissionInterviewSessionInProjectScope(hotSession.projectId, projectId)) {
+      return { removed: false };
+    }
     await cancelMissionInterviewSession(sessionId);
     return { removed: true };
-  } catch (error) {
-    if (!(error instanceof SessionNotFoundError)) {
-      throw error;
-    }
   }
 
+  const persistedSession = _aiSessionStore?.get(sessionId);
+  if (persistedSession?.type === "mission_interview" && !isMissionInterviewSessionInProjectScope(persistedSession.projectId, projectId)) {
+    return { removed: false };
+  }
+
+  /*
+  FNXC:MissionDraftDiscard 2026-06-24-02:47:
+  Draft discard uses the same project scope as draft listing: a project-scoped request can remove only that project's mission interview rows, and an unscoped request can remove only unscoped drafts. Ordinary planning sessions are excluded by the type guard.
+  */
   const removed = _aiSessionStore?.deleteByIdAndType(sessionId, "mission_interview") ?? false;
   return { removed };
 }

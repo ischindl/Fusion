@@ -742,6 +742,9 @@ export function createMissionRouter(
       const tabId = typeof req.body?.tabId === "string" && req.body.tabId.trim().length > 0
         ? req.body.tabId.trim()
         : undefined;
+      const projectId = typeof req.query.projectId === "string" && req.query.projectId.trim().length > 0
+        ? req.query.projectId.trim()
+        : undefined;
 
       if (!sessionId || typeof sessionId !== "string") {
         throw badRequest("sessionId is required");
@@ -757,7 +760,7 @@ export function createMissionRouter(
       }
 
       const { discardMissionInterviewSession } = await import("./mission-interview.js");
-      const result = await discardMissionInterviewSession(sessionId);
+      const result = await discardMissionInterviewSession(sessionId, projectId);
       if (!result.removed) {
         throw notFound(`Mission interview session ${sessionId} not found or expired`);
       }

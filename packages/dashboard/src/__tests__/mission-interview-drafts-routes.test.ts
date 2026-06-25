@@ -165,6 +165,31 @@ describe("mission interview draft routes", () => {
     expect(aiSessionStore.get("draft-cold")).toBeNull();
   });
 
+  it("POST /interview/drafts/:sessionId/discard is scoped by project and leaves other session types intact", async () => {
+    aiSessionStore.upsert(makeRow({ id: "draft-project-b", title: "Project B", projectId: "project-b", status: "awaiting_input" }));
+    aiSessionStore.upsert(makeRow({ id: "planning-row", type: "planning", title: "Planning", projectId: "project-a", status: "awaiting_input" }));
+
+    const wrongProject = await request(
+      app,
+      "POST",
+      "/api/missions/interview/drafts/draft-project-b/discard?projectId=project-a",
+      JSON.stringify({}),
+      { "content-type": "application/json" },
+    );
+    const planningRow = await request(
+      app,
+      "POST",
+      "/api/missions/interview/drafts/planning-row/discard?projectId=project-a",
+      JSON.stringify({}),
+      { "content-type": "application/json" },
+    );
+
+    expect(wrongProject.status).toBe(404);
+    expect(planningRow.status).toBe(404);
+    expect(aiSessionStore.get("draft-project-b")).not.toBeNull();
+    expect(aiSessionStore.get("planning-row")).not.toBeNull();
+  });
+
   it("POST /interview/drafts/:sessionId/discard returns 404 when the session does not exist", async () => {
     const res = await request(app, "POST", "/api/missions/interview/drafts/missing/discard", JSON.stringify({}), {
       "content-type": "application/json",
@@ -172,6 +197,27 @@ describe("mission interview draft routes", () => {
 
     expect(res.status).toBe(404);
     expect((res.body as { error: string }).error).toContain("missing");
+  });
+
+  it("POST /interview/drafts/:sessionId/discard allows the owning tab to discard a locked draft", async () => {
+    aiSessionStore.upsert(makeRow({ id: "draft-owned", title: "Owned draft", status: "awaiting_input" }));
+    db.prepare("UPDATE ai_sessions SET lockedByTab = ?, lockedAt = ? WHERE id = ?").run(
+      "tab-owner",
+      "2026-05-12T00:00:00.000Z",
+      "draft-owned",
+    );
+
+    const res = await request(
+      app,
+      "POST",
+      "/api/missions/interview/drafts/draft-owned/discard",
+      JSON.stringify({ tabId: "tab-owner" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, removed: true });
+    expect(aiSessionStore.get("draft-owned")).toBeNull();
   });
 
   it("POST /interview/drafts/:sessionId/discard returns 409 when locked by another tab", async () => {
