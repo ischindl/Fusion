@@ -10,9 +10,9 @@ import {
 } from "../sandbox/index.js";
 import { defaultShell } from "../shell-utils.js";
 import {
+  defaultVerificationTimeoutMs,
   runVerificationCommand,
   VERIFICATION_COMMAND_MAX_BUFFER,
-  VERIFICATION_COMMAND_TIMEOUT_MS,
 } from "../verification-utils.js";
 
 function makeStub(overrides: Partial<SandboxBackend> = {}): SandboxBackend {
@@ -159,7 +159,9 @@ describe("sandbox wiring", () => {
     expect(runStreaming).toHaveBeenCalledTimes(1);
     expect(runStreaming).toHaveBeenCalledWith("echo ok", {
       cwd: "/tmp/project",
-      timeout: VERIFICATION_COMMAND_TIMEOUT_MS,
+      // FNXC:Verification 2026-06-25-14:05: the default budget is now scope-aware;
+      // "echo ok" has no pnpm --filter so it resolves to the workspace default (900s).
+      timeout: defaultVerificationTimeoutMs("echo ok"),
       maxBuffer: VERIFICATION_COMMAND_MAX_BUFFER,
       signal: undefined,
       env: { FOO: "1" },
