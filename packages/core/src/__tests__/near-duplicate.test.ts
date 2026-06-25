@@ -48,6 +48,24 @@ describe("extractIntentSignature", () => {
       ]),
     );
   });
+
+  it("uses sanitized file scope for file-path intent when available", () => {
+    const sig = extractIntentSignature({
+      title: "Fix poisoned file scope",
+      description:
+        "Forbidden context mentions packages/mobile/src/generated.ts, .fusion/tasks/FN-756/task.json, and packages/dashboard/src/routes/register-task-workflow-routes.ts.",
+      fileScope: [
+        "packages/core/src/store.ts",
+        "packages/engine/src/scheduler.ts",
+      ],
+    });
+
+    expect(sig.filePaths).toEqual([
+      "packages/core/src/store.ts",
+      "packages/engine/src/scheduler.ts",
+    ]);
+    expect(sig.filePaths).not.toContain("packages/dashboard/src/routes/register-task-workflow-routes.ts");
+  });
 });
 
 describe("near-duplicate canonical activity predicates", () => {

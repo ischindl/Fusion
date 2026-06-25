@@ -20,6 +20,7 @@ export { redactSecrets } from "./redact-secrets.js";
 export { isActiveNearDuplicateColumn, isNearDuplicateCanonicalInactive } from "./near-duplicate-canonical.js";
 export type { NearDuplicateCanonicalState } from "./near-duplicate-canonical.js";
 export * from "./frontend-ux-policy.js";
+export * from "./file-scope-classification.js";
 export { MAX_TASK_LIST_TEXT_CHARS, clampTaskListText, formatTaskListText } from "./task-list-format.js";
 export { MOCK_PROVIDER_ID } from "./mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./mock-provider-constants.js";

@@ -458,6 +458,29 @@ export async function createTask(
   }
 }
 
+export interface RepairOverlapBlockerResult {
+  taskId: string;
+  dryRun: boolean;
+  repaired: boolean;
+  statusCleared: boolean;
+  previousOverlapBlockedBy?: string;
+  currentOverlapBlockedBy?: string;
+  reason: string;
+  message: string;
+  task?: Task;
+}
+
+export function repairOverlapBlocker(
+  id: string,
+  options: { dryRun?: boolean; reason?: string } = {},
+  projectId?: string,
+): Promise<RepairOverlapBlockerResult> {
+  return api<RepairOverlapBlockerResult>(withProjectId(`/tasks/${id}/repair-overlap-blocker`, projectId), {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}
+
 export function updateTask(
   id: string,
   updates: {

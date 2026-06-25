@@ -15,6 +15,7 @@ vi.mock("../../api", async (importOriginal) => {
     uploadAttachment: vi.fn(),
     deleteAttachment: vi.fn(),
     updateTask: vi.fn().mockResolvedValue({}),
+    repairOverlapBlocker: vi.fn().mockResolvedValue({ repaired: true, statusCleared: false, reason: "repaired", message: "Repaired", task: makeTask() }),
     summarizeTitle: vi.fn().mockResolvedValue("Generated Title"),
     fetchTaskDetail: vi.fn().mockResolvedValue(makeTask()),
     fetchAgentLogs: vi.fn().mockResolvedValue([]),

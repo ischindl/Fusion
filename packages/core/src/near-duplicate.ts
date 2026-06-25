@@ -113,9 +113,10 @@ export function extractIntentSignature(input: NearDuplicateInput): IntentSignatu
   const title = input.title ?? "";
   const fileScope = input.fileScope ?? [];
   const text = `${title}\n${input.description}\n${fileScope.join("\n")}`;
+  const filePathText = fileScope.length > 0 ? fileScope.join("\n") : input.description;
   return {
     routePaths: extractRoutePaths(text),
-    filePaths: extractFilePaths(text),
+    filePaths: extractFilePaths(filePathText),
     identifiers: extractIdentifiers(text),
     titleTokens: toUnique(tokenize(title).filter((token) => token.length >= 3)),
   };

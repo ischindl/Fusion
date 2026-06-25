@@ -3020,6 +3020,47 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     }
   });
 
+  router.post("/tasks/:id/repair-overlap-blocker", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      /*
+      FNXC:OverlapRepair 2026-06-25-04:34:
+      This route can clear scheduler-visible blockers. Reject non-object JSON bodies before calling the store so malformed requests cannot accidentally run a real repair with every option undefined.
+      */
+      const body = req.body ?? {};
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        throw badRequest("body must be an object");
+      }
+      const { dryRun, reason } = body as { dryRun?: unknown; reason?: unknown };
+      if (dryRun !== undefined && typeof dryRun !== "boolean") {
+        throw badRequest("dryRun must be a boolean");
+      }
+      if (reason !== undefined && reason !== null && typeof reason !== "string") {
+        throw badRequest("reason must be a string");
+      }
+      if (typeof scopedStore.repairOverlapBlocker !== "function") {
+        throw new ApiError(501, "Overlap blocker repair is unavailable for this store");
+      }
+      const result = await scopedStore.repairOverlapBlocker(req.params.id, {
+        dryRun,
+        ...(typeof reason === "string" && reason.trim().length > 0 ? { reason: reason.trim() } : {}),
+      });
+      if (result.reason === "task-not-found") {
+        throw notFound(result.message);
+      }
+      if (!result.repaired && !result.dryRun) {
+        const status = result.reason === "no-overlap-blocker" ? 400 : 409;
+        throw new ApiError(status, result.message);
+      }
+      res.json(result);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      throw new ApiError(500, err instanceof Error ? err.message : String(err));
+    }
+  });
+
   // Update task
   router.patch("/tasks/:id", async (req, res) => {
     try {

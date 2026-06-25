@@ -27,6 +27,7 @@ import {
   findNearDuplicates,
   isNearDuplicateCanonicalInactive,
   applyFrontendUxCriteria,
+  extractEffectiveWriteScopeFromPrompt,
   MAX_TASK_LIST_TEXT_CHARS,
   type NearDuplicateCandidate,
 } from "@fusion/core";
@@ -2450,20 +2451,7 @@ export class TriageProcessor {
 }
 
 function parseFileScopeFromPrompt(text: string): string[] {
-  const match = text.match(/^##\s+File Scope\s*\n([\s\S]*?)(?=^##\s+|$)/m);
-  if (!match) return [];
-  const entries: string[] = [];
-  for (const rawLine of match[1].split("\n")) {
-    const trimmed = rawLine.trim();
-    if (!trimmed.startsWith("-")) continue;
-    const line = trimmed.replace(/^-+\s*/, "").replace(/`/g, "").trim();
-    if (!line || /^out of scope/i.test(line)) break;
-    const pathOnly = line.split(" ")[0]?.trim();
-    if (!pathOnly) continue;
-    entries.push(pathOnly);
-    if (entries.length >= 50) break;
-  }
-  return entries;
+  return extractEffectiveWriteScopeFromPrompt(text);
 }
 
 function extractPromptDeclaredTitle(prompt: string, taskId: string): string | null {
