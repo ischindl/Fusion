@@ -711,6 +711,7 @@ export function SettingsModal({
     pollIntervalMs: 15000,
     heartbeatMultiplier: 1,
     groupOverlappingFiles: true,
+    ignoreHiddenOverlapPaths: true,
     overlapIgnorePaths: [],
     autoMerge: true,
     mergeStrategy: "direct",
@@ -986,6 +987,7 @@ export function SettingsModal({
       .then(([s, scoped]) => {
         const normalizedSettings = {
           ...s,
+          ignoreHiddenOverlapPaths: s.ignoreHiddenOverlapPaths ?? true,
           mergeIntegrationWorktree: normalizeMergeIntegrationWorktreeMode(s.mergeIntegrationWorktree),
           mergeAdvanceAutoSync: normalizeMergeAdvanceAutoSyncMode(s.mergeAdvanceAutoSync),
           maxAutoMergeRetries: resolveMaxAutoMergeRetriesForSettingsForm(s),
@@ -2025,7 +2027,7 @@ export function SettingsModal({
         setImportFile(null);
         // Refresh settings to show imported values
         const refreshed = await fetchSettings(projectId);
-        setForm(refreshed);
+        setForm({ ...refreshed, ignoreHiddenOverlapPaths: refreshed.ignoreHiddenOverlapPaths ?? true });
       } else {
         addToast(result.error || t("settings.importExport.importFailed", "Import failed"), "error");
       }

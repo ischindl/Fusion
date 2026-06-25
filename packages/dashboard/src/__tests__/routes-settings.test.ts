@@ -773,6 +773,36 @@ describe("PUT /settings", () => {
     expect(store.updateSettings).toHaveBeenCalledWith({ maxConcurrent: 8, autoMerge: false });
   });
 
+  it("accepts boolean hidden-overlap filtering values", async () => {
+    const updatedSettings = { ...DEFAULT_SETTINGS, ignoreHiddenOverlapPaths: false };
+    (store.updateSettings as ReturnType<typeof vi.fn>).mockResolvedValue(updatedSettings);
+
+    const res = await REQUEST(
+      buildApp(),
+      "PUT",
+      "/api/settings",
+      JSON.stringify({ ignoreHiddenOverlapPaths: false }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(store.updateSettings).toHaveBeenCalledWith({ ignoreHiddenOverlapPaths: false });
+  });
+
+  it("rejects non-boolean hidden-overlap filtering values", async () => {
+    const res = await REQUEST(
+      buildApp(),
+      "PUT",
+      "/api/settings",
+      JSON.stringify({ ignoreHiddenOverlapPaths: "false" }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("ignoreHiddenOverlapPaths must be a boolean");
+    expect(store.updateSettings).not.toHaveBeenCalled();
+  });
+
   it("accepts valid nested evalSettings payload", async () => {
     (store.updateSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...DEFAULT_SETTINGS,

@@ -1932,7 +1932,8 @@
     "loadingMessage": "Chargement du tableau de bord Fusion",
     "loadingProgress": "Progression du chargement du tableau de bord",
     "updatingMessage": "Mise à jour du tableau de bord Fusion",
-    "updatingVersion": "Mise à jour vers une nouvelle version de l'interface..."
+    "updatingVersion": "Mise à jour vers une nouvelle version de l'interface...",
+    "title": ""
   },
   "dbBanner": {
     "body": "La vérification d'intégrité SQLite en arrière-plan de Fusion a signalé une corruption. Veuillez examiner les objets défaillants ci-dessous avant de continuer les opérations critiques.",
@@ -6427,7 +6428,9 @@
       "whenEnabledTasksWithStalePlansPROMPTMd": "",
       "whenTheStuckDetectorKillsAndReQueues": "",
       "browseWorkspacePath": "",
-      "overlapPickerNote": ""
+      "overlapPickerNote": "",
+      "ignoreHiddenDotPathsHelp": "",
+      "ignoreHiddenDotPathsInOverlapChecks": ""
     },
     "scope": {
       "globalBanner": "Ces paramètres sont partagés entre tous vos projets Fusion.",
@@ -8542,7 +8545,9 @@
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow"
+    "newWorkflow": "New workflow",
+    "merging": "",
+    "mergingTitle": ""
   },
   "workspace": {
     "projectRoot": "Racine du projet",

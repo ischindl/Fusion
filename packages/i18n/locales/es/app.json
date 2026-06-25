@@ -1932,7 +1932,8 @@
     "loadingMessage": "Cargando panel de Fusion",
     "loadingProgress": "Progreso de carga del panel",
     "updatingMessage": "Actualizando panel de Fusion",
-    "updatingVersion": "Actualizando a una nueva versión de frontend..."
+    "updatingVersion": "Actualizando a una nueva versión de frontend...",
+    "title": ""
   },
   "dbBanner": {
     "body": "La verificación de integridad de SQLite de Fusion en segundo plano informó de corrupción. Revise los objetos con error a continuación antes de continuar con operaciones críticas.",
@@ -6427,7 +6428,9 @@
       "whenEnabledTasksWithStalePlansPROMPTMd": "",
       "whenTheStuckDetectorKillsAndReQueues": "",
       "browseWorkspacePath": "",
-      "overlapPickerNote": ""
+      "overlapPickerNote": "",
+      "ignoreHiddenDotPathsHelp": "",
+      "ignoreHiddenDotPathsInOverlapChecks": ""
     },
     "scope": {
       "globalBanner": "Estos ajustes se comparten entre todos tus proyectos de Fusion.",
@@ -8542,7 +8545,9 @@
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow"
+    "newWorkflow": "New workflow",
+    "merging": "",
+    "mergingTitle": ""
   },
   "workspace": {
     "projectRoot": "Raíz del proyecto",

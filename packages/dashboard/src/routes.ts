@@ -532,6 +532,14 @@ function validateModelPresets(value: unknown): ModelPreset[] | undefined {
   });
 }
 
+function sanitizeBooleanSetting(name: string, value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw badRequest(`${name} must be a boolean`);
+  }
+  return value;
+}
+
 function sanitizeOverlapIgnorePaths(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
@@ -1049,6 +1057,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   registerSettingsMemoryRoutes(routeContext, {
     githubToken,
     validateModelPresets,
+    sanitizeBooleanSetting,
     sanitizeOverlapIgnorePaths,
     discoverDashboardPiExtensions,
   });

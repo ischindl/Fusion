@@ -201,6 +201,7 @@ const defaultSettings = {
   maxWorktrees: 4,
   pollIntervalMs: 15000,
   groupOverlappingFiles: true,
+  ignoreHiddenOverlapPaths: true,
   overlapIgnorePaths: [],
   autoMerge: true,
   mergeStrategy: "direct",
@@ -2873,6 +2874,74 @@ describe("SettingsModal", () => {
   });
 
   describe("Scheduling overlap ignore paths", () => {
+    it("defaults hidden overlap path filtering checked when settings omit the key", async () => {
+      const { ignoreHiddenOverlapPaths: _omitted, ...settingsWithoutHiddenDefault } = defaultSettings;
+      mockFetchSettings.mockResolvedValue(settingsWithoutHiddenDefault);
+      mockFetchSettingsByScope.mockResolvedValue({ global: settingsWithoutHiddenDefault, project: {} });
+
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText("Scheduling & Capacity"));
+
+      expect(screen.getByLabelText(/ignore hidden dot paths in overlap checks/i)).toBeChecked();
+    });
+
+    it("renders saved false for hidden overlap path filtering", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        ignoreHiddenOverlapPaths: false,
+      });
+      mockFetchSettingsByScope.mockResolvedValue({ global: defaultSettings, project: { ignoreHiddenOverlapPaths: false } });
+
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText("Scheduling & Capacity"));
+
+      expect(screen.getByLabelText(/ignore hidden dot paths in overlap checks/i)).not.toBeChecked();
+    });
+
+    it("sends hidden overlap filtering false without disrupting explicit ignore paths", async () => {
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText("Scheduling & Capacity"));
+
+      await userEvent.click(screen.getByLabelText(/ignore hidden dot paths in overlap checks/i));
+      await userEvent.type(screen.getByPlaceholderText("docs/"), "generated/*");
+      await userEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledTimes(1);
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0];
+      expect(payload.ignoreHiddenOverlapPaths).toBe(false);
+      expect(payload.overlapIgnorePaths).toEqual(["generated/*"]);
+    });
+
+    it("sends hidden overlap filtering true after toggling saved false", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        ignoreHiddenOverlapPaths: false,
+      });
+      mockFetchSettingsByScope.mockResolvedValue({ global: defaultSettings, project: { ignoreHiddenOverlapPaths: false } });
+
+      renderModal();
+      await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText("Scheduling & Capacity"));
+
+      await userEvent.click(screen.getByLabelText(/ignore hidden dot paths in overlap checks/i));
+      await userEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledTimes(1);
+      });
+      expect(mockUpdateSettings.mock.calls[0][0].ignoreHiddenOverlapPaths).toBe(true);
+    });
+
     it("renders existing overlap ignore paths from settings", async () => {
       mockFetchSettings.mockResolvedValue({
         ...defaultSettings,

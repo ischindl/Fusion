@@ -3650,6 +3650,13 @@ export interface ProjectSettings {
    */
   heartbeatPromptTemplate?: HeartbeatPromptTemplate;
   groupOverlappingFiles: boolean;
+  /**
+   * When true (default), file-overlap serialization ignores project-relative paths
+   * containing any hidden dot segment (for example `.fusion/`, `.changeset/`,
+   * `.github/`, `.env`, or `packages/.cache/out.js`). Set false to restore the
+   * legacy behavior that counts hidden paths as overlap blockers.
+   */
+  ignoreHiddenOverlapPaths?: boolean;
   /** File/directory paths to ignore when evaluating overlap serialization.
    *  Entries are project-relative paths (for example: `docs/README.md`, `docs/`, `generated/*`).
    *  Absolute paths and `..` traversal are not allowed.

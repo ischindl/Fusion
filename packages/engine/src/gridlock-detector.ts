@@ -79,10 +79,11 @@ export class GridlockDetector {
     }
 
     const overlapIgnorePaths = settings.overlapIgnorePaths ?? [];
+    const filterOptions = { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths };
     const activeScopes = new Map<string, string[]>();
     if (settings.groupOverlappingFiles) {
       for (const task of active) {
-        const scope = filterPathsByIgnoreList(await this.store.parseFileScopeFromPrompt(task.id), overlapIgnorePaths);
+        const scope = filterPathsByIgnoreList(await this.store.parseFileScopeFromPrompt(task.id), overlapIgnorePaths, filterOptions);
         if (scope.length > 0) {
           activeScopes.set(task.id, scope);
         }
@@ -106,7 +107,7 @@ export class GridlockDetector {
 
       if (!settings.groupOverlappingFiles) continue;
 
-      const taskScope = filterPathsByIgnoreList(await this.store.parseFileScopeFromPrompt(task.id), overlapIgnorePaths);
+      const taskScope = filterPathsByIgnoreList(await this.store.parseFileScopeFromPrompt(task.id), overlapIgnorePaths, filterOptions);
       if (taskScope.length === 0) continue;
 
       for (const [activeId, activeScope] of activeScopes) {

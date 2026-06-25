@@ -81,6 +81,7 @@ export function __resetCreateFnAgentForInsights(): void {
 interface SettingsMemoryRouteDeps {
   githubToken?: string;
   validateModelPresets: (input: unknown) => ModelPreset[] | undefined;
+  sanitizeBooleanSetting: (name: string, input: unknown) => boolean | undefined;
   sanitizeOverlapIgnorePaths: (input: unknown) => string[] | undefined;
   discoverDashboardPiExtensions: (cwd: string) => Promise<PiExtensionSettings>;
 }
@@ -196,7 +197,7 @@ export function validateCloudflaredManifest(input: unknown): { ok: true } | { ok
 
 export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: SettingsMemoryRouteDeps): void {
   const { router, options, store, runtimeLogger, getProjectContext, rethrowAsApiError } = ctx;
-  const { githubToken, validateModelPresets, sanitizeOverlapIgnorePaths, discoverDashboardPiExtensions } = deps;
+  const { githubToken, validateModelPresets, sanitizeBooleanSetting, sanitizeOverlapIgnorePaths, discoverDashboardPiExtensions } = deps;
   const execFileAsync = promisify(execFile);
 
   // Query the local tailscaled for this node's tailnet DNS name and any
@@ -602,6 +603,9 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
 
       if (Object.prototype.hasOwnProperty.call(clientSettings, "modelPresets")) {
         clientSettings.modelPresets = validateModelPresets(clientSettings.modelPresets);
+      }
+      if (Object.prototype.hasOwnProperty.call(clientSettings, "ignoreHiddenOverlapPaths")) {
+        clientSettings.ignoreHiddenOverlapPaths = sanitizeBooleanSetting("ignoreHiddenOverlapPaths", clientSettings.ignoreHiddenOverlapPaths);
       }
       if (Object.prototype.hasOwnProperty.call(clientSettings, "overlapIgnorePaths")) {
         clientSettings.overlapIgnorePaths = sanitizeOverlapIgnorePaths(clientSettings.overlapIgnorePaths);

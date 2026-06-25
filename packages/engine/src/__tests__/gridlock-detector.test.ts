@@ -181,6 +181,38 @@ describe("GridlockDetector", () => {
     expect(event).toBeNull();
   });
 
+  it("does not report gridlock for hidden-only overlaps by default", async () => {
+    tasks = [
+      createTask("FN-1", { column: "todo" }),
+      createTask("FN-2", { column: "in-progress" }),
+    ];
+    scopes = {
+      "FN-1": [".fusion/tasks/FN-1/PROMPT.md", "packages/.cache/out.js"],
+      "FN-2": [".fusion/tasks/FN-1/PROMPT.md", "packages/.cache/out.js"],
+    };
+
+    const event = await detector.detectGridlock();
+    expect(event).toBeNull();
+    expect(onGridlock).not.toHaveBeenCalled();
+  });
+
+  it("reports gridlock for hidden-only overlaps when legacy counting is restored", async () => {
+    settings = createSettings({ ignoreHiddenOverlapPaths: false });
+    tasks = [
+      createTask("FN-1", { column: "todo" }),
+      createTask("FN-2", { column: "in-progress" }),
+    ];
+    scopes = {
+      "FN-1": [".fusion/tasks/FN-1/PROMPT.md", "packages/.cache/out.js"],
+      "FN-2": [".fusion/tasks/FN-1/PROMPT.md", "packages/.cache/out.js"],
+    };
+
+    const event = await detector.detectGridlock();
+    expect(event?.blockedTaskIds).toEqual(["FN-1"]);
+    expect(event?.reasons).toEqual({ "FN-1": "overlap" });
+    expect(event?.blockingTaskIds).toEqual(["FN-2"]);
+  });
+
   it("respects overlap ignore paths from settings", async () => {
     settings = createSettings({ overlapIgnorePaths: ["docs/"] });
     tasks = [

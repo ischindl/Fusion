@@ -275,6 +275,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   heartbeatScopeDiscipline: "strict",
   heartbeatPromptTemplate: "default",
   groupOverlappingFiles: true,
+  ignoreHiddenOverlapPaths: true,
   overlapIgnorePaths: [],
   autoMerge: true,
   // U18 (R15): the Review-response loop is default-on. Independent of `autoMerge` —

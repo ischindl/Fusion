@@ -91,6 +91,13 @@ describe("settings key parity", () => {
     expect(DEFAULT_PROJECT_SETTINGS.heartbeatMultiplier).toBe(1);
   });
 
+  it("defaults hidden overlap path filtering on and keeps it project-scoped", () => {
+    expect(DEFAULT_PROJECT_SETTINGS.ignoreHiddenOverlapPaths).toBe(true);
+    expect(isProjectSettingsKey("ignoreHiddenOverlapPaths")).toBe(true);
+    expect(isGlobalSettingsKey("ignoreHiddenOverlapPaths")).toBe(false);
+    expect(PROJECT_SETTINGS_KEYS).toContain("ignoreHiddenOverlapPaths");
+  });
+
   it("defaults autoClaimCandidatesInPrompt to 5 and keeps it project-scoped", () => {
     expect(DEFAULT_PROJECT_SETTINGS.autoClaimCandidatesInPrompt).toBe(5);
     expect(isProjectSettingsKey("autoClaimCandidatesInPrompt")).toBe(true);

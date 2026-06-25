@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Scheduler } from "../scheduler.js";
-import type { Agent, AgentStore, Task, TaskStore } from "@fusion/core";
+import { filterPathsByIgnoreList, Scheduler } from "../scheduler.js";
+import type { Agent, AgentStore, Settings, Task, TaskStore } from "@fusion/core";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -35,7 +35,7 @@ function createAgentStore(agents: Agent[]): AgentStore {
   } as unknown as AgentStore;
 }
 
-function createStore(tasks: Task[], scopes: Record<string, string[]>): TaskStore {
+function createStore(tasks: Task[], scopes: Record<string, string[]>, settings: Partial<Settings> = {}): TaskStore {
   const updateTask = vi.fn(async (id: string, patch: Partial<Task>) => {
     const task = tasks.find((candidate) => candidate.id === id);
     if (task) Object.assign(task, patch);
@@ -49,7 +49,7 @@ function createStore(tasks: Task[], scopes: Record<string, string[]>): TaskStore
 
   return {
     listTasks: vi.fn(async () => tasks),
-    getSettings: vi.fn(async () => ({ maxConcurrent: 10, maxWorktrees: 10, groupOverlappingFiles: true })),
+    getSettings: vi.fn(async () => ({ maxConcurrent: 10, maxWorktrees: 10, groupOverlappingFiles: true, ...settings })),
     parseFileScopeFromPrompt: vi.fn(async (id: string) => scopes[id] ?? []),
     updateTask,
     moveTask,
@@ -62,6 +62,57 @@ function createStore(tasks: Task[], scopes: Record<string, string[]>): TaskStore
     recordRunAuditEvent: vi.fn(async () => undefined),
   } as unknown as TaskStore;
 }
+
+describe("filterPathsByIgnoreList", () => {
+  it("ignores hidden top-level files and directories by default", () => {
+    expect(filterPathsByIgnoreList([
+      ".env",
+      ".fusion/tasks/FN-1/PROMPT.md",
+      ".changeset/fn-6962.md",
+      ".github/workflows/ci.yml",
+      "src/foo.ts",
+    ])).toEqual(["src/foo.ts"]);
+  });
+
+  it("ignores nested hidden directories and Windows separators by default", () => {
+    expect(filterPathsByIgnoreList([
+      "packages/.cache/out.js",
+      "packages\\.vite\\manifest.json",
+      "docs/readme.md",
+    ])).toEqual(["docs/readme.md"]);
+  });
+
+  it("preserves hidden paths when legacy counting is explicitly restored", () => {
+    expect(filterPathsByIgnoreList([
+      ".env",
+      "packages/.cache/out.js",
+      "src/foo.ts",
+    ], undefined, { ignoreHiddenOverlapPaths: false })).toEqual([".env", "packages/.cache/out.js", "src/foo.ts"]);
+  });
+
+  it("applies explicit ignores when hidden filtering is enabled", () => {
+    expect(filterPathsByIgnoreList([
+      ".fusion/tasks/FN-1/PROMPT.md",
+      "docs/readme.md",
+      "generated/out.js",
+      "src/foo.ts",
+    ], ["docs/", "generated/*"])).toEqual(["src/foo.ts"]);
+  });
+
+  it("applies explicit ignores when hidden filtering is disabled", () => {
+    expect(filterPathsByIgnoreList([
+      ".fusion/tasks/FN-1/PROMPT.md",
+      "docs/readme.md",
+      "generated/out.js",
+      "src/foo.ts",
+    ], ["docs/", "generated/*"], { ignoreHiddenOverlapPaths: false })).toEqual([".fusion/tasks/FN-1/PROMPT.md", "src/foo.ts"]);
+  });
+
+  it("keeps visible paths for empty and blank explicit ignore lists", () => {
+    expect(filterPathsByIgnoreList(["src/foo.ts", "docs/readme.md"], [])).toEqual(["src/foo.ts", "docs/readme.md"]);
+    expect(filterPathsByIgnoreList(["src/foo.ts", "docs/readme.md"], ["", "  "])).toEqual(["src/foo.ts", "docs/readme.md"]);
+  });
+});
 
 describe("scheduler overlap starvation regression (FN-057)", () => {
   beforeEach(() => {
@@ -136,6 +187,49 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
       "FN-030",
       "queued — deferred for higher-priority runnable queued task FN-028 (overlap)",
     );
+  });
+
+  it("ignores hidden-only overlap leases by default when scheduling todo work", async () => {
+    const tasks = [
+      makeTask({ id: "FN-039", column: "in-progress", priority: "normal" }),
+      makeTask({ id: "FN-030", column: "todo", priority: "urgent" }),
+    ];
+    const store = createStore(tasks, {
+      "FN-039": [".fusion/tasks/FN-039/PROMPT.md", "packages/.cache/out.js"],
+      "FN-030": [".fusion/tasks/FN-039/PROMPT.md", "packages/.cache/out.js"],
+    });
+
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+
+    expect(store.moveTask).toHaveBeenCalledWith("FN-030", "in-progress", expect.objectContaining({ allocateWorktree: expect.any(Function) }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "FN-030",
+      expect.objectContaining({ status: "queued", overlapBlockedBy: "FN-039" }),
+    );
+  });
+
+  it("counts hidden-only overlap leases when legacy counting is restored", async () => {
+    const tasks = [
+      makeTask({ id: "FN-039", column: "in-progress", priority: "normal" }),
+      makeTask({ id: "FN-030", column: "todo", priority: "urgent" }),
+    ];
+    const store = createStore(tasks, {
+      "FN-039": [".fusion/tasks/FN-039/PROMPT.md", "packages/.cache/out.js"],
+      "FN-030": [".fusion/tasks/FN-039/PROMPT.md", "packages/.cache/out.js"],
+    }, { ignoreHiddenOverlapPaths: false });
+
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+
+    expect(store.updateTask).toHaveBeenCalledWith("FN-030", {
+      status: "queued",
+      blockedBy: null,
+      overlapBlockedBy: "FN-039",
+    });
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-030", "in-progress", expect.anything());
   });
 
   it("keeps active file-scope leases bounded while non-overlapping ready work proceeds", async () => {

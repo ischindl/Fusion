@@ -83,6 +83,12 @@ function normalizeOverlapPath(path: string): string {
   return path.trim().replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
+function hasHiddenOverlapPathSegment(path: string): boolean {
+  const normalizedPath = normalizeOverlapPath(path);
+  if (!normalizedPath) return false;
+  return normalizedPath.split("/").some((segment) => segment.startsWith("."));
+}
+
 function isIgnoredOverlapPath(path: string, ignorePath: string): boolean {
   const normalizedPath = normalizeOverlapPath(path);
   const normalizedIgnore = normalizeOverlapPath(ignorePath);
@@ -114,22 +120,32 @@ function computeAutoClaimFingerprint(task: Task): string {
   ].join("|");
 }
 
+export interface FilterOverlapPathsOptions {
+  ignoreHiddenOverlapPaths?: boolean;
+}
+
 /**
- * Remove scope entries that match configured overlap-ignore paths.
- * Used by scheduler overlap gating so shared safe paths (docs/generated/etc.)
- * can bypass serialization while keeping overlap protection enabled globally.
+ * Remove scope entries that should not participate in file-overlap serialization.
+ *
+ * FNXC:OverlapScheduling 2026-06-23-13:09:
+ * Hidden dot paths are ignored by default for overlap blockers because task artifacts and hidden/generated metadata such as `.fusion/`, `.changeset/`, `.github/`, `.env`, and nested `.cache/` directories caused false serialization. Operators can set `ignoreHiddenOverlapPaths=false` to restore legacy counting, while explicit `overlapIgnorePaths` keep their exact/directory/glob-prefix semantics in either mode.
  */
-export function filterPathsByIgnoreList(paths: string[], ignorePaths?: string[]): string[] {
-  if (!ignorePaths || ignorePaths.length === 0) {
+export function filterPathsByIgnoreList(
+  paths: string[],
+  ignorePaths?: string[],
+  options: FilterOverlapPathsOptions = {},
+): string[] {
+  const shouldIgnoreHidden = options.ignoreHiddenOverlapPaths ?? true;
+  const normalizedIgnorePaths = (ignorePaths ?? []).map(normalizeOverlapPath).filter(Boolean);
+
+  if (!shouldIgnoreHidden && normalizedIgnorePaths.length === 0) {
     return paths;
   }
 
-  const normalizedIgnorePaths = ignorePaths.map(normalizeOverlapPath).filter(Boolean);
-  if (normalizedIgnorePaths.length === 0) {
-    return paths;
-  }
-
-  return paths.filter((path) => !normalizedIgnorePaths.some((ignore) => isIgnoredOverlapPath(path, ignore)));
+  return paths.filter((path) => {
+    if (shouldIgnoreHidden && hasHiddenOverlapPathSegment(path)) return false;
+    return !normalizedIgnorePaths.some((ignore) => isIgnoredOverlapPath(path, ignore));
+  });
 }
 
 export interface QueuedOverlapCandidate {
@@ -1471,7 +1487,7 @@ export class Scheduler {
         const cached = filteredScopeByTaskId.get(taskId);
         if (cached !== undefined) return cached;
         const scope = await this.store.parseFileScopeFromPrompt(taskId);
-        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths);
+        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths });
         filteredScopeByTaskId.set(taskId, filteredScope);
         return filteredScope;
       };
@@ -2147,7 +2163,7 @@ export class Scheduler {
         const cached = filteredScopeByTaskId.get(taskId);
         if (cached !== undefined) return cached;
         const scope = await this.store.parseFileScopeFromPrompt(taskId);
-        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths);
+        const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths });
         filteredScopeByTaskId.set(taskId, filteredScope);
         return filteredScope;
       };

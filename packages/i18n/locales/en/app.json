@@ -6396,6 +6396,8 @@
       "fullAgentLog": "Full agent log",
       "globalMaxConcurrent": "Global Max Concurrent",
       "heartbeatScopeDiscipline": "Heartbeat Scope Discipline",
+      "ignoreHiddenDotPathsHelp": "When enabled, overlap checks ignore hidden path segments such as .fusion/, .changeset/, .github/, .env, and nested .cache/ directories. Uncheck to restore legacy counting for stricter serialization.",
+      "ignoreHiddenDotPathsInOverlapChecks": " Ignore hidden dot paths in overlap checks ",
       "ignoredOverlapPaths": "Ignored overlap paths",
       "letEngineerAgentsAutoClaimBacklogTasks": " Let engineer agents auto-claim backlog tasks ",
       "lite": "Lite",

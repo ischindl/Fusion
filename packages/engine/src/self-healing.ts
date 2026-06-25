@@ -5033,7 +5033,7 @@ export class SelfHealingManager {
       const cached = filteredScopeByTaskId.get(taskId);
       if (cached) return cached;
       const scope = await this.store.parseFileScopeFromPrompt(taskId);
-      const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths);
+      const filteredScope = filterPathsByIgnoreList(scope, overlapIgnorePaths, { ignoreHiddenOverlapPaths: settings.ignoreHiddenOverlapPaths });
       filteredScopeByTaskId.set(taskId, filteredScope);
       return filteredScope;
     };

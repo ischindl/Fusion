@@ -9430,6 +9430,30 @@ describe("FN-5335 triple-proof no-action unit coverage", () => {
       manager.stop();
     });
 
+    it("ignores hidden-only unmet dependency overlap when the setting is absent", async () => {
+      const { store, manager } = setup([
+        makeTask({ id: "FN-H", column: "in-progress", dependencies: ["FN-D"] }),
+        makeTask({ id: "FN-D", column: "todo" }),
+      ], { "FN-H": [".fusion/tasks/FN-H/PROMPT.md"], "FN-D": [".fusion/tasks/FN-H/PROMPT.md"] });
+      vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: true, metadata: {} });
+
+      await expect(manager.reconcileDependencyBlockingLeases()).resolves.toBe(0);
+      expect(store.moveTask).not.toHaveBeenCalled();
+      manager.stop();
+    });
+
+    it("rebounds hidden-only unmet dependency overlap when legacy counting is restored", async () => {
+      const { store, manager } = setup([
+        makeTask({ id: "FN-H", column: "in-progress", dependencies: ["FN-D"] }),
+        makeTask({ id: "FN-D", column: "todo" }),
+      ], { "FN-H": [".fusion/tasks/FN-H/PROMPT.md"], "FN-D": [".fusion/tasks/FN-H/PROMPT.md"] }, { ignoreHiddenOverlapPaths: false });
+      vi.spyOn(manager as any, "evaluateBackwardMoveTripleProof").mockResolvedValue({ ok: true, stalenessMs: 10_000, reason: "test", metadata: {} });
+
+      await expect(manager.reconcileDependencyBlockingLeases()).resolves.toBe(1);
+      expect(store.moveTask).toHaveBeenCalledWith("FN-H", "todo", expect.objectContaining({ moveSource: "engine", recoveryRehome: true }));
+      manager.stop();
+    });
+
     it.each([{ userPaused: true }, { paused: true }])("does not rebound operator-paused holders: %o", async (pauseState) => {
       const { store, manager } = setup([
         makeTask({ id: "FN-H", column: "in-progress", dependencies: ["FN-D"], ...pauseState }),

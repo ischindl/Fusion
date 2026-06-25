@@ -162,6 +162,16 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
         <small>{t("settings.scheduling.whenEnabledTasksThatModifyTheSameFiles", "When enabled, tasks that modify the same files are queued serially to avoid merge conflicts")}</small>
       </div>
 
+      {/**
+       * FNXC:SettingsScheduling 2026-06-23-13:22:
+       * Operators need a Scheduling toggle that defaults on for ignoring hidden dot paths in overlap checks while preserving the selected value independently of overlap serialization being enabled.
+       */}
+      <div className="form-group">
+        <label htmlFor="ignoreHiddenOverlapPaths" className="checkbox-label">
+          <input id="ignoreHiddenOverlapPaths" type="checkbox" checked={form.ignoreHiddenOverlapPaths !== false} onChange={(e) => setForm((f) => ({ ...f, ignoreHiddenOverlapPaths: e.target.checked }))}/>{t("settings.scheduling.ignoreHiddenDotPathsInOverlapChecks", " Ignore hidden dot paths in overlap checks ")}</label>
+        <small>{t("settings.scheduling.ignoreHiddenDotPathsHelp", "When enabled, overlap checks ignore hidden path segments such as .fusion/, .changeset/, .github/, .env, and nested .cache/ directories. Uncheck to restore legacy counting for stricter serialization.")}</small>
+      </div>
+
       <div className="form-group settings-overlap-ignore-group">
         <label>{t("settings.scheduling.ignoredOverlapPaths", "Ignored overlap paths")}</label>
         <small>{t("settings.scheduling.optionalFileOrDirectoryPathsToIgnoreWhen", " Optional file or directory paths to ignore when overlap serialization is enabled. Paths are project-relative (for example ")}<code>docs/</code>{t("settings.scheduling.or", " or ")}<code>generated/*</code>{t("settings.scheduling.closeParenPeriod", ").")}

@@ -1932,7 +1932,8 @@
     "loadingMessage": "加载 Fusion 仪表板",
     "loadingProgress": "仪表板加载进度",
     "updatingMessage": "更新 Fusion 仪表板",
-    "updatingVersion": "更新到新的前端版本..."
+    "updatingVersion": "更新到新的前端版本...",
+    "title": ""
   },
   "dbBanner": {
     "body": "Fusion 的后台 SQLite 完整性检查报告有损坏。继续关键操作之前，请查看下面的失败对象。",
@@ -6427,7 +6428,9 @@
       "whenEnabledTasksWithStalePlansPROMPTMd": "",
       "whenTheStuckDetectorKillsAndReQueues": "",
       "browseWorkspacePath": "",
-      "overlapPickerNote": ""
+      "overlapPickerNote": "",
+      "ignoreHiddenDotPathsHelp": "",
+      "ignoreHiddenDotPathsInOverlapChecks": ""
     },
     "scope": {
       "globalBanner": "这些设置在所有 Fusion 项目中共享。",
@@ -8542,7 +8545,9 @@
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow"
+    "newWorkflow": "New workflow",
+    "merging": "",
+    "mergingTitle": ""
   },
   "workspace": {
     "projectRoot": "项目根目录",
