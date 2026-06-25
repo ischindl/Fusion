@@ -10973,9 +10973,18 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     getScope: (taskId: string) => Promise<string[]>,
     previousOverlapBlockedBy: string,
   ): Promise<string | null> {
+    /*
+    FNXC:OverlapRepair 2026-06-25-05:49:
+    Stale-overlap repair must reroute only to tasks that the scheduler would still treat as active file-scope lease holders. Operator-paused or failed active rows are parked work, not live blockers, so the repair should clear stale state instead of creating a fresh blocker edge to them.
+    */
+    const holdsRepairFileScopeLease = (candidate: Task) => {
+      if (candidate.paused || candidate.userPaused || candidate.status === "failed") return false;
+      if (candidate.column === "in-progress") return true;
+      return candidate.column === "in-review" && Boolean(candidate.worktree);
+    };
     const activeCandidates = tasks
       .filter((candidate) => candidate.id !== task.id && candidate.id !== previousOverlapBlockedBy)
-      .filter((candidate) => candidate.column === "in-progress" || (candidate.column === "in-review" && Boolean(candidate.worktree) && !candidate.paused && candidate.status !== "failed"))
+      .filter(holdsRepairFileScopeLease)
       .sort((a, b) => a.id.localeCompare(b.id));
 
     for (const candidate of activeCandidates) {

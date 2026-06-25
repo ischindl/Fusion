@@ -588,6 +588,28 @@ Expected touched paths:
       expect(rerouted?.overlapBlockedBy).toBe(current.id);
       expect(rerouted?.status).toBe("queued");
     });
+
+    it("does not reroute stale overlap blockers to paused active tasks", async () => {
+      const stale = await store.createTask({ description: "stale blocker" });
+      const pausedCurrent = await store.createTask({ description: "paused current blocker" });
+      const target = await store.createTask({ description: "target" });
+      await writePrompt(stale.id, ["packages/core/**"]);
+      await writePrompt(pausedCurrent.id, ["packages/engine/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(stale.id, "todo");
+      await store.moveTask(pausedCurrent.id, "todo");
+      await store.moveTask(pausedCurrent.id, "in-progress");
+      await store.updateTask(pausedCurrent.id, { paused: true, userPaused: true, pausedReason: "operator parked" });
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: stale.id });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: true, reason: "repaired" });
+      const repaired = await store.getTask(target.id);
+      expect(repaired?.overlapBlockedBy).toBeUndefined();
+      expect(repaired?.status).toBeUndefined();
+    });
   });
 
   describe("FN-5216 File Scope sanitization on copy paths", () => {
