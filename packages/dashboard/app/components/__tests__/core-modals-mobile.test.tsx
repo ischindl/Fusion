@@ -528,6 +528,38 @@ describe("core modals mobile css coverage", () => {
     );
     expect(quickFieldsTriggerMatch).not.toBeNull();
     expect(quickFieldsTriggerMatch![0]).toContain("min-height: 36px");
+
+    const githubSelectRule = mobileBlock.match(
+      /\.new-task-github-reference-picker__remote-select,\s*\.new-task-github-reference-picker__select\s*\{[^}]+\}/,
+    );
+    expect(githubSelectRule).not.toBeNull();
+    expect(githubSelectRule![0]).toContain("min-height: calc(var(--space-xl) + var(--space-sm))");
+  });
+
+  it("NewTaskModal: mobile popup containers stay hit-testable and scrollable inside the sheet", () => {
+    const css = loadAllAppCss();
+    const mobileBlock = getMainMobileBlock(css);
+    const baseModalRule = getFirstRuleBlock(css, ".new-task-modal");
+
+    expect(baseModalRule).toContain("pointer-events: auto");
+
+    const taskFormDropdownRule = mobileBlock.match(
+      /\.task-form \.dep-dropdown\s*\{[^}]+\}/,
+    );
+    expect(taskFormDropdownRule).not.toBeNull();
+    expect(taskFormDropdownRule![0]).toContain("left: 0");
+    expect(taskFormDropdownRule![0]).toContain("right: 0");
+    expect(taskFormDropdownRule![0]).toContain("overflow-y: auto");
+    expect(taskFormDropdownRule![0]).toContain("overscroll-behavior: contain");
+
+    const quickFieldsDropdownRule = mobileBlock.match(
+      /\.new-task-quick-fields \.dep-dropdown\s*\{[^}]+\}/,
+    );
+    expect(quickFieldsDropdownRule).not.toBeNull();
+    expect(quickFieldsDropdownRule![0]).toContain("left: 0");
+    expect(quickFieldsDropdownRule![0]).toContain("right: 0");
+    expect(quickFieldsDropdownRule![0]).toContain("overflow-y: auto");
+    expect(quickFieldsDropdownRule![0]).toContain("overscroll-behavior: contain");
   });
 
   it("NewTaskModal: modal body uses token-based padding on mobile", () => {

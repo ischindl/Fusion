@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { readFileSync } from "node:fs";
 import { NewTaskModal } from "../NewTaskModal";
 import type { Task, Column } from "@fusion/core";
-import { apiFetchGitHubIssues, apiFetchGitHubPulls, checkDuplicateTasks, fetchGitRemotes, type BoardWorkflowsPayload } from "../../api";
+import { apiFetchGitHubIssues, apiFetchGitHubPulls, checkDuplicateTasks, fetchAgents, fetchGitRemotes, type BoardWorkflowsPayload } from "../../api";
 import { writeBoardWorkflowsCache } from "../../utils/boardWorkflowsCache";
 import { writeLastSelectedWorkflowId } from "../../utils/lastSelectedWorkflow";
 
@@ -382,6 +382,91 @@ describe("NewTaskModal", () => {
       await waitFor(() => expect(screen.getByTestId("new-task-github-reference-picker")).toBeInTheDocument());
       expect(screen.getByTestId("new-task-github-reference-select")).toBeEnabled();
       expect(document.querySelector(".new-task-modal")?.getAttribute("style")).toContain("--keyboard-overlap: 250px");
+    });
+
+    it("keeps the mobile sheet hit-testable when the transparent overlay passes through clicks", async () => {
+      await renderPickerWithData({ viewport: "mobile" });
+      await waitFor(() => expect(screen.getByTestId("new-task-github-reference-picker")).toBeInTheDocument());
+
+      expect(document.querySelector(".new-task-modal--floating")).toBeNull();
+      expect(newTaskModalCss).toContain("FNXC:NewTaskMobileAffordances 2026-06-25");
+      expect(newTaskModalCss).toMatch(/\.new-task-modal\s*\{[^}]*pointer-events:\s*auto;/s);
+    });
+
+    it("keeps GitHub, dependency, and agent popups reachable in the mobile keyboard sheet", async () => {
+      mockUseMobileKeyboard.mockReturnValue({
+        keyboardOpen: true,
+        keyboardOverlap: 250,
+        viewportHeight: 400,
+        viewportOffsetTop: 50,
+      });
+      vi.mocked(fetchAgents).mockResolvedValueOnce([
+        { id: "agent-exec", name: "Executor Bot", role: "executor", state: "idle" } as any,
+      ]);
+
+      await renderPickerWithData({ viewport: "mobile" });
+
+      await waitFor(() => expect(screen.getByTestId("new-task-github-reference-select")).toBeEnabled());
+      expect(screen.getByTestId("new-task-github-reference-picker")).toBeVisible();
+      expect(screen.getByText("Issue #12 — Crash on startup")).toBeInTheDocument();
+      expect(screen.getByText("PR #34 — Fix login")).toBeInTheDocument();
+      expect(screen.getByTestId("task-form-inline-github")).toBeVisible();
+      expect(screen.getByTestId("task-form-inline-models")).toBeVisible();
+      expect(screen.getByTestId("task-form-inline-node")).toBeVisible();
+      expect(screen.getByTestId("task-form-inline-priority")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Create Task" })).toBeVisible();
+
+      fireEvent.click(screen.getByTestId("dep-trigger"));
+      expect(screen.getByPlaceholderText("Search tasks…")).toBeVisible();
+      expect(screen.getByText("No available tasks")).toBeVisible();
+      const depDropdown = document.querySelector(".new-task-quick-fields .dep-dropdown");
+      expect(depDropdown).not.toBeNull();
+      expect(depDropdown?.closest(".new-task-modal")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("new-task-agent-button"));
+      await waitFor(() => expect(screen.getByTestId("agent-option-agent-exec")).toBeVisible());
+      const agentDropdown = document.querySelector(".new-task-quick-fields .agent-picker-dropdown");
+      expect(agentDropdown).not.toBeNull();
+      expect(agentDropdown?.closest(".new-task-modal")).toBeTruthy();
+      expect(document.querySelector(".new-task-modal")?.getAttribute("style")).toContain("--keyboard-overlap: 250px");
+    });
+
+    it("renders mobile GitHub data states without clipping or absent picker controls", async () => {
+      vi.mocked(fetchGitRemotes).mockImplementationOnce(() => new Promise(() => undefined));
+      const loadingRender = renderNewTaskModal({ projectId: "project-1" });
+      await waitFor(() => expect(screen.getByTestId("new-task-github-reference-status")).toHaveTextContent("Loading GitHub remotes"));
+      expect(screen.getByTestId("new-task-github-reference-picker")).toBeVisible();
+      loadingRender.unmount();
+
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([upstreamRemote, { ...originRemote, name: "fork" }]);
+      const multipleRemoteRender = renderNewTaskModal({ projectId: "project-1" });
+      await waitFor(() => expect(screen.getByTestId("new-task-github-remote-select")).toBeVisible());
+      expect(screen.getByText("Choose a GitHub remote before selecting an issue or pull request.")).toBeVisible();
+      multipleRemoteRender.unmount();
+
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([originRemote]);
+      vi.mocked(apiFetchGitHubIssues).mockImplementationOnce(() => new Promise(() => undefined));
+      vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce([]);
+      const referenceLoadingRender = renderNewTaskModal({ projectId: "project-1" });
+      await waitFor(() => expect(screen.getByTestId("new-task-github-reference-status")).toHaveTextContent("Loading open issues and pull requests"));
+      expect(screen.getByTestId("new-task-github-reference-picker")).toBeVisible();
+      referenceLoadingRender.unmount();
+
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([originRemote]);
+      vi.mocked(apiFetchGitHubIssues).mockRejectedValueOnce(new Error("GitHub auth required"));
+      vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce([]);
+      const authErrorRender = renderNewTaskModal({ projectId: "project-1" });
+      await waitFor(() => expect(screen.getByTestId("new-task-github-reference-status")).toHaveTextContent("GitHub auth required"));
+      expect(screen.getByTestId("new-task-github-reference-picker")).toBeVisible();
+      authErrorRender.unmount();
+
+      vi.mocked(fetchGitRemotes).mockResolvedValueOnce([originRemote]);
+      vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([{ ...issue, number: 7 }]);
+      vi.mocked(apiFetchGitHubPulls).mockResolvedValueOnce([{ ...pull, number: 7 }]);
+      renderNewTaskModal({ projectId: "project-1" });
+      await waitFor(() => expect(screen.getByText("Issue #7 — Crash on startup")).toBeVisible());
+      expect(screen.getByText("PR #7 — Fix login")).toBeVisible();
+      expect(screen.getByTestId("new-task-github-reference-select")).toBeVisible();
     });
   });
 

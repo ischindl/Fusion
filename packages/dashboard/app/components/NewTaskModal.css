@@ -1,6 +1,11 @@
 /* === New Task Modal === */
+/*
+FNXC:NewTaskMobileAffordances 2026-06-25-12:22:
+The transparent New Task overlay intentionally passes clicks through for desktop floating mode, so the panel itself must always opt back into hit testing. Mobile uses the non-floating full-screen sheet and must keep every desktop affordance (GitHub picker, quick buttons, dropdowns, and action row) tappable and scroll-reachable even when the keyboard constrains the visual viewport.
+*/
 .new-task-modal {
   min-height: min(520px, 80vh);
+  pointer-events: auto;
 }
 
 /*
@@ -647,6 +652,10 @@ The GitHub reference picker is a compact prompt-seeding helper inside the primar
     left: 0;
     right: 0;
     max-width: 100%;
+    max-height: min(40dvh, calc(var(--space-2xl) * 6));
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .task-form-description-actions {
@@ -673,6 +682,11 @@ The GitHub reference picker is a compact prompt-seeding helper inside the primar
     margin: 0 var(--space-md) var(--space-sm);
   }
 
+  .new-task-github-reference-picker__remote-select,
+  .new-task-github-reference-picker__select {
+    min-height: calc(var(--space-xl) + var(--space-sm));
+  }
+
   .new-task-quick-fields .dep-trigger {
     width: 100%;
     min-height: 36px;
@@ -682,6 +696,10 @@ The GitHub reference picker is a compact prompt-seeding helper inside the primar
     left: 0;
     right: 0;
     max-width: 100%;
+    max-height: min(40dvh, calc(var(--space-2xl) * 6));
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .task-form-more-options {
