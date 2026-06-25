@@ -53,6 +53,16 @@ class MockStore extends EventEmitter {
     };
   }
 
+  // FNXC:CommandCenter 2026-06-25-11:35: The /command-center/tokens handler now reads
+  // settings.modelPricingOverrides via getGlobalSettingsStore().getSettings() for USD
+  // cost derivation. Stub it so the auth check reaches a 200 instead of a 500 from a
+  // missing store accessor.
+  getGlobalSettingsStore() {
+    return {
+      getSettings: async () => ({ modelPricingOverrides: {} }),
+    };
+  }
+
   async listTasks(): Promise<Task[]> {
     return [];
   }

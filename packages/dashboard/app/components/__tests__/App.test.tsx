@@ -1017,7 +1017,7 @@ describe("App backend-unreachable first-run flow", () => {
     expect(screen.queryByText("Welcome to Fusion")).toBeNull();
   });
 
-  it("retries project loading and resumes setup wizard flow after connectivity recovers", async () => {
+  it("retries project loading and recovers from the backend error page after connectivity recovers", async () => {
     vi.useFakeTimers();
 
     try {
@@ -1050,7 +1050,17 @@ describe("App backend-unreachable first-run flow", () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
 
-      expect(screen.getByText("Set Up AI")).toBeTruthy();
+      /*
+      FNXC:Onboarding 2026-06-25-11:50: After connectivity recovers the backend-error
+      page is replaced by the normal dashboard shell. The setup wizard no longer
+      auto-resumes here: zero projects no longer force-open the project wizard
+      (useViewState FNXC:Onboarding 2026-06-22-05:06) and modelOnboardingComplete is
+      true in this fixture, so the AI-setup wizard ("Set Up AI") does not auto-open.
+      Assert recovery (error page gone, shell rendered) instead of the retired wizard.
+      */
+      expect(screen.queryByText("Can't reach the Fusion backend")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Retry Connection" })).toBeNull();
+      expect(screen.getByTestId("dashboard-project-shell")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -1283,6 +1293,14 @@ describe("App approval notification banner", () => {
 });
 
 describe("App chat unread response indicator", () => {
+  /* FNXC:Navigation 2026-06-25-11:00: Sidebar-destination tests must opt into leftSidebarNav:true; the shared defaultSettings keeps it false so legacy header-nav tests stay valid. */
+  beforeEach(() => {
+    (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
+  });
+
   const getChatEvents = async () => {
     render(<App />);
 
@@ -2110,6 +2128,14 @@ describe("OnboardingResumeCard", () => {
 describe("App view switching", () => {
   // FNXC:Navigation 2026-06-22-09:30: Research/Evals/Insights/Memory are now left-sidebar
   // destinations (sidebar-nav-*), not header More-views overflow items, on desktop.
+  /* FNXC:Navigation 2026-06-25-11:00: Sidebar-destination tests must opt into leftSidebarNav:true; the shared defaultSettings keeps it false so legacy header-nav tests stay valid. Tests that set their own fetchSettings mock add leftSidebarNav:true to their spread. */
+  beforeEach(() => {
+    (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
+  });
+
   it("opens research view from the sidebar and persists view selection", async () => {
     localStorage.setItem("kb-dashboard-view-mode", "project");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -2117,6 +2143,7 @@ describe("App view switching", () => {
       experimentalFeatures: {
         ...defaultSettings.experimentalFeatures,
         researchView: true,
+        leftSidebarNav: true,
       },
     });
 
@@ -2417,7 +2444,7 @@ describe("App view switching", () => {
     mockUseViewportMode.mockReturnValue("desktop");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { ...defaultSettings.experimentalFeatures, roadmap: true },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, roadmap: true, leftSidebarNav: true },
     });
     (fetchPluginDashboardViews as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
@@ -2584,7 +2611,7 @@ describe("App view switching", () => {
     // Override the default mock to exclude agentsView
     vi.mocked(fetchSettings).mockResolvedValue({
       ...defaultSettings,
-      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: true, skillsView: true }, // no agentsView
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: true, skillsView: true, leftSidebarNav: true }, // no agentsView
     });
 
     render(<App />);
@@ -2745,7 +2772,7 @@ describe("App view switching", () => {
   it("keeps insights view button visible after graduation from experimental flags", async () => {
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: false },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: false, leftSidebarNav: true },
     });
 
     render(<App />);
@@ -2791,7 +2818,7 @@ describe("App view switching", () => {
   it("keeps memory view button visible after graduation from experimental flags", async () => {
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { ...defaultSettings.experimentalFeatures, memoryView: false, insights: true },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, memoryView: false, insights: true, leftSidebarNav: true },
     });
 
     render(<App />);
@@ -2863,6 +2890,14 @@ describe("App view switching", () => {
 });
 
 describe("App GitHub import", () => {
+  /* FNXC:Navigation 2026-06-25-11:00: Sidebar-destination tests must opt into leftSidebarNav:true; the shared defaultSettings keeps it false so legacy header-nav tests stay valid. */
+  beforeEach(() => {
+    (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
+  });
+
   // FNXC:Navigation 2026-06-22-09:30: GitHub import is now the left-sidebar "Import Tasks"
   // destination rendering the GitHubImportModal embedded in main content (presentation="embedded"),
   // not a header-button modal overlay. Navigation in/out goes through the sidebar; embedded mode
@@ -4207,7 +4242,11 @@ describe("App board branch filters", () => {
   it("composes with search and does not affect list view tasks", async () => {
     localStorage.setItem("kb-dashboard-view-mode", "project");
     localStorage.setItem(taskViewStorageKey(), "board");
-    vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings });
+    /* FNXC:Navigation 2026-06-25-11:00: This test navigates via sidebar-nav-list, so it must load leftSidebarNav:true; the shared defaultSettings keeps it false for legacy header-nav tests. */
+    vi.mocked(fetchSettings).mockResolvedValue({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
     mockUseTasks.mockImplementation(() => ({
       tasks: [
         makeTask("FN-4", "Alpha Search", "feature/a", "main"),

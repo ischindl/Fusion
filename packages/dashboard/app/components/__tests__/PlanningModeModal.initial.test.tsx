@@ -671,7 +671,10 @@ describe("PlanningModeModal", () => {
 
       const { loadAllAppCss } = await import("../../test/cssFixture");
       const css = loadAllAppCss();
-      expect(css).toMatch(/\.spin\s*\{[^}]*animation:\s*spin\s+1s\s+linear\s+infinite;/);
+      // FNXC:PlanningModeModal 2026-06-25-11:30: The shared `.spin` loader keyframe was
+      // renamed `spin` → `fusion-spinner-spin` for collision-proofing (see styles.css),
+      // so assert the current keyframe name instead of the retired generic `spin`.
+      expect(css).toMatch(/\.spin\s*\{[^}]*animation:\s*fusion-spinner-spin\s+1s\s+linear\s+infinite;/);
 
       expect(screen.getByRole("button", { name: "Hide thinking" })).toBeDefined();
       expect(document.querySelector(".planning-thinking-output")?.textContent).toContain("Analyzing requirements...");

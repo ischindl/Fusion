@@ -6,7 +6,8 @@
 // route registration, the flag-gated early-return shape, and the deduped
 // flag-ON payload were untested. This exercises the route end-to-end against a
 // REAL TaskStore via createApiRoutes:
-//   - flag OFF → { flagEnabled: false } (the legacy single-lane shape)
+//   - workflowColumns graduated → a stale persisted `false` is treated as enabled,
+//     so the route returns the full payload (the legacy empty single-lane shape is retired)
 //   - flag ON, mixed default + custom selections → correct taskWorkflowIds and a
 //     DEDUPED workflows array (two cards on the same default lane collapse to one
 //     workflow entry).
@@ -84,17 +85,20 @@ describe("GET /tasks/board-workflows", () => {
 
   const get = (path: string) => REQUEST(app, "GET", path);
 
-  it("flag OFF → { flagEnabled: false } legacy shape", async () => {
-    // Even with tasks on the board, an explicitly-disabled flag returns the empty
-    // single-lane shape regardless of the project's default feature policy.
+  // FNXC:WorkflowColumns 2026-06-25-11:40: workflowColumns graduated from the
+  // experimental flag (isWorkflowColumnsEnabled always returns true; stale persisted
+  // `false` must resolve as enabled). The retired flag-OFF empty single-lane shape no
+  // longer exists; assert the graduation invariant — a persisted `false` still yields
+  // the full enabled payload with the card mapped to the default lane.
+  it("persisted workflowColumns:false is treated as enabled (graduated)", async () => {
     await store.updateGlobalSettings({ experimentalFeatures: { workflowColumns: false } });
-    await store.createTask({ description: "card" });
+    const card = await store.createTask({ description: "card" });
     const res = await get("/api/tasks/board-workflows");
     expect(res.status).toBe(200);
     const body = res.body as { flagEnabled: boolean; workflows: unknown[]; taskWorkflowIds: Record<string, string> };
-    expect(body.flagEnabled).toBe(false);
-    expect(body.workflows).toEqual([]);
-    expect(body.taskWorkflowIds).toEqual({});
+    expect(body.flagEnabled).toBe(true);
+    expect(body.taskWorkflowIds[card.id]).toBe(DEFAULT_LANE);
+    expect(body.workflows.length).toBeGreaterThan(0);
   });
 
   it("flag ON, mixed default + custom → correct taskWorkflowIds and deduped workflows", async () => {

@@ -4,7 +4,8 @@
 //
 // The promote endpoint has four error branches plus a success path, none of
 // which were exercised at the HTTP layer:
-//   - flag OFF                       → 400 (workflow columns not enabled)
+//   - workflowColumns graduated      → a stale persisted `false` is treated as
+//                                      enabled, so promote proceeds (no legacy 400)
 //   - promoteHeldTask success        → 200 (returns the promoted task)
 //   - capacity-exhausted-or-no-slot  → 409 code:"capacity-exhausted"
 //   - other engine rejection         → 409 code:"guard-rejected"
@@ -60,11 +61,17 @@ describe("POST /tasks/:id/promote", () => {
     promoteHeldTask.mockReset();
   });
 
-  it("flag OFF → 400 and never calls the engine", async () => {
+  // FNXC:WorkflowColumns 2026-06-25-11:40: workflowColumns graduated from the
+  // experimental flag (isWorkflowColumnsEnabled always returns true and stale
+  // persisted `false` must be treated as enabled). The retired flag-OFF → 400
+  // branch no longer exists; assert the graduation invariant instead — a persisted
+  // `false` still lets promote proceed and reach the engine.
+  it("persisted workflowColumns:false is treated as enabled (graduated) → proceeds to engine", async () => {
     const { app } = buildApp({ flagEnabled: false });
+    promoteHeldTask.mockResolvedValue({ released: true, toColumn: "in-progress" });
     const res = await promote(app);
-    expect(res.status).toBe(400);
-    expect(promoteHeldTask).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(promoteHeldTask).toHaveBeenCalledTimes(1);
   });
 
   it("success → 200 and returns the promoted task", async () => {
