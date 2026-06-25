@@ -119,6 +119,7 @@ interface MissionManagerProps {
   onClose: () => void;
   addToast: (message: string, type?: ToastType) => void;
   projectId?: string;
+  workflowId?: string | null;
   onSelectTask?: (taskId: string) => void;
   availableTasks?: Array<{ id: string; title?: string }>;
   resumeSessionId?: string;
@@ -614,7 +615,7 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
   };
 }
 
-export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
+export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, workflowId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
   const { t } = useTranslation("app");
   const { confirm } = useConfirm();
   const sessionTabId = useMemo(() => getSessionTabId(), []);
@@ -2020,11 +2021,23 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
+  const missionTriageOptions = useMemo(() => {
+    const branchOptions = toMissionBranchOptions(selectedMission ?? undefined);
+    /*
+    FNXC:MissionWorkflows 2026-06-25-00:00:
+    Mission feature and slice triage must carry the active header workflow into task creation just like Planning. Omit the field when the switcher has no resolved selection so API/tool/autopilot paths continue inheriting the project default.
+    */
+    return {
+      ...branchOptions,
+      ...(workflowId ? { workflowId } : {}),
+    } as NonNullable<Parameters<typeof triageFeature>[4]> & { workflowId?: string };
+  }, [selectedMission, workflowId]);
+
   // Triage a single feature — creates a task and links it
   const handleTriageFeature = useCallback(async (featureId: string) => {
     try {
       setSaving(true);
-      await triageFeature(featureId, undefined, undefined, projectId, toMissionBranchOptions(selectedMission ?? undefined));
+      await triageFeature(featureId, undefined, undefined, projectId, missionTriageOptions);
       addToast(t("missions.featureTriaged", "Feature triaged — task created"), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
@@ -2032,7 +2045,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     } finally {
       setSaving(false);
     }
-  }, [addToast, loadMissionDetail, selectedMission, projectId]);
+  }, [addToast, loadMissionDetail, missionTriageOptions, selectedMission, projectId]);
 
   // Triage with preview — fetches enriched description first
   const handleTriageFeatureWithPreview = useCallback(async (featureId: string) => {
@@ -2064,7 +2077,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleTriageAllSliceFeatures = useCallback(async (sliceId: string) => {
     try {
       setSaving(true);
-      const result = await triageAllSliceFeatures(sliceId, projectId, toMissionBranchOptions(selectedMission ?? undefined));
+      const result = await triageAllSliceFeatures(sliceId, projectId, missionTriageOptions);
       addToast(t("missions.sliceTriaged", { count: result.count, defaultValue_one: "Triaged {{count}} feature", defaultValue_other: "Triaged {{count}} features" }), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
@@ -2072,7 +2085,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     } finally {
       setSaving(false);
     }
-  }, [addToast, loadMissionDetail, selectedMission, projectId]);
+  }, [addToast, loadMissionDetail, missionTriageOptions, selectedMission, projectId]);
 
   // ── Assertion handlers ──
 

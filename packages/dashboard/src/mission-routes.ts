@@ -80,6 +80,13 @@ function validateFeatureId(id: string): boolean {
   return /^F-[A-Z0-9]+(?:-[A-Z0-9]+)*$/i.test(id);
 }
 
+function validateOptionalWorkflowId(workflowId: unknown): string | null | undefined {
+  if (workflowId === undefined || workflowId === null || typeof workflowId === "string") {
+    return workflowId as string | null | undefined;
+  }
+  throw badRequest("workflowId must be a string or null");
+}
+
 function validateAssertionId(id: string): boolean {
   // Assertion IDs follow format: CA-{base36timestamp}-{random}
   // e.g., CA-A3B7CD-E9F2
@@ -2819,7 +2826,8 @@ export function createMissionRouter(
     "/features/:featureId/triage",
     catchTypedHandler(async (req, res) => {
       const { featureId } = req.params;
-      const { taskTitle, taskDescription, branch, baseBranch, branchSelection, branchAssignment } = req.body || {};
+      const { taskTitle, taskDescription, branch, baseBranch, branchSelection, branchAssignment, workflowId } = req.body || {};
+      const validatedWorkflowId = validateOptionalWorkflowId(workflowId);
 
       if (!validateFeatureId(featureId)) {
         throw badRequest("Invalid feature ID format");
@@ -2842,6 +2850,7 @@ export function createMissionRouter(
             branch: resolvedBranch,
             baseBranch: resolvedBaseBranch,
             assignmentMode: branchMode,
+            ...(validatedWorkflowId !== undefined ? { workflowId: validatedWorkflowId } : {}),
           },
         );
         res.json(feature);
@@ -2852,6 +2861,9 @@ export function createMissionRouter(
         }
         if (errMsg.includes("TaskStore")) {
           throw new ApiError(503, "TaskStore not available for triage operations");
+        }
+        if (/workflow/i.test(errMsg) && /not found/i.test(errMsg)) {
+          throw notFound(errMsg);
         }
         throw err;
       }
@@ -2867,7 +2879,8 @@ export function createMissionRouter(
     "/slices/:sliceId/triage-all",
     catchTypedHandler(async (req, res) => {
       const { sliceId } = req.params;
-      const { branch, baseBranch, branchSelection, branchAssignment } = req.body || {};
+      const { branch, baseBranch, branchSelection, branchAssignment, workflowId } = req.body || {};
+      const validatedWorkflowId = validateOptionalWorkflowId(workflowId);
 
       if (!validateSliceId(sliceId)) {
         throw badRequest("Invalid slice ID format");
@@ -2886,12 +2899,16 @@ export function createMissionRouter(
           branch: resolvedBranch,
           baseBranch: resolvedBaseBranch,
           assignmentMode: branchMode,
+          ...(validatedWorkflowId !== undefined ? { workflowId: validatedWorkflowId } : {}),
         });
         res.json({ triaged, count: triaged.length });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (errMsg.includes("TaskStore")) {
           throw new ApiError(503, "TaskStore not available for triage operations");
+        }
+        if (/workflow/i.test(errMsg) && /not found/i.test(errMsg)) {
+          throw notFound(errMsg);
         }
         throw err;
       }

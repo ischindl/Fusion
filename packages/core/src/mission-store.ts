@@ -3897,6 +3897,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
       branch?: string;
       baseBranch?: string;
       assignmentMode?: "shared" | "per-task-derived";
+      workflowId?: string | null;
     },
   ): Promise<MissionFeature> {
     if (!this.taskStore) {
@@ -3987,6 +3988,11 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
                 },
               }
             : {}),
+          /*
+          FNXC:MissionWorkflows 2026-06-25-00:00:
+          Apply the selected Missions header workflow atomically during TaskStore.createTask so newly triaged features land in the intended workflow lane. Duplicate-guard reuses skip this create path, preserving existing duplicate tasks without workflow mutation.
+          */
+          ...(branchOptions?.workflowId !== undefined ? { workflowId: branchOptions.workflowId } : {}),
         });
 
         if (guard.fingerprint) {
@@ -4028,6 +4034,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
       branch?: string;
       baseBranch?: string;
       assignmentMode?: "shared" | "per-task-derived";
+      workflowId?: string | null;
     },
   ): Promise<MissionFeature[]> {
     if (!this.taskStore) {
@@ -4055,6 +4062,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
         branch: strategyBranch,
         baseBranch: resolvedBaseBranch,
         assignmentMode: resolvedAssignmentMode,
+        ...(branchOptions?.workflowId !== undefined ? { workflowId: branchOptions.workflowId } : {}),
       });
       triaged.push(updated);
     }

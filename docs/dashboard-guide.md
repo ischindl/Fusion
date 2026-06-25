@@ -711,6 +711,17 @@ Features:
 
 For full lifecycle behavior, runtime/heartbeat settings, and budgets, see [Agents guide](./agents.md).
 
+## Missions View
+
+Missions view manages mission hierarchies and task handoff from milestones, slices, and features.
+
+<!-- FNXC:MissionWorkflows 2026-06-25-06:04: Missions creates tasks from feature and slice triage, so the user-facing guide must document that its header workflow selector matches Planning and carries the selected workflow into mission-created tasks. -->
+
+Workflow behavior:
+- When workflow columns are enabled and more than one workflow is available, Missions shows the same header workflow selector as Planning.
+- Feature triage and slice **Triage all features** create new tasks on the selected workflow.
+- If no workflow is selected, or workflow columns are unavailable, mission-created tasks continue to use the project default workflow.
+
 ## Roadmaps View
 
 Roadmaps view manages roadmap hierarchies (roadmaps, milestones, features) and planning handoff exports.

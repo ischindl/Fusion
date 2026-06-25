@@ -3,6 +3,7 @@ import { MissionStore, deriveMilestoneAcceptanceCriteriaFromFeatures } from "../
 import { GoalStore } from "../goal-store.js";
 import { Database, SCHEMA_VERSION } from "../db.js";
 import type { MissionFeature } from "../mission-types.js";
+import type { WorkflowIr } from "../workflow-ir-types.js";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,6 +11,22 @@ import { rm } from "node:fs/promises";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "kb-mission-test-"));
+}
+
+function linearIr(name: string): WorkflowIr {
+  return {
+    version: "v1",
+    name,
+    nodes: [
+      { id: "start", kind: "start" },
+      { id: "triage", kind: "prompt", config: { name: "Triage", prompt: "review" } },
+      { id: "end", kind: "end" },
+    ],
+    edges: [
+      { from: "start", to: "triage", condition: "success" },
+      { from: "triage", to: "end", condition: "success" },
+    ],
+  };
 }
 
 /** Helper to create a task in the database for foreign key validation */
@@ -2298,6 +2315,63 @@ describe("MissionStore", () => {
       expect(task!.missionId).toBe(mission.id);
     });
 
+    /*
+    FNXC:MissionWorkflows 2026-06-25-00:00:
+    MissionStore tests pin the storage invariant: workflowId is applied only to newly created mission-triage tasks, while default inheritance and duplicate-task reuse keep their existing workflow behavior.
+    */
+    it("assigns selected workflow when triaging a new feature task", async () => {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      const msWithTs = ts.getMissionStore();
+      const workflow = await ts.createWorkflowDefinition({ name: "Mission QA", ir: linearIr("mission-qa") });
+
+      const mission = msWithTs.createMission({ title: "Mission" });
+      const milestone = msWithTs.addMilestone(mission.id, { title: "Milestone" });
+      const slice = msWithTs.addSlice(milestone.id, { title: "Slice" });
+      const feature = msWithTs.addFeature(slice.id, { title: "Workflow Feature" });
+
+      const triaged = await msWithTs.triageFeature(feature.id, undefined, undefined, { workflowId: workflow.id });
+
+      expect(ts.getTaskWorkflowSelection(triaged.taskId!)?.workflowId).toBe(workflow.id);
+    });
+
+    it("omitting workflowId preserves default workflow inheritance during feature triage", async () => {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      const msWithTs = ts.getMissionStore();
+      const workflow = await ts.createWorkflowDefinition({ name: "Mission Default", ir: linearIr("mission-default") });
+      await ts.setDefaultWorkflowId(workflow.id);
+
+      const mission = msWithTs.createMission({ title: "Mission" });
+      const milestone = msWithTs.addMilestone(mission.id, { title: "Milestone" });
+      const slice = msWithTs.addSlice(milestone.id, { title: "Slice" });
+      const feature = msWithTs.addFeature(slice.id, { title: "Default Workflow Feature" });
+
+      const triaged = await msWithTs.triageFeature(feature.id);
+
+      expect(ts.getTaskWorkflowSelection(triaged.taskId!)?.workflowId).toBe(workflow.id);
+    });
+
+    it("does not rewrite an existing duplicate task workflow selection", async () => {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      const msWithTs = ts.getMissionStore();
+      const firstWorkflow = await ts.createWorkflowDefinition({ name: "First Mission Workflow", ir: linearIr("mission-first") });
+      const secondWorkflow = await ts.createWorkflowDefinition({ name: "Second Mission Workflow", ir: linearIr("mission-second") });
+
+      const mission = msWithTs.createMission({ title: "Mission" });
+      const milestone = msWithTs.addMilestone(mission.id, { title: "Milestone" });
+      const slice = msWithTs.addSlice(milestone.id, { title: "Slice" });
+      const featureA = msWithTs.addFeature(slice.id, { title: "Feature A" });
+      const featureB = msWithTs.addFeature(slice.id, { title: "Feature B" });
+
+      const first = await msWithTs.triageFeature(featureA.id, "Same Task", "Same deterministic description", { workflowId: firstWorkflow.id });
+      const second = await msWithTs.triageFeature(featureB.id, "Same Task", "Same deterministic description", { workflowId: secondWorkflow.id });
+
+      expect(second.taskId).toBe(first.taskId);
+      expect(ts.getTaskWorkflowSelection(first.taskId!)?.workflowId).toBe(firstWorkflow.id);
+    });
+
     it("inherits mission baseBranch when no explicit override is provided", async () => {
       const { TaskStore } = await import("../store.js");
       const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
@@ -2560,6 +2634,46 @@ describe("MissionStore", () => {
       expect(triaged).toHaveLength(1);
       expect(triaged[0].id).toBe(f2.id);
       expect(triaged[0].status).toBe("triaged");
+    });
+
+    it("assigns selected workflow to every newly triaged slice feature", async () => {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      const msWithTs = ts.getMissionStore();
+      const workflow = await ts.createWorkflowDefinition({ name: "Slice Mission QA", ir: linearIr("slice-mission-qa") });
+
+      const mission = msWithTs.createMission({ title: "Mission" });
+      const milestone = msWithTs.addMilestone(mission.id, { title: "Milestone" });
+      const slice = msWithTs.addSlice(milestone.id, { title: "Slice" });
+      msWithTs.addFeature(slice.id, { title: "Feature 1" });
+      msWithTs.addFeature(slice.id, { title: "Feature 2" });
+
+      const triaged = await msWithTs.triageSlice(slice.id, { workflowId: workflow.id });
+
+      expect(triaged).toHaveLength(2);
+      expect(triaged.map((feature) => ts.getTaskWorkflowSelection(feature.taskId!)?.workflowId)).toEqual([workflow.id, workflow.id]);
+    });
+
+    it("assigns selected workflow only to newly created slice tasks while skipping already-triaged features", async () => {
+      const { TaskStore } = await import("../store.js");
+      const ts = new TaskStore(tmpDir, join(tmpDir, ".fusion-global-settings"), { inMemoryDb: true });
+      const msWithTs = ts.getMissionStore();
+      const existingWorkflow = await ts.createWorkflowDefinition({ name: "Existing Slice Workflow", ir: linearIr("slice-existing") });
+      const selectedWorkflow = await ts.createWorkflowDefinition({ name: "Selected Slice Workflow", ir: linearIr("slice-selected") });
+
+      const mission = msWithTs.createMission({ title: "Mission" });
+      const milestone = msWithTs.addMilestone(mission.id, { title: "Milestone" });
+      const slice = msWithTs.addSlice(milestone.id, { title: "Slice" });
+      const f1 = msWithTs.addFeature(slice.id, { title: "Feature 1" });
+      const f2 = msWithTs.addFeature(slice.id, { title: "Feature 2" });
+
+      const first = await msWithTs.triageFeature(f1.id, undefined, undefined, { workflowId: existingWorkflow.id });
+      const triaged = await msWithTs.triageSlice(slice.id, { workflowId: selectedWorkflow.id });
+
+      expect(triaged).toHaveLength(1);
+      expect(triaged[0].id).toBe(f2.id);
+      expect(ts.getTaskWorkflowSelection(first.taskId!)?.workflowId).toBe(existingWorkflow.id);
+      expect(ts.getTaskWorkflowSelection(triaged[0].taskId!)?.workflowId).toBe(selectedWorkflow.id);
     });
 
     it("triageSlice inherits mission baseBranch when no override is provided", async () => {

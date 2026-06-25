@@ -2,7 +2,7 @@
 FNXC:MainContent 2026-06-24-00:00:
 MainContent is the presentational switch for the dashboard's main content area, extracted verbatim from AppInner's renderMainContent(). It is a pure switch on taskView/viewMode returning the existing <PageErrorBoundary>/<Suspense> subtrees unchanged. The lazy view chunks (and their leading-underscore inventory convention) stay declared in App.tsx per the docs guard and are threaded in as props; the eager ChatView.css import remains in App.tsx so the styles bundle into the main CSS file.
 */
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import type { Task, TaskDetail } from "@fusion/core";
 import { Board } from "../Board";
 import { TaskCard } from "../TaskCard";
@@ -16,6 +16,7 @@ import { BackendConnectionErrorPage } from "../BackendConnectionErrorPage";
 import { CapacityRiskBanner } from "../CapacityRiskBanner";
 import { PlanningModeModal } from "../PlanningModeModal";
 import { PlanningWorkflowSwitcherSlot } from "../PlanningWorkflowSwitcherSlot";
+import { HeaderWorkflowSwitcherSlot } from "../HeaderWorkflowSwitcherSlot";
 import { GraphWorkflowSwitcherSlot, filterTasksByGraphWorkflowSelection } from "../GraphWorkflowSwitcherSlot";
 import { PluginDashboardViewHost } from "../../plugins/PluginDashboardViewHost";
 import { isPluginViewId } from "../../plugins/pluginViewRegistry";
@@ -170,6 +171,8 @@ export function MainContent({
   _SettingsView,
   _WorkflowEditorView,
 }: MainContentProps) {
+  const [missionWorkflowId, setMissionWorkflowId] = useState<string | null>(null);
+
   if (showBackendConnectionErrorPage) {
     return (
       <BackendConnectionErrorPage
@@ -341,6 +344,15 @@ export function MainContent({
   if (taskView === "missions") {
     return (
       <PageErrorBoundary>
+        {/*
+        FNXC:MissionWorkflows 2026-06-25-00:00:
+        Missions intentionally shares Planning's header workflow-selection surface because feature and slice triage create tasks. Keep the selected workflow local to this project view and thread only the resolved id into mission task creation.
+        */}
+        <HeaderWorkflowSwitcherSlot
+          projectId={currentProject?.id}
+          onOpenWorkflowEditor={openWorkflowEditorWithNav}
+          onWorkflowSelectionChange={(selection) => setMissionWorkflowId(selection?.selectedWorkflow.id ?? null)}
+        />
         <MissionManager
           isInline={true}
           isOpen={true}
@@ -352,6 +364,7 @@ export function MainContent({
           }}
           addToast={addToast}
           projectId={currentProject?.id}
+          workflowId={missionWorkflowId}
           onSelectTask={(taskId) => {
             const task = tasks.find((t) => t.id === taskId);
             if (task) openDetailTask(task as TaskDetail);

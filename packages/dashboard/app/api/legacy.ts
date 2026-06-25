@@ -7980,18 +7980,19 @@ export function triageFeature(
   taskTitle?: string,
   taskDescription?: string,
   projectId?: string,
-  branchOptions?: {
+  options?: {
     branchSelection?: {
       mode: "project-default" | "auto-new" | "existing" | "custom-new";
       branchName?: string;
       baseBranch?: string;
     };
     branchAssignment?: { mode: "shared" | "per-task-derived" };
+    workflowId?: string | null;
   },
 ): Promise<MissionFeature> {
   return api<MissionFeature>(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/triage`, projectId), {
     method: "POST",
-    body: JSON.stringify({ taskTitle, taskDescription, ...branchOptions }),
+    body: JSON.stringify({ taskTitle, taskDescription, ...options }),
   });
 }
 
@@ -7999,18 +8000,19 @@ export function triageFeature(
 export function triageAllSliceFeatures(
   sliceId: string,
   projectId?: string,
-  branchOptions?: {
+  options?: {
     branchSelection?: {
       mode: "project-default" | "auto-new" | "existing" | "custom-new";
       branchName?: string;
       baseBranch?: string;
     };
     branchAssignment?: { mode: "shared" | "per-task-derived" };
+    workflowId?: string | null;
   },
 ): Promise<{ triaged: MissionFeature[]; count: number }> {
   return api<{ triaged: MissionFeature[]; count: number }>(withProjectId(`/missions/slices/${encodeURIComponent(sliceId)}/triage-all`, projectId), {
     method: "POST",
-    body: JSON.stringify(branchOptions ?? {}),
+    body: JSON.stringify(options ?? {}),
   });
 }
 
