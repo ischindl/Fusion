@@ -1,0 +1,45 @@
+/*
+FNXC:ProviderIcons 2026-06-25-00:00:
+Command Center model analytics group rows by model id only, so dashboard model-name surfaces must infer the provider icon from the model/provider text before handing off to ProviderIcon's fallback-safe renderer.
+*/
+export function inferProviderIconKey(modelOrProviderName: string): string {
+  const normalized = modelOrProviderName.toLowerCase();
+
+  // Map common provider/model names to their icon keys.
+  if (normalized.includes("claude") || normalized.includes("anthropic")) {
+    return "anthropic";
+  }
+  if (normalized.includes("codex") || normalized.includes("openai") || normalized.includes("gpt")) {
+    return "openai";
+  }
+  if (normalized.includes("gemini") || normalized.includes("google") || normalized.includes("antigravity")) {
+    return "google";
+  }
+  if (normalized.includes("ollama")) {
+    return "ollama";
+  }
+  if (normalized.includes("minimax")) {
+    return "minimax";
+  }
+  if (normalized.includes("zai") || normalized.includes("zhipu")) {
+    return "zai";
+  }
+  if (normalized.includes("kimi") || normalized.includes("moonshot")) {
+    return "kimi";
+  }
+  if (normalized.includes("bedrock") || normalized.includes("amazon")) {
+    return "bedrock";
+  }
+  if (normalized.includes("xai") || normalized.includes("grok")) {
+    return "xai";
+  }
+  if (normalized.includes("opencode")) {
+    return "opencode";
+  }
+  if (normalized.includes("copilot") || normalized === "github copilot") {
+    return "github-copilot";
+  }
+
+  // Return the original name as fallback (ProviderIcon will show a default icon).
+  return modelOrProviderName;
+}

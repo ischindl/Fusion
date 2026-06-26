@@ -21,6 +21,7 @@ import { NodesView } from "../NodesView";
 import type { ToastType } from "../../hooks/useToast";
 import type { TaskView } from "../../hooks/useViewState";
 import { SdlcFunnel } from "./SdlcFunnel";
+import { inferProviderIconKey } from "../../utils/providerIconKey";
 import { Bar, type BarDatum } from "./charts/Bar";
 import { Sparkline } from "./charts/Sparkline";
 import { LineChart as RechartsLineChart, PieChart } from "./charts/recharts";
@@ -182,11 +183,15 @@ function OverviewTab({
       [...(tokens.data?.groups ?? [])]
         .sort((a, b) => b.totalTokens - a.totalTokens || (a.key ?? "").localeCompare(b.key ?? ""))
         .slice(0, 8)
-        .map((g) => ({
-          label: g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)"),
-          value: g.totalTokens,
-          valueLabel: formatCount(g.totalTokens),
-        })),
+        .map((g) => {
+          const label = g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)");
+          return {
+            label,
+            value: g.totalTokens,
+            valueLabel: formatCount(g.totalTokens),
+            iconProvider: inferProviderIconKey(g.key ?? ""),
+          };
+        }),
     [tokens.data?.groups, t],
   );
   const toolCategoryData = useMemo<BarDatum[]>(

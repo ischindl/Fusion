@@ -1,10 +1,21 @@
+import { ProviderIcon } from "../../ProviderIcon";
 import "./charts.css";
+
+/*
+ * FNXC:CommandCenterModelLabels 2026-06-25-00:00:
+ * Command Center model-heavy bar analytics must render provider marks immediately before model names. Keep provider icons opt-in on BarDatum so non-model chart rows (tool categories, activity series, plugin labels) continue rendering as plain strings with no provider icon shell.
+ */
+function hasIconProvider(datum: BarDatum): boolean {
+  return Object.prototype.hasOwnProperty.call(datum, "iconProvider");
+}
 
 export interface BarDatum {
   label: string;
   value: number;
   /** Optional display string for the value (defaults to the number). */
   valueLabel?: string;
+  /** Optional ProviderIcon provider key for model-name rows; omitted for non-model charts. */
+  iconProvider?: string;
 }
 
 export interface BarProps {
@@ -35,18 +46,24 @@ export function Bar({ data, max, ariaLabel }: BarProps) {
 
   return (
     <ul className="cc-bar-chart" role="list" aria-label={ariaLabel}>
-      {data.map((d) => {
+      {data.map((d, index) => {
         const width = safeWidthPercent(d.value, computedMax);
         const valueText = d.valueLabel ?? String(Number.isFinite(d.value) ? d.value : 0);
+        const labelText = d.label;
+        const iconLabelText = d.iconProvider && d.iconProvider !== labelText ? `${d.iconProvider} ${labelText}` : labelText;
+        const accessibleLabel = hasIconProvider(d) ? iconLabelText : labelText;
         return (
-          <li key={d.label} className="cc-bar-row">
-            <span className="cc-bar-label">{d.label}</span>
+          <li key={`${accessibleLabel}-${d.value}-${index}`} className="cc-bar-row">
+            <span className="cc-bar-label">
+              {hasIconProvider(d) ? <ProviderIcon provider={d.iconProvider ?? ""} size="sm" /> : null}
+              <span className="cc-bar-label-text">{d.label}</span>
+            </span>
             <div className="cc-bar-track">
               <div
                 className="cc-bar-fill"
                 style={{ width: `${width}%` }}
                 role="img"
-                aria-label={`${d.label}: ${valueText}`}
+                aria-label={`${accessibleLabel}: ${valueText}`}
               />
             </div>
             <span className="cc-bar-value">{valueText}</span>

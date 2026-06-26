@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { PluginActivationAnalytics, TokenAnalytics } from "@fusion/core";
 import type { DateRange } from "../DateRangePicker";
+import { inferProviderIconKey } from "../../../utils/providerIconKey";
 import { Bar } from "../charts/Bar";
 import { LineChart, PieChart } from "../charts/recharts";
 import { AreaShell } from "./AreaShell";
@@ -43,11 +44,15 @@ export function EcosystemArea({ range }: { range: DateRange }) {
       [...models]
         .sort((a, b) => b.nTasks - a.nTasks || (a.key ?? "").localeCompare(b.key ?? ""))
         .slice(0, 12)
-        .map((g) => ({
-          label: g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)"),
-          value: g.nTasks,
-          valueLabel: formatCount(g.nTasks),
-        })),
+        .map((g) => {
+          const label = g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)");
+          return {
+            label,
+            value: g.nTasks,
+            valueLabel: formatCount(g.nTasks),
+            iconProvider: inferProviderIconKey(g.key ?? ""),
+          };
+        }),
     [models, t],
   );
   /*

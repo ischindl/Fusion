@@ -63,6 +63,10 @@ import { defaultPresets, rangeFromPreset, type DateRange } from "../../DateRange
 const range7d: DateRange = { from: "2026-06-08", to: null, preset: "7d" };
 const customRange = (from: string, to: string): DateRange => ({ from, to, preset: "custom" });
 
+function providerIconIn(element: HTMLElement, provider: string): Element | null {
+  return element.querySelector(`.provider-icon[data-provider="${provider}"]`);
+}
+
 function tokenFixture(totalTokens = 1500) {
   return {
     from: "2026-06-08",
@@ -760,8 +764,36 @@ describe("TokensArea", () => {
     expect(screen.getByRole("img", { name: "Tokens trend" })).toBeTruthy();
     expect(screen.getByRole("img", { name: "Token share by model" })).toBeTruthy();
     expect(screen.getByLabelText("2026-06-09: 900")).toBeTruthy();
-    expect(screen.getByTestId("cc-tokens-row-gpt-4o")).toBeTruthy();
-    expect(screen.getByTestId("cc-tokens-row-claude-sonnet")).toBeTruthy();
+    const tokensBar = screen.getByRole("list", { name: "Tokens by model" }) as HTMLElement;
+    expect(providerIconIn(tokensBar, "openai")).toBeTruthy();
+    expect(providerIconIn(tokensBar, "anthropic")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "openai gpt-4o: 900" })).toBeTruthy();
+    expect(providerIconIn(screen.getByTestId("cc-tokens-pie"), "openai")).toBeNull();
+    expect(providerIconIn(screen.getByTestId("cc-tokens-pie"), "anthropic")).toBeNull();
+    expect(providerIconIn(screen.getByTestId("cc-tokens-row-gpt-4o"), "openai")).toBeTruthy();
+    expect(providerIconIn(screen.getByTestId("cc-tokens-row-claude-sonnet"), "anthropic")).toBeTruthy();
+  });
+
+  it("renders providerless and unknown model rows correctly", async () => {
+    apiMock.mockResolvedValue({
+      ...tokenFixture(),
+      totals: { ...tokenFixture().totals, totalTokens: 75, nTasks: 2 },
+      groups: [
+        { ...tokenFixture().groups[0], key: "legacy-model", totalTokens: 50, nTasks: 1 },
+        { ...tokenFixture().groups[1], key: null, totalTokens: 25, nTasks: 1 },
+      ],
+    });
+    render(<TokensArea range={range7d} />);
+
+    await screen.findByTestId("cc-area-tokens");
+    expect(screen.getByRole("img", { name: "legacy-model: 50" })).toBeTruthy();
+
+    const legacyRow = screen.getByTestId("cc-tokens-row-legacy-model");
+    const unknownRow = screen.getByTestId("cc-tokens-row-unknown");
+    expect(legacyRow.textContent).toContain("legacy-model");
+    expect(unknownRow.textContent).toContain("(unknown)");
+    expect(providerIconIn(legacyRow, "legacy-model")).toBeTruthy();
+    expect(providerIconIn(unknownRow, "")).toBeTruthy();
   });
 
   it("renders a large comma-grouped total unchanged in the total tokens card", async () => {
@@ -1623,6 +1655,12 @@ describe("EcosystemArea", () => {
     expect(screen.getByTestId("cc-ecosystem-pie")).toBeTruthy();
     expect(screen.getByTestId("cc-ecosystem-line")).toBeTruthy();
     expect(screen.getByRole("img", { name: "Task share by model" })).toBeTruthy();
+    const ecosystemBar = screen.getByRole("list", { name: "Tasks per model" }) as HTMLElement;
+    expect(providerIconIn(ecosystemBar, "openai")).toBeTruthy();
+    expect(providerIconIn(ecosystemBar, "anthropic")).toBeTruthy();
+    expect(providerIconIn(screen.getByTestId("cc-ecosystem-pie"), "openai")).toBeNull();
+    expect(providerIconIn(screen.getByTestId("cc-ecosystem-pie"), "anthropic")).toBeNull();
+    expect(screen.getByRole("img", { name: "openai gpt-4o: 3" })).toBeTruthy();
     expect(screen.getByRole("img", { name: "Ecosystem trend" })).toBeTruthy();
     expect(screen.getByTestId("cc-ecosystem-plugins-unavailable").textContent).toBe("—");
     expect(screen.getByTestId("cc-area-ecosystem").textContent).not.toContain("NaN");

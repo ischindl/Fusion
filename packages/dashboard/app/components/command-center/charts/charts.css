@@ -57,8 +57,42 @@ FN-6680 re-checked FN-6664 in a real Blink layout engine because jsdom does not 
 
 .cc-bar-label {
   min-inline-size: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   font-size: 0.8125rem;
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-bar-label > .provider-icon {
+  flex: 0 0 auto;
+}
+
+.cc-bar-label-text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-model-label {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  vertical-align: middle;
+}
+
+.cc-model-label .provider-icon {
+  flex: 0 0 auto;
+}
+
+.cc-model-label-text {
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,6 +507,10 @@ On narrow mobile, Recharts' default legend measured to 0px wide and positioned i
   .cc-recharts-empty {
     block-size: calc(var(--space-2xl) * 8 + var(--space-md));
   }
+
+  .cc-model-label {
+    max-inline-size: 100%;
+  }
 }
 
 /* ---- RadialGauge ---- */
@@ -677,6 +715,10 @@ On narrow mobile, Recharts' default legend measured to 0px wide and positioned i
   .cc-bar-row {
     grid-template-columns: minmax(0, 1fr) minmax(calc(var(--space-2xl) + var(--space-lg)), 2fr);
     align-items: start;
+  }
+
+  .cc-bar-label {
+    max-inline-size: 100%;
   }
 
   .cc-bar-value {

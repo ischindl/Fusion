@@ -44,6 +44,10 @@ vi.mock("../../NodesView", () => ({
   ),
 }));
 
+function providerIconIn(element: HTMLElement, provider: string): Element | null {
+  return element.querySelector(`.provider-icon[data-provider="${provider}"]`);
+}
+
 function tokenFixture(totalTokens = 1_500) {
   return {
     from: "2026-06-08",
@@ -514,15 +518,42 @@ describe("CommandCenter shell", () => {
 
     const charts = screen.getByTestId("command-center-overview-charts");
     expect(within(charts).getByText("Tokens by model")).toBeTruthy();
-    expect(within(screen.getByTestId("command-center-overview-chart-tokens")).getByText("gpt-4o")).toBeTruthy();
+    const overviewTokenChart = screen.getByTestId("command-center-overview-chart-tokens");
+    expect(within(overviewTokenChart).getByText("gpt-4o")).toBeTruthy();
+    expect(providerIconIn(overviewTokenChart, "openai")).toBeTruthy();
+    expect(providerIconIn(overviewTokenChart, "anthropic")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "openai gpt-4o: 900" })).toBeTruthy();
     expect(within(screen.getByTestId("command-center-overview-chart-tools")).getByText("read")).toBeTruthy();
     expect(screen.getByTestId("cc-overview-pie")).toBeTruthy();
+    expect(providerIconIn(screen.getByTestId("cc-overview-pie"), "openai")).toBeNull();
+    expect(providerIconIn(screen.getByTestId("cc-overview-pie"), "anthropic")).toBeNull();
     expect(screen.getByTestId("cc-overview-line")).toBeTruthy();
     expectDailyActivityLineBeforeTrend();
     expect(screen.getByRole("img", { name: "Token share by model" })).toBeTruthy();
     expect(screen.getByRole("img", { name: "Daily activity line" })).toBeTruthy();
     expect(screen.getByRole("img", { name: "Daily activity trend" })).toBeTruthy();
     expectThroughputLastAfter("command-center-stat-tokens", "command-center-live-strip", "command-center-overview-charts");
+  });
+
+  it("renders Overview providerless and unknown model icons without touching pie labels", async () => {
+    mockOverviewApi({
+      tokens: {
+        ...tokenFixture(),
+        groups: [
+          { ...tokenFixture().groups[0], key: "legacy-model", totalTokens: 50, nTasks: 1 },
+          { ...tokenFixture().groups[1], key: null, totalTokens: 25, nTasks: 1 },
+        ],
+      },
+    });
+    render(<CommandCenter />);
+
+    const overviewTokenChart = await screen.findByTestId("command-center-overview-chart-tokens");
+    expect(providerIconIn(overviewTokenChart, "legacy-model")).toBeTruthy();
+    expect(providerIconIn(overviewTokenChart, "")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "legacy-model: 50" })).toBeTruthy();
+    expect(within(overviewTokenChart).getByText("legacy-model").closest(".cc-bar-label")).toBeTruthy();
+    expect(within(overviewTokenChart).getByText("(unknown)").closest(".cc-bar-label")).toBeTruthy();
+    expect(providerIconIn(screen.getByTestId("cc-overview-pie"), "legacy-model")).toBeNull();
   });
 
   it("renders large comma-grouped token totals unchanged in Overview stat surfaces", async () => {

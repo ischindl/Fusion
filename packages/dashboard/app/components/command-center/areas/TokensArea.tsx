@@ -11,6 +11,8 @@ import type {
   TokenTimeGranularity,
 } from "@fusion/core";
 import type { DateRange } from "../DateRangePicker";
+import { ProviderIcon } from "../../ProviderIcon";
+import { inferProviderIconKey } from "../../../utils/providerIconKey";
 import { Bar } from "../charts/Bar";
 import { TokenSeriesChart } from "../charts/TokenSeriesChart";
 import { LineChart as RechartsLineChart, PieChart } from "../charts/recharts";
@@ -34,6 +36,32 @@ The Tokens surface must add real pie and line charts from already-fetched token 
 
 function costSortValue(cost: CostResult): number {
   return cost.unavailable || cost.usd === null ? -1 : cost.usd;
+}
+
+function modelGroupIdentity(group: TokenGroupSummary): string {
+  return group.key ?? "unknown";
+}
+
+function modelGroupDisplayLabel(group: TokenGroupSummary, unknownLabel: string): string {
+  return group.key ?? unknownLabel;
+}
+
+function modelGroupIconProvider(group: TokenGroupSummary): string {
+  return inferProviderIconKey(group.key ?? "");
+}
+
+/*
+FNXC:CommandCenterProviderIcons 2026-06-25-00:00:
+Every textual Command Center model-name surface needs an adjacent ProviderIcon inferred from the model id, including null/unknown ids where ProviderIcon's CPU fallback is the intended safe state.
+*/
+function ModelNameWithProviderIcon({ group, unknownLabel }: { group: TokenGroupSummary; unknownLabel: string }) {
+  const label = group.key ?? unknownLabel;
+  return (
+    <span className="cc-model-label">
+      <ProviderIcon provider={modelGroupIconProvider(group)} size="sm" />
+      <span className="cc-model-label-text">{label}</span>
+    </span>
+  );
 }
 
 function sortGroups(groups: TokenGroupSummary[], key: SortKey, dir: 1 | -1): TokenGroupSummary[] {
@@ -99,9 +127,10 @@ export function TokensArea({ range }: { range: DateRange }) {
         .sort((a, b) => b.totalTokens - a.totalTokens)
         .slice(0, 12)
         .map((g) => ({
-          label: g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)"),
+          label: modelGroupDisplayLabel(g, t("commandCenter.tokens.unknownModel", "(unknown)")),
           value: g.totalTokens,
           valueLabel: formatCount(g.totalTokens),
+          iconProvider: modelGroupIconProvider(g),
         })),
     [groups, t],
   );
@@ -112,7 +141,7 @@ export function TokensArea({ range }: { range: DateRange }) {
         .sort((a, b) => b.totalTokens - a.totalTokens)
         .slice(0, 12)
         .map((g) => ({
-          label: g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)"),
+          label: modelGroupDisplayLabel(g, t("commandCenter.tokens.unknownModel", "(unknown)")),
           value: g.totalTokens,
         })),
     [groups, t],
@@ -244,8 +273,8 @@ export function TokensArea({ range }: { range: DateRange }) {
             </thead>
             <tbody>
               {sortedGroups.map((g) => (
-                <tr key={g.key ?? "∅"} data-testid={`cc-tokens-row-${g.key ?? "unknown"}`}>
-                  <td>{g.key ?? t("commandCenter.tokens.unknownModel", "(unknown)")}</td>
+                <tr key={modelGroupIdentity(g)} data-testid={`cc-tokens-row-${modelGroupIdentity(g)}`}>
+                  <td><ModelNameWithProviderIcon group={g} unknownLabel={t("commandCenter.tokens.unknownModel", "(unknown)")} /></td>
                   <td>{formatCount(g.inputTokens)}</td>
                   <td>{formatCount(g.outputTokens)}</td>
                   <td>{formatCount(g.cachedTokens)}</td>
