@@ -1,17 +1,21 @@
 /* === Session Notification Banner === */
 
+/*
+FNXC:SessionBanner 2026-06-25-00:00:
+FN-7020 requires the needs-input banner to stay visible when relevant without competing with primary dashboard content. Keep the desktop and mobile layouts compact by reducing padding, gaps, list heights, and text scale while preserving token-based touch targets.
+*/
 .session-notification-banner {
-  --session-notification-banner-max-height: min(60vh, calc(var(--space-2xl) * 13));
-  --session-notification-list-max-height: min(48vh, calc(var(--space-2xl) * 9));
-  --session-notification-touch-size: calc(var(--space-xl) + var(--space-md));
+  --session-notification-banner-max-height: min(52vh, calc(var(--space-2xl) * 10));
+  --session-notification-list-max-height: min(38vh, calc(var(--space-2xl) * 7));
+  --session-notification-touch-size: calc(var(--space-xl) + var(--space-xs));
 
   position: sticky;
   top: 0;
   z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-lg);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
   border-bottom: var(--btn-border-width) solid var(--border);
   border-left: var(--space-xs) solid var(--triage);
   background: var(--surface);
@@ -44,6 +48,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--text);
 }
@@ -56,12 +61,12 @@
 .session-notification-banner__dismiss-all {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   min-height: var(--session-notification-touch-size);
   border: var(--btn-border-width) solid transparent;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   border-radius: var(--radius-sm);
   padding: var(--space-xs) var(--space-sm);
@@ -85,7 +90,7 @@
 .session-notification-banner__list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   overflow-y: auto;
   max-height: var(--session-notification-list-max-height);
 }
@@ -94,8 +99,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
   border: var(--btn-border-width) solid var(--border);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--triage) 8%, var(--surface));
@@ -109,7 +114,7 @@
 .session-notification-banner__item-main {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   min-width: 0;
   flex: 1;
 }
@@ -129,7 +134,7 @@
 
 .session-notification-banner__title {
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -139,14 +144,14 @@
 
 .session-notification-banner__meta {
   margin: var(--space-xs) 0 0;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--text-muted);
 }
 
 .session-notification-banner__actions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
 }
 
 .session-notification-banner__resume {
@@ -155,9 +160,9 @@
   background: transparent;
   color: var(--triage);
   border-radius: var(--radius-sm);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  padding: var(--space-xs) var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
@@ -214,8 +219,12 @@
 
 @media (max-width: 768px) {
   .session-notification-banner {
-    padding: var(--space-sm) var(--space-md);
-    gap: var(--space-sm);
+    --session-notification-banner-max-height: min(46vh, calc(var(--space-2xl) * 9));
+    --session-notification-list-max-height: min(32vh, calc(var(--space-2xl) * 6));
+    --session-notification-touch-size: calc(var(--space-xl) + var(--space-md));
+
+    padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-xs);
   }
 
   .session-notification-banner__header {
@@ -226,6 +235,8 @@
   .session-notification-banner__item {
     flex-direction: column;
     align-items: flex-start;
+    gap: var(--space-xs);
+    padding: var(--space-xs);
   }
 
   .session-notification-banner__item-main {
