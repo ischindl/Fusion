@@ -133,11 +133,16 @@ describe("sendNtfyNotificationWithResult", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    vi.useRealTimers();
     fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
       new Headers(init?.headers);
       return { ok: true, status: 200, statusText: "OK" } as Response;
     });
     global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("calling with a unicode title does not throw and posts JSON with auth preserved", async () => {
@@ -157,7 +162,7 @@ describe("sendNtfyNotificationWithResult", () => {
       "https://ntfy.sh/",
       expect.objectContaining({
         method: "POST",
-        signal,
+        signal: expect.any(AbortSignal),
         headers: expect.objectContaining({
           "Content-Type": "application/json",
           Authorization: "Bearer secret-token",
@@ -257,7 +262,7 @@ describe("sendNtfyNotificationWithResult", () => {
       "https://ntfy.sh/ascii-topic",
       expect.objectContaining({
         method: "POST",
-        signal,
+        signal: expect.any(AbortSignal),
         headers: expect.objectContaining({
           "Content-Type": "text/plain",
           Title: "Task FN-1 merged",
@@ -267,6 +272,256 @@ describe("sendNtfyNotificationWithResult", () => {
         body: "Task \"Example\" has been merged to main",
       }),
     );
+  });
+
+  it("does not retry when the first ntfy publish succeeds", async () => {
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "single-success",
+      title: "Task FN-1 merged",
+      message: "Task merged",
+      retryDelayMs: 0,
+    });
+
+    expect(result).toEqual({ ok: true, status: 200, statusText: "OK" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries retryable network failures and returns the recovered success", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK" } as Response);
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      ntfyAccessToken: "secret-token",
+      topic: "retry-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      retryDelayMs: 0,
+    });
+
+    expect(result).toEqual({ ok: true, status: 200, statusText: "OK" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      const request = call[1] as RequestInit;
+      const headers = new Headers(request.headers as HeadersInit);
+      expect(headers.get("Authorization")).toBe("Bearer secret-token");
+      expect(call[0]).toBe("https://ntfy.sh/retry-topic");
+    }
+  });
+
+  it.each([
+    { status: 503, statusText: "Service Unavailable" },
+    { status: 429, statusText: "Too Many Requests" },
+  ])("retries retryable HTTP status $status", async ({ status, statusText }) => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status, statusText } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK" } as Response);
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "http-retry-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      retryDelayMs: 0,
+    });
+
+    expect(result).toEqual({ ok: true, status: 200, statusText: "OK" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { status: 400, statusText: "Bad Request" },
+    { status: 401, statusText: "Unauthorized" },
+    { status: 403, statusText: "Forbidden" },
+    { status: 404, statusText: "Not Found" },
+  ])("does not retry non-429 client status $status", async ({ status, statusText }) => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status, statusText } as Response);
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "client-error-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      retryDelayMs: 0,
+    });
+
+    expect(result).toEqual({ ok: false, status, statusText });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the last HTTP failure after exhausting retryable responses", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 503, statusText: "first" } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 503, statusText: "second" } as Response);
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "exhaust-http-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      retryDelayMs: 0,
+      maxAttempts: 2,
+    });
+
+    expect(result).toEqual({ ok: false, status: 503, statusText: "second" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns null without throwing after exhausting network retries", async () => {
+    fetchMock.mockRejectedValue(new Error("DNS failure"));
+
+    await expect(sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "network-fail-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      retryDelayMs: 0,
+      maxAttempts: 2,
+    })).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts a hung attempt with the per-attempt timeout and retries", async () => {
+    vi.useFakeTimers();
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    fetchMock
+      .mockImplementationOnce((_input: string | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(abortError), { once: true });
+      }))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK" } as Response);
+
+    const resultPromise = sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "timeout-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      attemptTimeoutMs: 5,
+      retryDelayMs: 0,
+      maxAttempts: 2,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(resultPromise).resolves.toEqual({ ok: true, status: 200, statusText: "OK" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("returns null after every attempt times out", async () => {
+    vi.useFakeTimers();
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    fetchMock.mockImplementation((_input: string | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    const resultPromise = sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "timeout-null-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      attemptTimeoutMs: 5,
+      retryDelayMs: 0,
+      maxAttempts: 2,
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(resultPromise).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("short-circuits without fetch when the caller signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "aborted-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      signal: controller.signal,
+      retryDelayMs: 0,
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not retry after a caller aborts mid-flight", async () => {
+    const controller = new AbortController();
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    fetchMock.mockImplementationOnce((_input: string | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    const resultPromise = sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "caller-abort-topic",
+      title: "ASCII title",
+      message: "ASCII message",
+      signal: controller.signal,
+      retryDelayMs: 0,
+    });
+
+    controller.abort();
+
+    await expect(resultPromise).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts unicode retries through the JSON publish path", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 503, statusText: "Service Unavailable" } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK" } as Response);
+
+    const result = await sendNtfyNotificationWithResult({
+      ntfyBaseUrl: "https://ntfy.sh",
+      topic: "unicode-topic",
+      title: "Triage Bot → Executor Bot",
+      message: "Triage Bot → you: preview text",
+      priority: "high",
+      retryDelayMs: 0,
+    });
+
+    expect(result).toEqual({ ok: true, status: 200, statusText: "OK" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      expect(call[0]).toBe("https://ntfy.sh/");
+      const request = call[1] as RequestInit;
+      const payload = JSON.parse(String(request.body)) as { topic: string; priority: number; message: string };
+      expect(new Headers(request.headers as HeadersInit).get("Content-Type")).toBe("application/json");
+      expect(payload).toEqual(expect.objectContaining({
+        topic: "unicode-topic",
+        priority: 4,
+        message: "Triage Bot → you: preview text",
+      }));
+    }
+  });
+
+  it("lets the provider report success when the primitive retry recovers", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK" } as Response);
+    const provider = new NtfyNotificationProvider();
+    await provider.initialize({
+      topic: "provider-retry-topic",
+      ntfyBaseUrl: "https://ntfy.sh",
+      events: ["in-review"],
+    });
+
+    const result = await provider.sendNotification("in-review", {
+      taskId: "FN-1",
+      taskTitle: "Retry me",
+      event: "in-review",
+    });
+
+    expect(result).toEqual({ success: true, providerId: "ntfy" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await provider.shutdown();
   });
 
   it("truncates overlong titles to 250 characters with an ellipsis", async () => {

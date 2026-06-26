@@ -19,6 +19,9 @@ const GRIDLOCK_NOTIFICATION_COOLDOWN_MS = 15 * 60 * 1000;
 const NTFY_TITLE_MAX = 250;
 // ntfy documents a 4 KiB message body limit; reserve room for an ellipsis when truncating UTF-8 payloads.
 const NTFY_MESSAGE_MAX = 4096;
+const DEFAULT_NTFY_MAX_ATTEMPTS = 3;
+const DEFAULT_NTFY_ATTEMPT_TIMEOUT_MS = 10_000;
+const DEFAULT_NTFY_RETRY_DELAY_MS = 500;
 
 export const DEFAULT_NTFY_EVENTS: readonly NtfyNotificationEvent[] = [
   "in-review",
@@ -57,6 +60,12 @@ export interface SendNtfyNotificationInput {
   priority?: NtfyNotificationPriority;
   clickUrl?: string;
   signal?: AbortSignal;
+  /** @internal Test seam for exercising timeout behavior without slow wall-clock waits. */
+  attemptTimeoutMs?: number;
+  /** @internal Test seam for exercising retry behavior without slow wall-clock waits. */
+  retryDelayMs?: number;
+  /** @internal Test seam for keeping retry-bound assertions narrow. */
+  maxAttempts?: number;
 }
 
 interface NtfyConfig {
@@ -156,6 +165,40 @@ function ntfyPriorityToInt(priority: NtfyNotificationPriority): number {
   }
 }
 
+function isRetryableNtfyStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<"slept" | "aborted"> {
+  if (signal?.aborted) {
+    return Promise.resolve("aborted");
+  }
+  if (ms <= 0) {
+    return Promise.resolve("slept");
+  }
+
+  return new Promise((resolve) => {
+    function cleanup() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    const onAbort = () => {
+      cleanup();
+      resolve("aborted");
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve("slept");
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export function resolveNtfyEvents(events?: NtfyNotificationEvent[]): NtfyNotificationEvent[] {
   return events && events.length > 0 ? [...events] : [...DEFAULT_NTFY_EVENTS];
 }
@@ -216,61 +259,115 @@ export async function sendNtfyNotificationWithResult({
   priority = "default",
   clickUrl,
   signal,
+  attemptTimeoutMs = DEFAULT_NTFY_ATTEMPT_TIMEOUT_MS,
+  retryDelayMs = DEFAULT_NTFY_RETRY_DELAY_MS,
+  maxAttempts = DEFAULT_NTFY_MAX_ATTEMPTS,
 }: SendNtfyNotificationInput): Promise<{ ok: boolean; status: number; statusText: string } | null> {
+  const resolvedMaxAttempts = Math.max(1, Math.floor(maxAttempts));
+
   try {
     const resolvedBaseUrl = resolveNtfyBaseUrl(ntfyBaseUrl);
     const trimmedToken = ntfyAccessToken?.trim();
     const truncatedTitle = truncateNtfyTitle(title);
     const truncatedMessage = truncateNtfyMessage(message);
     const latin1Safe = isLatin1Safe(truncatedTitle) && isLatin1Safe(truncatedMessage);
+    const url = latin1Safe ? `${resolvedBaseUrl}/${topic}` : `${resolvedBaseUrl}/`;
+    const body = latin1Safe
+      ? truncatedMessage
+      : JSON.stringify({
+        topic,
+        title: truncatedTitle,
+        message: truncatedMessage,
+        priority: ntfyPriorityToInt(priority),
+        ...(clickUrl ? { click: clickUrl } : {}),
+      });
 
-    const headers: Record<string, string> = {
-      "Content-Type": latin1Safe ? "text/plain" : "application/json",
-    };
+    /*
+    FNXC:Notifications 2026-06-25-18:25:
+    Task notifications are one-shot and a single transient ntfy network failure, timeout, 5xx, or 429 can permanently lose the user-facing event.
+    Keep ntfy best-effort and never-throwing, but bound each attempt with an internal timeout and retry only retryable failures while honoring caller lifecycle aborts immediately.
+    */
+    for (let attempt = 1; attempt <= resolvedMaxAttempts; attempt += 1) {
+      if (signal?.aborted) {
+        return null;
+      }
 
-    if (latin1Safe) {
-      headers.Priority = priority;
-      headers.Title = truncatedTitle;
-      if (clickUrl) {
-        headers.Click = clickUrl;
+      const attemptController = new AbortController();
+      let timedOut = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const onCallerAbort = () => attemptController.abort();
+      signal?.addEventListener("abort", onCallerAbort, { once: true });
+      if (attemptTimeoutMs > 0) {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          attemptController.abort();
+        }, attemptTimeoutMs);
+      }
+
+      try {
+        const headers: Record<string, string> = {
+          "Content-Type": latin1Safe ? "text/plain" : "application/json",
+        };
+
+        if (latin1Safe) {
+          headers.Priority = priority;
+          headers.Title = truncatedTitle;
+          if (clickUrl) {
+            headers.Click = clickUrl;
+          }
+        }
+
+        if (trimmedToken) {
+          headers.Authorization = `Bearer ${trimmedToken}`;
+        }
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body,
+          signal: attemptController.signal,
+        });
+
+        if (!response.ok) {
+          schedulerLog.log(`Ntfy notification failed: ${response.status} ${response.statusText}`);
+        }
+
+        const result = {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+        };
+        if (response.ok || !isRetryableNtfyStatus(response.status) || attempt === resolvedMaxAttempts) {
+          return result;
+        }
+      } catch (err) {
+        if (signal?.aborted || (isAbortError(err) && !timedOut)) {
+          return null;
+        }
+        if (attempt === resolvedMaxAttempts) {
+          schedulerLog.log(`Failed to send ntfy notification: ${err}`);
+          return null;
+        }
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        signal?.removeEventListener("abort", onCallerAbort);
+      }
+
+      const slept = await sleep(retryDelayMs, signal);
+      if (slept === "aborted") {
+        return null;
       }
     }
-
-    if (trimmedToken) {
-      headers.Authorization = `Bearer ${trimmedToken}`;
-    }
-
-    const response = await fetch(latin1Safe ? `${resolvedBaseUrl}/${topic}` : `${resolvedBaseUrl}/`, {
-      method: "POST",
-      headers,
-      body: latin1Safe
-        ? truncatedMessage
-        : JSON.stringify({
-          topic,
-          title: truncatedTitle,
-          message: truncatedMessage,
-          priority: ntfyPriorityToInt(priority),
-          ...(clickUrl ? { click: clickUrl } : {}),
-        }),
-      signal,
-    });
-
-    if (!response.ok) {
-      schedulerLog.log(`Ntfy notification failed: ${response.status} ${response.statusText}`);
-    }
-
-    return {
-      ok: response.ok,
-      status: response.status,
-      statusText: response.statusText,
-    };
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (isAbortError(err) || signal?.aborted) {
       return null;
     }
     schedulerLog.log(`Failed to send ntfy notification: ${err}`);
-    return null;
   }
+
+  return null;
 }
 
 export async function sendNtfyNotification(input: SendNtfyNotificationInput): Promise<void> {
