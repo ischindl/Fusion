@@ -88,4 +88,56 @@ describe("TaskStore execution timing semantics", () => {
 
     expect(done.cumulativeActiveMs).toBe(5 * 60_000);
   });
+
+  /*
+  FNXC:TaskTiming 2026-06-26-10:14:
+  Per-stage dwell instrumentation regression. Asserts columnDwellMs accumulates the correct
+  wall-clock per column across a full todo->in-progress->in-review->done sequence, that a
+  re-entered column (second in-progress / second todo visit) ADDS to the existing bucket rather
+  than overwriting it, and that the JSON map survives the SQLite round-trip (getTask rehydration).
+  */
+  it("accumulates per-column dwell across a multi-column, multi-visit sequence", async () => {
+    vi.useFakeTimers();
+    // todo entry anchor. Create + first move share this instant => leaving the
+    // creation column is a 0ms dwell and records no spurious bucket.
+    vi.setSystemTime(new Date("2026-06-26T10:00:00.000Z"));
+
+    const task = await store.createTask({ description: "per-stage dwell" });
+    await store.moveTask(task.id, "todo");
+
+    // todo dwell visit #1: 5 min
+    vi.setSystemTime(new Date("2026-06-26T10:05:00.000Z"));
+    await store.moveTask(task.id, "in-progress");
+
+    // in-progress dwell visit #1: 3 min
+    vi.setSystemTime(new Date("2026-06-26T10:08:00.000Z"));
+    await store.moveTask(task.id, "in-review");
+
+    // in-review dwell: 10 min
+    vi.setSystemTime(new Date("2026-06-26T10:18:00.000Z"));
+    await store.moveTask(task.id, "done");
+
+    // done dwell: 2 min (reopen leaves done)
+    vi.setSystemTime(new Date("2026-06-26T10:20:00.000Z"));
+    await store.moveTask(task.id, "todo", { moveSource: "user" });
+
+    // todo dwell visit #2: 1 min => bucket adds to the prior 5 min
+    vi.setSystemTime(new Date("2026-06-26T10:21:00.000Z"));
+    await store.moveTask(task.id, "in-progress");
+
+    // in-progress dwell visit #2: 4 min => bucket adds to the prior 3 min
+    vi.setSystemTime(new Date("2026-06-26T10:25:00.000Z"));
+    const final = await store.moveTask(task.id, "in-review");
+
+    expect(final.columnDwellMs).toEqual({
+      todo: 6 * 60_000, // 5 + 1
+      "in-progress": 7 * 60_000, // 3 + 4
+      "in-review": 10 * 60_000,
+      done: 2 * 60_000,
+    });
+
+    // JSON map survives the DB round-trip.
+    const reloaded = await store.getTask(task.id);
+    expect(reloaded?.columnDwellMs).toEqual(final.columnDwellMs);
+  });
 });

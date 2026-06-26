@@ -162,7 +162,7 @@ export function isFts5CorruptionError(error: unknown): boolean {
 
 // ── Schema Definition ────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 129;
+const SCHEMA_VERSION = 130;
 
 const TASKS_FTS_AUTOMERGE = 8;
 const TASKS_FTS_CRISISMERGE = 16;
@@ -296,6 +296,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   columnMovedAt TEXT,
   firstExecutionAt TEXT,
   cumulativeActiveMs INTEGER,
+  -- FNXC:TaskTiming 2026-06-26-10:14: per-column dwell map (JSON text) accumulated at the
+  -- column-transition seam (store.ts moveTaskInternal). Fills the gap left by cumulativeActiveMs
+  -- (in-progress only) so todo/in-review/done wall-clock is queryable per stage. Source of truth
+  -- for getSchemaCompatibilityTableSchemas(); fresh DBs get it here, existing DBs are backfilled
+  -- by the version-130 migration / ensureSchemaCompatibility() at boot.
+  columnDwellMs TEXT,
   executionStartedAt TEXT,
   executionCompletedAt TEXT,
   -- JSON columns for nested arrays/objects
@@ -5336,6 +5342,17 @@ export class Database {
       // migrated and fresh-from-SCHEMA_SQL DBs converged.
       this.applyMigration(129, () => {
         this.addColumnIfMissing("tasks", "workspaceWorktrees", "TEXT");
+      });
+    }
+
+    if (version < 130) {
+      // FNXC:TaskTiming 2026-06-26-10:14: add the columnDwellMs column so existing DBs durably
+      // persist per-stage dwell going forward. Backfill is also covered by ensureSchemaCompatibility()
+      // (SCHEMA_SQL is its source of truth); this versioned migration keeps migrated and
+      // fresh-from-SCHEMA_SQL DBs converged. No data backfill: pre-existing rows start with NULL
+      // (= undefined map) and accumulate from their next column transition.
+      this.applyMigration(130, () => {
+        this.addColumnIfMissing("tasks", "columnDwellMs", "TEXT");
       });
     }
 

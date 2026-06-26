@@ -2668,6 +2668,18 @@ export interface Task {
    *  Incremented whenever the task leaves `in-progress`; never decremented and
    *  never cleared by reopen flows. */
   cumulativeActiveMs?: number;
+  /*
+  FNXC:TaskTiming 2026-06-26-10:14:
+  Per-stage dwell-time instrumentation. `cumulativeActiveMs` only measures `in-progress`,
+  so "how long did a task sit in todo / in-review" was unrecoverable without reconstructing
+  it from agent logs. This map records cumulative wall-clock milliseconds spent in EACH
+  column (column name -> total ms), accumulated at the column-transition seam in store.ts
+  exactly like `cumulativeActiveMs`: on every transition we add the dwell of the column being
+  LEFT (newColumnMovedAt - previousColumnMovedAt, clamped >= 0). Multi-visit columns add to
+  the existing bucket; never decremented and never cleared by reopen flows. Directly queryable
+  per stage by consumers like productivity-analytics.ts.
+  */
+  columnDwellMs?: Record<string, number>;
   /** ISO-8601 wall-clock timestamp for the current execution attempt.
    *  Set when entering `in-progress`; may be cleared on reopen to
    *  todo/triage when resume state is not preserved. */
@@ -4906,6 +4918,9 @@ export interface ArchivedTaskEntry {
   firstExecutionAt?: string;
   /** Accumulated active runtime spent in `in-progress` across attempts. */
   cumulativeActiveMs?: number;
+  /** FNXC:TaskTiming 2026-06-26-10:14: per-column cumulative dwell (ms) carried through
+   *  archive/restore so per-stage wall-clock survives archival. See Task.columnDwellMs. */
+  columnDwellMs?: Record<string, number>;
   /** Current-attempt execution anchor; may be cleared on reopen. */
   executionStartedAt?: string;
   /** First-time completion anchor; may be cleared on reopen. */

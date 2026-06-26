@@ -283,6 +283,10 @@ interface TaskRow {
   columnMovedAt: string | null;
   firstExecutionAt: string | null;
   cumulativeActiveMs: number | null;
+  // FNXC:TaskTiming 2026-06-26-10:14: per-column dwell map (JSON text), populated by the
+  // column-transition seam in moveTaskInternal. Persisted alongside cumulativeActiveMs so
+  // per-stage wall-clock survives the SQLite round-trip getChangedTaskColumns/rowToTask use.
+  columnDwellMs: string | null;
   executionStartedAt: string | null;
   executionCompletedAt: string | null;
   dependencies: string | null;
@@ -442,6 +446,8 @@ const TASK_COLUMN_DESCRIPTORS: TaskColumnDescriptor[] = [
   defineTaskColumn("columnMovedAt", (task) => task.columnMovedAt ?? null),
   defineTaskColumn("firstExecutionAt", (task) => task.firstExecutionAt ?? null),
   defineTaskColumn("cumulativeActiveMs", (task) => task.cumulativeActiveMs ?? null),
+  // FNXC:TaskTiming 2026-06-26-10:14: serialize per-column dwell map as JSON text (same as mergeDetails/workspaceWorktrees).
+  defineTaskColumn("columnDwellMs", (task) => toJsonNullable(task.columnDwellMs)),
   defineTaskColumn("executionStartedAt", (task) => task.executionStartedAt ?? null),
   defineTaskColumn("executionCompletedAt", (task) => task.executionCompletedAt ?? null),
   defineTaskColumn("dependencies", (task) => toJson(task.dependencies || [])),
@@ -2084,6 +2090,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       columnMovedAt: row.columnMovedAt || undefined,
       firstExecutionAt: row.firstExecutionAt || undefined,
       cumulativeActiveMs: row.cumulativeActiveMs ?? undefined,
+      // FNXC:TaskTiming 2026-06-26-10:14: rehydrate per-column dwell map; drop empty maps to undefined like workspaceWorktrees.
+      columnDwellMs: (() => {
+        const d = fromJson<Record<string, number>>(row.columnDwellMs);
+        return d && Object.keys(d).length > 0 ? d : undefined;
+      })(),
       executionStartedAt: row.executionStartedAt || undefined,
       executionCompletedAt: row.executionCompletedAt || undefined,
       dependencies: fromJson<string[]>(row.dependencies) || [],
@@ -2266,6 +2277,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       columnMovedAt: entry.columnMovedAt,
       firstExecutionAt: entry.firstExecutionAt,
       cumulativeActiveMs: entry.cumulativeActiveMs,
+      columnDwellMs: entry.columnDwellMs,
       executionStartedAt: entry.executionStartedAt,
       executionCompletedAt: entry.executionCompletedAt,
       modelPresetId: entry.modelPresetId,
@@ -2402,6 +2414,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       columnMovedAt: task.columnMovedAt,
       firstExecutionAt: task.firstExecutionAt,
       cumulativeActiveMs: task.cumulativeActiveMs,
+      columnDwellMs: task.columnDwellMs,
       executionStartedAt: task.executionStartedAt,
       executionCompletedAt: task.executionCompletedAt,
       archivedAt,
@@ -2612,7 +2625,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "graphResumeRetryCount", "resumeLimboTipSha", "resumeLimboStepSignature", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       "error", "summary", "thinkingLevel", "executionMode",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenUsageModelProvider", "tokenUsageModelId", "tokenUsagePerModel", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
-      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "executionStartedAt", "executionCompletedAt",
+      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "columnDwellMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "customFields", "comments", "review", "reviewState", "workflowStepResults", "steeringComments",
       "attachments", "prInfo", "prInfos", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "sourceIssueClosedAt", "mergeDetails", "workspaceWorktrees",
       "breakIntoSubtasks", "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles",
@@ -2661,7 +2674,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "graphResumeRetryCount", "resumeLimboTipSha", "resumeLimboStepSignature", "postReviewFixCount", "recoveryRetryCount", "taskDoneRetryCount", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       "error", "summary", "thinkingLevel", "executionMode",
       "tokenUsageInputTokens", "tokenUsageOutputTokens", "tokenUsageCachedTokens", "tokenUsageCacheWriteTokens", "tokenUsageTotalTokens", "tokenUsageFirstUsedAt", "tokenUsageLastUsedAt", "tokenUsageModelProvider", "tokenUsageModelId", "tokenUsagePerModel", "tokenBudgetSoftAlertedAt", "tokenBudgetHardAlertedAt", "tokenBudgetOverride",
-      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "executionStartedAt", "executionCompletedAt",
+      "createdAt", "updatedAt", "columnMovedAt", "firstExecutionAt", "cumulativeActiveMs", "columnDwellMs", "executionStartedAt", "executionCompletedAt",
       "dependencies", "steps", "customFields", "attachments", "steeringComments",
       "comments", "review", "reviewState", "workflowStepResults", "prInfo", "prInfos", "issueInfo", "githubTracking", "sourceIssueProvider", "sourceIssueRepository", "sourceIssueExternalIssueId", "sourceIssueNumber", "sourceIssueUrl", "sourceIssueClosedAt", "mergeDetails", "workspaceWorktrees",
       "breakIntoSubtasks", "noCommitsExpected", "enabledWorkflowSteps", "modifiedFiles",
@@ -7361,9 +7374,38 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     }
 
     const movedAt = internal.now ?? new Date().toISOString();
+    /*
+    FNXC:TaskTiming 2026-06-26-10:14:
+    Capture the previous column-entry timestamp BEFORE it is overwritten so we can record
+    per-stage dwell. `cumulativeActiveMs` only covers `in-progress`; this seam fills the gap
+    for todo / in-review / done so per-stage wall-clock is measurable going forward without
+    reconstructing it from agent logs.
+    */
+    const previousColumnMovedAt = task.columnMovedAt;
     task.column = toColumn;
     task.columnMovedAt = movedAt;
     task.updatedAt = movedAt;
+
+    /*
+    FNXC:TaskTiming 2026-06-26-10:14:
+    Accumulate dwell for the column being LEFT into `columnDwellMs[fromColumn]`, mirroring the
+    `cumulativeActiveMs` accumulation pattern. Flag-INDEPENDENT (runs for both the workflow-hook
+    and legacy-inline paths) because it keys off the generic columnMovedAt delta, not in-progress
+    execution timestamps. Skip when the previous timestamp is missing/unparseable (e.g. first move
+    or legacy rows), and clamp to >= 0 to defend against clock skew / out-of-order `internal.now`.
+    Multi-visit columns add to the existing bucket, never decrement.
+    */
+    {
+      const prevMs = Date.parse(previousColumnMovedAt ?? "");
+      const nowMs = Date.parse(movedAt);
+      if (Number.isFinite(prevMs) && Number.isFinite(nowMs)) {
+        const dwellMs = Math.max(0, nowMs - prevMs);
+        if (dwellMs > 0) {
+          const buckets = (task.columnDwellMs ??= {});
+          buckets[fromColumn] = Math.max(0, buckets[fromColumn] ?? 0) + dwellMs;
+        }
+      }
+    }
 
     if (useWorkflow) {
       // ── Flag-ON: route the legacy per-column side effects through the
