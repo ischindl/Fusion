@@ -22,6 +22,9 @@ export type SignalSeverity = "critical" | "error" | "warning" | "info";
 /** Supported external signal providers. */
 export type SignalProvider = "sentry" | "datadog" | "pagerduty" | "webhook";
 
+/** Normalized lifecycle intent for an ingested signal. */
+export type SignalResolution = "open" | "resolved";
+
 /**
  * Field-length caps applied to every normalized {@link Signal} before it is
  * turned into a task. External input is never trusted — caps bound storage and
@@ -65,6 +68,11 @@ export interface Signal {
   body?: string;
   /** Normalized severity. */
   severity: SignalSeverity;
+  /**
+   * FNXC:Signals 2026-06-25-22:21:
+   * Connector events must distinguish fire from recovery so incident-backed Signals metrics can preserve status. Omitted means "open" for backward-compatible task creation; "resolved" routes the grouped incident to resolveIncident instead of opening another occurrence.
+   */
+  resolution?: SignalResolution;
   /**
    * Optional canonical URL back to the source. Treated as SSRF-untrusted: it is
    * stored as data and only rendered as an external link, never fetched server

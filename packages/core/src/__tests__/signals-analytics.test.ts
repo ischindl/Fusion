@@ -30,9 +30,9 @@ function insertIncident(
     incidentId,
     `group-${incidentId}`,
     `Signal ${incidentId}`,
-    fields.severity ?? "error",
+    fields.severity === undefined ? "error" : fields.severity,
     fields.status,
-    fields.source ?? "webhook",
+    fields.source === undefined ? "webhook" : fields.source,
     fields.openedAt,
     fields.resolvedAt ?? null,
     now,
@@ -56,7 +56,7 @@ describe("signals-analytics", () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("aggregates real incident signals by source, severity, status, and MTTR", () => {
+  it("aggregates real incident signals by source, severity, and MTTR", () => {
     insertIncident(db, {
       status: "open",
       openedAt: "2026-03-02T10:00:00.000Z",
@@ -98,6 +98,21 @@ describe("signals-analytics", () => {
     ]);
   });
 
+  it("buckets missing source and severity as unknown", () => {
+    insertIncident(db, {
+      status: "open",
+      openedAt: "2026-03-02T10:00:00.000Z",
+      source: null,
+      severity: null,
+    });
+
+    const result = aggregateSignalsAnalytics(db, RANGE);
+
+    expect(result.bySource).toEqual([{ source: "unknown", count: 1 }]);
+    expect(result.bySeverity).toEqual([{ severity: "unknown", count: 1 }]);
+    expect(result.byStatus).toEqual([{ status: "open", count: 1 }]);
+  });
+
   it("keeps MTTR as the unavailable sentinel when no incident resolved in range", () => {
     insertIncident(db, {
       status: "open",
@@ -110,5 +125,21 @@ describe("signals-analytics", () => {
 
     expect(result.totalSignals).toBe(1);
     expect(result.mttr).toEqual({ value: null, unavailable: true, sampleCount: 0 });
+  });
+
+  it("returns zeroed analytics when incidents table is absent", () => {
+    db.prepare("DROP TABLE incidents").run();
+
+    expect(aggregateSignalsAnalytics(db, RANGE)).toEqual({
+      from: RANGE.from,
+      to: RANGE.to,
+      totalSignals: 0,
+      open: 0,
+      resolved: 0,
+      mttr: { value: null, unavailable: true, sampleCount: 0 },
+      bySource: [],
+      bySeverity: [],
+      byStatus: [],
+    });
   });
 });

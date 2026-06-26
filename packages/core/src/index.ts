@@ -641,14 +641,13 @@ export type {
   GithubIssueRepoBreakdown,
   GithubResolvedIssue,
 } from "./github-issue-analytics.js";
-export { aggregateSignalsAnalytics } from "./signals-analytics.js";
+export { aggregateSignalsAnalytics } from "./activity-analytics.js";
 export type {
+  SignalSourceCount,
+  SignalSeverityCount,
   SignalsAnalytics,
-  SignalsAnalyticsQuery,
-  SignalsBreakdown,
-  SignalsSeverityBreakdown,
-  SignalsStatusBreakdown,
-} from "./signals-analytics.js";
+  ActivityAnalyticsQuery as SignalsAnalyticsQuery,
+} from "./activity-analytics.js";
 export { composeLiveSnapshot } from "./command-center-live.js";
 export type {
   LiveSnapshot,

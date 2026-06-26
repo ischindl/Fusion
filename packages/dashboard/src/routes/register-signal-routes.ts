@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import type { Task, TaskStore } from "@fusion/core";
+import { ingestIncidentSignal, resolveIncident } from "../monitor-store.js";
 import { ApiError, badRequest, rateLimited, unauthorized } from "../api-error.js";
 import {
   DeliveryNonceCache,
@@ -60,9 +61,36 @@ export function resolveSignalSecret(
   return value && value.length > 0 ? value : undefined;
 }
 
+export interface SignalConnectorStatus {
+  provider: SignalProvider;
+  configured: boolean;
+}
+
+/**
+ * FNXC:CommandCenterSignals 2026-06-25-22:36:
+ * The Signals UI needs configuration truth without ever reading secret values. Return provider booleans only so empty states can distinguish "no connector configured" from "configured but quiet" while keeping HMAC secrets write-only environment data.
+ */
+export function listSignalConnectorStatus(env: NodeJS.ProcessEnv = process.env): SignalConnectorStatus[] {
+  return Object.values(SIGNAL_SOURCES).map((source) => ({
+    provider: source.provider,
+    configured: resolveSignalSecret(source, env) !== undefined,
+  }));
+}
+
+export function resolveConfiguredSignalProviders(env: NodeJS.ProcessEnv = process.env): SignalProvider[] {
+  return listSignalConnectorStatus(env)
+    .filter((status) => status.configured)
+    .map((status) => status.provider);
+}
+
 const SIGNAL_DELIVERY_META_KEY = "signalDeliveryId";
 const SIGNAL_GROUPING_META_KEY = "signalGroupingKey";
 const SIGNAL_SOURCE_META_KEY = "signalSource";
+
+function signalTimestampToIso(timestamp: number | undefined): string | undefined {
+  if (timestamp === undefined || !Number.isFinite(timestamp)) return undefined;
+  return new Date(timestamp).toISOString();
+}
 
 /**
  * Persistent delivery dedup: has a task already been created for this provider +
@@ -170,6 +198,33 @@ export async function ingestSignal(deps: SignalIngestDeps): Promise<SignalIngest
 
   // 5. Create the triage task.
   const task = await store.createTask(signalToTaskInput(signal));
+
+  try {
+    /*
+    FNXC:CommandCenterSignals 2026-06-25-22:25:
+    FN-6706 makes verified connector events durable beyond task creation: every new actionable signal writes/absorbs an incidents row with provider source, normalized severity, and open/resolved status so the Command Center Signals endpoint can report real external pressure. Incident storage is intentionally best-effort after task creation, so a local analytics write failure is logged but never rejects the upstream webhook after Fusion accepted the triage task.
+
+    FNXC:CommandCenterSignals 2026-06-25-22:25:
+    Resolution signals are recorded before resolveIncident runs. This preserves cold-resolve events (for example Datadog recovery after Fusion missed the firing alert) as resolved metrics rows instead of silently dropping provider/status visibility.
+    */
+    const db = store.getDatabase();
+    const at = signalTimestampToIso(signal.timestamp) ?? new Date().toISOString();
+    ingestIncidentSignal(db, {
+      groupingKey: signal.groupingKey,
+      title: signal.title,
+      severity: signal.severity,
+      source: signal.source,
+      link: signal.link,
+      meta: signal.meta,
+      at,
+    });
+    if (signal.resolution === "resolved") {
+      resolveIncident(db, signal.groupingKey, at);
+    }
+  } catch (err) {
+    console.error("[signal-incident-bridge] Failed to record connector signal", err);
+  }
+
   return { status: 201, taskId: task.id };
 }
 

@@ -8,17 +8,40 @@ import { AreaShell } from "./AreaShell";
 import { useAnalyticsArea } from "./useAnalyticsArea";
 import { formatCount } from "./areaShared";
 
+type SignalConnectorStatus = {
+  provider: string;
+  configured: boolean;
+};
+
+type SignalConnectorsResponse = {
+  connectors: SignalConnectorStatus[];
+};
+
+type SignalsAnalyticsWithConnectors = SignalsAnalytics & {
+  connectors?: {
+    configured: string[];
+    anyConfigured: boolean;
+  };
+};
+
 /*
 FNXC:CommandCenter 2026-06-16-09:42:
 Signals area of the Command Center (PR #1683). Surfaces external-signal volume/severity from the project-scoped incidents table so operators see incoming pressure alongside internal analytics.
 
 FNXC:CommandCenter 2026-06-19-00:00:
 Signals now reads a real `/api/command-center/signals` route backed by incidents instead of swallowing a missing endpoint. Empty still means no incident source has recorded data, and MTTR remains `—` until at least one incident is resolved. FN-6706 owns building external Sentry/Datadog/PagerDuty/webhook connectors into that incidents table.
+
+FNXC:CommandCenterSignals 2026-06-25-22:40:
+Empty Signals copy is driven by the connectors-status endpoint, not fabricated metrics. Operators must see "no connector configured" when no HMAC secret exists and "configured, awaiting signals" when ingestion is ready but quiet; loading the status should keep the normal loading-before-empty behavior.
 */
 
 export function SignalsArea({ range }: { range: DateRange }) {
   const { t } = useTranslation("app");
-  const { data, isLoading } = useAnalyticsArea<SignalsAnalytics>("/command-center/signals", range);
+  const { data, isLoading } = useAnalyticsArea<SignalsAnalyticsWithConnectors>("/command-center/signals", range);
+  const { data: connectorsData, isLoading: isConnectorsLoading } = useAnalyticsArea<SignalConnectorsResponse>(
+    "/command-center/signals/connectors",
+    range,
+  );
 
   const sourceBars = useMemo(
     () => (data?.bySource ?? []).map((s) => ({ label: s.source, value: s.count, valueLabel: formatCount(s.count) })),
@@ -42,18 +65,30 @@ export function SignalsArea({ range }: { range: DateRange }) {
   );
 
   const isEmpty = !data || data.totalSignals === 0;
+  const configuredProvidersFromStatus = Array.isArray(connectorsData?.connectors)
+    ? connectorsData.connectors.filter((connector) => connector.configured).map((connector) => connector.provider)
+    : undefined;
+  const configuredProviders = configuredProvidersFromStatus ?? data?.connectors?.configured ?? [];
+  const hasConfiguredConnector = configuredProviders.length > 0 || data?.connectors?.anyConfigured === true;
+  const emptyMessage = hasConfiguredConnector
+    ? t(
+      "commandCenter.signals.emptyAwaitingSignals",
+      "Connector configured, awaiting signals in this range. Configured providers: {{providers}}.",
+      { providers: configuredProviders.length > 0 ? configuredProviders.join(", ") : t("commandCenter.signals.providersUnknown", "unknown") },
+    )
+    : t(
+      "commandCenter.signals.emptyNoConnectorConfigured",
+      "No signal connector configured. Connect Sentry, Datadog, PagerDuty, or a generic webhook to see incident metrics here.",
+    );
   const hasStatusPie = !isEmpty && statusPieData.some((datum) => datum.value > 0);
 
   return (
     <AreaShell
       testId="signals"
-      isLoading={isLoading}
+      isLoading={isLoading || isConnectorsLoading}
       error={null}
       isEmpty={isEmpty}
-      emptyMessage={t(
-        "commandCenter.signals.empty",
-        "No external signals yet. Connect a signal source (Sentry, Datadog, PagerDuty, webhook) to see incident metrics here.",
-      )}
+      emptyMessage={emptyMessage}
     >
       <div className="cc-area-section">
         <h3 className="cc-area-section-title">{t("commandCenter.signals.summaryTitle", "Summary")}</h3>

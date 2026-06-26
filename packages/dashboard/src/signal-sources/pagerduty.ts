@@ -14,6 +14,9 @@ import {
  * PagerDuty v3 webhooks sign with `X-PagerDuty-Signature: v1=<hex>` =
  * HMAC-SHA256 of the raw body using the subscription secret. `groupingKey` is
  * the PagerDuty `incident.id` (native dedup primitive for U13's storm guard).
+ *
+ * FNXC:Signals 2026-06-25-22:23:
+ * PagerDuty closes incidents via event.event_type "incident.resolved" or data.status "resolved". Map both to Signal.resolution="resolved" so recovery webhooks resolve the same grouped incident that trigger/ack events opened.
  */
 
 function mapUrgency(urgency: unknown, severity: unknown): SignalSeverity {
@@ -32,6 +35,10 @@ function parsePagerDutySignatureHeader(header: string | undefined): string | und
     if (trimmed.startsWith("v1=")) return trimmed.slice("v1=".length);
   }
   return undefined;
+}
+
+function isResolvedPagerDutyEvent(eventType: unknown, status: unknown): boolean {
+  return eventType === "incident.resolved" || status === "resolved";
 }
 
 export const pagerdutySource: SignalSource = {
@@ -74,6 +81,8 @@ export const pagerdutySource: SignalSource = {
     const eventId =
       typeof event.id === "string" ? event.id : incidentId;
 
+    const eventType = typeof event.event_type === "string" ? event.event_type : undefined;
+    const status = typeof data.status === "string" ? data.status : undefined;
     const signal: Signal = {
       source: "pagerduty",
       externalId: eventId,
@@ -81,12 +90,13 @@ export const pagerdutySource: SignalSource = {
       title,
       body: typeof data.description === "string" ? data.description : undefined,
       severity: mapUrgency(data.urgency, data.severity),
+      resolution: isResolvedPagerDutyEvent(eventType, status) ? "resolved" : "open",
       link: typeof data.html_url === "string" ? data.html_url : undefined,
       timestamp:
         typeof event.occurred_at === "string" ? Date.parse(event.occurred_at) : undefined,
       meta: {
-        eventType: typeof event.event_type === "string" ? event.event_type : undefined,
-        status: typeof data.status === "string" ? data.status : undefined,
+        eventType,
+        status,
       },
     };
     return applySignalCaps(signal);

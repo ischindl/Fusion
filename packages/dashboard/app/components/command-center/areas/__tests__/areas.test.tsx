@@ -102,6 +102,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  window.dispatchEvent(new Event("resize"));
 });
 
 
@@ -1460,4 +1462,3 @@ describe("EcosystemArea", () => {
     expect(screen.getByTestId("cc-area-ecosystem").textContent).not.toContain("Infinity");
   });
 });
-

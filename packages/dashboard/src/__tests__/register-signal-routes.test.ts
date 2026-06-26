@@ -1,14 +1,18 @@
 // @vitest-environment node
 
 import { createHmac } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Task, TaskStore } from "@fusion/core";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { aggregateSignalsAnalytics, Database, type Task, type TaskStore } from "@fusion/core";
 import { DeliveryNonceCache, type SignalSource } from "../signal-source.js";
 import {
   ingestSignal,
   resolveSignalSecret,
   signalToTaskInput,
   getSignalSource,
+  resolveConfiguredSignalProviders,
 } from "../routes/register-signal-routes.js";
 import { webhookSource } from "../signal-sources/webhook.js";
 import { sentrySource } from "../signal-sources/sentry.js";
@@ -20,7 +24,7 @@ function sign(body: string, secret: string): string {
 }
 
 /** Minimal fake task store implementing only what the ingestion path uses. */
-function makeStore() {
+function makeStore(db?: Database) {
   const tasks: Task[] = [];
   let counter = 0;
   const store = {
@@ -38,9 +42,32 @@ function makeStore() {
       tasks.push(task);
       return task;
     },
+    getDatabase() {
+      if (!db) throw new Error("test database not configured");
+      return db;
+    },
     _tasks: tasks,
   };
   return store as unknown as TaskStore & { _tasks: Task[] };
+}
+
+function makeDbStore() {
+  const dir = mkdtempSync(join(tmpdir(), "kb-signal-routes-"));
+  tempDirs.push(dir);
+  const db = new Database(join(dir, ".fusion"));
+  db.init();
+  openDbs.push(db);
+  return { db, store: makeStore(db) };
+}
+
+function incidents(db: Database) {
+  return db.prepare("SELECT groupingKey, source, severity, status, meta FROM incidents ORDER BY id ASC").all() as Array<{
+    groupingKey: string;
+    source: string | null;
+    severity: string | null;
+    status: string;
+    meta: string | null;
+  }>;
 }
 
 const SECRETS: Record<string, string> = {
@@ -51,6 +78,8 @@ const SECRETS: Record<string, string> = {
 };
 
 const savedEnv: Record<string, string | undefined> = {};
+const tempDirs: string[] = [];
+const openDbs: Database[] = [];
 
 beforeEach(() => {
   for (const [k, v] of Object.entries(SECRETS)) {
@@ -64,6 +93,8 @@ afterEach(() => {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
+  while (openDbs.length > 0) openDbs.pop()?.close();
+  while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
 function ctxFor(source: SignalSource, payload: object, headers: Record<string, string>) {
@@ -71,6 +102,23 @@ function ctxFor(source: SignalSource, payload: object, headers: Record<string, s
   const lower: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
   return { rawBody, headers: lower, body: payload };
+}
+
+function signedSignalContext(source: SignalSource, payload: object) {
+  const raw = JSON.stringify(payload);
+  switch (source.provider) {
+    case "webhook":
+      return ctxFor(source, payload, {
+        "x-fusion-signature": sign(raw, SECRETS.FUSION_SIGNAL_WEBHOOK_SECRET),
+        "x-fusion-timestamp": String(Date.now()),
+      });
+    case "sentry":
+      return ctxFor(source, payload, { "sentry-hook-signature": sign(raw, SECRETS.FUSION_SIGNAL_SENTRY_SECRET) });
+    case "datadog":
+      return ctxFor(source, payload, { "x-datadog-signature": sign(raw, SECRETS.FUSION_SIGNAL_DATADOG_SECRET) });
+    case "pagerduty":
+      return ctxFor(source, payload, { "x-pagerduty-signature": `v1=${sign(raw, SECRETS.FUSION_SIGNAL_PAGERDUTY_SECRET)}` });
+  }
 }
 
 describe("getSignalSource registry", () => {
@@ -321,10 +369,325 @@ describe("ingestSignal — Datadog & PagerDuty adapters (groupingKey from native
   });
 });
 
+describe("ingestSignal — incident capture", () => {
+  it("writes source and normalized severity for all configured providers", async () => {
+    const cases = [
+      {
+        source: webhookSource,
+        payload: { id: "wh-1", title: "Disk full", severity: "critical", groupingKey: "wh-group", timestamp: Date.now() },
+        headers(raw: string) {
+          return {
+            "x-fusion-signature": sign(raw, SECRETS.FUSION_SIGNAL_WEBHOOK_SECRET),
+            "x-fusion-timestamp": String(Date.now()),
+          };
+        },
+        expected: { source: "webhook", severity: "critical", groupingKey: "wh-group" },
+      },
+      {
+        source: sentrySource,
+        payload: { data: { issue: { id: "sentry-1", title: "Fatal", level: "fatal" } }, timestamp: Date.now() },
+        headers(raw: string) {
+          return { "sentry-hook-signature": sign(raw, SECRETS.FUSION_SIGNAL_SENTRY_SECRET) };
+        },
+        expected: { source: "sentry", severity: "critical", groupingKey: "sentry-1" },
+      },
+      {
+        source: datadogSource,
+        payload: { aggreg_key: "dd-1", event_id: "dd-event-1", title: "Warn", alert_type: "warning" },
+        headers(raw: string) {
+          return { "x-datadog-signature": sign(raw, SECRETS.FUSION_SIGNAL_DATADOG_SECRET) };
+        },
+        expected: { source: "datadog", severity: "warning", groupingKey: "dd-1" },
+      },
+      {
+        source: pagerdutySource,
+        payload: {
+          event: {
+            id: "pd-event-1",
+            event_type: "incident.triggered",
+            occurred_at: new Date().toISOString(),
+            data: { id: "pd-1", title: "Pager", urgency: "high", status: "triggered" },
+          },
+        },
+        headers(raw: string) {
+          return { "x-pagerduty-signature": `v1=${sign(raw, SECRETS.FUSION_SIGNAL_PAGERDUTY_SECRET)}` };
+        },
+        expected: { source: "pagerduty", severity: "critical", groupingKey: "pd-1" },
+      },
+    ] as const;
+
+    for (const c of cases) {
+      const { db, store } = makeDbStore();
+      const raw = JSON.stringify(c.payload);
+      const res = await ingestSignal({
+        source: c.source,
+        store,
+        rawBody: Buffer.from(raw),
+        headers: Object.fromEntries(Object.entries(c.headers(raw)).map(([k, v]) => [k.toLowerCase(), v])),
+        body: c.payload,
+        nonceCache: new DeliveryNonceCache(),
+      });
+      expect(res.status).toBe(201);
+      expect(incidents(db)).toMatchObject([{
+        groupingKey: c.expected.groupingKey,
+        source: c.expected.source,
+        severity: c.expected.severity,
+        status: "open",
+      }]);
+    }
+  });
+
+  it("absorbs re-fires by grouping key without inserting duplicate incident rows", async () => {
+    const { db, store } = makeDbStore();
+    const mk = (id: string) => {
+      const payload = { id, title: "Same outage", severity: "error", groupingKey: "same-outage" };
+      const raw = JSON.stringify(payload);
+      return {
+        source: webhookSource,
+        store,
+        rawBody: Buffer.from(raw),
+        headers: {
+          "x-fusion-signature": sign(raw, SECRETS.FUSION_SIGNAL_WEBHOOK_SECRET),
+          "x-fusion-timestamp": String(Date.now()),
+        },
+        body: payload,
+        nonceCache: new DeliveryNonceCache(),
+      };
+    };
+
+    expect((await ingestSignal(mk("refire-1"))).status).toBe(201);
+    expect((await ingestSignal(mk("refire-2"))).status).toBe(201);
+
+    const rows = incidents(db);
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].meta ?? "{}")).toMatchObject({ occurrences: 2 });
+  });
+
+  it("marks resolution events as resolved for every provider", async () => {
+    const now = Date.now();
+    const cases = [
+      {
+        source: webhookSource,
+        groupingKey: "wh-resolve",
+        openPayload: { id: "wh-open", title: "Webhook outage", severity: "critical", groupingKey: "wh-resolve", timestamp: now },
+        resolvePayload: { id: "wh-resolved", title: "Webhook recovered", severity: "critical", groupingKey: "wh-resolve", timestamp: now, status: "resolved" },
+        expectedSource: "webhook",
+      },
+      {
+        source: sentrySource,
+        groupingKey: "sentry-resolve",
+        openPayload: {
+          id: "sentry-delivery-open",
+          action: "created",
+          data: { issue: { id: "sentry-resolve", title: "Sentry outage", level: "fatal" } },
+          timestamp: now,
+        },
+        resolvePayload: {
+          id: "sentry-delivery-resolved",
+          action: "resolved",
+          data: { issue: { id: "sentry-resolve", title: "Sentry recovered", level: "fatal", status: "resolved" } },
+          timestamp: now + 1,
+        },
+        expectedSource: "sentry",
+      },
+      {
+        source: datadogSource,
+        groupingKey: "dd-resolve",
+        openPayload: { aggreg_key: "dd-resolve", event_id: "dd-open", title: "CPU high", alert_type: "error" },
+        resolvePayload: { aggreg_key: "dd-resolve", event_id: "dd-resolved", title: "CPU recovered", alert_type: "recovery" },
+        expectedSource: "datadog",
+      },
+      {
+        source: pagerdutySource,
+        groupingKey: "pd-resolve",
+        openPayload: {
+          event: {
+            id: "pd-open",
+            event_type: "incident.triggered",
+            occurred_at: new Date(now).toISOString(),
+            data: { id: "pd-resolve", title: "PagerDuty outage", urgency: "high", status: "triggered" },
+          },
+        },
+        resolvePayload: {
+          event: {
+            id: "pd-resolved",
+            event_type: "incident.resolved",
+            occurred_at: new Date(now + 1_000).toISOString(),
+            data: { id: "pd-resolve", title: "PagerDuty recovered", urgency: "high", status: "resolved" },
+          },
+        },
+        expectedSource: "pagerduty",
+      },
+    ] as const;
+
+    for (const c of cases) {
+      const { db, store } = makeDbStore();
+      expect((await ingestSignal({
+        source: c.source,
+        store,
+        ...signedSignalContext(c.source, c.openPayload),
+        nonceCache: new DeliveryNonceCache(),
+      })).status).toBe(201);
+      expect((await ingestSignal({
+        source: c.source,
+        store,
+        ...signedSignalContext(c.source, c.resolvePayload),
+        nonceCache: new DeliveryNonceCache(),
+      })).status).toBe(201);
+
+      expect(incidents(db)).toMatchObject([{ groupingKey: c.groupingKey, source: c.expectedSource, status: "resolved" }]);
+    }
+  });
+
+  it("also resolves PagerDuty incidents when only data.status is resolved", async () => {
+    const { db, store } = makeDbStore();
+    const openedAt = new Date().toISOString();
+    const openPayload = {
+      event: {
+        id: "pd-status-open",
+        event_type: "incident.triggered",
+        occurred_at: openedAt,
+        data: { id: "pd-status-resolve", title: "PagerDuty status path", urgency: "high", status: "triggered" },
+      },
+    };
+    const resolvePayload = {
+      event: {
+        id: "pd-status-resolved",
+        event_type: "incident.annotated",
+        occurred_at: new Date(Date.parse(openedAt) + 1_000).toISOString(),
+        data: { id: "pd-status-resolve", title: "PagerDuty status recovered", urgency: "high", status: "resolved" },
+      },
+    };
+
+    expect((await ingestSignal({
+      source: pagerdutySource,
+      store,
+      ...signedSignalContext(pagerdutySource, openPayload),
+      nonceCache: new DeliveryNonceCache(),
+    })).status).toBe(201);
+    expect((await ingestSignal({
+      source: pagerdutySource,
+      store,
+      ...signedSignalContext(pagerdutySource, resolvePayload),
+      nonceCache: new DeliveryNonceCache(),
+    })).status).toBe(201);
+
+    expect(incidents(db)).toMatchObject([{ groupingKey: "pd-status-resolve", source: "pagerduty", status: "resolved" }]);
+  });
+
+  it("keeps connector acceptance successful when the best-effort incident write fails", async () => {
+    const store = makeStore();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const payload = { id: "incident-db-failure", title: "Accepted signal", groupingKey: "incident-db-failure" };
+
+    const res = await ingestSignal({
+      source: webhookSource,
+      store,
+      ...signedSignalContext(webhookSource, payload),
+      nonceCache: new DeliveryNonceCache(),
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.taskId).toBe("FN-1");
+    expect(store._tasks).toHaveLength(1);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[signal-incident-bridge] Failed to record connector signal",
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("feeds connector-recorded incidents into aggregateSignalsAnalytics breakdowns", async () => {
+    const { db, store } = makeDbStore();
+    const sentryPayload = {
+      id: "sentry-analytics-open",
+      data: { issue: { id: "sentry-analytics", title: "Sentry analytics", level: "fatal" } },
+      timestamp: Date.parse("2026-03-04T00:00:00.000Z"),
+    };
+    const datadogPayload = {
+      aggreg_key: "datadog-analytics",
+      event_id: "datadog-analytics-open",
+      title: "Datadog analytics",
+      alert_type: "warning",
+      date: Date.parse("2026-03-04T00:05:00.000Z"),
+    };
+
+    expect((await ingestSignal({
+      source: sentrySource,
+      store,
+      ...signedSignalContext(sentrySource, sentryPayload),
+      nonceCache: new DeliveryNonceCache(),
+    })).status).toBe(201);
+    expect((await ingestSignal({
+      source: datadogSource,
+      store,
+      ...signedSignalContext(datadogSource, datadogPayload),
+      nonceCache: new DeliveryNonceCache(),
+    })).status).toBe(201);
+
+    const analytics = aggregateSignalsAnalytics(db, {
+      from: "2026-03-01T00:00:00.000Z",
+      to: "2026-03-31T00:00:00.000Z",
+    });
+    expect(analytics.totalSignals).toBe(2);
+    expect(analytics.bySource).toEqual(expect.arrayContaining([
+      { source: "sentry", count: 1 },
+      { source: "datadog", count: 1 },
+    ]));
+    expect(analytics.bySeverity).toEqual(expect.arrayContaining([
+      { severity: "critical", count: 1 },
+      { severity: "warning", count: 1 },
+    ]));
+    expect(analytics.byStatus).toEqual([{ status: "open", count: 2 }]);
+  });
+
+  it("does not write incidents for malformed or duplicate payloads", async () => {
+    const { db, store } = makeDbStore();
+    const malformed = { nope: true };
+    const malformedRaw = JSON.stringify(malformed);
+    expect((await ingestSignal({
+      source: webhookSource,
+      store,
+      rawBody: Buffer.from(malformedRaw),
+      headers: {
+        "x-fusion-signature": sign(malformedRaw, SECRETS.FUSION_SIGNAL_WEBHOOK_SECRET),
+        "x-fusion-timestamp": String(Date.now()),
+      },
+      body: malformed,
+      nonceCache: new DeliveryNonceCache(),
+    })).status).toBe(400);
+
+    const payload = { id: "dup-incident", title: "Duplicate", groupingKey: "dup-group" };
+    const raw = JSON.stringify(payload);
+    const mk = () => ({
+      source: webhookSource,
+      store,
+      rawBody: Buffer.from(raw),
+      headers: {
+        "x-fusion-signature": sign(raw, SECRETS.FUSION_SIGNAL_WEBHOOK_SECRET),
+        "x-fusion-timestamp": String(Date.now()),
+      },
+      body: payload,
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect((await ingestSignal(mk())).status).toBe(201);
+    expect((await ingestSignal(mk())).deduped).toBe(true);
+
+    expect(incidents(db)).toHaveLength(1);
+  });
+});
+
 describe("helpers", () => {
   it("resolveSignalSecret reads the provider env var", () => {
     expect(resolveSignalSecret(webhookSource)).toBe("wh-secret");
     expect(resolveSignalSecret(webhookSource, {})).toBeUndefined();
+  });
+
+  it("resolveConfiguredSignalProviders reports providers with configured secrets", () => {
+    expect(resolveConfiguredSignalProviders({
+      FUSION_SIGNAL_WEBHOOK_SECRET: "wh",
+      FUSION_SIGNAL_PAGERDUTY_SECRET: "pd",
+    })).toEqual(["webhook", "pagerduty"]);
   });
 
   it("signalToTaskInput maps to a triage task with provenance metadata", () => {

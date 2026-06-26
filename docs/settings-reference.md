@@ -25,6 +25,22 @@ At runtime, settings are merged. **Project settings override global settings** w
 
 ---
 
+## Signal connector environment variables
+
+Command Center signal connectors are configured with process environment variables read by the dashboard/API server. These values are secrets and are never returned by the connectors-status endpoint; `GET /api/command-center/signals/connectors` reports only per-provider `configured` booleans.
+
+| Environment variable | Connector | Used by | Notes |
+|---|---|---|---|
+| `FUSION_SIGNAL_WEBHOOK_SECRET` | Generic webhook | `POST /api/signals/webhook` | Verifies `X-Fusion-Signature` (`sha256=`-prefixed HMAC-SHA256 hex) plus `X-Fusion-Timestamp`. |
+| `FUSION_SIGNAL_SENTRY_SECRET` | Sentry | `POST /api/signals/sentry` | Verifies `Sentry-Hook-Signature` against Sentry issue webhook payloads. |
+| `FUSION_SIGNAL_DATADOG_SECRET` | Datadog | `POST /api/signals/datadog` | Verifies the custom `X-Datadog-Signature` HMAC header; optional `X-Datadog-Timestamp` bounds replay. |
+| `FUSION_SIGNAL_PAGERDUTY_SECRET` | PagerDuty | `POST /api/signals/pagerduty` | Verifies `X-PagerDuty-Signature` (`v1=<hex>`). |
+| `FUSION_MONITOR_INGEST_SECRET` | Monitor incidents API | `POST /api/monitor/incidents` | Separate bearer-token path for direct monitor ingestion; it is not used by `/api/signals/:provider`. |
+
+See [Signals Connectors](./signals-connectors.md) for setup, signing, payload, and open/resolved mapping details.
+
+---
+
 ## Global Settings
 
 Defaults from `DEFAULT_GLOBAL_SETTINGS`; key scope from `GLOBAL_SETTINGS_KEYS`.

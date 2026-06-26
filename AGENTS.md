@@ -240,6 +240,7 @@ Scoped exception (FN-5819): shared-branch-group members (`branchContext.assignme
 - `./docs/PLUGIN_AUTHORING.md` — plugin authoring guide, lifecycle hooks, routes, tools, and dashboard-extension surfaces.
 - `./docs/agents.md` — pi extension scope, coordination tools, checkout leasing, runtime config.
 - `./docs/settings-reference.md` — model-selection hierarchy, mock provider mode, token budget precedence, presets.
+- `./docs/signals-connectors.md` — setup, HMAC auth, payload mapping, and security notes for Command Center external signal connectors.
 - `./docs/storage.md` — hybrid storage model details, including per-task `agent-log.jsonl` storage and retention semantics.
 - `./docs/multi-project.md` — central/per-project DB and isolation modes.
 - `./docs/missions.md` — mission/milestone/slice/feature model.

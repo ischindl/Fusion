@@ -25,6 +25,7 @@ import {
   type CsvTable,
 } from "../command-center-csv.js";
 import { invalidateAllGlobalSettingsCaches } from "../project-store-resolver.js";
+import { listSignalConnectorStatus, resolveConfiguredSignalProviders } from "./register-signal-routes.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
 /**
@@ -374,11 +375,28 @@ export const registerCommandCenterRoutes: ApiRouteRegistrar = (ctx) => {
   });
 
   /**
+   * GET /api/command-center/signals/connectors
+   * Per-provider signal connector configuration status without secret values.
+   *
+   * FNXC:CommandCenter 2026-06-25-22:36:
+   * The Signals empty state must be honest about setup state. Expose configured booleans through the same scoped/authenticated Command Center route family, never the raw HMAC secret, so the UI can avoid implying data merely has not arrived when no provider is configured.
+   */
+  router.get("/command-center/signals/connectors", async (req, res) => {
+    try {
+      await getScopedStore(req);
+      res.json({ connectors: listSignalConnectorStatus() });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err, "Failed to list signal connector status");
+    }
+  });
+
+  /**
    * GET /api/command-center/signals
    * External Signals metrics backed by locally recorded incidents.
    *
    * FNXC:CommandCenter 2026-06-19-00:00:
-   * The Signals surface must not be a phantom endpoint. Mirror sibling Command Center routes by resolving getScopedStore(req) before reading incidents, so project-A callers only see project-A signal volume and MTTR stays the honest unavailable sentinel when no incidents are resolved.
+   * The Signals surface must not be a phantom endpoint. Mirror sibling Command Center routes by resolving getScopedStore(req) before reading incidents, so project-A callers only see project-A signal volume and MTTR stays the honest unavailable sentinel when no incidents are resolved. Include connector configuration separately from counts so the UI can distinguish "not configured" from "configured but quiet" without using the write-only ingestion bearer-token path.
    */
   router.get("/command-center/signals", async (req, res) => {
     try {
@@ -388,7 +406,14 @@ export const registerCommandCenterRoutes: ApiRouteRegistrar = (ctx) => {
         from: range.from,
         to: range.to,
       });
-      res.json(result);
+      const configured = resolveConfiguredSignalProviders();
+      res.json({
+        ...result,
+        connectors: {
+          configured,
+          anyConfigured: configured.length > 0,
+        },
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err, "Failed to aggregate signal analytics");

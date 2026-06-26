@@ -15,6 +15,9 @@ import {
  * Sentry signs webhooks with `Sentry-Hook-Signature` = HMAC-SHA256(hex) of the
  * raw request body using the integration's client secret. `groupingKey` is the
  * Sentry `issue.id` (its native dedup primitive) — used by U13's storm guard.
+ *
+ * FNXC:Signals 2026-06-25-22:23:
+ * Sentry issue webhooks represent recovery as action "resolved" or issue.status "resolved". Normalize both to Signal.resolution="resolved" so the incidents bridge closes the grouped issue while every other action is treated as an open/fire event.
  */
 
 function mapLevel(level: unknown): SignalSeverity {
@@ -32,6 +35,10 @@ function mapLevel(level: unknown): SignalSeverity {
     default:
       return "error";
   }
+}
+
+function mapSentryResolution(action: unknown, status: unknown): Signal["resolution"] {
+  return action === "resolved" || status === "resolved" ? "resolved" : "open";
 }
 
 export const sentrySource: SignalSource = {
@@ -93,13 +100,23 @@ export const sentrySource: SignalSource = {
           ? issue.permalink
           : undefined;
 
+    const deliveryId =
+      (typeof p.id === "string" && p.id) ||
+      (typeof p.event_id === "string" && p.event_id) ||
+      `${issueId}:${typeof p.action === "string" ? p.action : "event"}:${typeof p.timestamp === "number" ? p.timestamp : "latest"}`;
+
     const signal: Signal = {
       source: "sentry",
-      externalId: issueId,
+      /**
+       * FNXC:Signals 2026-06-25-23:31:
+       * Sentry grouping is issue-scoped, but delivery dedup must not suppress a later resolved action for the same issue. Prefer webhook delivery ids and otherwise include action/timestamp so open and recovery events can both reach the incidents bridge.
+       */
+      externalId: deliveryId,
       groupingKey: issueId,
       title,
       body: typeof issue.culprit === "string" ? issue.culprit : undefined,
       severity: mapLevel(issue.level),
+      resolution: mapSentryResolution(p.action, issue.status),
       link,
       timestamp:
         typeof p.timestamp === "number"

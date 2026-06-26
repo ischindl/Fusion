@@ -76,6 +76,49 @@ export interface MonitorMetrics {
   deployments: number;
 }
 
+
+/** Command Center Signals source breakdown from incidents opened in range. */
+export interface SignalSourceCount {
+  source: string;
+  count: number;
+}
+
+/** Command Center Signals severity breakdown from incidents opened in range. */
+export interface SignalSeverityCount {
+  severity: string;
+  count: number;
+}
+
+/** Command Center Signals status breakdown from incidents opened in range. */
+export interface SignalStatusCount {
+  status: string;
+  count: number;
+}
+
+/**
+ * External signal analytics for the Command Center Signals area. Counts are
+ * sourced from the `incidents` table so connector ingestion, monitor metrics,
+ * and UI pressure indicators share one durable signal record.
+ */
+export interface SignalsAnalytics {
+  from: string | null;
+  to: string | null;
+  /** Incidents opened (by `openedAt`) within the range. */
+  totalSignals: number;
+  /** Open incidents opened within the range. */
+  open: number;
+  /** Incidents resolved (by `resolvedAt`) within the range. */
+  resolved: number;
+  /** Mean-time-to-resolve over incidents resolved in range. */
+  mttr: MttrSummary;
+  /** Incidents opened in range grouped by source; null/blank values are `unknown`. */
+  bySource: SignalSourceCount[];
+  /** Incidents opened in range grouped by severity; null/blank values are `unknown`. */
+  bySeverity: SignalSeverityCount[];
+  /** Incidents opened in range grouped by status so connector recoveries are visible. */
+  byStatus: SignalStatusCount[];
+}
+
 export interface ActivityAnalytics {
   from: string | null;
   to: string | null;
@@ -656,25 +699,8 @@ export function aggregateMonitorMetrics(
     )
     .all(...resolvedRange.params) as ResolvedIncidentRow[];
 
-  let totalMs = 0;
-  let sampleCount = 0;
-  for (const row of resolvedRows) {
-    const opened = Date.parse(row.openedAt);
-    const resolved = Date.parse(row.resolvedAt);
-    if (!Number.isFinite(opened) || !Number.isFinite(resolved)) continue;
-    const delta = resolved - opened;
-    if (delta < 0) continue; // guard against clock skew / bad data
-    totalMs += delta;
-    sampleCount += 1;
-  }
-
-  const mttr: MttrSummary =
-    sampleCount === 0
-      ? { value: null, unavailable: true, sampleCount: 0 }
-      : { value: totalMs / sampleCount / 60_000, unavailable: false, sampleCount };
-
   return {
-    mttr,
+    mttr: mttrFromResolvedRows(resolvedRows),
     incidentsOpened,
     incidentsResolved,
     openIncidents,
@@ -700,4 +726,127 @@ function tableExists(db: Database, table: string): boolean {
     )
     .get(table) as { name: string } | undefined;
   return row !== undefined;
+}
+
+/* ------------------------------------------------------------------------- */
+/* FN-6706 — Command Center Signals analytics from incidents                  */
+/* ------------------------------------------------------------------------- */
+
+interface SignalsGroupRow {
+  key: string | null;
+  count: number;
+}
+
+function emptySignalsAnalytics(query: ActivityAnalyticsQuery): SignalsAnalytics {
+  return {
+    from: query.from ?? null,
+    to: query.to ?? null,
+    totalSignals: 0,
+    open: 0,
+    resolved: 0,
+    mttr: { value: null, unavailable: true, sampleCount: 0 },
+    bySource: [],
+    bySeverity: [],
+    byStatus: [],
+  };
+}
+
+function mttrFromResolvedRows(rows: ResolvedIncidentRow[]): MttrSummary {
+  let totalMs = 0;
+  let sampleCount = 0;
+  for (const row of rows) {
+    const opened = Date.parse(row.openedAt);
+    const resolved = Date.parse(row.resolvedAt);
+    if (!Number.isFinite(opened) || !Number.isFinite(resolved)) continue;
+    const delta = resolved - opened;
+    if (delta < 0) continue;
+    totalMs += delta;
+    sampleCount += 1;
+  }
+  return sampleCount === 0
+    ? { value: null, unavailable: true, sampleCount: 0 }
+    : { value: totalMs / sampleCount / 60_000, unavailable: false, sampleCount };
+}
+
+function signalsBreakdown(
+  db: Database,
+  column: "source" | "severity" | "status",
+  openedWhere: string,
+  params: string[],
+): Array<{ key: string; count: number }> {
+  const rows = db
+    .prepare(
+      `SELECT COALESCE(NULLIF(TRIM(${column}), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM incidents ${openedWhere}
+       GROUP BY key
+       ORDER BY count DESC, key ASC`,
+    )
+    .all(...params) as SignalsGroupRow[];
+  return rows.map((row) => ({ key: row.key ?? "unknown", count: row.count }));
+}
+
+/**
+ * Aggregate Command Center Signals data from verified connector incidents.
+ *
+ * FNXC:CommandCenterSignals 2026-06-19-00:00:
+ * FN-6706 requires the Signals area to read real connector pressure from the project-scoped incidents table. Use openedAt for total/open/source/severity, resolvedAt for resolved/MTTR, bucket missing source/severity as `unknown`, and degrade to an empty unavailable-MTTR shape on older schemas without incidents.
+ *
+ * FNXC:CommandCenterSignals 2026-06-25-23:35:
+ * Connector resolution events must surface as a status breakdown, not only top-line open/resolved counts, so the UI and API can prove provider recovery signals changed incident state.
+ */
+export function aggregateSignalsAnalytics(
+  db: Database,
+  query: ActivityAnalyticsQuery = {},
+): SignalsAnalytics {
+  if (!tableExists(db, "incidents")) return emptySignalsAnalytics(query);
+
+  const openedRange = rangeClauses("openedAt", query);
+  const resolvedRange = rangeClauses("resolvedAt", query);
+  const openWhere = openedRange.where
+    ? `${openedRange.where} AND status = 'open'`
+    : "WHERE status = 'open'";
+  const resolvedWhere = resolvedRange.where
+    ? `${resolvedRange.where} AND resolvedAt IS NOT NULL`
+    : "WHERE resolvedAt IS NOT NULL";
+
+  const totalSignals = (
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM incidents ${openedRange.where}`)
+      .get(...openedRange.params) as CountRow
+  ).count;
+  const open = (
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM incidents ${openWhere}`)
+      .get(...openedRange.params) as CountRow
+  ).count;
+  const resolved = (
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM incidents ${resolvedWhere}`)
+      .get(...resolvedRange.params) as CountRow
+  ).count;
+
+  const resolvedRows = db
+    .prepare(`SELECT openedAt, resolvedAt FROM incidents ${resolvedWhere}`)
+    .all(...resolvedRange.params) as ResolvedIncidentRow[];
+
+  return {
+    from: query.from ?? null,
+    to: query.to ?? null,
+    totalSignals,
+    open,
+    resolved,
+    mttr: mttrFromResolvedRows(resolvedRows),
+    bySource: signalsBreakdown(db, "source", openedRange.where, openedRange.params).map((row) => ({
+      source: row.key,
+      count: row.count,
+    })),
+    bySeverity: signalsBreakdown(db, "severity", openedRange.where, openedRange.params).map((row) => ({
+      severity: row.key,
+      count: row.count,
+    })),
+    byStatus: signalsBreakdown(db, "status", openedRange.where, openedRange.params).map((row) => ({
+      status: row.key,
+      count: row.count,
+    })),
+  };
 }

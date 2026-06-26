@@ -72,6 +72,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  window.dispatchEvent(new Event("resize"));
 });
 
 describe("GithubArea", () => {
@@ -347,6 +349,13 @@ describe("GithubArea", () => {
 });
 
 // FN-6684 Mission Control decision: no extra pie/line test here because MissionControlPanel already renders the live SDLC Funnel for its only quantitative distribution; adding a pie would duplicate that affordance.
+function mockSignalsResponses(signals: unknown, connectors: unknown): void {
+  apiMock.mockImplementation((path: string) => {
+    if (path.startsWith("/command-center/signals/connectors")) return Promise.resolve(connectors);
+    return Promise.resolve(signals);
+  });
+}
+
 describe("SignalsArea", () => {
   it("renders the empty state (not an error) when the signals endpoint is missing", async () => {
     apiMock.mockRejectedValue(new Error("API returned HTML instead of JSON (404)"));
@@ -358,14 +367,17 @@ describe("SignalsArea", () => {
   });
 
   it("renders signal metrics and status pie when data is present", async () => {
-    apiMock.mockResolvedValue({
-      totalSignals: 8,
-      open: 3,
-      resolved: 5,
-      mttr: { value: 42, unavailable: false },
-      bySource: [{ source: "sentry", count: 8 }],
-      bySeverity: [{ severity: "error", count: 8 }],
-    });
+    mockSignalsResponses(
+      {
+        totalSignals: 8,
+        open: 3,
+        resolved: 5,
+        mttr: { value: 42, unavailable: false },
+        bySource: [{ source: "sentry", count: 8 }],
+        bySeverity: [{ severity: "error", count: 8 }],
+      },
+      { connectors: [] },
+    );
     render(<SignalsArea range={range7d} />);
     await screen.findByTestId("cc-area-signals");
     expect(screen.getByTestId("cc-signals-total").textContent).toContain("8");
@@ -375,14 +387,17 @@ describe("SignalsArea", () => {
   });
 
   it("keeps signals pie safe for single-item and non-finite source/severity data", async () => {
-    apiMock.mockResolvedValue({
-      totalSignals: 1,
-      open: 1,
-      resolved: 0,
-      mttr: { value: null, unavailable: true },
-      bySource: [{ source: "broken", count: Number.NaN }],
-      bySeverity: [{ severity: "broken", count: Number.POSITIVE_INFINITY }],
-    });
+    mockSignalsResponses(
+      {
+        totalSignals: 1,
+        open: 1,
+        resolved: 0,
+        mttr: { value: null, unavailable: true },
+        bySource: [{ source: "broken", count: Number.NaN }],
+        bySeverity: [{ severity: "broken", count: Number.POSITIVE_INFINITY }],
+      },
+      { connectors: [] },
+    );
     render(<SignalsArea range={range7d} />);
     await screen.findByTestId("cc-area-signals");
     expect(screen.getByTestId("cc-signals-pie")).toBeTruthy();
@@ -390,17 +405,70 @@ describe("SignalsArea", () => {
     expect(screen.getByTestId("cc-area-signals").textContent).not.toContain("Infinity");
   });
 
-  it("renders settled zero signals without a pie shell", async () => {
-    apiMock.mockResolvedValue({
-      totalSignals: 0,
-      open: 0,
-      resolved: 0,
-      mttr: { value: null, unavailable: true },
-      bySource: [],
-      bySeverity: [],
-    });
+  it("renders the not-configured zero state without a pie shell", async () => {
+    mockSignalsResponses(
+      {
+        totalSignals: 0,
+        open: 0,
+        resolved: 0,
+        mttr: { value: null, unavailable: true },
+        bySource: [],
+        bySeverity: [],
+        connectors: { configured: [], anyConfigured: false },
+      },
+      { connectors: [] },
+    );
     render(<SignalsArea range={range7d} />);
-    await screen.findByTestId("cc-area-signals-empty");
+    const empty = await screen.findByTestId("cc-area-signals-empty");
+    expect(empty.textContent).toContain("No signal connector configured");
     expect(screen.queryByTestId("cc-signals-pie")).toBeNull();
+  });
+
+  it("keeps legacy zero responses without connectors on the setup CTA", async () => {
+    mockSignalsResponses(
+      {
+        totalSignals: 0,
+        open: 0,
+        resolved: 0,
+        mttr: { value: null, unavailable: true },
+        bySource: [],
+        bySeverity: [],
+      },
+      { connectors: [] },
+    );
+    render(<SignalsArea range={range7d} />);
+    const empty = await screen.findByTestId("cc-area-signals-empty");
+    expect(empty.textContent).toContain("No signal connector configured");
+    expect(screen.queryByTestId("cc-signals-pie")).toBeNull();
+  });
+
+  it("renders configured-but-quiet zero signals distinctly on desktop and mobile", async () => {
+    for (const width of [1024, 390]) {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+      window.dispatchEvent(new Event("resize"));
+      mockSignalsResponses(
+        {
+          totalSignals: 0,
+          open: 0,
+          resolved: 0,
+          mttr: { value: null, unavailable: true },
+          bySource: [],
+          bySeverity: [],
+          connectors: { configured: ["sentry", "pagerduty"], anyConfigured: true },
+        },
+        {
+          connectors: [
+            { provider: "sentry", configured: true },
+            { provider: "pagerduty", configured: true },
+          ],
+        },
+      );
+      const rendered = render(<SignalsArea range={range7d} />);
+      const empty = await screen.findByTestId("cc-area-signals-empty");
+      expect(empty.textContent).toContain("Connector configured, awaiting signals in this range");
+      expect(empty.textContent).toContain("sentry, pagerduty");
+      expect(screen.queryByTestId("cc-signals-pie")).toBeNull();
+      rendered.unmount();
+    }
   });
 });

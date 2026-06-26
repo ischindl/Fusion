@@ -30,6 +30,9 @@ import {
  *     "timestamp"?: <epoch ms>,
  *     "meta"?: { ... }
  *   }
+ *
+ * FNXC:Signals 2026-06-25-22:23:
+ * Generic callers can clear an incident by sending status "resolved" or action "resolve"/"resolved". Everything else remains an open/fire event so first-party webhooks can drive both Command Center signal counts and status transitions with one payload contract.
  */
 
 const SEVERITIES: SignalSeverity[] = ["critical", "error", "warning", "info"];
@@ -43,6 +46,10 @@ function coerceSeverity(value: unknown): SignalSeverity {
 function stripSig(header: string | undefined): string | undefined {
   if (!header) return undefined;
   return header.startsWith("sha256=") ? header.slice("sha256=".length) : header;
+}
+
+function mapWebhookResolution(status: unknown, action: unknown): Signal["resolution"] {
+  return status === "resolved" || action === "resolved" || action === "resolve" ? "resolved" : "open";
 }
 
 export const webhookSource: SignalSource = {
@@ -88,6 +95,7 @@ export const webhookSource: SignalSource = {
       title,
       body: typeof p.body === "string" ? p.body : undefined,
       severity: coerceSeverity(p.severity),
+      resolution: mapWebhookResolution(p.status, p.action),
       link: typeof p.link === "string" ? p.link : undefined,
       timestamp: typeof p.timestamp === "number" ? p.timestamp : undefined,
       meta: p.meta && typeof p.meta === "object" ? (p.meta as Record<string, unknown>) : undefined,

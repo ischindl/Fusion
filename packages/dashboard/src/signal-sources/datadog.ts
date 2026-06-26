@@ -16,6 +16,9 @@ import {
  * include a shared-secret HMAC the user templates into a custom header
  * (`X-Datadog-Signature` = HMAC-SHA256(hex) of the raw body). `groupingKey` is
  * the Datadog monitor/aggregation key (`alert_id` / `aggreg_key`).
+ *
+ * FNXC:Signals 2026-06-25-22:23:
+ * Datadog monitor webhooks report recovery as alert_type "recovery" or "success". Normalize those to Signal.resolution="resolved" and keep all other alert types open so Command Center incident status matches monitor state.
  */
 
 function mapAlertType(value: unknown): SignalSeverity {
@@ -32,6 +35,10 @@ function mapAlertType(value: unknown): SignalSeverity {
     default:
       return "error";
   }
+}
+
+function isResolvedAlertType(value: unknown): boolean {
+  return value === "success" || value === "recovery";
 }
 
 export const datadogSource: SignalSource = {
@@ -86,6 +93,7 @@ export const datadogSource: SignalSource = {
       title,
       body: typeof p.body === "string" ? p.body : typeof p.text_only_msg === "string" ? p.text_only_msg : undefined,
       severity: mapAlertType(p.alert_type),
+      resolution: isResolvedAlertType(p.alert_type) ? "resolved" : "open",
       link: typeof p.link === "string" ? p.link : typeof p.url === "string" ? p.url : undefined,
       timestamp:
         typeof p.date === "number"
