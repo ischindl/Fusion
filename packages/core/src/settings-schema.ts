@@ -380,6 +380,10 @@ export const DEFAULT_PROJECT_SETTINGS = {
   // proportional to the change; the thin merge gate carries cross-cutting
   // coverage. Falls back to package/explicit command when no tests resolve.
   scopeVerificationToChangedFiles: true,
+  // FNXC:Verification 2026-06-25-00:00: OPT-IN LLM diff-review verification.
+  // Default "off" so the verification gate is byte-identical to pre-feature
+  // behavior until a project explicitly opts into "advisory" or "blocking".
+  verificationLlmReview: "off",
   ephemeralAgentsEnabled: true,
   agentProvisioning: {},
   sandboxProvisioning: {},

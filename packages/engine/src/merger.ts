@@ -38,6 +38,7 @@ import {
 } from "./verification-utils.js";
 import { resolveSandboxBackend } from "./sandbox/index.js";
 import type { SandboxBackend } from "./sandbox/types.js";
+import { resolveLlmReviewMode, runLlmReviewGate, type LlmReviewAgentDeps } from "./llm-review-verification.js";
 
 // Re-export for backward compatibility (tests import from merger.ts)
 export {
@@ -1601,14 +1602,31 @@ async function runDeterministicVerification(
   testSource?: "explicit" | "inferred" | "inferred-scoped",
   buildSource?: "explicit" | "inferred",
   signal?: AbortSignal,
+  /**
+   * FNXC:Verification 2026-06-25-00:00:
+   * OPT-IN LLM diff-review context. `baseRef` is the integration base used to
+   * compute the task diff for the review; `deps` is a test seam for the agent.
+   * Only consumed when `settings.verificationLlmReview !== "off"`, so omitting it
+   * (every default-off caller) is byte-identical to pre-feature behavior.
+   */
+  llmReviewContext?: { baseRef?: string; deps?: LlmReviewAgentDeps },
 ): Promise<VerificationResult> {
   const result: VerificationResult = { allPassed: true };
   const settings = await store.getSettings();
   const verificationCommandTimeoutMs = settings.verificationCommandTimeoutMs;
+  const llmReviewMode = resolveLlmReviewMode(settings);
 
   // Nothing to verify
   if (!testCommand && !buildCommand) {
-    mergerLog.log(`${taskId}: no verification commands configured — skipping`);
+    // FNXC:Verification 2026-06-25-00:00: When LLM review is off (default) the
+    // no-command path is byte-identical to before. When opted in, the review
+    // still runs as the verification step even with no test/build commands.
+    if (llmReviewMode === "off") {
+      mergerLog.log(`${taskId}: no verification commands configured — skipping`);
+      return result;
+    }
+    mergerLog.log(`${taskId}: no verification commands configured — running LLM diff review only (${llmReviewMode})`);
+    await runMergerLlmReviewGate(store, rootDir, taskId, settings, result, llmReviewContext, signal);
     return result;
   }
 
@@ -1853,6 +1871,13 @@ async function runDeterministicVerification(
     }
   }
 
+  // FNXC:Verification 2026-06-25-00:00: OPT-IN LLM diff review runs AFTER the
+  // test/build commands. In blocking mode a high-severity failing verdict throws
+  // VerificationError (like a failed command); advisory/unavailable never throw.
+  if (llmReviewMode !== "off") {
+    await runMergerLlmReviewGate(store, rootDir, taskId, settings, result, llmReviewContext, signal);
+  }
+
   mergerLog.log(`${taskId}: deterministic verification passed`);
   await store.logEntry(taskId, "Deterministic merge verification passed");
   await store.appendAgentLog(taskId, "Deterministic merge verification passed", "text", undefined, "merger");
@@ -1869,6 +1894,51 @@ async function runDeterministicVerification(
   }
 
   return result;
+}
+
+/**
+ * FNXC:Verification 2026-06-25-00:00:
+ * Run the OPT-IN LLM diff-review gate inside the merger verification path and
+ * mirror the verdict onto `result.llmReview`. In blocking mode, a high-severity
+ * failing verdict throws VerificationError so the merge aborts like a failed
+ * command; advisory mode and any advisory-unavailable (LLM/infra error) verdict
+ * are recorded but never throw.
+ */
+async function runMergerLlmReviewGate(
+  store: TaskStore,
+  rootDir: string,
+  taskId: string,
+  settings: Settings,
+  result: VerificationResult,
+  llmReviewContext: { baseRef?: string; deps?: LlmReviewAgentDeps } | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  const gate = await runLlmReviewGate({
+    store,
+    rootDir,
+    taskId,
+    settings,
+    baseRef: llmReviewContext?.baseRef,
+    signal,
+    agentLabel: "merger",
+    deps: llmReviewContext?.deps,
+  });
+  if (gate.verdict) {
+    result.llmReview = {
+      passed: gate.verdict.passed,
+      advisoryUnavailable: gate.verdict.advisoryUnavailable,
+      findings: gate.verdict.findings,
+      summary: gate.verdict.summary,
+    };
+  }
+  if (gate.blocked) {
+    result.allPassed = false;
+    result.failedCommand = "llmReview";
+    throw new VerificationError(
+      `LLM diff review verification failed for ${taskId}`,
+      result,
+    );
+  }
 }
 
 async function runVerificationCommand(
@@ -5984,7 +6054,16 @@ async function applyBranchCommitsPreservingHistory(params: {
     }
   }
 
-  if (testCommand || buildCommand) {
+  // FNXC:Verification 2026-06-25-00:00: Run the verification gate when test/build
+  // commands exist OR when the OPT-IN LLM diff review is enabled (so the review
+  // runs even with no commands). When neither holds (default), this is a no-op
+  // and the merge path is byte-identical to before. `baseRef` (the integration
+  // base) is forwarded so the review diff is `git diff <baseRef>..HEAD`.
+  let shouldVerify = Boolean(testCommand || buildCommand);
+  if (!shouldVerify) {
+    shouldVerify = resolveLlmReviewMode(await store.getSettings()) !== "off";
+  }
+  if (shouldVerify) {
     throwIfAborted(signal, taskId);
     await runDeterministicVerification(
       store,
@@ -5995,6 +6074,7 @@ async function applyBranchCommitsPreservingHistory(params: {
       testSource,
       buildSource,
       signal,
+      { baseRef },
     );
   }
 

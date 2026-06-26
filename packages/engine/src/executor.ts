@@ -66,6 +66,7 @@ import {
   VERIFICATION_LOG_MAX_CHARS,
   type VerificationResult,
 } from "./verification-utils.js";
+import { resolveLlmReviewMode, runLlmReviewGate, type LlmReviewAgentDeps } from "./llm-review-verification.js";
 import { canonicalFusionBranchName, canonicalStepInstanceBranchName, generateWorktreeName, resolveTaskWorkingBranch } from "./worktree-names.js";
 import { resolveTaskWorktreePath, resolveWorktreesDir } from "./worktree-paths.js";
 import { Type, type Static } from "@earendil-works/pi-ai";
@@ -12125,10 +12126,19 @@ ${feedback}
   ): Promise<VerificationResult> {
     const testCommand = settings.testCommand?.trim();
     const buildCommand = settings.buildCommand?.trim();
+    const llmReviewMode = resolveLlmReviewMode(settings);
 
     if (!testCommand && !buildCommand) {
-      executorLog.log(`${task.id}: no test/build commands configured — skipping verification`);
-      return { allPassed: true };
+      // FNXC:Verification 2026-06-25-00:00: When LLM review is off (default) this
+      // is byte-identical to before. When opted in, the review still runs as the
+      // verification step even with no test/build commands.
+      if (llmReviewMode === "off") {
+        executorLog.log(`${task.id}: no test/build commands configured — skipping verification`);
+        return { allPassed: true };
+      }
+      const result: VerificationResult = { allPassed: true };
+      await this.runExecutorLlmReviewGate(task, worktreePath, settings, result);
+      return result;
     }
 
     const parts: string[] = [];
@@ -12174,6 +12184,16 @@ ${feedback}
       }
     }
 
+    // FNXC:Verification 2026-06-25-00:00: OPT-IN LLM diff review runs AFTER the
+    // test/build commands. In blocking mode a high-severity failing verdict marks
+    // result.allPassed=false (like a failed command); advisory/unavailable never fail.
+    if (llmReviewMode !== "off") {
+      await this.runExecutorLlmReviewGate(task, worktreePath, settings, result);
+      if (!result.allPassed) {
+        return result;
+      }
+    }
+
     executorLog.log(`${task.id}: [verification] passed`);
     await this.store.logEntry(
       task.id,
@@ -12182,6 +12202,46 @@ ${feedback}
       this.getRunContextFor(task.id),
     );
     return result;
+  }
+
+  /**
+   * FNXC:Verification 2026-06-25-00:00:
+   * Run the OPT-IN LLM diff-review gate in the executor verification path and
+   * mirror the verdict onto `result.llmReview`. In blocking mode a high-severity
+   * failing verdict sets `result.allPassed=false` / `failedCommand="llmReview"`
+   * (this gate returns its result rather than throwing); advisory mode and any
+   * advisory-unavailable (LLM/infra error) verdict are recorded but never fail.
+   * The review diff is `git diff <task.baseCommitSha>..HEAD` in the worktree.
+   */
+  private async runExecutorLlmReviewGate(
+    task: Task,
+    worktreePath: string,
+    settings: Settings,
+    result: VerificationResult,
+    deps?: LlmReviewAgentDeps,
+  ): Promise<void> {
+    const gate = await runLlmReviewGate({
+      store: this.store,
+      rootDir: worktreePath,
+      taskId: task.id,
+      settings,
+      baseRef: task.baseCommitSha,
+      taskTitle: task.title,
+      agentLabel: "executor",
+      deps,
+    });
+    if (gate.verdict) {
+      result.llmReview = {
+        passed: gate.verdict.passed,
+        advisoryUnavailable: gate.verdict.advisoryUnavailable,
+        findings: gate.verdict.findings,
+        summary: gate.verdict.summary,
+      };
+    }
+    if (gate.blocked) {
+      result.allPassed = false;
+      result.failedCommand = "llmReview";
+    }
   }
 
   /**

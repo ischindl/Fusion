@@ -4053,6 +4053,20 @@ export interface ProjectSettings {
    * package-scoped/explicit command. Set false to always run the broader
    * package/full command. Default: true. */
   scopeVerificationToChangedFiles?: boolean;
+  /**
+   * FNXC:Verification 2026-06-25-00:00:
+   * OPT-IN, default-off LLM diff-review verification step. When not "off", an AI
+   * reviews the task's diff for correctness/regressions as an ADDITIONAL
+   * verification step after the (possibly empty) test/build commands.
+   * - "off" (default): never invoked; the verification gate is byte-identical to
+   *   pre-feature behavior.
+   * - "advisory": runs the review and logs findings to the task, but NEVER fails
+   *   verification on it.
+   * - "blocking": a verdict of passed:false with a high-severity finding fails
+   *   verification, exactly like a failed test/build command.
+   * Any LLM/infra failure yields a non-blocking "advisory unavailable" result in
+   * every mode — an LLM outage must never hard-block a merge. Default: "off". */
+  verificationLlmReview?: "off" | "advisory" | "blocking";
   /** When enabled, AI-generated task specifications require manual approval
    *  before the task can move from triage to todo. Tasks with approved specs
    *  remain in triage with status "awaiting-approval" until a user approves

@@ -95,6 +95,19 @@ export interface VerificationResult {
     packageName: string;
     recovered: boolean;
   };
+  /**
+   * FNXC:Verification 2026-06-25-00:00:
+   * Structured verdict from the OPT-IN LLM diff-review step, when it ran (setting
+   * `verificationLlmReview` !== "off"). Present in advisory and blocking modes;
+   * `failedCommand === "llmReview"` marks a blocking-mode failure. Absent when the
+   * feature is off, keeping the default-off path byte-identical.
+   */
+  llmReview?: {
+    passed: boolean;
+    advisoryUnavailable: boolean;
+    findings: Array<{ severity: "high" | "medium" | "low"; file: string; summary: string }>;
+    summary: string;
+  };
 }
 
 // ── Process group exec ─────────────────────────────────────────────────
