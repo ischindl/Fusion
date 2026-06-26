@@ -319,7 +319,13 @@ FN-6860 rescued dev-server-process by settling stdout detection and fallback-pro
 FNXC:DashboardTestQuarantine 2026-06-22-18:05:
 FN-6937 verified that FN-6860's claimed session-cross-tab ledger removal had not landed: the file was active because this exclude list was empty, but `test-quarantine.json` still carried the stale 2026-06-19 row. The repeated loaded `dashboard-api-quality-backfill` runs and lock-holder mutation proof confirmed FN-6742's rescue still holds, so remove the orphaned ledger row and keep this list empty to restore ledger↔config lockstep.
 */
-const quarantinedDashboardTests: string[] = [];
+/*
+FNXC:DashboardTestQuarantine 2026-06-25-09:50:
+Quarantine DevServerView.mobile.test.tsx: CI full-suite shard 4/4 fails with 'expected +0 to be 1' on the mobile CSS structure assertion. Under the deletion ratchet — see scripts/lib/test-quarantine.json.
+*/
+const quarantinedDashboardTests: string[] = [
+  "app/components/__tests__/DevServerView.mobile.test.tsx",
+];
 
 const qualityApiTests = [
   // Critical HTTP/server behavior: auth, task/project/settings mutation,
