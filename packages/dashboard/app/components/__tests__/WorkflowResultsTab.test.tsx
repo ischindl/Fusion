@@ -318,6 +318,47 @@ describe("WorkflowResultsTab", () => {
     expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
   });
 
+  it("recomputes inherited workflow details after switching from an explicit task while selection fetch fails", async () => {
+    mockedFetchTaskWorkflow
+      .mockResolvedValueOnce({ workflowId: "WF-001" })
+      .mockRejectedValueOnce(new Error("task workflow unavailable"));
+
+    const { rerender } = render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        task={{ ...baseTask, id: "FN-001" }}
+        settings={mockSettings}
+        results={[]}
+        enabledWorkflowSteps={["browser-verification"]}
+        projectId="project-switch"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Custom Delivery Workflow"));
+
+    rerender(
+      <WorkflowResultsTab
+        taskId="FN-002"
+        task={{ ...baseTask, id: "FN-002" }}
+        settings={mockSettings}
+        results={[]}
+        enabledWorkflowSteps={["browser-verification"]}
+        projectId="project-switch"
+      />,
+    );
+
+    await waitFor(() => expect(mockedFetchTaskWorkflow).toHaveBeenCalledWith("FN-002", "project-switch"));
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Built-in Coding Workflow"));
+    await waitFor(() => expect(screen.getByTestId("workflow-configured-step-browser-verification")).toHaveTextContent("Browser Verification"));
+    expect(screen.getByTestId("workflow-configured-step-browser-verification")).not.toHaveTextContent("Step definition not found.");
+
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("builtin:coding", "project-switch"));
+    expect(mockedFetchWorkflow).not.toHaveBeenCalledWith("WF-001", "project-switch");
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
+  });
+
   it("returns to the effective default workflow when an explicit selection is cleared", async () => {
     mockedSelectTaskWorkflow.mockResolvedValueOnce({ workflowId: null, enabledWorkflowSteps: [] });
 
@@ -360,6 +401,37 @@ describe("WorkflowResultsTab", () => {
     await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("WF-STALE", "project-stale"));
     expect(await screen.findByTestId("workflow-graph-unavailable")).toHaveTextContent("Workflow graph unavailable");
     expect(screen.queryByTestId("workflow-graph-preview")).not.toBeInTheDocument();
+  });
+
+  it("shows graph unavailable when a fetched workflow has no mappable nodes", async () => {
+    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-EMPTY" });
+    mockedFetchWorkflows.mockResolvedValue([{ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition]);
+    mockedFetchWorkflow.mockResolvedValueOnce({ id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition);
+
+    render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-empty" />);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Empty Workflow"));
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("WF-EMPTY", "project-empty"));
+    expect(await screen.findByTestId("workflow-graph-unavailable")).toHaveTextContent("Workflow graph unavailable");
+    expect(screen.queryByTestId("workflow-graph-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workflow-graph-loading")).not.toBeInTheDocument();
+  });
+
+  it("keys graph cache by project and effective workflow id", async () => {
+    mockedFetchTaskWorkflow.mockResolvedValue({ workflowId: null });
+    const { rerender } = render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-a" />);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Built-in Coding Workflow"));
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("builtin:coding", "project-a"));
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
+
+    rerender(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-b" />);
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("builtin:coding", "project-b"));
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
   });
 
   it("shows no workflow assigned and avoids graph fetch when board workflows provide no usable effective id", async () => {

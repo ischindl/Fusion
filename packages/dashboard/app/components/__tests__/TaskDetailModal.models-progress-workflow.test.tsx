@@ -1120,6 +1120,62 @@ describe("TaskDetailModal", () => {
       expect(screen.queryByText("Initial Check")).not.toBeInTheDocument();
     });
 
+    it("clears stale workflow results immediately when switching tasks while the tab stays mounted", async () => {
+      const { fetchWorkflowResults } = await import("../../api");
+      const mockFetch = vi.mocked(fetchWorkflowResults);
+      let resolveNextResults: (results: import("@fusion/core").WorkflowStepResult[]) => void = () => {};
+      const nextResultsPromise = new Promise<import("@fusion/core").WorkflowStepResult[]>((resolve) => {
+        resolveNextResults = resolve;
+      });
+      mockFetch
+        .mockResolvedValueOnce([
+          { workflowStepId: "WS-INITIAL", workflowStepName: "Initial Check", status: "passed", output: "Initial output" },
+        ] as import("@fusion/core").WorkflowStepResult[])
+        .mockReturnValueOnce(nextResultsPromise);
+
+      const { rerender } = render(
+        <TaskDetailModal
+          initialTab="workflow"
+          task={makeTask({ id: "FN-099", enabledWorkflowSteps: ["WS-INITIAL"] })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(await screen.findByText("Initial Check", {}, { timeout: 15_000 })).toBeTruthy();
+
+      rerender(
+        <TaskDetailModal
+          initialTab="workflow"
+          task={makeTask({ id: "FN-200", enabledWorkflowSteps: ["WS-NEXT"] })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledWith("FN-200", undefined));
+      await waitFor(() => expect(screen.queryByText("Initial Check")).not.toBeInTheDocument());
+      expect(screen.getByTestId("workflow-results-loading")).toBeTruthy();
+
+      await act(async () => {
+        resolveNextResults([
+          { workflowStepId: "WS-NEXT", workflowStepName: "Next Task Check", status: "passed", output: "Next output" },
+        ] as import("@fusion/core").WorkflowStepResult[]);
+        await nextResultsPromise;
+      });
+
+      expect(await screen.findByText("Next Task Check")).toBeTruthy();
+      expect(screen.queryByText("Initial Check")).not.toBeInTheDocument();
+    });
+
     it("renders configured workflow steps state when results are empty", async () => {
       const { fetchWorkflowResults } = await import("../../api");
       const mockFetch = vi.mocked(fetchWorkflowResults);

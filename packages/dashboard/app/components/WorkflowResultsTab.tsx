@@ -350,12 +350,17 @@ export function WorkflowResultsTab({
   // Load the task's current workflow selection (if any).
   useEffect(() => {
     let cancelled = false;
+    /*
+    FNXC:TaskWorkflowDetails 2026-06-26-01:31:
+    Task-detail hosts can keep WorkflowResultsTab mounted while switching tasks. Clear the previous explicit selection before the new task selection fetch resolves (or fails) so default-inherited tasks use boardWorkflowFallbackId for the summary, graph fetch, and configured step details instead of a stale custom workflow from the prior task.
+    */
+    setSelectedWorkflowId(null);
     fetchTaskWorkflow(taskId, projectId)
       .then((res) => {
         if (!cancelled) setSelectedWorkflowId(res.workflowId);
       })
       .catch(() => {
-        /* selection is optional; ignore load failures */
+        if (!cancelled) setSelectedWorkflowId(null);
       });
     return () => {
       cancelled = true;
@@ -418,7 +423,14 @@ export function WorkflowResultsTab({
   const graphCacheKey = effectiveWorkflowId ? `${projectId ?? ""}::${effectiveWorkflowId}` : null;
 
   useEffect(() => {
-    if (!graphExpanded || !effectiveWorkflowId || !graphCacheKey || workflowGraphCache[graphCacheKey]) return;
+    if (!graphExpanded || !effectiveWorkflowId || !graphCacheKey) {
+      setWorkflowGraphLoading(false);
+      return;
+    }
+    if (workflowGraphCache[graphCacheKey]) {
+      setWorkflowGraphLoading(false);
+      return;
+    }
     let cancelled = false;
     setWorkflowGraphLoading(true);
     fetchWorkflow(effectiveWorkflowId, projectId)
@@ -513,8 +525,21 @@ export function WorkflowResultsTab({
   }, [allWorkflowSteps, optionalWorkflowSteps]);
 
   const workflowStepLookup = useMemo(() => {
-    return new Map(workflowStepOptions.map((step) => [step.id, step]));
-  }, [workflowStepOptions]);
+    const lookup = new Map<string, WorkflowStepOption>();
+    for (const step of workflowStepOptions) {
+      lookup.set(step.id, step);
+    }
+    /*
+    FNXC:TaskWorkflowDetails 2026-06-26-01:37:
+    Some persisted tasks store optional-group template ids (for example `browser-verification`) while the global step resolver returns the materialized workflow-step id plus `templateId`. Alias both ids to the same definition so configured step/stage details populate instead of showing the missing-definition fallback.
+    */
+    for (const step of allWorkflowSteps) {
+      if (!step.templateId) continue;
+      const option = lookup.get(step.id);
+      if (option) lookup.set(step.templateId, option);
+    }
+    return lookup;
+  }, [allWorkflowSteps, workflowStepOptions]);
 
   const toggleOutput = (stepId: string) => {
     setExpandedOutputs((prev) => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -1060,7 +1085,7 @@ export function WorkflowResultsTab({
                 <div className="workflow-results-spinner" />
                 <span>{t("app:workflow.loadingGraph", "Loading workflow graph…")}</span>
               </div>
-            ) : graphFlow ? (
+            ) : graphFlow && graphFlow.nodes.length > 0 ? (
               <div className="workflow-graph-preview" data-testid="workflow-graph-preview">
                 <ReactFlowProvider>
                   <ReactFlow

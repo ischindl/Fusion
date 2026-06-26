@@ -951,6 +951,11 @@ export function TaskDetailContent({
   useEffect(() => {
     if (activeTab !== "workflow") return;
     let cancelled = false;
+    /*
+    FNXC:TaskWorkflowDetails 2026-06-26-01:43:
+    A mounted task-detail Workflow tab can switch from one task to another while the previous result list is visible. Clear results before the new fetch so live step/stage details never flash stale rows from another task while cancellation protects the in-flight request.
+    */
+    setWorkflowResults([]);
     setWorkflowResultsLoading(true);
     fetchWorkflowResults(task.id, projectId)
       .then((results) => {
