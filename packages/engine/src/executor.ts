@@ -3714,22 +3714,42 @@ export class TaskExecutor {
 
         // Run workflow steps before transitioning — skip in fast mode
         if (task.executionMode !== "fast") {
-          if (await this.shouldDeferCompletionForGlobalPause(task.id, "before workflow steps during completed-task recovery")) {
+          if (await this.shouldDeferCompletionForGlobalPause(task.id, "before workflow-graph re-entry during completed-task recovery")) {
             return false;
           }
-          const workflowResult = await this.runWorkflowSteps(task, task.worktree, settings, undefined);
-          if (workflowResult === "deferred-paused") {
-            if (this.pausedAborted.has(task.id)) {
-              this.clearPausedAborted(task.id);
-            }
-            return false;
+          /*
+          FNXC:WorkflowExecution 2026-06-25-00:00:
+          U4 (KTD-2) watchdog re-entry. The legacy `runWorkflowSteps` recovery path
+          was deleted; the workflow graph is the sole executor. A stranded completed
+          task is recovered by RE-ENTERING the graph via `maybeExecuteWorkflowGraph`
+          (the same entry execute() uses), which: (1) re-runs any pending
+          optional-group / gate nodes, (2) records their outcomes into
+          `task.workflowStepResults` (U2) and emits the `[pre-merge]` logs, and
+          (3) OWNS the in-review vs back-for-fix transition. The graph's execute seam
+          registers the normal completion interceptor, so a task whose implementation
+          already completed resumes at the post-implementation nodes (it does not
+          re-run the agent from scratch). RECOVERY POLICY mapping (per plan U4): the
+          old "any failure including REVISE is hard" recovery rule now maps onto the
+          graph's gate semantics — a GATE node REVISE/failure routes the task back for
+          fix, while an ADVISORY REVISE is non-blocking and proceeds to review. KTD-5:
+          for a store lacking `getTaskWorkflowSelection` that has enabled steps,
+          `maybeExecuteWorkflowGraph` itself fails closed (parks) rather than letting
+          recovery silently skip the gates.
+          */
+          const graphOwned = await this.maybeExecuteWorkflowGraph(task);
+          if (graphOwned) {
+            this.clearCompletedTaskWatchdog(task.id);
+            await this.store.logEntry(
+              task.id,
+              `Auto-recovered: stranded completed task re-dispatched through the workflow graph — the graph re-ran pending workflow steps (recording results) and owns the in-review / back-for-fix transition`,
+            ).catch(() => undefined);
+            executorLog.log(`✓ ${task.id} auto-recovered completed task via workflow-graph re-entry`);
+            return true;
           }
-          if (!workflowResult.allPassed) {
-            // For recovery path, treat any failure (including revision) as hard failure
-            // Send back to in-progress so executor can attempt to fix the issues
-            await this.sendTaskBackForFix(task, task.worktree!, workflowResult.feedback, workflowResult.stepName || "Unknown", "Workflow step failed during recovery", false);
-            return true; // Still transitioned out of in-progress
-          }
+          // Graph declined (minimal store WITHOUT the workflow-selection API and no
+          // enabled gates to run — a store WITH enabled steps would have been parked
+          // fail-closed above): there is nothing to gate, so fall through to the
+          // legacy in-review handoff below.
         } else {
           executorLog.log(`${task.id}: fast mode — skipping workflow steps on auto-recovery`);
         }
@@ -4213,7 +4233,29 @@ export class TaskExecutor {
         /*
         FNXC:WorkflowExecution 2026-06-23-22:01:
         Graph execution is the default for production TaskStore implementations, which expose workflow-selection APIs. Minimal test stores and older embedded adapters can lack that API; fall back to the legacy executor instead of half-entering graph routing with no workflow persistence surface.
+
+        FNXC:WorkflowExecution 2026-06-25-00:00:
+        U4 (KTD-2/KTD-5) FAIL-CLOSED. The legacy `runWorkflowSteps` execution path was deleted; the graph is now the sole workflow-step executor. A store without `getTaskWorkflowSelection` can no longer reach a legacy executor that runs the enabled pre-merge gates. If we returned `false` here for a task that has enabled workflow steps, execute() would proceed and SILENTLY SKIP every gate (the exact FN-7039 silent-skip class) before handing off to review. So when the task has enabled pre-merge workflow steps (and is not fast mode, which intentionally skips them), park the task as a workflow failure instead — loud, never silent. Tasks with NO enabled steps have nothing to gate, so they keep the legacy implementation path (no behavior change), which is what minimal test stores exercise.
         */
+        let liveForGate: Task | null = null;
+        try {
+          liveForGate = await this.store.getTask(task.id);
+        } catch {
+          liveForGate = null;
+        }
+        const gateTask = liveForGate ?? task;
+        const hasEnabledSteps = (gateTask.enabledWorkflowSteps?.length ?? 0) > 0;
+        if (hasEnabledSteps && gateTask.executionMode !== "fast") {
+          await this.handleGraphFailure(task, {
+            disposition: "failed",
+            outcome: "failure",
+            reason:
+              "workflow-selection-api-unavailable: store lacks getTaskWorkflowSelection so the workflow graph cannot run "
+              + `${gateTask.enabledWorkflowSteps?.length ?? 0} enabled pre-merge workflow step(s); the legacy runWorkflowSteps path was removed (U4). Failing closed rather than skipping gates (KTD-5).`,
+            visitedNodeIds: [],
+          });
+          return true;
+        }
         return false;
       }
       try {
@@ -5412,69 +5454,12 @@ export class TaskExecutor {
       runVerification: async () => ({ outcome: "success", value: "verification-skipped", data: {
         verdict: "skipped",
       } }),
-      runWorkflowStep: async (_ctx, task, input) => {
-        if (input.phase !== "pre-merge") {
-          return { outcome: "success", value: "workflow-step-skipped", data: { allPassed: true } };
-        }
-        const live = await this.store.getTask(task.id);
-        if (live.executionMode === "fast") {
-          executorLog.log(`${task.id}: fast mode — skipping pre-merge workflow steps`);
-          await this.store.logEntry(task.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(task.id));
-          return { outcome: "success", value: "workflow-step-skipped", data: { allPassed: true } };
-        }
-        if (await this.shouldDeferCompletionForGlobalPause(task.id, "before workflow steps after task completion")) {
-          return { outcome: "success", value: "deferred-paused", data: { allPassed: false } };
-        }
-        const worktreePath = input.worktreePath || live.worktree || this.rootDir;
-        const workflowResult = await this.runWorkflowSteps(live, worktreePath, settings, undefined);
-        if (workflowResult === "deferred-paused") {
-          if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-            this.clearPausedAborted(task.id);
-          } else if (this.pausedAborted.has(task.id)) {
-            this.clearPausedAborted(task.id);
-          }
-          return { outcome: "success", value: "deferred-paused", data: { allPassed: false } };
-        }
-        if (!workflowResult.allPassed) {
-          const feedback = workflowResult.feedback || "Workflow step failed";
-          const stepName = workflowResult.stepName || "Unknown";
-          if (workflowResult.revisionRequested) {
-            const rerunScheduled = await this.handleWorkflowRevisionRequest(
-              live,
-              worktreePath,
-              feedback,
-              stepName,
-              settings,
-            );
-            if (!rerunScheduled) {
-              return {
-                outcome: "failure",
-                value: "workflow-step-revision-unhandled",
-                data: workflowResult,
-              };
-            }
-          } else {
-            const retried = await this.handleWorkflowStepFailure(
-              live,
-              worktreePath,
-              feedback,
-              stepName,
-            );
-            if (!retried) {
-              await this.sendTaskBackForFix(
-                live,
-                worktreePath,
-                feedback,
-                stepName,
-                "Workflow step failed",
-              );
-            }
-          }
-          return { outcome: "success", value: "remediation-scheduled", data: workflowResult };
-        }
-        await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
-        return { outcome: "success", value: "workflow-steps-passed", data: workflowResult };
-      },
+      // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the legacy
+      // `runWorkflowStep` primitive + the `workflow-step` seam it served were
+      // removed. Workflow quality gates run as the graph's own optional-group /
+      // gate nodes (builtin:coding already routes through them), which record
+      // results into `task.workflowStepResults` directly (U2). No `runWorkflowStep`
+      // primitive remains in `WorkflowRuntimePrimitives`.
       updateSteps: async (_ctx, task, steps) => {
         await this.store.updateTask(task.id, { steps });
         return { outcome: "success", value: "steps-updated", data: { count: steps.length } };
@@ -5584,58 +5569,14 @@ export class TaskExecutor {
           value: paused ? "implementation-paused" : "implementation-incomplete",
         };
       },
-      workflowStep: async (seamTask) => {
-        const live = await this.store.getTask(seamTask.id);
-        if (live.executionMode === "fast") {
-          executorLog.log(`${seamTask.id}: fast mode — skipping pre-merge workflow steps`);
-          await this.store.logEntry(seamTask.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(seamTask.id));
-          return { outcome: "success", value: "workflow-step-skipped" };
-        }
-        const worktreePath = live.worktree || this.rootDir;
-        const settings = await this.store.getSettings();
-        const workflowResult = await this.runWorkflowSteps(live, worktreePath, settings, undefined);
-        if (workflowResult === "deferred-paused") {
-          if (await this.parkTaskAfterWorkflowStepPause(seamTask.id)) {
-            this.clearPausedAborted(seamTask.id);
-          } else if (this.pausedAborted.has(seamTask.id)) {
-            this.clearPausedAborted(seamTask.id);
-          }
-          return { outcome: "success", value: "deferred-paused" };
-        }
-        if (!workflowResult.allPassed) {
-          const feedback = workflowResult.feedback || "Workflow step failed";
-          const stepName = workflowResult.stepName || "Unknown";
-          if (workflowResult.revisionRequested) {
-            const rerunScheduled = await this.handleWorkflowRevisionRequest(
-              live,
-              worktreePath,
-              feedback,
-              stepName,
-              settings,
-            );
-            if (!rerunScheduled) return { outcome: "failure", value: "workflow-step-revision-unhandled" };
-          } else {
-            const retried = await this.handleWorkflowStepFailure(
-              live,
-              worktreePath,
-              feedback,
-              stepName,
-            );
-            if (!retried) {
-              await this.sendTaskBackForFix(
-                live,
-                worktreePath,
-                feedback,
-                stepName,
-                "Workflow step failed",
-              );
-            }
-          }
-          return { outcome: "success", value: "remediation-scheduled" };
-        }
-        await this.store.updateTask(seamTask.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
-        return { outcome: "success", value: "workflow-steps-passed" };
-      },
+      // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the legacy
+      // `workflowStep` seam was removed. Workflow quality gates run as the graph's
+      // own optional-group / gate nodes (builtin:coding replaced its `workflow-step`
+      // seam node with optional-group nodes) which record into
+      // `task.workflowStepResults` (U2). `WorkflowLegacySeams.workflowStep` no
+      // longer exists, and `resolveSeamName` no longer recognizes the
+      // `workflow-step` seam (an IR node still declaring it now fails loudly via
+      // WorkflowIrError rather than silently no-opping).
       review: async (seamTask) => {
         // The legacy "review" stage is the in-review handoff: per-step AI review
         // already ran during implementation (fn_review_step), and the in-review
@@ -8242,38 +8183,25 @@ export class TaskExecutor {
               }
             }
 
-            // Run workflow steps before moving to in-review — skip in fast mode
-            if (executionMode !== "fast") {
-              const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
-              if (workflowResult === "deferred-paused") {
-                if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                  this.clearPausedAborted(task.id);
-                  return;
-                }
-                if (this.pausedAborted.has(task.id)) {
-                  this.clearPausedAborted(task.id);
-                }
-                return;
-              }
-              if (!workflowResult.allPassed) {
-                // Check if revision was requested
-                if (workflowResult.revisionRequested) {
-                  const rerunScheduled = await this.handleWorkflowRevisionRequest(task, worktreePath, workflowResult.feedback, workflowResult.stepName, settings);
-                  if (rerunScheduled) {
-                    return;
-                  }
-                } else {
-                  // Try to fix workflow step failures with retries
-                  const retried = await this.handleWorkflowStepFailure(task, worktreePath, workflowResult.feedback, workflowResult.stepName || "Unknown");
-                  if (retried) {
-                    return; // Retry scheduled
-                  }
-                  // Retries exhausted - send back to in-progress for remediation
-                  await this.sendTaskBackForFix(task, worktreePath, workflowResult.feedback, workflowResult.stepName || "Unknown", "Workflow step failed");
-                  return;
-                }
-              }
-            } else {
+            // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2/KTD-5) — workflow
+            // steps are graph-owned. For a graph-driven run the execute seam
+            // registered a completion interceptor; stop at the
+            // implementation-complete boundary and hand the remaining lifecycle
+            // (workflow gates → review → merge) back to the graph runner, which
+            // records results into task.workflowStepResults (U2). The legacy
+            // runWorkflowSteps loop was deleted. A NON-graph run reaching here has no
+            // enabled workflow steps to run (a minimal store WITH enabled steps is
+            // parked fail-closed inside maybeExecuteWorkflowGraph, KTD-5), so there
+            // is nothing to gate before the in-review handoff.
+            const graphCompletion = this.graphCompletionInterceptors.get(task.id);
+            if (graphCompletion) {
+              this.clearCompletedTaskWatchdog(task.id);
+              executorLog.log(`✓ ${task.id} implementation complete — graph interpreter owns the remaining lifecycle`);
+              const liveModified = (await this.store.getTask(task.id).catch(() => task)).modifiedFiles ?? [];
+              graphCompletion({ modifiedFiles: liveModified });
+              return;
+            }
+            if (executionMode === "fast") {
               executorLog.log(`${task.id}: fast mode — skipping pre-merge workflow steps`);
               await this.store.logEntry(task.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(task.id));
             }
@@ -9068,51 +8996,25 @@ export class TaskExecutor {
             }
 
             this.scheduleCompletedTaskWatchdog(task.id, "task completion");
-            if (await this.shouldDeferCompletionForGlobalPause(task.id, "before workflow steps after task completion")) {
+            if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion")) {
               return;
             }
 
-            // Run workflow steps before moving to in-review — skip in fast mode
-            if (executionMode !== "fast") {
-              const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
-              if (workflowResult === "deferred-paused") {
-                if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                  this.clearPausedAborted(task.id);
-                  wasPaused = true;
-                  return;
-                }
-                if (this.pausedAborted.has(task.id)) {
-                  this.clearPausedAborted(task.id);
-                  wasPaused = true;
-                }
-                return;
-              }
-              if (!workflowResult.allPassed) {
-                // Check if revision was requested
-                if (workflowResult.revisionRequested) {
-                  const rerunScheduled = await this.handleWorkflowRevisionRequest(task, worktreePath, workflowResult.feedback, workflowResult.stepName, settings);
-                  if (rerunScheduled) {
-                    return;
-                  }
-                } else {
-                  // Try to fix workflow step failures with retries
-                  const retried = await this.handleWorkflowStepFailure(task, worktreePath, workflowResult.feedback, workflowResult.stepName || "Unknown");
-                  if (retried) {
-                    return; // Retry scheduled
-                  }
-                  // Retries exhausted - send back to in-progress for remediation
-                  await this.sendTaskBackForFix(task, worktreePath, workflowResult.feedback, workflowResult.stepName || "Unknown", "Workflow step failed");
-                  return;
-                }
-              }
-            } else {
+            // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2/KTD-5) — the legacy
+            // runWorkflowSteps loop was deleted; workflow gates are graph-owned and
+            // record into task.workflowStepResults (U2). The graph-interceptor
+            // short-circuit above already returns for every graph-driven run, so a
+            // run reaching here is a non-graph fallback with NO enabled workflow
+            // steps (a minimal store WITH enabled steps is parked fail-closed in
+            // maybeExecuteWorkflowGraph, KTD-5) — nothing to gate before handoff.
+            if (executionMode === "fast") {
               executorLog.log(`${task.id}: fast mode — skipping pre-merge workflow steps`);
               await this.store.logEntry(task.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(task.id));
             }
 
             // Reset retry counters on success
             await this.store.updateTask(task.id, { workflowStepRetries: undefined, taskDoneRetryCount: null });
-            if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion")) {
+            if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion (post-reset)")) {
               return;
             }
 
@@ -9344,37 +9246,26 @@ export class TaskExecutor {
               }
 
               this.scheduleCompletedTaskWatchdog(task.id, "task completion retry");
-              if (await this.shouldDeferCompletionForGlobalPause(task.id, "before workflow steps after task completion retry")) {
+              if (await this.shouldDeferCompletionForGlobalPause(task.id, "before in-review transition after task completion retry")) {
                 return;
               }
 
-              // Run workflow steps before moving to in-review — skip in fast mode
-              if (executionMode !== "fast") {
-                const workflowResult = await this.runWorkflowSteps(task, worktreePath, settings, taskEnv);
-                if (workflowResult === "deferred-paused") {
-                  if (await this.parkTaskAfterWorkflowStepPause(task.id)) {
-                    this.clearPausedAborted(task.id);
-                    wasPaused = true;
-                    return;
-                  }
-                  if (this.pausedAborted.has(task.id)) {
-                    this.clearPausedAborted(task.id);
-                    wasPaused = true;
-                  }
-                  return;
-                }
-                if (!workflowResult.allPassed) {
-                  if (workflowResult.revisionRequested) {
-                    const rerunScheduled = await this.handleWorkflowRevisionRequest(task, worktreePath, workflowResult.feedback, workflowResult.stepName, settings);
-                    if (rerunScheduled) {
-                      return;
-                    }
-                  } else {
-                    await this.sendTaskBackForFix(task, worktreePath, workflowResult.feedback, workflowResult.stepName || "Unknown", "Workflow step failed on retry");
-                    return;
-                  }
-                }
-              } else {
+              // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2/KTD-5) — workflow
+              // gates are graph-owned (record into task.workflowStepResults, U2); the
+              // legacy runWorkflowSteps loop was deleted. For a graph-driven run the
+              // execute seam registered a completion interceptor, so stop at the
+              // implementation boundary and let the graph own the remaining
+              // lifecycle. A non-graph fallback reaching here has NO enabled workflow
+              // steps (a minimal store WITH enabled steps is parked fail-closed in
+              // maybeExecuteWorkflowGraph, KTD-5) — nothing to gate before handoff.
+              const graphCompletion = this.graphCompletionInterceptors.get(task.id);
+              if (graphCompletion) {
+                this.clearCompletedTaskWatchdog(task.id);
+                executorLog.log(`✓ ${task.id} implementation complete (retry) — graph interpreter owns the remaining lifecycle`);
+                graphCompletion({ modifiedFiles });
+                return;
+              }
+              if (executionMode === "fast") {
                 executorLog.log(`${task.id}: fast mode — skipping pre-merge workflow steps`);
                 await this.store.logEntry(task.id, "Fast mode — pre-merge workflow steps skipped", undefined, this.getRunContextFor(task.id));
               }
@@ -12894,326 +12785,6 @@ ${failureFeedback}
    *   When provided, the worktree starts from that ref instead of HEAD.
    */
   /**
-   * Run workflow step agents sequentially after main task execution completes.
-   * Each workflow step spawns a separate agent with the step's prompt.
-   * Returns structured result: all passed, all passed (true), failed (false), or revision requested.
-   */
-  private async runWorkflowSteps(
-    task: Task,
-    worktreePath: string,
-    settings: Settings,
-    taskEnv?: NodeJS.ProcessEnv,
-  ): Promise<WorkflowStepResult | "deferred-paused"> {
-    await this.auditReadonlyWorkflowStepPromptsOnce(task.id);
-    // Check if task has enabled workflow steps
-    const currentTask = await this.store.getTask(task.id);
-    if (!currentTask.enabledWorkflowSteps?.length) return { allPassed: true };
-
-    const workflowStepIds = currentTask.enabledWorkflowSteps;
-    const results: import("@fusion/core").WorkflowStepResult[] = [];
-
-    for (const wsId of workflowStepIds) {
-      const ws = await this.store.getWorkflowStep(wsId);
-      if (!ws) {
-        await this.store.logEntry(task.id, `[pre-merge] Workflow step ${wsId} not found — skipping`);
-        results.push({
-          workflowStepId: wsId,
-          workflowStepName: "Unknown",
-          phase: "pre-merge",
-          status: "skipped",
-          output: "Workflow step definition not found",
-        });
-        await this.store.updateTask(task.id, { workflowStepResults: results });
-        continue;
-      }
-
-      // Normalize legacy steps: undefined phase → "pre-merge"
-      const stepPhase = ws.phase || "pre-merge";
-
-      // readonly review steps always run pre-merge to reuse the coding worktree — see FN-2185 post-mortem.
-      // Skip non-readonly post-merge steps — those run in the merger after merge.
-      if (stepPhase === "post-merge" && ws.toolMode !== "readonly") continue;
-
-      // Normalize legacy steps without mode to prompt-mode
-      const stepMode: "prompt" | "script" = ws.mode || "prompt";
-      const gateMode: "gate" | "advisory" = ws.gateMode || (stepMode === "script" ? "gate" : "advisory");
-
-      // Skip validation per mode
-      if (stepMode === "prompt" && !ws.prompt?.trim()) {
-        await this.store.logEntry(task.id, `[pre-merge] Workflow step '${ws.name}' has no prompt — skipping`);
-        results.push({
-          workflowStepId: ws.id,
-          workflowStepName: ws.name,
-          phase: stepPhase,
-          status: "skipped",
-          output: "No prompt configured for this workflow step",
-        });
-        await this.store.updateTask(task.id, { workflowStepResults: results });
-        continue;
-      }
-
-      if (stepMode === "script" && !ws.scriptName?.trim()) {
-        await this.store.logEntry(task.id, `[pre-merge] Workflow step '${ws.name}' has no scriptName — skipping`);
-        results.push({
-          workflowStepId: ws.id,
-          workflowStepName: ws.name,
-          phase: stepPhase,
-          status: "skipped",
-          output: "No scriptName configured for this workflow step",
-        });
-        await this.store.updateTask(task.id, { workflowStepResults: results });
-        continue;
-      }
-
-      if (this.isFrontendUxStep(ws)) {
-        try {
-          const diffScopedFiles = await this.captureModifiedFiles(worktreePath, currentTask.baseCommitSha, task.id, undefined, "workflow-step-frontend-ux");
-          const declaredScopedFiles = await this.store.parseFileScopeFromPrompt(task.id).catch(() => [] as string[]);
-          const diffHasSignal = diffScopedFiles.length > 0;
-          const declaredHasSignal = declaredScopedFiles.length > 0;
-          const diffHasFrontendFiles = diffHasSignal && this.hasFrontendFilesInScope(diffScopedFiles);
-          const declaredHasFrontendFiles = declaredHasSignal && this.hasFrontendFilesInScope(declaredScopedFiles);
-
-          const shouldSkipForDiffOnly = diffHasSignal && !declaredHasSignal && !diffHasFrontendFiles;
-          const shouldSkipForDeclaredOnly = declaredHasSignal && !diffHasSignal && !declaredHasFrontendFiles;
-          const shouldSkipForBothSignals = diffHasSignal && declaredHasSignal && !diffHasFrontendFiles && !declaredHasFrontendFiles;
-
-          if (shouldSkipForDiffOnly || shouldSkipForDeclaredOnly || shouldSkipForBothSignals) {
-            const skippedForDeclaredScope = shouldSkipForDeclaredOnly || shouldSkipForBothSignals;
-            results.push({
-              workflowStepId: ws.id,
-              workflowStepName: ws.name,
-              phase: stepPhase,
-              status: "skipped",
-              output: skippedForDeclaredScope
-                ? "Declared File Scope contains no frontend/UI files — auto-skipped (FN-4343)"
-                : "No frontend/UI files in diff scope — auto-skipped (FN-3906)",
-            });
-            await this.store.updateTask(task.id, { workflowStepResults: results });
-            await this.store.logEntry(
-              task.id,
-              skippedForDeclaredScope
-                ? "[pre-merge] Auto-skipped Frontend UX Design — declared File Scope contains no frontend/UI files (FN-4343)"
-                : "[pre-merge] Auto-skipped Frontend UX Design — no frontend/UI files in diff scope",
-            );
-            continue;
-          }
-        } catch {
-          // best-effort scope detection only; fall through to regular execution/defer flow
-        }
-      }
-
-      if (await this.shouldDeferWorkflowStepCompletion(task.id, `before workflow step '${ws.name}'`)) {
-        return "deferred-paused";
-      }
-
-      if (ws.id.startsWith("plugin:")) {
-        await this.store.logEntry(task.id, `[pre-merge] Starting plugin workflow step: ${ws.name} (${ws.id})`);
-      } else {
-        await this.store.logEntry(task.id, `[pre-merge] Starting workflow step: ${ws.name} (${stepMode} mode)`);
-      }
-      executorLog.log(`${task.id} — [pre-merge] running workflow step: ${ws.name} (${stepMode} mode)`);
-
-      const startedAt = new Date().toISOString();
-      const stepStartedAtMs = Date.now();
-      const workflowStepScopeEnforcement = settings.workflowStepScopeEnforcement ?? "block";
-      const shouldCheckWorkflowStepScope = stepPhase === "pre-merge"
-        && stepMode === "prompt"
-        && workflowStepScopeEnforcement !== "off";
-      const preStepModifiedFiles = shouldCheckWorkflowStepScope
-        ? await this.captureModifiedFiles(worktreePath, currentTask.baseCommitSha, task.id, undefined, "workflow-step-pre")
-        : [];
-
-      // Push pending entry BEFORE execution so dashboard can show live status
-      results.push({
-        workflowStepId: ws.id,
-        workflowStepName: ws.name,
-        phase: stepPhase,
-        status: "pending",
-        startedAt,
-      });
-      await this.store.updateTask(task.id, { workflowStepResults: results });
-
-      try {
-        const result: WorkflowStepOutcome = stepMode === "script"
-          ? await this.executeScriptWorkflowStep(task, ws, worktreePath, settings, taskEnv)
-          : await this.executeWorkflowStep(task, ws, worktreePath, settings, taskEnv);
-        if (await this.shouldDeferWorkflowStepCompletion(task.id, `workflow step '${ws.name}'`)) {
-          return "deferred-paused";
-        }
-        const completedAt = new Date().toISOString();
-
-        if (result.success) {
-          if (shouldCheckWorkflowStepScope) {
-            const declaredScope = await this.store.parseFileScopeFromPrompt(task.id).catch(() => [] as string[]);
-            const refreshedTask = await this.store.getTask(task.id);
-            if (declaredScope.length > 0 && refreshedTask?.scopeOverride !== true) {
-              const postStepModifiedFiles = await this.captureModifiedFiles(worktreePath, currentTask.baseCommitSha, task.id, undefined, "workflow-step-post");
-              const preStepSet = new Set(preStepModifiedFiles);
-              const stepCommittedFiles = postStepModifiedFiles.filter((filePath) => !preStepSet.has(filePath));
-              const stepUncommittedFiles = await this.captureUncommittedModifiedFiles(worktreePath);
-              const stepTouchedFiles = [...new Set([...stepCommittedFiles, ...stepUncommittedFiles])];
-              const hasScopeOverlap = stepTouchedFiles.some((filePath) => workflowPathMatchesDeclaredScope(filePath, declaredScope));
-              if (stepTouchedFiles.length > 0 && !hasScopeOverlap) {
-                const scopeLeakMessage = `Workflow step '${ws.name}' wrote files outside declared File Scope. Staged: [${stepTouchedFiles.join(", ")}]. Declared: [${declaredScope.join(", ")}]. (FN-4343)`;
-                await this.store.logEntry(
-                  task.id,
-                  `[pre-merge] Workflow step scope leak: ${ws.name} wrote off-scope files [${stepTouchedFiles.join(", ") || "<none>"}]`,
-                );
-                if (workflowStepScopeEnforcement === "warn") {
-                  await this.store.logEntry(task.id, `[pre-merge] workflowStepScopeEnforcement=warn — ${scopeLeakMessage}`);
-                } else {
-                  const existingIdx = results.findIndex(r => r.workflowStepId === ws.id);
-                  if (existingIdx >= 0) {
-                    results[existingIdx] = {
-                      ...results[existingIdx],
-                      status: gateMode === "advisory" ? "advisory_failure" : "failed",
-                      output: scopeLeakMessage,
-                      notes: scopeLeakMessage,
-                      completedAt,
-                    };
-                  }
-                  await this.store.updateTask(task.id, { workflowStepResults: results });
-                  if (gateMode === "advisory") {
-                    await this.store.updateTask(task.id, { status: "advisory_failure" });
-                    await this.store.logEntry(task.id, `[pre-merge] Advisory workflow step scope warning: ${ws.name}`);
-                    continue;
-                  }
-                  return {
-                    allPassed: false,
-                    revisionRequested: true,
-                    feedback: scopeLeakMessage,
-                    stepName: ws.name,
-                  };
-                }
-              }
-            }
-          }
-
-          await this.store.logEntry(task.id, `[timing] Workflow step '${ws.name}' completed in ${Date.now() - stepStartedAtMs}ms`);
-          await this.store.logEntry(task.id, `[pre-merge] Workflow step completed: ${ws.name}`);
-          executorLog.log(`${task.id} — [pre-merge] workflow step passed: ${ws.name}`);
-          // Update existing pending entry in place
-          const existingIdx = results.findIndex(r => r.workflowStepId === ws.id);
-          if (existingIdx >= 0) {
-            const malformed = result.malformed === true;
-            results[existingIdx] = {
-              ...results[existingIdx],
-              status: malformed ? "skipped" : "passed",
-              output: malformed ? "malformed output — no verdict extracted" : result.output,
-              verdict: result.verdict,
-              notes: result.notes ?? (malformed ? undefined : result.output),
-              completedAt,
-            };
-          }
-          await this.store.updateTask(task.id, { workflowStepResults: results });
-        } else if (result.revisionRequested) {
-          // Revision requested — this is a structured outcome that routes back to executor
-          await this.store.logEntry(task.id, `[timing] Workflow step '${ws.name}' requested revision after ${Date.now() - stepStartedAtMs}ms`);
-          await this.store.logEntry(
-            task.id,
-            `[pre-merge] Workflow step requested revision: ${ws.name}`,
-            result.output,
-          );
-          executorLog.log(`${task.id} — [pre-merge] workflow step requested revision: ${ws.name}`);
-          // Update existing pending entry in place
-          const existingIdx = results.findIndex(r => r.workflowStepId === ws.id);
-          if (existingIdx >= 0) {
-            results[existingIdx] = {
-              ...results[existingIdx],
-              status: gateMode === "advisory" ? "advisory_failure" : "failed",
-              output: result.output || "Revision requested",
-              verdict: result.verdict,
-              notes: result.notes || result.output || "Revision requested",
-              completedAt,
-            };
-          }
-          await this.store.updateTask(task.id, { workflowStepResults: results });
-          if (gateMode === "advisory") {
-            await this.store.logEntry(task.id, `[pre-merge] Advisory workflow step failed: ${ws.name}`);
-            continue;
-          }
-          return {
-            allPassed: false,
-            revisionRequested: true,
-            feedback: result.output || "Workflow step requested revision",
-            stepName: ws.name,
-          };
-        } else {
-          // Hard failure
-          await this.store.logEntry(task.id, `[timing] Workflow step '${ws.name}' failed after ${Date.now() - stepStartedAtMs}ms`);
-          await this.store.logEntry(
-            task.id,
-            `[pre-merge] Workflow step failed: ${ws.name}`,
-            result.error || "Unknown error",
-          );
-          executorLog.error(`${task.id} — [pre-merge] workflow step failed: ${ws.name}; output captured in task log`);
-          // Update existing pending entry in place
-          const existingIdx = results.findIndex(r => r.workflowStepId === ws.id);
-          if (existingIdx >= 0) {
-            results[existingIdx] = {
-              ...results[existingIdx],
-              status: gateMode === "advisory" ? "advisory_failure" : "failed",
-              output: result.error || "Workflow step failed",
-              notes: result.error || "Workflow step failed",
-              completedAt,
-            };
-          }
-          await this.store.updateTask(task.id, { workflowStepResults: results });
-          if (gateMode === "advisory") {
-            await this.store.updateTask(task.id, { status: "advisory_failure" });
-            await this.store.logEntry(task.id, `[pre-merge] Advisory workflow step failed: ${ws.name}`);
-            continue;
-          }
-          return {
-            allPassed: false,
-            revisionRequested: false,
-            feedback: result.error || "Workflow step failed",
-            stepName: ws.name,
-          };
-        }
-      } catch (err: unknown) {
-        if (await this.shouldDeferWorkflowStepCompletion(task.id, `workflow step '${ws.name}'`)) {
-          return "deferred-paused";
-        }
-        const { message: errorMessage, detail: errorDetail, stack: errorStack } = formatError(err);
-        const completedAt = new Date().toISOString();
-        await this.store.logEntry(
-          task.id,
-          `[pre-merge] Workflow step failed: ${ws.name}`,
-          errorStack ?? errorDetail,
-        );
-        executorLog.error(`${task.id} — [pre-merge] workflow step error: ${ws.name} — ${errorDetail}`);
-        // Update existing pending entry in place
-        const existingIdx = results.findIndex(r => r.workflowStepId === ws.id);
-        if (existingIdx >= 0) {
-          results[existingIdx] = {
-            ...results[existingIdx],
-            status: gateMode === "advisory" ? "advisory_failure" : "failed",
-            output: errorMessage || "Workflow step error",
-            notes: errorMessage || "Workflow step error",
-            completedAt,
-          };
-        }
-        await this.store.updateTask(task.id, { workflowStepResults: results });
-        if (gateMode === "advisory") {
-          await this.store.updateTask(task.id, { status: "advisory_failure" });
-          await this.store.logEntry(task.id, `[pre-merge] Advisory workflow step error: ${ws.name}`);
-          continue;
-        }
-        return {
-          allPassed: false,
-          revisionRequested: false,
-          feedback: errorMessage || "Workflow step error",
-          stepName: ws.name,
-        };
-      }
-    }
-
-    return { allPassed: true };
-  }
-
-  /**
    * Execute a script-mode workflow step by resolving the scriptName to a command
    * from project settings and running it in the task worktree.
    */
@@ -13278,42 +12849,6 @@ ${failureFeedback}
     } finally {
       this.unregisterConfiguredCommandController(task.id, scriptAbortController);
     }
-  }
-
-  /**
-   * FN-3906: Only the built-in Frontend UX Design step gets orchestrator-level
-   * diff-scope auto-skip. Match by canonical template id only.
-   */
-  private isFrontendUxStep(workflowStep: WorkflowStep): boolean {
-    return workflowStep.id === "frontend-ux-design";
-  }
-
-  /**
-   * FN-3906: Detect whether the task diff scope contains frontend/UI-related
-   * files so Frontend UX Design can be safely skipped when irrelevant.
-   */
-  private hasFrontendFilesInScope(files: string[]): boolean {
-    const frontendExtensionPattern = /\.(tsx|jsx|vue|svelte|astro|html|css|scss|sass|less|styl)$/i;
-    const frontendPathMarkers = [
-      "/components/",
-      "/app/components/",
-      "/dashboard/",
-      "/frontend/",
-      "/ui/",
-      "/styles/",
-      "/themes/",
-      "/design-system/",
-      "/design-tokens/",
-    ];
-    const frontendTokenFilenamePattern = /(^|\/)(tokens|theme)\.(ts|js|json|css)$/i;
-
-    return files.some((file) => {
-      const normalized = file.replace(/\\/g, "/");
-      const lowered = normalized.toLowerCase();
-      return frontendExtensionPattern.test(normalized)
-        || frontendPathMarkers.some((marker) => lowered.includes(marker))
-        || frontendTokenFilenamePattern.test(lowered);
-    });
   }
 
   /** Parse structured JSON verdict from workflow step output. */
@@ -13752,28 +13287,6 @@ You have access to the file system to review changes.${verdictBlock}`;
 
     executorLog.log(`${task.id}: retrying workflow step '${workflowStep.name}' with fallback ${fallback.provider}/${fallback.modelId} (label=${fallback.label})`);
     return runOnce(fallback.provider, fallback.modelId, "fallback");
-  }
-
-  private async auditReadonlyWorkflowStepPromptsOnce(taskId: string): Promise<void> {
-    if (this.readonlyWorkflowStepAuditDone) return;
-    this.readonlyWorkflowStepAuditDone = true;
-    const tokens = ["edit", "write", "commit", "stage", "modify"];
-    try {
-      const steps = await this.store.listWorkflowSteps();
-      for (const step of steps) {
-        if ((step.mode || "prompt") !== "prompt" || (step.toolMode || "readonly") !== "readonly") continue;
-        const prompt = step.prompt || "";
-        for (const token of tokens) {
-          const re = new RegExp(`\\b${token}\\b`, "i");
-          if (re.test(prompt)) {
-            executorLog.warn(`[workflow-step-audit] readonly step "${step.name}" prompt contains write-implying token "${token}" — re-review intended scope (no auto-migration performed)`);
-            break;
-          }
-        }
-      }
-    } catch (error) {
-      executorLog.warn(`${taskId}: failed readonly workflow-step prompt audit: ${formatError(error)}`);
-    }
   }
 
   private MAX_WORKTREE_RETRIES = 3;

@@ -83,8 +83,6 @@ export {
   type CodingSessionResult,
   type ReviewPrimitiveResult,
   type VerificationPrimitiveResult,
-  type WorkflowStepPrimitiveInput,
-  type WorkflowStepPrimitiveResult,
   type TransitionPrimitiveInput,
   type MergePrimitiveInput,
   type MergePrimitiveResult,

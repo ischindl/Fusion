@@ -178,11 +178,9 @@ export class WorkflowGraphTaskRunner {
     const wrappedSeams: WorkflowLegacySeams = {
       planning: (t, c) => ((sideEffectsRan = true), invoked.push("planning"), seams.planning(t, c)),
       execute: (t, c) => ((sideEffectsRan = true), invoked.push("execute"), seams.execute(t, c)),
-      workflowStep: (t, c) => {
-        sideEffectsRan = true;
-        invoked.push("workflow-step");
-        return seams.workflowStep?.(t, c) ?? Promise.resolve({ outcome: "success", value: "workflow-step-skipped" });
-      },
+      // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the `workflow-step`
+      // seam wrapper was removed; workflow gates run as graph optional-group / gate
+      // nodes that record into task.workflowStepResults (U2).
       review: (t, c) => ((sideEffectsRan = true), invoked.push("review"), seams.review(t, c)),
       merge: (t, c) => ((sideEffectsRan = true), invoked.push("merge"), seams.merge(t, c)),
       schedule: (t, c) => ((sideEffectsRan = true), invoked.push("schedule"), seams.schedule(t, c)),

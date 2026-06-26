@@ -791,71 +791,75 @@ describe("In-progress task resume after restart", () => {
     expect(store.logEntry).not.toHaveBeenCalledWith("FN-1473", "Resumed after engine restart");
   });
 
-  it("recoverCompletedTask() marks task failed then moves to in-review when workflow fails", async () => {
+  // U4 (KTD-2/KTD-5): the legacy `runWorkflowSteps` recovery path was deleted.
+  // recoverCompletedTask now RE-ENTERS the workflow graph (maybeExecuteWorkflowGraph),
+  // which records workflowStepResults and OWNS the in-review / back-for-fix
+  // transition. These two tests replace the old "runWorkflowSteps fails → bounce"
+  // test: one proves the graph re-entry seam, one proves the fail-closed guard.
+  it("recoverCompletedTask() re-enters the workflow graph (records results + owns the transition)", async () => {
+    const store = createMockStore();
+    const task = makeTask("FN-963", "in-progress", {
+      worktree: "/tmp/wt/FN-963",
+      steps: makeSteps("done"),
+    });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue([]);
+    // The graph is the sole executor; recovery delegates to it. Spy the graph
+    // entry to assert the re-entry seam without standing up a full graph runner
+    // (the graph's own recording/transition behavior is covered by
+    // builtin-coding-workflow-step-results.test.ts and the cutover backstop).
+    const graphEntry = vi
+      .spyOn(executor as any, "maybeExecuteWorkflowGraph")
+      .mockResolvedValue(true);
+
+    const recovered = await executor.recoverCompletedTask(task);
+
+    expect(recovered).toBe(true);
+    expect(graphEntry).toHaveBeenCalledTimes(1);
+    expect(graphEntry).toHaveBeenCalledWith(task);
+    // The graph owns the transition — recovery must NOT itself bounce or hand off.
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-963", "in-review");
+  });
+
+  it("recoverCompletedTask() fails closed (KTD-5) when the store lacks getTaskWorkflowSelection and the task has enabled workflow steps", async () => {
+    // createMockStore does NOT expose getTaskWorkflowSelection, so the workflow
+    // graph cannot resolve a selection — and the legacy runWorkflowSteps path was
+    // removed (U4). A task with an enabled pre-merge step MUST fail closed rather
+    // than silently hand off to review with no gate execution (the FN-7039 class).
     const store = createMockStore({
       getTask: vi.fn().mockResolvedValue(makeTaskDetail("FN-963", "in-progress", {
         worktree: "/tmp/wt/FN-963",
         steps: makeSteps("done"),
         enabledWorkflowSteps: ["wf-1"],
       })),
-      getWorkflowStep: vi.fn().mockResolvedValue({
-        id: "wf-1",
-        name: "Build",
-        mode: "script",
-        scriptName: "pnpm test",
-        phase: "pre-merge",
-      }),
     });
     const task = makeTask("FN-963", "in-progress", {
       worktree: "/tmp/wt/FN-963",
       steps: makeSteps("done"),
+      enabledWorkflowSteps: ["wf-1"],
     });
-
-    mockedExecSync.mockImplementation((command) => {
-      const cmd = String(command);
-      if (cmd === "pnpm test") {
-        throw new Error("tests failed");
-      }
-      return "" as any;
-    });
-
-    // Use fake timers to control the setTimeout in sendTaskBackForFix
-    vi.useFakeTimers();
 
     const executor = new TaskExecutor(store, "/tmp/test");
+    vi.spyOn(executor as any, "captureModifiedFiles").mockResolvedValue([]);
+    // Spy handleGraphFailure (the park-the-task seam) to assert the fail-closed
+    // branch fired with a clear reason — i.e. NOT a silent no-op.
+    const handleGraphFailure = vi
+      .spyOn(executor as any, "handleGraphFailure")
+      .mockResolvedValue(undefined);
+
     const recovered = await executor.recoverCompletedTask(task);
 
     expect(recovered).toBe(true);
-    // Task should be cleared and reset for retry (not failed + in-review)
-    expect(store.updateTask).toHaveBeenCalledWith("FN-963", {
-      status: null,
-      error: null,
-      sessionFile: null,
-      workflowStepRetries: 0,
-    });
-    // Should add a comment with failure feedback
-    expect(store.addTaskComment).toHaveBeenCalledWith(
-      "FN-963",
-      expect.stringContaining("Workflow step failed during recovery"),
-      "agent",
-    );
-    // Should reset all steps to pending
-    expect(store.updateStep).toHaveBeenCalledWith("FN-963", 0, "pending");
-
-    // Advance timers to trigger the setTimeout that moves task to todo then in-progress
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Task should move to todo then in-progress (not in-review). The
-    // workflow-rerun bounce passes `preserveWorktree: true` so the
-    // checkout doesn't briefly disappear during the hop.
-    expect(store.moveTask).toHaveBeenCalledWith(
-      "FN-963",
-      "todo",
-      expect.objectContaining({ preserveWorktree: true }),
-    );
-    expect(store.moveTask).toHaveBeenCalledWith("FN-963", "in-progress");
-
-    vi.useRealTimers();
+    expect(handleGraphFailure).toHaveBeenCalledTimes(1);
+    const failureArg = (handleGraphFailure.mock.calls[0] as unknown[])[1] as {
+      disposition: string;
+      reason: string;
+    };
+    expect(failureArg.disposition).toBe("failed");
+    expect(String(failureArg.reason)).toContain("workflow-selection-api-unavailable");
+    // Must NOT silently finalize to review as a success.
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-963", "in-review");
   });
 });
 

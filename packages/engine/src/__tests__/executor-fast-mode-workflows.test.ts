@@ -137,11 +137,11 @@ describe("fast mode workflow/runtime invariants", () => {
   // called. Fast mode is irrelevant to a bypassed group; the seam is simply gone.
   it("graph executor with builtin:coding selection bypasses the disabled browser-verification group", async () => {
     const { executor } = makeExecutorForTask(task({ executionMode: "fast", worktree: "/tmp/wt" }));
-    const runWorkflowSteps = vi.spyOn(executor as any, "runWorkflowSteps").mockResolvedValue(workflowResult());
+    // U4 (KTD-2): runWorkflowSteps + the workflow-step seam were removed; workflow
+    // gates run as graph optional-group nodes only.
     const seams = {
       planning: vi.fn(async () => ({ outcome: "success", value: "planned" })),
       execute: vi.fn(async () => ({ outcome: "success", value: "implemented" })),
-      workflowStep: (executor as any).createAuthoritativeWorkflowSeams({}).workflowStep,
       review: vi.fn(async () => ({ outcome: "success", value: "approved" })),
       merge: vi.fn(async () => ({ outcome: "success", value: "merged" })),
       schedule: vi.fn(async () => ({ outcome: "success", value: "scheduled" })),
@@ -161,7 +161,6 @@ describe("fast mode workflow/runtime invariants", () => {
     expect(result.visitedNodeIds).toContain("browser-verification");
     expect(result.visitedNodeIds).not.toContain("browser-verification::browser-verification-step");
     expect(result.visitedNodeIds).not.toContain("workflow-step");
-    expect(runWorkflowSteps).not.toHaveBeenCalled();
     expect(seams.review).toHaveBeenCalledTimes(1);
     expect(seams.merge).toHaveBeenCalledTimes(1);
   });
@@ -219,42 +218,11 @@ describe("fast mode workflow/runtime invariants", () => {
     expect(awaitInput).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    ["legacy seam", (executor: TaskExecutor, settings: any) => (executor as any).createAuthoritativeWorkflowSeams(settings).workflowStep(task({ id: "FN-6226" }), {})],
-    ["graph primitive", (executor: TaskExecutor, settings: any) => (executor as any).createAuthoritativeWorkflowPrimitives(settings).runWorkflowStep(
-      { run: { taskId: "FN-6226" }, node: { node: { id: "workflow-step" }, context: {} } },
-      task({ id: "FN-6226" }),
-      { phase: "pre-merge", worktreePath: "/tmp/wt" },
-    )],
-  ])("%s skips pre-merge workflow steps in fast mode", async (_label, invoke) => {
-    const { executor } = makeExecutorForTask(task({ executionMode: "fast", worktree: "/tmp/wt" }));
-    const runWorkflowSteps = vi.spyOn(executor as any, "runWorkflowSteps").mockResolvedValue(workflowResult());
-
-    const result = await invoke(executor, { experimentalFeatures: { workflowGraphExecutor: true } });
-
-    expect(result.outcome).toBe("success");
-    expect(result.value).toBe("workflow-step-skipped");
-    expect(runWorkflowSteps).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["legacy seam", (executor: TaskExecutor, settings: any) => (executor as any).createAuthoritativeWorkflowSeams(settings).workflowStep(task({ id: "FN-6226" }), {})],
-    ["graph primitive", (executor: TaskExecutor, settings: any) => (executor as any).createAuthoritativeWorkflowPrimitives(settings).runWorkflowStep(
-      { run: { taskId: "FN-6226" }, node: { node: { id: "workflow-step" }, context: {} } },
-      task({ id: "FN-6226" }),
-      { phase: "pre-merge", worktreePath: "/tmp/wt" },
-    )],
-  ])("%s runs pre-merge workflow steps for standard and default execution modes", async (_label, invoke) => {
-    for (const executionMode of ["standard", undefined]) {
-      const { executor } = makeExecutorForTask(task({ executionMode, worktree: "/tmp/wt" }));
-      const runWorkflowSteps = vi.spyOn(executor as any, "runWorkflowSteps").mockResolvedValue(workflowResult());
-
-      const result = await invoke(executor, { experimentalFeatures: { workflowGraphExecutor: true } });
-
-      expect(result.outcome).toBe("success");
-      expect(runWorkflowSteps).toHaveBeenCalledTimes(1);
-    }
-  });
+  // U4 (KTD-2): the legacy `workflow-step` seam and `runWorkflowStep` primitive
+  // were removed, so the two it.each blocks that drove them directly (fast-mode
+  // skip + standard-mode run) are gone. Fast-mode skip of workflow gates is now
+  // covered above by the custom-node tests ("skips custom %s nodes in fast mode")
+  // and by builtin-coding-workflow-step-results.test.ts (graph recording path).
 
   it("keeps fn_task_done mandatory while excluding fn_review_step in fast mode", async () => {
     mockedCreateFnAgent.mockImplementation(async (opts: any) => ({

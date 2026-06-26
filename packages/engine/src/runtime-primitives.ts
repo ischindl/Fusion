@@ -14,7 +14,6 @@ export type RuntimePrimitiveName =
   | "reset-step"
   | "review"
   | "verification"
-  | "workflow-step"
   | "transition"
   | "merge"
   | "abort"
@@ -80,18 +79,11 @@ export interface VerificationPrimitiveResult {
   stepName?: string;
 }
 
-export interface WorkflowStepPrimitiveInput {
-  phase: "pre-merge" | "post-merge";
-  stepId?: string;
-  worktreePath?: string;
-}
-
-export interface WorkflowStepPrimitiveResult {
-  allPassed: boolean;
-  revisionRequested?: boolean;
-  feedback?: string;
-  stepName?: string;
-}
+// FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the `runWorkflowStep`
+// primitive and its `WorkflowStepPrimitiveInput`/`WorkflowStepPrimitiveResult`
+// shapes were removed. Workflow quality gates run as the graph's own
+// optional-group / gate nodes which record into `task.workflowStepResults` (U2);
+// there is no dedicated workflow-step runtime primitive.
 
 export interface TransitionPrimitiveInput {
   column?: string;
@@ -178,12 +170,6 @@ export interface WorkflowRuntimePrimitives {
     task: TaskDetail,
     prepared: PreparedWorktree,
   ): Promise<RuntimePrimitiveResult<VerificationPrimitiveResult>>;
-
-  runWorkflowStep(
-    ctx: WorkflowPrimitiveContext,
-    task: TaskDetail,
-    input: WorkflowStepPrimitiveInput,
-  ): Promise<RuntimePrimitiveResult<WorkflowStepPrimitiveResult>>;
 
   updateSteps(
     ctx: WorkflowPrimitiveContext,

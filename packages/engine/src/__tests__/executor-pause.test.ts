@@ -2774,78 +2774,11 @@ describe("StepSessionExecutor integration", () => {
     expect(mockCleanup).toHaveBeenCalled();
   });
 
-  it("workflow steps run on success and block on failure", async () => {
-    const store = createStepSessionStore();
-
-    // Enable a workflow step
-    store.getTask.mockResolvedValue({
-      id: "FN-200",
-      title: "Step-session test task",
-      description: "Test task",
-      column: "in-progress",
-      dependencies: [],
-      steps: [
-        { name: "Step 0", status: "pending" },
-      ],
-      currentStep: 0,
-      log: [],
-      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      baseCommitSha: "abc123",
-      enabledWorkflowSteps: ["WS-001"],
-    });
-
-    store.getWorkflowStep.mockResolvedValue({
-      id: "WS-001",
-      name: "Test Workflow",
-      description: "Test",
-      mode: "script",
-      phase: "pre-merge",
-      scriptName: "test-script",
-      prompt: undefined,
-      enabled: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-
-    // Steps succeed, but workflow step will fail
-    mockExecuteAll.mockResolvedValue([
-      { stepIndex: 0, success: true, retries: 0 },
-    ]);
-
-    const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
-
-    // Use fake timers to control the setTimeout in sendTaskBackForFix
-    vi.useFakeTimers();
-
-    // Exhaust retries so workflow step failure is immediate
-    await executor.execute(createTaskWithSteps({ steps: [{ name: "Step 0", status: "pending" }], workflowStepRetries: 3, enabledWorkflowSteps: ["WS-001"] }));
-
-    // Should have called getWorkflowStep to look up the workflow step
-    expect(store.getWorkflowStep).toHaveBeenCalledWith("WS-001");
-    // With script mode and no scripts configured, the step should fail (script not found)
-    // Task should be sent back to in-progress for remediation, NOT call onError
-    expect(store.addTaskComment).toHaveBeenCalledWith(
-      "FN-200",
-      expect.stringContaining("Workflow step failed"),
-      "agent",
-    );
-    // onError should NOT be called (task is being retried, not permanently failed)
-    expect(onError).not.toHaveBeenCalled();
-
-    // Advance timers to trigger the setTimeout that moves task to todo then in-progress
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Task should move to todo then in-progress (not in-review). The
-    // workflow-rerun bounce flags preserveResumeState so the worktree and
-    // accumulated step progress survive the transient todo state.
-    expect(store.moveTask).toHaveBeenCalledWith("FN-200", "todo", { preserveResumeState: true, preserveWorktree: true });
-    expect(store.moveTask).toHaveBeenCalledWith("FN-200", "in-progress");
-
-    vi.useRealTimers();
-  });
+  // U4 (KTD-2): removed "workflow steps run on success and block on failure" —
+  // it drove the deleted legacy runWorkflowSteps loop via execute() on a minimal
+  // store (no getTaskWorkflowSelection). That path now fails closed (KTD-5), and
+  // the run-on-success / block-on-failure behavior is covered through the graph by
+  // builtin-coding-workflow-step-results.test.ts.
 
   it("onStepStart callback updates step status to in-progress", async () => {
     const store = createStepSessionStore();

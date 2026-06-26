@@ -99,15 +99,10 @@ function primitivesFromLegacySeams(seams: WorkflowLegacySeams): WorkflowRuntimeP
       return { ...result, data: { verdict: result.outcome === "success" ? "APPROVE" : "REVISE" } };
     },
     runVerification: async () => ({ outcome: "success", data: { verdict: "skipped" } }),
-    runWorkflowStep: async (ctx, task) => {
-      const result = await seams.workflowStep?.(task, ctx.node.context ?? {});
-      return {
-        outcome: result?.outcome ?? "success",
-        value: result?.value ?? "workflow-step-skipped",
-        contextPatch: result?.contextPatch,
-        data: { allPassed: result?.outcome !== "failure" },
-      };
-    },
+    // FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the `runWorkflowStep`
+    // primitive + `workflow-step` seam were removed. Workflow gates run as graph
+    // optional-group / gate nodes that record into task.workflowStepResults (U2);
+    // this driver no longer adapts a workflow-step seam.
     updateSteps: async (_ctx, _task, steps) => ({ outcome: "success", data: { count: steps.length } }),
     transitionTask: async (ctx, task) => seams.schedule(task, ctx.node.context ?? {}),
     requestMerge: async (ctx, task) => {

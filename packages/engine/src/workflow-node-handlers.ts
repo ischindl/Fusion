@@ -11,10 +11,16 @@ import {
 } from "./runtime-primitives.js";
 import { runWorkflowMergeAttemptNode } from "./workflow-merge-nodes.js";
 
+// FNXC:WorkflowExecution 2026-06-25-00:00: U4 (KTD-2) — the `workflow-step` seam
+// was removed. Workflow quality gates run as the graph's own optional-group /
+// gate nodes (builtin:coding replaced its `workflow-step` seam node with
+// optional-group nodes) which record into `task.workflowStepResults` (U2). An IR
+// node still declaring `config.seam: "workflow-step"` is no longer a recognized
+// seam: `resolveSeamName` throws a WorkflowIrError for it (fails loud, never a
+// silent no-op).
 export type WorkflowSeamName =
   | "planning"
   | "execute"
-  | "workflow-step"
   | "review"
   | "merge"
   | "schedule"
@@ -26,7 +32,6 @@ export interface WorkflowLegacySeams {
    *  custom planning behavior is expressed as a custom prompt node. */
   planning: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
   execute: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
-  workflowStep?: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
   review: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
   merge: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
   schedule: (task: TaskDetail, context: Record<string, unknown>) => Promise<WorkflowNodeResult>;
@@ -205,7 +210,6 @@ export function resolveSeamName(node: { config?: Record<string, unknown> }): Wor
   if (
     seam === "planning" ||
     seam === "execute" ||
-    seam === "workflow-step" ||
     seam === "review" ||
     seam === "merge" ||
     seam === "schedule" ||
@@ -261,11 +265,6 @@ export function createPromptLikeHandler(
       // IS the seam node, so its declared column drives the binding. (Other seams
       // — planning/review/merge/schedule — stamp it too; only execute reads it.)
       context.context[SEAM_GOVERNING_NODE_CONTEXT_KEY] = node.id;
-      if (seam === "workflow-step") {
-        return seams.workflowStep
-          ? seams.workflowStep(context.task, context.context)
-          : { outcome: "success", value: "workflow-step-skipped" };
-      }
       return seams[seam]!(context.task, context.context);
     }
     if (!runCustomNode) {
@@ -351,16 +350,6 @@ export function createPrimitivePromptLikeHandler(
             "workflow:worktree-path": prepared.data.worktreePath,
           },
         };
-      }
-      if (seam === "workflow-step") {
-        const worktreePath = typeof context.context["workflow:worktree-path"] === "string"
-          ? context.context["workflow:worktree-path"]
-          : undefined;
-        const result = await primitives.runWorkflowStep(primitiveCtx, context.task, {
-          phase: "pre-merge",
-          worktreePath,
-        });
-        return { outcome: result.outcome, value: result.value, contextPatch: result.contextPatch };
       }
       if (seam === "review") {
         const result = await primitives.runReview(primitiveCtx, context.task, { type: "code" });
@@ -965,7 +954,7 @@ export function createNoopLegacySeams(): WorkflowLegacySeams {
   return {
     planning: success,
     execute: success,
-    workflowStep: success,
+    // U4 (KTD-2): no `workflow-step` seam — workflow gates run as graph nodes.
     review: success,
     merge: success,
     schedule: success,
