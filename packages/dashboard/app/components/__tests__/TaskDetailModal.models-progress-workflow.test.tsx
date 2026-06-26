@@ -693,6 +693,40 @@ describe("TaskDetailModal", () => {
       expect(segments[3].classList.contains("step-progress-segment--skipped")).toBe(true);
     });
 
+    it("renders a segment for each ENABLED workflow step, not only implementation steps", () => {
+      // Regression: the detail Progress bar must include enabled optional workflow steps.
+      const { container } = render(
+        <TaskDetailModal
+          initialTab="definition"
+          task={makeTask({
+            steps: [
+              { name: "Step 1", status: "done" },
+              { name: "Step 2", status: "pending" },
+            ],
+            enabledWorkflowSteps: ["code-review", "browser-verification"],
+            workflowStepResults: [
+              { workflowStepId: "code-review", workflowStepName: "Code Review", status: "passed" },
+            ],
+          })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const segments = container.querySelectorAll(".step-progress-segment");
+      // 2 impl steps + 2 enabled workflow steps = 4 segments.
+      expect(segments).toHaveLength(4);
+      const workflowSegments = container.querySelectorAll(".step-progress-segment--source-workflow");
+      expect(workflowSegments).toHaveLength(2);
+      // code-review ran (passed → unified "done"); browser-verification enabled-not-run (pending).
+      expect(segments[2].classList.contains("step-progress-segment--done")).toBe(true);
+      expect(segments[3].classList.contains("step-progress-segment--pending")).toBe(true);
+    });
+
     it("segments have correct inline background colors based on status", () => {
       const { container } = render(
         <TaskDetailModal

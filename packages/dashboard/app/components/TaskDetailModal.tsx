@@ -58,6 +58,7 @@ import { resolveEffectiveGithubRepoDefault } from "./githubTracking";
 import type { TFunction } from "i18next";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
 import { getInReviewStallCopy, shouldShowInReviewStallBadge } from "../utils/inReviewStallCopy";
+import { getUnifiedTaskProgress } from "../utils/taskProgress";
 import { getStalePausedReviewCopy, shouldShowStalePausedReviewBadge } from "../utils/stalePausedReviewCopy";
 import { getTaskAgeStalenessCopy } from "../utils/taskAgeStalenessCopy";
 import { findInReviewStallLogEntry, IN_REVIEW_STALL_LOG_REGEX } from "../utils/findInReviewStallLogEntry";
@@ -117,11 +118,25 @@ function toTaskChatModelInfo(model: ModelSelection): { provider: string; modelId
   return model.modelId ? { provider: model.provider, modelId: model.modelId } : { provider: model.provider };
 }
 
+/*
+FNXC:WorkflowStepResults 2026-06-26-18:00:
+The detail Progress bar renders the UNIFIED step model (implementation steps + enabled
+workflow steps), so its segment colors must cover the workflow-step statuses too:
+`passed`→done/success, `failed`→error (blocking gate), `advisory_failure`→warning (amber,
+non-blocking), `running`→in-progress, plus the implementation statuses. Colors mirror the
+TaskCard step dots so the two surfaces read identically.
+*/
 function getStepStatusColor(status: string): string {
   switch (status) {
     case "done":
+    case "passed":
       return "var(--color-success)";
+    case "failed":
+      return "var(--color-error-dark)";
+    case "advisory_failure":
+      return "var(--ws-warning)";
     case "in-progress":
+    case "running":
       return "var(--in-progress)";
     case "skipped":
       return "var(--text-dim)";
@@ -553,6 +568,18 @@ export function TaskDetailContent({
         : task.overlapBlockedBy === undefined ? fullDetail.overlapBlockedBy : task.overlapBlockedBy,
     } as TaskDetail)
     : ({ ...task, prompt: "" } as TaskDetail);
+  /*
+  FNXC:WorkflowStepResults 2026-06-26-18:00:
+  The detail Progress bar must show a segment for each ENABLED workflow step, not only
+  implementation steps. Drive it from the same unified model the cards use
+  (getUnifiedTaskProgress: task.steps + enabledWorkflowSteps, statuses from
+  task.workflowStepResults) so an enabled optional step (e.g. "Code Review") gets its own
+  segment even before it runs (pending).
+  */
+  const unifiedProgress = useMemo(
+    () => getUnifiedTaskProgress(workingTask),
+    [workingTask.steps, workingTask.enabledWorkflowSteps, workingTask.workflowStepResults],
+  );
   const canRetryTask =
     task.status === "failed" ||
     task.status === "stuck-killed" ||
@@ -3637,20 +3664,20 @@ export function TaskDetailContent({
           </div>
           <div className="detail-section detail-step-progress">
             <h4>{t("taskDetail.progress.heading", "Progress")}</h4>
-            {workingTask.steps && workingTask.steps.length > 0 ? (
+            {unifiedProgress.total > 0 ? (
               <div className="step-progress-wrapper">
                 <div className="step-progress-bar">
-                  {workingTask.steps.map((step, index) => (
+                  {unifiedProgress.items.map((item) => (
                     <div
-                      key={index}
-                      className={`step-progress-segment step-progress-segment--${step.status}`}
-                      data-tooltip={`${step.name} (${step.status})`}
-                      style={{ backgroundColor: getStepStatusColor(step.status) }}
+                      key={item.id}
+                      className={`step-progress-segment step-progress-segment--${item.status} step-progress-segment--source-${item.source}`}
+                      data-tooltip={`${item.name} (${item.source === "workflow" ? "workflow step · " : ""}${item.status})`}
+                      style={{ backgroundColor: getStepStatusColor(item.status) }}
                     />
                   ))}
                 </div>
                 <span className="step-progress-label">
-                  {t("taskDetail.progress.stepCount", { count: workingTask.steps.filter(s => s.status === "done").length, total: workingTask.steps.length, defaultValue_one: "{{count}}/{{total}} step", defaultValue_other: "{{count}}/{{total}} steps" })}
+                  {t("taskDetail.progress.stepCount", { count: unifiedProgress.completed, total: unifiedProgress.total, defaultValue_one: "{{count}}/{{total}} step", defaultValue_other: "{{count}}/{{total}} steps" })}
                 </span>
               </div>
             ) : (
