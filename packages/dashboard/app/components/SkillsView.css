@@ -192,7 +192,17 @@ The search controls at the top of the Skills list need breathing room below the 
   flex: 1;
 }
 
+/*
+FNXC:Skills 2026-06-25-00:00:
+Left Discovered Skills rows must keep compact, intentional text sizing and truncate every text line with ellipsis so long names, paths, or sources never force horizontal scroll in wide clamped, narrow dock, or mobile list layouts. The chevron remains fixed-size while only the skill-name text truncates.
+*/
 .skills-view-item-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: 100%;
+  min-width: 0;
+  font-size: 0.9em;
   font-weight: 500;
   color: var(--text);
   overflow: hidden;
@@ -200,7 +210,20 @@ The search controls at the top of the Skills list need breathing room below the 
   white-space: nowrap;
 }
 
+.skills-view-item-name svg {
+  flex-shrink: 0;
+}
+
+.skills-view-item-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .skills-view-item-path {
+  max-width: 100%;
+  font-size: 0.85em;
   color: var(--text-muted);
   font-family: var(--font-mono);
   overflow: hidden;
@@ -209,9 +232,14 @@ The search controls at the top of the Skills list need breathing room below the 
 }
 
 .skills-view-item-source {
+  max-width: 100%;
+  font-size: 0.85em;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: calc(var(--space-xs) / 8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Toggle switch */

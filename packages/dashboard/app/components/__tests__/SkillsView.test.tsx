@@ -607,6 +607,70 @@ describe("SkillsView", () => {
       });
     });
 
+    it("declares ellipsis truncation for long and short discovered-skill row text", async () => {
+      const longToken = "skill".repeat(30);
+      const longSkill: DiscoveredSkill = {
+        id: "github::skills/" + longToken,
+        name: longToken,
+        path: "/project/.fusion/skills/" + longToken,
+        relativePath: "skills/" + longToken + "/nested/" + longToken,
+        enabled: true,
+        metadata: {
+          source: "github.com/example/" + longToken + "/" + longToken,
+          scope: "project",
+          origin: "package",
+        },
+      };
+      const emptyMetadataSkill = {
+        id: "local::skills/empty-metadata",
+        name: "empty-metadata-skill",
+        path: "/project/.fusion/skills/empty-metadata",
+        relativePath: "",
+        enabled: false,
+        metadata: {
+          scope: "project",
+          origin: "top-level",
+        },
+      } as unknown as DiscoveredSkill;
+      mockFetchDiscoveredSkills.mockResolvedValue([
+        mockDiscoveredSkills[0],
+        longSkill,
+        emptyMetadataSkill,
+      ]);
+
+      render(<SkillsView addToast={mockAddToast} onClose={onClose} />);
+
+      await waitFor(() => {
+        expect(screen.getByText(longSkill.name)).toBeTruthy();
+        expect(screen.getByText("test-skill")).toBeTruthy();
+        expect(screen.getByText("empty-metadata-skill")).toBeTruthy();
+      });
+
+      const assertTruncation = (element: Element | null) => {
+        expect(element).toBeTruthy();
+        const styles = getComputedStyle(element as Element);
+        expect(styles.overflow).toBe("hidden");
+        expect(styles.textOverflow).toBe("ellipsis");
+        expect(styles.whiteSpace).toBe("nowrap");
+      };
+
+      const longRow = screen.getByText(longSkill.name).closest(".skills-view-item");
+      const shortRow = screen.getByText("test-skill").closest(".skills-view-item");
+      const emptyMetadataRow = screen.getByText("empty-metadata-skill").closest(".skills-view-item");
+
+      assertTruncation(longRow?.querySelector(".skills-view-item-name-text") ?? null);
+      assertTruncation(longRow?.querySelector(".skills-view-item-path") ?? null);
+      assertTruncation(longRow?.querySelector(".skills-view-item-source") ?? null);
+      assertTruncation(shortRow?.querySelector(".skills-view-item-name-text") ?? null);
+      assertTruncation(shortRow?.querySelector(".skills-view-item-path") ?? null);
+      assertTruncation(shortRow?.querySelector(".skills-view-item-source") ?? null);
+
+      expect(longRow?.querySelector(".skills-view-item-name svg")).toBeTruthy();
+      expect(longRow?.querySelector(".skills-view-item-toggle")).toBeTruthy();
+      expect(emptyMetadataRow?.querySelector(".skills-view-item-path")?.textContent).toBe("");
+      expect(emptyMetadataRow?.querySelector(".skills-view-item-source")?.textContent).toBe("");
+    });
+
     it("renders toggle sliders with .skills-view-toggle-slider class", async () => {
       render(<SkillsView addToast={mockAddToast} onClose={onClose} />);
 

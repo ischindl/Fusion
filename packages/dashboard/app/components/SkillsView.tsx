@@ -563,7 +563,7 @@ export function SkillsView({ projectId, addToast, onClose }: SkillsViewProps) {
                       <div className="skills-view-item-info">
                         <span className="skills-view-item-name">
                           {isSelected ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          {skill.name}
+                          <span className="skills-view-item-name-text">{skill.name}</span>
                         </span>
                         <span className="skills-view-item-path">{skill.relativePath}</span>
                         <span className="skills-view-item-source">{skill.metadata.source}</span>
