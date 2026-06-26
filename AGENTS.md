@@ -131,6 +131,12 @@ pnpm verify:workspace  # deep opt-in verification (lint -> test:full -> build); 
 - Do not add new real-network calls, real polling loops, or mock-the-world shells when a narrower seam exists.
 - Use the testing taxonomy in `docs/testing.md` when deciding trim vs keep.
 
+### Standing Rule: Scope Verification to Changed Files — Do Not Use `allowFullSuite`
+
+- When verifying via `fn_run_verification`, **do not pass `allowFullSuite: true` unless absolutely necessary.** It is a last-resort escape hatch that runs a marathon command (root `pnpm test`, `pnpm test:full`, `verify:workspace`, whole-package tests, repeat loops) far in excess of what the change requires, and it is the main way verification balloons past its budget.
+- Default to a **file-scoped** command targeting only the tests affected by the diff, e.g. `pnpm --filter @fusion/<pkg> exec vitest run src/path/to/changed.test.ts --silent=passed-only --reporter=dot`. The marathon soft-cap exists to push you toward this.
+- `allowFullSuite: true` is justified only for a genuinely full run with no targetable test set (e.g. a cross-cutting infra change) — and then state the reason. The thin merge gate (`pnpm test:gate`) is the cross-cutting safety net, not per-task verification.
+
 ### Standing Rule: Fix the Invariant, Not the Repro (FN-5893)
 
 - When fixing a bug, the regression test must assert the general invariant across ALL known surfaces — not only the single reported reproduction.

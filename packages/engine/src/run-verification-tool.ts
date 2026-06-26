@@ -367,7 +367,7 @@ export const runVerificationParams = Type.Object({
   allowFullSuite: Type.Optional(
     Type.Boolean({
       description:
-        "Explicit opt-in for marathon verification commands such as pnpm test, pnpm test:full, verify:workspace, whole-package tests, or repeat loops. Default: false; still respects the hard timeout.",
+        "DO NOT SET THIS unless absolutely necessary. It is a last-resort opt-in for marathon commands (`pnpm test`, `pnpm test:full`, `verify:workspace`, whole-package tests, repeat loops) that run far more than the change requires and make verification slow. Default false — keep it false. First scope verification to the changed files (e.g. `pnpm --filter <pkg> exec vitest run src/path/to/changed.test.ts --silent=passed-only --reporter=dot`); the soft cap exists to push you toward that. Only set true when a genuinely full run is unavoidable (e.g. a cross-cutting infra change with no targetable test set), and say why. Still respects the hard timeout.",
     }),
   ),
   expectFailure: Type.Optional(
