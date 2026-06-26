@@ -78,6 +78,7 @@ describe("filterTasksByGraphWorkflowSelection", () => {
     expect(filterTasksByGraphWorkflowSelection(tasks, "project-graph", selection).map((task) => task.id)).toEqual([
       "FN-default",
       "FN-unassigned",
+      "FN-unknown",
     ]);
     expect(filterTasksByGraphWorkflowSelection(tasks, "project-graph", { ...selection, selectedWorkflow: CUSTOM_WORKFLOW }).map((task) => task.id)).toEqual([
       "FN-review",

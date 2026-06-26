@@ -30,9 +30,16 @@ export function filterTasksByGraphWorkflowSelection<T extends { id: string }>(
   selection: GraphWorkflowSelection | null,
 ): T[] {
   if (!projectId || !selection) return tasks;
+  const workflowIds = new Set(selection.boardWorkflows.workflows.map((workflow) => workflow.id));
   return tasks.filter((task) => {
-    const assignedWorkflowId = selection.boardWorkflows.taskWorkflowIds[task.id]
-      ?? selection.boardWorkflows.defaultWorkflowId;
+    const rawAssignedWorkflowId = selection.boardWorkflows.taskWorkflowIds[task.id];
+    /*
+    FNXC:GraphWorkflowSelection 2026-06-26-03:48:
+    Graph task scoping treats stale taskWorkflowIds entries that reference deleted workflows as default-workflow assignments. The board-workflows payload can outlive workflow deletion across cache/remount boundaries, so filtering must not hide those tasks from every workflow view.
+    */
+    const assignedWorkflowId = rawAssignedWorkflowId && workflowIds.has(rawAssignedWorkflowId)
+      ? rawAssignedWorkflowId
+      : selection.boardWorkflows.defaultWorkflowId;
     return assignedWorkflowId === selection.selectedWorkflow.id;
   });
 }

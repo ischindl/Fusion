@@ -37,8 +37,9 @@ describe("useBoardWorkflows", () => {
     };
   }
 
-  it("initial fetch populates workflow options and selects the default", async () => {
-    const deps = makeDeps(() => Promise.resolve(makePayload()));
+  it("initial fetch populates workflow options, writes cache, and selects the default", async () => {
+    const payload = makePayload();
+    const deps = makeDeps(() => Promise.resolve(payload));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
 
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
@@ -47,7 +48,56 @@ describe("useBoardWorkflows", () => {
     // Default sorts first.
     expect(result.current.workflowOptions[0].id).toBe("wf-a");
     expect(result.current.selectedWorkflow?.id).toBe("wf-a");
-    expect(deps.writeBoardWorkflowsCache).toHaveBeenCalledWith("p1", expect.objectContaining({ flagEnabled: true }));
+    expect(deps.writeBoardWorkflowsCache).toHaveBeenCalledWith("p1", payload);
+  });
+
+  it("hydrates board workflows synchronously from cache before refetch resolves", () => {
+    const cachedPayload = makePayload({
+      defaultWorkflowId: "wf-b",
+      workflows: [
+        { id: "wf-a", name: "Alpha", columns: [] },
+        { id: "wf-b", name: "Beta", columns: [] },
+      ],
+    });
+    const deps = makeDeps(() => new Promise<BoardWorkflowsPayload>(() => {}));
+    deps.readBoardWorkflowsCache.mockReturnValue(cachedPayload);
+
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+
+    expect(deps.readBoardWorkflowsCache).toHaveBeenCalledWith("p1");
+    expect(result.current.boardWorkflows).toEqual(cachedPayload);
+    expect(result.current.workflowOptions.map((workflow) => workflow.id)).toEqual(["wf-b", "wf-a"]);
+    expect(result.current.selectedWorkflow?.id).toBe("wf-b");
+    expect(deps.fetchBoardWorkflows).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-hydrates per-project cache entries when the project changes", async () => {
+    const projectOnePayload = makePayload({ defaultWorkflowId: "wf-a" });
+    const projectTwoPayload = makePayload({
+      defaultWorkflowId: "wf-c",
+      workflows: [{ id: "wf-c", name: "Gamma", columns: [] }],
+    });
+    const deps = makeDeps(() => new Promise<BoardWorkflowsPayload>(() => {}));
+    deps.readBoardWorkflowsCache.mockImplementation((projectId?: string) => {
+      if (projectId === "p1") return projectOnePayload;
+      if (projectId === "p2") return projectTwoPayload;
+      return null;
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useBoardWorkflows({ projectId, ...deps }),
+      { initialProps: { projectId: "p1" } },
+    );
+
+    expect(result.current.selectedWorkflow?.id).toBe("wf-a");
+
+    rerender({ projectId: "p2" });
+
+    await waitFor(() => expect(result.current.boardWorkflows).toEqual(projectTwoPayload));
+    expect(result.current.workflowOptions.map((workflow) => workflow.id)).toEqual(["wf-c"]);
+    expect(result.current.selectedWorkflow?.id).toBe("wf-c");
+    expect(deps.readBoardWorkflowsCache).toHaveBeenCalledWith("p1");
+    expect(deps.readBoardWorkflowsCache).toHaveBeenCalledWith("p2");
   });
 
   it("stale-response guard drops an out-of-order response", async () => {
@@ -80,13 +130,88 @@ describe("useBoardWorkflows", () => {
 
   it("an SSE workflow event re-fetches", async () => {
     const deps = makeDeps(() => Promise.resolve(makePayload()));
-    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+    renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
 
     await waitFor(() => expect(deps.fetchBoardWorkflows).toHaveBeenCalledTimes(1));
     expect(typeof subscribeHandlers["workflow:updated"]).toBe("function");
 
     await act(async () => { subscribeHandlers["workflow:updated"](); });
     expect(deps.fetchBoardWorkflows).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to the default workflow when the selected workflow is deleted", async () => {
+    let payload = makePayload();
+    const deps = makeDeps(() => Promise.resolve(payload));
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+
+    await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-a"));
+    act(() => { result.current.setSelectedWorkflowId("wf-b"); });
+    await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-b"));
+
+    payload = makePayload({ workflows: [{ id: "wf-a", name: "Alpha", columns: [] }] });
+    await act(async () => { result.current.refreshBoardWorkflows(); });
+
+    await waitFor(() => {
+      expect(result.current.selectedWorkflow?.id).toBe("wf-a");
+      expect(result.current.selectedWorkflowId).toBe("wf-a");
+    });
+  });
+
+  it("falls back to the first workflow when the default workflow is absent", async () => {
+    let payload = makePayload();
+    const deps = makeDeps(() => Promise.resolve(payload));
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+
+    await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-a"));
+    act(() => { result.current.setSelectedWorkflowId("wf-b"); });
+    await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-b"));
+
+    payload = makePayload({
+      defaultWorkflowId: "wf-missing",
+      workflows: [{ id: "wf-c", name: "Gamma", columns: [] }],
+    });
+    await act(async () => { result.current.refreshBoardWorkflows(); });
+
+    await waitFor(() => {
+      expect(result.current.selectedWorkflow?.id).toBe("wf-c");
+      expect(result.current.selectedWorkflowId).toBe("wf-c");
+    });
+  });
+
+  it("resets selection when workflow mode turns off", async () => {
+    let payload = makePayload();
+    const deps = makeDeps(() => Promise.resolve(payload));
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+
+    await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-a"));
+    act(() => { result.current.setSelectedWorkflowId("wf-b"); });
+    await waitFor(() => expect(result.current.selectedWorkflowId).toBe("wf-b"));
+
+    payload = makePayload({ flagEnabled: false, workflows: [] });
+    await act(async () => { result.current.refreshBoardWorkflows(); });
+
+    await waitFor(() => {
+      expect(result.current.workflowMode).toBe(false);
+      expect(result.current.selectedWorkflow).toBeNull();
+      expect(result.current.selectedWorkflowId).toBeNull();
+    });
+  });
+
+  it("keeps selected workflow state isolated per hook consumer", async () => {
+    const depsOne = makeDeps(() => Promise.resolve(makePayload()));
+    const depsTwo = makeDeps(() => Promise.resolve(makePayload()));
+
+    const first = renderHook(() => useBoardWorkflows({ projectId: "p1", ...depsOne }));
+    const second = renderHook(() => useBoardWorkflows({ projectId: "p1", ...depsTwo }));
+
+    await waitFor(() => expect(first.result.current.selectedWorkflow?.id).toBe("wf-a"));
+    await waitFor(() => expect(second.result.current.selectedWorkflow?.id).toBe("wf-a"));
+
+    act(() => { first.result.current.setSelectedWorkflowId("wf-b"); });
+
+    await waitFor(() => expect(first.result.current.selectedWorkflow?.id).toBe("wf-b"));
+    expect(second.result.current.selectedWorkflow?.id).toBe("wf-a");
+    expect(second.result.current.selectedWorkflowId).toBe("wf-a");
   });
 
   it("unmount removes visibility/focus listeners and unsubscribes from SSE", async () => {
