@@ -274,10 +274,14 @@ Tablet viewports inherit the base tab rule because AgentDetailView has only a mo
 
 FNXC:AgentDetailView 2026-06-21-11:03:
 Agent-detail tabs must be non-shrinking flex children so the overflow strip develops real horizontal scroll on narrow mobile viewports instead of squashing Dashboard / Logs / Mail / Skills / Settings into the available width (FN-6865).
+
+FNXC:AgentDetailView 2026-06-26-01:00:
+`touch-action` is non-inherited, so the tab buttons themselves are the touch targets that must opt into pan-x; the FN-6450/FN-6865 container-only opt-in still left button touches under the global mobile `* { touch-action: pan-y; }` lock. Mirror the FN-7048 task-detail fix for FN-7052 without changing tab layout or labels.
 */
 .agent-detail-tab {
   display: flex;
   flex: 0 0 auto;
+  touch-action: pan-x pan-y;
   align-items: center;
   gap: var(--space-xs);
   padding: calc(var(--space-sm) + var(--space-xs) * 0.5) var(--space-md);
@@ -1834,6 +1838,7 @@ Agent-detail tabs must be non-shrinking flex children so the overflow strip deve
   .agent-detail-tab {
     padding: var(--space-md) calc(var(--space-md) + var(--space-xs) * 0.5);
     font-size: 0.875rem;
+    touch-action: pan-x pan-y;
     white-space: nowrap;
     min-height: calc(var(--space-lg) + var(--space-md) + var(--space-xs));
   }

@@ -66,6 +66,7 @@ describe("AgentDetailView mobile scroll regression (FN-4231)", () => {
     expect(tabsStyle.touchAction).toBe("pan-x pan-y");
     expect(tabsStyle.touchAction).toContain("pan-x");
     expect(tabsStyle.overflowX).toBe("auto");
+    expect(tabStyle.touchAction).toContain("pan-x");
     expect(tabStyle.flexShrink).toBe("0");
   });
 
@@ -84,9 +85,12 @@ describe("AgentDetailView mobile scroll regression (FN-4231)", () => {
     const tabsEl = document.querySelector(".agent-detail-tabs") as HTMLElement;
     const tabEl = document.querySelector(".agent-detail-tab") as HTMLElement;
 
+    const tabStyle = window.getComputedStyle(tabEl);
+
     expect(window.getComputedStyle(tabsEl).overflowX).toBe("auto");
-    expect(window.getComputedStyle(tabEl).whiteSpace).toBe("nowrap");
-    expect(window.getComputedStyle(tabEl).flexShrink).toBe("0");
+    expect(tabStyle.touchAction).toContain("pan-x");
+    expect(tabStyle.whiteSpace).toBe("nowrap");
+    expect(tabStyle.flexShrink).toBe("0");
   });
 
   it("keeps tab labels readable across tablet and mobile states (FN-6728)", async () => {
