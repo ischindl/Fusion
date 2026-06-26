@@ -22,7 +22,7 @@ It documents only behavior implemented in the current codebase:
 ## 1.1 General requirements
 
 - Remote Access is **global-scoped** (`GlobalSettings.remoteAccess` in `packages/core/src/types.ts`).
-- Configure it in dashboard settings (Remote tab) or via `PUT /api/settings/global` or `PUT /api/remote/settings`.
+- Configure it in dashboard settings (Remote Access tab, always visible) or via `PUT /api/settings/global` or `PUT /api/remote/settings`.
 - A provider must be selected (`remoteAccess.activeProvider`) before tunnel start.
 - Start/stop is always manual through `/api/remote/tunnel/start` and `/api/remote/tunnel/stop`.
 

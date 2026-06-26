@@ -779,6 +779,7 @@ See also:
 ### Remote Access settings (global-scoped)
 
 Remote access settings are global-only (stored in `~/.fusion/settings.json`), not project-scoped.
+The Settings → Remote Access section is always visible; starting a tunnel still requires `remoteAccess.enabled`, a selected provider, and provider-specific prerequisites.
 The canonical persisted shape is a nested `remoteAccess` object.
 
 Use **[Remote Access runbook](./remote-access.md)** for setup prerequisites (Tailscale/Cloudflare), tokenized login-link security caveats, and operational troubleshooting. Keep this section as a schema reference.

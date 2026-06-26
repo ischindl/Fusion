@@ -272,7 +272,6 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 const KNOWN_EXPERIMENTAL_FEATURES: Record<string, string> = {
   insights: "Insights",
   memoryView: "Memory Editor",
-  remoteAccess: "Remote Access",
   skillsView: "Skills View",
   nodesView: "Nodes View",
   devServerView: "Dev Server",
@@ -304,12 +303,16 @@ Right Dock Panel is no longer experimental: keep honoring the dock as always-on 
 
 FNXC:SettingsExperimental 2026-06-23-01:31:
 Chat Rooms, Goals, Memory, Insights, Skills, and Todo graduated from Experimental. Hide stale persisted flags so users cannot accidentally disable now-default dashboard surfaces during upgrades.
+
+FNXC:SettingsExperimental 2026-06-26-00:00:
+Remote Access graduated from Experimental — section is always available; stale persisted `remoteAccess` flags are hidden so upgrades cannot disable it.
 */
 const HIDDEN_EXPERIMENTAL_FEATURE_KEYS = new Set<string>([
   "chatRooms",
   "goalsView",
   "insights",
   "memoryView",
+  "remoteAccess",
   "roadmap",
   "rightDock",
   "skillsView",
@@ -816,14 +819,9 @@ export function SettingsModal({
 
   const { nodes } = useNodes();
   const experimentalFeatures = form.experimentalFeatures ?? {};
-  const remoteAccessEnabled = isExperimentalFeatureEnabled(experimentalFeatures, "remoteAccess");
   const researchViewEnabled = isExperimentalFeatureEnabled(experimentalFeatures, "researchView");
   const evalsViewEnabled = isExperimentalFeatureEnabled(experimentalFeatures, "evalsView");
   const visibleSections = SETTINGS_SECTIONS.filter((section) => {
-    if (section.id === "remote") {
-      return remoteAccessEnabled;
-    }
-
     if (section.id === "research-global" || section.id === "research-project") {
       return researchViewEnabled;
     }
@@ -842,11 +840,6 @@ export function SettingsModal({
   const activeSectionScope = visibleSections.find((s) => s.id === activeSection)?.scope;
 
   useEffect(() => {
-    if (activeSection === "remote" && !remoteAccessEnabled) {
-      setActiveSection(firstVisibleSectionId);
-      return;
-    }
-
     if ((activeSection === "research-global" || activeSection === "research-project") && !researchViewEnabled) {
       setActiveSection(firstVisibleSectionId);
       return;
@@ -860,7 +853,7 @@ export function SettingsModal({
     if (!visibleSections.some((section) => section.id === activeSection)) {
       setActiveSection(firstVisibleSectionId);
     }
-  }, [activeSection, remoteAccessEnabled, researchViewEnabled, evalsViewEnabled, firstVisibleSectionId, visibleSections]);
+  }, [activeSection, researchViewEnabled, evalsViewEnabled, firstVisibleSectionId, visibleSections]);
 
   // Auth state (independent of the settings save flow)
   const [authProviders, setAuthProviders] = useState<AuthProvider[]>([]);

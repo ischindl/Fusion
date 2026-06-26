@@ -220,6 +220,19 @@ describe("SettingsModal", () => {
       await user.click(summary);
     };
 
+    it("opens the Remote Access section when the legacy experimental flag is absent", async () => {
+      mockFetchSettings.mockResolvedValue({
+        ...defaultSettings,
+        experimentalFeatures: {},
+      });
+
+      renderModal();
+      await waitForSettingsModalReady();
+      await openRemoteSection();
+
+      expect(screen.getByRole("heading", { name: "Remote Access" })).toBeInTheDocument();
+    });
+
     describe("with default Remote render", () => {
       beforeEach(async () => {
         renderModal();

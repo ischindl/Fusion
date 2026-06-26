@@ -1388,53 +1388,59 @@ describe("SettingsModal", () => {
     });
 
     describe("section visibility behind experimental flags", () => {
-      it("hides Remote Access nav item when experimentalFeatures.remoteAccess is falsy", async () => {
-        mockFetchSettings.mockResolvedValue({
-          ...defaultSettings,
-          experimentalFeatures: {},
-        });
-
-        renderModal();
-        await waitForSettingsModalReady();
-
-        expect(screen.queryByRole("button", { name: /Remote Access/i })).not.toBeInTheDocument();
-      });
-
-      it("shows Remote Access nav item when experimentalFeatures.remoteAccess is true", async () => {
-        mockFetchSettings.mockResolvedValue({
-          ...defaultSettings,
-          experimentalFeatures: { remoteAccess: true },
-        });
+      it.each([
+        ["experimentalFeatures undefined", undefined],
+        ["experimentalFeatures empty", {}],
+        ["legacy remoteAccess false", { remoteAccess: false }],
+        ["legacy remoteAccess true", { remoteAccess: true }],
+      ] as const)("shows Remote Access nav item when %s", async (_label, experimentalFeatures) => {
+        const { experimentalFeatures: _omitted, ...settingsWithoutExperimentalFeatures } = defaultSettings;
+        mockFetchSettings.mockResolvedValue(
+          experimentalFeatures === undefined
+            ? settingsWithoutExperimentalFeatures
+            : {
+                ...defaultSettings,
+                experimentalFeatures,
+              },
+        );
 
         renderModal();
 
         expect(await screen.findByRole("button", { name: /Remote Access/i })).toBeInTheDocument();
       });
 
-      it("shows Remote Access in KNOWN_EXPERIMENTAL_FEATURES toggle list", async () => {
-        mockFetchSettings.mockResolvedValue({
-          ...defaultSettings,
-          experimentalFeatures: {},
-        });
+      it.each([
+        ["experimentalFeatures undefined", undefined],
+        ["experimentalFeatures empty", {}],
+        ["legacy remoteAccess false", { remoteAccess: false }],
+        ["legacy remoteAccess true", { remoteAccess: true }],
+      ] as const)("does not render a Remote Access experimental toggle when %s", async (_label, experimentalFeatures) => {
+        const { experimentalFeatures: _omitted, ...settingsWithoutExperimentalFeatures } = defaultSettings;
+        mockFetchSettings.mockResolvedValue(
+          experimentalFeatures === undefined
+            ? settingsWithoutExperimentalFeatures
+            : {
+                ...defaultSettings,
+                experimentalFeatures,
+              },
+        );
 
         renderModal();
 
         await openExperimentalFeaturesSection();
 
-        expect(screen.getByLabelText("Remote Access")).toBeInTheDocument();
+        expect(screen.queryByLabelText("Remote Access")).not.toBeInTheDocument();
       });
 
-      it("falls back to the first selectable section when opening remote while remoteAccess is disabled", async () => {
+      it("stays on the remote section when opening remote while remoteAccess is absent", async () => {
         mockFetchSettings.mockResolvedValue({
           ...defaultSettings,
           experimentalFeatures: {},
         });
 
         renderModal({ initialSection: "remote" });
-        await waitForSettingsModalReady();
 
-        expect(screen.queryByRole("button", { name: /Remote Access/i })).not.toBeInTheDocument();
-        expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
+        expect(await screen.findByRole("heading", { name: "Remote Access" })).toBeInTheDocument();
       });
 
       it("hides research settings nav items when experimentalFeatures.researchView is disabled", async () => {
