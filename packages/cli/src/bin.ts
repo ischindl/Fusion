@@ -126,6 +126,7 @@ async function loadCommandHandlers() {
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
   const { runSettingsImport } = await import("./commands/settings-import.js");
+  const { runMcpList, runMcpAdd, runMcpEdit, runMcpRemove, runMcpEnable, runMcpDisable, runMcpImport, runMcpExport, runMcpValidate } = await import("./commands/mcp.js");
   const { runGitStatus, runGitFetch, runGitPull, runGitPush } = await import("./commands/git.js");
   const { runBranchGroupList, runBranchGroupShow, runBranchGroupPromote, runBranchGroupAbandon } = await import("./commands/branch-group.js");
   const { runBackupCreate, runBackupList, runBackupRestore, runBackupCleanup } = await import("./commands/backup.js");
@@ -193,6 +194,15 @@ async function loadCommandHandlers() {
     runSettingsSet,
     runSettingsExport,
     runSettingsImport,
+    runMcpList,
+    runMcpAdd,
+    runMcpEdit,
+    runMcpRemove,
+    runMcpEnable,
+    runMcpDisable,
+    runMcpImport,
+    runMcpExport,
+    runMcpValidate,
     runGitStatus,
     runGitFetch,
     runGitPull,
@@ -387,6 +397,17 @@ PR:
   fn settings set worktrunk.onFailure <fail|fallback-native>
   fn settings export [opts]              Export settings to a JSON file
   fn settings import <file> [opts]       Import settings from a JSON file
+  fn mcp list [--project <name>] [--json] List MCP servers by scope and effective resolution
+  fn mcp add <name> --scope <global|project> --transport <stdio|sse|http> [opts]
+                                      Add an MCP server using secret references for env/header values
+  fn mcp edit|remove|enable|disable <name> [--scope <global|project>]
+                                      Update, remove, or toggle a scoped MCP server
+  fn mcp import <file> [--scope <global|project>] [--yes]
+                                      Import Claude Desktop mcpServers JSON and create Fusion secrets
+  fn mcp export [--scope <global|project|effective>] [--output <file>]
+                                      Export Fusion MCP JSON with secret references only
+  fn mcp validate [--scope <global|project|effective>] [--json]
+                                      Validate MCP definitions without revealing secrets
 
   fn git status              Show current branch, commit, dirty state, ahead/behind
   fn git push                Push current branch
@@ -679,6 +700,15 @@ async function main() {
     runSettingsSet,
     runSettingsExport,
     runSettingsImport,
+    runMcpList,
+    runMcpAdd,
+    runMcpEdit,
+    runMcpRemove,
+    runMcpEnable,
+    runMcpDisable,
+    runMcpImport,
+    runMcpExport,
+    runMcpValidate,
     runGitStatus,
     runGitFetch,
     runGitPull,
@@ -1631,6 +1661,100 @@ async function main() {
         process.exit(1);
         break;
       }
+
+      case "mcp": {
+        const subcommand = args[1] ?? "list";
+        const scope = getFlagValue(args, "--scope") as "global" | "project" | "effective" | undefined;
+        const secretScope = getFlagValue(args, "--secret-scope") as "global" | "project" | undefined;
+        const commonSensitive = {
+          env: getRepeatedFlagValues(args, "--env"),
+          headers: getRepeatedFlagValues(args, "--header"),
+          envRaw: getRepeatedFlagValues(args, "--env-raw"),
+          headersRaw: getRepeatedFlagValues(args, "--header-raw"),
+          createEnv: getRepeatedFlagValues(args, "--create-secret-env"),
+          createHeaders: getRepeatedFlagValues(args, "--create-secret-header"),
+          secretRef: getFlagValue(args, "--secret-ref"),
+          secretScope,
+        };
+        switch (subcommand) {
+          case "list":
+          case "ls":
+            await runMcpList({ projectName, json: args.includes("--json") });
+            break;
+          case "add": {
+            const name = args[2];
+            if (!name) { console.error("Usage: fn mcp add <name> --scope global|project --transport stdio|sse|http [--command <cmd>|--url <url>]"); process.exit(1); }
+            const argValues = getRepeatedFlagValues(args, "--arg");
+            const argsValue = argValues.length > 0 ? argValues : getFlagValue(args, "--args");
+            await runMcpAdd(name, {
+              projectName,
+              scope: scope === "effective" ? undefined : scope,
+              transport: getFlagValue(args, "--transport") as "stdio" | "sse" | "http" | "streamable-http" | undefined,
+              command: getFlagValue(args, "--command"),
+              args: argsValue,
+              url: getFlagValue(args, "--url"),
+              enabled: args.includes("--disabled") ? false : args.includes("--enabled") ? true : undefined,
+              ...commonSensitive,
+            });
+            break;
+          }
+          case "edit": {
+            const name = args[2];
+            if (!name) { console.error("Usage: fn mcp edit <name> [--scope global|project] [opts]"); process.exit(1); }
+            const argValues = getRepeatedFlagValues(args, "--arg");
+            const argsValue = argValues.length > 0 ? argValues : getFlagValue(args, "--args");
+            await runMcpEdit(name, {
+              projectName,
+              scope: scope === "effective" ? undefined : scope,
+              transport: getFlagValue(args, "--transport") as "stdio" | "sse" | "http" | "streamable-http" | undefined,
+              command: getFlagValue(args, "--command"),
+              args: argsValue,
+              url: getFlagValue(args, "--url"),
+              enabled: args.includes("--disabled") ? false : args.includes("--enabled") ? true : undefined,
+              ...commonSensitive,
+            });
+            break;
+          }
+          case "remove":
+          case "rm": {
+            const name = args[2];
+            if (!name) { console.error("Usage: fn mcp remove <name> [--scope global|project]"); process.exit(1); }
+            await runMcpRemove(name, { projectName, scope: scope === "effective" ? undefined : scope });
+            break;
+          }
+          case "enable": {
+            const name = args[2];
+            if (!name) { console.error("Usage: fn mcp enable <name> [--scope global|project]"); process.exit(1); }
+            await runMcpEnable(name, { projectName, scope: scope === "effective" ? undefined : scope });
+            break;
+          }
+          case "disable": {
+            const name = args[2];
+            if (!name) { console.error("Usage: fn mcp disable <name> [--scope global|project]"); process.exit(1); }
+            await runMcpDisable(name, { projectName, scope: scope === "effective" ? undefined : scope });
+            break;
+          }
+          case "import": {
+            const file = args[2];
+            if (!file) { console.error("Usage: fn mcp import <file> [--scope global|project] [--yes]"); process.exit(1); }
+            await runMcpImport(file, { projectName, scope: scope === "effective" ? undefined : scope, yes: args.includes("--yes") });
+            break;
+          }
+          case "export":
+            await runMcpExport({ projectName, scope, output: getFlagValue(args, "--output"), json: args.includes("--json") });
+            break;
+          case "validate":
+          case "test":
+            await runMcpValidate({ projectName, scope, json: args.includes("--json") });
+            break;
+          default:
+            console.error(`Unknown subcommand: mcp ${subcommand || ""}`);
+            console.log("Try: fn mcp list | add | edit | remove | enable | disable | import | export | validate");
+            process.exit(1);
+        }
+        break;
+      }
+
 
       case "git": {
         const subcommand = args[1];

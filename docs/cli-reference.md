@@ -986,6 +986,55 @@ fn settings import <file> [--scope global|project|both] [--merge] [--yes]
 
 ---
 
+## `fn mcp`
+
+Manage Fusion MCP server definitions for stdio, SSE, and streamable HTTP transports.
+
+```bash
+fn mcp list [--project <name>] [--json]
+fn mcp add <name> --scope global|project --transport stdio --command <cmd> [--arg <arg> ...]
+fn mcp add <name> --scope global|project --transport sse|http --url <url>
+fn mcp edit <name> [--scope global|project] [--transport stdio|sse|http] [--command <cmd>|--url <url>]
+fn mcp remove <name> [--scope global|project]
+fn mcp enable <name> [--scope global|project]
+fn mcp disable <name> [--scope global|project]
+fn mcp import <claude-desktop.json> [--scope global|project] [--yes]
+fn mcp export [--scope global|project|effective] [--output <file>] [--json]
+fn mcp validate [--scope global|project|effective] [--json]
+```
+
+Scope semantics:
+- `--scope global` writes shared MCP declarations in global settings.
+- `--scope project` writes the selected project's declarations. Project servers override same-named global servers; a project server with `enabled:false` disables the inherited global server without deleting it.
+- `list`, `export`, and `validate` can show the `effective` resolution, which is global plus project overrides after disabled entries are removed.
+
+Secret handling:
+- Fusion never persists raw MCP env/header/token-like values in settings. Sensitive fields are stored only as Fusion secret references (`{ secretRef, scope }`).
+- Use `--env KEY=SECRET_REF` or `--header NAME=SECRET_REF` to attach existing secrets. Add `--secret-scope global|project` when the referenced secret lives outside the command's default scope.
+- Use `--create-secret-env KEY=VALUE` or `--create-secret-header NAME=VALUE` when you want the CLI to create a Fusion secret and persist only the resulting reference.
+- `--env-raw` and `--header-raw` are rejected by design; they exist only to produce an explicit no-plaintext error for scripts that try to pass inline sensitive values.
+- `fn mcp import` accepts Claude Desktop-style `{ "mcpServers": { ... } }` JSON, creates Fusion secrets for imported plaintext env/header values, and writes only secret references.
+- `list`, `export`, and `validate` print descriptors/summaries, never decrypted secret values.
+
+| Option | Description |
+|---|---|
+| `--scope` | `global` or `project` for writes; `global`, `project`, or `effective` for read/export/validate commands. |
+| `--transport` | Server transport for add/edit: `stdio`, `sse`, `http`, or `streamable-http`. |
+| `--command` | Command path/name for `stdio` servers. |
+| `--arg <arg>` / `--args <args>` | Arguments for `stdio` servers. Repeat `--arg`; `--args` accepts a space-separated string. |
+| `--url` | URL for `sse`, `http`, or `streamable-http` servers. |
+| `--env KEY=SECRET_REF` | Attach an env var to an existing secret reference. |
+| `--header NAME=SECRET_REF` | Attach an HTTP/SSE header to an existing secret reference. |
+| `--secret-scope` | Scope used when resolving `--env`, `--header`, or `--secret-ref` (default: command scope). |
+| `--secret-ref` | Existing secret reference for token-like single-secret flows. |
+| `--create-secret-env KEY=VALUE` | Create a Fusion secret for an env var and store only the reference. |
+| `--create-secret-header NAME=VALUE` | Create a Fusion secret for a header and store only the reference. |
+| `--output <file>` | Write `fn mcp export` output to a file instead of stdout. |
+| `--json` | Print machine-readable output for list/export/validate where supported. |
+| `--yes` | Skip confirmation during import. |
+
+---
+
 ## `fn git`
 
 Project git operations.
