@@ -605,8 +605,8 @@ Default notes:
 | `missionStaleThresholdMs` | `number` | `600000` | Mission stale threshold in ms while `activating` (10 min). |
 | `missionMaxTaskRetries` | `number` | `3` | Max automatic retries for failed mission-linked tasks. |
 | `missionHealthCheckIntervalMs` | `number` | `300000` | Mission health-check interval in ms (5 min). |
-| `agentPrompts` | `AgentPromptsConfig` | `undefined` | Custom role prompt templates and assignments. |
-| `promptOverrides` | `Record<string, string \| null>` | `undefined` | Segment-level prompt overrides (set a key to `null` to clear it). |
+| `agentPrompts` | `AgentPromptsConfig` | `undefined` | Custom role prompt templates and assignments edited in Settings → Prompts. |
+| `promptOverrides` | `Record<string, string \| null>` | `undefined` | Global PromptKey segment-level overrides edited in Settings → Prompts (set a key to `null` to clear it). |
 | `reflectionEnabled` | `boolean` | `false` | Enable/disable agent self-reflection workflows. |
 | `reflectionIntervalMs` | `number` | `3600000` | Periodic reflection interval in ms. |
 | `reflectionAfterTask` | `boolean` | `true` | Trigger reflection after task completion. |
@@ -1114,7 +1114,14 @@ For runtime details, see the [OpenClaw Runtime Plugin documentation](../plugins/
 
 ## Prompt Overrides
 
+<!--
+FNXC:Settings 2026-06-26-23:44:
+Settings → Prompts and the Workflow Editor are separate prompt-editing surfaces. Settings owns role templates plus global PromptKey segment overrides; workflow prompt/gate node text is edited per workflow and per node in the Workflow Editor, and the settings UI links there to avoid ownership ambiguity.
+-->
+
 Fusion supports fine-grained customization of AI agent prompts through the `promptOverrides` setting. This enables surgical customization of specific prompt segments without replacing entire role prompts (which `agentPrompts` does).
+
+Settings → Prompts owns `agentPrompts` role system prompt templates, role assignments, and global PromptKey segment overrides. Per-workflow step prompts for workflow `prompt` and `gate` nodes are edited in the Workflow Editor; the Prompts settings section includes an **Open workflow settings** link to jump to that surface.
 
 ### Supported Prompt Keys
 

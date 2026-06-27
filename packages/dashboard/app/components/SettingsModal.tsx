@@ -3021,7 +3021,14 @@ export function SettingsModal({
           />
         );
       case "prompts":
-        return <PromptsSection scopeBanner={renderScopeBanner()} form={form} setForm={setForm} />;
+        return (
+          <PromptsSection
+            scopeBanner={renderScopeBanner()}
+            form={form}
+            setForm={setForm}
+            onOpenWorkflowSettings={onOpenWorkflowSettings}
+          />
+        );
       case "plugins":
         return (
           <PluginsSection
