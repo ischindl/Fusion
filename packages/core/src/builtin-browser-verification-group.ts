@@ -24,6 +24,9 @@ to the former `browser-verification` catalog entry). These built-ins are the par
 oracle, so the produced node bytes must NOT change. Plugin-contributed templates still
 use the `WorkflowStepTemplate` shape via the editor palette, but built-ins no longer
 read from a shared array.
+
+FNXC:WorkflowBrowserVerification 2026-06-27-13:20:
+The Browser Verification step must actually use the `agent-browser` workflow surface, not only mention it in the prompt. `requiresBrowser` tells the engine to load the agent-browser navigation skill when available, preflight CLI availability, and surface start/probe/tool activity in the task agent log while keeping the step's coding tool mode intact.
 */
 
 /** Stable per-task enable key + group node id (preserved from the prior templateId). */
@@ -100,6 +103,7 @@ export function browserVerificationOptionalGroupNode(column: string): WorkflowIr
               prompt: BROWSER_VERIFICATION_PROMPT,
               toolMode: "coding",
               gateMode: "advisory",
+              requiresBrowser: true,
             },
           },
         ],

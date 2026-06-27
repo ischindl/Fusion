@@ -35,7 +35,10 @@ function codingTask(enabledWorkflowSteps?: string[]): TaskDetail {
  *  handler keyed on the inner template node id; everything else succeeds. */
 function makeExecutor(onInnerStep: () => void) {
   const prompt = vi.fn<WorkflowNodeHandler>(async (node) => {
-    if (node.id === "browser-verification-step") onInnerStep();
+    if (node.id === "browser-verification-step") {
+      expect(node.config?.requiresBrowser).toBe(true);
+      onInnerStep();
+    }
     return { outcome: "success" };
   });
   return new WorkflowGraphExecutor({ handlers: { prompt } });
@@ -55,7 +58,8 @@ describe("builtin coding browser-verification optional-group (U6)", () => {
       disabledRuns++;
     }).run(codingTask(), settingsOn(), BUILTIN_CODING_WORKFLOW_IR);
 
-    // The browser-verification step ran exactly once when enabled, never when off.
+    // The browser-verification step ran exactly once when enabled, carrying the
+    // browser capability flag; the disabled task never materializes the inner step.
     expect(enabledRuns).toBe(1);
     expect(disabledRuns).toBe(0);
 

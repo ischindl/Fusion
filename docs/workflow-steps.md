@@ -357,8 +357,10 @@ FN-7039 (U6) DELETED the `WORKFLOW_STEP_TEMPLATES` built-in catalog array (the f
 
 The built-in quality gates ship as inlined `optional-group` node builders in `@fusion/core`, not as a template catalog (the former `WORKFLOW_STEP_TEMPLATES` array was removed):
 
-- **Browser Verification** (`browser-verification`, `builtin-browser-verification-group.ts`) — browser-automation-style checks for UI validation flows; an optional-group node on `builtin:coding`.
+- **Browser Verification** (`browser-verification`, `builtin-browser-verification-group.ts`) — browser-automation-style checks for UI validation flows; an optional-group node on `builtin:coding` and `builtin:stepwise-coding`.
 - **Code Review** (`code-review`, `builtin-code-review-group.ts`) — the inlined code-review gate.
+
+The Browser Verification inner prompt node carries `requiresBrowser: true` while keeping `toolMode: "coding"`. When that step runs, the executor best-effort adds the `agent-browser-navigation` skill (when the agent-browser plugin is installed), runs a bounded non-fatal `agent-browser --version` preflight, and writes start, availability, and finish entries into both the task log and the task's agent log. A missing or timed-out `agent-browser` binary is logged as an actionable warning rather than failing the step solely because of the preflight; the prompt can still fast-bail or report a normal verification failure. Because Bash tool events are already streamed to the agent log, `agent-browser open ...`, `agent-browser snapshot ...`, and related commands appear as the browser-verification activity the step performed.
 
 Plugin-contributed gate kinds (documentation review, QA, security audit, performance, accessibility, frontend UX design, etc.) can still be supplied as palette templates; see [Plugin-Contributed Steps](#plugin-contributed-steps).
 

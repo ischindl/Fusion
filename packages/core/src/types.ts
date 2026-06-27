@@ -658,6 +658,13 @@ export interface WorkflowStep {
    *  skill (discovery + selection) and the engine injects the Fusion workflow-step
    *  conventions preamble. Only meaningful for skill-executor graph nodes. */
   skillName?: string;
+  /**
+   * Browser capability requested by prompt-mode steps. When true, the executor
+   * loads the agent-browser navigation skill when available, preflights the
+   * `agent-browser` CLI, and records browser-verification activity in the agent
+   * log. Ignored for script-mode steps.
+   */
+  requiresBrowser?: boolean;
   /** Name of a script from project settings `scripts` map to execute (required when mode is "script") */
   scriptName?: string;
   /** Whether this step is available for selection on new tasks */

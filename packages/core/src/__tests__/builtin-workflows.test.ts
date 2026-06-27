@@ -9,6 +9,7 @@ import {
   isBuiltinWorkflowPluginGated,
 } from "../builtin-workflows.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
+import { BROWSER_VERIFICATION_GROUP_ID, BROWSER_VERIFICATION_STEP_NODE_ID } from "../builtin-browser-verification-group.js";
 import { builtinPromptConfig, BUILTIN_SEAM_PROMPTS } from "../builtin-workflow-prompts.js";
 import { BUILTIN_WORKFLOW_SETTINGS } from "../builtin-workflow-settings.js";
 import { resolveColumnFlags } from "../trait-registry.js";
@@ -17,6 +18,12 @@ import { DEFAULT_WORKFLOW_COLUMN_IDS, parseWorkflowIr, serializeWorkflowIr } fro
 import { createSharedTaskStoreTestHarness } from "./store-test-helpers.js";
 
 const EXECUTE_NODE_MAX_RETRIES = 2;
+
+function browserVerificationInnerConfig(ir: { nodes: Array<{ id: string; kind: string; config?: Record<string, unknown> }> }): Record<string, unknown> {
+  const group = ir.nodes.find((node) => node.id === BROWSER_VERIFICATION_GROUP_ID);
+  const template = group?.config?.template as { nodes?: Array<{ id: string; config?: Record<string, unknown> }> } | undefined;
+  return template?.nodes?.find((node) => node.id === BROWSER_VERIFICATION_STEP_NODE_ID)?.config ?? {};
+}
 
 describe("built-in workflows", () => {
   // Non-compiler built-ins model graph-only node kinds or reusable fragments the
@@ -165,6 +172,11 @@ describe("built-in workflows", () => {
     expect(byId.get("workflow-step")).toBeUndefined();
     expect(byId.get("browser-verification")?.kind).toBe("optional-group");
     expect(byId.get("browser-verification")?.column).toBe("in-progress");
+    expect(browserVerificationInnerConfig(ir)).toMatchObject({
+      toolMode: "coding",
+      gateMode: "advisory",
+      requiresBrowser: true,
+    });
     expect(byId.get("review")?.column).toBe("in-review");
     // Merge is the native primitive region (FN-6035), placed in in-review.
     expect(byId.get("merge")).toBeUndefined();

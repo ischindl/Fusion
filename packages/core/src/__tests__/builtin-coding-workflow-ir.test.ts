@@ -7,8 +7,19 @@ import {
   parseWorkflowIr,
   serializeWorkflowIr,
 } from "../index.js";
+import { BROWSER_VERIFICATION_GROUP_ID, BROWSER_VERIFICATION_STEP_NODE_ID } from "../builtin-browser-verification-group.js";
+import type { WorkflowIrV2 } from "../workflow-ir-types.js";
 
 const EXECUTE_NODE_MAX_RETRIES = 2;
+
+function browserVerificationInnerConfig(ir: WorkflowIrV2): Record<string, unknown> {
+  const group = ir.nodes.find((node) => node.id === BROWSER_VERIFICATION_GROUP_ID);
+  expect(group?.kind).toBe("optional-group");
+  const template = group?.config?.template as { nodes?: Array<{ id: string; config?: Record<string, unknown> }> } | undefined;
+  const inner = template?.nodes?.find((node) => node.id === BROWSER_VERIFICATION_STEP_NODE_ID);
+  expect(inner).toBeDefined();
+  return inner?.config ?? {};
+}
 
 function executeNodeConfig(ir = BUILTIN_CODING_WORKFLOW_IR): Record<string, unknown> {
   const executeNodes = ir.nodes.filter((node) => node.id === "execute" && node.config?.seam === "execute");
@@ -53,6 +64,11 @@ describe("builtin coding workflow ir", () => {
     expect(group?.kind).toBe("optional-group");
     expect(group?.config?.name).toBe("Browser Verification");
     expect(group?.config?.defaultOn).toBe(false);
+    expect(browserVerificationInnerConfig(BUILTIN_CODING_WORKFLOW_IR)).toMatchObject({
+      toolMode: "coding",
+      gateMode: "advisory",
+      requiresBrowser: true,
+    });
     // execute → browser-verification → code-review → review on the success path; the
     // pre-merge code-review optional-group sits next to browser-verification. failure → end.
     expect(BUILTIN_CODING_WORKFLOW_IR.edges).toEqual(
@@ -147,6 +163,13 @@ describe("builtin coding workflow ir", () => {
         expect.objectContaining({ from: "merge-attempt", to: "merge-retry", condition: "outcome:transient-failure" }),
       ]),
     );
+  });
+
+  it("marks browser verification as browser-capable in both coding built-ins", () => {
+    expect(browserVerificationInnerConfig(BUILTIN_CODING_WORKFLOW_IR).requiresBrowser).toBe(true);
+    expect(browserVerificationInnerConfig(BUILTIN_STEPWISE_CODING_WORKFLOW_IR).requiresBrowser).toBe(true);
+    expect(browserVerificationInnerConfig(BUILTIN_CODING_WORKFLOW_IR).toolMode).toBe("coding");
+    expect(browserVerificationInnerConfig(BUILTIN_STEPWISE_CODING_WORKFLOW_IR).toolMode).toBe("coding");
   });
 
   it("expresses merge policy regions in stepwise and PR built-ins", () => {
