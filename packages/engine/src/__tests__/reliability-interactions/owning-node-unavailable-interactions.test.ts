@@ -49,6 +49,11 @@ function createMockStore(task: Task, settings: Record<string, unknown> = {}): Ta
   return {
     listTasks: vi.fn().mockResolvedValue([task]),
     getSettings: vi.fn().mockResolvedValue(settings),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler reliability fakes must expose the production `updateSettings` heartbeat write so owning-node handoff invariants run before call-count assertions.
+    */
+    updateSettings: vi.fn().mockResolvedValue(settings),
     getTask: vi.fn().mockResolvedValue(task),
     updateTask: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn().mockResolvedValue(undefined),

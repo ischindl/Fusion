@@ -45,6 +45,11 @@ function createStore(task: Task, settings: Record<string, unknown>, tasksForList
   return {
     listTasks: vi.fn().mockImplementation(async () => tasksForList ?? [task]),
     getSettings: vi.fn().mockResolvedValue(settings),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler fakes must expose the production `updateSettings` heartbeat write so ephemeral-agent dispatch assertions measure scheduler behavior instead of fake drift.
+    */
+    updateSettings: vi.fn().mockResolvedValue(settings),
     getTask: vi.fn().mockResolvedValue(task),
     updateTask: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn().mockResolvedValue(undefined),

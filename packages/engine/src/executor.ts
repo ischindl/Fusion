@@ -2610,9 +2610,14 @@ export class TaskExecutor {
                 }
               } else {
                 const settings = await this.store.getSettings();
+                /*
+                FNXC:ColumnAgentModel 2026-06-27-10:05:
+                Override column agents own the active session model even when a mid-flight task edit adds its own modelProvider/modelId; ignore task-level model fields during column-agent re-resolution so the watcher cannot clobber the governing agent's runtime model.
+                */
+                const overrideColumnGoverns = binding!.mode === "override";
                 const { provider: newProvider, modelId: newModelId } = resolveExecutorSessionModel(
-                  task.modelProvider,
-                  task.modelId,
+                  overrideColumnGoverns ? undefined : task.modelProvider,
+                  overrideColumnGoverns ? undefined : task.modelId,
                   settings,
                   (newAgent.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
                 );
@@ -8579,9 +8584,14 @@ export class TaskExecutor {
         // Column-agent session identity (U4): the model precedence input is the
         // EFFECTIVE identity agent's runtimeConfig (column agent when it governs,
         // else the assigned agent — byte-identical no-binding path).
+        /*
+        FNXC:ColumnAgentModel 2026-06-27-11:24:
+        Override column agents own initial session model selection as well as mid-flight re-resolution. Ignore task-level modelProvider/modelId before resolveExecutorSessionModel so pre-existing task model pairs cannot run the column-agent identity on the task model.
+        */
+        const overrideColumnGovernsInitialSession = columnAgentSeam?.mode === "override";
         const { provider: executorProvider, modelId: executorModelId } = resolveExecutorSessionModel(
-          detail.modelProvider,
-          detail.modelId,
+          overrideColumnGovernsInitialSession ? undefined : detail.modelProvider,
+          overrideColumnGovernsInitialSession ? undefined : detail.modelId,
           settings,
           (identityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
         );

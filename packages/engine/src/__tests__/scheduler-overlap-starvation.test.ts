@@ -50,6 +50,11 @@ function createStore(tasks: Task[], scopes: Record<string, string[]>, settings: 
   return {
     listTasks: vi.fn(async () => tasks),
     getSettings: vi.fn(async () => ({ maxConcurrent: 10, maxWorktrees: 10, groupOverlappingFiles: true, ...settings })),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler fakes must mirror the production TaskStore heartbeat surface (`updateSettings`) so active-time writes do not abort overlap scheduling before call-count invariants run in full-suite shards.
+    */
+    updateSettings: vi.fn(async () => ({ maxConcurrent: 10, maxWorktrees: 10, groupOverlappingFiles: true, ...settings })),
     parseFileScopeFromPrompt: vi.fn(async (id: string) => scopes[id] ?? []),
     updateTask,
     moveTask,

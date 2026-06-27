@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
  * - packages/engine/src/run-verification-tool.ts :: runVerificationCommand — backs fn_run_verification with superviseSpawn and maxLifetimeMs.
  * - packages/engine/src/executor.ts :: runConfiguredCommand — runs settings.scripts, settings.setupScript, settings.worktreeInitCommand, and workflow script commands through backend.run with timeoutMs and maxBuffer.
  * - packages/engine/src/merger.ts :: runConfiguredMergeWorktreeCommand — runs configured merge-worktree commands through backend.run with timeoutMs and maxBuffer.
- * - packages/engine/src/merger.ts :: executePostMergeScriptStep — runs post-merge settings.scripts entries through backend.run with timeoutMs and maxBuffer.
+ * - FNXC:EngineTests 2026-06-27-10:05: U7c removed the legacy merger-side executePostMergeScriptStep path; the static guard must track only live user-configured command surfaces so registry drift fails for real protected functions, not deleted ones.
  * - packages/engine/src/routine-runner.ts :: executeCommand — runs configured automation/routine commands through backend.run with timeoutMs and maxBuffer.
  * - packages/engine/src/sandbox/native.ts :: NativeSandboxBackend.run — default sandbox backend uses superviseSpawn with maxLifetimeMs plus timeoutMs/maxBuffer enforcement.
  * - packages/engine/src/sandbox/bubblewrap-backend.ts :: BubblewrapBackend.run — isolating backend delegates to native fallback or runBwrapSpawn; runBwrapSpawn uses spawn with timeoutMs and maxBuffer enforcement.
@@ -74,16 +74,6 @@ const protectedCommandPaths: GuardEntry[] = [
     requiredSafeguards: [
       { label: "sandbox backend.run", pattern: /backend\.run\(/ },
       { label: "timeoutMs option", pattern: /timeoutMs\s*,/ },
-      { label: "maxBuffer option", pattern: /maxBuffer\s*:/ },
-    ],
-  },
-  {
-    file: "src/merger.ts",
-    name: "executePostMergeScriptStep",
-    signature: "async function executePostMergeScriptStep(",
-    requiredSafeguards: [
-      { label: "sandbox backend.run", pattern: /backend\.run\(/ },
-      { label: "timeoutMs option", pattern: /timeoutMs\s*:/ },
       { label: "maxBuffer option", pattern: /maxBuffer\s*:/ },
     ],
   },

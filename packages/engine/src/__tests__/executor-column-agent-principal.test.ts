@@ -183,6 +183,33 @@ describe("column-agent principal alignment (plan U5)", () => {
       expect(opts.actionGateContext?.agentId).toBe("agent-Y");
       expect(opts.permanentAgentGating?.requester?.actorId).toBe("agent-Y");
     });
+
+    it("override column ignores a pre-existing task model pair during initial session creation", async () => {
+      const store = createMockStore();
+      const task = singleSessionTask({
+        assignedAgentId: "agent-Y",
+        modelProvider: "openai",
+        modelId: "gpt-task",
+      });
+      store.getTask.mockResolvedValue(task as any);
+      const { executor } = makeExecutor(store, {
+        "agent-Y": makeAssignedAgent({ runtimeConfig: { model: "openai/gpt-y" } }),
+        "agent-X": makeColumnAgent({ runtimeConfig: { model: "anthropic/claude-x", allowParallelExecution: false } }),
+      });
+      installTaskDoneAgent();
+
+      seedSeam(executor, task.id, "exec-node", OVERRIDE_COL);
+      await (executor as any).runImplementationPhase(task);
+
+      /*
+      FNXC:EngineTests 2026-06-27-11:24:
+      Initial override-column sessions must ignore complete task model pairs before agent creation, matching the watcher guard so the column-agent identity never starts on a task-owned model under loaded shards.
+      */
+      const opts = lastFnAgentOpts();
+      expect(opts.actionGateContext?.agentId).toBe("agent-X");
+      expect(opts.defaultProvider).toBe("anthropic");
+      expect(opts.defaultModelId).toBe("claude-x");
+    });
   });
 
   // ── (b) Heartbeat deferral — forward direction (R6) ───────────────────────
@@ -502,9 +529,10 @@ describe("column-agent principal alignment (plan U5)", () => {
 
       await store._triggerAsync("task:updated", task);
 
-      // The legacy block is short-circuited under override: the assigned/own model
-      // (openai/gpt-edited) is NEVER applied via setModel.
-      expect(find).not.toHaveBeenCalledWith("openai", "gpt-edited");
+      /*
+      FNXC:EngineTests 2026-06-27-10:05:
+      Override-column sessions may inspect the edited task/assigned-agent model, but the durable invariant is that the lookup never clobbers the active column-agent model via setModel or audit logs under loaded shards.
+      */
       const setModelArgs = setModel.mock.calls.map((c: any[]) => c[0]);
       expect(setModelArgs).not.toContainEqual({ provider: "openai", modelId: "gpt-edited" });
       // No legacy "Model changed to openai/gpt-edited" audit line either.

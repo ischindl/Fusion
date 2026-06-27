@@ -86,6 +86,11 @@ describe("reliability interactions: lease recovery central claim", () => {
       logEntry: vi.fn().mockResolvedValue(undefined),
       moveTask: vi.fn().mockResolvedValue(task),
       getSettings: vi.fn().mockResolvedValue({ maxConcurrent: 1, maxWorktrees: 1 }),
+      /*
+      FNXC:EngineTests 2026-06-27-10:05:
+      Scheduler reliability fakes must mirror the production `updateSettings` heartbeat path so lease-recovery call-count invariants are not skipped by TaskStore fake drift.
+      */
+      updateSettings: vi.fn().mockResolvedValue({ maxConcurrent: 1, maxWorktrees: 1 }),
       parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
       on: vi.fn(),
       off: vi.fn(),

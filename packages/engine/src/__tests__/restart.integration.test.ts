@@ -304,6 +304,14 @@ function createMockStore(overrides: Record<string, any> = {}) {
       ...DEFAULT_SETTINGS,
       mergeIntegrationWorktree: "cwd-main" as const,
     }),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler/restart fakes must include the production `updateSettings` heartbeat surface so restart dispatch call-count assertions stay deterministic under full-suite shard load.
+    */
+    updateSettings: vi.fn().mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      mergeIntegrationWorktree: "cwd-main" as const,
+    }),
     setPluginWorkflowStepTemplates: vi.fn(),
     getRootDir: vi.fn().mockReturnValue("/tmp/root"),
     getFusionDir: vi.fn().mockReturnValue("/tmp/root/.fusion"),

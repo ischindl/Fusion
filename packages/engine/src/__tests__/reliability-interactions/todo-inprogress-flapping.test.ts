@@ -96,6 +96,11 @@ function makeSchedulerStore(rootDir: string, task: Task, settingsOverrides: Part
 
   return Object.assign(emitter, {
     getSettings: vi.fn(async () => settings),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler reliability fakes must mirror the production `updateSettings` heartbeat path so flapping/oscillation invariants run instead of aborting on fake drift.
+    */
+    updateSettings: vi.fn(async () => settings),
     getTask: vi.fn(async (id: string) => (id === task.id ? task : null)),
     listTasks: vi.fn(async ({ column }: { column?: string } = {}) => {
       if (!column) return [task];

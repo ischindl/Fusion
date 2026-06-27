@@ -43,6 +43,11 @@ function createStore(task: Task) {
       unavailableNodePolicy: "block",
     }),
     getTask: vi.fn().mockResolvedValue(task),
+    /*
+    FNXC:EngineTests 2026-06-27-10:05:
+    Scheduler fakes must mirror the production `updateSettings` heartbeat path so node-unreachable audit assertions are not short-circuited by incomplete TaskStore doubles.
+    */
+    updateSettings: vi.fn().mockResolvedValue(undefined),
     updateTask: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn().mockResolvedValue(undefined),
     parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
