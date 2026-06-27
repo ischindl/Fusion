@@ -16,6 +16,7 @@ import { type TaskRow } from "./persistence.js";
 import * as schema from "../postgres/schema/index.js";
 import { MergeRequestRow, WorkflowWorkItemRow } from "./row-types.js";
 import { TodoStore } from "../todo-store.js";
+import { AsyncTodoStore } from "../async-todo-store.js";
 import { assertColumnTraitsValid } from "../trait-registry.js";
 import { BoardConfig, BranchGroup, MergeRequestRecord, Task, WorkflowStepTemplate, WorkflowWorkItem, WorkflowWorkItemKind } from "../types.js";
 import { WorkflowFieldDefinition, WorkflowIr, WorkflowIrColumn } from "../workflow-ir-types.js";
@@ -237,9 +238,22 @@ export function getResearchStoreImpl(store: TaskStore): ResearchStore {
     return store.researchStore;
 }
 
-export function getTodoStoreImpl(store: TaskStore): TodoStore {
+export function getTodoStoreImpl(store: TaskStore): TodoStore | AsyncTodoStore {
     if (!store.todoStore) {
-      store.todoStore = new TodoStore(store.db);
+      // FNXC:TodoStore 2026-06-27-04:00:
+      // PG backend mode returns the AsyncDataLayer-backed AsyncTodoStore (CRUD
+      // over project.todo_lists / project.todo_items). The sync SQLite TodoStore
+      // (store.db) is used only in legacy SQLite mode. Both expose the same
+      // method names; the dashboard todo routes await the result so either works.
+      if (store.backendMode) {
+        const layer = store.getAsyncLayer();
+        if (!layer) {
+          throw new Error("TodoStore is not available: AsyncDataLayer not initialized in backend mode");
+        }
+        store.todoStore = new AsyncTodoStore(layer);
+      } else {
+        store.todoStore = new TodoStore(store.db);
+      }
     }
     return store.todoStore;
 }

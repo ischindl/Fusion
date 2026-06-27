@@ -26,6 +26,8 @@ import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
 import type {
   TodoList,
   TodoItem,
+  TodoListCreateInput,
+  TodoItemCreateInput,
   TodoListUpdateInput,
   TodoItemUpdateInput,
   TodoListWithItems,
@@ -336,4 +338,83 @@ export async function getTodoListsWithItems(
     ...list,
     items: itemsByListId.get(list.id) ?? [],
   }));
+}
+
+/**
+ * FNXC:TodoStore 2026-06-27-04:00:
+ * PostgreSQL-backed TodoStore — the AsyncDataLayer counterpart of the sync
+ * SQLite `TodoStore` (todo-store.ts). It exposes the SAME public method names so
+ * the dashboard todo routes can call either implementation behind `await`;
+ * `getTodoStoreImpl` returns this in backend mode instead of throwing
+ * "TodoStore is not available in PG backend mode". Id/timestamp generation and
+ * the list-existence check mirror the sync store; sortOrder auto-assignment and
+ * the completed→completedAt toggle live in the helper functions above.
+ *
+ * Known gap vs the sync store: the sync TodoStore is an EventEmitter that emits
+ * list:created/item:updated/… for SSE live-refresh. This wrapper performs the
+ * CRUD only; UI updates land on the next read/refresh, not via live events.
+ */
+export class AsyncTodoStore {
+  constructor(private readonly layer: AsyncDataLayer) {}
+
+  private static newId(prefix: "TDL" | "TDI"): string {
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+    return `${prefix}-${timestamp}-${random}`;
+  }
+
+  async getListsWithItems(projectId: string): Promise<TodoListWithItems[]> {
+    return getTodoListsWithItems(this.layer.db, projectId);
+  }
+
+  async createList(projectId: string, input: TodoListCreateInput): Promise<TodoList> {
+    const now = new Date().toISOString();
+    return createTodoList(this.layer.db, {
+      id: AsyncTodoStore.newId("TDL"),
+      projectId,
+      title: input.title,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async updateList(id: string, input: TodoListUpdateInput): Promise<TodoList | undefined> {
+    return updateTodoList(this.layer.db, id, input);
+  }
+
+  async deleteList(id: string): Promise<boolean> {
+    return deleteTodoList(this.layer.db, id);
+  }
+
+  async createItem(listId: string, input: TodoItemCreateInput): Promise<TodoItem> {
+    // Match the sync store: reject items for a missing list with a clear error
+    // rather than relying on the FK violation surfacing opaquely.
+    const list = await getTodoList(this.layer.db, listId);
+    if (!list) {
+      throw new Error(`Todo list ${listId} not found`);
+    }
+    const now = new Date().toISOString();
+    return createTodoItem(this.layer.db, {
+      id: AsyncTodoStore.newId("TDI"),
+      listId,
+      text: input.text,
+      completed: false,
+      completedAt: null,
+      sortOrder: input.sortOrder,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async updateItem(id: string, input: TodoItemUpdateInput): Promise<TodoItem | undefined> {
+    return updateTodoItem(this.layer.db, id, input);
+  }
+
+  async deleteItem(id: string): Promise<boolean> {
+    return deleteTodoItem(this.layer.db, id);
+  }
+
+  async reorderItems(listId: string, itemIds: string[]): Promise<TodoItem[]> {
+    return reorderTodoItems(this.layer, listId, itemIds);
+  }
 }
