@@ -274,7 +274,10 @@ export function createMissionRouter(
     watchMission(missionId: string): void;
     unwatchMission(missionId: string): void;
     isWatching(missionId: string): boolean;
-    getAutopilotStatus(missionId: string): import("@fusion/core").AutopilotStatus;
+    // FNXC:MissionStore 2026-06-28-12:45: getAutopilotStatus is async — the engine
+    // MissionAutopilot reads the mission through the union store (sync MissionStore
+    // OR async AsyncMissionStore in PG backend mode), so callers must await it.
+    getAutopilotStatus(missionId: string): Promise<import("@fusion/core").AutopilotStatus>;
     checkAndStartMission(missionId: string): Promise<void>;
     recoverStaleMission(missionId: string): Promise<void>;
     start(): void;
@@ -3139,7 +3142,7 @@ export function createMissionRouter(
       }
 
       if (missionAutopilot) {
-        const status = missionAutopilot.getAutopilotStatus(missionId);
+        const status = await missionAutopilot.getAutopilotStatus(missionId);
         res.json(status);
       } else {
         // No autopilot instance — return status from mission data
@@ -3199,7 +3202,7 @@ export function createMissionRouter(
           missionAutopilot.unwatchMission(missionId);
         }
 
-        const status = missionAutopilot.getAutopilotStatus(missionId);
+        const status = await missionAutopilot.getAutopilotStatus(missionId);
         res.json(status);
       } else {
         // No autopilot instance — return updated status from mission data
@@ -3250,7 +3253,7 @@ export function createMissionRouter(
         await missionAutopilot.recoverStaleMission(missionId);
       }
 
-      const status = missionAutopilot.getAutopilotStatus(missionId);
+      const status = await missionAutopilot.getAutopilotStatus(missionId);
       res.json(status);
     })
   );
@@ -3275,7 +3278,7 @@ export function createMissionRouter(
 
       if (missionAutopilot) {
         missionAutopilot.unwatchMission(missionId);
-        const status = missionAutopilot.getAutopilotStatus(missionId);
+        const status = await missionAutopilot.getAutopilotStatus(missionId);
         res.json(status);
       } else {
         res.json({

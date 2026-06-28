@@ -646,6 +646,15 @@ export async function insertProjectRow(
   });
 }
 
+/**
+ * Delete a project from the central registry.
+ *
+ * FNXC:ProjectLifecycle 2026-06-28-12:00:
+ * This removes ONLY the central.projects row. FK cascades clean up
+ * project_health, central_activity_log, and project_node_path_mappings.
+ * Task data in project.tasks is NOT deleted — the project schema has no
+ * FK to central.projects, so tasks survive and are visible on re-add.
+ */
 export async function deleteProject(handle: QueryHandle, id: string): Promise<void> {
   await handle.delete(schema.central.projects).where(eq(schema.central.projects.id, id));
 }

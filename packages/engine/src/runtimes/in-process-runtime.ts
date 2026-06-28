@@ -479,14 +479,25 @@ export class InProcessRuntime
        * disabled until the MissionStore is fully converted to the async path.
        */
       let missionStore: import("@fusion/core").MissionStore | undefined;
+      // FNXC:MissionStore 2026-06-28-12:45:
+      // MissionAutopilot's STORE-access path was ported to drive BOTH backends —
+      // it types its store as `MissionStore | AsyncMissionStore` and awaits every
+      // call (mirrors the ResearchOrchestrator union+await port). So the autopilot
+      // is constructed from `autopilotMissionStore`, resolved in BOTH backends with
+      // NO `instanceof MissionStore` gate; the autopilot LOOP (watch/recover/
+      // recompute/persist) now runs in PG mode. The sync-only `missionStore` below
+      // stays gated for the Scheduler + MissionExecutionLoop, whose slice EXECUTION
+      // and validator-loop paths are NOT yet ported to async (out of scope).
+      let autopilotMissionStore:
+        | import("@fusion/core").MissionStore
+        | import("@fusion/core").AsyncMissionStore
+        | undefined;
       try {
-        // FNXC:MissionStore 2026-06-27-15:35:
-        // MissionAutopilot is coupled to the sync EventEmitter MissionStore. In PG
-        // backend mode getMissionStore() returns the AsyncMissionStore (CRUD-only),
-        // so guard with `instanceof MissionStore` and skip autopilot init — mission
-        // autopilot + live SSE mission events stay degraded in PG (mirrors the U4
-        // research orchestrator guard in project-engine.ts).
         const resolvedMissionStore = this.taskStore.getMissionStore();
+        // Union store for the autopilot — works in both SQLite and PG backends.
+        autopilotMissionStore = resolvedMissionStore;
+        // Sync-only narrowing for the Scheduler + MissionExecutionLoop, which still
+        // call the store synchronously and are skipped in PG backend mode.
         missionStore = resolvedMissionStore instanceof MissionStore ? resolvedMissionStore : undefined;
       } catch (msErr) {
         runtimeLog.warn(
@@ -494,9 +505,10 @@ export class InProcessRuntime
           msErr instanceof Error ? msErr.message : msErr,
         );
         missionStore = undefined;
+        autopilotMissionStore = undefined;
       }
-      this.missionAutopilot = missionStore
-        ? new MissionAutopilot(this.taskStore, missionStore)
+      this.missionAutopilot = autopilotMissionStore
+        ? new MissionAutopilot(this.taskStore, autopilotMissionStore)
         : undefined;
       const missionAutopilot = this.missionAutopilot;
 
@@ -1122,24 +1134,32 @@ export class InProcessRuntime
        * skipped, same as mission autopilot above.
        */
       let activeMissionStore: import("@fusion/core").MissionStore | undefined;
+      // FNXC:MissionStore 2026-06-28-12:45: autopilot crash-recovery now runs in BOTH
+      // backends. `recoverMissions` accepts the `MissionStore | AsyncMissionStore`
+      // union and awaits every store call, so resolve the store WITHOUT an instanceof
+      // gate here. The sync-only `activeMissionStore` below still gates the
+      // scheduler-driven `reconcileAllMissionFeatures` (not yet ported to async).
+      let activeAutopilotMissionStore:
+        | import("@fusion/core").MissionStore
+        | import("@fusion/core").AsyncMissionStore
+        | undefined;
       try {
-        // FNXC:MissionStore 2026-06-27-15:35: sync-only crash recovery; skip the
-        // AsyncMissionStore (PG backend) via instanceof — same degrade as autopilot.
         const resolvedActive = this.taskStore.getMissionStore();
+        activeAutopilotMissionStore = resolvedActive;
         activeMissionStore = resolvedActive instanceof MissionStore ? resolvedActive : undefined;
-        // FNXC:MissionStore 2026-06-27-16:30 (review): log the PG-mode degrade so
-        // skipped mission crash-recovery is observable, matching the autopilot
-        // block's warning rather than silently dropping it.
+        // FNXC:MissionStore 2026-06-27-16:30 (review): log the PG-mode degrade for the
+        // scheduler-driven feature reconciliation that stays sync-only.
         if (!activeMissionStore) {
-          runtimeLog.warn("[runtime] mission crash recovery skipped: MissionStore not available in PG backend mode");
+          runtimeLog.warn("[runtime] scheduler feature reconciliation skipped: sync MissionStore not available in PG backend mode");
         }
       } catch (error) {
         activeMissionStore = undefined;
+        activeAutopilotMissionStore = undefined;
         runtimeLog.warn(`[runtime] mission crash recovery skipped: ${error instanceof Error ? error.message : String(error)}`);
       }
       const activeMissionAutopilot = this.scheduler.getMissionAutopilot?.();
-      if (activeMissionStore && activeMissionAutopilot) {
-        void activeMissionAutopilot.recoverMissions(activeMissionStore);
+      if (activeAutopilotMissionStore && activeMissionAutopilot) {
+        void activeMissionAutopilot.recoverMissions(activeAutopilotMissionStore);
       }
 
       // 13. Reconcile feature status for all active missions (not just autopilot)

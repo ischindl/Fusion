@@ -293,7 +293,8 @@ export interface ServerOptions {
     watchMission(missionId: string): void;
     unwatchMission(missionId: string): void;
     isWatching(missionId: string): boolean;
-    getAutopilotStatus(missionId: string): import("@fusion/core").AutopilotStatus;
+    // FNXC:MissionStore 2026-06-28-12:45: getAutopilotStatus is async (union store).
+    getAutopilotStatus(missionId: string): Promise<import("@fusion/core").AutopilotStatus>;
     checkAndStartMission(missionId: string): Promise<void>;
     recoverStaleMission(missionId: string): Promise<void>;
     start(): void;

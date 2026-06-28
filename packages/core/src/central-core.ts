@@ -567,7 +567,15 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
 
   /**
    * Unregister a project from the central database.
-   * Cascades to delete health records and activity log entries.
+   *
+   * FNXC:ProjectLifecycle 2026-06-28-12:00:
+   * Removing a project from the central registry does NOT delete task data.
+   * The central.projects row is removed (cascading to project_health,
+   * central_activity_log, and project_node_path_mappings via FK onDelete
+   * cascade), but project.tasks has no FK to central.projects — tasks survive
+   * unregister so the project can be re-added with the same ID and its task
+   * history is immediately visible. This is a deliberate data-preservation
+   * contract, not an oversight.
    *
    * @param id — Project ID to unregister
    */
