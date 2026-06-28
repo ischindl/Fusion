@@ -116,6 +116,18 @@ describe("settings defaults invariants", () => {
     });
   });
 
+  describe("showWorktreeGrouping default", () => {
+    it("keeps showWorktreeGrouping explicitly false in project defaults", () => {
+      expect(DEFAULT_PROJECT_SETTINGS.showWorktreeGrouping).toBe(false);
+      expect("showWorktreeGrouping" in DEFAULT_PROJECT_SETTINGS).toBe(true);
+    });
+
+    it("keeps showWorktreeGrouping project-scoped only", () => {
+      // showWorktreeGrouping intentionally has no DEFAULT_GLOBAL_SETTINGS counterpart.
+      expect("showWorktreeGrouping" in DEFAULT_GLOBAL_SETTINGS).toBe(false);
+    });
+  });
+
   describe("mergeIntegrationWorktree default", () => {
     it("defaults project settings to reuse-task-worktree", () => {
       expect(DEFAULT_PROJECT_SETTINGS.mergeIntegrationWorktree).toBe("reuse-task-worktree");

@@ -527,6 +527,7 @@ function AppInner() {
   const {
     maxConcurrent,
     autoMerge,
+    showWorktreeGrouping,
     globalPaused,
     isTestMode,
     taskStuckTimeoutMs,
@@ -1186,6 +1187,7 @@ function AppInner() {
     mainPanelDetailTask,
     filteredBoardTasks,
     maxConcurrent,
+    showWorktreeGrouping,
     moveTask,
     pauseTask,
     openTaskDetailInMainPanel,

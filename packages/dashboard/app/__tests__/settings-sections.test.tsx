@@ -164,6 +164,38 @@ describe("WorktreesSection", () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
+  it("renders and toggles the board worktree grouping checkbox", () => {
+    const setForm = vi.fn((updater: SettingsFormState | ((prev: SettingsFormState) => SettingsFormState)) => {
+      if (typeof updater === "function") {
+        return updater({ recycleWorktrees: false, showWorktreeGrouping: false } as SettingsFormState);
+      }
+      return updater;
+    });
+
+    render(
+      <WorktreesSection
+        scopeBanner={null}
+        form={{ recycleWorktrees: false, showWorktreeGrouping: false, worktreeCopyFiles: [] } as SettingsFormState}
+        setForm={setForm}
+        gitRemotes={[]}
+        worktrunkInstall={worktrunkInstall}
+        worktrunkInstallVerified={true}
+        onOpenWorktreesDirPicker={vi.fn()}
+        onWorktreeCopyFileChange={vi.fn()}
+        onRemoveWorktreeCopyFile={vi.fn()}
+        onAddWorktreeCopyFile={vi.fn()}
+        onOpenWorktreeCopyFilePicker={vi.fn()}
+      />,
+    );
+
+    const checkbox = screen.getByLabelText(/Show worktree grouping on the board/i) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+
+    expect(setForm).toHaveBeenCalledTimes(1);
+    expect(setForm.mock.results[0]?.value).toMatchObject({ showWorktreeGrouping: true });
+  });
+
   it("keeps an empty copy-file row reachable when the setting is undefined", () => {
     render(
       <WorktreesSection

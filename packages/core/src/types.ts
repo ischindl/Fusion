@@ -3666,6 +3666,13 @@ export interface ProjectSettings {
    *  of being deleted. New tasks acquire a warm worktree from the pool,
    *  preserving build caches (node_modules, target/, dist/). Default: false. */
   recycleWorktrees?: boolean;
+  /**
+   * Controls whether the board shows worktree grouping and worktree-name labels in WIP/processing columns.
+   *
+   * FNXC:WorktreeGroupingSetting 2026-06-27-22:30:
+   * This is an explicit show/hide project setting. The default-off state hides worktree grouping and labels in both legacy and workflow-mode WIP columns; when enabled, operators see grouping in every WIP/processing column, including workflow-mode columns flagged as counting toward WIP.
+   */
+  showWorktreeGrouping?: boolean;
   /** When true, restores the legacy behavior of silently creating sibling
    *  branches like `fusion/FN-123-2` when the canonical task branch is already
    *  checked out elsewhere. Default: false. */

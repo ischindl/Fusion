@@ -21,6 +21,7 @@ interface BoardProps {
   tasks: Task[];
   projectId?: string;
   maxConcurrent: number;
+  showWorktreeGrouping: boolean;
   onMoveTask: (id: string, column: ColumnType) => Promise<Task>;
   onPauseTask?: (id: string) => Promise<Task>;
   onOpenDetail: (task: Task | TaskDetail) => void;
@@ -136,7 +137,7 @@ function BoardWorkflowSkeleton({ empty = false }: { empty?: boolean }) {
   );
 }
 
-export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowColumnsEnabled, settingsLoaded, workflowControlsInHeader = false }: BoardProps) {
+export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowColumnsEnabled, settingsLoaded, workflowControlsInHeader = false }: BoardProps) {
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   const archivedLoadedRef = useRef(false);
   const boardRef = useRef<HTMLElement | null>(null);
@@ -546,6 +547,7 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
                 allTasks={selectedWorkflowTasks}
                 projectId={projectId}
                 maxConcurrent={maxConcurrent}
+                showWorktreeGrouping={showWorktreeGrouping}
                 onMoveTask={onMoveTask}
                 onPromote={handlePromote}
                 canDropTask={(taskId) => canDropTask(taskId, columnDef.id, selectedWorkflow.id)}
@@ -592,6 +594,7 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
               allTasks={selectedWorkflowTasks}
               projectId={projectId}
               maxConcurrent={maxConcurrent}
+              showWorktreeGrouping={showWorktreeGrouping}
               onMoveTask={onMoveTask}
               onPromote={handlePromote}
               canDropTask={(taskId) => canDropTask(taskId, selectedWorkflowArchivedColumn.id, selectedWorkflow.id)}
@@ -639,6 +642,7 @@ export function Board({ tasks, projectId, maxConcurrent, onMoveTask, onPauseTask
             tasks={tasksByColumn[col]}
             projectId={projectId}
             maxConcurrent={maxConcurrent}
+            showWorktreeGrouping={showWorktreeGrouping}
             onMoveTask={onMoveTask}
             onPauseTask={onPauseTask}
             onOpenDetail={onOpenDetail}

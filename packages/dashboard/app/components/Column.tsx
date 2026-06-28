@@ -91,6 +91,7 @@ interface ColumnProps {
   tasks: Task[];
   projectId?: string;
   maxConcurrent: number;
+  showWorktreeGrouping: boolean;
   onMoveTask: (id: string, column: ColumnType, optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   onPauseTask?: (id: string) => Promise<Task>;
   onOpenDetail: (task: Task | TaskDetail) => void;
@@ -171,7 +172,7 @@ interface ColumnProps {
   getDraggingTaskId?: () => string | null;
 }
 
-function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, taskStuckTimeoutMs, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, blockerFanoutMap, prAuthAvailable, workflowMode, workflowId, columnDisplayName, columnFlags, onPromote, canDropTask, getDraggingTaskId }: ColumnProps) {
+function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, taskStuckTimeoutMs, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, blockerFanoutMap, prAuthAvailable, workflowMode, workflowId, columnDisplayName, columnFlags, onPromote, canDropTask, getDraggingTaskId }: ColumnProps) {
   const { t } = useTranslation("app");
   // Anchor the board.rejection.* catalog keys for the i18next extractor (it
   // scopes `t` to the useTranslation binding, so the shared translateRejection
@@ -240,21 +241,24 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
   const isArchived = workflowMode ? Boolean(columnFlags?.archived) : column === "archived";
   const isHoldColumn = workflowMode && Boolean(columnFlags?.hold);
   const isCollapsed = isArchived && collapsed;
-  // Legacy in-progress renders worktree groups (not paginated); in workflow
-  // mode there is no special-casing, so a processing column paginates normally.
-  const isLegacyInProgress = !workflowMode && column === "in-progress";
+  const isWipProcessingColumn = workflowMode ? Boolean(columnFlags?.countsTowardWip) : column === "in-progress";
+  /*
+  FNXC:WorktreeGroupingSetting 2026-06-27-22:30:
+  The project setting is an explicit show/hide control: worktree grouping and labels render only when enabled and only for the board's WIP/processing column. Turning it off must leave plain task cards with no legacy group shell in either legacy or workflow-mode columns.
+  */
+  const showWorktreeGroups = showWorktreeGrouping === true && isWipProcessingColumn;
   // When search is active, skip pagination so all matching tasks are visible
-  const shouldPaginate = !isArchived && !isSearchActive && !isLegacyInProgress && tasks.length > PAGINATED_COLUMN_THRESHOLD;
+  const shouldPaginate = !isArchived && !isSearchActive && !showWorktreeGroups && tasks.length > PAGINATED_COLUMN_THRESHOLD;
 
   useEffect(() => {
     setVisibleTaskCount((current) => {
-      if (isLegacyInProgress || isArchived || tasks.length <= PAGINATED_COLUMN_THRESHOLD) {
+      if (showWorktreeGroups || isArchived || tasks.length <= PAGINATED_COLUMN_THRESHOLD) {
         return VISIBLE_TASKS_INITIAL;
       }
 
       return Math.min(Math.max(current, VISIBLE_TASKS_INITIAL), tasks.length);
     });
-  }, [isLegacyInProgress, isArchived, tasks.length]);
+  }, [showWorktreeGroups, isArchived, tasks.length]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     // Don't allow dropping into archived column via drag-drop
@@ -369,12 +373,10 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
     }
   }, [onPromote, t]);
 
-  // Worktree grouping is a legacy in-progress affordance; in workflow mode a
-  // custom processing column renders plain cards (KTD-11 keeps one-card-one-lane).
   const worktreeGroups = useMemo(() => {
-    if (!isLegacyInProgress) return [];
-    return groupByWorktree(tasks, tasks, maxConcurrent);
-  }, [isLegacyInProgress, tasks, maxConcurrent]);
+    if (!showWorktreeGroups) return [];
+    return groupByWorktree(tasks, allTasks ?? tasks, maxConcurrent);
+  }, [showWorktreeGroups, tasks, allTasks, maxConcurrent]);
 
   const visibleTasks = useMemo(() => {
     if (!shouldPaginate) return tasks;
@@ -706,7 +708,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
               }}
             />
           )}
-          {isLegacyInProgress ? (
+          {showWorktreeGroups ? (
             worktreeGroups.length === 0 ? (
               <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
             ) : (

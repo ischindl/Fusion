@@ -149,6 +149,7 @@ export interface MainContentProps {
   mainPanelDetailTask: Task | TaskDetail | null;
   filteredBoardTasks: Task[];
   maxConcurrent: number;
+  showWorktreeGrouping: boolean;
   moveTask: (
     id: string,
     column: ColumnId,

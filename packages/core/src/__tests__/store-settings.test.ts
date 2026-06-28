@@ -40,6 +40,14 @@ describe("TaskStore", () => {
     });
   });
 
+  describe("showWorktreeGrouping setting", () => {
+    it("persists showWorktreeGrouping and returns it via getSettings", async () => {
+      await harness.store().updateSettings({ showWorktreeGrouping: true });
+      const settings = await harness.store().getSettings();
+      expect(settings.showWorktreeGrouping).toBe(true);
+    });
+  });
+
   describe("worktreeCopyFiles setting", () => {
     it("round-trips populated copy-file paths via getSettings and project serialization", async () => {
       await harness.store().updateSettings({ worktreeCopyFiles: [".env", "config/local.env", "packages/api/.env.test"] });

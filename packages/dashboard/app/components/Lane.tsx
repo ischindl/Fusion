@@ -31,6 +31,7 @@ export interface LaneProps {
   onToggleCollapse: (workflowId: string) => void;
   projectId?: string;
   maxConcurrent: number;
+  showWorktreeGrouping?: boolean;
   onMoveTask: (id: string, column: ColumnType, optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   onPromote: (taskId: string) => Promise<void>;
   /** Drag pre-check: null = allowed, else an i18n messageKey (R17). */
@@ -177,6 +178,7 @@ function LaneComponent(props: LaneProps) {
               allTasks={tasks}
               projectId={props.projectId}
               maxConcurrent={props.maxConcurrent}
+              showWorktreeGrouping={props.showWorktreeGrouping === true}
               onMoveTask={props.onMoveTask}
               onPromote={props.onPromote}
               canDropTask={makeCanDrop(col.id)}

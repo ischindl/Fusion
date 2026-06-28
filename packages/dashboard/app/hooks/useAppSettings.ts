@@ -11,6 +11,7 @@ export interface UseAppSettingsResult {
   maxConcurrent: number;
   rootDir: string;
   autoMerge: boolean;
+  showWorktreeGrouping: boolean;
   testMode: boolean;
   isTestMode: boolean;
   globalPaused: boolean;
@@ -48,6 +49,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [maxConcurrent, setMaxConcurrent] = useState(2);
   const [rootDir, setRootDir] = useState<string>(".");
   const [autoMerge, setAutoMerge] = useState(true);
+  const [showWorktreeGrouping, setShowWorktreeGrouping] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const [isTestMode, setIsTestMode] = useState(false);
   const [globalPaused, setGlobalPaused] = useState(false);
@@ -88,6 +90,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     if (settingsResult.status === "fulfilled") {
       const settings = settingsResult.value;
       setAutoMerge(Boolean(settings.autoMerge));
+      setShowWorktreeGrouping(settings.showWorktreeGrouping === true);
       const nextTestMode = settings.testMode === true;
       const nextIsTestMode = nextTestMode || settings.defaultProvider?.trim().toLowerCase() === "mock";
       setTestMode(nextTestMode);
@@ -226,6 +229,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     maxConcurrent,
     rootDir,
     autoMerge,
+    showWorktreeGrouping,
     testMode,
     isTestMode,
     globalPaused,
