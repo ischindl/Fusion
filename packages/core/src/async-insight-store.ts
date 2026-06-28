@@ -17,6 +17,7 @@
  *   consume.
  */
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
@@ -41,6 +42,7 @@ import type {
   InsightRunTrigger,
   InsightRunUpdateInput,
   InsightStatus,
+  InsightStoreEvents,
   InsightUpdateInput,
   InsightUpsertInput,
 } from "./insight-types.js";
@@ -527,13 +529,24 @@ export async function listStalePendingRuns(
  * Id/timestamp generation mirrors the sync store (INS-, INSR-, INSEVT- prefixes);
  * the run lifecycle state machine lives in the `updateInsightRun` helper above.
  *
- * Known gap vs the sync store: the sync InsightStore is an EventEmitter
- * (insight:created/run:event/…) for SSE live-refresh; this wrapper performs CRUD
- * only. The sync-coupled insight-run executor + background sweeper are not ported
- * in this unit, so manual run execution/retry remain a sync-mode capability.
+ * FNXC:InsightStore 2026-06-28-13:00:
+ * SSE live-push parity — the async wrapper now extends EventEmitter<InsightStoreEvents>
+ * and emits the SAME events at the SAME mutation points as the sync InsightStore
+ * (insight-store.ts) so subscribers live-refresh in PG backend mode. Emit sites are
+ * mirrored method-by-method from the sync store: createInsight/upsert(create path)→
+ * insight:created, updateInsight/upsert(update path)→insight:updated, deleteInsight→
+ * insight:deleted, createRun→run:created, updateRun→run:updated (+run:completed on a
+ * terminal status change), appendRunEvent→run:event. Each emit fires AFTER the
+ * persistence await succeeds, with the same payload (the persisted entity). The instance
+ * is cached on the TaskStore, so subscribers reach the same object the routes mutate.
+ *
+ * Known gap vs the sync store: the sync-coupled insight-run executor + background sweeper
+ * are not ported, so manual run execution/retry remain a sync-mode capability.
  */
-export class AsyncInsightStore {
-  constructor(private readonly layer: AsyncDataLayer) {}
+export class AsyncInsightStore extends EventEmitter<InsightStoreEvents> {
+  constructor(private readonly layer: AsyncDataLayer) {
+    super();
+  }
 
   private static newId(prefix: "INS" | "INSR"): string {
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -551,8 +564,13 @@ export class AsyncInsightStore {
   }
 
   async upsertInsight(projectId: string, input: InsightUpsertInput): Promise<Insight> {
-    return upsertInsight(this.layer.db, projectId, {
-      id: AsyncInsightStore.newId("INS"),
+    // The upsert helper returns the freshly-created insight under our generated id on
+    // the create path, or the pre-existing (different-id) insight on the update path —
+    // so id identity distinguishes which sync emit to mirror (createInsight→
+    // insight:created vs upsertInsight update branch→insight:updated).
+    const id = AsyncInsightStore.newId("INS");
+    const result = await upsertInsight(this.layer.db, projectId, {
+      id,
       title: input.title,
       content: input.content ?? null,
       category: input.category,
@@ -560,14 +578,20 @@ export class AsyncInsightStore {
       fingerprint: input.fingerprint,
       provenance: input.provenance,
     });
+    this.emit(result.id === id ? "insight:created" : "insight:updated", result);
+    return result;
   }
 
   async updateInsight(id: string, input: InsightUpdateInput): Promise<Insight | undefined> {
-    return updateInsight(this.layer.db, id, input);
+    const updated = await updateInsight(this.layer.db, id, input);
+    if (updated) this.emit("insight:updated", updated);
+    return updated;
   }
 
   async deleteInsight(id: string): Promise<boolean> {
-    return deleteInsight(this.layer.db, id);
+    const deleted = await deleteInsight(this.layer.db, id);
+    if (deleted) this.emit("insight:deleted", id);
+    return deleted;
   }
 
   async countInsights(options: Omit<InsightListOptions, "limit" | "offset"> = {}): Promise<number> {
@@ -584,7 +608,7 @@ export class AsyncInsightStore {
       retryOfRunId: input.lifecycle?.retryOfRunId,
       ...input.lifecycle,
     };
-    return createInsightRun(this.layer.db, {
+    const run = await createInsightRun(this.layer.db, {
       id: AsyncInsightStore.newId("INSR"),
       projectId,
       trigger: input.trigger,
@@ -592,6 +616,8 @@ export class AsyncInsightStore {
       lifecycle: lifecycle as Record<string, unknown>,
       createdAt: now,
     });
+    this.emit("run:created", run);
+    return run;
   }
 
   async getRun(id: string): Promise<InsightRun | undefined> {
@@ -603,7 +629,17 @@ export class AsyncInsightStore {
   }
 
   async updateRun(id: string, input: InsightRunUpdateInput): Promise<InsightRun | undefined> {
-    return updateInsightRun(this.layer.db, id, input);
+    const before = await getInsightRun(this.layer.db, id);
+    const updated = await updateInsightRun(this.layer.db, id, input);
+    if (updated) {
+      // Mirror sync InsightStore.updateRun: run:completed only on a transition INTO a
+      // terminal status, then always run:updated.
+      if (before && TERMINAL_RUN_STATUSES.has(updated.status) && updated.status !== before.status) {
+        this.emit("run:completed", updated);
+      }
+      this.emit("run:updated", updated);
+    }
+    return updated;
   }
 
   async upsertRun(projectId: string, trigger: InsightRunTrigger, input: InsightRunCreateInput): Promise<InsightRun> {
@@ -648,7 +684,7 @@ export class AsyncInsightStore {
     if (!run) {
       throw new Error(`Insight run not found: ${runId}`);
     }
-    return appendInsightRunEvent(this.layer, {
+    const runEvent = await appendInsightRunEvent(this.layer, {
       id: `INSEVT-${randomUUID()}`,
       runId,
       type: event.type,
@@ -657,6 +693,8 @@ export class AsyncInsightStore {
       classification: event.classification,
       metadata: event.metadata,
     });
+    this.emit("run:event", { runId, event: runEvent });
+    return runEvent;
   }
 
   async listRunEvents(runId: string): Promise<InsightRunEvent[]> {

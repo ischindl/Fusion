@@ -18,6 +18,7 @@
  *   consume.
  */
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
@@ -40,6 +41,7 @@ import type {
   ResearchRunStatus,
   ResearchRunUpdateInput,
   ResearchSource,
+  ResearchStoreEvents,
 } from "./research-types.js";
 
 /** A query-capable handle: either the top-level db or a transaction handle. */
@@ -772,14 +774,29 @@ export async function getResearchExport(handle: QueryHandle, id: string): Promis
  * the sync store (RR-/REVT-/RSRC-/REXP- prefixes); the run lifecycle + retry machines
  * live in the helpers above.
  *
- * Known gap vs the sync store: the sync ResearchStore is an EventEmitter
- * (run:created/run:status_changed/…) for SSE live-refresh, and the engine
- * ResearchOrchestrator/ResearchRunDispatcher are coupled to that sync EventEmitter.
- * This wrapper performs CRUD + lifecycle only; AI research EXECUTION (orchestrator
- * dispatch) stays degraded in PG mode — the dashboard CRUD/lifecycle surface is in scope.
+ * FNXC:ResearchStore 2026-06-28-13:00:
+ * SSE live-push parity — the async wrapper now extends EventEmitter<ResearchStoreEvents>
+ * and emits the SAME events at the SAME mutation points as the sync ResearchStore
+ * (research-store.ts) so the dashboard SSE handler live-refreshes in PG backend mode
+ * instead of only on manual reload. Emit sites are mirrored method-by-method from the
+ * sync store's `this.emit(` call sites: createRun→run:created, updateRun→run:updated,
+ * deleteRun→run:deleted, addEvent→event:added, addSource→source:added, updateStatus→
+ * run:status_changed (+run:completed/failed/cancelled/timed_out). Each emit fires AFTER
+ * the persistence await succeeds, with the same payload (the persisted entity) the sync
+ * store emits. The instance is cached on the TaskStore, so SSE subscribes to the same
+ * object the routes mutate.
+ *
+ * Known gap vs the sync store: AI research EXECUTION (orchestrator dispatch) stays
+ * degraded in PG mode — the dashboard CRUD/lifecycle surface is in scope. requestCancellation/
+ * createRetryRun mirror the sync helpers (which emit only indirectly via the sync
+ * updateRun/updateStatus); the async variants call the helpers directly, so their
+ * status-change events surface through an explicit updateStatus call by the caller, not
+ * from inside requestCancellation/createRetryRun.
  */
-export class AsyncResearchStore {
-  constructor(private readonly layer: AsyncDataLayer) {}
+export class AsyncResearchStore extends EventEmitter<ResearchStoreEvents> {
+  constructor(private readonly layer: AsyncDataLayer) {
+    super();
+  }
 
   async createRun(input: ResearchRunCreateInput): Promise<ResearchRun> {
     const now = new Date().toISOString();
@@ -806,7 +823,9 @@ export class AsyncResearchStore {
       createdAt: now,
       updatedAt: now,
     };
-    return createResearchRun(this.layer.db, run);
+    const created = await createResearchRun(this.layer.db, run);
+    this.emit("run:created", created);
+    return created;
   }
 
   async getRun(id: string): Promise<ResearchRun | undefined> {
@@ -814,7 +833,9 @@ export class AsyncResearchStore {
   }
 
   async updateRun(id: string, input: ResearchRunUpdateInput): Promise<ResearchRun | undefined> {
-    return updateResearchRun(this.layer.db, id, input);
+    const updated = await updateResearchRun(this.layer.db, id, input);
+    if (updated) this.emit("run:updated", updated);
+    return updated;
   }
 
   async listRuns(options: ResearchRunListOptions = {}): Promise<ResearchRun[]> {
@@ -822,11 +843,15 @@ export class AsyncResearchStore {
   }
 
   async deleteRun(id: string): Promise<boolean> {
-    return deleteResearchRun(this.layer.db, id);
+    const deleted = await deleteResearchRun(this.layer.db, id);
+    if (deleted) this.emit("run:deleted", id);
+    return deleted;
   }
 
   async appendEvent(runId: string, event: Omit<ResearchEvent, "id" | "timestamp">): Promise<ResearchEvent> {
-    return appendResearchEvent(this.layer, runId, event);
+    const created = await appendResearchEvent(this.layer, runId, event);
+    this.emit("event:added", { runId, event: created });
+    return created;
   }
 
   async listRunEvents(runId: string): Promise<ResearchRunEvent[]> {
@@ -834,7 +859,9 @@ export class AsyncResearchStore {
   }
 
   async addSource(runId: string, source: Omit<ResearchSource, "id">): Promise<ResearchSource> {
-    return addResearchSource(this.layer.db, runId, source);
+    const created = await addResearchSource(this.layer.db, runId, source);
+    this.emit("source:added", { runId, source: created });
+    return created;
   }
 
   async updateSource(runId: string, sourceId: string, updates: Partial<ResearchSource>): Promise<void> {
@@ -846,7 +873,16 @@ export class AsyncResearchStore {
   }
 
   async updateStatus(runId: string, status: ResearchRunStatus, extra?: Partial<ResearchRun>): Promise<void> {
-    return updateResearchStatus(this.layer, runId, status, extra);
+    await updateResearchStatus(this.layer, runId, status, extra);
+    // Mirror sync ResearchStore.updateStatus emit set: run:status_changed always,
+    // plus the terminal-specific event keyed off the persisted (normalized) status.
+    const updated = await getResearchRun(this.layer.db, runId);
+    if (!updated) return;
+    this.emit("run:status_changed", updated);
+    if (updated.status === "completed") this.emit("run:completed", updated);
+    if (updated.status === "failed") this.emit("run:failed", updated);
+    if (updated.status === "cancelled") this.emit("run:cancelled", updated);
+    if (updated.status === "timed_out") this.emit("run:timed_out", updated);
   }
 
   async requestCancellation(runId: string, reason?: string): Promise<ResearchRun> {

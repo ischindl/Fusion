@@ -2131,6 +2131,7 @@ export type {
 export {
   recordDeploymentAsync,
   resolveIncidentAsync,
+  ingestIncidentSignalAsync,
   getOpenIncidentByGroupingKeyAsync,
   getIncidentAsync,
 } from "./task-store/async-monitor.js";

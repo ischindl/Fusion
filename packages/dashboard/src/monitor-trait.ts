@@ -147,7 +147,12 @@ export async function runMonitorOnRegression(
 
   let incidentId: string;
   try {
-    const { incident } = ingestIncidentSignal(db, signal);
+    // FNXC:PostgresCutover 2026-06-28-09:05:
+    // ingestIncidentSignal is now async (backend dual-path). This call is still
+    // reached only for the sync SQLite `db` (the backend-mode early return above
+    // guards the remaining storm-guard helpers, which are not yet PG-ported), but
+    // the now-async signature must be awaited.
+    const { incident } = await ingestIncidentSignal(db, signal);
     incidentId = incident.incidentId;
 
     const recent = countRecentAutoFixTasks(db, config, nowMs);

@@ -212,12 +212,20 @@ export async function ingestSignal(deps: SignalIngestDeps): Promise<SignalIngest
     updated, so the returned Promise floated and resolution errors were silently
     dropped. Now resolveIncident receives the async layer in backend mode
     (getAsyncLayer() ?? getDatabase(), matching monitor-routes.ts) and the call
-    is awaited so errors surface in the catch below. ingestIncidentSignal
-    remains sync/SQLite-scoped (a separate unguarded path); the await only
-    applies to the now-async resolveIncident.
+    is awaited so errors surface in the catch below.
+
+    FNXC:PostgresCutover 2026-06-28-09:05:
+    ingestIncidentSignal is now backend-dual-path (FN-6706 PG cutover): it accepts
+    the AsyncDataLayer and writes project.incidents via Drizzle in backend mode.
+    The earlier backend-mode skip+warn (signals were dropped, recorded only via
+    the resolveIncident path) is removed; we now pass getAsyncLayer() ?? getDatabase()
+    (matching the resolveIncident call below) and await it, so incident open/absorb
+    works end-to-end in both SQLite and PostgreSQL backends. Incident storage stays
+    best-effort: a local write failure is logged in the catch below but never
+    rejects the upstream webhook after Fusion accepted the triage task.
     */
     const at = signalTimestampToIso(signal.timestamp) ?? new Date().toISOString();
-    ingestIncidentSignal(store.getDatabase(), {
+    await ingestIncidentSignal(store.getAsyncLayer() ?? store.getDatabase(), {
       groupingKey: signal.groupingKey,
       title: signal.title,
       severity: signal.severity,

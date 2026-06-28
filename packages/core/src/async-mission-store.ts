@@ -38,6 +38,7 @@
  *   They program against the stable `AsyncDataLayer` interface (U4), not the
  *   underlying driver.
  */
+import { EventEmitter } from "node:events";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
@@ -85,6 +86,7 @@ import type {
   MissionSummary,
   MissionAssertionBackfillReport,
   MissionAssertionTextSource,
+  MissionStoreEvents,
 } from "./mission-store.js";
 import { reconcileDeterministicDuplicate, runDeterministicDuplicateGuard } from "./duplicate-guard.js";
 import { resolveEntryPointBranchAssignment } from "./branch-assignment.js";
@@ -1921,14 +1923,35 @@ export async function listFailedTaskIds(handle: QueryHandle): Promise<Set<string
 // applyMissionHierarchySnapshot/listGoalIdsForTask) are NOT ported here — their
 // sync consumers are instanceof-guarded.
 // ════════════════════════════════════════════════════════════════════
-export class AsyncMissionStore {
+/**
+ * FNXC:MissionStore 2026-06-28-13:00:
+ * SSE live-push parity — AsyncMissionStore extends EventEmitter<MissionStoreEvents>
+ * and emits the SAME events at the SAME mutation points as the sync MissionStore
+ * (mission-store.ts) so the dashboard SSE handler live-refreshes mission/milestone/
+ * slice/feature/assertion changes in PG backend mode (previously only manual reload
+ * updated them). Emit sites are mirrored method-by-method from the sync store's
+ * `this.emit(` call sites; each emit fires AFTER the persistence await succeeds with
+ * the same payload (the persisted entity) the sync store emits. The status-cascade
+ * recompute helpers (recomputeSliceStatus/MilestoneStatus/MissionStatus/MilestoneValidation)
+ * route through the emitting update* methods, so cascade-driven updates emit exactly as
+ * in the sync store. The instance is cached on the TaskStore, so SSE subscribes to the
+ * same object the mission routes mutate.
+ *
+ * Known gap vs the sync store: completeValidatorRun / reapValidatorRun /
+ * createGeneratedFixFeature (validator-run:completed, fix-feature:created) are not ported
+ * into the async wrapper, so those two events never fire in PG mode (validator-run loop
+ * execution stays a sync-mode capability).
+ */
+export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
   private idSequence = 0;
   private readonly milestonesMissingStructuredAssertions = new Set<string>();
 
   constructor(
     private readonly layer: AsyncDataLayer,
     private readonly taskStore?: import("./store.js").TaskStore,
-  ) {}
+  ) {
+    super();
+  }
 
   private get db(): AsyncDataLayer["db"] {
     return this.layer.db;
@@ -1946,7 +1969,7 @@ export class AsyncMissionStore {
   // ════════════════ MISSION CRUD ════════════════
   async createMission(input: MissionCreateInput & { autopilotEnabled?: boolean }): Promise<Mission> {
     const now = new Date().toISOString();
-    return createMission(this.db, {
+    const mission = await createMission(this.db, {
       id: this.generateId("M"),
       title: input.title,
       description: input.description,
@@ -1961,6 +1984,8 @@ export class AsyncMissionStore {
       createdAt: now,
       updatedAt: now,
     });
+    this.emit("mission:created", mission);
+    return mission;
   }
 
   async getMission(id: string): Promise<Mission | undefined> {
@@ -2221,9 +2246,9 @@ export class AsyncMissionStore {
   ): Promise<MissionEvent> {
     const mission = await getMission(this.db, missionId);
     if (!mission) throw new Error(`Mission ${missionId} not found`);
-    return this.layer.transactionImmediate(async (tx) => {
+    const event = await this.layer.transactionImmediate(async (tx) => {
       const maxSeq = await getMaxEventSeq(tx);
-      const event: MissionEvent = {
+      const created: MissionEvent = {
         id: this.generateId("ME"),
         missionId,
         eventType,
@@ -2232,9 +2257,11 @@ export class AsyncMissionStore {
         timestamp: new Date().toISOString(),
         seq: maxSeq + 1,
       };
-      await insertMissionEvent(tx, event);
-      return event;
+      await insertMissionEvent(tx, created);
+      return created;
     });
+    this.emit("mission:event", event);
+    return event;
   }
 
   async getMissionEvents(
@@ -2255,6 +2282,7 @@ export class AsyncMissionStore {
       updatedAt: new Date().toISOString(),
     };
     await updateMission(this.db, updated);
+    this.emit("mission:updated", updated);
     return updated;
   }
 
@@ -2262,6 +2290,7 @@ export class AsyncMissionStore {
     const mission = await getMission(this.db, id);
     if (!mission) throw new Error(`Mission ${id} not found`);
     await deleteMission(this.db, id);
+    this.emit("mission:deleted", id);
   }
 
   async updateMissionInterviewState(id: string, state: InterviewState): Promise<Mission> {
@@ -2270,21 +2299,29 @@ export class AsyncMissionStore {
 
   // ════════════════ MISSION-GOAL LINKS ════════════════
   async linkGoal(missionId: string, goalId: string): Promise<MissionGoalLink> {
-    return this.layer.transactionImmediate(async (tx) => {
+    const { link, changed } = await this.layer.transactionImmediate(async (tx) => {
       if (!(await missionExists(tx, missionId))) throw new Error(`Mission ${missionId} not found`);
       if (!(await goalExists(tx, goalId))) throw new Error(`Goal ${goalId} not found`);
       const existing = await getMissionGoalLink(tx, missionId, goalId);
-      if (existing) return existing;
+      if (existing) return { link: existing, changed: false };
       const createdAt = new Date().toISOString();
       await insertMissionGoalLink(tx, missionId, goalId, createdAt);
       const row = await getMissionGoalLink(tx, missionId, goalId);
       if (!row) throw new Error(`Failed to link mission ${missionId} to goal ${goalId}`);
-      return row;
+      return { link: row, changed: true };
     });
+    // Mirror sync: emit mission:goal-linked only when a new link was created.
+    if (changed) this.emit("mission:goal-linked", link);
+    return link;
   }
 
   async unlinkGoal(missionId: string, goalId: string): Promise<boolean> {
-    return deleteMissionGoalLink(this.db, missionId, goalId);
+    // Capture the link row before deletion so the emit payload matches the sync
+    // store's mission:goal-unlinked [MissionGoalLink] shape.
+    const link = await getMissionGoalLink(this.db, missionId, goalId);
+    const deleted = await deleteMissionGoalLink(this.db, missionId, goalId);
+    if (deleted && link) this.emit("mission:goal-unlinked", link);
+    return deleted;
   }
 
   async listGoalIdsForMission(missionId: string): Promise<string[]> {
@@ -2318,7 +2355,9 @@ export class AsyncMissionStore {
       createdAt: now,
       updatedAt: now,
     };
-    return createMilestone(this.db, milestone);
+    const created = await createMilestone(this.db, milestone);
+    this.emit("milestone:created", created);
+    return created;
   }
 
   async getMilestone(id: string): Promise<Milestone | undefined> {
@@ -2341,6 +2380,7 @@ export class AsyncMissionStore {
       updatedAt: new Date().toISOString(),
     };
     await updateMilestone(this.db, updated);
+    this.emit("milestone:updated", updated);
     await this.recomputeMissionStatus(updated.missionId);
     return updated;
   }
@@ -2365,6 +2405,7 @@ export class AsyncMissionStore {
       }
     }
     await deleteMilestone(this.db, id);
+    this.emit("milestone:deleted", id);
     await this.recomputeMissionStatus(missionId);
   }
 
@@ -2412,7 +2453,9 @@ export class AsyncMissionStore {
       createdAt: now,
       updatedAt: now,
     };
-    return createSlice(this.db, slice);
+    const created = await createSlice(this.db, slice);
+    this.emit("slice:created", created);
+    return created;
   }
 
   async getSlice(id: string): Promise<Slice | undefined> {
@@ -2435,6 +2478,7 @@ export class AsyncMissionStore {
       updatedAt: new Date().toISOString(),
     };
     await updateSlice(this.db, updated);
+    this.emit("slice:updated", updated);
     await this.recomputeMilestoneStatus(updated.milestoneId);
     return updated;
   }
@@ -2457,6 +2501,7 @@ export class AsyncMissionStore {
       }
     }
     await deleteSlice(this.db, id);
+    this.emit("slice:deleted", id);
     await this.recomputeMilestoneStatus(milestoneId);
   }
 
@@ -2484,6 +2529,7 @@ export class AsyncMissionStore {
         console.error(`[AsyncMissionStore] Auto-triage failed for slice ${id}:`, err);
       }
     }
+    this.emit("slice:activated", updated);
     return updated;
   }
 
@@ -2514,7 +2560,8 @@ export class AsyncMissionStore {
       implementationAttemptCount: 0,
       validatorAttemptCount: 0,
     };
-    await createFeature(this.db, feature);
+    const created = await createFeature(this.db, feature);
+    this.emit("feature:created", created);
     await this.recomputeSliceStatus(sliceId);
     await this.applyDerivedMilestoneAcceptanceCriteria(slice.milestoneId);
     await this.ensureFeatureAssertion(feature);
@@ -2545,6 +2592,7 @@ export class AsyncMissionStore {
       updatedAt: new Date().toISOString(),
     };
     await updateFeature(this.db, updated);
+    this.emit("feature:updated", updated);
     const taskIdChanged = updates.taskId !== undefined && updates.taskId !== feature.taskId;
     const statusChanged = updates.status !== undefined && updates.status !== feature.status;
     if (taskIdChanged || statusChanged) await this.recomputeSliceStatus(updated.sliceId);
@@ -2579,6 +2627,7 @@ export class AsyncMissionStore {
       if (managed) await this.deleteContractAssertion(managed.id);
     }
     await deleteFeature(this.db, id);
+    this.emit("feature:deleted", id);
     await this.recomputeSliceStatus(sliceId);
   }
 
@@ -2607,6 +2656,7 @@ export class AsyncMissionStore {
     const updated = await this.updateFeature(featureId, { taskId, status: "triaged", ...loopStateUpdates });
     await setTaskMissionLinkage(this.db, taskId, linkage.missionId, linkage.sliceId);
     await this.recomputeSliceStatus(updated.sliceId);
+    this.emit("feature:linked", { feature: updated, taskId });
     return updated;
   }
 
@@ -2645,6 +2695,7 @@ export class AsyncMissionStore {
       updatedAt: now,
     };
     await createValidatorRun(this.db, run);
+    this.emit("validator-run:started", run);
     await this.updateFeature(featureId, {
       validatorAttemptCount: newValidatorAttemptCount,
       lastValidatorRunId: run.id,
@@ -2713,6 +2764,7 @@ export class AsyncMissionStore {
       updatedAt: now,
     };
     const created = await createContractAssertion(this.db, assertion);
+    this.emit("assertion:created", created);
     await this.recomputeMilestoneValidation(milestoneId);
     return created;
   }
@@ -2736,6 +2788,7 @@ export class AsyncMissionStore {
       updatedAt: new Date().toISOString(),
     };
     await updateContractAssertion(this.db, updated);
+    this.emit("assertion:updated", updated);
     await this.recomputeMilestoneValidation(updated.milestoneId);
     return updated;
   }
@@ -2745,6 +2798,7 @@ export class AsyncMissionStore {
     if (!assertion) throw new Error(`Assertion ${id} not found`);
     const milestoneId = assertion.milestoneId;
     await deleteContractAssertion(this.db, id);
+    this.emit("assertion:deleted", id);
     await this.recomputeMilestoneValidation(milestoneId);
   }
 
@@ -2767,6 +2821,7 @@ export class AsyncMissionStore {
       throw new Error(`Feature ${featureId} is already linked to assertion ${assertionId}`);
     }
     await linkFeatureToAssertion(this.db, featureId, assertionId, new Date().toISOString());
+    this.emit("assertion:linked", { featureId, assertionId });
     await this.recomputeMilestoneValidation(assertion.milestoneId);
   }
 
@@ -2775,6 +2830,7 @@ export class AsyncMissionStore {
       throw new Error(`Feature ${featureId} is not linked to assertion ${assertionId}`);
     }
     await unlinkFeatureFromAssertion(this.db, featureId, assertionId);
+    this.emit("assertion:unlinked", { featureId, assertionId });
     const assertion = await getContractAssertion(this.db, assertionId);
     if (assertion) await this.recomputeMilestoneValidation(assertion.milestoneId);
   }
@@ -3106,6 +3162,7 @@ export class AsyncMissionStore {
   private async recomputeMilestoneValidation(milestoneId: string): Promise<void> {
     const rollup = await this.getMilestoneValidationRollup(milestoneId);
     await updateMilestoneValidationState(this.db, milestoneId, rollup.state);
+    this.emit("milestone:validation:updated", { milestoneId, state: rollup.state, rollup });
   }
 
   private deriveFeatureAssertion(feature: MissionFeature): { assertionText: string; textSource: MissionAssertionTextSource } {

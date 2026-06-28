@@ -16,7 +16,7 @@ import type {
   AgentLogEntry,
   TaskIdIntegrityReport,
 } from "@fusion/core";
-import { AgentStore, ChatStore, setRunningAgentCountSource, MissionStore } from "@fusion/core";
+import { AgentStore, ChatStore, setRunningAgentCountSource } from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "./routes.js";
 import { createApiRoutes } from "./routes.js";
 import { createSSE, disconnectSSEClient, markSSEClientAlive } from "./sse.js";
@@ -1049,16 +1049,17 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     const engineManager = options?.engineManager;
 
-    // FNXC:MissionStore 2026-06-27-15:50:
-    // The dashboard SSE subscribes to the sync EventEmitter MissionStore for live
-    // mission events. In PG backend mode getMissionStore() returns the
-    // AsyncMissionStore (not an EventEmitter); guard with instanceof and pass
-    // undefined so createSSE leaves mission subscriptions off (mission SSE stays
-    // degraded in PG, mirroring the research-store guard). createSSE handles undefined.
-    const safeGetMissionStore = (s: TaskStore): MissionStore | undefined => {
+    // FNXC:MissionStore 2026-06-28-13:10:
+    // Both MissionStore and the PG-backend AsyncMissionStore now extend EventEmitter and
+    // emit the same mission/milestone/slice/feature events, so SSE subscribes to whichever
+    // getMissionStore() resolves — live mission refresh works in both backends. (Previously
+    // this instanceof-narrowed to the sync store and passed undefined in PG mode, leaving
+    // mission SSE degraded.) createSSE still handles undefined for a missing store.
+    const safeGetMissionStore = (
+      s: TaskStore,
+    ): ReturnType<TaskStore["getMissionStore"]> | undefined => {
       try {
-        const resolved = s.getMissionStore();
-        return resolved instanceof MissionStore ? resolved : undefined;
+        return s.getMissionStore();
       } catch {
         return undefined;
       }

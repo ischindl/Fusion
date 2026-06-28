@@ -1,12 +1,10 @@
 import type { Request, Response } from "express";
-// FNXC:ResearchStore 2026-06-27-12:25:
-// Value import so SSE can narrow getResearchStore() (now ResearchStore | AsyncResearchStore)
-// to the sync EventEmitter ResearchStore. AsyncResearchStore (PG backend) is not an
-// EventEmitter, so research run-event subscriptions stay off in PG mode.
-import { ResearchStore } from "@fusion/core";
 import type {
   TaskStore,
   MissionStore,
+  AsyncMissionStore,
+  ResearchStore,
+  AsyncResearchStore,
   PluginStore,
   PluginInstallation,
   PluginState,
@@ -17,6 +15,16 @@ import type {
   ChatStore,
   AutomationStore,
 } from "@fusion/core";
+
+// FNXC:DashboardSSE 2026-06-28-13:10:
+// Both the sync stores AND their PG-backend async wrappers now extend EventEmitter
+// and emit the SAME mission/research events, so SSE subscribes to whichever backend
+// getMissionStore()/getResearchStore() resolves — live push works in both backends.
+// Previously these were instanceof-narrowed to the sync EventEmitter only, leaving PG
+// mode without live refresh. The union members share an identical event map, so a single
+// subscribe/unsubscribe set is type-safe across both.
+type SseMissionStore = MissionStore | AsyncMissionStore;
+type SseResearchStore = ResearchStore | AsyncResearchStore;
 import type { AiSessionStore } from "./ai-session-store.js";
 
 let activeConnections = 0;
@@ -456,7 +464,7 @@ export interface CreateSSEOptions {
 
 export function createSSE(
   store: TaskStore,
-  missionStore?: MissionStore,
+  missionStore?: SseMissionStore,
   aiSessionStore?: AiSessionStore,
   pluginStore?: PluginStore,
   options?: CreateSSEOptions,
@@ -471,15 +479,14 @@ export function createSSE(
     const connectionId = nextConnectionId++;
     const clientId = normalizeSSEClientId(_req.query?.clientId);
     const socket = res.socket ?? _req.socket;
-    // FNXC:ResearchStore 2026-06-27-12:25:
-    // SSE research run-event subscriptions require the sync EventEmitter ResearchStore.
-    // In PG backend mode getResearchStore() returns the AsyncResearchStore (CRUD-only,
-    // not an EventEmitter), so narrow to ResearchStore | null: keep serving every other
-    // event type and skip only the research subscriptions below (optional-chained).
-    let researchStore: ResearchStore | null;
+    // FNXC:ResearchStore 2026-06-28-13:10:
+    // Both ResearchStore and AsyncResearchStore (PG backend) now emit run:* events, so
+    // SSE subscribes to whichever getResearchStore() resolves. The optional-chained
+    // subscribe/unsubscribe below is kept so a getResearchStore() that throws (no research
+    // store wired) degrades gracefully to research-less streaming.
+    let researchStore: SseResearchStore | null;
     try {
-      const resolvedResearchStore = store.getResearchStore();
-      researchStore = resolvedResearchStore instanceof ResearchStore ? resolvedResearchStore : null;
+      researchStore = store.getResearchStore();
     } catch {
       researchStore = null;
     }

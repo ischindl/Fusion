@@ -4,6 +4,7 @@ import type { AsyncDataLayer } from "@fusion/core";
 import {
   recordDeploymentAsync,
   resolveIncidentAsync,
+  ingestIncidentSignalAsync,
 } from "@fusion/core";
 
 /**
@@ -241,13 +242,35 @@ export function getIncident(db: Database, incidentId: string): Incident | null {
  * key, the firing is ABSORBED into it (occurrence count + updatedAt bumped) —
  * this is the cooldown/dedup path. Otherwise a fresh `open` incident is created.
  * Returns the incident plus whether it was newly opened.
+ *
+ * FNXC:PostgresCutover 2026-06-28-09:00:
+ * Backend dual-path (FN-6706 PG cutover): mirrors {@link resolveIncident}. In
+ * backend mode the dashboard passes the AsyncDataLayer (`getAsyncLayer()`), which
+ * uniquely exposes `ping()`; we delegate to `ingestIncidentSignalAsync`, writing
+ * the schema-qualified `project.incidents` table (snake_case columns) via Drizzle.
+ * The async path preserves the exact upsert/dedup semantics of the sync SQLite
+ * path below: absorb a re-firing signal into the open incident for a grouping key
+ * (bump `meta.occurrences` + `updatedAt`, preserve first `meta.firstFiredAt`), or
+ * otherwise open a fresh `open` incident. Made async so callers must await.
  */
-export function ingestIncidentSignal(
-  db: Database,
+export async function ingestIncidentSignal(
+  db: Database | AsyncDataLayer,
   input: IncidentSignalInput,
-): { incident: Incident; created: boolean } {
+): Promise<{ incident: Incident; created: boolean }> {
+  // FNXC:MonitorStoreDiscriminator 2026-06-28-09:00:
+  // `"ping" in db` is unique to AsyncDataLayer (SQLite `Database` also exposes
+  // `transactionImmediate`, so that earlier discriminator was broken). The async
+  // helper returns the core `Incident` shape, structurally identical to this
+  // module's `Incident`.
+  if ("ping" in db) {
+    return ingestIncidentSignalAsync((db as AsyncDataLayer).db, input) as Promise<{
+      incident: Incident;
+      created: boolean;
+    }>;
+  }
+  const sqliteDb = db as Database;
   const now = input.at ?? new Date().toISOString();
-  const existing = getOpenIncidentByGroupingKey(db, input.groupingKey);
+  const existing = getOpenIncidentByGroupingKey(sqliteDb, input.groupingKey);
 
   if (existing) {
     // Absorb the re-firing signal into the open incident.
@@ -259,11 +282,11 @@ export function ingestIncidentSignal(
       [OCCURRENCES_META_KEY]: occurrences,
       [FIRST_FIRED_META_KEY]: meta[FIRST_FIRED_META_KEY] ?? existing.openedAt,
     };
-    db.prepare(
+    sqliteDb.prepare(
       `UPDATE incidents SET updatedAt = ?, meta = ? WHERE incidentId = ?`,
     ).run(now, JSON.stringify(nextMeta), existing.incidentId);
-    db.bumpLastModified();
-    const updated = getIncident(db, existing.incidentId);
+    sqliteDb.bumpLastModified();
+    const updated = getIncident(sqliteDb, existing.incidentId);
     return { incident: updated ?? existing, created: false };
   }
 
@@ -273,7 +296,7 @@ export function ingestIncidentSignal(
     [OCCURRENCES_META_KEY]: 1,
     [FIRST_FIRED_META_KEY]: now,
   };
-  db.prepare(
+  sqliteDb.prepare(
     `INSERT INTO incidents
        (incidentId, groupingKey, title, severity, status, source, fixTaskId, openedAt, resolvedAt, link, meta, createdAt, updatedAt)
      VALUES (?, ?, ?, ?, 'open', ?, NULL, ?, NULL, ?, ?, ?, ?)`,
@@ -289,8 +312,8 @@ export function ingestIncidentSignal(
     now,
     now,
   );
-  db.bumpLastModified();
-  const incident = getIncident(db, incidentId);
+  sqliteDb.bumpLastModified();
+  const incident = getIncident(sqliteDb, incidentId);
   if (!incident) throw new Error(`incident ${incidentId} not found after insert`);
   return { incident, created: true };
 }
