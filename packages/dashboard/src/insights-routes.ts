@@ -20,6 +20,8 @@ import {
   executeInsightRunLifecycle,
   resolvePlanningSettingsModel,
   retryInsightRunLifecycle,
+  type AsyncInsightStore,
+  type InsightRun,
   type InsightCategory,
   type MemoryInsightCategory,
   type InsightStatus,
@@ -96,20 +98,31 @@ const INSIGHT_CATEGORY_BY_MEMORY_CATEGORY: Record<MemoryInsightCategory, Insight
 
 const activeRunControllers = new Map<string, AbortController>();
 
-function maybeRecoverOrphanedActiveRun(params: {
-  insightStore: InsightStore;
-  run: ReturnType<InsightStore["getRun"]>;
+/*
+ * FNXC:InsightStore 2026-06-28-10:10:
+ * Insight-run EXECUTION (POST /run, POST /runs/:id/retry) + the orphan recovery
+ * helpers drive whichever backend store getInsightStore() resolves: the sync
+ * SQLite `InsightStore` in legacy mode, or the PostgreSQL `AsyncInsightStore` in
+ * backend mode. Both share method names returning identical shapes, so callers
+ * type the store as this union and `await` every call. The interim PG-mode 503
+ * (getSyncInsightStore) is gone — run execution now works in both backends.
+ */
+type RouteInsightStore = InsightStore | AsyncInsightStore;
+
+async function maybeRecoverOrphanedActiveRun(params: {
+  insightStore: RouteInsightStore;
+  run: InsightRun | null | undefined;
   now: Date;
-}): boolean {
+}): Promise<boolean> {
   const { insightStore, run, now } = params;
-  return recoverOrphanedInsightRun({
+  return (await recoverOrphanedInsightRun({
     insightStore,
     run,
     now,
     activeRunControllers,
     source: "manual",
     graceMs: ORPHAN_GRACE_MS,
-  }).recovered;
+  })).recovered;
 }
 
 async function withAbort<T>(signal: AbortSignal, task: Promise<T>): Promise<T> {
@@ -128,7 +141,7 @@ async function executeInsightAttempt(params: {
   projectId: string;
   runId: string;
   signal: AbortSignal;
-  insightStore: InsightStore;
+  insightStore: RouteInsightStore;
   taskStore?: TaskStore;
   settings: Settings;
   modelProvider?: string;
@@ -206,7 +219,7 @@ async function executeInsightAttempt(params: {
     const title = toInsightTitle(insight.content);
     const fingerprint = computeInsightFingerprint(title, category);
 
-    const upsertedInsight = params.insightStore.upsertInsight(params.projectId, {
+    const upsertedInsight = await params.insightStore.upsertInsight(params.projectId, {
       title,
       content: insight.content,
       category,
@@ -256,37 +269,35 @@ export function createInsightsRouter(store: TaskStore): Router {
   const requestContext = new AsyncLocalStorage<TaskStore>();
 
   /*
-   * FNXC:InsightStore 2026-06-27-09:20:
-   * The startup sweep + background sweeper are sync-coupled to the SQLite
-   * InsightStore (they call listStalePendingRuns/updateRun synchronously). In PG
-   * backend mode getInsightStore() returns the AsyncDataLayer-backed
-   * AsyncInsightStore, so the sweeper cannot drive it. Only wire the eager
-   * root-store + background sweeper when the resolved store is the sync
-   * InsightStore (instanceof narrows the union); in backend mode the per-request
-   * read/write routes still work, but the background stale-run sweeper stays
-   * disabled (a follow-up async sweeper port is out of this unit's scope).
+   * FNXC:InsightStore 2026-06-28-10:10:
+   * The startup sweep + background sweeper now drive EITHER backend: the sync
+   * SQLite InsightStore or the PostgreSQL AsyncInsightStore. Both expose the same
+   * method names (listStalePendingRuns/updateRun/appendRunEvent), and the sweeper
+   * helpers `await` every call, so the eager root-store + background sweeper wire
+   * up whenever getInsightStore() resolves to either store. The previous
+   * sync-only instanceof gate (a PG-mode capability gap) is removed.
    */
-  let rootInsightStore: InsightStore | undefined;
+  let rootInsightStore: RouteInsightStore | undefined;
   if (typeof (store as { getInsightStore?: () => unknown }).getInsightStore === "function") {
     try {
       const resolved = (store as { getInsightStore: () => unknown }).getInsightStore();
-      rootInsightStore = resolved instanceof InsightStore ? resolved : undefined;
+      rootInsightStore = resolved as RouteInsightStore;
     } catch {
       rootInsightStore = undefined;
     }
   }
 
   if (rootInsightStore) {
-    try {
-      sweepStaleInsightRuns({
-        insightStore: rootInsightStore,
-        activeRunControllers,
-        graceMs: ORPHAN_GRACE_MS,
-        source: "startup",
-      });
-    } catch (error) {
+    // FNXC:InsightStore 2026-06-28-10:10: sweep is async; swallow rejection so a
+    // backend hiccup at boot never breaks router construction.
+    void sweepStaleInsightRuns({
+      insightStore: rootInsightStore,
+      activeRunControllers,
+      graceMs: ORPHAN_GRACE_MS,
+      source: "startup",
+    }).catch((error) => {
       console.warn("[insight-sweeper] startup sweep failed", error);
-    }
+    });
 
     const { dispose: disposeSweeper } = startInsightRunSweeper({
       insightStore: rootInsightStore,
@@ -337,21 +348,6 @@ export function createInsightsRouter(store: TaskStore): Router {
       throw new ApiError(500, "Store context not available");
     }
     return store.getInsightStore();
-  }
-
-  /**
-   * FNXC:InsightStore 2026-06-27-09:20:
-   * The sync-coupled insight-run executor + run sweeper are not ported in this
-   * unit. Manual run execution (POST /run) and retry (POST /runs/:id/retry)
-   * require the sync InsightStore; in PG backend mode they surface a clean 503
-   * instead of crashing. Read/write/cancel routes do not use this guard.
-   */
-  function getSyncInsightStore(): InsightStore {
-    const resolved = getInsightStore();
-    if (!(resolved instanceof InsightStore)) {
-      throw new ApiError(503, "Insight run execution is not yet available in PG backend mode");
-    }
-    return resolved;
   }
 
   // ── List Insights ───────────────────────────────────────────────────────
@@ -410,7 +406,7 @@ export function createInsightsRouter(store: TaskStore): Router {
   router.post("/run", async (req: Request, res: Response) => {
     try {
       const projectId = getProjectId(req) ?? "";
-      const insightStore = getSyncInsightStore();
+      const insightStore = getInsightStore();
       const trigger: InsightRunTrigger = (req.body.trigger as InsightRunTrigger) ?? "manual";
 
       if (!VALID_TRIGGERS.includes(trigger)) {
@@ -440,9 +436,9 @@ export function createInsightsRouter(store: TaskStore): Router {
         };
       }
 
-      const existingActiveRun = insightStore.findActiveRun(projectId, trigger);
+      const existingActiveRun = await insightStore.findActiveRun(projectId, trigger);
       if (existingActiveRun) {
-        maybeRecoverOrphanedActiveRun({
+        await maybeRecoverOrphanedActiveRun({
           insightStore,
           run: existingActiveRun,
           now: new Date(),
@@ -533,19 +529,17 @@ export function createInsightsRouter(store: TaskStore): Router {
         options.offset = offset;
       }
 
-      // FNXC:InsightStore 2026-06-27-09:20: drive-by sweep is sync-coupled; only
-      // run it against the sync InsightStore (skipped in PG backend mode).
-      if (store instanceof InsightStore) {
-        try {
-          sweepStaleInsightRuns({
-            insightStore: store,
-            activeRunControllers,
-            graceMs: ORPHAN_GRACE_MS,
-            source: "drive_by",
-          });
-        } catch (error) {
-          console.warn("[insight-sweeper] drive-by sweep failed", error);
-        }
+      // FNXC:InsightStore 2026-06-28-10:10: drive-by sweep runs against either
+      // backend (sync InsightStore or async AsyncInsightStore) — await it.
+      try {
+        await sweepStaleInsightRuns({
+          insightStore: store,
+          activeRunControllers,
+          graceMs: ORPHAN_GRACE_MS,
+          source: "drive_by",
+        });
+      } catch (error) {
+        console.warn("[insight-sweeper] drive-by sweep failed", error);
       }
 
       const runs = await store.listRuns(options);
@@ -562,18 +556,17 @@ export function createInsightsRouter(store: TaskStore): Router {
       const id = String(req.params.id);
       const store = getInsightStore();
 
-      // FNXC:InsightStore 2026-06-27-09:20: sync-coupled drive-by sweep; PG-skip.
-      if (store instanceof InsightStore) {
-        try {
-          sweepStaleInsightRuns({
-            insightStore: store,
-            activeRunControllers,
-            graceMs: ORPHAN_GRACE_MS,
-            source: "drive_by",
-          });
-        } catch (error) {
-          console.warn("[insight-sweeper] drive-by sweep failed", error);
-        }
+      // FNXC:InsightStore 2026-06-28-10:10: drive-by sweep runs against either
+      // backend (sync InsightStore or async AsyncInsightStore) — await it.
+      try {
+        await sweepStaleInsightRuns({
+          insightStore: store,
+          activeRunControllers,
+          graceMs: ORPHAN_GRACE_MS,
+          source: "drive_by",
+        });
+      } catch (error) {
+        console.warn("[insight-sweeper] drive-by sweep failed", error);
       }
 
       const run = await store.getRun(id);
@@ -641,8 +634,8 @@ export function createInsightsRouter(store: TaskStore): Router {
   router.post("/runs/:id/retry", async (req: Request, res: Response) => {
     try {
       const id = String(req.params.id);
-      const store = getSyncInsightStore();
-      const existing = store.getRun(id);
+      const store = getInsightStore();
+      const existing = await store.getRun(id);
       if (!existing) throw notFound(`Run not found: ${id}`);
       if (existing.status !== "failed") {
         throw new ApiError(409, `Run ${id} must be failed to retry`);

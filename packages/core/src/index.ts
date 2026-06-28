@@ -1651,6 +1651,10 @@ export type { AgentDreamProcessorResult, DreamProcessorResult, DreamPromptExecut
 // ── Project Insights ──────────────────────────────────────────────────────
 
 export { InsightLifecycleError, InsightStore, computeInsightFingerprint } from "./insight-store.js";
+// FNXC:InsightStore 2026-06-28-10:10: export the PostgreSQL-backed AsyncInsightStore
+// so the dashboard insights routes + run sweeper can type the run-execution store
+// path as the `InsightStore | AsyncInsightStore` union (insight-run execution in PG mode).
+export { AsyncInsightStore } from "./async-insight-store.js";
 export {
   classifyInsightRunError,
   executeInsightRunLifecycle,
