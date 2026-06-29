@@ -22,6 +22,7 @@ import {
   type WorkflowRunObservation,
 } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult } from "./workflow-graph-task-runner.js";
+import { ensureWorkflowCompletionSummary } from "./workflow-completion-summary.js";
 import { createCodeNodeRunner } from "./code-node-runner.js";
 import { getActiveNotificationService } from "./notifier.js";
 import type { ParseStepsHandlerDeps, CodeNodeRunner } from "./workflow-node-handlers.js";
@@ -2018,6 +2019,14 @@ export class TaskExecutor {
    */
   private async handoffTaskToReview(task: Task, reason: string, runId = this.getRunContextFor(task.id)?.runId): Promise<Task> {
     const agentId = this.getRunContextFor(task.id)?.agentId;
+    if (reason.startsWith("workflow-")) {
+      await ensureWorkflowCompletionSummary(this.store, task as TaskDetail, {
+        reason,
+        runId,
+      }).catch((error: unknown) => {
+        executorLog.warn(`${task.id}: failed to record workflow completion summary: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     const handedOff = await this.store.handoffToReview(task.id, {
       ownerAgentId: agentId ?? null,
       evidence: {
