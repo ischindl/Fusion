@@ -261,6 +261,7 @@ vi.mock("@fusion/core", async (importOriginal) => {
 const {
   mockExec,
   mockExecSync,
+  mockExecFileSync,
   mockFindPrForBranch,
   mockCreatePr,
   mockGetPrMergeStatus,
@@ -282,6 +283,15 @@ const {
     };
   }),
   mockExecSync: vi.fn(() => ""),
+  mockExecFileSync: vi.fn((file: string, args: readonly string[] = [], options?: { cwd?: string }) => {
+    if (file === "git" && args.join(" ") === "remote get-url origin") {
+      if (options?.cwd !== "/repo" && options?.cwd !== process.cwd()) {
+        throw new Error(`unexpected repository cwd: ${options?.cwd ?? "<unset>"}`);
+      }
+      return "https://github.com/owner/repo.git\n";
+    }
+    return "";
+  }),
   mockFindPrForBranch: vi.fn(),
   mockCreatePr: vi.fn(),
   mockGetPrMergeStatus: vi.fn(),
@@ -307,6 +317,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     exec: mockExec,
     execSync: mockExecSync,
     execFile: mockExecFile,
+    execFileSync: mockExecFileSync,
   };
 });
 
@@ -913,6 +924,16 @@ beforeEach(() => {
   resetGitHubMocks();
   mockExecSync.mockReset();
   mockExecSync.mockReturnValue("");
+  mockExecFileSync.mockReset();
+  mockExecFileSync.mockImplementation((file: string, args: readonly string[] = [], options?: { cwd?: string }) => {
+    if (file === "git" && args.join(" ") === "remote get-url origin") {
+      if (options?.cwd !== "/repo" && options?.cwd !== process.cwd()) {
+        throw new Error(`unexpected repository cwd: ${options?.cwd ?? "<unset>"}`);
+      }
+      return "https://github.com/owner/repo.git\n";
+    }
+    return "";
+  });
   mockExec.mockClear();
   mockListen.mockReset();
   mockListen.mockImplementation((port: number) => {
@@ -1006,6 +1027,36 @@ describe("processPullRequestMergeTask", () => {
       expect.objectContaining({ number: 42, status: "open" }),
     );
     expect(store.updateTask).toHaveBeenCalledWith("FN-093", { status: "awaiting-pr-checks" });
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["remote", "get-url", "origin"],
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+
+  it("keeps the production missing-repository error when no project remote is resolvable", async () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error("not a git repository");
+    });
+    const store = makeMockStore();
+    store.getTask.mockResolvedValue({
+      id: "FN-093",
+      title: "Task",
+      description: "Description",
+      column: "in-review",
+      paused: false,
+      log: [],
+    });
+
+    await expect(processPullRequestMergeTask(store as any, "/repo", "FN-093", {
+      findPrForBranch: mockFindPrForBranch,
+      createPr: mockCreatePr,
+      getPrMergeStatus: mockGetPrMergeStatus,
+      mergePr: mockMergePr,
+    } as any, () => undefined)).rejects.toThrow("processPullRequestMergeTask: could not determine repository");
+
+    expect(mockCreatePr).not.toHaveBeenCalled();
+    expect(mockGetPrMergeStatus).not.toHaveBeenCalled();
   });
 
   it("links an existing PR instead of creating a duplicate", async () => {
@@ -1050,6 +1101,7 @@ describe("processPullRequestMergeTask", () => {
     } as any, mockGetTaskMergeBlocker);
 
     expect(mockCreatePr).not.toHaveBeenCalled();
+    expect(mockGetPrMergeStatus).toHaveBeenCalledWith("owner", "repo", 7);
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-093",
       "Linked existing PR",
@@ -1114,6 +1166,7 @@ describe("processPullRequestMergeTask", () => {
     } as any, mockGetTaskMergeBlocker);
 
     expect(result).toBe("merged");
+    expect(mockGetPrMergeStatus).toHaveBeenCalledWith("owner", "repo", 42);
     expect(mockMergePr).toHaveBeenCalledWith({ number: 42, method: "squash" });
     expect(store.moveTask).toHaveBeenCalledWith("FN-093", "done");
     // Check that exec was called with the expected commands (options object and callback may follow)
@@ -1177,6 +1230,7 @@ describe("processPullRequestMergeTask", () => {
     } as any, mockGetTaskMergeBlocker);
 
     expect(result).toBe("waiting");
+    expect(mockGetPrMergeStatus).toHaveBeenCalledWith("owner", "repo", 42);
     expect(mockMergePr).not.toHaveBeenCalled();
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(store.updateTask).toHaveBeenCalledWith("FN-093", { status: "awaiting-pr-checks" });
@@ -1234,6 +1288,11 @@ describe("runDashboard — PR-first auto-merge queue", () => {
       head: "fusion/fn-093",
       base: "main",
     });
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["remote", "get-url", "origin"],
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
     expect(aiMergeTask).not.toHaveBeenCalled();
   });
 
@@ -1263,6 +1322,11 @@ describe("runDashboard — PR-first auto-merge queue", () => {
       head: "fusion/fn-093",
       base: "main",
     });
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["remote", "get-url", "origin"],
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
     expect(aiMergeTask).not.toHaveBeenCalled();
   });
 });
