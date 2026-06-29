@@ -63,6 +63,21 @@ const DUPLICATE_STOPWORDS = new Set(["a", "an", "the", "and", "or", "of", "to", 
 const ARTIFACT_TYPES = new Set<ArtifactType>(["document", "image", "video", "audio", "other"]);
 const ADDRESS_PR_FEEDBACK_PROMPT = "Run /ce-resolve-pr-feedback to resolve open PR review feedback: evaluate each thread, fix valid issues, and reply.";
 
+function clearRebuiltSpecWorkflowPins(store: TaskStore, taskId: string): void {
+  /*
+  FNXC:WorkflowReplan 2026-06-29-00:33:
+  Spec rebuild intentionally invalidates the planned step source, so persisted graph foreach pins from the previous PROMPT.md must be cleared before the next parse-steps node runs. Keeping the stale pins makes rebuilt tasks fail closed with pin-mismatch at parse instead of executing the fresh plan.
+  */
+  const maybeStore = store as unknown as {
+    clearWorkflowRunStepInstances?: (taskId: string) => void;
+  };
+  try {
+    maybeStore.clearWorkflowRunStepInstances?.(taskId);
+  } catch {
+    // Legacy stores may not have workflow-run instance persistence; rebuild must still proceed.
+  }
+}
+
 function isArtifactType(value: string): value is ArtifactType {
   return ARTIFACT_TYPES.has(value as ArtifactType);
 }
@@ -3071,6 +3086,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (task.column === "triage") {
         // Log the rebuild request
         await scopedStore.logEntry(task.id, "Specification rebuild requested by user");
+        clearRebuiltSpecWorkflowPins(scopedStore, task.id);
 
         // Remove the existing spec so rebuilds produce a fresh PROMPT.md instead
         // of asking triage to revise whatever was already on disk.
@@ -3099,6 +3115,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       // Log the rebuild request
       await scopedStore.logEntry(task.id, "Specification rebuild requested by user");
+      clearRebuiltSpecWorkflowPins(scopedStore, task.id);
 
       // Move to triage for replanning
       const updated = await scopedStore.moveTask(task.id, "triage");

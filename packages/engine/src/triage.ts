@@ -2636,6 +2636,21 @@ export class TriageProcessor {
       return;
     }
 
+    if (options.isReplan) {
+      /*
+      FNXC:WorkflowReplan 2026-06-29-00:33:
+      AI spec revision replaces the task's step-source PROMPT.md, so graph foreach instance pins from the previous plan must be discarded before execution reparses steps. Otherwise rebuilt tasks can fail at parse with a stale pin-mismatch even though the new plan is valid.
+      */
+      const maybeStore = this.store as unknown as {
+        clearWorkflowRunStepInstances?: (taskId: string) => void;
+      };
+      try {
+        maybeStore.clearWorkflowRunStepInstances?.(task.id);
+      } catch {
+        // Older stores may not persist graph step instances; replanning remains valid without cleanup.
+      }
+    }
+
     await this.store.moveTask(task.id, "todo");
 
     if (shouldApplyPromptDeclaredTitle && promptDeclaredTitle) {
