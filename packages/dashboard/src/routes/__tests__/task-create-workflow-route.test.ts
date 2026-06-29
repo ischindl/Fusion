@@ -128,7 +128,7 @@ describe("POST /tasks workflowId (U6/R3)", () => {
 
   it.each([
     ["default coding", "builtin:coding", ["plan-review", "code-review"]],
-    ["legacy coding", "builtin:legacy-coding", ["code-review"]],
+    ["legacy coding", "builtin:legacy-coding", ["plan-review", "code-review"]],
     ["coding per-step review", "builtin:stepwise-coding", ["plan-review", "code-review"]],
   ])("%s workflow create/select/resolve works end to end", async (_label, workflowId, defaultSteps) => {
     const res = await post("/api/tasks", {
@@ -181,7 +181,14 @@ describe("POST /tasks workflowId (U6/R3)", () => {
     expect(res.status).toBe(201);
     const created = res.body as { id: string };
 
-    expect(store.getTaskWorkflowSelection(created.id)?.workflowId).toBe("builtin:compound-engineering");
+    /*
+     * FNXC:WorkflowSelection 2026-06-29-08:48:
+     * Explicit Compound Engineering workflow intent must persist when the required plugin is available because silently falling back to Coding hides operator-selected workflow execution.
+     */
+    expect(store.getTaskWorkflowSelection(created.id)).toMatchObject({
+      workflowId: "builtin:compound-engineering",
+    });
+    expect(store.getTaskWorkflowSelection(created.id)?.workflowId).not.toBe("builtin:coding");
   });
 
   it("workflowId: null → task created with no workflow steps", async () => {
