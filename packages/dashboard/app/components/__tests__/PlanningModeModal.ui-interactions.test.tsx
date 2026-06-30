@@ -104,6 +104,7 @@ vi.mock("../../api", () => ({
   rejectPlan: (...args: any[]) => mockRejectPlan(...args),
   refineTask: (...args: any[]) => mockRefineTask(...args),
   fetchSettings: vi.fn().mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {} }),
+  fetchTaskEffectiveSettings: vi.fn().mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {} }),
   fetchGlobalSettings: vi.fn().mockResolvedValue({}),
   fetchModels: (...args: any[]) => mockFetchModels(...args),
   fetchWorkflowSteps: vi.fn().mockResolvedValue([]),
@@ -213,7 +214,8 @@ describe("PlanningModeModal", () => {
         />
       );
 
-      expect(screen.getByText("Definition")).toBeDefined();
+      expect(screen.getByText("Example task")).toBeDefined();
+      expect(screen.getByRole("button", { name: "Plan" })).toBeDefined();
       expect(container.querySelector(".detail-body")).not.toBeNull();
     });
   });
@@ -937,12 +939,12 @@ describe("PlanningModeModal", () => {
   });
 
   describe("Summary markdown preview toggle", () => {
-    it("toggles description between plain textarea and formatted markdown preview", async () => {
+    async function renderPlanningSummary(description: string) {
       mockConnectPlanningStream.mockImplementationOnce((_sessionId: string, _projectId: string | undefined, handlers: any) => {
         setTimeout(() => {
           handlers.onSummary?.({
             ...mockSummary,
-            description: "## Heading\n\n- item\n\n**bold**",
+            description,
           });
         }, 10);
 
@@ -952,7 +954,7 @@ describe("PlanningModeModal", () => {
         };
       });
 
-      const { container } = render(
+      const result = render(
         <PlanningModeModal
           isOpen={true}
           onClose={mockOnClose}
@@ -971,6 +973,12 @@ describe("PlanningModeModal", () => {
         expect(screen.getByText("Planning Complete!")).toBeDefined();
       });
 
+      return result;
+    }
+
+    it("toggles description between plain textarea and formatted markdown preview", async () => {
+      const { container } = await renderPlanningSummary("## Heading\n\n- item\n\n**bold**");
+
       expect(container.querySelector(".planning-textarea")).not.toBeNull();
       expect(container.querySelector(".planning-description-preview")).toBeNull();
 
@@ -986,6 +994,55 @@ describe("PlanningModeModal", () => {
 
       await waitFor(() => {
         expect(container.querySelector(".planning-textarea")).not.toBeNull();
+      });
+    });
+
+    it("expands and collapses the mobile summary description without breaking the adjacent markdown toggle", async () => {
+      mockViewport("mobile");
+      const { container } = await renderPlanningSummary(
+        "## Heading\n\n" +
+          "This is a long planning description that should visibly change between collapsed and expanded summary states on mobile.\n\n" +
+          "- Keep markdown available\n" +
+          "- Keep expand available",
+      );
+
+      const markdownToggle = screen.getByTestId("planning-description-markdown-toggle");
+      const expandButton = screen.getByRole("button", { name: "Expand description" });
+      expect(markdownToggle.closest("label")).toBeNull();
+      expect(expandButton.closest("label")).toBeNull();
+
+      const textarea = container.querySelector<HTMLTextAreaElement>(".planning-textarea");
+      expect(textarea).not.toBeNull();
+      expect(textarea?.classList.contains("expanded")).toBe(false);
+
+      fireEvent.click(expandButton);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Collapse description" })).toBeDefined();
+        expect(container.querySelector(".planning-textarea")?.classList.contains("expanded")).toBe(true);
+      });
+
+      fireEvent.click(markdownToggle);
+
+      await waitFor(() => {
+        const preview = container.querySelector(".planning-description-preview");
+        expect(preview).not.toBeNull();
+        expect(preview?.classList.contains("expanded")).toBe(true);
+        expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeDefined();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Collapse description" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Expand description" })).toBeDefined();
+        expect(container.querySelector(".planning-description-preview")?.classList.contains("expanded")).toBe(false);
+      });
+
+      fireEvent.click(markdownToggle);
+
+      await waitFor(() => {
+        expect(container.querySelector(".planning-textarea")).not.toBeNull();
+        expect(container.querySelector(".planning-description-preview")).toBeNull();
       });
     });
   });
