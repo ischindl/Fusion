@@ -500,9 +500,20 @@ Use the terminal on mobile:
 2. Use the mobile terminal controls and close the modal when finished.
    Expected outcome: terminal sessions reconnect/recover normally without desktop dock state affecting the mobile layout.
 
+Open a terminal in a specific workspace:
+
+1. Open the terminal and use the workspace picker in the terminal header.
+   Expected outcome: **Project Root** is always available and opens a new tab in the repository root.
+2. Select a task worktree from the **Task Worktrees** list, then choose **Open terminal in selected workspace**.
+   Expected outcome: Fusion opens a new terminal tab with the selected task label and starts the shell in that task worktree.
+3. If a task is listed without a live worktree, the task remains visible but disabled and marked **No worktree**.
+   Expected outcome: no empty action button or arbitrary path field is shown; create or restore the task worktree first, then refresh/open the terminal again.
+
+The picker follows the same workspace metadata as the Files modal. The server accepts terminal working directories only for the project root or registered project worktrees; rejected, missing, or unsafe explicit worktree paths fail the new-tab request rather than opening a mislabeled Project Root shell or an arbitrary location. The existing **+** new-tab action remains a fast Project Root terminal, and reconnect, restart, resize, scrollback, initial-command, and tab-persistence flows continue to use server-confirmed session metadata.
+
 Features:
 
-- Multiple terminal tabs
+- Multiple terminal tabs, including Project Root tabs and task-worktree tabs
 - PTY-backed shell sessions
 - Ctrl/Cmd+C copies the current terminal selection, while plain Ctrl+C with no selection still sends SIGINT
 - Ctrl/Cmd+V pastes clipboard text into the active terminal session

@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useCallback,
+  useMemo,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -23,9 +24,13 @@ import {
   Settings,
   Maximize2,
   Minimize2,
+  ChevronDown,
+  FolderGit2,
+  FolderRoot,
 } from "lucide-react";
 import { useTerminal } from "../hooks/useTerminal";
 import { useTerminalSessions } from "../hooks/useTerminalSessions";
+import { useWorkspaces } from "../hooks/useWorkspaces";
 import { nextFloatingZ, currentFloatingZ } from "./floatingWindowStack";
 import { getPathBasename } from "../utils/pathDisplay";
 import {
@@ -416,6 +421,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
   
   const terminalRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const terminalWorkspacePickerRef = useRef<HTMLDivElement>(null);
   const overlayMouseDownRef = useRef(false);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<ITerminalAddon | null>(null);
@@ -882,6 +888,78 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
     retryBootstrap,
     replaceActiveTabSession,
   } = useTerminalSessions(projectId);
+
+  const {
+    projectName: terminalWorkspaceProjectName,
+    workspaces: terminalWorkspaces,
+    loading: terminalWorkspacesLoading,
+    error: terminalWorkspacesError,
+  } = useWorkspaces(projectId);
+  const [terminalWorkspaceMenuOpen, setTerminalWorkspaceMenuOpen] = useState(false);
+  const [selectedTerminalWorkspaceId, setSelectedTerminalWorkspaceId] = useState("project");
+
+  const selectedTerminalWorkspace = useMemo(
+    () => terminalWorkspaces.find((workspace) => workspace.id === selectedTerminalWorkspaceId) ?? null,
+    [selectedTerminalWorkspaceId, terminalWorkspaces],
+  );
+  const shouldShowTerminalWorkspacePicker = terminalWorkspaces.length > 0 && !terminalWorkspacesError;
+  const selectedTerminalWorkspaceCanOpen = selectedTerminalWorkspaceId === "project" || Boolean(selectedTerminalWorkspace?.worktree);
+  const selectedTerminalWorkspaceLabel =
+    selectedTerminalWorkspaceId === "project"
+      ? t("terminal.projectRoot", "Project Root")
+      : (selectedTerminalWorkspace?.label ?? selectedTerminalWorkspaceId);
+
+  /*
+  FNXC:TerminalWorkspaces 2026-06-29-00:00:
+  Terminal worktree selection follows the file-browser workspace model: Project Root opens the default terminal cwd, and task entries use only registered WorkspaceInfo.worktree paths. Keep this header affordance compact and available in docked, floating, and mobile terminal modes without replacing the fast + new-terminal path.
+
+  FNXC:TerminalWorkspaces 2026-06-29-00:00:
+  The picker is a header menu, not terminal input: Escape and outside clicks close the listbox first so users do not accidentally close the whole terminal while navigating worktrees with keyboard or touch.
+  */
+  useEffect(() => {
+    if (selectedTerminalWorkspaceId === "project") {
+      return;
+    }
+    const stillAvailable = terminalWorkspaces.some((workspace) => workspace.id === selectedTerminalWorkspaceId);
+    if (!stillAvailable) {
+      setSelectedTerminalWorkspaceId("project");
+      setTerminalWorkspaceMenuOpen(false);
+    }
+  }, [selectedTerminalWorkspaceId, terminalWorkspaces]);
+
+  useEffect(() => {
+    if (!terminalWorkspaceMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && terminalWorkspacePickerRef.current?.contains(target)) {
+        return;
+      }
+      setTerminalWorkspaceMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [terminalWorkspaceMenuOpen]);
+
+  const handleOpenSelectedTerminalWorkspace = useCallback(() => {
+    setTerminalWorkspaceMenuOpen(false);
+    if (selectedTerminalWorkspaceId === "project") {
+      void createTab();
+      return;
+    }
+
+    if (!selectedTerminalWorkspace?.worktree) {
+      return;
+    }
+
+    void createTab({
+      cwd: selectedTerminalWorkspace.worktree,
+      title: selectedTerminalWorkspace.label,
+    });
+  }, [createTab, selectedTerminalWorkspace, selectedTerminalWorkspaceId]);
 
   // Get the WebSocket connection for the active session
   const { connectionStatus, sendInput, resize, onData, onConnect, onExit, onScrollback, reconnect, onSessionInvalid } = 
@@ -1493,18 +1571,24 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, setFontSize]);
 
-  // Handle escape key to close
+  // Handle escape key to close the open worktree menu before closing the terminal.
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (terminalWorkspaceMenuOpen) {
+          e.preventDefault();
+          e.stopPropagation();
+          setTerminalWorkspaceMenuOpen(false);
+          return;
+        }
         onClose();
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, terminalWorkspaceMenuOpen]);
 
   // Focus terminal when connected
   useEffect(() => {
@@ -1899,12 +1983,112 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
             ))}
             <button
               className="terminal-tab terminal-tab--new"
-              onClick={createTab}
+              onClick={() => void createTab()}
               title={t("terminal.newTerminal", "New terminal")}
+              aria-label={t("terminal.newTerminal", "New terminal")}
             >
               +
             </button>
           </div>
+
+          {shouldShowTerminalWorkspacePicker && (
+            <div
+              ref={terminalWorkspacePickerRef}
+              className="terminal-workspace-picker"
+              data-testid="terminal-workspace-picker"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="terminal-workspace-picker-trigger"
+                onClick={() => setTerminalWorkspaceMenuOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={terminalWorkspaceMenuOpen}
+                aria-controls={terminalWorkspaceMenuOpen ? "terminal-workspace-picker-menu" : undefined}
+                aria-label={t("terminal.selectWorkspaceWithCurrent", "Select terminal workspace: {{workspace}}", { workspace: selectedTerminalWorkspaceLabel })}
+                title={t("terminal.selectWorkspace", "Select terminal workspace")}
+              >
+                {selectedTerminalWorkspaceId === "project" ? <FolderRoot size={14} /> : <FolderGit2 size={14} />}
+                <span className="terminal-workspace-picker-label">{selectedTerminalWorkspaceLabel}</span>
+                <ChevronDown size={14} className={`terminal-workspace-picker-chevron${terminalWorkspaceMenuOpen ? " open" : ""}`} />
+              </button>
+              <button
+                type="button"
+                className="terminal-workspace-picker-open"
+                onClick={handleOpenSelectedTerminalWorkspace}
+                disabled={!selectedTerminalWorkspaceCanOpen}
+                title={
+                  selectedTerminalWorkspaceCanOpen
+                    ? t("terminal.openWorkspaceTerminal", "Open terminal in selected workspace")
+                    : t("terminal.workspaceMissingWorktree", "This task has no worktree path yet")
+                }
+                aria-label={t("terminal.openWorkspaceTerminal", "Open terminal in selected workspace")}
+              >
+                <Plus size={14} />
+              </button>
+              {terminalWorkspaceMenuOpen && (
+                <div
+                  id="terminal-workspace-picker-menu"
+                  className="terminal-workspace-picker-menu"
+                  role="listbox"
+                  aria-label={t("terminal.selectWorkspace", "Select terminal workspace")}
+                >
+                  <button
+                    type="button"
+                    className={`terminal-workspace-picker-option${selectedTerminalWorkspaceId === "project" ? " active" : ""}`}
+                    onClick={() => {
+                      setSelectedTerminalWorkspaceId("project");
+                      setTerminalWorkspaceMenuOpen(false);
+                    }}
+                    role="option"
+                    aria-selected={selectedTerminalWorkspaceId === "project"}
+                  >
+                    <div className="terminal-workspace-picker-option-main">
+                      <FolderRoot size={14} />
+                      <span>{t("terminal.projectRoot", "Project Root")}</span>
+                    </div>
+                    <span className="terminal-workspace-picker-option-meta">{terminalWorkspaceProjectName}</span>
+                  </button>
+                  <div className="terminal-workspace-picker-group-label">
+                    {terminalWorkspacesLoading
+                      ? t("terminal.loadingWorkspaces", "Task worktrees (refreshing…)")
+                      : t("terminal.taskWorktrees", "Task Worktrees")}
+                  </div>
+                  {terminalWorkspaces.map((workspace) => {
+                    const disabled = !workspace.worktree;
+                    return (
+                      <button
+                        key={workspace.id}
+                        type="button"
+                        className={`terminal-workspace-picker-option${selectedTerminalWorkspaceId === workspace.id ? " active" : ""}${disabled ? " disabled" : ""}`}
+                        onClick={() => {
+                          if (disabled) return;
+                          setSelectedTerminalWorkspaceId(workspace.id);
+                          setTerminalWorkspaceMenuOpen(false);
+                        }}
+                        disabled={disabled}
+                        role="option"
+                        aria-selected={selectedTerminalWorkspaceId === workspace.id}
+                        aria-disabled={disabled}
+                        title={disabled ? t("terminal.workspaceMissingWorktree", "This task has no worktree path yet") : workspace.title}
+                      >
+                        <div className="terminal-workspace-picker-option-main">
+                          <FolderGit2 size={14} />
+                          <span>{workspace.label}</span>
+                        </div>
+                        <span className="terminal-workspace-picker-option-meta">
+                          {disabled
+                            ? t("terminal.noWorktree", "No worktree")
+                            : (workspace.title ?? workspace.worktree)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           
           {/* Status indicator */}
           <div className="terminal-title" data-testid="terminal-title">
