@@ -737,11 +737,15 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
   // the lookup mirrors GET /workflows/:id (built-ins resolved by
   // getWorkflowDefinition). The envelope carries the server's SCHEMA_VERSION so
   // import can version-gate it; the client triggers a file download.
+  //
+  // FNXC:WorkflowPortability 2026-06-30-00:00:
+  // Workflow exports are the operator's portability boundary; include project-scoped setting values and prompt overrides with the graph definition so imports do not silently reset tuned runtime policy or prompt text.
   router.get("/workflows/:id/export", async (req, res) => {
     try {
       const { store } = await getProjectContext(req);
       const def = await store.getWorkflowDefinition(req.params.id);
       if (!def) throw notFound(`Workflow '${req.params.id}' not found`);
+      const projectId = store.getWorkflowSettingsProjectId();
       res.json({
         fusionWorkflowExport: 1,
         schemaVersion: SCHEMA_VERSION,
@@ -750,6 +754,8 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         description: def.description,
         ir: def.ir,
         layout: def.layout,
+        settingValues: store.getWorkflowSettingValues(def.id, projectId),
+        promptOverrides: store.getWorkflowPromptOverrides(def.id, projectId),
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
@@ -766,8 +772,9 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
   //   4. trait availability         → 422 (names the missing trait)
   //   5. strip cliSkipApproval/autoApprove from every node config (incl. foreach
   //      template nodes) — trust boundary; flagged in the response.
-  //   6. scriptName existence       → non-blocking WARNINGS
-  //   7. fresh id + name collision suffix → store.createWorkflowDefinition
+  //   6. setting/prompt restore maps → 400 before or compensating delete after create
+  //   7. scriptName existence       → non-blocking WARNINGS
+  //   8. fresh id + name collision suffix → store.createWorkflowDefinition
   router.post("/workflows/import", async (req, res) => {
     try {
       const { store, projectId } = await getProjectContext(req);
@@ -817,13 +824,28 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       // carry an approval bypass smuggled through an untrusted file.
       const strippedApprovalFlags = stripApprovalFlags(ir);
 
-      // 6. scriptName warnings (non-blocking): a script node referencing a name
+      // 6. Restore-map trust boundary. Older export envelopes omit these fields;
+      // present fields must be object maps and prompt override keys must target
+      // prompt-bearing nodes in the imported graph before any definition is written.
+      //
+      // FNXC:WorkflowPortability 2026-06-30-00:00:
+      // Imported setting values and prompt overrides must use the same validation authorities as interactive edits; never trust envelope maps enough to bypass declarations or prompt-bearing node checks.
+      const importedSettingValues = readOptionalObjectMap(envelope.settingValues, "settingValues");
+      const importedPromptOverrides = readOptionalStringMap(envelope.promptOverrides, "promptOverrides");
+      const promptNodeIds = new Set(enumeratePromptBearingWorkflowNodes(ir).map((entry) => entry.nodeId));
+      for (const nodeId of Object.keys(importedPromptOverrides)) {
+        if (!promptNodeIds.has(nodeId)) {
+          throw badRequest(`Node '${nodeId}' is not a prompt-bearing node in imported workflow`, { nodeId });
+        }
+      }
+
+      // 7. scriptName warnings (non-blocking): a script node referencing a name
       // absent from the project's configured scripts is importable, but flagged.
       const settings = await store.getSettingsFast();
       const knownScripts = new Set(Object.keys(settings.scripts ?? {}));
       const warnings = collectScriptNameWarnings(ir, knownScripts);
 
-      // 7. Fresh id is server-minted by createWorkflowDefinition; resolve a
+      // 8. Fresh id is server-minted by createWorkflowDefinition; resolve a
       // collision-free name (case-sensitive exact match across the merged set,
       // built-ins included).
       const existingNames = new Set(
@@ -862,8 +884,40 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         throw createErr;
       }
 
+      let restoredSettingValues: Record<string, unknown> = {};
+      let restoredPromptOverrides: Record<string, string> = {};
+      try {
+        const workflowProjectId = store.getWorkflowSettingsProjectId();
+        if (Object.keys(importedSettingValues).length > 0) {
+          restoredSettingValues = await store.updateWorkflowSettingValues(
+            workflow.id,
+            workflowProjectId,
+            importedSettingValues,
+          );
+        }
+        if (Object.keys(importedPromptOverrides).length > 0) {
+          restoredPromptOverrides = store.updateWorkflowPromptOverrides(
+            workflow.id,
+            workflowProjectId,
+            importedPromptOverrides,
+          );
+        }
+      } catch (restoreErr: unknown) {
+        await store.deleteWorkflowDefinition(workflow.id);
+        if (restoreErr instanceof WorkflowSettingRejectionError) {
+          throw badRequest(restoreErr.message, { rejections: restoreErr.rejections });
+        }
+        throw restoreErr;
+      }
+
       emitWorkflowSseEvent("workflow:created", workflow, projectId);
-      res.status(201).json({ workflow, strippedApprovalFlags, warnings });
+      res.status(201).json({
+        workflow,
+        strippedApprovalFlags,
+        warnings,
+        settingValues: restoredSettingValues,
+        promptOverrides: restoredPromptOverrides,
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err);
@@ -1096,4 +1150,26 @@ function resolveImportName(baseName: string, existing: Set<string>): string {
     n += 1;
   }
   return candidate;
+}
+
+/** Optional workflow-export map parser. Undefined preserves backward compatibility
+ *  with older envelopes; any present non-object value is malformed untrusted input. */
+function readOptionalObjectMap(value: unknown, fieldName: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw badRequest(`${fieldName} must be an object map when present`);
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Prompt override maps are stricter than generic setting maps because every
+ *  override must be runnable prompt text before it can be restored. */
+function readOptionalStringMap(value: unknown, fieldName: string): Record<string, string> {
+  const map = readOptionalObjectMap(value, fieldName);
+  for (const [key, entry] of Object.entries(map)) {
+    if (typeof entry !== "string") {
+      throw badRequest(`${fieldName}.${key} must be a string prompt override`, { nodeId: key });
+    }
+  }
+  return map as Record<string, string>;
 }

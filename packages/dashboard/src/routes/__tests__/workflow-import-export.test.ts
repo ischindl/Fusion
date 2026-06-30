@@ -11,8 +11,8 @@ import express from "express";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskStore, SCHEMA_VERSION, isBuiltinWorkflowId } from "@fusion/core";
-import type { WorkflowIr } from "@fusion/core";
+import { TaskStore, SCHEMA_VERSION, isBuiltinWorkflowId, enumeratePromptBearingWorkflowNodes } from "@fusion/core";
+import type { WorkflowIr, WorkflowIrV2, WorkflowSettingDefinition } from "@fusion/core";
 import { registerWorkflowRoutes } from "../register-workflow-routes.js";
 import { ApiError, sendErrorResponse } from "../../api-error.js";
 import { request } from "../../test-request.js";
@@ -73,6 +73,32 @@ describe("workflow import/export routes (U5/R9/R10)", () => {
     } as WorkflowIr;
   }
 
+  const TIMEOUT_DECL: WorkflowSettingDefinition = {
+    id: "workflowStepTimeoutMs",
+    name: "Step timeout (ms)",
+    type: "number",
+    default: 360_000,
+  };
+
+  /** Minimal v2 graph with one prompt-bearing node and one setting declaration. */
+  function v2IrWithSettingAndPrompt(): WorkflowIrV2 {
+    return {
+      version: "v2",
+      name: "portable",
+      columns: [],
+      nodes: [
+        { id: "start", kind: "start" },
+        { id: "execute", kind: "prompt", config: { name: "Execute", prompt: "Default execute prompt" } },
+        { id: "end", kind: "end" },
+      ],
+      edges: [
+        { from: "start", to: "execute", condition: "success" },
+        { from: "execute", to: "end", condition: "success" },
+      ],
+      settings: [TIMEOUT_DECL],
+    } as WorkflowIrV2;
+  }
+
   function envelope(overrides?: Partial<Record<string, unknown>>): Record<string, unknown> {
     return {
       fusionWorkflowExport: 1,
@@ -115,6 +141,89 @@ describe("workflow import/export routes (U5/R9/R10)", () => {
     expect(body.workflow.layout).toEqual({ n1: { x: 5, y: 6 } });
     // Semantic IR equality: same node ids/kinds.
     expect(body.workflow.ir.nodes.map((n) => n.id)).toEqual(created.ir.nodes.map((n) => n.id));
+  });
+
+  it("round-trips custom workflow setting values and prompt overrides onto a fresh id", async () => {
+    const projectId = store.getWorkflowSettingsProjectId();
+    const created = await store.createWorkflowDefinition({
+      name: "Portable custom flow",
+      description: "settings and prompts",
+      ir: v2IrWithSettingAndPrompt(),
+      layout: { execute: { x: 42, y: 84 } },
+    });
+    await store.updateWorkflowSettingValues(created.id, projectId, { workflowStepTimeoutMs: 123_000 });
+    store.updateWorkflowPromptOverrides(created.id, projectId, { execute: "Customized execute prompt" });
+
+    const exp = await get(`/api/workflows/${created.id}/export`);
+    expect(exp.status).toBe(200);
+    expect(exp.body.settingValues).toEqual({ workflowStepTimeoutMs: 123_000 });
+    expect(exp.body.promptOverrides).toEqual({ execute: "Customized execute prompt" });
+
+    const imp = await postJson("/api/workflows/import", exp.body);
+    expect(imp.status).toBe(201);
+    const body = imp.body as {
+      workflow: { id: string };
+      settingValues: Record<string, unknown>;
+      promptOverrides: Record<string, string>;
+    };
+    expect(body.workflow.id).not.toBe(created.id);
+    expect(body.settingValues).toEqual(exp.body.settingValues);
+    expect(body.promptOverrides).toEqual(exp.body.promptOverrides);
+    expect(store.getWorkflowSettingValues(body.workflow.id, projectId)).toEqual(exp.body.settingValues);
+    expect(store.getWorkflowPromptOverrides(body.workflow.id, projectId)).toEqual(exp.body.promptOverrides);
+  });
+
+  it("round-trips built-in setting values and prompt overrides onto an editable imported workflow", async () => {
+    const projectId = store.getWorkflowSettingsProjectId();
+    const builtinId = "builtin:coding";
+    const builtin = await store.getWorkflowDefinition(builtinId);
+    const promptNodeId = enumeratePromptBearingWorkflowNodes(builtin?.ir as WorkflowIr)[0]?.nodeId;
+    expect(promptNodeId).toBeTruthy();
+    await store.updateWorkflowSettingValues(builtinId, projectId, { workflowStepTimeoutMs: 456_000 });
+    store.updateWorkflowPromptOverrides(builtinId, projectId, { [promptNodeId]: "Built-in customized prompt" });
+
+    const exp = await get(`/api/workflows/${builtinId}/export`);
+    expect(exp.status).toBe(200);
+    expect(exp.body.settingValues).toEqual({ workflowStepTimeoutMs: 456_000 });
+    expect(exp.body.promptOverrides).toEqual({ [promptNodeId]: "Built-in customized prompt" });
+
+    const imp = await postJson("/api/workflows/import", exp.body);
+    expect(imp.status).toBe(201);
+    const body = imp.body as { workflow: { id: string }; settingValues: Record<string, unknown>; promptOverrides: Record<string, string> };
+    expect(isBuiltinWorkflowId(body.workflow.id)).toBe(false);
+    expect(body.settingValues).toEqual(exp.body.settingValues);
+    expect(body.promptOverrides).toEqual(exp.body.promptOverrides);
+    expect(store.getWorkflowSettingValues(body.workflow.id, projectId)).toEqual(exp.body.settingValues);
+    expect(store.getWorkflowPromptOverrides(body.workflow.id, projectId)).toEqual(exp.body.promptOverrides);
+  });
+
+  it("rejects invalid restored setting values without leaving partial workflow rows", async () => {
+    const res = await postJson(
+      "/api/workflows/import",
+      envelope({
+        name: "Bad settings import",
+        ir: v2IrWithSettingAndPrompt(),
+        settingValues: { workflowStepTimeoutMs: "not-a-number" },
+        promptOverrides: { execute: "valid prompt" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { details?: { rejections?: unknown[] } }).details?.rejections).toHaveLength(1);
+    expect((await userDefs()).map((w) => w.name)).not.toContain("Bad settings import");
+  });
+
+  it("rejects invalid restored prompt override node ids without leaving partial workflow rows", async () => {
+    const res = await postJson(
+      "/api/workflows/import",
+      envelope({
+        name: "Bad prompt import",
+        ir: v2IrWithSettingAndPrompt(),
+        settingValues: { workflowStepTimeoutMs: 222_000 },
+        promptOverrides: { end: "not prompt-bearing" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await userDefs()).map((w) => w.name)).not.toContain("Bad prompt import");
   });
 
   it("suffixes the name on collision", async () => {

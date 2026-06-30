@@ -5494,7 +5494,11 @@ export function compileWorkflow(id: string, projectId?: string): Promise<{ steps
 /** A workflow export envelope (U5/R9/KTD-5). `schemaVersion` is the SERVER's
  *  schema version at export time — the import route version-gates against it
  *  (the app build aliases @fusion/core to types-only, so the value can only come
- *  from the server, never an app-side core import). */
+ *  from the server, never an app-side core import).
+ *
+ *  FNXC:WorkflowPortability 2026-06-30-00:00:
+ *  Dashboard downloads must carry project-scoped setting values and prompt overrides with the workflow graph so the same shared API path supports portable desktop and mobile Workflow Editor imports.
+ */
 export interface WorkflowExportEnvelope {
   fusionWorkflowExport: 1;
   schemaVersion: number;
@@ -5503,6 +5507,8 @@ export interface WorkflowExportEnvelope {
   description: string;
   ir: import("@fusion/core").WorkflowIr;
   layout: import("@fusion/core").WorkflowDefinition["layout"];
+  settingValues: Record<string, unknown>;
+  promptOverrides: Record<string, string>;
 }
 
 /** Fetch a workflow's export envelope and trigger a browser download as
@@ -5532,6 +5538,8 @@ export interface ImportWorkflowResult {
   workflow: import("@fusion/core").WorkflowDefinition;
   strippedApprovalFlags: boolean;
   warnings: string[];
+  settingValues: Record<string, unknown>;
+  promptOverrides: Record<string, string>;
 }
 
 /** Import a workflow export envelope (U5/R10). The server is the sole validator;

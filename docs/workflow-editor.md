@@ -156,8 +156,8 @@ If you switch workflows while an AI design request is in flight, the stale resul
 
 ## Import, export, auto-layout, save, and delete
 
-- **Export:** downloads the active persisted workflow as a JSON envelope. Export is available for built-ins too because it reads the server's saved definition.
-- **Import:** choose a JSON workflow envelope to create a workflow from it. Invalid JSON and server validation errors render in a persistent inline error region; non-blocking import warnings render beside it.
+- **Export:** downloads the active persisted workflow as a JSON envelope. Export is available for built-ins too because it reads the server's saved definition. The envelope includes the Workflow IR, layout, metadata, and the active project's stored workflow setting values and prompt overrides for the selected workflow.
+- **Import:** choose a JSON workflow envelope to create a workflow from it. Fusion creates a fresh editable workflow id, restores exported setting values and prompt overrides onto that new id, and keeps validating those restored maps against the imported setting declarations and prompt-bearing nodes. Invalid JSON and server validation errors render in a persistent inline error region; non-blocking import warnings render beside it.
 - **Auto-layout:** applies a left-to-right tidy layout to editable graph nodes. It changes positions only and marks the workflow dirty.
 - **Save:** custom workflows serialize the current graph, columns, fields, and setting declarations to Workflow IR and update the active workflow. After saving, Fusion compiles the workflow to report whether it can run on the linear engine or must run on the graph interpreter.
 - **Delete:** deletes the active custom workflow after confirmation. Built-in workflows cannot be deleted.
