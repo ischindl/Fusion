@@ -9560,8 +9560,11 @@ export class TaskExecutor {
             error: (s) => executorLog.warn(s),
           },
         }),
-        // Skip fn_review_step tool in fast mode — fast mode bypasses automated review gates
-        ...(executionMode !== "fast" ? [
+        /*
+        FNXC:WorkflowReviewGates 2026-06-29-20:41:
+        Workflow-graph execution owns plan/code/browser review gates as nodes. Do not expose legacy in-session `fn_review_step` during graph-owned execute seams; otherwise default coding can duplicate Plan Review inside implementation steps after the workflow-level Plan Review has already passed.
+        */
+        ...(executionMode !== "fast" && !this.graphCompletionInterceptors.has(task.id) ? [
           this.createReviewStepTool(task.id, worktreePath, detail.prompt, codeReviewVerdicts, sessionRef, stepCheckpoints, detail, stuckDetector),
         ] : []),
         this.createSpawnAgentTool(task.id, worktreePath, settings, taskEnv),
@@ -9903,6 +9906,7 @@ export class TaskExecutor {
               this.options.pluginRunner,
               customFieldDefs,
               this.workspaceConfig,
+              { workflowReviewGatesOwnedByGraph: this.graphCompletionInterceptors.has(task.id) },
             );
             await promptWithFallback(session, agentPrompt);
           }
@@ -10273,7 +10277,16 @@ export class TaskExecutor {
                     "Do NOT ask for permission. Do NOT write a summary. Just call a tool and keep working.",
                     "",
                     "Original task:",
-                    buildExecutionPrompt(detail, this.rootDir, settings, worktreePath, this.options.pluginRunner, retryCustomFieldDefs, this.workspaceConfig),
+                    buildExecutionPrompt(
+                      detail,
+                      this.rootDir,
+                      settings,
+                      worktreePath,
+                      this.options.pluginRunner,
+                      retryCustomFieldDefs,
+                      this.workspaceConfig,
+                      { workflowReviewGatesOwnedByGraph: this.graphCompletionInterceptors.has(task.id) },
+                    ),
                   ].join("\n");
                 } else {
                   retryPrompt = [
@@ -10283,7 +10296,16 @@ export class TaskExecutor {
                     "2. If there is remaining work, finish it and then call fn_task_done.",
                     "",
                     "Original task:",
-                    buildExecutionPrompt(detail, this.rootDir, settings, worktreePath, this.options.pluginRunner, retryCustomFieldDefs, this.workspaceConfig),
+                    buildExecutionPrompt(
+                      detail,
+                      this.rootDir,
+                      settings,
+                      worktreePath,
+                      this.options.pluginRunner,
+                      retryCustomFieldDefs,
+                      this.workspaceConfig,
+                      { workflowReviewGatesOwnedByGraph: this.graphCompletionInterceptors.has(task.id) },
+                    ),
                   ].join("\n");
                 }
 
@@ -16980,9 +17002,15 @@ export function buildExecutionPrompt(
   pluginRunner?: PluginRunner,
   customFieldDefs?: WorkflowFieldDefinition[],
   workspaceConfig?: WorkspaceConfig | null,
+  options?: { workflowReviewGatesOwnedByGraph?: boolean },
 ): string {
   const prompt = scopePromptToWorktree(task.prompt, rootDir, worktreePath, workspaceConfig);
   const reviewLevel = parseReviewLevelFromPrompt(prompt);
+  /*
+   * FNXC:WorkflowReviewGates 2026-06-29-20:41:
+   * Default Coding and other workflow-graph tasks run review gates as graph nodes, so the executor prompt must not ask implementation agents to call legacy per-step review tools. This keeps Plan Review once-before-execution and Code Review once-before-merge unless a workflow explicitly adds a step-review node.
+   */
+  const workflowReviewGatesOwnedByGraph = options?.workflowReviewGatesOwnedByGraph === true;
 
   // Build co-author trailer arg for git commits based on settings. The user's
   // configured git identity remains the primary author; Fusion is appended as
@@ -17126,12 +17154,12 @@ ${prompt}
 ${attachmentsSection}${commandsSection}${memorySection}${progressSection}${steeringSection}${customFieldsSection}
 ## Review level: ${reviewLevel}
 
-${reviewLevel === 0 ? "No reviews required. Implement directly." : ""}
+${workflowReviewGatesOwnedByGraph ? `Workflow review gates are handled by the workflow graph outside this implementation session. Do not request per-step plan review or per-step code review from inside execution; complete the implementation steps and let the graph run enabled Plan Review, Browser Verification, and Code Review nodes at their configured positions.` : `${reviewLevel === 0 ? "No reviews required. Implement directly." : ""}
 ${reviewLevel >= 1 ? `Before implementing each step (except Step 0 and the final step), call:
 \`fn_review_step(step=N, type="plan", step_name="...")\`` : ""}
 ${reviewLevel >= 2 ? `After implementing + committing each step, call:
 \`fn_review_step(step=N, type="code", step_name="...", baseline="<SHA from before step>")\`` : ""}
-${reviewLevel >= 3 ? `After tests, also call fn_review_step with type="code" for test review.` : ""}
+${reviewLevel >= 3 ? `After tests, also call fn_review_step with type="code" for test review.` : ""}`}
 ${pluginTaskContributions ? `
 
 ${pluginTaskContributions}
