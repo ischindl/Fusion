@@ -68,6 +68,8 @@ vi.mock("../Column", () => ({
     doneSortMode,
     onDoneSortModeChange,
     workflowId,
+    workflowOptions,
+    defaultWorkflowId,
     canDropTask,
     onPlanningMode,
     onSubtaskBreakdown,
@@ -90,6 +92,8 @@ vi.mock("../Column", () => ({
     doneSortMode?: string;
     onDoneSortModeChange?: (mode: "completion-date-desc" | "task-id-desc") => void;
     workflowId?: string;
+    workflowOptions?: { id: string; name: string }[];
+    defaultWorkflowId?: string | null;
     canDropTask?: unknown;
     onPlanningMode?: unknown;
     onSubtaskBreakdown?: unknown;
@@ -97,7 +101,12 @@ vi.mock("../Column", () => ({
   }) => {
     columnRenderCounts[column] = (columnRenderCounts[column] ?? 0) + 1;
     return (
-      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"} data-has-subtask={onSubtaskBreakdown ? "yes" : "no"}>
+      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((workflow) => workflow.id))} data-default-workflow-id={defaultWorkflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"} data-has-subtask={onSubtaskBreakdown ? "yes" : "no"}>
+        {onQuickCreate ? (
+          <button type="button" data-testid={`mock-quick-create-${column}`} onClick={() => void (onQuickCreate as (input: { description: string; column?: string; workflowId?: string }) => Promise<unknown>)({ description: `Create from ${column}`, column, workflowId: "wf-custom" })}>
+            quick-create-{column}
+          </button>
+        ) : null}
         {tasks.map((task) => (
           <article key={task.id} data-testid={`board-task-card-${task.id}`}>
             {task.title ?? task.description ?? task.id}
@@ -1404,6 +1413,37 @@ describe("Board", () => {
 
       fireEvent.click(screen.getByTestId("workflow-switcher"));
       expect(screen.queryByTestId("workflow-switcher-edit-__all_workflows__")).toBeNull();
+    });
+
+
+    it("passes workflow options and the selected workflow default to per-workflow quick-add", async () => {
+      enableFlag({ "FN-1": CUSTOM_WORKFLOW.id }, [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW]);
+      renderBoard({ tasks: [mkTask({ id: "FN-1", column: "intake" })] });
+
+      await selectWorkflow(CUSTOM_WORKFLOW.id);
+
+      const intakeColumn = screen.getByTestId("column-intake");
+      expect(intakeColumn).toHaveAttribute("data-default-workflow-id", CUSTOM_WORKFLOW.id);
+      expect(JSON.parse(intakeColumn.getAttribute("data-workflow-options") || "[]")).toEqual(["builtin:coding", "wf-custom"]);
+    });
+
+    it("defaults All workflows quick-add to the default workflow and resolves selected workflow columns", async () => {
+      const onQuickCreate = vi.fn().mockResolvedValue({ id: "FN-new", workflowId: "wf-custom" });
+      enableFlag({}, [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW]);
+      renderBoard({ onQuickCreate });
+
+      await selectWorkflow("__all_workflows__");
+
+      const defaultCreateColumn = screen.getByTestId("column-triage");
+      expect(defaultCreateColumn).toHaveAttribute("data-workflow-id", "builtin:coding");
+      expect(defaultCreateColumn).toHaveAttribute("data-default-workflow-id", "builtin:coding");
+      fireEvent.click(screen.getByTestId("mock-quick-create-triage"));
+
+      await waitFor(() => expect(onQuickCreate).toHaveBeenCalledWith(expect.objectContaining({
+        workflowId: "wf-custom",
+        column: "intake",
+      })));
+      expect(onQuickCreate).not.toHaveBeenCalledWith(expect.objectContaining({ workflowId: "__all_workflows__" }));
     });
 
     it("falls stale and missing task workflow ids back to the default workflow", async () => {

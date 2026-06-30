@@ -1614,6 +1614,79 @@ describe("QuickEntryBox", () => {
     innerWidthSpy.mockRestore();
   });
 
+
+  describe("quick-add workflow selector", () => {
+    const workflowOptions = [
+      { id: "wf-default", name: "Coding", columns: [] },
+      { id: "wf-review", name: "Review", columns: [] },
+      { id: "wf-review-copy", name: "Review", columns: [] },
+    ];
+
+    it("defaults to the provided workflow, changes selection, and passes it to Save/Plan/Subtask", async () => {
+      vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([]);
+      const onCreate = vi.fn().mockResolvedValue(CREATED_TASK);
+      const onPlanningMode = vi.fn();
+      const onSubtaskBreakdown = vi.fn();
+      renderQuickEntryBox({
+        onCreate,
+        onPlanningMode,
+        onSubtaskBreakdown,
+        workflowId: "wf-review",
+        defaultWorkflowId: "wf-default",
+        workflowOptions,
+      });
+
+      expect(screen.getByTestId("quick-entry-workflow-trigger")).toHaveTextContent("Review");
+      fireEvent.click(screen.getByTestId("quick-entry-workflow-trigger"));
+      expect(screen.getByLabelText("Review (wf-review-copy)")).toBeTruthy();
+      fireEvent.click(screen.getByTestId("quick-entry-workflow-option-wf-default"));
+      expect(screen.getByTestId("quick-entry-workflow-trigger")).toHaveTextContent("Coding");
+
+      fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Create in selected workflow" } });
+      clickSave();
+      await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ workflowId: "wf-default" })));
+
+      fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Plan in selected workflow" } });
+      fireEvent.click(screen.getByTestId("plan-button"));
+      expect(onPlanningMode).toHaveBeenCalledWith("Plan in selected workflow", "wf-default");
+
+      fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Subtask in selected workflow" } });
+      fireEvent.click(screen.getByTestId("subtask-button"));
+      expect(onSubtaskBreakdown).toHaveBeenCalledWith("Subtask in selected workflow", "wf-default");
+    });
+
+    it("repairs stale parent workflow ids to the default workflow and refetches optional steps when changed", async () => {
+      vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([]);
+      renderQuickEntryBox({
+        workflowId: "__all_workflows__",
+        defaultWorkflowId: "wf-default",
+        workflowOptions,
+      });
+
+      await waitFor(() => expect(fetchWorkflowOptionalSteps).toHaveBeenCalledWith("wf-default", TEST_PROJECT_ID));
+      expect(screen.getByTestId("quick-entry-workflow-trigger")).toHaveTextContent("Coding");
+
+      fireEvent.click(screen.getByTestId("quick-entry-workflow-trigger"));
+      fireEvent.click(screen.getByTestId("quick-entry-workflow-option-wf-review"));
+      await waitFor(() => expect(fetchWorkflowOptionalSteps).toHaveBeenCalledWith("wf-review", TEST_PROJECT_ID));
+      expect(fetchWorkflowOptionalSteps).not.toHaveBeenCalledWith("__all_workflows__", TEST_PROJECT_ID);
+    });
+
+    it("hides the selector without real workflow choices and leaves no shell", () => {
+      renderQuickEntryBox({ workflowId: "wf-default", workflowOptions: [{ id: "wf-default", name: "Coding", columns: [] }] });
+
+      expect(screen.queryByTestId("quick-entry-workflow-trigger")).toBeNull();
+      expect(screen.getByTestId("quick-entry-actions").querySelector(".quick-entry-workflow-wrap")).toBeNull();
+    });
+
+    it("uses tokenized responsive CSS for the workflow selector", () => {
+      const selectorRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-menu");
+      expect(selectorRule).toContain("var(--space-");
+      expect(selectorRule).not.toMatch(/#[0-9a-f]{3,8}|rgb\(/i);
+      expect(QUICK_ENTRY_BOX_CSS).toMatch(/@media \(max-width: 768px\) \{[\s\S]*?quick-entry-workflow/);
+    });
+  });
+
   describe("optional workflow steps", () => {
     const DEFAULT_ON_STEP = {
       templateId: "browser-verification",

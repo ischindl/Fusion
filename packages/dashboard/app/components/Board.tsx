@@ -436,6 +436,18 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
       : boardWorkflows.defaultWorkflowId;
   }, [boardWorkflows, knownWorkflowIds]);
 
+  const resolveWorkflowQuickCreateTarget = useCallback((targetWorkflowId: string, preferredColumnId?: string | null): ColumnId | undefined => {
+    if (targetWorkflowId === ALL_WORKFLOWS_BOARD_VIEW_ID) return undefined;
+    const workflow = boardWorkflows?.workflows.find((candidate) => candidate.id === targetWorkflowId);
+    if (!workflow) return undefined;
+    const visibleColumns = workflow.columns.filter((column) => !column.flags.archived && !column.flags.hiddenFromBoard);
+    const preferredColumn = preferredColumnId ? visibleColumns.find((column) => column.id === preferredColumnId) : undefined;
+    const column = preferredColumn
+      ?? visibleColumns.find((candidate) => candidate.flags.intake)
+      ?? visibleColumns[0];
+    return column?.id as ColumnId | undefined;
+  }, [boardWorkflows]);
+
   const selectedWorkflowTasks = useMemo(() => {
     if (!workflowMode || !boardWorkflows || !selectedWorkflow) return [];
     return tasks.filter((task) => getEffectiveTaskWorkflowId(task) === selectedWorkflow.id);
@@ -464,14 +476,22 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
    */
   const handleWorkflowQuickCreate = useCallback(async (input: TaskCreateInput) => {
     if (!onQuickCreate || !selectedWorkflow) return undefined;
-    const created = await onQuickCreate(input);
+    const targetWorkflowId = typeof input.workflowId === "string" && input.workflowId !== ALL_WORKFLOWS_BOARD_VIEW_ID
+      ? input.workflowId
+      : selectedWorkflow.id;
+    const targetColumn = resolveWorkflowQuickCreateTarget(targetWorkflowId, input.column);
+    const created = await onQuickCreate({
+      ...input,
+      ...(targetColumn ? { column: targetColumn } : {}),
+      workflowId: targetWorkflowId,
+    });
     if (created?.id) {
-      const createdWorkflowId = (created as Task & { workflowId?: string }).workflowId ?? selectedWorkflow.id;
+      const createdWorkflowId = (created as Task & { workflowId?: string }).workflowId ?? targetWorkflowId;
       applyOptimisticTaskWorkflow(created.id, createdWorkflowId);
       refreshBoardWorkflows();
     }
     return created;
-  }, [applyOptimisticTaskWorkflow, onQuickCreate, refreshBoardWorkflows, selectedWorkflow]);
+  }, [applyOptimisticTaskWorkflow, onQuickCreate, refreshBoardWorkflows, resolveWorkflowQuickCreateTarget, selectedWorkflow]);
 
   /**
    * FNXC:WorkflowBoard 2026-06-29-23:58:
@@ -479,15 +499,22 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
    */
   const handleAggregateWorkflowQuickCreate = useCallback(async (input: TaskCreateInput) => {
     if (!onQuickCreate) return undefined;
-    const created = await onQuickCreate(input);
-    const targetWorkflowId = typeof input.workflowId === "string" ? input.workflowId : undefined;
+    const targetWorkflowId = typeof input.workflowId === "string" && input.workflowId !== ALL_WORKFLOWS_BOARD_VIEW_ID
+      ? input.workflowId
+      : (boardWorkflows?.workflows.find((workflow) => workflow.id === boardWorkflows.defaultWorkflowId)?.id ?? boardWorkflows?.workflows[0]?.id);
+    const targetColumn = targetWorkflowId ? resolveWorkflowQuickCreateTarget(targetWorkflowId, input.column) : undefined;
+    const created = await onQuickCreate({
+      ...input,
+      ...(targetColumn ? { column: targetColumn } : {}),
+      ...(targetWorkflowId ? { workflowId: targetWorkflowId } : {}),
+    });
     if (created?.id && targetWorkflowId) {
       const createdWorkflowId = (created as Task & { workflowId?: string }).workflowId ?? targetWorkflowId;
       applyOptimisticTaskWorkflow(created.id, createdWorkflowId);
       refreshBoardWorkflows();
     }
     return created;
-  }, [applyOptimisticTaskWorkflow, onQuickCreate, refreshBoardWorkflows]);
+  }, [applyOptimisticTaskWorkflow, boardWorkflows, onQuickCreate, refreshBoardWorkflows, resolveWorkflowQuickCreateTarget]);
 
   const selectedWorkflowArchivedColumn = useMemo(() => {
     if (!selectedWorkflow) return null;
@@ -812,7 +839,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                   prAuthAvailable={prAuthAvailable}
                   autoMerge={autoMerge}
                   mergeStrategy={mergeStrategy}
-                  {...(isCreateColumn && aggregateQuickCreateTarget ? { workflowId: aggregateQuickCreateTarget.workflowId, onQuickCreate: handleAggregateWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
+                  {...(isCreateColumn && aggregateQuickCreateTarget ? { workflowId: aggregateQuickCreateTarget.workflowId, workflowOptions, defaultWorkflowId: boardWorkflows?.defaultWorkflowId ?? null, onQuickCreate: handleAggregateWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
                   {...(columnDef.flags.mergeBlocker || columnDef.flags.humanReview ? { onToggleAutoMerge: handleToggleAutoMerge } : {})}
                   {...(columnDef.id === "done" ? { onArchiveAllDone } : {})}
                   {...(isDoneLikeColumn ? { doneSortMode, onDoneSortModeChange: setDoneSortMode } : {})}
@@ -890,7 +917,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                 prAuthAvailable={prAuthAvailable}
                 autoMerge={autoMerge}
                 mergeStrategy={mergeStrategy}
-                {...(isCreateColumn ? { onQuickCreate: handleWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
+                {...(isCreateColumn ? { workflowOptions, defaultWorkflowId: selectedWorkflow.id, onQuickCreate: handleWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
                 {...(columnDef.flags.mergeBlocker || columnDef.flags.humanReview ? { onToggleAutoMerge: handleToggleAutoMerge } : {})}
                 {...(columnDef.id === "done" ? { onArchiveAllDone } : {})}
                 {...(isWorkflowDoneLikeColumn ? { doneSortMode, onDoneSortModeChange: setDoneSortMode } : {})}

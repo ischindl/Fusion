@@ -1,11 +1,11 @@
 import "./QuickEntryBox.css";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import type { ToastType } from "../hooks/useToast";
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, getErrorMessage } from "@fusion/core";
 import type { Task, Settings, TaskPriority, ResolvedWorkflowOptionalStep } from "@fusion/core";
-import type { ModelInfo, RefinementType, Agent, CreateTaskInput, DuplicateMatch } from "../api";
+import type { ModelInfo, RefinementType, Agent, CreateTaskInput, DuplicateMatch, BoardWorkflowDefinition } from "../api";
 import { checkDuplicateTasks, fetchModels, fetchSettings, refineText, getRefineErrorMessage, updateGlobalSettings, fetchAgents, uploadAttachment, fetchWorkflowOptionalSteps } from "../api";
 import { DuplicateWarningModal } from "./DuplicateWarningModal";
 import { Link, Paperclip, Brain, Lightbulb, ListTree, Sparkles, Save, ChevronDown, ChevronUp, ChevronRight, Bot, Server, Flag } from "lucide-react";
@@ -40,6 +40,10 @@ interface QuickEntryBoxProps {
   onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
   /** Selected workflow lane for AI-assisted create actions. Omit in legacy board mode to preserve project-default inheritance. */
   workflowId?: string | null;
+  /** Real workflows available to the quick-add workflow selector. Board-only aggregate sentinels must be filtered before rendering/submission. */
+  workflowOptions?: BoardWorkflowDefinition[];
+  /** Project/default workflow id used when the parent view is aggregate or stale. */
+  defaultWorkflowId?: string | null;
   /** Optional project context for API calls */
   projectId?: string;
   /**
@@ -101,7 +105,25 @@ function parseModelSelection(value: string): { provider?: string; modelId?: stri
   };
 }
 
-export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, workflowId, projectId, autoExpand = true, defaultExpanded = true, singleLine = false, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
+function getRealWorkflowOptions(workflowOptions: BoardWorkflowDefinition[] | undefined): BoardWorkflowDefinition[] {
+  return (workflowOptions ?? []).filter((workflow) => workflow.id !== "__all_workflows__");
+}
+
+function resolveQuickAddWorkflowId(
+  parentWorkflowId: string | null | undefined,
+  defaultWorkflowId: string | null | undefined,
+  workflowOptions: BoardWorkflowDefinition[],
+): string | null | undefined {
+  if (parentWorkflowId === undefined) return undefined;
+  if (parentWorkflowId === null) return null;
+  if (workflowOptions.length === 0) return parentWorkflowId === "__all_workflows__" ? null : parentWorkflowId;
+  const validIds = new Set(workflowOptions.map((workflow) => workflow.id));
+  if (validIds.has(parentWorkflowId)) return parentWorkflowId;
+  if (defaultWorkflowId && validIds.has(defaultWorkflowId)) return defaultWorkflowId;
+  return workflowOptions[0]?.id ?? null;
+}
+
+export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels, onPlanningMode, onSubtaskBreakdown, workflowId, workflowOptions, defaultWorkflowId, projectId, autoExpand = true, defaultExpanded = true, singleLine = false, favoriteProviders: parentFavoriteProviders, favoriteModels: parentFavoriteModels, onToggleFavorite: parentToggleFavorite, onToggleModelFavorite: parentToggleModelFavorite, onOpenTask }: QuickEntryBoxProps) {
   const { t } = useTranslation("app");
   const [description, setDescription] = useState(() => {
     if (typeof window !== "undefined") {
@@ -162,6 +184,17 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
+  const realWorkflowOptions = useMemo(() => getRealWorkflowOptions(workflowOptions), [workflowOptions]);
+  const workflowPickerRef = useRef<HTMLDivElement>(null);
+  const previousWorkflowDefaultRef = useRef<{ workflowId: string | null | undefined; defaultWorkflowId: string | null | undefined }>({ workflowId, defaultWorkflowId });
+  const [showWorkflowPicker, setShowWorkflowPicker] = useState(false);
+  /*
+  FNXC:QuickAddWorkflow 2026-06-30-00:00:
+  Quick-add needs an independent real workflow target because the main Board selector can be on the aggregate "All workflows" read view. Resolve only against real workflow ids and keep the aggregate sentinel out of task create, Plan, Subtask, and optional-step requests.
+  */
+  const [quickEntryWorkflowId, setQuickEntryWorkflowId] = useState<string | null | undefined>(() => (
+    resolveQuickAddWorkflowId(workflowId, defaultWorkflowId, getRealWorkflowOptions(workflowOptions))
+  ));
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadedModels, setLoadedModels] = useState<ModelInfo[]>(availableModels ?? []);
@@ -259,10 +292,38 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   FNXC:WorkflowOptionalSteps 2026-06-26-05:10:
   Resolution MUST mirror the executor/store (explicit workflowId → project default → `builtin:coding`). The earlier `?? null` tail hid `builtin:coding`'s optional steps (browser-verification, code-review) whenever no project default workflow was configured, so operators never saw the toggles even though the unselected task runs `builtin:coding` (FN-7039). Fall back to `builtin:coding` once settings have loaded; stay `null` while settings are still loading so we don't fetch the wrong workflow then refetch.
   */
+  const selectedQuickEntryWorkflow = typeof quickEntryWorkflowId === "string"
+    ? realWorkflowOptions.find((option) => option.id === quickEntryWorkflowId)
+    : undefined;
+  const quickEntryWorkflowNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const option of realWorkflowOptions) {
+      counts.set(option.name, (counts.get(option.name) ?? 0) + 1);
+    }
+    return counts;
+  }, [realWorkflowOptions]);
+  const showWorkflowSelector = workflowId !== undefined && realWorkflowOptions.length >= 2 && quickEntryWorkflowId !== null;
+  const quickEntryWorkflowLabel = selectedQuickEntryWorkflow?.name ?? t("tasks.workflow", "Workflow");
+  const selectedWorkflowForCreate = workflowId === undefined ? undefined : quickEntryWorkflowId;
+
+  useEffect(() => {
+    const parentChanged = previousWorkflowDefaultRef.current.workflowId !== workflowId
+      || previousWorkflowDefaultRef.current.defaultWorkflowId !== defaultWorkflowId;
+    previousWorkflowDefaultRef.current = { workflowId, defaultWorkflowId };
+    setQuickEntryWorkflowId((current) => {
+      const resolved = resolveQuickAddWorkflowId(workflowId, defaultWorkflowId, realWorkflowOptions);
+      if (parentChanged) return resolved;
+      if (typeof current === "string" && realWorkflowOptions.some((option) => option.id === current)) {
+        return current;
+      }
+      return resolved;
+    });
+  }, [defaultWorkflowId, realWorkflowOptions, workflowId]);
+
   const effectiveOptionalWorkflowId =
-    workflowId === null
+    selectedWorkflowForCreate === null
       ? null
-      : (workflowId ?? settings?.defaultWorkflowId ?? (settings ? "builtin:coding" : null));
+      : (selectedWorkflowForCreate ?? settings?.defaultWorkflowId ?? (settings ? "builtin:coding" : null));
 
   useEffect(() => {
     let cancelled = false;
@@ -480,6 +541,19 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showPriorityPicker]);
 
+  useEffect(() => {
+    if (!showWorkflowPicker) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (workflowPickerRef.current?.contains(target)) return;
+      setShowWorkflowPicker(false);
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showWorkflowPicker]);
+
   const resetForm = useCallback(() => {
     pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
     setPendingImages([]);
@@ -566,6 +640,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       const createdTask = await onCreate({
         description: trimmed,
         column: "triage",
+        ...(selectedWorkflowForCreate !== undefined ? { workflowId: selectedWorkflowForCreate } : {}),
         dependencies: dependencies.length ? dependencies : undefined,
         ...(selectedAgentId ? { assignedAgentId: selectedAgentId } : {}),
         modelPresetId: selectedPresetId,
@@ -612,6 +687,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     onCreate,
     description,
     dependencies,
+    selectedWorkflowForCreate,
     selectedAgentId,
     selectedPresetId,
     hasExecutorOverride,
@@ -752,6 +828,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
           setPriorityPickerPosition(null);
           return;
         }
+        if (showWorkflowPicker) {
+          setShowWorkflowPicker(false);
+          return;
+        }
         if (showAgentPicker) {
           setShowAgentPicker(false);
           setAgentPickerPosition(null);
@@ -786,6 +866,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       activeModelSubmenu,
       isRefineMenuOpen,
       showPriorityPicker,
+      showWorkflowPicker,
       projectId,
       setIsDisclosureExpanded,
       duplicateMatches,
@@ -1379,8 +1460,8 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    if (workflowId !== undefined) {
-      onPlanningMode?.(trimmed, workflowId);
+    if (selectedWorkflowForCreate !== undefined) {
+      onPlanningMode?.(trimmed, selectedWorkflowForCreate);
     } else {
       onPlanningMode?.(trimmed);
     }
@@ -1388,7 +1469,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     FNXC:QuickAddPlanningPreserve 2026-06-22-00:00:
     Opening planning mode must preserve the quick-add description and scoped draft so exiting planning without creating tasks restores the user's text. The draft is cleared only by planning-completion handlers.
     */
-  }, [description, onPlanningMode, workflowId, addToast, t]);
+  }, [description, onPlanningMode, selectedWorkflowForCreate, addToast, t]);
 
   const handleSubtaskClick = useCallback(() => {
     const trimmed = description.trim();
@@ -1396,14 +1477,14 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       addToast(t("tasks.enterDescriptionFirst", "Enter a description first"), "error");
       return;
     }
-    if (workflowId !== undefined) {
-      onSubtaskBreakdown?.(trimmed, workflowId);
+    if (selectedWorkflowForCreate !== undefined) {
+      onSubtaskBreakdown?.(trimmed, selectedWorkflowForCreate);
     } else {
       onSubtaskBreakdown?.(trimmed);
     }
     // Clear the form after triggering subtask breakdown
     resetForm();
-  }, [description, onSubtaskBreakdown, workflowId, addToast, resetForm]);
+  }, [description, onSubtaskBreakdown, selectedWorkflowForCreate, addToast, resetForm]);
 
   const handleSaveClick = useCallback(() => {
     // Save button now creates the task (same as Enter key)
@@ -1571,6 +1652,72 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
               touchButtonRef.current = null;
             }}
           >
+            {showWorkflowSelector && (
+              <div className="quick-entry-workflow-wrap" ref={workflowPickerRef}>
+                <button
+                  type="button"
+                  className="btn btn-sm dep-trigger quick-entry-workflow-trigger"
+                  data-testid="quick-entry-workflow-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={showWorkflowPicker}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setShowDeps(false);
+                    setShowAgentPicker(false);
+                    setAgentPickerPosition(null);
+                    setShowNodePicker(false);
+                    setNodePickerPosition(null);
+                    setShowPriorityPicker(false);
+                    setPriorityPickerPosition(null);
+                    setIsModelMenuOpen(false);
+                    setModelMenuPosition(null);
+                    setActiveModelSubmenu(null);
+                    setShowWorkflowPicker((prev) => !prev);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setShowWorkflowPicker(false);
+                    }
+                  }}
+                  title={t("tasks.quickEntryWorkflowTitle", "Workflow for the next task")}
+                >
+                  <span className="quick-entry-workflow-label">{quickEntryWorkflowLabel}</span>
+                  <ChevronDown size={12} aria-hidden="true" />
+                </button>
+                {showWorkflowPicker && (
+                  <div className="dep-dropdown quick-entry-workflow-menu" role="listbox" data-testid="quick-entry-workflow-menu">
+                    <div className="dep-dropdown-search-header">{t("tasks.quickEntryWorkflowHeader", "Create in workflow")}</div>
+                    {realWorkflowOptions.map((option) => {
+                      const duplicateName = (quickEntryWorkflowNameCounts.get(option.name) ?? 0) > 1;
+                      const optionLabel = duplicateName
+                        ? t("tasks.quickEntryWorkflowDuplicateLabel", "{{name}} ({{id}})", { name: option.name, id: option.id })
+                        : option.name;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          role="option"
+                          aria-selected={quickEntryWorkflowId === option.id}
+                          aria-label={optionLabel}
+                          className={`dep-dropdown-item quick-entry-workflow-option${quickEntryWorkflowId === option.id ? " selected" : ""}`}
+                          data-testid={`quick-entry-workflow-option-${option.id}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setQuickEntryWorkflowId(option.id);
+                            setShowWorkflowPicker(false);
+                          }}
+                        >
+                          <span className="dep-dropdown-title">{option.name}</span>
+                          {duplicateName ? <span className="dep-dropdown-subtitle">{option.id}</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               type="button"
               className="btn btn-task-create btn-sm"

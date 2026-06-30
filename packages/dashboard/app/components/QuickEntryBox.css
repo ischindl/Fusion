@@ -135,6 +135,57 @@ The global `.description-with-refine textarea { padding-right: 70px }` (styles.c
   flex: 1 1 auto;
 }
 
+/*
+FNXC:QuickAddWorkflow 2026-06-30-00:00:
+Quick-add workflow targeting sits in the action row as a compact existing-button dropdown. Use tokenized sizing/colors so the selector wraps with Save/Plan controls on narrow Board and List surfaces without introducing a separate visual hierarchy.
+*/
+.quick-entry-workflow-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.quick-entry-workflow-trigger {
+  max-width: calc(var(--space-xl) * 8);
+}
+
+.quick-entry-workflow-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-entry-workflow-menu {
+  position: absolute;
+  inset-block-start: calc(100% + var(--space-xs));
+  inset-inline-start: 0;
+  min-width: min(calc(var(--space-xl) * 10), calc(100vw - var(--space-lg)));
+  max-width: calc(100vw - var(--space-lg));
+  max-height: min(calc(var(--space-xl) * 10), calc(100vh - var(--space-xl) * 2));
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+.quick-entry-workflow-option {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+@media (max-width: 768px) {
+  .quick-entry-workflow-wrap,
+  .quick-entry-workflow-trigger {
+    max-width: 100%;
+  }
+
+  .quick-entry-workflow-menu {
+    min-width: min(calc(var(--space-xl) * 9), calc(100vw - var(--space-lg)));
+  }
+}
+
 .quick-entry-model-wrap {
   position: relative;
 }

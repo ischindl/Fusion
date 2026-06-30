@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ListView } from "../ListView";
@@ -52,22 +52,36 @@ vi.mock("../QuickEntryBox", () => ({
     onPlanningMode,
     onSubtaskBreakdown,
     workflowId,
+    workflowOptions,
+    defaultWorkflowId,
   }: {
-    onCreate?: (input: { description: string }) => Promise<unknown>;
+    onCreate?: (input: { description: string; workflowId?: string | null }) => Promise<unknown>;
     addToast: (message: string, type?: "error" | "success" | "info" | "warning") => void;
     onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
     onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
     workflowId?: string | null;
+    workflowOptions?: { id: string; name: string }[];
+    defaultWorkflowId?: string | null;
   }) => {
     const [value, setValue] = useState("");
+    const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null | undefined>(
+      workflowId ?? defaultWorkflowId ?? workflowOptions?.[0]?.id,
+    );
     const [expanded, setExpanded] = useState(false);
     const [modelMenuOpen, setModelMenuOpen] = useState(false);
+
+    useEffect(() => {
+      setSelectedWorkflowId(workflowId ?? defaultWorkflowId ?? workflowOptions?.[0]?.id);
+    }, [defaultWorkflowId, workflowId, workflowOptions]);
 
     const submit = async () => {
       const description = value.trim();
       if (!description || !onCreate) return;
       try {
-        await onCreate({ description });
+        await onCreate({
+          description,
+          ...(selectedWorkflowId !== undefined ? { workflowId: selectedWorkflowId } : {}),
+        });
         setValue("");
       } catch (err) {
         addToast(err instanceof Error ? err.message : "Failed to create task", "error");
@@ -77,8 +91,8 @@ vi.mock("../QuickEntryBox", () => ({
     const handoff = (callback?: (description: string, workflowId?: string | null) => void) => {
       const description = value.trim();
       if (!description || !callback) return;
-      if (workflowId !== undefined) {
-        callback(description, workflowId);
+      if (selectedWorkflowId !== undefined) {
+        callback(description, selectedWorkflowId);
         return;
       }
       callback(description);
@@ -121,6 +135,12 @@ vi.mock("../QuickEntryBox", () => ({
           <button type="button" data-testid="quick-entry-subtask" onClick={() => handoff(onSubtaskBreakdown)}>
             Subtask
           </button>
+          {workflowOptions && workflowOptions.length > 1 ? (
+            <button type="button" data-testid="quick-entry-workflow-option-wf-custom" onClick={() => setSelectedWorkflowId("wf-custom")}>
+              Custom workflow
+            </button>
+          ) : null}
+          <span data-testid="quick-entry-workflow-props" data-workflow-id={workflowId ?? ""} data-default-workflow-id={defaultWorkflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((option) => option.id))} />
           <button type="button" data-testid="quick-entry-save" onClick={() => void submit()}>
             Save
           </button>
@@ -3068,6 +3088,43 @@ describe("ListView Quick Entry", () => {
         workflowId: "builtin:coding",
       }));
     });
+  });
+
+  it("passes workflow options to quick-add and submits the changed selector workflow", async () => {
+    const mockOnQuickCreate = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:default",
+      workflows: [
+        {
+          id: "builtin:default",
+          name: "Default",
+          columns: [{ id: "triage", name: "Triage", flags: { intake: true } }],
+        },
+        {
+          id: "wf-custom",
+          name: "Custom",
+          columns: [{ id: "backlog", name: "Backlog", flags: { intake: true } }],
+        },
+      ],
+      taskWorkflowIds: {},
+    });
+    renderListView({ onQuickCreate: mockOnQuickCreate });
+
+    await waitFor(() => expect(screen.getByTestId("quick-entry-workflow-props")).toHaveAttribute("data-workflow-id", "builtin:default"));
+    expect(screen.getByTestId("quick-entry-workflow-props")).toHaveAttribute("data-default-workflow-id", "builtin:default");
+    expect(JSON.parse(screen.getByTestId("quick-entry-workflow-props").getAttribute("data-workflow-options") || "[]")).toEqual(["builtin:default", "wf-custom"]);
+
+    fireEvent.click(screen.getByTestId("quick-entry-toggle"));
+    fireEvent.click(screen.getByTestId("quick-entry-workflow-option-wf-custom"));
+    fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Create on changed list workflow" } });
+    fireEvent.click(screen.getByTestId("quick-entry-save"));
+
+    await waitFor(() => expect(mockOnQuickCreate).toHaveBeenCalledWith(expect.objectContaining({
+      description: "Create on changed list workflow",
+      workflowId: "wf-custom",
+      column: "backlog",
+    })));
   });
 
   it("passes the selected workflow id to list quick-entry Plan and Subtask handoffs", async () => {

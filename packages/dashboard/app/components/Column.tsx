@@ -13,7 +13,7 @@ import { groupByWorktree } from "../utils/worktreeGrouping";
 import type { ToastType } from "../hooks/useToast";
 import type { TaskContextMenuColumnMetadata } from "./TaskContextMenu";
 import { ChevronDown, ChevronUp, MoreVertical } from "lucide-react";
-import type { ModelInfo, BoardWorkflowColumnFlags } from "../api";
+import type { BoardWorkflowDefinition, ModelInfo, BoardWorkflowColumnFlags } from "../api";
 import type { BlockerFanoutEntry } from "../hooks/useBlockerFanout";
 import type { DoneColumnSortMode } from "./taskSorting";
 
@@ -167,6 +167,10 @@ interface ColumnProps {
   workflowMode?: boolean;
   /** Workflow id for column-aware task creation in workflow mode. */
   workflowId?: string;
+  /** Real workflow choices for the quick-add selector in workflow mode. */
+  workflowOptions?: BoardWorkflowDefinition[];
+  /** Default workflow target for quick-add when the parent view is aggregate or stale. */
+  defaultWorkflowId?: string | null;
   /** Display name for this column, from the workflow definition. */
   columnDisplayName?: string;
   /** Resolved trait flags for this column (workflow mode). */
@@ -190,7 +194,7 @@ interface ColumnProps {
   getDraggingTaskId?: () => string | null;
 }
 
-function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, doneSortMode, onDoneSortModeChange, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, taskStuckTimeoutMs, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, taskWorkflowBadges, blockerFanoutMap, prAuthAvailable, workflowMode, workflowId, columnDisplayName, columnFlags, workflowContextMenuColumns, taskContextMenuColumnsByTaskId, onPromote, canDropTask, getDraggingTaskId }: ColumnProps) {
+function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, doneSortMode, onDoneSortModeChange, collapsed, onToggleCollapse, allTasks, availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, taskStuckTimeoutMs, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, taskWorkflowBadges, blockerFanoutMap, prAuthAvailable, workflowMode, workflowId, workflowOptions, defaultWorkflowId, columnDisplayName, columnFlags, workflowContextMenuColumns, taskContextMenuColumnsByTaskId, onPromote, canDropTask, getDraggingTaskId }: ColumnProps) {
   const { t } = useTranslation("app");
   // Anchor the board.rejection.* catalog keys for the i18next extractor (it
   // scopes `t` to the useTranslation binding, so the shared translateRejection
@@ -421,7 +425,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
         return onQuickCreate({
           ...input,
           column,
-          ...(workflowId ? { workflowId } : {}),
+          ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : (workflowId ? { workflowId } : {})),
         });
       }
       return onQuickCreate(input);
@@ -769,6 +773,8 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
               onPlanningMode={onPlanningMode}
               onSubtaskBreakdown={onSubtaskBreakdown}
               workflowId={workflowMode ? workflowId : undefined}
+              workflowOptions={workflowMode ? workflowOptions : undefined}
+              defaultWorkflowId={workflowMode ? defaultWorkflowId : undefined}
               projectId={projectId}
               autoExpand={false}
               favoriteProviders={favoriteProviders}

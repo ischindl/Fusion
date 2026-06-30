@@ -682,13 +682,25 @@ export function ListView({
     });
   }, [projectId]);
 
+  const resolveListQuickCreateTarget = useCallback((targetWorkflowId: string, preferredColumnId?: string | null): ColumnId | undefined => {
+    const workflow = boardWorkflows?.workflows.find((candidate) => candidate.id === targetWorkflowId);
+    if (!workflow) return undefined;
+    const visibleColumns = workflow.columns.filter((column) => !column.flags.archived && !column.flags.hiddenFromBoard);
+    const preferredColumn = preferredColumnId ? visibleColumns.find((column) => column.id === preferredColumnId) : undefined;
+    const column = preferredColumn
+      ?? visibleColumns.find((candidate) => candidate.flags.intake)
+      ?? visibleColumns[0];
+    return column?.id as ColumnId | undefined;
+  }, [boardWorkflows]);
+
   const handleListQuickCreate = useCallback(async (input: TaskCreateInput) => {
     const create = onQuickCreate ?? (async () => addToast(t("listView.taskCreationUnavailable", "Task creation not available"), "error"));
     if (workflowMode && selectedWorkflow && createTargetColumn) {
-      const workflowId = input.workflowId ?? selectedWorkflow.id;
+      const workflowId = typeof input.workflowId === "string" ? input.workflowId : selectedWorkflow.id;
+      const targetColumn = resolveListQuickCreateTarget(workflowId, input.column) ?? createTargetColumn;
       const created = await create({
         ...input,
-        column: input.column ?? createTargetColumn,
+        column: targetColumn,
         workflowId,
       });
       if (created?.id) {
@@ -699,7 +711,7 @@ export function ListView({
       return created;
     }
     return create(input);
-  }, [addToast, applyOptimisticTaskWorkflow, createTargetColumn, onQuickCreate, refreshBoardWorkflows, selectedWorkflow, t, workflowMode]);
+  }, [addToast, applyOptimisticTaskWorkflow, createTargetColumn, onQuickCreate, refreshBoardWorkflows, resolveListQuickCreateTarget, selectedWorkflow, t, workflowMode]);
 
   /*
   FNXC:ListWorkflowSelection 2026-06-29-00:00:
@@ -2350,6 +2362,8 @@ export function ListView({
                 onPlanningMode={onPlanningMode}
                 onSubtaskBreakdown={onSubtaskBreakdown}
                 workflowId={listQuickEntryWorkflowId}
+                workflowOptions={workflowMode ? workflowOptions : undefined}
+                defaultWorkflowId={workflowMode ? selectedWorkflow?.id ?? boardWorkflows?.defaultWorkflowId ?? null : undefined}
                 projectId={projectId}
                 autoExpand={false}
                 defaultExpanded={false}
