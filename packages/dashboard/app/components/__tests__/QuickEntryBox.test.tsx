@@ -1699,17 +1699,90 @@ describe("QuickEntryBox", () => {
       expect(screen.getByTestId("quick-entry-actions").querySelector(".quick-entry-workflow-wrap")).toBeNull();
     });
 
-    it("uses tokenized responsive CSS for the wider workflow selector", () => {
+    it("keeps long workflow names readable in the menu while the trigger uses a truncation label", () => {
+      const longName = "Long workflow name that should remain readable in the opened menu";
+      renderQuickEntryBox({
+        workflowId: "wf-long",
+        defaultWorkflowId: "wf-default",
+        workflowOptions: [
+          { id: "wf-default", name: "Coding", columns: [] },
+          { id: "wf-long", name: longName, icon: "🧭", columns: [] },
+        ],
+      });
+
+      const trigger = screen.getByTestId("quick-entry-workflow-trigger");
+      const triggerLabel = trigger.querySelector(".quick-entry-workflow-label");
+      expect(triggerLabel).toHaveTextContent(longName);
+      expect(triggerLabel).toHaveClass("quick-entry-workflow-label");
+
+      fireEvent.click(trigger);
+      expect(screen.getByTestId("quick-entry-workflow-menu")).toHaveTextContent(longName);
+      const optionName = screen.getByTestId("quick-entry-workflow-option-wf-long").querySelector(".quick-entry-workflow-option-name");
+      expect(optionName).toHaveTextContent(longName);
+      expect(optionName).toHaveClass("quick-entry-workflow-option-name");
+    });
+
+    it("clamps the wider workflow menu within the viewport from right-side triggers", () => {
+      const viewportWidth = 800;
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(viewportWidth);
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(720);
+      renderQuickEntryBox({
+        workflowId: "wf-long",
+        defaultWorkflowId: "wf-default",
+        workflowOptions: [
+          { id: "wf-default", name: "Coding", columns: [] },
+          { id: "wf-long", name: "A long readable workflow name", icon: "🧭", columns: [] },
+        ],
+      });
+
+      const trigger = screen.getByTestId("quick-entry-workflow-trigger");
+      vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+        x: 720,
+        y: 100,
+        width: 64,
+        height: 32,
+        top: 100,
+        right: 784,
+        bottom: 132,
+        left: 720,
+        toJSON: () => ({}),
+      } as DOMRect);
+
+      fireEvent.click(trigger);
+      const menu = screen.getByTestId("quick-entry-workflow-menu");
+      const left = parseFloat(menu.style.left);
+      const width = parseFloat(menu.style.width);
+
+      expect(menu.style.position).toBe("fixed");
+      expect(left).toBeGreaterThanOrEqual(16);
+      expect(left + width).toBeLessThanOrEqual(viewportWidth - 16);
+      expect(width).toBeGreaterThan(64);
+    });
+
+    it("uses tokenized responsive CSS for a compact workflow trigger and readable menu", () => {
+      const wrapRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-wrap");
       const triggerRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-trigger");
+      const labelRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-label");
       const menuRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-menu");
       const optionCopyRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-option-copy");
+      const optionNameRule = cssRuleBody(QUICK_ENTRY_BOX_CSS, ".quick-entry-workflow-option-name,\n.quick-entry-workflow-option-id");
 
-      expect(triggerRule).toContain("max-width: min(calc(var(--space-xl) * 11), calc(100vw - var(--space-lg)))");
+      expect(wrapRule).toContain("flex: 0 1 auto");
+      expect(wrapRule).toContain("width: fit-content");
+      expect(wrapRule).toContain("max-width: min(calc(var(--space-xl) * 5), 100%)");
+      expect(triggerRule).toContain("width: auto");
+      expect(triggerRule).toContain("max-width: min(calc(var(--space-xl) * 5), calc(100vw - var(--space-lg)))");
       expect(triggerRule).toContain("gap: var(--space-xs)");
+      expect(labelRule).toContain("text-overflow: ellipsis");
+      expect(menuRule).toContain("position: fixed");
+      expect(menuRule).not.toContain("inset-inline-start: 0");
       expect(menuRule).toContain("width: min(calc(var(--space-xl) * 16), calc(100vw - var(--space-lg)))");
       expect(menuRule).toContain("min-width: min(calc(var(--space-xl) * 14), calc(100vw - var(--space-lg)))");
       expect(optionCopyRule).toContain("gap: var(--space-2xs)");
-      expect(`${triggerRule}\n${menuRule}\n${optionCopyRule}`).not.toMatch(/#[0-9a-f]{3,8}|rgb\(|\d+px/i);
+      expect(optionNameRule).toContain("overflow-wrap: anywhere");
+      expect(optionNameRule).toContain("white-space: normal");
+      expect(optionNameRule).not.toContain("text-overflow: ellipsis");
+      expect(`${wrapRule}\n${triggerRule}\n${labelRule}\n${menuRule}\n${optionCopyRule}\n${optionNameRule}`).not.toMatch(/#[0-9a-f]{3,8}|rgb\(|\d+px/i);
       expect(QUICK_ENTRY_BOX_CSS).toMatch(/@media \(max-width: 768px\) \{[\s\S]*?quick-entry-workflow-menu[\s\S]*?min-width: min\(calc\(var\(--space-xl\) \* 11\), calc\(100vw - var\(--space-lg\)\)\)/);
     });
   });

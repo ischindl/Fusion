@@ -196,6 +196,9 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   );
   const realWorkflowOptions = useMemo(() => getRealWorkflowOptions(workflowOptions), [workflowOptions]);
   const workflowPickerRef = useRef<HTMLDivElement>(null);
+  const workflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const workflowPickerPortalRef = useRef<HTMLDivElement>(null);
+  const [workflowPickerPosition, setWorkflowPickerPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
   const previousWorkflowDefaultRef = useRef<{ workflowId: string | null | undefined; defaultWorkflowId: string | null | undefined }>({ workflowId, defaultWorkflowId });
   const [showWorkflowPicker, setShowWorkflowPicker] = useState(false);
   /*
@@ -594,7 +597,9 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
       if (workflowPickerRef.current?.contains(target)) return;
+      if (workflowPickerPortalRef.current?.contains(target)) return;
       setShowWorkflowPicker(false);
+      setWorkflowPickerPosition(null);
     };
 
     document.addEventListener("mousedown", handleClickOutside);
@@ -877,6 +882,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
         }
         if (showWorkflowPicker) {
           setShowWorkflowPicker(false);
+          setWorkflowPickerPosition(null);
           return;
         }
         if (showAgentPicker) {
@@ -1058,6 +1064,56 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       top,
       left,
     });
+  }, [getEffectiveViewport]);
+
+  const updateWorkflowPickerPosition = useCallback(() => {
+    const trigger = workflowTriggerRef.current;
+    if (!trigger) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const { width: viewportWidth, height: viewportHeight, offsetTop, offsetLeft } = getEffectiveViewport();
+    const horizontalPadding = 16;
+    const verticalPadding = 16;
+    const gap = 4;
+    const isMobile = viewportWidth <= 768;
+    const preferredHeight = Math.min(viewportHeight * (isMobile ? 0.6 : 0.5), 360);
+    /*
+    FNXC:QuickAddWorkflow 2026-06-30-16:16:
+    The workflow menu is wider than its compact trigger, so portal and clamp it against the visual viewport instead of anchoring it to the trigger's inline start. This keeps right-side Board columns and wrapped mobile action rows readable without horizontal overflow.
+    */
+    const preferredWidth = isMobile
+      ? Math.min(viewportWidth - horizontalPadding * 2, 448)
+      : Math.min(Math.max(rect.width * 3, 448), 512);
+    const width = Math.min(
+      preferredWidth,
+      Math.max(viewportWidth - horizontalPadding * 2, 240),
+    );
+
+    const triggerTop = rect.top - offsetTop;
+    const triggerBottom = rect.bottom - offsetTop;
+    const triggerLeft = rect.left - offsetLeft;
+    const spaceBelow = viewportHeight - triggerBottom;
+    const spaceAbove = triggerTop;
+    const availableBelow = Math.max(spaceBelow - verticalPadding - gap, 180);
+    const availableAbove = Math.max(spaceAbove - verticalPadding - gap, 180);
+    const openUpward = spaceBelow < preferredHeight && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      Math.min(openUpward ? availableAbove : availableBelow, preferredHeight),
+      180,
+    );
+
+    const left = Math.min(
+      Math.max(triggerLeft, horizontalPadding),
+      viewportWidth - horizontalPadding - width,
+    ) + offsetLeft;
+    const top = openUpward
+      ? Math.max(verticalPadding + offsetTop, triggerTop - maxHeight - gap + offsetTop)
+      : Math.min(
+          triggerBottom + gap + offsetTop,
+          viewportHeight + offsetTop - verticalPadding - maxHeight,
+        );
+
+    setWorkflowPickerPosition({ top, left, width, maxHeight });
   }, [getEffectiveViewport]);
 
   const updateDepDropdownPosition = useCallback(() => {
@@ -1336,6 +1392,31 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       }
     };
   }, [isRefineMenuOpen, updateRefineMenuPosition]);
+
+  // Keep workflow picker portal anchored during scroll/resize
+  useEffect(() => {
+    if (!showWorkflowPicker) return;
+
+    const handleReposition = () => updateWorkflowPickerPosition();
+
+    window.addEventListener("resize", handleReposition);
+    window.addEventListener("scroll", handleReposition, true);
+
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener("resize", handleReposition);
+      vv.addEventListener("scroll", handleReposition);
+    }
+
+    return () => {
+      window.removeEventListener("resize", handleReposition);
+      window.removeEventListener("scroll", handleReposition, true);
+      if (vv) {
+        vv.removeEventListener("resize", handleReposition);
+        vv.removeEventListener("scroll", handleReposition);
+      }
+    };
+  }, [showWorkflowPicker, updateWorkflowPickerPosition]);
 
   // Keep dependency dropdown portal anchored during scroll/resize
   useEffect(() => {
@@ -1688,6 +1769,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
             {showWorkflowSelector && (
               <div className="quick-entry-workflow-wrap" ref={workflowPickerRef}>
                 <button
+                  ref={workflowTriggerRef}
                   type="button"
                   className="btn btn-sm dep-trigger quick-entry-workflow-trigger"
                   data-testid="quick-entry-workflow-trigger"
@@ -1705,12 +1787,21 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                     setIsModelMenuOpen(false);
                     setModelMenuPosition(null);
                     setActiveModelSubmenu(null);
-                    setShowWorkflowPicker((prev) => !prev);
+                    setShowWorkflowPicker((prev) => {
+                      const next = !prev;
+                      if (next) {
+                        updateWorkflowPickerPosition();
+                      } else {
+                        setWorkflowPickerPosition(null);
+                      }
+                      return next;
+                    });
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       e.preventDefault();
                       setShowWorkflowPicker(false);
+                      setWorkflowPickerPosition(null);
                     }
                   }}
                   title={t("tasks.quickEntryWorkflowTitle", "Workflow for the next task")}
@@ -1724,8 +1815,21 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                   <span className="quick-entry-workflow-label">{quickEntryWorkflowLabel}</span>
                   <ChevronDown size={12} aria-hidden="true" />
                 </button>
-                {showWorkflowPicker && (
-                  <div className="dep-dropdown quick-entry-workflow-menu" role="listbox" data-testid="quick-entry-workflow-menu">
+                {showWorkflowPicker && portalRoot && workflowPickerPosition && createPortal(
+                  <div
+                    ref={workflowPickerPortalRef}
+                    className="dep-dropdown quick-entry-workflow-menu"
+                    role="listbox"
+                    data-testid="quick-entry-workflow-menu"
+                    style={{
+                      position: "fixed",
+                      top: `${workflowPickerPosition.top}px`,
+                      left: `${workflowPickerPosition.left}px`,
+                      width: `${workflowPickerPosition.width}px`,
+                      maxHeight: workflowPickerPosition.maxHeight ? `${workflowPickerPosition.maxHeight}px` : undefined,
+                      overflowY: workflowPickerPosition.maxHeight ? "auto" : undefined,
+                    }}
+                  >
                     <div className="dep-dropdown-search-header">{t("tasks.quickEntryWorkflowHeader", "Create in workflow")}</div>
                     {realWorkflowOptions.map((option) => {
                       const duplicateName = (quickEntryWorkflowNameCounts.get(option.name) ?? 0) > 1;
@@ -1745,6 +1849,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                           onClick={() => {
                             setQuickEntryWorkflowId(option.id);
                             setShowWorkflowPicker(false);
+                            setWorkflowPickerPosition(null);
                           }}
                         >
                           <WorkflowIcon workflowId={option.id} icon={option.icon} className="quick-entry-workflow-icon" decorative />
@@ -1755,7 +1860,8 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                         </button>
                       );
                     })}
-                  </div>
+                  </div>,
+                  portalRoot,
                 )}
               </div>
             )}
