@@ -717,7 +717,14 @@ const providerConfig: Record<
   { component: typeof AnthropicIcon; color: string; label?: string }
 > = {
   // Branded provider colors are tokenized in app/styles.css for theme-system consistency.
+  /*
+  FNXC:ProviderAuth 2026-06-29-23:45:
+  Settings renders Anthropic subscription OAuth and raw Anthropic API-key auth as separate cards, but both remain Anthropic-branded credentials.
+  Keep both synthetic ids on the Anthropic icon so the split provider cards do not fall back to a generic icon.
+  */
   anthropic: { component: AnthropicIcon, color: "var(--provider-anthropic)" },
+  "anthropic-api-key": { component: AnthropicIcon, color: "var(--provider-anthropic)", label: "Anthropic API Key" },
+  "anthropic-subscription": { component: AnthropicIcon, color: "var(--provider-anthropic)", label: "Anthropic Subscription" },
   "claude-cli": { component: ClaudeCliIcon, color: "var(--provider-anthropic)", label: "Anthropic — via Claude CLI" },
   "pi-claude-cli": { component: ClaudeCliIcon, color: "var(--provider-anthropic)", label: "Anthropic — via Claude CLI" },
   "droid-cli": { component: DroidCliIcon, color: "var(--provider-openai)", label: "Factory AI — via Droid CLI" },

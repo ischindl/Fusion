@@ -10,7 +10,9 @@ function makeAuthStorage(credentials: Record<string, { type: string; key?: strin
     getOAuthProviders: vi.fn(() => []),
     hasAuth: vi.fn((provider: string) => Boolean(credentials[provider])),
     login: vi.fn(),
-    logout: vi.fn(),
+    logout: vi.fn((provider: string) => {
+      delete credentials[provider];
+    }),
     set: vi.fn((provider: string, credential: { type: string; key?: string }) => {
       credentials[provider] = credential;
     }),
@@ -122,7 +124,7 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
     expect(providerIds).toContain("opencode-go");
   });
 
-  it("keeps built-in API key providers when OAuth provider ids collide", () => {
+  it("keeps explicit API-key aliases when OAuth provider ids collide", () => {
     const fusionAuth = makeAuthStorage();
     fusionAuth.getOAuthProviders = vi.fn(() => [
       { id: "anthropic", name: "Anthropic OAuth" },
@@ -133,7 +135,8 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
     const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
     const providerIds = wrapped.getApiKeyProviders().map((provider) => provider.id);
 
-    expect(providerIds).toEqual(expect.arrayContaining(["anthropic", "opencode-go"]));
+    expect(providerIds).toEqual(expect.arrayContaining(["anthropic-api-key", "opencode-go"]));
+    expect(providerIds).not.toContain("anthropic");
   });
 
   it("reads legacy auth JSON without creating missing files", async () => {
@@ -150,7 +153,7 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
     expect(existsSync(missingLegacyAuth)).toBe(false);
   });
 
-  it("reads non-expired OAuth credentials from legacy auth JSON", async () => {
+  it("reads non-expired OAuth credentials from legacy auth JSON except Anthropic model API-key auth", async () => {
     const tempDir = tempWorkspace("fusion-provider-auth-oauth-");
     const legacyAgentDir = join(tempDir, ".pi", "agent");
     const legacyAgentAuth = join(legacyAgentDir, "auth.json");
@@ -164,16 +167,23 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
           refresh: "legacy-refresh-token",
           expires: Date.now() + 60_000,
         },
+        anthropic: {
+          type: "oauth",
+          access: "legacy-anthropic-access-token",
+          refresh: "legacy-anthropic-refresh-token",
+          expires: Date.now() + 60_000,
+        },
       }),
     );
 
     const storage = createReadOnlyAuthFileStorage([legacyAgentAuth]);
 
     expect(await storage.getApiKey("openai-codex")).toBe("legacy-access-token");
+    expect(await storage.getApiKey("anthropic")).toBeUndefined();
   });
 
   describe("Anthropic provider classification", () => {
-    it("keeps anthropic in getOAuthProviders when upstream reports it as OAuth", () => {
+    it("exposes Anthropic subscription OAuth under anthropic and API-key auth under a separate alias", () => {
       const fusionAuth = makeAuthStorage();
       fusionAuth.getOAuthProviders = vi.fn(() => [
         { id: "anthropic", name: "Anthropic" },
@@ -183,23 +193,30 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
 
       const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
       const oauthProviders = wrapped.getOAuthProviders();
+      const apiKeyProviders = wrapped.getApiKeyProviders();
 
       const oauthIds = oauthProviders.map((p) => p.id);
       expect(oauthIds).toContain("anthropic");
+      expect(oauthIds).not.toContain("anthropic-api-key");
+      expect(oauthProviders).toContainEqual({ id: "anthropic", name: "Anthropic Subscription" });
       expect(oauthIds).toContain("github-copilot");
+      expect(apiKeyProviders).toContainEqual({ id: "anthropic-api-key", name: "Anthropic API Key" });
     });
 
-    it("includes anthropic in getApiKeyProviders when OAuth-backed", () => {
+    it("keeps OpenAI API-key provider id unchanged when OAuth uses openai-codex", () => {
       const fusionAuth = makeAuthStorage();
       fusionAuth.getOAuthProviders = vi.fn(() => [
-        { id: "anthropic", name: "Anthropic" },
+        { id: "openai-codex", name: "OpenAI Codex" },
       ]);
-      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+      const modelRegistry = { getAll: vi.fn(() => [
+        { provider: "openai", id: "openai/gpt-4o" },
+      ]) } as any;
 
       const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
       const apiKeyProviders = wrapped.getApiKeyProviders();
 
-      expect(apiKeyProviders).toContainEqual({ id: "anthropic", name: "Anthropic" });
+      expect(apiKeyProviders).toContainEqual({ id: "openai", name: "Openai" });
+      expect(apiKeyProviders.some((p) => p.id === "openai-codex")).toBe(false);
     });
 
     it("keeps only explicit built-ins when a model-registry-derived provider is also OAuth-backed", () => {
@@ -220,7 +237,86 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
       expect(apiKeyProviders.some((p) => p.id === "github-copilot")).toBe(false);
     });
 
-    it("round-trips anthropic API key credentials", async () => {
+    it("keeps Anthropic subscription login from overwriting an existing anthropic API key", async () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: { type: "api_key", key: "sk-ant-api03-existing" },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      fusionAuth.login = vi.fn(async (provider: string) => {
+        fusionAuth.set(provider, {
+          type: "oauth",
+          access: "oauth-access",
+          refresh: "oauth-refresh",
+          expires: Date.now() + 60_000,
+        });
+      });
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      await wrapped.login("anthropic", {} as any);
+
+      expect(fusionAuth.login).toHaveBeenCalledWith("anthropic", expect.any(Object));
+      expect(wrapped.get("anthropic")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-subscription")?.type).toBe("oauth");
+      expect(wrapped.hasAuth("anthropic-subscription")).toBe(true);
+      expect(wrapped.get("anthropic-api-key")).toEqual({ type: "api_key", key: "sk-ant-api03-existing" });
+      expect(await wrapped.getApiKey("anthropic")).toBe("sk-ant-api03-existing");
+    });
+
+    it("logs out Anthropic subscription alias without clearing the raw API key", () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: { type: "api_key", key: "sk-ant-api03-existing" },
+        "anthropic-subscription": {
+          type: "oauth",
+          access: "oauth-access",
+          refresh: "oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      wrapped.logout("anthropic-subscription");
+
+      expect(fusionAuth.logout).toHaveBeenCalledWith("anthropic-subscription");
+      expect(fusionAuth.logout).not.toHaveBeenCalledWith("anthropic");
+      expect(wrapped.get("anthropic-api-key")).toEqual({ type: "api_key", key: "sk-ant-api03-existing" });
+    });
+
+    it("logs out legacy Anthropic OAuth stored under the raw anthropic id", () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: {
+          type: "oauth",
+          access: "legacy-oauth-access",
+          refresh: "legacy-oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      expect(wrapped.get("anthropic")?.type).toBe("oauth");
+
+      wrapped.logout("anthropic");
+      wrapped.reload();
+
+      expect(fusionAuth.get).toHaveBeenCalledWith("anthropic");
+      expect(fusionAuth.logout).toHaveBeenCalledWith("anthropic-subscription");
+      expect(fusionAuth.logout).toHaveBeenCalledWith("anthropic");
+      expect(wrapped.get("anthropic")).toBeUndefined();
+      expect(wrapped.get("anthropic-subscription")).toBeUndefined();
+      expect(wrapped.get("anthropic-api-key")).toBeUndefined();
+    });
+
+    it("round-trips anthropic API-key alias through the underlying anthropic credential", async () => {
       const fusionAuth = makeAuthStorage();
       fusionAuth.getOAuthProviders = vi.fn(() => [
         { id: "anthropic", name: "Anthropic" },
@@ -228,19 +324,130 @@ describe("wrapAuthStorageWithApiKeyProviders", () => {
       const modelRegistry = { getAll: vi.fn(() => []) } as any;
 
       const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
-      wrapped.setApiKey("anthropic", "sk-ant-api03-test-key");
+      wrapped.setApiKey("anthropic-api-key", "sk-ant-api03-test-key");
 
       expect(fusionAuth.set).toHaveBeenCalledWith("anthropic", {
         type: "api_key",
         key: "sk-ant-api03-test-key",
       });
+      expect(wrapped.hasApiKey("anthropic-api-key")).toBe(true);
       expect(wrapped.hasApiKey("anthropic")).toBe(true);
+      expect(await wrapped.getApiKey("anthropic-api-key")).toBe("sk-ant-api03-test-key");
       expect(await wrapped.getApiKey("anthropic")).toBe("sk-ant-api03-test-key");
-      expect(wrapped.get("anthropic")).toEqual({ type: "api_key", key: "sk-ant-api03-test-key" });
+      expect(wrapped.get("anthropic-api-key")).toEqual({ type: "api_key", key: "sk-ant-api03-test-key" });
 
-      wrapped.clearApiKey("anthropic");
+      wrapped.clearApiKey("anthropic-api-key");
 
       expect(fusionAuth.remove).toHaveBeenCalledWith("anthropic");
+      expect(wrapped.hasApiKey("anthropic-api-key")).toBe(false);
+      expect(await wrapped.getApiKey("anthropic-api-key")).toBeUndefined();
+      expect(await wrapped.getApiKey("anthropic")).toBeUndefined();
+    });
+
+    it("preserves legacy Anthropic OAuth under anthropic when saving the separated API-key alias", async () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: {
+          type: "oauth",
+          access: "oauth-access",
+          refresh: "oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      wrapped.setApiKey("anthropic-api-key", "sk-ant-api03-new-key");
+      const legacyReadCallIndex = fusionAuth.get.mock.calls.findIndex(([provider]) => provider === "anthropic");
+      const apiKeyWriteCallIndex = fusionAuth.set.mock.calls.findIndex(([provider]) => provider === "anthropic");
+
+      expect(legacyReadCallIndex).toBeGreaterThanOrEqual(0);
+      expect(fusionAuth.get.mock.invocationCallOrder[legacyReadCallIndex]).toBeLessThan(
+        fusionAuth.set.mock.invocationCallOrder[apiKeyWriteCallIndex],
+      );
+      expect(fusionAuth.set).toHaveBeenCalledWith("anthropic-subscription", expect.objectContaining({ type: "oauth" }));
+      expect(fusionAuth.set).toHaveBeenCalledWith("anthropic", {
+        type: "api_key",
+        key: "sk-ant-api03-new-key",
+      });
+      expect(wrapped.get("anthropic")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-subscription")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-api-key")).toEqual({ type: "api_key", key: "sk-ant-api03-new-key" });
+      expect(await wrapped.getApiKey("anthropic")).toBe("sk-ant-api03-new-key");
+    });
+
+    it("preserves legacy Anthropic OAuth under anthropic when clearing the separated API-key alias", async () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: {
+          type: "oauth",
+          access: "oauth-access",
+          refresh: "oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+      wrapped.clearApiKey("anthropic-api-key");
+
+      expect(fusionAuth.set).toHaveBeenCalledWith("anthropic-subscription", expect.objectContaining({ type: "oauth" }));
+      expect(fusionAuth.remove).toHaveBeenCalledWith("anthropic");
+      expect(wrapped.get("anthropic")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-subscription")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-api-key")).toBeUndefined();
+      expect(await wrapped.getApiKey("anthropic")).toBeUndefined();
+    });
+
+    it("does not treat legacy Anthropic OAuth under anthropic as the model API key", async () => {
+      const fusionAuth = makeAuthStorage({
+        anthropic: {
+          type: "oauth",
+          access: "oauth-access",
+          refresh: "oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry);
+
+      expect(wrapped.hasAuth("anthropic")).toBe(true);
+      expect(wrapped.get("anthropic")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-subscription")?.type).toBe("oauth");
+      expect(wrapped.hasApiKey("anthropic-api-key")).toBe(false);
+      expect(wrapped.get("anthropic-api-key")).toBeUndefined();
+      expect(await wrapped.getApiKey("anthropic-api-key")).toBeUndefined();
+      expect(await wrapped.getApiKey("anthropic")).toBeUndefined();
+    });
+
+    it("hydrates fallback Anthropic OAuth as subscription-only instead of the model API key", async () => {
+      const fusionAuth = makeAuthStorage();
+      const fallbackAuth = makeAuthStorage({
+        anthropic: {
+          type: "oauth",
+          access: "legacy-oauth-access",
+          refresh: "legacy-oauth-refresh",
+          expires: Date.now() + 60_000,
+        },
+      });
+      fusionAuth.getOAuthProviders = vi.fn(() => [
+        { id: "anthropic", name: "Anthropic" },
+      ]);
+      const modelRegistry = { getAll: vi.fn(() => []) } as any;
+
+      const wrapped = wrapAuthStorageWithApiKeyProviders(fusionAuth, modelRegistry, [fallbackAuth]);
+
+      expect(fusionAuth.set).toHaveBeenCalledWith("anthropic-subscription", expect.objectContaining({ type: "oauth" }));
+      expect(wrapped.get("anthropic-subscription")?.type).toBe("oauth");
+      expect(wrapped.get("anthropic-api-key")).toBeUndefined();
       expect(wrapped.hasApiKey("anthropic")).toBe(false);
       expect(await wrapped.getApiKey("anthropic")).toBeUndefined();
     });

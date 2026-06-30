@@ -101,6 +101,19 @@ function getProviderInfoMap(t: (key: string, defaultValue: string) => string): R
         usageDescription: t("setup.apiKeyUsage.anthropic", "Used for Claude models in task execution and planning"),
       },
     },
+    "anthropic-api-key": {
+      description: t("setup.providerDesc.anthropicApiKey", "Claude models via raw Anthropic API key"),
+      apiKeyInfo: {
+        fieldLabel: t("setup.apiKeyLabel.anthropic", "Anthropic API Key"),
+        setupInstructions: t("setup.apiKeySetup.anthropic", "Create an API key from your Anthropic Console under API keys."),
+        dashboardUrl: "https://console.anthropic.com/settings/keys",
+        inputPlaceholder: "sk-ant-...",
+        usageDescription: t("setup.apiKeyUsage.anthropic", "Used for Claude models in task execution and planning"),
+      },
+    },
+    "anthropic-subscription": {
+      description: t("setup.providerDesc.anthropicSubscription", "Claude subscription OAuth — sign in with your Anthropic account"),
+    },
     openai: {
       description: t("setup.providerDesc.openai", "GPT models — versatile for a wide range of tasks"),
       apiKeyInfo: {
@@ -174,6 +187,7 @@ const PROVIDER_KEY_HINTS: Record<string, {
   example: string;
 }> = {
   anthropic: { pattern: /^sk-ant-/, hint: "Starts with sk-ant-", example: "sk-ant-api03-..." },
+  "anthropic-api-key": { pattern: /^sk-ant-/, hint: "Starts with sk-ant-", example: "sk-ant-api03-..." },
   openai: { pattern: /^sk-/, hint: "Starts with sk-", example: "sk-..." },
   "openai-codex": { pattern: /^sk-/, hint: "Starts with sk-", example: "sk-..." },
   openrouter: { pattern: /^sk-or-/, hint: "Starts with sk-or-", example: "sk-or-v1-..." },
@@ -195,6 +209,8 @@ const PROVIDER_KEY_HINTS_FALLBACK = {
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: "Anthropic",
+  "anthropic-api-key": "Anthropic API Key",
+  "anthropic-subscription": "Anthropic Subscription",
   openai: "OpenAI",
   "openai-codex": "OpenAI Codex",
   openrouter: "OpenRouter",
@@ -228,7 +244,11 @@ function getProviderDisplayName(providerId: string): string {
     .join(" ");
 }
 
-const QUICK_START_PROVIDER_IDS = ["anthropic", "openai", "google", "gemini", "ollama"] as const;
+/*
+FNXC:ProviderAuth 2026-06-29-23:58:
+Onboarding quick start must show Anthropic subscription OAuth and raw Anthropic API-key auth as separate first-class cards; keep the legacy `anthropic` id as a fallback only for older status payloads.
+*/
+const QUICK_START_PROVIDER_IDS = ["anthropic-subscription", "anthropic-api-key", "anthropic", "openai", "google", "gemini", "ollama"] as const;
 
 const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
   "anthropic",
@@ -244,6 +264,8 @@ const ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER = [
 ] as const;
 
 const ONBOARDING_PROVIDER_FAMILY_ALIASES: Record<string, (typeof ONBOARDING_CURATED_PROVIDER_FAMILY_ORDER)[number]> = {
+  "anthropic-subscription": "anthropic",
+  "anthropic-api-key": "anthropic",
   anthropic: "anthropic",
   "claude-cli": "claude-cli",
   "droid-cli": "droid-cli",
@@ -1811,7 +1833,7 @@ export function ModelOnboardingModal({
   const showShellConnectionSetup = shellState.host !== "web" && !shellState.activeProfileId;
   const orderedAiProviders = [...aiProviders].sort(compareOnboardingProviders);
   const hasOauthProviders = orderedAiProviders.some((provider) => !provider.type || provider.type === "oauth");
-  const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key" || provider.supportsApiKey === true;
+  const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key";
   const hasApiKeyProviders = orderedAiProviders.some((provider) => providerSupportsApiKey(provider));
   const connectedAiProviders = aiProviders.filter((provider) => provider.authenticated);
   const hasAiProvider = connectedAiProviders.length > 0;
@@ -1956,7 +1978,18 @@ export function ModelOnboardingModal({
     "";
 
   const quickStartSet = new Set<string>(QUICK_START_PROVIDER_IDS);
-  const quickStartProviders = orderedAiProviders
+  const hasSeparatedAnthropicProvider = orderedAiProviders.some(
+    (provider) => provider.id === "anthropic-subscription" || provider.id === "anthropic-api-key",
+  );
+  /*
+  FNXC:ProviderAuth 2026-06-29-23:59:
+  Onboarding may receive a stale legacy `anthropic` status row during rollout, but the separated `anthropic-subscription` and `anthropic-api-key` cards are now the source of truth.
+  Suppress the legacy row whenever either separated card is present so users never see duplicate Anthropic auth choices or a dual-purpose card.
+  */
+  const visibleOrderedAiProviders = orderedAiProviders.filter(
+    (provider) => !(provider.id === "anthropic" && hasSeparatedAnthropicProvider),
+  );
+  const quickStartProviders = visibleOrderedAiProviders
     .filter((provider) => quickStartSet.has(provider.id))
     .sort((a, b) => {
       const rankA = QUICK_START_PROVIDER_IDS.indexOf(a.id as (typeof QUICK_START_PROVIDER_IDS)[number]);
@@ -1966,10 +1999,10 @@ export function ModelOnboardingModal({
       }
       return compareOnboardingProviders(a, b);
     });
-  const connectedNonQuickStartProviders = orderedAiProviders.filter(
+  const connectedNonQuickStartProviders = visibleOrderedAiProviders.filter(
     (provider) => provider.authenticated && !quickStartSet.has(provider.id),
   );
-  const advancedProviders = orderedAiProviders.filter(
+  const advancedProviders = visibleOrderedAiProviders.filter(
     (provider) => !provider.authenticated && !quickStartSet.has(provider.id),
   );
 
@@ -2018,13 +2051,12 @@ export function ModelOnboardingModal({
     if (providerSupportsApiKey(provider)) {
       const providerInfo = getProviderInfo(provider.id, t);
       const apiKeyInfo = getApiKeyInfo(provider, t);
-      const isDualAuthProvider = provider.type !== "api_key" && provider.supportsApiKey === true;
       const hasStoredApiKey = Boolean(provider.keyHint);
 
       /*
-      FNXC:ProviderAuth 2026-06-28-16:14:
-      Onboarding should offer Anthropic's raw API-key path next to the existing OAuth login path, while OpenAI continues using its existing standalone API-key card.
-      Use `supportsApiKey` for dual providers so OAuth-only authentication does not hide the API-key input.
+      FNXC:ProviderAuth 2026-06-29-22:20:
+      Onboarding must offer Anthropic subscription OAuth as its own login card and raw Anthropic API-key auth as a separate key card, matching OpenAI Codex versus OpenAI API-key behavior.
+      Treat only `type: "api_key"` providers as key-entry cards so the separated invariant cannot regress through `supportsApiKey`.
       */
       return (
         <div
@@ -2052,55 +2084,6 @@ export function ModelOnboardingModal({
               <span className="auth-key-hint">{t("setup.apiKeyHint", "Key: {{keyHint}}", { keyHint: provider.keyHint })}</span>
             )}
           </div>
-          {isDualAuthProvider && (
-            <div className="onboarding-provider-card__actions">
-              {authActionInProgress === provider.id ? (
-                provider.authenticated ? (
-                  <button className="btn btn-sm" disabled>
-                    {t("setup.loggingOut", "Logging out…")}
-                  </button>
-                ) : (
-                  <>
-                    <button className="btn btn-sm" disabled>
-                      {t("setup.waitingForLogin", "Waiting for login…")}
-                    </button>
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => void handleCancelLogin(provider.id)}
-                    >
-                      {t("setup.cancelLogin", "Cancel")}
-                    </button>
-                  </>
-                )
-              ) : showRemoteLoginInProgress ? (
-                <>
-                  <button className="btn btn-sm" disabled>
-                    {t("setup.waitingForLogin", "Waiting for login…")}
-                  </button>
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => void handleCancelLogin(provider.id)}
-                  >
-                    {t("setup.cancelLogin", "Cancel")}
-                  </button>
-                </>
-              ) : provider.authenticated ? (
-                <button
-                  className="btn btn-sm"
-                  onClick={() => handleLogout(provider.id)}
-                >
-                  {t("setup.logout", "Logout")}
-                </button>
-              ) : (
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleLogin(provider.id)}
-                >
-                  {t("setup.login", "Login")}
-                </button>
-              )}
-            </div>
-          )}
           <div className="onboarding-provider-card__actions onboarding-provider-card__actions--api-key">
             <ApiKeyEntryForm
               provider={provider}
@@ -2109,57 +2092,12 @@ export function ModelOnboardingModal({
               isSaving={authActionInProgress === provider.id}
               error={apiKeyErrors[provider.id]}
               success={apiKeySuccess[provider.id]}
-              isConnected={provider.type === "api_key" ? provider.authenticated : hasStoredApiKey}
+              isConnected={provider.authenticated || hasStoredApiKey}
               onInputChange={handleApiKeyInputChange}
               onSave={handleSaveApiKey}
               onClear={handleClearApiKey}
             />
           </div>
-          {isDualAuthProvider && (authActionInProgress === provider.id || showRemoteLoginInProgress) && provider.id === "github-copilot" && deviceCodes[provider.id] && (
-            <div className="auth-device-code-panel" data-testid={`onboarding-device-code-${provider.id}`}>
-              <strong>{t("setup.enterCodeOnGitHub", "Enter this code on GitHub")}</strong>
-              <div className="auth-device-code-pill">{deviceCodes[provider.id].userCode}</div>
-              <div className="auth-provider-actions-row">
-                <button
-                  className="btn btn-sm"
-                  onClick={() => {
-                    void (async () => {
-                      const copied = await copyTextToClipboard(deviceCodes[provider.id].userCode);
-                      if (copied) {
-                        addToast(t("setup.copiedCodeToClipboard", "Copied code to clipboard"), "success");
-                        return;
-                      }
-                      addToast(t("setup.failedToCopyCode", "Failed to copy code — copy it manually from the box above"), "error");
-                    })();
-                  }}
-                >
-                  {t("setup.copyCode", "Copy code")}
-                </button>
-                <button className="btn btn-sm" onClick={() => window.open(appendTokenQuery(deviceCodes[provider.id].verificationUri), "_blank")}>
-                  {t("setup.openGitHub", "Open GitHub")}
-                </button>
-              </div>
-            </div>
-          )}
-          {isDualAuthProvider && (authActionInProgress === provider.id || showRemoteLoginInProgress) && loginInstructions[provider.id] && (
-            <LoginInstructions
-              instructions={loginInstructions[provider.id]}
-              data-testid={`onboarding-login-instructions-${provider.id}`}
-            />
-          )}
-          {isDualAuthProvider && (authActionInProgress === provider.id || showRemoteLoginInProgress) && manualCodeConfigs[provider.id] && (
-            <OAuthManualCodeForm
-              value={manualCodeInputs[provider.id] ?? ""}
-              onChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [provider.id]: value }))}
-              onSubmit={() => void handleSubmitManualCode(provider.id)}
-              prompt={manualCodeConfigs[provider.id].prompt}
-              placeholder={manualCodeConfigs[provider.id].placeholder}
-              helpText={manualCodeConfigs[provider.id].helpText}
-              disabled={manualCodeSubmitInProgress === provider.id}
-              submitLabel={manualCodeSubmitInProgress === provider.id ? t("setup.submittingCode", "Submitting…") : t("setup.submitCode", "Submit code")}
-              data-testid={`onboarding-manual-code-${provider.id}`}
-            />
-          )}
         </div>
       );
     }

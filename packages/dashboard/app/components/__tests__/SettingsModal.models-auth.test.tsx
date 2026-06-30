@@ -1069,21 +1069,21 @@ describe("SettingsModal", () => {
     it("warns before starting manual-code oauth login and stops when cancelled", async () => {
       vi.spyOn(window, "open").mockImplementation(() => null);
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+        providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth", requiresManualCode: true }],
       });
       mockConfirm.mockResolvedValueOnce(false);
 
       renderModal();
       await waitForSettingsModalReady();
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
       await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Login" }));
 
       await waitFor(() => {
         expect(mockConfirm).toHaveBeenCalledWith({
           title: "Heads up — manual paste-back required",
           message:
-            "After you sign in with Anthropic, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?",
+            "After you sign in with Anthropic Subscription, the browser will try to redirect to a localhost address that this dashboard can't reach. The redirect tab will look like it failed. Before that happens, copy the full URL from the browser address bar — you'll paste it back here to finish login. Continue?",
           confirmLabel: "Continue to login",
           cancelLabel: "Cancel",
         });
@@ -1094,7 +1094,7 @@ describe("SettingsModal", () => {
     it("continues manual-code oauth login after confirmation", async () => {
       const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+        providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth", requiresManualCode: true }],
       });
       mockLoginProvider.mockResolvedValueOnce({ url: "https://claude.ai/oauth/authorize" });
       mockConfirm.mockResolvedValueOnce(true);
@@ -1102,12 +1102,12 @@ describe("SettingsModal", () => {
       renderModal();
       await waitForSettingsModalReady();
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
       await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Login" }));
 
       await waitFor(() => {
         expect(mockConfirm).toHaveBeenCalled();
-        expect(mockLoginProvider).toHaveBeenCalledWith("anthropic");
+        expect(mockLoginProvider).toHaveBeenCalledWith("anthropic-subscription");
         expect(openSpy).toHaveBeenCalledWith("https://claude.ai/oauth/authorize", "_blank");
       });
     });
@@ -1134,7 +1134,7 @@ describe("SettingsModal", () => {
     it("renders Anthropic pasted-code form when login response includes manualCode", async () => {
       const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" }],
+        providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" }],
       });
       mockLoginProvider.mockResolvedValueOnce({
         url: "https://claude.ai/oauth/authorize",
@@ -1148,7 +1148,7 @@ describe("SettingsModal", () => {
       renderModal();
       await waitForSettingsModalReady();
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
       await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Login" }));
 
       expect(await within(anthropicCard).findByText("Paste the final redirect URL or authorization code")).toBeInTheDocument();
@@ -1156,7 +1156,7 @@ describe("SettingsModal", () => {
       await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Submit code" }));
 
       await waitFor(() => {
-        expect(mockSubmitProviderManualCode).toHaveBeenCalledWith("anthropic", "anthropic-code");
+        expect(mockSubmitProviderManualCode).toHaveBeenCalledWith("anthropic-subscription", "anthropic-code");
       });
       expect(openSpy).toHaveBeenCalled();
     });
@@ -1183,7 +1183,7 @@ describe("SettingsModal", () => {
       });
 
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" }],
+        providers: [{ id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" }],
       });
       mockLoginProvider.mockResolvedValueOnce({
         url: "https://claude.ai/oauth/authorize",
@@ -1195,7 +1195,7 @@ describe("SettingsModal", () => {
       renderModal();
       await waitForSettingsModalReady();
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
+      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
       await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Login" }));
 
       const textarea = await within(anthropicCard).findByRole("textbox");
@@ -1358,53 +1358,46 @@ describe("SettingsModal", () => {
       expect(addToast).toHaveBeenCalledWith(expect.stringContaining("manually"), "error");
     });
 
-    it("renders dual Anthropic OAuth and API-key controls in Authentication settings", async () => {
+    it("renders separate Anthropic subscription and API-key controls in Authentication settings", async () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true }],
+        providers: [
+          { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+          { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+        ],
       });
 
       render(<SettingsModal onClose={noop} addToast={vi.fn()} />);
       await settingsModalUser.click(await screen.findByRole("button", { name: "Authentication" }));
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-      expect(within(anthropicCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
-      await settingsModalUser.type(within(anthropicCard).getByPlaceholderText("Enter API key"), "sk-ant-api03-settings");
-      await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Save" }));
+      const subscriptionCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+      const apiKeyCard = screen.getByTestId("auth-provider-icon-anthropic-api-key").closest(".auth-provider-card") as HTMLElement;
+      expect(within(subscriptionCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
+      expect(within(subscriptionCard).queryByPlaceholderText("Enter API key")).not.toBeInTheDocument();
+      await settingsModalUser.type(within(apiKeyCard).getByPlaceholderText("Enter API key"), "sk-ant-api03-settings");
+      await settingsModalUser.click(within(apiKeyCard).getByRole("button", { name: "Save" }));
 
-      expect(mockSaveApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-api03-settings");
+      expect(mockSaveApiKey).toHaveBeenCalledWith("anthropic-api-key", "sk-ant-api03-settings");
     });
 
-    it("renders Login and Clear for an Anthropic API-key-only card", async () => {
+    it("renders API-key clear separately from Anthropic subscription logout", async () => {
       mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true, keyHint: "sk-•••••1234" }],
+        providers: [
+          { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: true, type: "oauth" },
+          { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: true, type: "api_key", keyHint: "sk-•••••dkey" },
+        ],
       });
 
       render(<SettingsModal onClose={noop} addToast={vi.fn()} />);
       await settingsModalUser.click(await screen.findByRole("button", { name: "Authentication" }));
 
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-      expect(within(anthropicCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
-      expect(within(anthropicCard).queryByRole("button", { name: "Logout" })).not.toBeInTheDocument();
-      expect(within(anthropicCard).getByText("Key: sk-•••••1234")).toBeInTheDocument();
-      await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Clear" }));
+      const subscriptionCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+      const apiKeyCard = screen.getByTestId("auth-provider-icon-anthropic-api-key").closest(".auth-provider-card") as HTMLElement;
+      expect(within(subscriptionCard).getByRole("button", { name: "Logout" })).toBeInTheDocument();
+      expect(within(subscriptionCard).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+      expect(within(apiKeyCard).getByText("Key: sk-•••••dkey")).toBeInTheDocument();
+      await settingsModalUser.click(within(apiKeyCard).getByRole("button", { name: "Clear" }));
 
-      expect(mockClearApiKey).toHaveBeenCalledWith("anthropic");
-    });
-
-    it("renders Clear beside OAuth controls for stored Anthropic API keys", async () => {
-      mockFetchAuthStatus.mockResolvedValueOnce({
-        providers: [{ id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth", supportsApiKey: true, keyHint: "sk-•••••dkey" }],
-      });
-
-      render(<SettingsModal onClose={noop} addToast={vi.fn()} />);
-      await settingsModalUser.click(await screen.findByRole("button", { name: "Authentication" }));
-
-      const anthropicCard = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-      expect(within(anthropicCard).getByRole("button", { name: "Logout" })).toBeInTheDocument();
-      expect(within(anthropicCard).getByText("Key: sk-•••••dkey")).toBeInTheDocument();
-      await settingsModalUser.click(within(anthropicCard).getByRole("button", { name: "Clear" }));
-
-      expect(mockClearApiKey).toHaveBeenCalledWith("anthropic");
+      expect(mockClearApiKey).toHaveBeenCalledWith("anthropic-api-key");
     });
 
     it("scrolls settings content to top after API key save succeeds", async () => {

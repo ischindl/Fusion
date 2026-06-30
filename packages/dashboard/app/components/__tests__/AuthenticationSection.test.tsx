@@ -77,65 +77,64 @@ describe("AuthenticationSection", () => {
     vi.clearAllMocks();
   });
 
-  it("renders an unauthenticated dual Anthropic card with OAuth login and API-key save", () => {
+  it("renders separate Anthropic subscription OAuth and API-key cards", () => {
     const { handleLogin, handleSaveApiKey } = renderAuthSection([
-      { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true },
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+      { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
     ]);
 
-    const card = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-    expect(within(card).getByRole("button", { name: "Login" })).toBeInTheDocument();
-    fireEvent.change(within(card).getByPlaceholderText("Enter API key"), { target: { value: "sk-ant-api03-new" } });
-    const saveButton = within(card).getByRole("button", { name: "Save" });
-    expect(saveButton).toHaveClass("btn-primary");
-    fireEvent.click(saveButton);
-    fireEvent.click(within(card).getByRole("button", { name: "Login" }));
+    const subscriptionCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+    const apiKeyCard = screen.getByTestId("auth-provider-icon-anthropic-api-key").closest(".auth-provider-card") as HTMLElement;
+    expect(screen.queryByTestId("auth-provider-icon-anthropic")).not.toBeInTheDocument();
 
-    expect(handleSaveApiKey).toHaveBeenCalledWith("anthropic");
-    expect(handleLogin).toHaveBeenCalledWith("anthropic");
+    fireEvent.click(within(subscriptionCard).getByRole("button", { name: "Login" }));
+    expect(within(subscriptionCard).queryByPlaceholderText("Enter API key")).not.toBeInTheDocument();
+    expect(handleLogin).toHaveBeenCalledWith("anthropic-subscription");
+
+    fireEvent.change(within(apiKeyCard).getByPlaceholderText("Enter API key"), { target: { value: "sk-ant-api03-new" } });
+    fireEvent.click(within(apiKeyCard).getByRole("button", { name: "Save" }));
+    expect(within(apiKeyCard).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
+    expect(handleSaveApiKey).toHaveBeenCalledWith("anthropic-api-key");
   });
 
-  it("renders OAuth-only dual Anthropic as authenticated while keeping the API-key input", () => {
-    const { handleLogout } = renderAuthSection([
-      { id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth", supportsApiKey: true },
+  it("keeps Anthropic OAuth logout separate from a stored API key clear action", () => {
+    const { handleLogout, handleClearApiKey } = renderAuthSection([
+      { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: true, type: "oauth" },
+      { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: true, type: "api_key", keyHint: "sk-•••••dkey" },
     ]);
 
-    const card = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-    expect(card).toHaveClass("auth-provider-card--authenticated");
-    expect(within(card).getByRole("button", { name: "Logout" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Save" })).toBeInTheDocument();
-    expect(within(card).getByPlaceholderText("Enter API key")).toBeInTheDocument();
-    fireEvent.click(within(card).getByRole("button", { name: "Logout" }));
+    const subscriptionCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
+    const apiKeyCard = screen.getByTestId("auth-provider-icon-anthropic-api-key").closest(".auth-provider-card") as HTMLElement;
 
-    expect(handleLogout).toHaveBeenCalledWith("anthropic");
+    fireEvent.click(within(subscriptionCard).getByRole("button", { name: "Logout" }));
+    expect(within(subscriptionCard).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+    expect(handleLogout).toHaveBeenCalledWith("anthropic-subscription");
+
+    expect(within(apiKeyCard).getByText("Key: sk-•••••dkey")).toBeInTheDocument();
+    fireEvent.click(within(apiKeyCard).getByRole("button", { name: "Clear" }));
+    expect(within(apiKeyCard).queryByRole("button", { name: "Logout" })).not.toBeInTheDocument();
+    expect(handleClearApiKey).toHaveBeenCalledWith("anthropic-api-key");
   });
 
-  it("renders API-key-only dual Anthropic with masked key hint and Clear", () => {
-    const { handleClearApiKey } = renderAuthSection([
-      { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true, keyHint: "sk-•••••1234" },
+  it("ignores legacy supportsApiKey flags on OAuth cards", () => {
+    const { handleLogin, handleSaveApiKey } = renderAuthSection([
+      {
+        id: "anthropic-subscription",
+        name: "Anthropic Subscription",
+        authenticated: false,
+        type: "oauth",
+        supportsApiKey: true,
+      } as AuthProvider & { supportsApiKey: true },
     ]);
 
-    const card = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-    expect(card).not.toHaveClass("auth-provider-card--authenticated");
-    expect(within(card).getByRole("button", { name: "Login" })).toBeInTheDocument();
-    expect(within(card).queryByRole("button", { name: "Logout" })).not.toBeInTheDocument();
-    expect(within(card).getByText("Key: sk-•••••1234")).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Clear" })).toBeInTheDocument();
-    fireEvent.change(within(card).getByPlaceholderText("Enter API key"), { target: { value: "sk-ant-api03-replacement" } });
-    expect(within(card).queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Save" })).toBeInTheDocument();
-    fireEvent.change(within(card).getByPlaceholderText("Enter API key"), { target: { value: "" } });
-    fireEvent.click(within(card).getByRole("button", { name: "Clear" }));
+    const subscriptionCard = screen.getByTestId("auth-provider-icon-anthropic-subscription").closest(".auth-provider-card") as HTMLElement;
 
-    expect(handleClearApiKey).toHaveBeenCalledWith("anthropic");
-  });
+    expect(within(subscriptionCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
+    expect(within(subscriptionCard).queryByPlaceholderText("Enter API key")).not.toBeInTheDocument();
 
-  it("renders both OAuth logout and API-key Clear when Anthropic has both credentials", () => {
-    renderAuthSection([
-      { id: "anthropic", name: "Anthropic", authenticated: true, type: "oauth", supportsApiKey: true, keyHint: "sk-•••••dkey" },
-    ]);
-
-    const card = screen.getByTestId("auth-provider-icon-anthropic").closest(".auth-provider-card") as HTMLElement;
-    expect(within(card).getByRole("button", { name: "Logout" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Clear" })).toBeInTheDocument();
+    fireEvent.click(within(subscriptionCard).getByRole("button", { name: "Login" }));
+    expect(handleLogin).toHaveBeenCalledWith("anthropic-subscription");
+    expect(handleSaveApiKey).not.toHaveBeenCalled();
   });
 });

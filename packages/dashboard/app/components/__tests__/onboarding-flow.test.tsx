@@ -503,31 +503,42 @@ describe("onboarding flow integration", () => {
       expect(screen.getByTestId("claude-cli-provider-card")).toHaveAttribute("data-authenticated", "false");
     });
 
-    it("renders dual Anthropic OAuth and API-key controls in onboarding", async () => {
+    it("renders separate Anthropic OAuth and API-key controls in onboarding", async () => {
       mockFetchAuthStatus.mockResolvedValue({
         providers: [
-          { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true },
+          { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+          { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+          { id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth" },
           { id: "openai", name: "OpenAI", authenticated: false, type: "api_key" },
         ],
       });
 
-      renderModal();
+      const { container } = renderModal();
 
       await waitFor(() => {
-        expect(screen.getByTestId("onboarding-apikey-input-anthropic")).toBeInTheDocument();
+        expect(screen.getByTestId("onboarding-apikey-input-anthropic-api-key")).toBeInTheDocument();
       });
 
-      const anthropicCard = screen.getByTestId("onboarding-provider-card-anthropic");
-      expect(within(anthropicCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
+      const subscriptionCard = screen.getByTestId("onboarding-provider-card-anthropic-subscription");
+      const anthropicCard = screen.getByTestId("onboarding-provider-card-anthropic-api-key");
+      const renderedAnthropicAuthCards = container.querySelectorAll(
+        '[data-testid^="onboarding-provider-card-anthropic"]',
+      );
+      expect(renderedAnthropicAuthCards).toHaveLength(2);
+      expect(screen.queryByTestId("onboarding-provider-card-anthropic")).not.toBeInTheDocument();
+      expect(within(subscriptionCard).getByRole("button", { name: "Login" })).toBeInTheDocument();
+      expect(within(subscriptionCard).queryByTestId("onboarding-apikey-input-anthropic-subscription")).not.toBeInTheDocument();
+      expect(within(anthropicCard).queryByRole("button", { name: "Login" })).not.toBeInTheDocument();
+      expect(screen.getByTestId("onboarding-apikey-input-anthropic-api-key")).toBeInTheDocument();
       expect(screen.getByTestId("onboarding-apikey-input-openai")).toBeInTheDocument();
 
-      fireEvent.change(screen.getByTestId("onboarding-apikey-input-anthropic"), {
+      fireEvent.change(screen.getByTestId("onboarding-apikey-input-anthropic-api-key"), {
         target: { value: "sk-ant-api03-flow-test" },
       });
-      fireEvent.click(screen.getByTestId("onboarding-apikey-save-anthropic"));
+      fireEvent.click(screen.getByTestId("onboarding-apikey-save-anthropic-api-key"));
 
       await waitFor(() => {
-        expect(mockSaveApiKey).toHaveBeenCalledWith("anthropic", "sk-ant-api03-flow-test");
+        expect(mockSaveApiKey).toHaveBeenCalledWith("anthropic-api-key", "sk-ant-api03-flow-test");
       });
     });
 

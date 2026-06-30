@@ -710,7 +710,7 @@ Manual re-login is still required when no refresh token is stored, the refresh r
 
 ### Anthropic API-key authentication
 
-Anthropic can be connected with a raw API key from both Model Onboarding and **Settings → Authentication**. Anthropic appears as a dual-auth provider: the same Anthropic card keeps the OAuth Login/Logout controls and also shows an API-key row for `ANTHROPIC_API_KEY`, with only masked key hints returned by `/api/auth/status`.
+Anthropic can be connected with a raw API key from both Model Onboarding and **Settings → Authentication**. Anthropic API-key auth appears as a separate **Anthropic API Key** card for `ANTHROPIC_API_KEY`, while Claude subscription OAuth appears as **Anthropic Subscription** with Login/Logout controls. `/api/auth/status` returns only masked key hints for the API-key card.
 
 ### Authentication troubleshooting (mobile OAuth fallback)
 

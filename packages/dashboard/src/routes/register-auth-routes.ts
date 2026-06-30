@@ -147,7 +147,32 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
     };
   }
 
+  const ANTHROPIC_OAUTH_PROVIDER_ID = "anthropic";
+  const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
+
+  function toOauthLoginProviderId(providerId: string): string {
+    return providerId === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID ? ANTHROPIC_OAUTH_PROVIDER_ID : providerId;
+  }
+
+  function toOauthCredentialProviderId(providerId: string): string {
+    return providerId === ANTHROPIC_OAUTH_PROVIDER_ID ? ANTHROPIC_SUBSCRIPTION_PROVIDER_ID : providerId;
+  }
+
+  function toAuthStatusProvider(provider: { id: string; name: string }): { id: string; name: string } {
+    if (provider.id !== ANTHROPIC_OAUTH_PROVIDER_ID) {
+      return provider;
+    }
+    /*
+    FNXC:ProviderAuth 2026-06-29-22:12:
+    Anthropic subscription OAuth and raw `ANTHROPIC_API_KEY` credentials share the upstream auth id `anthropic`, but dashboard users need separate cards so saving or clearing an API key never appears to replace Claude subscription login.
+    Expose OAuth through a synthetic UI id and map it back only at route boundaries.
+    */
+    return { id: ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, name: "Anthropic Subscription" };
+  }
+
   function shouldRewriteOauthRedirect(providerId: string, origin: string | undefined): boolean {
+    const storageProviderId = toOauthLoginProviderId(providerId);
+
     if (!origin || isLocalhostOrigin(origin)) {
       return false;
     }
@@ -155,7 +180,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
     // These providers do not use a redirect_uri-based callback:
     //   - openai-codex, anthropic: pasted-code UX with their own localhost callbacks
     //   - github-copilot: OAuth device-code flow (verification_uri has no state/redirect_uri)
-    if (providerId === "openai-codex" || providerId === "anthropic" || providerId === "github-copilot") {
+    if (storageProviderId === "openai-codex" || storageProviderId === "anthropic" || storageProviderId === "github-copilot") {
       return false;
     }
 
@@ -272,12 +297,13 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         type: "oauth" | "api_key" | "cli";
         expired?: boolean;
         keyHint?: string;
-        supportsApiKey?: boolean;
         loginInProgress?: boolean;
         requiresManualCode?: boolean;
       }[] = await Promise.all(oauthProviders.map(async (p) => {
-        let hasAuth = storage.hasAuth(p.id);
-        let expired = hasAuth && isExpiredOauthCredential(p.id, storage);
+        const statusProvider = toAuthStatusProvider(p);
+        const storageProviderId = toOauthCredentialProviderId(statusProvider.id);
+        let hasAuth = storage.hasAuth(storageProviderId);
+        let expired = hasAuth && isExpiredOauthCredential(storageProviderId, storage);
         if (expired && storage.getApiKey) {
           /*
           FNXC:ClaudeOAuth 2026-06-13-22:46:
@@ -285,21 +311,21 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
           Keep this best-effort so providers without refresh support still report expired and ask the user to re-authenticate.
           */
           try {
-            await storage.getApiKey(p.id);
+            await storage.getApiKey(storageProviderId);
           } catch {
             // Best-effort refresh only; preserve the expired status below.
           }
-          hasAuth = storage.hasAuth(p.id);
-          expired = hasAuth && isExpiredOauthCredential(p.id, storage);
+          hasAuth = storage.hasAuth(storageProviderId);
+          expired = hasAuth && isExpiredOauthCredential(storageProviderId, storage);
         }
         return {
-          id: p.id,
-          name: p.name,
+          id: statusProvider.id,
+          name: statusProvider.name,
           authenticated: hasAuth && !expired,
           type: "oauth" as const,
           expired,
-          loginInProgress: loginInProgress.has(p.id),
-          requiresManualCode: getManualCodeConfig(p.id, origin) !== undefined || undefined,
+          loginInProgress: loginInProgress.has(statusProvider.id),
+          requiresManualCode: getManualCodeConfig(toOauthLoginProviderId(statusProvider.id), origin) !== undefined || undefined,
         };
       }));
 
@@ -313,20 +339,6 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
             if (cred?.type === "api_key" && cred?.key) {
               keyHint = maskApiKey(cred.key);
             }
-          }
-          const existing = providers.find((provider) => provider.id === p.id);
-          if (existing) {
-            /*
-            FNXC:ProviderAuth 2026-06-28-15:58:
-            Anthropic can be authenticated by either OAuth or `ANTHROPIC_API_KEY`, so `/auth/status` must expose one dual-auth card instead of duplicating the provider or hiding the key row.
-            Mark API-key-only credentials authenticated here because settings groups cards solely by `authenticated`.
-            */
-            existing.supportsApiKey = true;
-            existing.keyHint = keyHint;
-            if (!existing.authenticated && storage.hasApiKey) {
-              existing.authenticated = storage.hasApiKey(p.id);
-            }
-            continue;
           }
           providers.push({
             id: p.id,
@@ -847,6 +859,8 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         throw badRequest("origin must be a string when provided");
       }
 
+      const storageProvider = toOauthLoginProviderId(provider);
+
       // Prevent concurrent logins for the same provider
       if (loginInProgress.has(provider)) {
         throw conflict(`Login already in progress for ${provider}`);
@@ -854,10 +868,11 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
 
       const storage = getAuthStorage();
       const oauthProviders = storage.getOAuthProviders();
-      const found = oauthProviders.find((p) => p.id === provider);
+      const found = oauthProviders.find((p) => p.id === provider || p.id === storageProvider);
       if (!found) {
         throw badRequest(`Unknown provider: ${provider}`);
       }
+      const loginProvider = found.id === provider ? provider : storageProvider;
 
       const abortController = new AbortController();
       let resolveInput: (value: string) => void = () => {};
@@ -881,7 +896,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
          resolveInput,
          rejectInput,
          inputSubmitted: false,
-         manualCode: getManualCodeConfig(provider, origin),
+         manualCode: getManualCodeConfig(storageProvider, origin),
        };
        loginInProgress.set(provider, pendingLogin);
 
@@ -910,11 +925,11 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       let resolvedDeviceCode: DeviceCodeInfo | undefined;
 
       // Start login flow in background — don't await the full login
-      const loginPromise = storage.login(provider, {
+      const loginPromise = storage.login(loginProvider, {
         onAuth: (info) => {
           if (!resolvedDeviceCode) {
             const parsedUserCode =
-              provider === "github-copilot" && info.instructions
+              storageProvider === "github-copilot" && info.instructions
                 ? parseGitHubCopilotDeviceCode(info.instructions)
                 : undefined;
             if (parsedUserCode) {
@@ -927,7 +942,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
 
           resolveAuthInfo({
             url: info.url,
-            instructions: appendManualCodeHint(info.instructions, provider, origin),
+            instructions: appendManualCodeHint(info.instructions, storageProvider, origin),
             deviceCode: resolvedDeviceCode,
           });
         },
@@ -939,12 +954,12 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
 
           resolveAuthInfo({
             url: info.verificationUri,
-            instructions: appendManualCodeHint(undefined, provider, origin),
+            instructions: appendManualCodeHint(undefined, storageProvider, origin),
             deviceCode: resolvedDeviceCode,
           });
         },
         onPrompt: async (_prompt) => {
-          if (providerWantsAutoPrompt(provider) && !autoPromptConsumed) {
+          if (providerWantsAutoPrompt(storageProvider) && !autoPromptConsumed) {
             autoPromptConsumed = true;
             return "";
           }
@@ -955,7 +970,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         // to race pasted codes against the localhost callback server.
         onManualCodeInput: async () => await pendingLogin.inputPromise,
         onProgress: () => {}, // no-op for web UI
-        onSelect: async (prompt) => selectOauthOption(provider, prompt),
+        onSelect: async (prompt) => selectOauthOption(storageProvider, prompt),
         signal: abortController.signal,
       });
 
@@ -1131,7 +1146,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       }
 
       const storage = getAuthStorage();
-      storage.logout(provider);
+      storage.logout(toOauthCredentialProviderId(provider));
       clearUsageCache();
       res.json({ success: true });
     } catch (err: unknown) {
@@ -1223,6 +1238,16 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       const storage = getAuthStorage();
       if (!storage.clearApiKey) {
         throw badRequest("API key management is not supported");
+      }
+
+      /*
+      FNXC:ProviderAuth 2026-06-29-23:55:
+      API-key save and clear must share the same provider-id allowlist so separated OAuth cards such as `anthropic-subscription` cannot accidentally clear raw API-key storage.
+      */
+      const apiKeyProviders = storage.getApiKeyProviders?.() ?? [];
+      const found = apiKeyProviders.find((p) => p.id === provider);
+      if (!found) {
+        throw badRequest(`Unknown API key provider: ${provider}`);
       }
 
       storage.clearApiKey(provider);

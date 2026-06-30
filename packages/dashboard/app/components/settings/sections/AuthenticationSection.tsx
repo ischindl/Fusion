@@ -47,10 +47,18 @@ export interface AuthenticationSectionProps {
 export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
     const { t } = useTranslation("app");
     const { projectId, addToast, authProviders, authLoading, authActionInProgress, apiKeyInputs, setApiKeyInputs, apiKeyErrors, opencodeApiKeyRefreshStatus, deviceCodes, loginInstructions, manualCodeConfigs, manualCodeInputs, setManualCodeInputs, manualCodeSubmitInProgress, loadAuthStatus, handleLogin, handleLogout, handleCancelLogin, handleSaveApiKey, handleClearApiKey, handleSubmitManualCode, onReopenOnboarding, } = auth;
+    const hasSeparatedAnthropicProvider = authProviders.some((p) => p.id === "anthropic-subscription" || p.id === "anthropic-api-key");
+    /*
+    FNXC:ProviderAuth 2026-06-29-23:50:
+    Settings must render Anthropic subscription OAuth and raw Anthropic API-key auth as separate cards; when a mixed/legacy status payload includes the old `anthropic` OAuth id alongside separated cards, hide the legacy card so users never see two OAuth-looking Anthropic entries or a resurrected dual-card surface.
+    */
+    const visibleAuthProviders = hasSeparatedAnthropicProvider
+        ? authProviders.filter((p) => p.id !== "anthropic")
+        : authProviders;
     // CLI-backed providers render their own compact card; filter them out of the
     // standard OAuth/API-key sort and render alongside.
-    const cliAuthProviders = authProviders.filter((p) => p.type === "cli");
-    const nonCliProviders = authProviders.filter((p) => p.type !== "cli");
+    const cliAuthProviders = visibleAuthProviders.filter((p) => p.type === "cli");
+    const nonCliProviders = visibleAuthProviders.filter((p) => p.type !== "cli");
     const sortedProviders = [...nonCliProviders].sort((a, b) => {
         if (a.authenticated !== b.authenticated) {
             return a.authenticated ? -1 : 1;
@@ -79,7 +87,7 @@ export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
         (claudeCliProvider && !claudeCliProvider.authenticated) ||
         (cursorCliProvider && !cursorCliProvider.authenticated) ||
         (llamaCppProvider && !llamaCppProvider.authenticated);
-    const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key" || provider.supportsApiKey === true;
+    const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key";
     const renderApiKeySection = (provider: AuthProvider) => (<div className="auth-apikey-section">
       <div className="auth-apikey-input-row">
         <input type="password" className="auth-apikey-input" placeholder={t("settings.authentication.enterAPIKey", "Enter API key")} value={apiKeyInputs[provider.id] ?? ""} onChange={(e) => setApiKeyInputs((prev) => ({ ...prev, [provider.id]: e.target.value }))} disabled={authActionInProgress === provider.id}/>
@@ -146,9 +154,9 @@ export function AuthenticationSection({ auth }: AuthenticationSectionProps) {
       {loginInstructions[provider.id] && (provider.loginInProgress || authActionInProgress === provider.id) && (<LoginInstructions instructions={loginInstructions[provider.id]} data-testid={`auth-login-instructions-${provider.id}`}/>)}
       {manualCodeConfigs[provider.id] && (provider.loginInProgress || authActionInProgress === provider.id) && (<OAuthManualCodeForm value={manualCodeInputs[provider.id] ?? ""} onChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [provider.id]: value }))} onSubmit={() => void handleSubmitManualCode(provider.id)} prompt={manualCodeConfigs[provider.id].prompt} placeholder={manualCodeConfigs[provider.id].placeholder} helpText={manualCodeConfigs[provider.id].helpText} disabled={manualCodeSubmitInProgress === provider.id} submitLabel={manualCodeSubmitInProgress === provider.id ? "Submitting…" : "Submit code"} data-testid={`auth-manual-code-${provider.id}`}/>)}</div>);
     /*
-    FNXC:ProviderAuth 2026-06-28-16:02:
-    A provider can be dual-auth: Anthropic keeps its OAuth login controls while also accepting an `ANTHROPIC_API_KEY` stored through the same API-key row as standalone providers.
-    Render both intentional controls on one card so Settings does not create duplicate provider cards or orphaned action wrappers.
+    FNXC:ProviderAuth 2026-06-29-22:18:
+    Settings must render Anthropic subscription OAuth and raw Anthropic API-key auth as separate provider cards.
+    Only `type: "api_key"` cards show key controls so OAuth logout never looks like it will clear `ANTHROPIC_API_KEY`.
     */
     return (<>
       <h4 className="settings-section-heading">{t("settings.auth.title", "Authentication")}</h4>

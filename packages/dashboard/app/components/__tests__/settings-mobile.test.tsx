@@ -47,7 +47,10 @@ vi.mock("../../api", () => ({
   fetchSettingsByScope: vi.fn(() => Promise.resolve({ global: { ...defaultSettings }, project: {} })),
   updateSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
   updateGlobalSettings: vi.fn(() => Promise.resolve({ ...defaultSettings })),
-  fetchAuthStatus: vi.fn(() => Promise.resolve({ providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", supportsApiKey: true }] })),
+  fetchAuthStatus: vi.fn(() => Promise.resolve({ providers: [
+    { id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, type: "oauth" },
+    { id: "anthropic-api-key", name: "Anthropic API Key", authenticated: false, type: "api_key" },
+  ] })),
   loginProvider: vi.fn(() => Promise.resolve({ url: "https://auth.example.com/login" })),
   logoutProvider: vi.fn(() => Promise.resolve({ success: true })),
   saveApiKey: vi.fn(() => Promise.resolve({ success: true })),
@@ -375,7 +378,7 @@ describe("SettingsModal mobile adaptations", () => {
     expect(getByText("These settings are shared across all your Fusion projects.")).toBeTruthy();
   });
 
-  it("renders dual Anthropic Authentication controls on mobile", async () => {
+  it("renders separate Anthropic Authentication controls on mobile", async () => {
     mockSettingsViewport(true);
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
     const user = userEvent.setup();
@@ -383,10 +386,12 @@ describe("SettingsModal mobile adaptations", () => {
     await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
     await user.selectOptions(getByLabelText("Settings Section"), "authentication");
 
-    const card = (await findByTestId("auth-provider-icon-anthropic")).closest(".auth-provider-card") as HTMLElement;
-    expect(within(card).getByRole("button", { name: "Login" })).toBeTruthy();
-    expect(within(card).getByPlaceholderText("Enter API key")).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "Save" })).toBeTruthy();
+    const subscriptionCard = (await findByTestId("auth-provider-icon-anthropic-subscription")).closest(".auth-provider-card") as HTMLElement;
+    const apiKeyCard = (await findByTestId("auth-provider-icon-anthropic-api-key")).closest(".auth-provider-card") as HTMLElement;
+    expect(within(subscriptionCard).getByRole("button", { name: "Login" })).toBeTruthy();
+    expect(within(subscriptionCard).queryByPlaceholderText("Enter API key")).toBeNull();
+    expect(within(apiKeyCard).getByPlaceholderText("Enter API key")).toBeTruthy();
+    expect(within(apiKeyCard).getByRole("button", { name: "Save" })).toBeTruthy();
   });
 
   it("renders notification provider cards responsively on mobile", async () => {

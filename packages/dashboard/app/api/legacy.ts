@@ -1730,8 +1730,6 @@ export interface AuthProvider {
    *   one-click Enable/Disable + Test button rather than login/key inputs.
    */
   type?: "oauth" | "api_key" | "cli";
-  /** Provider accepts a raw API key in addition to its primary auth method, e.g. an OAuth provider that also accepts ANTHROPIC_API_KEY. */
-  supportsApiKey?: boolean;
   /** Masked hint of the stored API key (first 3 + bullets + last 4 chars) */
   keyHint?: string;
 }
