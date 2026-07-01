@@ -210,17 +210,20 @@ describe("TaskCard", () => {
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
     await waitFor(() => expect(onPauseTask).toHaveBeenCalledWith("FN-001"));
+    expect(onPauseTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
   });
 
-  it("opens the board card context menu from keyboard without opening detail", () => {
+  it("opens the board card context menu from keyboard, selects an action, and closes", async () => {
     const onOpenDetail = vi.fn();
+    const onArchiveTask = vi.fn(async () => makeTask({ column: "archived" }));
     render(
       <TaskCard
         task={makeTask({ column: "done", status: "done" as any })}
         onOpenDetail={onOpenDetail}
         addToast={noop}
-        onArchiveTask={vi.fn()}
+        onArchiveTask={onArchiveTask}
       />,
     );
 
@@ -229,7 +232,11 @@ describe("TaskCard", () => {
     fireEvent.keyDown(card, { key: "F10", shiftKey: true });
 
     expect(screen.getByRole("menu")).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    await waitFor(() => expect(onArchiveTask).toHaveBeenCalledWith("FN-001"));
+    expect(onArchiveTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
   });
 
@@ -357,15 +364,16 @@ describe("TaskCard", () => {
     expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
   });
 
-  it("opens the board card context menu on touch long-press and suppresses detail click", () => {
+  it("opens the board card context menu on touch long-press, selects the tapped action, and suppresses detail click", async () => {
     vi.useFakeTimers();
     const onOpenDetail = vi.fn();
+    const onUnpauseTask = vi.fn(async () => makeTask());
     render(
       <TaskCard
         task={makeTask({ paused: true, userPaused: true })}
         onOpenDetail={onOpenDetail}
         addToast={noop}
-        onUnpauseTask={vi.fn(async () => makeTask())}
+        onUnpauseTask={onUnpauseTask}
       />,
     );
 
@@ -377,6 +385,14 @@ describe("TaskCard", () => {
     fireEvent.pointerUp(card, { pointerType: "touch", pointerId: 1, clientX: 16, clientY: 16 });
     fireEvent.click(card);
     expect(onOpenDetail).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Unpause" }), { pointerType: "touch", pointerId: 2 });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onUnpauseTask).toHaveBeenCalledWith("FN-001");
+    expect(onUnpauseTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("cancels board card long-press when touch moves before the delay", () => {

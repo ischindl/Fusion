@@ -801,7 +801,7 @@ describe("ListView", () => {
     viewportSpy.mockRestore();
   });
 
-  it("opens the task context menu from mobile card long-press without ordinary tap-to-open", () => {
+  it("opens the task context menu from mobile card long-press, selects the tapped action, and suppresses ordinary tap-to-open", async () => {
     vi.useFakeTimers();
     const viewportSpy = mockMobileViewport();
     const onOpenDetail = vi.fn();
@@ -822,8 +822,13 @@ describe("ListView", () => {
     expect(screen.getByRole("menuitem", { name: "Pause" })).toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Pause" }), { pointerType: "touch", pointerId: 2 });
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(onPauseTask).toHaveBeenCalledWith("FN-001");
+    expect(onPauseTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     viewportSpy.mockRestore();
     vi.useRealTimers();
   });
@@ -841,9 +846,10 @@ describe("ListView", () => {
     act(() => {
       vi.advanceTimersByTime(550);
     });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Refine" }), { pointerType: "touch", pointerId: 2 });
 
     expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-011" }), { origin: "list-mobile", initialAction: "refine" });
+    expect(onOpenDetail).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     viewportSpy.mockRestore();
     vi.useRealTimers();

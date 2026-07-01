@@ -1,6 +1,6 @@
 import "./TaskContextMenu.css";
-import type { KeyboardEvent, ReactNode } from "react";
-import { Fragment, useEffect, useRef } from "react";
+import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef } from "react";
 import type { TFunction } from "i18next";
 import type { ColumnId, Task, TaskDetail } from "@fusion/core";
 import { COLUMNS, VALID_TRANSITIONS, isColumn } from "@fusion/core";
@@ -288,6 +288,37 @@ export function TaskContextMenu({
   autoFocusFirstItem = true,
 }: TaskContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const touchSelectedActionRef = useRef<{ id: string; at: number } | null>(null);
+
+  const selectAction = useCallback((action: TaskMenuActionDescriptor) => {
+    if (action.disabled || action.tone === "note" || !action.onSelect) return;
+    onActionSelect?.(action);
+    action.onSelect();
+  }, [onActionSelect]);
+
+  /*
+  FNXC:TaskContextMenu 2026-07-01-00:00:
+  Mobile task menus must commit the selected action on touch/pen pointer release before host popovers can be removed by outside-click or focus retargeting. Desktop mouse keeps click activation, while the click guard prevents synthesized mobile clicks from firing the same task action twice.
+  */
+  const handleActionPointerUp = useCallback((event: ReactPointerEvent<HTMLButtonElement>, action: TaskMenuActionDescriptor) => {
+    if (event.pointerType === "mouse") return;
+    event.preventDefault();
+    event.stopPropagation();
+    touchSelectedActionRef.current = { id: action.id, at: Date.now() };
+    selectAction(action);
+  }, [selectAction]);
+
+  const handleActionClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>, action: TaskMenuActionDescriptor) => {
+    const touchSelection = touchSelectedActionRef.current;
+    if (touchSelection?.id === action.id && Date.now() - touchSelection.at < 1000) {
+      event.preventDefault();
+      event.stopPropagation();
+      touchSelectedActionRef.current = null;
+      return;
+    }
+    touchSelectedActionRef.current = null;
+    selectAction(action);
+  }, [selectAction]);
 
   useEffect(() => {
     if (!autoFocusFirstItem) return;
@@ -330,10 +361,8 @@ export function TaskContextMenu({
             className={classes.join(" ")}
             role={role === "menu" ? "menuitem" : undefined}
             disabled={action.disabled}
-            onClick={() => {
-              onActionSelect?.(action);
-              action.onSelect?.();
-            }}
+            onPointerUp={(event) => handleActionPointerUp(event, action)}
+            onClick={(event) => handleActionClick(event, action)}
           >
             {action.label}
           </button>

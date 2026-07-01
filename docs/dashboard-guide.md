@@ -139,9 +139,10 @@ Features:
 - GitHub provenance marker on task cards imported from GitHub (`sourceType: github_import`), shown in the footer with other external-source metadata
 - Task card header meta badges group priority, fast mode, agent-created provenance, workflow identity, and elapsed/created-time chips into one wrapping row; agent labels prefer `sourceMetadata.agentName` over raw agent IDs
 - Task detail surfaces show the selected/effective workflow identity near the task's workflow controls so individual cards remain understandable when Board is in **All workflows** or another aggregate/mixed context.
-- Board task cards support a context menu from right-click, keyboard context menu / Shift+F10, or touch long-press for detail-aligned lifecycle actions without changing normal card clicks. Completed card context menus include **Refine**, which opens the existing task-detail refinement feedback modal for the same task.
+- Board task cards support a context menu from right-click, keyboard context menu / Shift+F10, or touch long-press for detail-aligned lifecycle actions without changing normal card clicks. Selecting an action applies that exact action once and dismisses the menu. Completed card context menus include **Refine**, which opens the existing task-detail refinement feedback modal for the same task.
 <!-- FNXC:BoardCardActions 2026-06-29-00:00: Board card context menus are documented as alternate entry points only; normal click still opens task detail, and mobile long-press must not trigger detail behind the menu.
-FNXC:DoneTaskRefine 2026-07-01-00:00: Completed Board card context menus must label Refine only because they now route to the real task-detail refinement feedback modal instead of a dead row or direct API call. -->
+FNXC:DoneTaskRefine 2026-07-01-00:00: Completed Board card context menus must label Refine only because they now route to the real task-detail refinement feedback modal instead of a dead row or direct API call.
+FNXC:TaskContextMenu 2026-07-01-00:00: Board/List touch context-menu item taps must invoke the selected action exactly once and close the menu, matching desktop right-click and keyboard context-menu activation. -->
 <!-- FNXC:WorkflowBadges 2026-06-30-09:10: Task cards and task detail need workflow-name badges wherever mixed-workflow board contexts can hide the selected lane, especially the Board-only All workflows aggregate. -->
 <!-- FNXC:BoardDoneSorting 2026-06-29-00:00: The Done board column exposes a local descending sort selector so operators can review either latest completions or highest task IDs without changing other lifecycle columns. -->
 <!-- FNXC:BoardDoneSorting 2026-06-29-20:28: Document both Done sort modes as descending-only and Done-column-only so legacy Done and workflow complete-lane operators understand the selector does not change other lifecycle columns. -->
@@ -175,10 +176,11 @@ Features:
 - Bulk selection + batch model updates
 - Bulk Pause / Unpause / Archive actions from the selection toolbar (`Pause selected`, `Unpause selected`, `Archive selected`) for fast batch task state management.
 - Bulk delete from the selection toolbar (`Delete selected`): archived selections are skipped automatically, and dependency-conflict failures can be force-deleted per task after a danger confirmation that removes dependency references.
-- List rows and mobile cards support the same task context menu as Board cards from right-click, keyboard context menu / Shift+F10, or touch long-press without changing ordinary row selection or tap-to-open behavior, including **Refine** for completed tasks.
+- List rows and mobile cards support the same task context menu as Board cards from right-click, keyboard context menu / Shift+F10, or touch long-press without changing ordinary row selection or tap-to-open behavior. Selecting an action applies that exact action once and dismisses the menu, including **Refine** for completed tasks.
 <!-- FNXC:ListContextMenu 2026-06-29-00:00: List context menus are alternate action entry points only; desktop left-click still selects the split-pane detail and mobile tap still opens detail while long-press suppresses the follow-up tap.
 FNXC:ListContextMenu 2026-06-30-00:20: Keyboard access is part of the Board/List context-menu contract, so docs must include the context-menu key and Shift+F10 alongside pointer and touch entry points.
-FNXC:DoneTaskRefine 2026-07-01-00:00: Completed List row/card context menus route Refine to the existing task-detail feedback modal so desktop right-click and mobile long-press share the same refinement flow. -->
+FNXC:DoneTaskRefine 2026-07-01-00:00: Completed List row/card context menus route Refine to the existing task-detail feedback modal so desktop right-click and mobile long-press share the same refinement flow.
+FNXC:TaskContextMenu 2026-07-01-00:00: Mobile List card long-press action taps must select and dismiss through the same shared TaskContextMenu invariant as Board and Task Detail surfaces. -->
 
 ![List view](./screenshots/list-view.png)
 
@@ -1053,7 +1055,7 @@ Inspect task definition, logs, review feedback, comments, artifacts, workflow ou
 - These two metadata controls share matched sizing/alignment in read mode (including mobile wrapping) so they behave like a single polished control group.
 <!-- FNXC:TaskDetailWorkflowBadge 2026-06-29-18:45: Task Detail header metadata shows the resolved workflow name when board-workflows metadata is available, but omits the chip entirely for missing or stale workflow payloads so embedded, modal, and mobile headers do not render empty badge shells. -->
 - Task metadata keeps priority, execution mode, provenance, optional workflow identity, optional PR context, and compact `Created` / `Updated` timestamps in one wrapping row across desktop and mobile widths; recent timestamps render as relative time (`just now`, `Xm`, `Xh`, `Xd`) and older values switch to short month/day dates.
-- The **Actions** menu exposes **Pause** / **Unpause** for eligible non-terminal tasks, including tasks assigned to agents. If a task was paused by an agent, the **Paused by agent** note is informational; users can still unpause it manually from the same menu.
+- The **Actions** menu exposes **Pause** / **Unpause** for eligible non-terminal tasks, including tasks assigned to agents. If a task was paused by an agent, the **Paused by agent** note is informational; users can still unpause it manually from the same menu. On mobile task popups, tapping an Actions item applies the selected action once and closes the menu.
 - After delete confirmations are complete, Task Detail closes immediately while the delete request finishes in the background; success and error outcomes still appear as toasts.
 - Eligible existing tasks (triage, todo, in-progress, in-review) expose a **GitHub tracking** section directly in Task Detail, even when tracking is currently disabled.
 - The GitHub tracking section now defaults to a compact summary row; use the disclosure arrow to expand linked-issue details plus tracking edit controls.

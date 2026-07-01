@@ -182,6 +182,29 @@ describe("TaskContextMenu shared task action model", () => {
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
+  it("selects enabled touch menu items on pointer release exactly once", () => {
+    const onPause = vi.fn();
+    const onActionSelect = vi.fn();
+    render(
+      <TaskContextMenu
+        actions={[
+          { id: "pause", label: "Pause", onSelect: onPause },
+          { id: "disabled", label: "Disabled", disabled: true, onSelect: vi.fn() },
+          { id: "note", label: "Paused by agent", tone: "note", disabled: true, onSelect: vi.fn() },
+        ]}
+        onActionSelect={onActionSelect}
+      />,
+    );
+
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Pause" }), { pointerType: "touch", pointerId: 1 });
+
+    expect(onActionSelect).toHaveBeenCalledTimes(1);
+    expect(onActionSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "pause" }));
+    expect(onPause).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("menuitem", { name: "Disabled" })).toBeDisabled();
+    expect(screen.getByText("Paused by agent")).toHaveAttribute("role", "note");
+  });
+
   it("focuses the first enabled action and supports arrow-key roving", () => {
     render(
       <TaskContextMenu

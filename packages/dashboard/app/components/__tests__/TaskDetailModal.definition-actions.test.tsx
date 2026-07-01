@@ -800,6 +800,37 @@ describe("TaskDetailModal", () => {
 
     });
 
+    it("mobile task popup Actions menu selects a tapped item once and dismisses", async () => {
+      const { pauseTask } = await import("../../api");
+      const mockPauseTask = vi.mocked(pauseTask);
+      mockPauseTask.mockResolvedValueOnce(makeTask({ id: "FN-001", paused: true }) as Task);
+      const addToast = vi.fn();
+
+      render(
+        <TaskDetailContent
+          task={makeTask({ id: "FN-001", column: "todo", paused: false, userPaused: false })}
+          initialTab="definition"
+          embedded
+          onRequestClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={addToast}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      const pauseItem = screen.getByRole("menuitem", { name: "Pause" });
+
+      fireEvent.pointerUp(pauseItem, { pointerType: "touch", pointerId: 1 });
+
+      await waitFor(() => expect(mockPauseTask).toHaveBeenCalledWith("FN-001", undefined));
+      expect(mockPauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(addToast).toHaveBeenCalledWith("Paused FN-001", "success");
+    });
+
     it("successful duplicate shows success toast with new task ID", async () => {
             mockConfirm.mockResolvedValue(true);
 
