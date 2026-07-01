@@ -1625,42 +1625,28 @@ describe("createFnAgent", () => {
     });
   });
 
-  it("resolves direct Anthropic Claude Sonnet 5 when the mocked registry initially lacks it", async () => {
+  it("does not synthesize direct Anthropic Claude Sonnet 5 when the registry lacks it", async () => {
     getAllMock.mockReturnValueOnce([]);
     findMock.mockImplementation((provider: string, modelId: string) => {
       if (provider === "anthropic" && modelId === "claude-sonnet-5") {
-        const anthropicRegistration = registerProviderMock.mock.calls.find(([name]) => name === "anthropic")?.[1] as { models?: Array<{ id: string; name: string }> } | undefined;
-        const registeredModel = anthropicRegistration?.models?.find((model) => model.id === modelId);
-        return registeredModel ? { ...registeredModel, provider } : undefined;
+        return undefined;
       }
       return { provider, id: modelId };
     });
 
     const { createFnAgent } = await import("../pi.js");
-    const result = await createFnAgent({
+    await expect(createFnAgent({
       cwd: "/tmp",
       systemPrompt: "test",
       tools: "readonly",
       defaultProvider: "anthropic",
       defaultModelId: "claude-sonnet-5",
-    });
+    })).rejects.toThrow("Configured model anthropic/claude-sonnet-5 (primary selection) was not found in the pi model registry");
 
-    expect(registerProviderMock).toHaveBeenCalledWith("anthropic", expect.objectContaining({
-      api: "anthropic-messages",
-      models: expect.arrayContaining([expect.objectContaining({
-        id: "claude-sonnet-5",
-        name: "Claude Sonnet 5",
-        contextWindow: 1_000_000,
-        maxTokens: 128_000,
-      })]),
+    expect(registerProviderMock).not.toHaveBeenCalledWith("anthropic", expect.objectContaining({
+      models: expect.arrayContaining([expect.objectContaining({ id: "claude-sonnet-5" })]),
     }));
-    expect(createAgentSessionMock).toHaveBeenCalledWith(expect.objectContaining({
-      model: expect.objectContaining({ provider: "anthropic", id: "claude-sonnet-5" }),
-    }));
-    expect((result.session as { model?: unknown }).model).toEqual(expect.objectContaining({
-      provider: "anthropic",
-      id: "claude-sonnet-5",
-    }));
+    expect(createAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("does not duplicate Claude Sonnet 5 when the Anthropic registry already has it", async () => {

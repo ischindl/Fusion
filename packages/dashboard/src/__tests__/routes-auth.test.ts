@@ -398,7 +398,7 @@ describe("GET /models", () => {
     expect(res.body.models).toEqual([]);
   });
 
-  it("adds Claude Sonnet 5 for configured direct Anthropic users without relying on Claude CLI", async () => {
+  it("does not force-add Claude Sonnet 5 for configured direct Anthropic users", async () => {
     const modelRegistry = createMutableModelRegistry([
       { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "anthropic", reasoning: true, contextWindow: 200000 },
       { id: "gpt-4o", name: "GPT-4o", provider: "openai", reasoning: false, contextWindow: 128000 },
@@ -408,9 +408,12 @@ describe("GET /models", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.models).toEqual(expect.arrayContaining([
-      expect.objectContaining({ provider: "anthropic", id: "claude-sonnet-5", name: "Claude Sonnet 5", reasoning: true, contextWindow: 1_000_000 }),
+      expect.objectContaining({ provider: "anthropic", id: "claude-sonnet-4-5" }),
     ]));
-    expect(modelRegistry.registerProvider).toHaveBeenCalledWith("anthropic", expect.objectContaining({
+    expect(res.body.models).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "anthropic", id: "claude-sonnet-5" }),
+    ]));
+    expect(modelRegistry.registerProvider).not.toHaveBeenCalledWith("anthropic", expect.objectContaining({
       models: expect.arrayContaining([expect.objectContaining({ id: "claude-sonnet-5" })]),
     }));
   });
@@ -431,13 +434,13 @@ describe("GET /models", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.models).toEqual([]);
-      expect(modelRegistry.models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
+      expect(modelRegistry.models.some((model) => model.id === "claude-sonnet-5")).toBe(false);
     } finally {
       readFileSpy.mockRestore();
     }
   });
 
-  it("does not duplicate Claude Sonnet 5 when upstream registry already includes it", async () => {
+  it("dedupes Claude Sonnet 5 when upstream registry already includes it", async () => {
     const modelRegistry = createMutableModelRegistry([
       { id: "claude-sonnet-5", name: "Claude Sonnet 5 Upstream", provider: "anthropic", reasoning: true, contextWindow: 1_000_000, maxTokens: 128_000 },
     ]);

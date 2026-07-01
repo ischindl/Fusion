@@ -58,9 +58,9 @@ describe("piAdapter — buildLaunch", () => {
     ]);
   });
 
-  it("forwards direct Anthropic Claude Sonnet 5 without Claude CLI routing", () => {
+  it("forwards arbitrary direct Anthropic user-entered model ids without Claude CLI routing", () => {
     const spec = piAdapter.buildLaunch({
-      settings: { provider: "anthropic", model: "claude-sonnet-5", sessionDir: "/tmp/sess/pi" },
+      settings: { provider: "anthropic", model: "custom-anthropic-model", sessionDir: "/tmp/sess/pi" },
       posture: null,
     });
     expect(spec.command).toBe("pi");
@@ -68,7 +68,7 @@ describe("piAdapter — buildLaunch", () => {
       "--provider",
       "anthropic",
       "--model",
-      "claude-sonnet-5",
+      "custom-anthropic-model",
       "--session-dir",
       "/tmp/sess/pi",
     ]);

@@ -36,9 +36,7 @@ describe("model-pricing", () => {
     expect(result.usd).toBeCloseTo(10.0, 2);
   });
 
-  it("prices Claude Sonnet 5 for Anthropic and bare-model fallback", () => {
-    // claude-sonnet-5 introductory pricing: input $2/1M, output $10/1M,
-    // cache read $0.20/1M, 5m cache write $2.50/1M.
+  it("reports direct Anthropic Claude Sonnet 5 pricing as unavailable without a static catalog row", () => {
     const usage = {
       inputTokens: 1_000_000,
       outputTokens: 200_000,
@@ -47,12 +45,12 @@ describe("model-pricing", () => {
     };
 
     const anthropic = costFor(usage, { provider: "anthropic", model: "claude-sonnet-5" });
-    expect(anthropic.unavailable).toBe(false);
-    expect(anthropic.usd).toBeCloseTo(5.1, 3);
+    expect(anthropic.unavailable).toBe(true);
+    expect(anthropic.usd).toBeNull();
 
     const bare = costFor(usage, { model: "claude-sonnet-5" });
-    expect(bare.unavailable).toBe(false);
-    expect(bare.usd).toBeCloseTo(5.1, 3);
+    expect(bare.unavailable).toBe(true);
+    expect(bare.usd).toBeNull();
   });
 
   it("prices OpenAI Codex GPT-5 models instead of reporting unavailable", () => {
@@ -206,13 +204,11 @@ describe("model-pricing", () => {
       ).toBe(MODEL_PRICING["openai-codex:gpt-5-codex"]);
     });
 
-    it("resolves Claude Sonnet 5 by explicit provider and bare model", () => {
+    it("does not resolve static pricing for direct Anthropic Claude Sonnet 5", () => {
       expect(
         lookupPricing({ provider: " Anthropic ", model: " Claude-Sonnet-5 " }),
-      ).toBe(MODEL_PRICING["anthropic:claude-sonnet-5"]);
-      expect(lookupPricing({ model: "claude-sonnet-5" })).toBe(
-        MODEL_PRICING["anthropic:claude-sonnet-5"],
-      );
+      ).toBeUndefined();
+      expect(lookupPricing({ model: "claude-sonnet-5" })).toBeUndefined();
     });
 
     it("falls back to a bare model id when provider is unset", () => {

@@ -191,18 +191,9 @@ export default function (pi: ExtensionAPI) {
     // https://platform.claude.com/docs/en/about-claude/models/overview
     const extraModels: typeof catalogModels = [
       /*
-       * FNXC:ModelCatalog 2026-06-30-12:31:
-       * The vendored Claude CLI provider has its own model list because it exposes `pi-claude-cli` independently from direct `anthropic`. Add Claude Sonnet 5 here as supplemental metadata so Claude CLI users can select it before the upstream pi-ai catalog catches up, while the dedupe below prevents duplicate rows after it does.
+       * FNXC:ModelCatalog 2026-07-01-18:18:
+       * Keep Claude CLI supplemental metadata limited to models that Fusion can advertise without triggering the direct-Anthropic Sonnet 5 404 loop. `claude-sonnet-5` must come from the upstream/live registry before this provider shows it, because static metadata cannot prove the current account and CLI surface can call that model.
        */
-      {
-        id: "claude-sonnet-5",
-        name: "Claude Sonnet 5",
-        reasoning: true,
-        input: ["text", "image"],
-        cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-        contextWindow: 1_000_000,
-        maxTokens: 128_000,
-      },
       {
         id: "claude-opus-4-7",
         name: "Claude Opus 4.7",

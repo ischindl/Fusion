@@ -116,7 +116,7 @@ describe("provider registration (default export)", () => {
     expect(firstModel.cost).toBeDefined();
   });
 
-  it("includes all extra Claude model entries", async () => {
+  it("includes supported extra Claude model entries without force-adding Sonnet 5", async () => {
     const registerProvider = vi.fn();
     const mockPi = { registerProvider, on: vi.fn() } as any;
 
@@ -127,7 +127,6 @@ describe("provider registration (default export)", () => {
     const modelIds = new Set(config.models.map((m: { id: string }) => m.id));
 
     for (const id of [
-      "claude-sonnet-5",
       "claude-opus-4-7",
       "claude-sonnet-4-6",
       "claude-sonnet-4-5",
@@ -136,14 +135,7 @@ describe("provider registration (default export)", () => {
       expect(modelIds.has(id)).toBe(true);
     }
 
-    expect(config.models.find((m: { id: string }) => m.id === "claude-sonnet-5")).toMatchObject({
-      name: "Claude Sonnet 5",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-    });
+    expect(modelIds.has("claude-sonnet-5")).toBe(false);
   });
 
   it("deduplicates extra models when catalog already includes them", async () => {

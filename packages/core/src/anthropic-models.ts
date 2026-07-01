@@ -28,33 +28,15 @@ export interface AnthropicProviderRegistration {
 }
 
 /*
- * FNXC:ModelCatalog 2026-06-30-12:22:
- * Claude Sonnet 5 support must not depend on the installed pi-ai catalog version or on the Claude CLI provider. Keep this supplemental Anthropic registration shared by engine sessions and dashboard model routes, and dedupe by model id so upstream catalog catch-up does not create duplicate picker rows.
+ * FNXC:ModelCatalog 2026-07-01-18:05:
+ * Anthropic's official model overview lists `claude-sonnet-5` as a Claude API ID, but FN-7374 observed sparse provider `404 not_found_error` responses for direct Anthropic accounts after Fusion force-added that ID from static supplemental metadata. Fusion cannot encode per-account/model-surface availability from static docs, so direct Anthropic pickers must rely on the live/upstream registry for Sonnet 5 and only dedupe rows the registry already provides. Existing saved selections keep runtime fallback/actionable failure handling instead of being newly advertised here.
  */
 export const SUPPLEMENTAL_ANTHROPIC_PROVIDER_REGISTRATION: AnthropicProviderRegistration = {
   name: "Anthropic",
   baseUrl: "https://api.anthropic.com/v1",
   apiKey: "$ANTHROPIC_API_KEY",
   api: "anthropic-messages",
-  models: [
-    {
-      id: CLAUDE_SONNET_5_MODEL_ID,
-      name: "Claude Sonnet 5",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: {
-        input: 2,
-        output: 10,
-        cacheRead: 0.2,
-        cacheWrite: 2.5,
-      },
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      compat: {
-        supportsDeveloperRole: false,
-      },
-    },
-  ],
+  models: [],
 };
 
 type AnthropicModelLike = Partial<Omit<AnthropicModelRegistration, "name" | "compat">> & {
