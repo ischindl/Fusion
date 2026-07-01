@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
   CreateInteractiveAiSessionFactory,
+  CreateInteractiveAiSessionOptions,
   InteractiveAiSession,
   InteractiveAiSessionEvent,
   InteractiveAiSessionProgressEvent,
@@ -291,7 +292,7 @@ export class CeOrchestrator {
   private buildSessionOptions(
     stage: CeStageDefinition,
     sessionId: string,
-    opts: { allowAnswerQuestionIdDrift?: boolean } = {},
+    opts: Pick<CreateInteractiveAiSessionOptions, "allowAnswerQuestionIdDrift"> = {},
   ): Parameters<CreateInteractiveAiSessionFactory>[0] {
     const defaultProvider = getDefaultProvider(this.ctx.settings);
     const defaultModelId = getDefaultModelId(this.ctx.settings);
