@@ -369,8 +369,12 @@ describe("Transient Error Detector", () => {
 
       expect(isProviderModelNotFoundError(anthropicSonnet5Error)).toBe(true);
       expect(isProviderModelNotFoundError("model claude-sonnet-5 not found")).toBe(true);
+      expect(isProviderModelNotFoundError("model claude-sonnet-5 is not available on this account")).toBe(false);
+      expect(isModelAuthTierIncompatibilityError("model claude-sonnet-5 is not available on this account")).toBe(true);
       expect(isProviderModelNotFoundError("GET /api/tasks/FN-404 returned 404 Not Found")).toBe(false);
       expect(isProviderModelNotFoundError("Task FN-404 not found")).toBe(false);
+      expect(isProviderModelNotFoundError("404 Not Found: /api/chat/sessions/missing"))
+        .toBe(false);
     });
   });
 

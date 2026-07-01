@@ -241,8 +241,8 @@ export function isProviderModelNotFoundError(errorMessage: string): boolean {
   }
 
   /*
-   * FNXC:ModelFallback 2026-07-01-00:30:
-   * Anthropic can reject newly cataloged models such as Claude Sonnet 5 with a structured 404 `not_found_error` when the current account or API surface cannot serve that model. Treat only provider/model-scoped 404s as model-selection failures so configured fallbacks run without reclassifying unrelated application 404s as recoverable model swaps.
+   * FNXC:ModelFallback 2026-07-01-16:42:
+   * Anthropic can reject newly cataloged models such as Claude Sonnet 5 with a structured 404 `not_found_error` when the current account or API surface cannot serve that model, often with only `message: "Not found"`. Treat provider error envelopes and explicit model-not-found text as model-selection failures so configured fallbacks run, while generic application 404s without a provider envelope remain terminal.
    */
   const hasStructuredProviderNotFound =
     /["']type["']\s*:\s*["']not_found_error["']/i.test(errorMessage)

@@ -449,6 +449,31 @@ function buildChatFailureInfo(error: unknown, fallbackSummary = "AI processing f
   return { summary: fallbackSummary };
 }
 
+function addModelContextToFailureInfo(
+  failureInfo: ChatFailureInfo,
+  provider: string | undefined,
+  modelId: string | undefined,
+): ChatFailureInfo {
+  if (!provider || !modelId) {
+    return failureInfo;
+  }
+  const modelRef = `${provider}/${modelId}`;
+  if (failureInfo.summary.includes(modelRef) || failureInfo.summary.includes(modelId)) {
+    return failureInfo;
+  }
+  /*
+   * FNXC:ChatModels 2026-07-01-16:42:
+   * No-fallback chat failures for explicit model picks must name the selected provider/model. Anthropic Sonnet 5 can return a structured 404 `not_found_error` whose payload says only "Not found"; without this context the dashboard shows an unhelpful generic failure while hiding which model selection needs operator action.
+   */
+  return {
+    ...failureInfo,
+    summary: `Model ${modelRef} response failed: ${failureInfo.summary}`,
+    ...(failureInfo.detail && !failureInfo.detail.includes(modelRef) && !failureInfo.detail.includes(modelId)
+      ? { detail: `Selected model: ${modelRef}\n${failureInfo.detail}` }
+      : {}),
+  };
+}
+
 function persistFailureMessage(
   chatStore: ChatStore,
   sessionId: string,
@@ -1463,8 +1488,12 @@ export class ChatManager {
     const effectiveModelProvider = input.modelProvider ?? responderRuntimeModel.provider;
     const effectiveModelId = input.modelId ?? responderRuntimeModel.modelId;
     const chatModelSettings = await this.getChatModelSettings();
-    const allowFallback = !(input.modelProvider && input.modelId)
-      && !(responderRuntimeModel.provider && responderRuntimeModel.modelId);
+    /*
+     * FNXC:ChatModels 2026-07-01-16:42:
+     * Room responders should pass configured fallback models even when the room send chose an explicit model. The engine still swaps only for retryable provider/model-selection failures, so an unavailable Sonnet 5 can recover without making ordinary prompt errors ambiguous.
+     */
+    const allowFallback = true;
+    let roomFallbackInfo: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" } | undefined;
 
     const roomSkillContext = buildSessionSkillContextSync(
       input.responder,
@@ -1506,6 +1535,12 @@ export class ChatManager {
             fallbackModelId: chatModelSettings.fallbackModelId,
           }
         : {}),
+      onFallbackModelUsed: (payload: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }) => {
+        roomFallbackInfo = payload;
+        diagnostics.warn(
+          `[fallback] room responder ${input.responder.id} switched from ${payload.primaryModel} to ${payload.fallbackModel} (${payload.triggerPoint})`,
+        );
+      },
     });
 
     try {
@@ -1542,6 +1577,7 @@ export class ChatManager {
         thinkingOutput: null,
         metadata: {
           roomId: input.roomId,
+          ...(roomFallbackInfo ? { fallback: roomFallbackInfo } : {}),
         },
       };
     } finally {
@@ -1643,6 +1679,8 @@ export class ChatManager {
     let fallbackInfo:
       | { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }
       | undefined;
+    let failureContextProvider: string | undefined;
+    let failureContextModelId: string | undefined;
 
     const persistInFlightSnapshot = (): void => {
       const runningToolCalls = [...pendingToolStarts.entries()].flatMap(([toolName, starts]) =>
@@ -1721,6 +1759,8 @@ export class ChatManager {
       const requestedModelId = modelId ?? session.modelId ?? undefined;
       let effectiveModelProvider = requestedModelProvider;
       let effectiveModelId = requestedModelId;
+      failureContextProvider = effectiveModelProvider;
+      failureContextModelId = effectiveModelId;
       let hasExplicitAgentRuntimeModel = false;
 
       const needsTitle = session.title === null || session.title === undefined || session.title.trim() === "";
@@ -1795,6 +1835,8 @@ export class ChatManager {
         }
         effectiveModelProvider ??= runtimeModel.provider;
         effectiveModelId ??= runtimeModel.modelId;
+        failureContextProvider = effectiveModelProvider;
+        failureContextModelId = effectiveModelId;
       }
 
       // Auto-generate chat title on first message if session has no title.
@@ -1863,12 +1905,14 @@ export class ChatManager {
         && requestedModelId === chatModelSettings.defaultModelId
         && !!requestedModelProvider
         && !!requestedModelId;
+      /*
+       * FNXC:ChatModels 2026-07-01-16:42:
+       * Explicit chat model selections still receive the configured fallback for provider/model unavailability. A selected Anthropic Sonnet 5 should not end as a generic Response failed when the engine can safely do its single retryable model swap; permanent-agent runtime models remain authoritative unless the user-selected chat model is the configured default.
+       */
       const allowFallback =
         !hasExplicitAgentRuntimeModel
-        && (
-          !(requestedModelProvider && requestedModelId)
-          || usesConfiguredDefaultModel
-        );
+        || usesConfiguredDefaultModel
+        || !!(requestedModelProvider && requestedModelId);
 
       const messagingTools = agent?.id && this.messageStore
         ? [
@@ -2033,7 +2077,11 @@ export class ChatManager {
       const sessionErrorMessage = (agentResult.session.state as { errorMessage?: unknown }).errorMessage;
       if (typeof sessionErrorMessage === "string" && sessionErrorMessage.trim().length > 0
           && !accumulatedText && !accumulatedThinking && toolCallsAccum.length === 0) {
-        const failureInfo = buildChatFailureInfo(sessionErrorMessage, "Model response failed");
+        const failureInfo = addModelContextToFailureInfo(
+          buildChatFailureInfo(sessionErrorMessage, "Model response failed"),
+          effectiveModelProvider,
+          effectiveModelId,
+        );
         persistFailureMessage(this.chatStore, sessionId, failureInfo);
         this.flushInFlightGenerationPersist(sessionId, null);
         chatStreamManager.broadcast(sessionId, {
@@ -2113,7 +2161,10 @@ export class ChatManager {
         return;
       }
 
-      const failureInfo = buildChatFailureInfo(err, "AI processing failed");
+      let failureInfo = buildChatFailureInfo(err, "AI processing failed");
+      if (!fallbackInfo) {
+        failureInfo = addModelContextToFailureInfo(failureInfo, failureContextProvider, failureContextModelId);
+      }
       diagnostics.error(`Error in sendMessage for session ${sessionId}:`, err);
 
       if (accumulatedText || accumulatedThinking || toolCallsAccum.length > 0) {

@@ -1568,15 +1568,15 @@ describe("ChatManager.sendMessage", () => {
     }));
   });
 
-  it("does not allow fallback when the chat session has a specific non-default model selected", async () => {
+  it("allows fallback when the chat session explicitly selects Sonnet 5", async () => {
     let createOptions: any;
     mockChatStore.getSession.mockReturnValue({
       id: "chat-001",
       agentId: "agent-001",
       status: "active",
-      title: "Explicit Model Chat",
-      modelProvider: "openai-codex",
-      modelId: "gpt-5.3-codex",
+      title: "Explicit Sonnet 5 Chat",
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-5",
     });
 
     __setCreateFnAgent(async (options: any) => {
@@ -1584,7 +1584,12 @@ describe("ChatManager.sendMessage", () => {
       return {
         session: {
           prompt: vi.fn().mockImplementation(async function (this: any) {
-            this.state.messages = [{ role: "assistant", content: "Primary reply" }];
+            await options.onFallbackModelUsed?.({
+              primaryModel: "anthropic/claude-sonnet-5",
+              fallbackModel: "zai/glm-5.1",
+              triggerPoint: "prompt-time",
+            });
+            this.state.messages = [{ role: "assistant", content: "Fallback reply" }];
           }),
           dispose: vi.fn(),
           state: { messages: [] as Array<{ role: string; content: string }> },
@@ -1601,8 +1606,60 @@ describe("ChatManager.sendMessage", () => {
 
     await chatManager.sendMessage("chat-001", "Hello");
 
-    expect(createOptions.fallbackProvider).toBeUndefined();
-    expect(createOptions.fallbackModelId).toBeUndefined();
+    expect(createOptions.defaultProvider).toBe("anthropic");
+    expect(createOptions.defaultModelId).toBe("claude-sonnet-5");
+    expect(createOptions.fallbackProvider).toBe("zai");
+    expect(createOptions.fallbackModelId).toBe("glm-5.1");
+    expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", {
+      modelProvider: "zai",
+      modelId: "glm-5.1",
+    });
+    const assistantCall = mockChatStore.addMessage.mock.calls.find((call) => call[1].role === "assistant");
+    expect(assistantCall?.[1]).toEqual(expect.objectContaining({
+      content: "Fallback reply",
+      metadata: {
+        fallback: {
+          primaryModel: "anthropic/claude-sonnet-5",
+          fallbackModel: "zai/glm-5.1",
+          triggerPoint: "prompt-time",
+        },
+      },
+    }));
+  });
+
+  it("persists actionable Sonnet 5 provider detail when no fallback is configured", async () => {
+    const sonnet5NotFoundError =
+      'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}';
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      title: "Explicit Sonnet 5 Chat",
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-5",
+    });
+
+    __setCreateFnAgent(async () => ({
+      session: {
+        prompt: vi.fn().mockRejectedValue(new Error(sonnet5NotFoundError)),
+        dispose: vi.fn(),
+        state: { messages: [] },
+      },
+    }));
+
+    const chatManager = createChatManagerWithSettings({
+      defaultProvider: "anthropic",
+      defaultModelId: "claude-sonnet-4-5",
+    });
+
+    await chatManager.sendMessage("chat-001", "Hello");
+
+    const failureCall = mockChatStore.addMessage.mock.calls.find(
+      (call) => call[1].role === "assistant" && call[1].metadata?.failureInfo,
+    );
+    expect(failureCall?.[1].content).toContain("claude-sonnet-5");
+    expect(failureCall?.[1].metadata.failureInfo.summary).toContain("not_found_error");
+    expect(failureCall?.[1].metadata.failureInfo.summary).not.toBe("Response failed");
   });
 
   it("persists thinking output even when no text was generated", async () => {
