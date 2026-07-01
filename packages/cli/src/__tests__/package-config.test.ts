@@ -48,7 +48,7 @@ function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
   for (const dependencyName of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
     expect(dependencies, `${label}: ${dependencyName} must remain a required runtime dependency`).toHaveProperty(
       dependencyName,
-      "^0.79.9",
+      "^0.80.3",
     );
     expect(peerDependencies, `${label}: ${dependencyName} must not be a peer dependency`).not.toHaveProperty(
       dependencyName,
@@ -323,10 +323,8 @@ describe("Workspace bootstrap script contract", () => {
     expect(buildIdx).toBeGreaterThan(testIdx);
   });
 
-  it("keeps default build CLI-first by excluding desktop/mobile", () => {
-    expect(rootPkg.scripts?.build).toBe(
-      "pnpm -r --filter=!@fusion/desktop --filter=!@fusion/mobile build",
-    );
+  it("keeps default build routed through workspace builder", () => {
+    expect(rootPkg.scripts?.build).toBe("node scripts/build-workspace.mjs");
   });
 
   it("keeps explicit opt-in scripts for full, desktop, and mobile builds", () => {
