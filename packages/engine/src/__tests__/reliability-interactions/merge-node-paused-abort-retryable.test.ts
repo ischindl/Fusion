@@ -134,6 +134,8 @@ describe("merge-node paused-abort retry classification (FN-6735)", () => {
 
     expect(mergeRequester).toHaveBeenCalledWith(task.id);
     const messages = logText(store);
+    expect(messages).toContain("Pause abort classified: provenance=hard-cancel; node=merge");
+    expect(messages).toContain("column=in-review; status=reviewing");
     expect(messages).toContain("Workflow graph merge failure at node 'merge' routed to bounded auto-merge retry after benign pause/resume abort");
     expect(messages).not.toContain("operator action required");
     expect(store.updateTask).not.toHaveBeenCalledWith(

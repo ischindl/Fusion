@@ -1707,13 +1707,33 @@ export class TaskExecutor {
   private pendingEphemeralDeletions = new Set<string>();
   private workspaceConfig: WorkspaceConfig | null | undefined = undefined;
 
-  private markPausedAborted(taskId: string, provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel"): void {
+  private markPausedAborted(
+    taskId: string,
+    provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel",
+    source = "unspecified",
+  ): void {
+    const previousProvenance = this.pausedAbortProvenance.get(taskId);
+    const alreadyMarked = this.pausedAborted.has(taskId);
     this.pausedAborted.add(taskId);
     this.pausedAbortProvenance.set(taskId, provenance);
+    if (!alreadyMarked || previousProvenance !== provenance) {
+      /*
+      FNXC:WorkflowLifecycle 2026-07-01-22:24:
+      Pause aborts are frequent enough that operators need task-log breadcrumbs at the marker source, not only at the later graph-failure sink. Log first-mark/provenance-change events so a task card shows why a workflow was interrupted and which code path owned the abort.
+      */
+      void this.store.logEntry(
+        taskId,
+        `Pause abort marked: provenance=${provenance} source=${source}${previousProvenance && previousProvenance !== provenance ? ` previous=${previousProvenance}` : ""}`,
+        undefined,
+        this.getRunContextFor(taskId),
+      ).catch((error) => {
+        executorLog.warn(`${taskId}: failed to log pause-abort marker: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
   }
 
   private markCompletionFinalized(taskId: string): void {
-    this.markPausedAborted(taskId, "completion-finalize");
+    this.markPausedAborted(taskId, "completion-finalize", "completion-finalize");
     this.completionFinalizedTaskIds.add(taskId);
   }
 
@@ -2382,11 +2402,12 @@ export class TaskExecutor {
    */
   async awaitAbortInFlightTaskWork(taskId: string, reason: string, options: { userCanceled?: boolean } = {}): Promise<void> {
     let hadActiveSurface = false;
+    const abortedSurfaces: string[] = [];
 
     if (options.userCanceled) {
       this.userCanceledTaskIds.add(taskId);
     }
-    this.markPausedAborted(taskId, "hard-cancel");
+    this.markPausedAborted(taskId, "hard-cancel", `abort-in-flight:${reason}`);
     this.options.stuckTaskDetector?.untrackTask(taskId);
     this.clearWorkflowRerunWatchdog(taskId);
     this.clearCompletedTaskWatchdog(taskId);
@@ -2403,21 +2424,25 @@ export class TaskExecutor {
     const claimedSession = this.activeSessions.get(taskId);
     if (claimedSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("agent-session");
       this.deleteActiveSession(taskId);
     }
     const claimedStepExecutor = this.activeStepExecutors.get(taskId);
     if (claimedStepExecutor) {
       hadActiveSurface = true;
+      abortedSurfaces.push("step-session");
       this.deleteActiveStepExecutor(taskId);
     }
     const claimedWorkflowSession = this.activeWorkflowStepSessions.get(taskId);
     if (claimedWorkflowSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("workflow-step-session");
       this.deleteActiveWorkflowStepSession(taskId);
     }
     const claimedConfiguredCommands = this.activeConfiguredCommandControllers.get(taskId);
     if (claimedConfiguredCommands && claimedConfiguredCommands.size > 0) {
       hadActiveSurface = true;
+      abortedSurfaces.push(`configured-command:${claimedConfiguredCommands.size}`);
       this.activeConfiguredCommandControllers.delete(taskId);
       for (const controller of claimedConfiguredCommands) {
         controller.abort();
@@ -2426,12 +2451,14 @@ export class TaskExecutor {
     const claimedWorkflowGraphController = this.activeWorkflowGraphAbortControllers.get(taskId);
     if (claimedWorkflowGraphController) {
       hadActiveSurface = true;
+      abortedSurfaces.push("workflow-graph");
       this.activeWorkflowGraphAbortControllers.delete(taskId);
       claimedWorkflowGraphController.abort();
     }
     const claimedSubagents = this.activeSubagentSessions.has(taskId);
     if (claimedSubagents) {
       hadActiveSurface = true;
+      abortedSurfaces.push("subagent-session");
       this.disposeSubagentsForTask(taskId, reason);
     }
     // CLI Agent Executor (U7): a cli-agent session is a hard-cancel surface like
@@ -2442,6 +2469,7 @@ export class TaskExecutor {
     const claimedCliSession = this.activeCliTaskSessions.get(taskId);
     if (claimedCliSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("cli-agent-session");
       this.activeCliTaskSessions.delete(taskId);
     }
 
@@ -2499,6 +2527,14 @@ export class TaskExecutor {
 
     if (hadActiveSurface) {
       executorLog.log(`${taskId}: awaited abort of in-flight work — ${reason}`);
+      await this.store.logEntry(
+        taskId,
+        `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`,
+        undefined,
+        this.getRunContextFor(taskId),
+      ).catch((error) => {
+        executorLog.warn(`${taskId}: failed to log pause-abort cleanup: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
   }
 
@@ -3081,7 +3117,7 @@ export class TaskExecutor {
       if (settings.globalPause && !previous.globalPause) {
         for (const [taskId, controllers] of this.activeConfiguredCommandControllers) {
           executorLog.log(`Global pause — aborting configured command(s) for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:configured-command");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           for (const controller of controllers) {
             controller.abort();
@@ -3099,7 +3135,7 @@ export class TaskExecutor {
         }
         for (const [taskId, { session }] of this.activeSessions) {
           executorLog.log(`Global pause — terminating agent session for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:agent-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           // abort() interrupts any in-flight LLM stream / tool call;
           // dispose() then releases session resources.
@@ -3117,7 +3153,7 @@ export class TaskExecutor {
         }
         for (const [taskId, stepExecutor] of this.activeStepExecutors) {
           executorLog.log(`Global pause — terminating step sessions for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:step-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           stepExecutor.terminateAllSessions().catch(err =>
             executorLog.warn(`Failed to terminate step sessions for global pause ${taskId}: ${err}`)
@@ -3129,7 +3165,7 @@ export class TaskExecutor {
         }
         for (const [taskId, workflowSession] of this.activeWorkflowStepSessions) {
           executorLog.log(`Global pause — terminating workflow step session for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:workflow-step-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           const sessionWithAbort = workflowSession as AgentSession & { abort?: () => Promise<void> };
           if (typeof sessionWithAbort.abort === "function") {
@@ -3145,7 +3181,7 @@ export class TaskExecutor {
         }
         for (const [taskId, controller] of this.activeWorkflowGraphAbortControllers) {
           executorLog.log(`Global pause — aborting workflow graph runner for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:workflow-graph");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           controller.abort();
           this.activeWorkflowGraphAbortControllers.delete(taskId);
@@ -5986,7 +6022,7 @@ export class TaskExecutor {
       },
       abortRun: async (_ctx, task, input) => {
         if (input.hardCancel) {
-          this.markPausedAborted(task.id, "merge-seam");
+          this.markPausedAborted(task.id, "merge-seam", "workflow-abort-run:merge-seam");
         }
         await this.store.updateTask(task.id, {
           paused: true,
@@ -8078,6 +8114,16 @@ export class TaskExecutor {
           || (live.paused && !mergeSeamAborted && !suppressFinalizedCompletionAbort)
           || (pausedAborted && !mergeSeamAborted && !completionFinalizeAborted && !suppressFinalizedCompletionAbort),
       );
+      if (pausedAborted || live.paused || live.userPaused || abortProvenance) {
+        const failedNodeForLog = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
+        const failureValueForLog = this.graphFailureValue(result) ?? "none";
+        await this.store.logEntry(
+          task.id,
+          `Pause abort classified: provenance=${abortProvenance ?? "unknown"}; node=${failedNodeForLog}; interrupted=${result.interruptedNodeId ?? "none"}; abortKind=${result.interruptedAbortKind ?? "none"}; column=${live.column}; status=${live.status ?? "none"}; paused=${live.paused === true}; userPaused=${live.userPaused === true}; value=${failureValueForLog}; genuine=${genuinePauseAbort}; mergeSeam=${mergeSeamAborted}; completionSuppressed=${suppressFinalizedCompletionAbort}`,
+          undefined,
+          this.getRunContextFor(task.id),
+        );
+      }
       if (genuinePauseAbort && await this.isReentrantPausedAbortedInFlightNode(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
         if (await this.reenterPausedAbortedWorkflowNode(live, result, abortProvenance)) {
           return;
