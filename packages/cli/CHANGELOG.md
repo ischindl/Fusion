@@ -1,5 +1,190 @@
 # @runfusion/fusion
 
+## 0.53.0
+
+### Minor Changes
+
+- 12ee9a9: summary: Add exact tool overrides for permanent-agent permission policies.
+  category: feature
+  dev: Adds per-tool permission policy overrides on top of category rules.
+- a9e2baa: summary: Add a project option to link imported GitHub issues to GitHub tracking.
+  category: feature
+  dev: GitHub issue import paths honor githubLinkImportedIssuesToTracking while ordinary task creation remains unchanged.
+- 1750523: summary: Add Enable GitHub tracking to Board and List task context menus.
+  category: feature
+  dev: Reuses the existing task PATCH GitHub tracking flow from shared card/list context menu actions.
+- 1ccef81: summary: Let task-detail planner Chat answer current-task token, cost, and timing questions.
+  category: feature
+  dev: Adds read-only task-scoped planner chat tool `fn_task_planner_get_task_metrics` with derived pricing semantics.
+- a404997: summary: Add a Glass Silver dashboard theme.
+  category: feature
+  dev: Registers glass-silver across core theme metadata, dashboard/desktop startup validators, CSS tokens, swatches, and tests.
+- 03160eb: summary: Add a mobile terminal tab dropdown for switching and closing terminal sessions.
+  category: feature
+  dev: Mobile terminal headers now use a native tab selector while desktop keeps the tab strip.
+- 14bb7a3: summary: Branching workflows now run on the graph interpreter; the legacy step-compiler and its interpreter-only banner are gone.
+  category: feature
+  dev: Removed the linear WorkflowStep compiler (compileWorkflowToSteps/validateLinearity/WorkflowCompileError) from @fusion/core; parseWorkflowIr is now the sole workflow validity gate at save/select/refine and in the graph task runner. Deleted the POST /api/workflows/:id/compile preview route and its client wrapper, and dropped the interpreterOnly response field and editor banner. MERGE_REGION_NODE_KINDS moved into workflow-lifecycle-validation.
+
+### Patch Changes
+
+- ad8db59: summary: Allow Compound Engineering recovered sessions to answer persisted questions after dashboard restarts.
+  category: fix
+  dev: Keeps strict question-id validation by default while letting CE trust its persisted session row as the recovery anchor.
+- 9432339: summary: Contain planning parse failures as retryable session errors and add `--supervise` dashboard restart mode.
+  category: fix
+  dev: Planning sessions that receive non-JSON AI output now persist as retryable error state instead of unpersisting the session. The `/api/health` endpoint remains available during session errors. A new `--supervise` flag on `fn dashboard` runs the dashboard under foreground process supervision with bounded restart attempts and exponential backoff, preventing Tailscale Serve 502s from unexpected dashboard exits.
+- a1af5de: summary: Fix Anthropic Claude subscription chats failing (404/502/429) by restoring direct OAuth execution.
+  category: fix
+  dev: Reverts the FN-7391/FN-7396 runtime rerouting that sent subscription OAuth to a `/v1`-based `anthropic-subscription` provider (reintroducing issue #1857). `getApiKey("anthropic")` again resolves subscription/legacy OAuth (raw API key still wins), so `anthropic/*` selections run on pi-ai's built-in provider with Claude Code OAuth headers; the model picker advertises `anthropic` for OAuth users; explicit `pi-claude-cli` and raw `ANTHROPIC_API_KEY` remain separate surfaces.
+- 3884169: summary: Fix tasks looping through triage at the completion-summary node, plus Stats/Routing/Node labels crashing.
+  category: fix
+  dev: Issue #1863 (v0.52.0 regression). (1) The best-effort completion-summary graph node is wired with a success-only edge, so a thrown handler exception or a failed summary projection write terminated the graph and the in-review→todo resume router bounced the task forever. The graph executor now degrades a completion-summary node failure to success (ensureWorkflowCompletionSummary still backfills task.summary), with a routeGraphFailureToExecutionResume backstop. (2) Three views called t() with keys that resolve to nested objects (taskDetail.executionMode, routing.source, nodes.dockerHost); added leaf label keys across all locales and a dashboard invariant test that scans t("literal") callers against the real en/app.json.
+- 88bcbce: summary: Prevent task branches from inheriting unrelated checked-out task commits.
+  category: fix
+  dev: Fresh worktree acquisition now pins the integration branch as the default start point, and merge finalization validates task-owned branch diffs from baseCommitSha when available.
+- c93f2d4: summary: Fix arrow-key editing for Settings in the terminal dashboard.
+  category: fix
+  dev: Settings detail-pane arrows now edit enum values instead of switching panes.
+- 72eb9af: summary: Make the task Activity tab switch Live, Feed, and Raw views directly.
+  category: fix
+  dev: Removes the duplicate in-panel Activity view select from TaskDetailModal.
+- d448603: summary: Show Refine in completed task card and list context menus.
+  category: fix
+  dev: Routes done/custom-complete Board and List context-menu Refine actions into the existing Task Detail refinement composer.
+- 98ca9ac: summary: Fix mobile task action menus so tapped actions run once and close.
+  category: fix
+  dev: Shared TaskContextMenu now commits touch/pen selections on pointer release and guards synthesized clicks.
+- 7457f04: summary: Reuse the standard Chat surface for task-detail planner chat.
+  category: fix
+  dev: Extracts StandardChatSurface for shared message, thinking, tool-call, and mobile send rendering without importing the lazy ChatView chunk from task detail.
+- d8f3cc6: summary: Make mobile task-detail chat Send buttons submit on the first tap.
+  category: fix
+  dev: Adds touch-first send handling for Activity steering, done-task refinement, and planner Chat composers.
+- b3b01bc: summary: Add All workflows to top-level dashboard workflow selectors.
+  category: feature
+  dev: Extends the dashboard aggregate workflow sentinel to List, Planning, Missions, and Graph without backend handoff.
+- 62c4aae: summary: Recover explicit Sonnet 5 chat selections with configured model fallbacks.
+  category: fix
+  dev: Routes Anthropic Sonnet 5 provider/model failures through chat/runtime fallback and preserves actionable no-fallback errors.
+- 1f3a15e: summary: Fix Windows desktop startup failures in packaged builds.
+  category: fix
+  dev: Externalizes Electron updater CJS dependencies, loads the dashboard registry manifest through Node-safe file IO, and separates NSIS/portable Windows artifacts.
+- f04f01d: summary: Fix Board task context menus so they are not clipped by columns.
+  category: fix
+  dev: Board TaskCard menus are portaled to document.body and clamped in viewport coordinates.
+- e4eb8b6: summary: Prevent mobile Board task long-press menus from selecting card text.
+  category: fix
+  dev: Suppresses WebKit/native selection for non-editing TaskCard surfaces while preserving edit textareas.
+- fed60ec: summary: Hide task planner chats from the common Chat feed unless enabled in Settings.
+  category: fix
+  dev: Adds project setting `showTaskChatsInCommonFeed` and filters task-planner sessions in chat list APIs/client refresh.
+- d93fac0: summary: Let the task popup setting open board tasks as popups on desktop too.
+  category: fix
+  dev: Keeps the existing `openMobileTasksInPopup` setting key while broadening ordinary board-card routing across viewports.
+- c194248: summary: Preserve task-detail planner Chat working state after leaving and returning.
+  category: fix
+  dev: Rehydrates task-planner chat generation snapshots and reattaches streams across tab switches and modal remounts.
+- a65633d: summary: Keep sent chat messages visible when a provider error interrupts the reply.
+  category: fix
+  dev: Reconciles accepted optimistic chat sends with persisted transcripts across global, planner, and room chats.
+- 4805182: summary: Let Planning Mode Yes/No questions accept a custom Other answer.
+  category: fix
+  dev: Extends confirm-question handling to preserve user-authored alternatives via `_other`.
+- 67f93ce: summary: Show thinking effort on task log model rows when it is configured.
+  category: fix
+  dev: Runtime using-model markers append `(thinking effort: <level>)` while dashboard parsers strip suffix annotations for provider icons and effective-model displays.
+- 919420e: summary: Enforce maxWorktrees as a hard cap on active execution worktrees.
+  category: fix
+  dev: TaskStore rejects allocated in-progress moves once active holders reach maxWorktrees, independent of maxConcurrent.
+- 427ce04: summary: Stop force-advertising Anthropic Claude Sonnet 5 when account availability is unknown.
+  category: fix
+  dev: Removes static Sonnet 5 supplemental catalog/pricing metadata while preserving fallback handling for saved selections.
+- 7e5d908: summary: Fix the mobile task Activity view dropdown so it opens above the tab strip without clipping.
+  category: fix
+  dev: Root-portals and viewport-clamps the task-detail Activity Live/Feed/Raw menu with regression coverage.
+- a4ef439: summary: Keep the Planner Chat stop-generation icon visible on mobile while thinking.
+  category: fix
+  dev: Narrows the mobile Planner Chat text-hiding selector so the shared chat stop icon span remains visible.
+- 914c7c1: summary: Hide failed-task banners while task planner chat is maximized.
+  category: fix
+  dev: TaskDetailModal no longer mounts failed-banner chrome during expanded planner Chat; Activity and collapsed detail still show failures.
+- 3702763: summary: Upgrade Fusion's bundled pi SDK dependencies to 0.80.3.
+  category: internal
+  dev: Upgrades @earendil-works/pi-ai and @earendil-works/pi-coding-agent to ^0.80.3.
+- e341c06: summary: Make Planner Chat clarification questions answerable in task details.
+  category: fix
+  dev: Extracts fn_ask_question cards from grouped tool-call details in shared chat rendering.
+- 6d1507a: summary: Close task details immediately after confirming task deletion.
+  category: fix
+  dev: Updates shared task-detail delete close behavior and split-detail host wiring so detail shells close before delete requests settle.
+- d94c359: summary: Honor project auto plan approval across task finalization paths.
+  category: fix
+  dev: Ensures planApprovalMode=auto-approve-all wins over workflow requirePlanApproval for ordinary plan approval.
+- ec0fa96: summary: Add a Triage column shortcut for plan auto-approval.
+  category: feature
+  dev: Adds a Board column switch that mirrors project planApprovalMode=auto-approve-all.
+- 869974c: summary: Make chat-created workflows appear immediately across workflow selectors.
+  category: fix
+  dev: Chat workflow tools now emit workflow lifecycle SSE and workflow lists force-refresh per project.
+- af6e671: summary: Recover live worktree conflicts by retrying with a fresh task worktree.
+  category: fix
+  dev: Executor worktree acquisition now preserves active-session conflict owners and retries bounded sibling branches instead of surfacing automatic cleanup failure.
+- 4378053: summary: Fix Activity expand controls so Live and Feed overlay content and Raw has one fullscreen button.
+  category: fix
+  dev: Updates task-detail Activity Live/Feed overlay controls and keeps Raw on AgentLogViewer fullscreen.
+- 4694b4a: summary: Move destructive task context-menu actions to the bottom.
+  category: fix
+  dev: Reorders shared TaskContextMenu descriptors so Reset precedes Delete at the end across Board, List, and Detail menus.
+- 18b07b5: summary: Fix folded Android mobile terminal spacing on initial open.
+  category: fix
+  dev: Terminal mobile detection now honors touch visualViewport width for TerminalModal and SessionTerminal.
+- bfe5ced: summary: Show eligible Claude Sonnet 5 model rows once in model pickers.
+  category: fix
+  dev: Dedupes /api/models rows by provider/model while preserving direct Anthropic Sonnet 5 guardrails.
+- 3219ced: summary: Restore Claude Sonnet 5 and latest Anthropic models in the Claude CLI model picker.
+  category: fix
+  dev: pi-claude-cli supplemental extraModels now advertises claude-sonnet-5 for the subscription-authenticated CLI surface; direct-Anthropic supplemental registration and static pricing remain withheld per FN-7374's 404 not_found_error handling. Local evidence used claude 2.1.197 with --model accepting aliases/full names; checksum remains upstream-pending-verification.
+- 775ff5f: summary: Fix Anthropic subscription chat failing with 429/502 by routing it through the Claude CLI.
+  category: fix
+  dev: Anthropic routing now keeps three surfaces distinct: raw API keys authenticate direct api.anthropic.com/v1, subscription/OAuth remains `anthropic-subscription`, and CLI execution uses `pi-claude-cli`; OAuth-only selections never authenticate direct `/v1` and are routed to the CLI provider when available.
+- 4beae71: summary: Keep hidden task-planner Chat replies from lighting the global Chat unread badge.
+  category: fix
+  dev: Enriches direct chat SSE payloads with session agent metadata plus common-feed visibility, then suppresses `task-planner:` unread badges only while hidden.
+- e85d25e: summary: Fix desktop launch from npm installs in directories with invalid JSON.
+  category: fix
+  dev: Keeps installed desktop launch independent of source workspace builds and host JSON files.
+- 19e59ec: summary: Keep Anthropic subscription OAuth, Claude CLI, and direct API-key auth separated.
+  category: fix
+  dev: Restores anthropic-subscription status/usage/banner behavior and direct subscription-backed execution while keeping raw anthropic API-key auth and explicit pi-claude-cli execution separate.
+- f998fe3: summary: Ensure task lifecycle plugins receive runtime context during completion hooks.
+  category: fix
+  dev: PluginLoader now appends PluginContext to task lifecycle hook invocations when callers provide only task event args.
+- 9c2a264: summary: Show Claude CLI models when Anthropic subscription OAuth and Claude CLI are connected.
+  category: fix
+  dev: Keeps subscription OAuth on anthropic-subscription while direct anthropic remains raw API-key-only.
+- 20e42c6: summary: Fix Compound Engineering Debug stage launches that could fail with a JSON parse error.
+  category: fix
+  dev: Strengthens CE stage prompts and debug skill guidance so dashboard sessions emit the interactive JSON protocol.
+- dbe637f: summary: Include graph-owned workflow step execution in Command Center activity analytics.
+  category: fix
+  dev: StepSessionExecutor now publishes best-effort agentRuns lifecycle rows for workflow step sessions.
+- b7c6443: summary: Restore Claude Sonnet 5 in the model picker (it had disappeared from every surface).
+  category: fix
+  dev: Re-adds `claude-sonnet-5` to SUPPLEMENTAL_ANTHROPIC_PROVIDER_REGISTRATION and its static pricing (removed by FN-7374). Live-verified: Sonnet 5 returns 200 on api.anthropic.com/v1 with a raw ANTHROPIC_API_KEY and runs via the Claude CLI; it 403s (scope) on subscription-OAuth /v1, where the runtime actionable-failure/fallback path applies.
+- b58d9b5: summary: Enforce explicit external checkout metadata for review routing.
+  category: fix
+  dev: Reviews now use sourceMetadata.externalReviewCheckout only when it points at a valid git checkout, otherwise they fail closed to the task worktree and log the selected review target.
+- 24279c9: summary: Let proven task merges finalize even when old branch history remains.
+  category: fix
+  dev: Auto-merge finalization now trusts durable task merge proof instead of blocking on stale branch-only residue.
+- 07aa1a0: summary: Widen Project Models dropdown menus so long provider and model names are easier to read.
+  category: fix
+  dev: Adds an opt-in readable menu width to the shared dashboard model dropdown and applies it only in Project Models.
+- 62c5840: summary: Give workflow review steps a longer default timeout.
+  category: fix
+  dev: Raises the built-in `workflowStepTimeoutMs` default and engine fallback from 6 minutes to 15 minutes.
+
 ## 0.52.0
 
 ### Minor Changes
