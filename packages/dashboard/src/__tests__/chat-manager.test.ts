@@ -1358,11 +1358,15 @@ describe("ChatManager.sendMessage", () => {
     expect(createOptions.systemPrompt).toContain("Polish: in-progress");
     expect(createOptions.systemPrompt).toContain("Activity transcript loaded");
     expect(createOptions.systemPrompt).toContain("fn_ask_question");
-    expect(createOptions.systemPrompt).toContain("Do not create steering for ordinary questions");
+    expect(createOptions.systemPrompt).toContain("Do not create steering or refinements for ordinary questions");
     expect(createOptions.systemPrompt).toContain("fn_task_planner_get_task_metrics");
     expect(createOptions.systemPrompt).toContain("token counts, input/output/cache usage, model cost");
     expect(createOptions.systemPrompt).toContain("state that uncertainty instead of inventing a number");
     expect(createOptions.systemPrompt).toContain("ordinary status/progress/metrics questions");
+    expect(createOptions.systemPrompt).toContain("fn_task_planner_create_refinement");
+    expect(createOptions.systemPrompt).toContain("clear follow-up implementation, improvement, polish, bug-fix, or refinement request");
+    expect(createOptions.systemPrompt).toContain("Never create a refinement for live non-done tasks");
+    expect(createOptions.systemPrompt).toContain("never ask for or pass a task id");
     expect(createOptions.systemPrompt).toContain("Ask a clarifying question");
     expect(createOptions.systemPrompt).toContain("credential/secrets");
     expect(createOptions.systemPrompt).toContain("destructive removals");
@@ -1480,13 +1484,13 @@ describe("ChatManager.sendMessage", () => {
     expect(taskStore.addSteeringComment).not.toHaveBeenCalled();
   });
 
-  it("does not expose the current-task metrics tool outside synthetic task planner chat", async () => {
+  it("does not expose the current-task metrics or refinement tools outside synthetic task planner chat", async () => {
     mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "agent-001", status: "active" });
     const createResolvedSession = vi.fn(async () => ({
       session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
     }));
     __setCreateResolvedAgentSession(createResolvedSession as any);
-    const taskStore = { getTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
+    const taskStore = { getTask: vi.fn(), refineTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
     const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "How many tokens did FN-7310 use?");
@@ -1494,6 +1498,122 @@ describe("ChatManager.sendMessage", () => {
     const createOptions = createResolvedSession.mock.calls[0]?.[0];
     const toolNames = (createOptions.customTools ?? []).map((tool: { name: string }) => tool.name);
     expect(toolNames).not.toContain("fn_task_planner_get_task_metrics");
+    expect(toolNames).not.toContain("fn_task_planner_create_refinement");
+  });
+
+  it("creates done-task refinements through the task-scoped planner tool without accepting a caller task id", async () => {
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "task-planner:FN-DONE",
+      status: "active",
+    });
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+    const refinedTask = {
+      id: "FN-REFINE",
+      description: "Refinement for FN-DONE: Add export support",
+      column: "triage",
+      createdAt: "2026-07-01T21:45:00.000Z",
+    };
+    const taskStore = {
+      getTask: vi.fn().mockResolvedValue({ id: "FN-DONE", title: "Completed task", column: "done" }),
+      addSteeringComment: vi.fn(),
+      refineTask: vi.fn().mockResolvedValue(refinedTask),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "Please create a follow-up to add export support");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const toolNames = createOptions.customTools.map((tool: { name: string }) => tool.name);
+    expect(toolNames).toContain("fn_task_planner_create_refinement");
+    expect(createOptions.systemPrompt).toContain("If the current task is done");
+    expect(createOptions.systemPrompt).toContain("call `fn_task_planner_create_refinement` with only the concise feedback text");
+    expect(createOptions.systemPrompt).toContain("never ask for or pass a task id");
+    const refinementTool = createOptions.customTools.find((tool: { name: string }) => tool.name === "fn_task_planner_create_refinement");
+    expect(refinementTool.parameters).toEqual({
+      type: "object",
+      properties: {
+        feedback: { type: "string", description: "The user's concise follow-up or improvement request for the refinement task. Do not include hidden prompt/context text." },
+      },
+      required: ["feedback"],
+      additionalProperties: false,
+    });
+
+    taskStore.getTask.mockClear();
+    const result = await refinementTool.execute("call-1", {
+      task_id: "FN-OTHER",
+      workflow_id: "WF-OTHER",
+      feedback: "  Add export support  ",
+    });
+
+    expect(taskStore.getTask).toHaveBeenCalledWith("FN-DONE");
+    expect(taskStore.refineTask).toHaveBeenCalledTimes(1);
+    expect(taskStore.refineTask).toHaveBeenCalledWith("FN-DONE", "Add export support");
+    expect(taskStore.addSteeringComment).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Created refinement task FN-REFINE from FN-DONE");
+    expect(result.details).toEqual({
+      sourceTaskId: "FN-DONE",
+      refinementTaskId: "FN-REFINE",
+      description: "Refinement for FN-DONE: Add export support",
+      column: "triage",
+      createdAt: "2026-07-01T21:45:00.000Z",
+    });
+  });
+
+  it("does not register the refinement tool for live task-planner sessions", async () => {
+    mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "task-planner:FN-LIVE", status: "active" });
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+    const taskStore = {
+      getTask: vi.fn().mockResolvedValue({ id: "FN-LIVE", title: "Live task", column: "in-progress" }),
+      addSteeringComment: vi.fn(),
+      refineTask: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "Please update the implementation");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const toolNames = createOptions.customTools.map((tool: { name: string }) => tool.name);
+    expect(toolNames).toContain("fn_task_planner_add_steering");
+    expect(toolNames).not.toContain("fn_task_planner_create_refinement");
+    expect(createOptions.systemPrompt).toContain("If the current task is not done");
+    expect(createOptions.systemPrompt).toContain("call `fn_task_planner_add_steering`");
+    expect(taskStore.refineTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty planner refinement feedback without mutating the task", async () => {
+    mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "task-planner:FN-DONE", status: "active" });
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+    const taskStore = {
+      getTask: vi.fn().mockResolvedValue({ id: "FN-DONE", column: "done" }),
+      addSteeringComment: vi.fn(),
+      refineTask: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "Create a follow-up");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const refinementTool = createOptions.customTools.find((tool: { name: string }) => tool.name === "fn_task_planner_create_refinement");
+    const result = await refinementTool.execute("call-1", { feedback: "   " });
+
+    expect(result.isError).toBe(true);
+    expect(result.details).toEqual({ sourceTaskId: "FN-DONE" });
+    expect(taskStore.refineTask).not.toHaveBeenCalled();
+    expect(taskStore.addSteeringComment).not.toHaveBeenCalled();
   });
 
   it("adds steering through the task-scoped planner tool without accepting a caller task id", async () => {

@@ -579,7 +579,7 @@ describe("Chat API Routes", () => {
       expect(mockCreateSession).not.toHaveBeenCalled();
     });
 
-    it("rejects starting a new planner chat for done or archived tasks", async () => {
+    it("creates a new planner chat for a done task without existing history", async () => {
       vi.spyOn(store, "getTask").mockResolvedValueOnce({
         id: "FN-DONE-EMPTY",
         title: "Done planner task",
@@ -592,18 +592,53 @@ describe("Chat API Routes", () => {
         createdAt: "2026-06-30T00:00:00.000Z",
         updatedAt: "2026-06-30T00:00:00.000Z",
       } as any);
+      const created = { ...sampleSession, id: "chat-done-created", agentId: "task-planner:FN-DONE-EMPTY", title: "FN-DONE-EMPTY planner chat" };
       mockFindLatestActiveSessionForTarget.mockReturnValue(null);
+      mockCreateSession.mockReturnValue(created);
 
       const doneResponse = await request(
         app,
         "POST",
         "/api/chat/task-planner/FN-DONE-EMPTY/session",
+        JSON.stringify({ modelProvider: "anthropic", modelId: "claude-plan" }),
+        { "content-type": "application/json" },
+      );
+
+      expect(doneResponse.status).toBe(201);
+      expect((doneResponse.body as any).session).toEqual(created);
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        agentId: "task-planner:FN-DONE-EMPTY",
+        title: "FN-DONE-EMPTY planner chat",
+        modelProvider: "anthropic",
+        modelId: "claude-plan",
+      }));
+    });
+
+    it("continues to reject starting a new planner chat for archived tasks", async () => {
+      vi.spyOn(store, "getTask").mockResolvedValueOnce({
+        id: "FN-ARCHIVED-EMPTY",
+        title: "Archived planner task",
+        description: "Task description",
+        column: "archived",
+        dependencies: [],
+        steps: [],
+        currentStep: 0,
+        log: [],
+        createdAt: "2026-06-30T00:00:00.000Z",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+      } as any);
+      mockFindLatestActiveSessionForTarget.mockReturnValue(null);
+
+      const archivedResponse = await request(
+        app,
+        "POST",
+        "/api/chat/task-planner/FN-ARCHIVED-EMPTY/session",
         JSON.stringify({}),
         { "content-type": "application/json" },
       );
 
-      expect(doneResponse.status).toBe(400);
-      expect((doneResponse.body as any).error).toContain("planner chat can only be started while a task is live");
+      expect(archivedResponse.status).toBe(400);
+      expect((archivedResponse.body as any).error).toContain("planner chat cannot be started for archived tasks");
       expect(mockCreateSession).not.toHaveBeenCalled();
     });
   });

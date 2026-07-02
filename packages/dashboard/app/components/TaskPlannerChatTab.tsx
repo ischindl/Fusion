@@ -135,11 +135,18 @@ function makeStreamingAssistantMessage(sessionId: string, content: string, toolC
 }
 
 const TASK_PLANNER_STEERING_TOOL_NAME = "fn_task_planner_add_steering";
+const TASK_PLANNER_REFINEMENT_TOOL_NAME = "fn_task_planner_create_refinement";
 
 interface PlannerSteeringResult {
   text: string;
   id?: string;
   createdAt?: string;
+}
+
+interface PlannerRefinementResult {
+  sourceTaskId: string;
+  refinementTaskId: string;
+  description?: string;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -176,6 +183,20 @@ function extractPlannerSteeringTextFromResult(result: unknown): string | null {
       ? detailsRecord.text.trim()
       : "";
   return text || null;
+}
+
+function extractPlannerRefinementResult(toolCall: ToolCallInfo): PlannerRefinementResult | null {
+  if (toolCall.toolName !== TASK_PLANNER_REFINEMENT_TOOL_NAME || toolCall.isError || toolCall.status === "running") return null;
+  const resultRecord = readRecord(toolCall.result);
+  const detailsRecord = readRecord(resultRecord?.details) ?? resultRecord;
+  const sourceTaskId = typeof detailsRecord?.sourceTaskId === "string" ? detailsRecord.sourceTaskId.trim() : "";
+  const refinementTaskId = typeof detailsRecord?.refinementTaskId === "string" ? detailsRecord.refinementTaskId.trim() : "";
+  if (!sourceTaskId || !refinementTaskId) return null;
+  return {
+    sourceTaskId,
+    refinementTaskId,
+    ...(typeof detailsRecord?.description === "string" && detailsRecord.description.trim() ? { description: detailsRecord.description.trim() } : {}),
+  };
 }
 
 function normalizeChatFailureSummary(error: string | ChatFailureInfo, fallback: string): string {
@@ -632,6 +653,30 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
         </div>
       );
     }
+    const refinementResult = extractPlannerRefinementResult(toolCall);
+    if (refinementResult) {
+      return (
+        <div key={`${toolCall.toolName}-${index}`} className="task-planner-chat-steering-confirmation" data-testid="task-planner-chat-refinement-confirmation">
+          <strong>{t("taskDetail.plannerChat.refinementCreated", "Created refinement task")} {refinementResult.refinementTaskId}</strong>
+          {refinementResult.description && <p>{refinementResult.description}</p>}
+        </div>
+      );
+    }
+    const isRunningRefinement = toolCall.toolName === TASK_PLANNER_REFINEMENT_TOOL_NAME && toolCall.status === "running";
+    if (isRunningRefinement) {
+      return (
+        <div key={`${toolCall.toolName}-${index}`} className="task-planner-chat-steering-confirmation task-planner-chat-steering-confirmation--pending" data-testid="task-planner-chat-refinement-pending">
+          <strong>{t("taskDetail.plannerChat.refinementCreating", "Creating refinement task…")}</strong>
+        </div>
+      );
+    }
+    if (toolCall.toolName === TASK_PLANNER_REFINEMENT_TOOL_NAME && toolCall.isError) {
+      return (
+        <div key={`${toolCall.toolName}-${index}`} className="task-planner-chat-steering-confirmation task-planner-chat-steering-confirmation--error" role="alert" data-testid="task-planner-chat-refinement-error">
+          <strong>{t("taskDetail.plannerChat.refinementFailed", "Refinement task was not created")}</strong>
+        </div>
+      );
+    }
     const isRunningSteering = toolCall.toolName === TASK_PLANNER_STEERING_TOOL_NAME && toolCall.status === "running";
     if (isRunningSteering) {
       return (
@@ -665,7 +710,10 @@ export function TaskPlannerChatTab({ task, projectId, active, expanded = false, 
 
   /*
   FNXC:TaskDetailPlannerChat 2026-06-30-23:58:
-  Planner Chat is a separate task-detail surface from Activity steering. It can answer from task context, offer starter prompts, ask structured follow-up questions, and convert explicit operator intent into steering through the server-side planner-chat tool instead of posting every chat message as steering by default.
+  Planner Chat is a separate task-detail surface from Activity steering. It can answer from task context, offer starter prompts, ask structured follow-up questions, and convert explicit live-task operator intent into steering through the server-side planner-chat tool instead of posting every chat message as steering by default.
+
+  FNXC:TaskDetailPlannerChat 2026-07-01-21:58:
+  Done-task Planner Chat remains sendable after completion and renders model-created refinement tool results inline, but tab activation stays lookup-only and the source task id still travels only through the server-bound `task-planner:<taskId>` session and stream metadata.
 
   FNXC:TaskDetailChat 2026-06-30-23:59:
   When the planner steering tool succeeds, the Chat transcript must show an explicit confirmation and refresh task detail data immediately so Activity/current steering reflects the persisted comment without closing the modal. Clarification tool calls stay as questions and never insert optimistic steering bubbles.

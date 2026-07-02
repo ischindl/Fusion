@@ -156,10 +156,13 @@ describe("task planner chat context", () => {
     expect(promptContext).toContain("Prompt/plan: not available");
   });
 
-  it("tells the planner to answer from context and state uncertainty", () => {
+  it("tells the planner to answer, refine completed tasks, and state uncertainty", () => {
     expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("current status");
     expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("State uncertainty");
     expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("Do not claim you ran code, tests, builds");
     expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("Activity is the execution/steering transcript");
+    expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("For completed tasks, clear follow-up implementation or improvement requests should create a refinement");
+    expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("ordinary completed-task questions should still be answered normally");
+    expect(TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE).toContain("Never ask for or pass a task id");
   });
 });

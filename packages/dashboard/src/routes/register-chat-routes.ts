@@ -139,7 +139,10 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
   Task planner Chat uses a synthetic task-scoped chat target (`task-planner:<taskId>`) so the dashboard can persist/resume a conversation without binding it to an executor/reviewer agent or the Activity steering-comment pipeline. The route validates the task in the scoped project store and stores the effective planning model override on the session.
 
   FNXC:TaskDetailPlannerChatRetention 2026-06-30-18:45:
-  Planner chats that already have user interaction remain available when a task reaches done, but new planner chats are not started for done or archived tasks. Archived-task cleanup removes existing task-planner sessions through ChatStore deletion so archived tasks stop retaining task-local planner context.
+  Planner chats that already have user interaction remain available when a task reaches done, and archived-task cleanup removes existing task-planner sessions through ChatStore deletion so archived tasks stop retaining task-local planner context.
+
+  FNXC:TaskDetailPlannerChat 2026-07-01-21:40:
+  Completed tasks may start a task-detail planner Chat after the fact so operators can ask retrospective questions and request a refinement from the completed source task. Archived tasks remain non-startable, and common Chat feed visibility is still controlled only by the global task-chat filtering setting below.
   */
   router.post("/chat/task-planner/:taskId/session", rateLimit(RATE_LIMITS.mutation), async (req, res) => {
     try {
@@ -171,8 +174,8 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         return;
       }
 
-      if (task.column === "done" || task.column === "archived") {
-        throw badRequest(`Task ${task.id} is ${task.column}; planner chat can only be started while a task is live`);
+      if (task.column === "archived") {
+        throw badRequest(`Task ${task.id} is archived; planner chat cannot be started for archived tasks`);
       }
 
       const session = chatStore.createSession({
