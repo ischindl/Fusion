@@ -1350,8 +1350,8 @@ Android folded Chrome can keep a wide layout viewport while visualViewport is th
   min-width: 0 !important;
   min-height: 0 !important;
   width: 100% !important;
-  width: 100vw !important;
-  max-width: 100vw !important;
+  width: var(--vv-width, 100vw) !important;
+  max-width: var(--vv-width, 100vw) !important;
   min-height: 100dvh !important;
   height: 100dvh !important;
   max-height: 100dvh !important;
@@ -1377,6 +1377,23 @@ Android folded Chrome can keep a wide layout viewport while visualViewport is th
   order: 1;
   flex: 1 1 40%;
   min-width: 0;
+}
+
+/*
+FNXC:Terminal 2026-07-02-12:30:
+The Android keyboard-open recurrence can start with a touch-primary visualViewport narrower than the layout viewport, so `terminal-modal--mobile` must apply the same keyboard-constrained height and current visual viewport width even when CSS media queries still see the wider layout viewport. This keeps xterm's initial 10px fit on contiguous monospace cells instead of a stale wide box that spaces filenames like `AGENTS.md` apart.
+*/
+.modal.terminal-modal.terminal-modal--mobile[style*="--keyboard-overlap"] {
+  min-height: auto !important;
+  width: var(--vv-width, 100vw) !important;
+  max-width: var(--vv-width, 100vw) !important;
+  height: var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) !important;
+  max-height: var(--vv-height, calc(100dvh - var(--keyboard-overlap, 0px))) !important;
+  overflow: hidden;
+}
+
+.modal-overlay.terminal-modal-overlay:has(.terminal-modal.terminal-modal--mobile[style*="--keyboard-overlap"]) {
+  align-items: flex-start !important;
 }
 
 /* === Terminal Modal Mobile Responsive === */

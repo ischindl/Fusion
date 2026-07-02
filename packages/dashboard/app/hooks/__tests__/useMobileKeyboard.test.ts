@@ -119,6 +119,44 @@ describe("useMobileKeyboard", () => {
     });
   });
 
+  it("uses touch visualViewport width for Android keyboard-open mobile detection", async () => {
+    setupMobileVisualViewport({
+      innerHeight: 700,
+      vvHeight: 320,
+      width: 390,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      value: 900,
+      writable: true,
+      configurable: true,
+    });
+    const originalClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, "clientHeight");
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 700,
+      configurable: true,
+    });
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    input.focus();
+
+    try {
+      const { result } = renderHook(() => useMobileKeyboard());
+
+      await waitFor(() => {
+        expect(result.current.keyboardOpen).toBe(true);
+        expect(result.current.keyboardOverlap).toBe(380);
+        expect(result.current.viewportHeight).toBe(320);
+      });
+    } finally {
+      input.remove();
+      if (originalClientHeight) {
+        Object.defineProperty(document.documentElement, "clientHeight", originalClientHeight);
+      } else {
+        delete (document.documentElement as { clientHeight?: number }).clientHeight;
+      }
+    }
+  });
+
   it("updates overlap when visualViewport resize fires on mobile", async () => {
     const { listeners, mockVV } = setupMobileVisualViewport({
       innerHeight: 800,

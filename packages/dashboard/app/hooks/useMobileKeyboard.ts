@@ -11,7 +11,15 @@ function isMobileDevice(): boolean {
   if (typeof window === "undefined") return false;
   const hasTouchScreen =
     "ontouchstart" in window || navigator.maxTouchPoints > 0;
-  const isNarrow = window.innerWidth <= 768;
+  const visualWidth = window.visualViewport?.width;
+  /*
+  FNXC:Terminal 2026-07-02-12:39:
+  Android Chrome can keep a tablet-sized layout viewport while the active visualViewport is the narrow keyboard-open terminal pane. Keyboard tracking must follow the touch visual width just like `useViewportMode`, or SessionTerminal renders mobile chrome but never lifts/refits its input bar for the initial 10px keyboard-open terminal state.
+  */
+  const effectiveWidth = hasTouchScreen && typeof visualWidth === "number" && visualWidth > 0
+    ? Math.min(window.innerWidth, visualWidth)
+    : window.innerWidth;
+  const isNarrow = effectiveWidth <= 768;
   return hasTouchScreen && isNarrow;
 }
 

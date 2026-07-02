@@ -470,6 +470,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
   const [openGeneration, setOpenGeneration] = useState(0);
   const [keyboardOverlap, setKeyboardOverlap] = useState(0);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null);
   const [terminalPreferences, setTerminalPreferences] = useState<TerminalPreferences>(() =>
     readTerminalPreferences(),
   );
@@ -860,6 +861,11 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
       // This is more reliable than 100dvh on iOS Safari where
       // the dynamic viewport height behavior varies by browser version.
       setViewportHeight(vv.height);
+      /*
+      FNXC:Terminal 2026-07-02-12:28:
+      Android Chrome can open the keyboard with a visual viewport narrower than the layout viewport while the terminal footer already shows the persisted 10px preference. Publish the current visual viewport width alongside --vv-height so the fullscreen mobile shell and xterm's first fit measure the visible keyboard-open box before any later orientation, unfold, reconnect, or manual font reset can repair stale wide columns.
+      */
+      setViewportWidth(vv.width);
       // Scroll the modal so the status bar (bottom edge) stays visible
       // when the virtual keyboard pushes the viewport up.
       if (overlap > 0 && modalRef.current?.scrollIntoView) {
@@ -916,6 +922,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
       }
       setKeyboardOverlap(0);
       setViewportHeight(null);
+      setViewportWidth(null);
     };
   }, [fitAndResizeForSession, isOpen]);
 
@@ -2086,6 +2093,7 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
           // This is more reliable than 100dvh which behaves differently
           // across Chrome Android vs iOS Safari.
           "--vv-height": viewportHeight ? `${viewportHeight}px` : undefined,
+          "--vv-width": viewportWidth ? `${viewportWidth}px` : undefined,
         }
       : {}),
     ...(isDockedMode ? { "--terminal-docked-height": `${dockedHeight}px` } : {}),
