@@ -13,7 +13,7 @@ import { MOBILE_MEDIA_QUERY, useViewportMode } from "../hooks/useViewportMode";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
 import { getBoardCanDropTaskRejection } from "./boardCanDropTask";
 import { WorkflowSwitcher } from "./WorkflowSwitcher";
-import { computeWorkflowStatusCounts, type WorkflowStatusCounts } from "./workflowStatusCounts";
+import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import {
@@ -400,16 +400,11 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
   const getDraggingTaskId = useCallback(() => draggingTaskIdRef.current, []);
 
   const workflowStatusCounts = useMemo(() => {
-    const counts = computeWorkflowStatusCounts(tasks, boardWorkflows);
-    const aggregateCounts: WorkflowStatusCounts = { todo: 0, inProgress: 0, done: 0, merging: 0 };
-    for (const workflowCounts of counts.values()) {
-      aggregateCounts.todo += workflowCounts.todo;
-      aggregateCounts.inProgress += workflowCounts.inProgress;
-      aggregateCounts.done += workflowCounts.done;
-      aggregateCounts.merging += workflowCounts.merging;
-    }
-    counts.set(ALL_WORKFLOWS_BOARD_VIEW_ID, aggregateCounts);
-    return counts;
+    /*
+    FNXC:WorkflowSwitcher 2026-07-01-23:04:
+    computeWorkflowStatusCounts already owns the dashboard-only All workflows aggregate sentinel. Board must pass the helper result through directly instead of re-summing every map entry, because the map includes the sentinel and summing it again doubles the dropdown aggregate row.
+    */
+    return computeWorkflowStatusCounts(tasks, boardWorkflows);
   }, [boardWorkflows, tasks]);
 
   useEffect(() => {

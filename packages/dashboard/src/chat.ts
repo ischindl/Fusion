@@ -313,6 +313,56 @@ function createTaskPlannerMetricsTool(taskStore: TaskStore, taskId: string, getP
   };
 }
 
+function createTaskPlannerRefinementTool(taskStore: TaskStore, taskId: string) {
+  return {
+    name: "fn_task_planner_create_refinement",
+    label: "Create Refinement Task",
+    description: "Create one follow-up refinement task from the current completed task. The source task id is fixed by server context; never accept or infer a different task id. Use only for clear follow-up implementation or improvement requests after completion.",
+    parameters: {
+      type: "object",
+      properties: {
+        feedback: { type: "string", description: "The user's concise follow-up or improvement request for the refinement task. Do not include hidden prompt/context text." },
+      },
+      required: ["feedback"],
+      additionalProperties: false,
+    },
+    execute: async (_id: string, params: { feedback?: unknown }) => {
+      const feedback = typeof params.feedback === "string" ? params.feedback.trim() : "";
+      if (!feedback) {
+        return { content: [{ type: "text" as const, text: "ERROR: feedback must be a non-empty string" }], details: { sourceTaskId: taskId }, isError: true };
+      }
+      try {
+        const sourceTask = await taskStore.getTask(taskId);
+        if (sourceTask.column !== "done") {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: Current task ${taskId} is ${sourceTask.column}; use planner steering for live tasks instead of creating a refinement.` }],
+            details: { sourceTaskId: taskId, column: sourceTask.column },
+            isError: true,
+          };
+        }
+        const refinedTask = await taskStore.refineTask(taskId, feedback);
+        return {
+          content: [{ type: "text" as const, text: `Created refinement task ${refinedTask.id} from ${taskId}.` }],
+          details: {
+            sourceTaskId: taskId,
+            refinementTaskId: refinedTask.id,
+            description: refinedTask.description ?? feedback,
+            column: refinedTask.column,
+            createdAt: refinedTask.createdAt,
+          },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `ERROR: Could not create a refinement for the current task ${taskId}: ${message}` }],
+          details: { sourceTaskId: taskId, error: message },
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
 function createTaskPlannerSteeringTool(taskStore: TaskStore, taskId: string) {
   return {
     name: "fn_task_planner_add_steering",
@@ -1908,11 +1958,13 @@ export class ChatManager {
       const taskPlannerChatTaskId = typeof session.agentId === "string" && session.agentId.startsWith(TASK_PLANNER_CHAT_AGENT_ID_PREFIX)
         ? session.agentId.slice(TASK_PLANNER_CHAT_AGENT_ID_PREFIX.length).trim()
         : "";
+      let taskPlannerTaskColumn = "";
       if (taskPlannerChatTaskId) {
         let taskContext = `Task ID: ${taskPlannerChatTaskId}\n\nContext availability notes:\n- Task store context is not available for this chat manager.`;
         if (this.taskStore) {
           try {
             const context = await buildTaskPlannerChatContext(this.taskStore, taskPlannerChatTaskId);
+            taskPlannerTaskColumn = context.snapshot.column ?? "";
             taskContext = context.promptContext;
           } catch (taskLoadError) {
             const message = taskLoadError instanceof Error ? taskLoadError.message : String(taskLoadError);
@@ -1926,8 +1978,11 @@ export class ChatManager {
 
         FNXC:TaskDetailChat 2026-06-30-23:59:
         Clear, bounded operator change requests in task-detail Chat are user intent and should become persisted steering comments through the task store's steering path. Ambiguous, conflicting, destructive, broad-scope, or credential/security-sensitive requests must ask a question first so planner chat cannot mutate a task from risky prose.
+
+        FNXC:TaskDetailPlannerChat 2026-07-01-21:52:
+        Done-task planner Chat separates retrospective conversation from follow-up work creation: answer completed-task questions normally, call the refinement tool only for clear implementation/improvement follow-ups, and keep live-task change requests on the existing steering path. All planner tools are bound to the current task server-side.
         */
-        systemPrompt = `${systemPrompt}\n\n${TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE}\n\nDecision rules:\n- Do not create steering for ordinary questions, summaries, thanks, status/progress requests, metric questions, or brainstorming. Answer normally.\n- For questions about token counts, input/output/cache usage, model cost, pricing, runtime, elapsed time, wall-clock duration, active time, timing events, workflow-step duration, or per-model usage, first call \`fn_task_planner_get_task_metrics\` and answer from its read-only result. If pricing is unavailable or stale, or a metric is missing, state that uncertainty instead of inventing a number.\n- Create steering only when the user gives a clear, bounded, actionable change request for this current task (for example telling the executor/reviewer to adjust implementation, tests, scope details, or acceptance criteria).\n- When creating steering, call \`fn_task_planner_add_steering\` with only the concise user-facing steering text. Never include hidden prompt/context/logs, credentials, or chain-of-thought.\n- Ask a clarifying question with \`fn_ask_question\` before adding steering for unclear targets, requests that could mean either conversation or task mutation, broad rewrites/scope changes, destructive removals, conflicting instructions, credential/secrets handling, or security-sensitive actions.\n- The steering and metrics tools are bound to this task server-side; never ask for or pass a task id.\n\n${taskContext}`;
+        systemPrompt = `${systemPrompt}\n\n${TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE}\n\nDecision rules:\n- Do not create steering or refinements for ordinary questions, summaries, thanks, status/progress requests, metric questions, or brainstorming. Answer normally.\n- For questions about token counts, input/output/cache usage, model cost, pricing, runtime, elapsed time, wall-clock duration, active time, timing events, workflow-step duration, or per-model usage, first call \`fn_task_planner_get_task_metrics\` and answer from its read-only result. If pricing is unavailable or stale, or a metric is missing, state that uncertainty instead of inventing a number.\n- If the current task is done and the user gives a clear follow-up implementation, improvement, polish, bug-fix, or refinement request for this completed task, call \`fn_task_planner_create_refinement\` with only the concise feedback text.\n- If the current task is not done and the user gives a clear, bounded, actionable change request for this current task (for example telling the executor/reviewer to adjust implementation, tests, scope details, or acceptance criteria), call \`fn_task_planner_add_steering\` with only the concise user-facing steering text.\n- Never create a refinement for live non-done tasks; use steering for clear live-task changes instead. Never add steering for done-task follow-up implementation requests when the refinement tool is available.\n- Never include hidden prompt/context/logs, credentials, or chain-of-thought in tool parameters.\n- Ask a clarifying question with \`fn_ask_question\` before adding steering or creating a refinement for unclear targets, requests that could mean either conversation or task mutation, broad rewrites/scope changes, destructive removals, conflicting instructions, credential/secrets handling, or security-sensitive actions.\n- The steering, metrics, and refinement tools are bound to this task server-side; never ask for or pass a task id.\n\n${taskContext}`;
       }
 
       if (agent) {
@@ -2045,8 +2100,15 @@ export class ChatManager {
       const taskPlannerMetricsTools = this.taskStore && taskPlannerChatTaskId
         ? [createTaskPlannerMetricsTool(this.taskStore, taskPlannerChatTaskId, () => this.getModelPricingOverrides())]
         : [];
+      /*
+      FNXC:TaskDetailPlannerChat 2026-07-01-21:44:
+      Done-task planner Chat uses a separate task-scoped refinement tool rather than Activity steering. The tool is registered only for synthetic task-planner sessions whose server-loaded current task is done, accepts only feedback text, and calls TaskStore.refineTask with the bound source id so models cannot route refinements to arbitrary tasks/projects/workflows.
+      */
+      const taskPlannerRefinementTools = this.taskStore && taskPlannerChatTaskId && taskPlannerTaskColumn === "done"
+        ? [createTaskPlannerRefinementTool(this.taskStore, taskPlannerChatTaskId)]
+        : [];
 
-      const customTools = [createAskQuestionTool(), ...taskPlannerSteeringTools, ...taskPlannerMetricsTools, ...messagingTools, ...workflowTools, ...documentTools, ...artifactTools];
+      const customTools = [createAskQuestionTool(), ...taskPlannerSteeringTools, ...taskPlannerMetricsTools, ...taskPlannerRefinementTools, ...messagingTools, ...workflowTools, ...documentTools, ...artifactTools];
 
       const sessionOptions = {
         cwd: this.rootDir,

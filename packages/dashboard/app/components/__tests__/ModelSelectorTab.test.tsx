@@ -29,6 +29,12 @@ function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
   } as unknown as TaskDetail;
 }
 
+async function selectDropdownOption(user: ReturnType<typeof userEvent.setup>, label: string, option: string) {
+  await user.click(screen.getByLabelText(label));
+  const listbox = await screen.findByRole("listbox");
+  await user.click(within(listbox).getByText(option));
+}
+
 describe("ModelSelectorTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -76,11 +82,130 @@ describe("ModelSelectorTab", () => {
       expect(mockUpdateTask).toHaveBeenCalledWith("FN-7398", {
         modelProvider: "pi-claude-cli",
         modelId: "claude-sonnet-5",
-      });
+      }, undefined);
       expect(onTaskUpdated).toHaveBeenCalledWith(expect.objectContaining({
         modelProvider: "pi-claude-cli",
         modelId: "claude-sonnet-5",
       }));
+    });
+  });
+
+  it("passes the scoped project id for executor, reviewer, planning, and thinking saves", async () => {
+    const user = userEvent.setup();
+    const addToast = vi.fn();
+    const onTaskUpdated = vi.fn();
+    const task = makeTask({
+      modelProvider: "pi-claude-cli",
+      modelId: "claude-haiku-5",
+      validatorModelProvider: "pi-claude-cli",
+      validatorModelId: "claude-haiku-5",
+      planningModelProvider: "pi-claude-cli",
+      planningModelId: "claude-haiku-5",
+      thinkingLevel: "minimal",
+    });
+
+    mockFetchModels.mockResolvedValue({
+      models: [
+        { provider: "pi-claude-cli", id: "claude-haiku-5", name: "Claude Haiku 5 (CLI)", reasoning: true, contextWindow: 200_000 },
+        { provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)", reasoning: true, contextWindow: 1_000_000 },
+      ],
+      favoriteProviders: [],
+      favoriteModels: [],
+    });
+    mockUpdateTask
+      .mockResolvedValueOnce({
+        ...task,
+        modelProvider: "pi-claude-cli",
+        modelId: "claude-sonnet-5",
+      })
+      .mockResolvedValueOnce({
+        ...task,
+        validatorModelProvider: "pi-claude-cli",
+        validatorModelId: "claude-sonnet-5",
+      })
+      .mockResolvedValueOnce({
+        ...task,
+        planningModelProvider: "pi-claude-cli",
+        planningModelId: "claude-sonnet-5",
+      })
+      .mockResolvedValueOnce({
+        ...task,
+        thinkingLevel: "high",
+      });
+
+    render(
+      <ModelSelectorTab
+        task={task}
+        addToast={addToast}
+        onTaskUpdated={onTaskUpdated}
+        projectId="project-alpha"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Executor Model")).toBeInTheDocument());
+
+    await selectDropdownOption(user, "Executor Model", "Claude Sonnet 5 (CLI)");
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenNthCalledWith(1, "FN-7398", {
+        modelProvider: "pi-claude-cli",
+        modelId: "claude-sonnet-5",
+      }, "project-alpha");
+    });
+
+    await selectDropdownOption(user, "Reviewer Model", "Claude Sonnet 5 (CLI)");
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenNthCalledWith(2, "FN-7398", {
+        validatorModelProvider: "pi-claude-cli",
+        validatorModelId: "claude-sonnet-5",
+      }, "project-alpha");
+    });
+
+    await selectDropdownOption(user, "Planning Model", "Claude Sonnet 5 (CLI)");
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenNthCalledWith(3, "FN-7398", {
+        planningModelProvider: "pi-claude-cli",
+        planningModelId: "claude-sonnet-5",
+      }, "project-alpha");
+    });
+
+    await user.selectOptions(screen.getByLabelText("Thinking Level"), "high");
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenNthCalledWith(4, "FN-7398", {
+        thinkingLevel: "high",
+      }, "project-alpha");
+    });
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("set to"), "success");
+  });
+
+  it("clears model overrides with the scoped project id", async () => {
+    const user = userEvent.setup();
+    const task = makeTask({
+      modelProvider: "pi-claude-cli",
+      modelId: "claude-sonnet-5",
+    });
+    mockUpdateTask.mockResolvedValueOnce({
+      ...task,
+      modelProvider: null,
+      modelId: null,
+    });
+
+    render(
+      <ModelSelectorTab
+        task={task}
+        addToast={vi.fn()}
+        onTaskUpdated={vi.fn()}
+        projectId="project-alpha"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("Executor Model")).toBeInTheDocument());
+    await selectDropdownOption(user, "Executor Model", "Use default");
+
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenCalledWith("FN-7398", {
+        modelProvider: null,
+        modelId: null,
+      }, "project-alpha");
     });
   });
 

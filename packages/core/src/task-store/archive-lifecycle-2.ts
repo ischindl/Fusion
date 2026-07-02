@@ -7,7 +7,7 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
-import {TaskHasLineageChildrenError} from "./errors.js";
+import {TaskHasLineageChildrenError, TaskSelfDeleteError} from "./errors.js";
 import {mkdir, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {eq} from "drizzle-orm";
@@ -87,7 +87,14 @@ export async function taskToArchiveEntryImpl(store: TaskStore, task: Task, archi
     };
   }
 
-export async function deleteTaskBackendImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: { agentId: string; runId: string; sessionId?: string }; },): Promise<Task> {
+export async function deleteTaskBackendImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: { agentId: string; runId: string; sessionId?: string; taskId?: string }; },): Promise<Task> {
+  /*
+  FNXC:TaskDeletion 2026-07-01-00:00:
+  Task-bound runtime callers may never soft-delete the task they are executing; this guard is the PostgreSQL-backend mirror of the SQLite-path guard in deleteTaskImpl so direct callers of deleteTaskBackend inherit the same invariant before any mutation or audit.
+  */
+  if (options?.auditContext?.taskId === id) {
+    throw new TaskSelfDeleteError(id);
+  }
     const layer = store.asyncLayer!;
     // Read the task row (forensic: include soft-deleted).
     const pgRow = await readTaskRowAsync(layer, id, { includeDeleted: true });

@@ -418,6 +418,11 @@ export const DEFAULT_PROJECT_SETTINGS = {
   // coverage. Falls back to package/explicit command when no tests resolve.
   scopeVerificationToChangedFiles: true,
   ephemeralAgentsEnabled: true,
+  /*
+  FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+  Default-on so ephemeral task-worker agents keep the ability to open follow-up tasks via fn_task_create. Operators who want to confine task creation to humans/permanent agents flip this off.
+  */
+  ephemeralAgentsCanCreateTasks: true,
   agentProvisioning: {},
   sandboxProvisioning: {},
   defaultAgentPermissionPolicy: undefined,

@@ -8,12 +8,12 @@
  */
 import {TaskStore} from "../store.js";
 import {MissionStore} from "../mission-store.js";
-import {TaskHasDependentsError, TaskHasLineageChildrenError} from "./errors.js";
+import {TaskHasDependentsError, TaskHasLineageChildrenError, TaskSelfDeleteError} from "./errors.js";
 import type {Task, Column, GithubIssueAction} from "../types.js";
 import "../builtin-traits.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 
-export async function deleteTaskImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: { agentId: string; runId: string; sessionId?: string }; },): Promise<Task> {
+export async function deleteTaskImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: { agentId: string; runId: string; sessionId?: string; taskId?: string }; },): Promise<Task> {
     // FNXC:RuntimeLifecycleAsync 2026-06-24-12:00:
     // Backend-mode deleteTask: delegate the core async operations (task read,
     // lineage gate, lineage clear, soft-delete, audit) to the async helpers.
@@ -21,6 +21,14 @@ export async function deleteTaskImpl(store: TaskStore, id: string, options?: { r
     // soft-delete semantics against PostgreSQL. The full deleteTask
     // orchestration (dependents rewrite, branch cleanup, events) is handled
     // by the async lifecycle helpers; the SQLite path below is unchanged.
+    /*
+    FNXC:TaskDeletion 2026-07-01-00:00:
+    Task-bound runtime callers may clean up other tasks, but the executing task must never soft-delete itself because that hides active work before the executor can finish or report failure.
+    Enforce this at the store boundary so future task-delete bridges inherit the same invariant before any mutation, branch cleanup, or task:deleted audit emission. Guard fires before the backend-mode dispatch so both SQLite and PostgreSQL paths are protected.
+    */
+    if (options?.auditContext?.taskId === id) {
+        throw new TaskSelfDeleteError(id);
+    }
     if (store.backendMode) {
       return store.deleteTaskBackend(id, options);
     }

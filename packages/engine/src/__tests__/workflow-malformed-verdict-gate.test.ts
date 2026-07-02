@@ -8,6 +8,9 @@ import { WorkflowGraphExecutor } from "../workflow-graph-executor.js";
 /*
 FNXC:WorkflowGates 2026-06-17-18:27:
 FN-6582 requires malformed workflow-step verdicts to remain explicit failures for blocking gates while advisory gates may record a non-blocking advisory failure. These tests pin the shared imperative parser seam and the graph handler path so malformed output cannot be mistaken for APPROVE.
+
+FNXC:ReviewLeniency 2026-07-02-00:30:
+POLICY CHANGE (operator request): malformed gate output (no parseable verdict, even after the executeWorkflowStep fallback-model retry) is now treated as a NON-BLOCKING advisory, relaxing the FN-6582 hard block. The real mapping lives in runGraphCustomNode (`outcome: success || !blocking || malformed ? "success" : "failure"`). A genuine PARSED non-pass verdict (REVISE) still blocks. The parser seam still classifies unparseable text as `malformed` (it is NOT silently promoted to APPROVE) — only the downstream blocking decision was relaxed. These handler/executor tests mock the node result to pin the graph PLUMBING for a genuine-failure verdict; they intentionally do not re-assert a malformed→block mapping that no longer exists.
 */
 
 const task = { id: "FN-6582" } as TaskDetail;
@@ -47,12 +50,13 @@ describe("workflow malformed-verdict gate", () => {
     expect(parseWorkflowStepOutput("native skill output", { requireVerdict: false })).toEqual({ output: "native skill output" });
   });
 
-  it("keeps a malformed blocking graph gate from producing a passing outcome", async () => {
-    const malformed = parseWorkflowStepOutput("lorem ipsum");
+  it("keeps a blocking graph gate with a genuine REVISE verdict from passing", async () => {
+    // A PARSED non-pass verdict still blocks (only unparseable/malformed output
+    // was relaxed to a non-blocking advisory — see the ReviewLeniency note above).
+    const revise = parseWorkflowStepOutput("REQUEST REVISION\nfix the gate");
     const runCustomNode = vi.fn(async () => ({
-      outcome: malformed.malformed ? "failure" as const : "success" as const,
-      value: malformed.malformed ? "malformed" : malformed.verdict,
-      contextPatch: malformed.malformed ? { "workflow:gate:malformed": true } : undefined,
+      outcome: revise.verdict === "REVISE" ? "failure" as const : "success" as const,
+      value: revise.verdict,
     }));
     const handlers = createDefaultNodeHandlers(noopSeams(), runCustomNode);
 
@@ -62,8 +66,7 @@ describe("workflow malformed-verdict gate", () => {
     );
 
     expect(result.outcome).toBe("failure");
-    expect(result.value).toBe("malformed");
-    expect(result.contextPatch).toEqual({ "workflow:gate:malformed": true });
+    expect(result.value).toBe("REVISE");
     expect(runCustomNode).toHaveBeenCalledOnce();
   });
 
@@ -85,12 +88,12 @@ describe("workflow malformed-verdict gate", () => {
     expect(result.contextPatch).toEqual({ "workflow:gate:malformed": true, "workflow:gate:advisory": true });
   });
 
-  it("terminates a graph run as failed when a malformed gate routes to failure", async () => {
-    const malformed = parseWorkflowStepOutput("lorem ipsum");
+  it("terminates a graph run as failed when a blocking gate returns REVISE", async () => {
+    const revise = parseWorkflowStepOutput("REQUEST REVISION\nfix the gate");
     const executor = new WorkflowGraphExecutor({
       handlers: createDefaultNodeHandlers(noopSeams(), async () => ({
-        outcome: malformed.malformed ? "failure" : "success",
-        value: malformed.malformed ? "malformed" : "APPROVE",
+        outcome: revise.verdict === "REVISE" ? "failure" : "success",
+        value: revise.verdict === "REVISE" ? "REVISE" : "APPROVE",
       })),
       runCustomNode: async () => ({ outcome: "success" }),
     });

@@ -870,12 +870,19 @@ describe("TaskDetailModal", () => {
   describe("Chat full-height layout", () => {
     it("FN-6347 defines chat modal-body and section fill-height CSS for desktop and mobile", () => {
       const css = readDashboardStylesSource();
-      const bodyRule = getCssRuleBlock(css, ".detail-body--chat");
+      const bodyRuleStart = css.indexOf("Task-detail tabs share the `.detail-body` outer content inset");
+      const bodyRuleCss = css.slice(bodyRuleStart, css.indexOf(".detail-title", bodyRuleStart));
+      const bodyRule = bodyRuleCss;
       const sectionRule = getCssRuleBlock(css, ".detail-section--chat");
       const mobileCss = css.slice(css.indexOf("@media (max-width: 768px)"));
       const mobileBodyRule = getCssRuleBlock(mobileCss, ".detail-body--chat");
       const mobileSectionRule = getCssRuleBlock(mobileCss, ".detail-section--chat");
 
+      expect(bodyRule).toContain("display: flex");
+      expect(bodyRule).toContain("flex-direction: column");
+      expect(bodyRule).toContain("min-height: 0");
+      expect(bodyRule).toContain("overflow-y: hidden");
+      expect(bodyRule).not.toMatch(/\bpadding(?:-[\w-]+)?:/);
       expectBaseRule(css, ".detail-body--planner-chat", "display: flex");
       expectBaseRule(css, ".detail-body--planner-chat", "flex-direction: column");
       expectBaseRule(css, ".detail-body--planner-chat", "min-height: 0");
@@ -886,6 +893,7 @@ describe("TaskDetailModal", () => {
       expect(sectionRule).toContain("min-height: 0");
       expectBaseRule(mobileCss, ".detail-body--chat", "overflow-y: hidden");
       expectBaseRule(mobileCss, ".detail-body--chat", "min-height: 0");
+      expect(mobileBodyRule).not.toMatch(/\bpadding(?:-[\w-]+)?:/);
       expect(mobileSectionRule).toContain("flex: 1");
       expect(mobileSectionRule).toContain("min-height: 0");
     });

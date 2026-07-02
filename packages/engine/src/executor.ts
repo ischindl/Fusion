@@ -86,7 +86,7 @@ import {
 import { buildSessionSkillContext } from "./session-skill-context.js";
 import type { SkillSelectionContext } from "./skill-resolver.js";
 import { resolveMcpServersForStore } from "./mcp-resolution.js";
-import { reviewStep, type ReviewVerdict, type ReviewResult } from "./reviewer.js";
+import { reviewStep, proseSignalsClearApproval, extractJsonObjectCandidates, type ReviewVerdict, type ReviewResult } from "./reviewer.js";
 import { buildUserCommentsPromptSection, selectUserCommentsForAgentContext } from "./agent-user-comments.js";
 import { resolveSandboxBackend } from "./sandbox/index.js";
 import type { SandboxBackend } from "./sandbox/types.js";
@@ -1139,8 +1139,6 @@ export type WorkflowStepResult =
   | { allPassed: false; revisionRequested: false; feedback: string; stepName: string }
   | { allPassed: false; revisionRequested: true; feedback: string; stepName: string };
 
-const WORKFLOW_STEP_VERDICTS = new Set(["APPROVE", "APPROVE_WITH_NOTES", "REVISE"] as const);
-
 export function parseWorkflowStepVerdict(rawOutput: string): { verdict: "APPROVE" | "APPROVE_WITH_NOTES" | "REVISE"; notes: string } | null {
   const trimmed = rawOutput.trim();
   const candidates: string[] = [];
@@ -1148,19 +1146,30 @@ export function parseWorkflowStepVerdict(rawOutput: string): { verdict: "APPROVE
   for (const match of fencedMatches) {
     candidates.push(match[1].trim());
   }
-  const jsonObjectMatches = trimmed.match(/\{[\s\S]*\}/g);
-  if (jsonObjectMatches) {
-    candidates.push(...jsonObjectMatches.map((value) => value.trim()));
-  }
+  /*
+  FNXC:ReviewLeniency 2026-07-01-23:30:
+  Prefer a balanced, string-aware object scan over a greedy `\{[\s\S]*\}` match: models that emit reasoning PROSE (which may itself contain braces) followed by a trailing `{"verdict":...}` payload broke the greedy span into invalid JSON. extractJsonObjectCandidates returns each top-level object in document order; iterating last→first prefers the trailing verdict payload.
+  */
+  candidates.push(...extractJsonObjectCandidates(trimmed));
 
   for (let i = candidates.length - 1; i >= 0; i -= 1) {
     try {
-      const parsed = JSON.parse(candidates[i]) as { verdict?: string; notes?: unknown };
-      if (!parsed || typeof parsed.verdict !== "string" || !WORKFLOW_STEP_VERDICTS.has(parsed.verdict as "APPROVE")) {
-        continue;
+      const parsed = JSON.parse(candidates[i]) as { verdict?: unknown; notes?: unknown };
+      if (!parsed || typeof parsed.verdict !== "string") continue;
+      /*
+      FNXC:ReviewLeniency 2026-07-01-23:30:
+      "Any approved" — accept approval-family verdict variants (APPROVE, APPROVED, APPROVE_WITH_NOTES, approve_with_verdict, …), not just the exact WORKFLOW_STEP_VERDICTS strings. A token starting with APPROVE maps to APPROVE_WITH_NOTES when it mentions notes, else APPROVE; REVISE-family → REVISE; anything else (e.g. "PASS") is not a verdict and the candidate is skipped.
+      */
+      const token = parsed.verdict.trim().toUpperCase();
+      let verdict: "APPROVE" | "APPROVE_WITH_NOTES" | "REVISE" | null = null;
+      if (token.startsWith("APPROVE") || token.startsWith("APPROVAL")) {
+        verdict = token.includes("NOTE") ? "APPROVE_WITH_NOTES" : "APPROVE";
+      } else if (token.startsWith("REVISE") || token.startsWith("REQUEST_REVISION") || token.startsWith("REJECT")) {
+        verdict = "REVISE";
       }
+      if (!verdict) continue;
       return {
-        verdict: parsed.verdict as "APPROVE" | "APPROVE_WITH_NOTES" | "REVISE",
+        verdict,
         notes: typeof parsed.notes === "string" ? parsed.notes : "",
       };
     } catch {
@@ -1191,7 +1200,11 @@ export function inferWorkflowStepVerdictFromProse(rawOutput: string): { verdict:
       notes: "",
     };
   }
-  if (/\b(approve|approved|looks good|no issues|out of scope)\b/i.test(trimmed)) {
+  /*
+  FNXC:ReviewLeniency 2026-07-01-22:15:
+  A gate review (code-review, browser-verification) whose text clearly approves must PASS even when it is not perfectly structured. Delegate to the shared proseSignalsClearApproval detector so this parser and the reviewer/plan-review parser agree on what "clearly approved" means, and so a prose rejection ("not approved", "please revise", "reject") is never promoted to APPROVE. Replaces the prior narrow approve/approved/looks good/no issues/out of scope regex (now a subset of the shared detector).
+  */
+  if (proseSignalsClearApproval(trimmed)) {
     return { verdict: "APPROVE", notes: "" };
   }
   return null;
@@ -3428,6 +3441,19 @@ export class TaskExecutor {
    *   this as a successful retry, since the original bounce may itself be
    *   stuck.
    */
+  /*
+  FNXC:ReviewLeniency 2026-07-02-02:10:
+  Clear prior terminal failure results (failed/advisory_failure — incl. optional gate nodes like code-review) so a retry starts clean. Call this ONLY once the task has left the mergeable in-review column (i.e. it is in `todo`): clearing while still in-review drops the merge blocker during the rerun-bounce window and could let a concurrent auto-merge sweep merge an empty-`steps` graph-native task with its gate failure unaddressed. `moveTask(in-review→todo)` already clears ALL results (applyReopenFieldClears), so this is chiefly for the in-progress→todo bounce path where the move does not. Passed/skipped/pending evidence is kept.
+  */
+  private async clearTerminalStepFailuresForRetry(taskId: string): Promise<void> {
+    const live = await this.store.getTask(taskId).catch(() => null);
+    if (!live) return;
+    const cleared = clearTerminalWorkflowStepFailures(live.workflowStepResults);
+    if (cleared !== live.workflowStepResults) {
+      await this.store.updateTask(taskId, { workflowStepResults: cleared }, this.getRunContextFor(taskId));
+    }
+  }
+
   private async performWorkflowRerunBounce(
     taskId: string,
     worktreePath: string,
@@ -3509,6 +3535,8 @@ export class TaskExecutor {
           executorLog.log(`${taskId}: workflow rerun parked in todo — ${pauseLabelAfterTodo} became active during bounce`);
           return "deferred-paused";
         }
+        // Now in `todo` (non-mergeable) — safe to clear prior gate failures.
+        await this.clearTerminalStepFailuresForRetry(taskId);
         await this.store.moveTask(taskId, "in-progress");
         return "bounced";
       }
@@ -3520,6 +3548,8 @@ export class TaskExecutor {
           executorLog.log(`${taskId}: workflow rerun parked in todo — ${pauseLabelBeforeResume} became active before resume`);
           return "deferred-paused";
         }
+        // Already in `todo` (non-mergeable) — safe to clear prior gate failures.
+        await this.clearTerminalStepFailuresForRetry(taskId);
         await this.store.moveTask(taskId, "in-progress");
         return "bounced";
       }
@@ -7437,9 +7467,14 @@ export class TaskExecutor {
      * recovery synthesize a Plan Review REVISE even when no reviewer requested
      * one; `advisory_failure` preserves visibility without inventing feedback.
      */
-    const advisoryFailureValue = (outcome as { malformed?: boolean }).malformed ? "advisory_failure" : "failed";
+    const malformed = (outcome as { malformed?: boolean }).malformed === true;
+    const advisoryFailureValue = malformed ? "advisory_failure" : "failed";
+    /*
+    FNXC:ReviewLeniency 2026-07-02-00:30:
+    Malformed review output (no parseable verdict, even after the fallback-model retry in executeWorkflowStep) is treated as a NON-BLOCKING advisory rather than a hard gate failure. Operators asked that an unparseable reviewer response not block a task in review — a genuine REVISE (parsed verdict) still blocks, and the advisory_failure value keeps the malformed result visible on the Workflow tab. Only `malformed` relaxes a gate; every parsed non-pass verdict continues to block exactly as before.
+    */
     return {
-      outcome: outcome.success || !blocking ? "success" : "failure",
+      outcome: outcome.success || !blocking || malformed ? "success" : "failure",
       value: verdict ?? (outcome.success ? "passed" : advisoryFailureValue),
       ...(Object.keys(contextPatch).length > 0 ? { contextPatch } : {}),
     };
@@ -7650,6 +7685,41 @@ export class TaskExecutor {
     if (failedNode === "merge" || failedNode === "requestMerge") return true;
     if (MERGE_REGION_KINDS.has(failedNode as WorkflowIrNodeKind)) return true;
     return failedNode === "merge-manual-hold" || failedNode === "merge-retry";
+  }
+
+  /*
+  FNXC:WorkflowRemediation 2026-07-01-23:40:
+  A live agent session surface for a task proves the work is still executing, independent of the persisted column/pause/status row that handleGraphFailure re-fetches. This mirrors clearPhantomExecutorBinding's `hasLiveSessionSurface` (FN-6736) but deliberately EXCLUDES `this.executing` and graph-routing membership: those are still set for the graph run that is currently ending (graphRouting is cleared in maybeExecuteWorkflowGraph's finally, AFTER handleGraphFailure returns), so including them would report every ending run as "still executing" and suppress all failures. Only a registered coding/step/CLI session surface means a SEPARATE, live agent is working the task.
+  */
+  private hasLiveTaskSessionSurface(taskId: string): boolean {
+    return (
+      this.activeSessions.has(taskId)
+      || this.activeStepExecutors.has(taskId)
+      || this.activeWorkflowStepSessions.has(taskId)
+      || this.activeCliTaskSessions.has(taskId)
+    );
+  }
+
+  /*
+  FNXC:WorkflowRemediation 2026-07-01-23:40:
+  A `pre-merge-remediation` / `plan-replan` node (e.g. `code-review-remediation`) is a FIRE-AND-FORGET async scheduler, not a terminal work node: its job is to hand off an implementation fix (sendTaskBackForFix re-dispatches the coding session) and stop traversal. These nodes carry only a `success` rework edge back to their gate and NO `failure` out-edge, so when their schedule call cannot re-arm (missing rehydrated failureContext after a restart → `missing-remediation-context`, `remediation-not-scheduled`, or an exhausted rework budget) the failure bubbles out as the terminal graph outcome and handleGraphFailure would stamp `status:"failed"` — even while a previously-scheduled fix/reviewer session is still live. Classify these nodes so that terminal sink can preserve a still-executing task instead of flagging a spurious failure. Detection prefers the resolved IR `workflowAction` (covers custom workflows), with a node-id fallback for the built-in ids when the IR cannot be resolved.
+  */
+  private async isRemediationGraphNode(taskId: string, failedNode: string | undefined): Promise<boolean> {
+    if (!failedNode) return false;
+    try {
+      const ir = await resolveWorkflowIrForTask(this.store, taskId);
+      const node = ir?.nodes?.find((n) => n.id === failedNode);
+      const action = node?.config?.workflowAction;
+      if (action === "pre-merge-remediation" || action === "plan-replan") return true;
+      if (node) return false;
+    } catch {
+      // Best-effort IR resolution; fall through to the built-in id fallback.
+    }
+    return (
+      failedNode === "code-review-remediation"
+      || failedNode === "browser-verification-remediation"
+      || failedNode === "plan-replan"
+    );
   }
 
   private isTerminalMergeGraphFailureValue(value: string | undefined): boolean {
@@ -8452,6 +8522,17 @@ export class TaskExecutor {
           return;
         }
       }
+      /*
+      FNXC:WorkflowRemediation 2026-07-01-23:40:
+      Do NOT flag a still-executing task as failed. A `pre-merge-remediation` / `plan-replan` node (e.g. `code-review-remediation`) is a fire-and-forget async scheduler with no `failure` out-edge, so a failed re-arm (missing rehydrated failureContext after restart, remediation-not-scheduled, or an exhausted rework budget) bubbles out as the terminal graph outcome here. When a SEPARATE live agent session surface is still registered for this task, the previously-scheduled fix/reviewer is genuinely mid-flight — parking `status:"failed"` would surface a spurious "Task Failed" over live work. Preserve the row and let the live session drive its own terminal handoff instead. Scoped strictly to remediation nodes + a live session surface so genuine execute/merge terminal failures (and remediation failures with NO live session, e.g. a truly exhausted budget) still park exactly as before.
+      */
+      if (this.hasLiveTaskSessionSurface(task.id) && await this.isRemediationGraphNode(task.id, failedNode)) {
+        const benignMessage = `Workflow graph ended at remediation node '${failedNode ?? "unknown"}' while a live agent session is still executing — not flagging as failed; live session preserved`;
+        executorLog.warn(`${task.id}: ${benignMessage}`);
+        await this.store.logEntry(task.id, benignMessage, undefined, this.getRunContextFor(task.id));
+        await this.persistTokenUsage(task.id);
+        return;
+      }
       const message = `Workflow graph terminated with failure at node '${failedNode ?? "unknown"}'`;
       executorLog.warn(`${task.id}: ${message}`);
       await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
@@ -8516,6 +8597,12 @@ export class TaskExecutor {
         recoveryRehome: true,
       });
     }
+    // FNXC:ReviewLeniency 2026-07-02-02:10: clear prior terminal failure results
+    // (incl. optional gate nodes like code-review) AFTER the task is in `todo`
+    // (non-mergeable) so the resumed run re-evaluates gates from a clean slate
+    // without dropping the in-review merge blocker mid-flight. (in-review→todo
+    // moveTask already clears all results; this covers the already-`todo` path.)
+    await this.clearTerminalStepFailuresForRetry(live.id);
     await this.persistTokenUsage(live.id);
     return true;
   }
@@ -8726,6 +8813,49 @@ export class TaskExecutor {
     return true;
   }
 
+  /*
+  FNXC:EphemeralAgents 2026-07-01-00:00:
+  `ephemeralAgentsEnabled: false` means "never spawn short-lived executor-FN-XXXX workers; only permanent agents run work" (see types.ts ephemeralAgentsEnabled). The legacy spawn refusal lives in EphemeralWorkerManager.onTaskStart (ephemeral-worker-manager.ts), but that runs as a fire-and-forget bookkeeping callback AFTER execution has already begun, so it cannot stop a run. The workflow-engine dispatch paths (maybeExecuteWorkflowGraph, workflowAuthoritativeDispatch, maybeDispatchWorkflowWorkEngine) execute tasks in-process without ever consulting the toggle. Any task that reaches execute() without a permanent assignment via a non-scheduler path (resume-after-restart, heartbeat re-entry, mission/autopilot, work-engine claim) therefore ran despite the operator disabling ephemeral agents.
+
+  This guard is the executor's last line of defense, mirroring the scheduler cutover gate (scheduler.ts:2464) and the spawn refusal (ephemeral-worker-manager.ts:132). It runs once at the top of the outer dispatch — before all three workflow paths — so a single check covers every workflow dispatch entry point. A task explicitly assigned to a permanent (non-ephemeral) agent is exactly how ephemeral-off mode is meant to run, so those are allowed through; everything else is re-queued for the scheduler to auto-assign a permanent agent or hold.
+  */
+  private async blockOuterDispatchWhenEphemeralDisabled(task: Task): Promise<boolean> {
+    const settings = await this.store.getSettings();
+    if (settings.ephemeralAgentsEnabled !== false) return false;
+
+    // A permanent (non-ephemeral) assignment is the sanctioned executor when
+    // ephemeral workers are off. `assignedAgentId` is only ever set by permanent
+    // assignment — default ephemeral mode never sets it — so when we cannot
+    // resolve the agent (no agentStore) we trust the presence of the id and allow
+    // the run rather than starving a legitimately-assigned task.
+    const assignedId = task.assignedAgentId?.trim();
+    if (assignedId) {
+      if (!this.options.agentStore) return false;
+      const agent = await this.options.agentStore.getAgent(assignedId).catch(() => null);
+      if (agent && !isEphemeralAgent(agent)) return false;
+    }
+
+    const liveTask = (await this.store.getTask(task.id).catch(() => null)) ?? task;
+    if (liveTask.column !== "todo") {
+      await this.store.moveTask(liveTask.id, "todo", {
+        preserveProgress: true,
+        preserveWorktree: true,
+        preserveResumeState: true,
+        moveSource: "engine",
+        recoveryRehome: true,
+      });
+    }
+    await this.store.updateTask(liveTask.id, { status: "queued" }, this.getRunContextFor(liveTask.id));
+    await this.store.logEntry(
+      liveTask.id,
+      "queued — ephemeral agents disabled; no permanent executor assigned",
+      "Executor pre-dispatch ephemeral gate blocked workflow/authoritative execution.",
+      this.getRunContextFor(liveTask.id),
+    );
+    executorLog.log(`${liveTask.id}: executor dispatch blocked — ephemeralAgentsEnabled=false and no permanent agent assigned`);
+    return true;
+  }
+
   async execute(task: Task): Promise<void> {
     this.completionFinalizedTaskIds.delete(task.id);
     await this.clearStalePauseAbortBeforeDispatch(task);
@@ -8741,6 +8871,12 @@ export class TaskExecutor {
         return;
       }
       if (await this.blockOuterDispatchWhenDependenciesUnmet(task)) return;
+      // FNXC:EphemeralAgents 2026-07-01-00:00: gate ALL workflow dispatch paths
+      // (graph/authoritative/work-engine) on ephemeralAgentsEnabled before any of
+      // them can claim the task. Placed inside the outer-dispatch block so seam
+      // re-entry (interceptor registered) is unaffected, and ahead of every path
+      // so the single check covers all three entry points.
+      if (await this.blockOuterDispatchWhenEphemeralDisabled(task)) return;
       const graphOwned = await this.maybeExecuteWorkflowGraph(task);
       if (graphOwned) return;
       const authoritativeOwned = await this.options.workflowAuthoritativeDispatch?.(task);
@@ -9874,7 +10010,7 @@ export class TaskExecutor {
       const customTools = [
         this.createTaskUpdateTool(task.id, codeReviewVerdicts, sessionRef, stepCheckpoints, stuckDetector),
         this.createTaskLogTool(task.id),
-        this.createTaskCreateTool(),
+        this.createTaskCreateTool(!identityAgent || isEphemeralAgent(identityAgent)),
         this.createTaskAddDepTool(task.id),
         this.createTaskDoneTool(task.id, worktreePath, detail.prompt ?? "", codeReviewVerdicts, () => { taskDone = true; }, audit),
         createRunVerificationTool({
@@ -11887,8 +12023,12 @@ export class TaskExecutor {
     return sharedCreateTaskLogTool(this.store, taskId);
   }
 
-  private createTaskCreateTool(): ToolDefinition {
-    return sharedCreateTaskCreateTool(this.store, { sourceType: "api" }, { rootDir: this.rootDir });
+  /*
+  FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+  A task-execution session is an ephemeral worker when no permanent identity agent governs it (default executor-FN-XXXX worker) or the governing agent is itself ephemeral. Pass that through so fn_task_create honors the project `ephemeralAgentsCanCreateTasks` toggle; permanent-agent sessions are never gated.
+  */
+  private createTaskCreateTool(callerIsEphemeral: boolean): ToolDefinition {
+    return sharedCreateTaskCreateTool(this.store, { sourceType: "api" }, { rootDir: this.rootDir, callerIsEphemeral });
   }
 
   private createTaskDocumentWriteTool(taskId: string): ToolDefinition {
@@ -13606,7 +13746,14 @@ ${failureContext.output.slice(0, VERIFICATION_LOG_MAX_CHARS)}
     const updatedTask = await this.store.getTask(taskId);
     await this.reopenLastStepForRevision(taskId, updatedTask);
 
-    // 5. Clear error/status/session fields and reset workflow step retries
+    // 5. Clear error/status/session fields and reset workflow step retries.
+    //    FNXC:ReviewLeniency 2026-07-02-02:10: prior terminal failure results
+    //    (incl. optional gate nodes like code-review) are cleared by the rerun
+    //    bounce AFTER the task leaves the mergeable in-review column (see
+    //    clearTerminalStepFailuresForRetry), NOT here — clearing them while the
+    //    task is still in-review would drop the merge blocker during the async
+    //    bounce window and let a concurrent auto-merge sweep merge an
+    //    empty-`steps` graph-native task with the gate failure unaddressed.
     await this.store.updateTask(taskId, {
       status: mergeVerificationFailure ? "merging-fix" : null,
       error: null,
@@ -14652,9 +14799,12 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         }
 
         if (parsed.malformed) {
+          // FNXC:ReviewLeniency 2026-07-02-00:30: malformed output (after the
+          // fallback-model retry) is recorded as a NON-BLOCKING advisory, not a
+          // hard gate block — see runGraphCustomNode's outcome mapping.
           await this.store.logEntry(
             task.id,
-            `[pre-merge] Workflow step '${workflowStep.name}' produced malformed output — blocking gate success`,
+            `[pre-merge] Workflow step '${workflowStep.name}' produced malformed output (no parseable verdict) — recorded as non-blocking advisory`,
           );
           if (workflowStep.requiresBrowser === true) {
             await logBrowserVerificationActivity(`[browser-verification] finished browser verification for task ${task.id}: malformed output`);
@@ -14704,18 +14854,24 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     };
 
     const primaryOutcome = await runOnce(primaryProvider, primaryModelId, "primary");
-    if (!primaryOutcome.timedOut) return primaryOutcome;
+    /*
+    FNXC:ReviewLeniency 2026-07-02-00:30:
+    Retry the fallback model on a MALFORMED (unparseable-verdict) primary response, not only on a timeout. A single fumbled response — reasoning with no trailing verdict — should get one more attempt on the fallback model before the gate result is recorded, mirroring the reviewer path's UNAVAILABLE retry. If no fallback is configured the malformed primary is returned as-is (and is treated as a non-blocking advisory downstream, see runGraphCustomNode).
+    */
+    const primaryMalformed = (primaryOutcome as { malformed?: boolean }).malformed === true;
+    if (!primaryOutcome.timedOut && !primaryMalformed) return primaryOutcome;
 
     if (!fallback) {
-      executorLog.warn(`${task.id}: workflow step '${workflowStep.name}' timed out and no fallback model is configured`);
+      const reason = primaryOutcome.timedOut ? "timed out" : "produced malformed output";
+      executorLog.warn(`${task.id}: workflow step '${workflowStep.name}' ${reason} and no fallback model is configured`);
       await this.store.logEntry(
         task.id,
-        `Workflow step '${workflowStep.name}' timed out — no fallback model configured (set settings.validatorFallbackProvider/Id or fallbackProvider/Id)`,
+        `Workflow step '${workflowStep.name}' ${reason} — no fallback model configured (set settings.validatorFallbackProvider/Id or fallbackProvider/Id)`,
       );
       return primaryOutcome;
     }
 
-    executorLog.log(`${task.id}: retrying workflow step '${workflowStep.name}' with fallback ${fallback.provider}/${fallback.modelId} (label=${fallback.label})`);
+    executorLog.log(`${task.id}: retrying workflow step '${workflowStep.name}' with fallback ${fallback.provider}/${fallback.modelId} (label=${fallback.label}) after primary ${primaryOutcome.timedOut ? "timeout" : "malformed output"}`);
     return runOnce(fallback.provider, fallback.modelId, "fallback");
   }
 
@@ -17730,6 +17886,18 @@ export interface PseudoPauseResult {
 
 function hasNonTerminalWorkflowSteps(task: Pick<TaskDetail, "steps">): boolean {
   return task.steps.length > 0 && task.steps.some((step) => step.status !== "done" && step.status !== "skipped");
+}
+
+/*
+FNXC:ReviewLeniency 2026-07-02-01:00:
+Retrying a task must clear PRIOR FAILURE states so the retry starts clean — including on optional gate nodes like code-review / browser-verification. Results are upserted by node id, so a re-running node overwrites its own stale entry, but a send-back-for-fix leaves the failed entry in place until (and unless) that node re-runs; meanwhile self-healing's failed-pre-merge scan and the dashboard both see a stale failure, and a node that is skipped/relaxed on the retry never clears it. Drop every terminal failure result (`failed`/`advisory_failure`) on retry while keeping `passed`/`skipped`/`pending` evidence (so a previously-passed Plan Review is not re-run). Returns the same array reference when nothing changed so callers can skip a no-op write.
+*/
+export function clearTerminalWorkflowStepFailures(
+  results: CoreWorkflowStepResult[] | undefined,
+): CoreWorkflowStepResult[] {
+  const current = results ?? [];
+  const kept = current.filter((result) => result.status !== "failed" && result.status !== "advisory_failure");
+  return kept.length === current.length ? current : kept;
 }
 
 function workflowStepResultPassed(task: Pick<Task, "workflowStepResults"> | undefined, workflowStepId: string): boolean {

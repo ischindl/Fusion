@@ -24,6 +24,16 @@ export class TaskHasDependentsError extends Error {
     this.dependentIds = dependentIds;
   }
 }
+export class TaskSelfDeleteError extends Error {
+  readonly taskId: string;
+  readonly code = "TASK_SELF_DELETE";
+
+  constructor(taskId: string) {
+    super(`Task ${taskId} cannot delete itself`);
+    this.name = "TaskSelfDeleteError";
+    this.taskId = taskId;
+  }
+}
 
 export class TaskDeletedError extends Error {
   constructor(

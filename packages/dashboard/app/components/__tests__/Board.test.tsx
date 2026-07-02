@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { Board } from "../Board";
 import { COLUMNS } from "@fusion/core";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID, BOARD_WORKFLOW_SELECTION_STORAGE_KEY } from "../../utils/boardWorkflowSelection";
@@ -1470,6 +1470,60 @@ describe("Board", () => {
       } finally {
         headerSlot.remove();
       }
+    });
+
+    it("renders the all-workflows dropdown count as a single aggregate of real workflow rows", async () => {
+      enableFlag(
+        {
+          "FN-default-todo": "builtin:coding",
+          "FN-default-active": "builtin:coding",
+          "FN-default-done": "builtin:coding",
+          "FN-custom-todo": "wf-custom",
+          "FN-custom-done": "wf-custom",
+          "FN-stale": "wf-deleted",
+          "FN-hidden": "builtin:coding",
+          "FN-archived": "builtin:coding",
+        },
+        [
+          {
+            ...DEFAULT_WORKFLOW,
+            columns: [
+              ...DEFAULT_WORKFLOW.columns,
+              { id: "quiet", name: "Quiet", flags: { hiddenFromBoard: true } },
+            ],
+          },
+          {
+            ...CUSTOM_WORKFLOW,
+            name: "Coding",
+          },
+        ],
+      );
+      renderBoard({
+        tasks: [
+          mkTask({ id: "FN-default-todo", column: "todo" }),
+          mkTask({ id: "FN-default-active", column: "in-progress", status: "merging" }),
+          mkTask({ id: "FN-default-done", column: "done" }),
+          mkTask({ id: "FN-custom-todo", column: "intake" }),
+          mkTask({ id: "FN-custom-done", column: "done" }),
+          mkTask({ id: "FN-stale", column: "todo" }),
+          mkTask({ id: "FN-hidden", column: "quiet" }),
+          mkTask({ id: "FN-archived", column: "archived" }),
+        ],
+      });
+
+      await openWorkflowSwitcher();
+      const aggregateOption = screen.getByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`);
+      expect(aggregateOption).toHaveTextContent("All workflows");
+      expect(within(aggregateOption).getByTitle("Todo: 3")).toBeInTheDocument();
+      expect(within(aggregateOption).getByTitle("In Progress: 1")).toBeInTheDocument();
+      expect(within(aggregateOption).getByTitle("Done: 2")).toBeInTheDocument();
+      expect(within(aggregateOption).getByTitle("1 merging")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("Todo: 2")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("In Progress: 1")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("Done: 1")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("Todo: 1")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("In Progress: 0")).toBeInTheDocument();
+      expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("Done: 1")).toBeInTheDocument();
     });
 
     it("renders one selected workflow at a time and switches workflows from the dropdown", async () => {

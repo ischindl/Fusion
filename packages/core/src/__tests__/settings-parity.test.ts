@@ -184,6 +184,12 @@ describe("settings key parity", () => {
     expect(isGlobalSettingsKey("ephemeralAgentsEnabled")).toBe(false);
   });
 
+  it("defaults ephemeralAgentsCanCreateTasks to true and keeps it project-scoped", () => {
+    expect(DEFAULT_PROJECT_SETTINGS.ephemeralAgentsCanCreateTasks).toBe(true);
+    expect(isProjectSettingsKey("ephemeralAgentsCanCreateTasks")).toBe(true);
+    expect(isGlobalSettingsKey("ephemeralAgentsCanCreateTasks")).toBe(false);
+  });
+
   it("defaults completionDocumentationMode to off", () => {
     expect(DEFAULT_PROJECT_SETTINGS.completionDocumentationMode).toBe("off");
   });

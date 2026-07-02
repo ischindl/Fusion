@@ -3,7 +3,7 @@ FNXC:TaskDetailTabs 2026-06-17-08:20:
 FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
 */
 import { describe, it, expect, vi } from "vitest";
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Task, TaskDetail } from "@fusion/core";
@@ -1555,7 +1555,7 @@ describe("TaskDetailModal", () => {
       }, { timeout: 3500 });
     });
 
-    it("uses updated model values in edit mode after saving from the Model tab", async () => {
+    it("saves task-detail model changes with the active project id", async () => {
       const { fetchModels, updateTask } = await import("../../api");
       const mockFetchModels = vi.mocked(fetchModels);
       const mockUpdateTask = vi.mocked(updateTask);
@@ -1587,20 +1587,28 @@ describe("TaskDetailModal", () => {
         .mockResolvedValueOnce(updatedAfterExecutor)
         .mockResolvedValueOnce(updatedAfterValidator);
 
+      const addToast = vi.fn();
+      const onTaskUpdated = vi.fn((updated: Task) => {
+        setStatefulTask((prev) => ({ ...prev, ...updated }));
+      });
+      let setStatefulTask: Dispatch<SetStateAction<TaskDetail>>;
+
       function StatefulModal() {
         const [task, setTask] = useState<TaskDetail>(initialTask);
+        setStatefulTask = setTask;
 
         return (
           <TaskDetailModal
             initialTab="definition"
             task={task}
+            projectId="project-alpha"
             onClose={noop}
             onMoveTask={noopMove}
             onDeleteTask={noopDelete}
             onMergeTask={noopMerge}
             onOpenDetail={noopOpenDetail}
-            onTaskUpdated={(updated) => setTask((prev) => ({ ...prev, ...updated }))}
-            addToast={noop}
+            onTaskUpdated={onTaskUpdated}
+            addToast={addToast}
           />
         );
       }
@@ -1623,6 +1631,7 @@ describe("TaskDetailModal", () => {
             modelProvider: "anthropic",
             modelId: "claude-sonnet-4-5",
           }),
+          "project-alpha",
         );
       });
 
@@ -1637,7 +1646,13 @@ describe("TaskDetailModal", () => {
             validatorModelProvider: "openai",
             validatorModelId: "gpt-4o",
           },
+          "project-alpha",
         );
+        expect(onTaskUpdated).toHaveBeenCalledWith(expect.objectContaining({
+          validatorModelProvider: "openai",
+          validatorModelId: "gpt-4o",
+        }));
+        expect(addToast).not.toHaveBeenCalledWith(expect.any(String), "error");
       });
 
       fireEvent.click(container.querySelector(".modal-edit-btn")!);
@@ -1645,6 +1660,59 @@ describe("TaskDetailModal", () => {
       await waitFor(() => {
         expect(screen.getByLabelText("Executor Model")).toHaveTextContent("Claude Sonnet 4.5");
         expect(screen.getByLabelText("Reviewer Model")).toHaveTextContent("GPT-4o");
+      });
+    });
+
+    it("rolls back the scoped reviewer model change and shows one error toast on real failure", async () => {
+      const { fetchModels, updateTask } = await import("../../api");
+      const mockFetchModels = vi.mocked(fetchModels);
+      const mockUpdateTask = vi.mocked(updateTask);
+      const user = userEvent.setup();
+      const addToast = vi.fn();
+
+      mockFetchModels.mockResolvedValue({
+        models: [
+          { provider: "anthropic", id: "claude-haiku-5", name: "Claude Haiku 5", reasoning: true, contextWindow: 200000 },
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 128000 },
+        ],
+        favoriteProviders: [],
+        favoriteModels: [],
+      });
+      mockUpdateTask.mockRejectedValueOnce(new Error("Task not found"));
+
+      render(
+        <TaskDetailModal
+          initialTab="model"
+          task={makeTask({
+            id: "FN-001",
+            column: "triage",
+            title: "Scoped reviewer failure",
+            validatorModelProvider: "anthropic",
+            validatorModelId: "claude-haiku-5",
+          })}
+          projectId="project-alpha"
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          onTaskUpdated={vi.fn()}
+          addToast={addToast}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByLabelText("Reviewer Model")).toBeInTheDocument());
+      await user.click(screen.getByLabelText("Reviewer Model"));
+      await user.click(await screen.findByText("GPT-4o"));
+
+      await waitFor(() => {
+        expect(mockUpdateTask).toHaveBeenCalledWith("FN-001", {
+          validatorModelProvider: "openai",
+          validatorModelId: "gpt-4o",
+        }, "project-alpha");
+        expect(addToast).toHaveBeenCalledTimes(1);
+        expect(addToast).toHaveBeenCalledWith("Task not found", "error");
+        expect(screen.getByLabelText("Reviewer Model")).toHaveTextContent("Claude Haiku 5");
       });
     });
 

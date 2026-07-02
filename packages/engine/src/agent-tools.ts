@@ -859,6 +859,11 @@ type AgentTaskCreationOptions = {
   rootDir?: string;
   bypassDuplicateCheck?: boolean;
   acknowledgedDuplicates?: string[];
+  /*
+  FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+  Set true when fn_task_create is registered for an ephemeral/runtime task-worker session (executor-FN-XXXX). The tool then honors the project `ephemeralAgentsCanCreateTasks` toggle and rejects creation when it is disabled. Permanent-agent sessions leave this unset and are never gated.
+  */
+  callerIsEphemeral?: boolean;
 };
 
 export async function createAgentTask(
@@ -963,6 +968,24 @@ export function createTaskCreateTool(
     parameters: taskCreateParams,
     execute: async (_id: string, params: Static<typeof taskCreateParams>) => {
       try {
+        /*
+        FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+        Ephemeral task-worker sessions may only create tasks when the project `ephemeralAgentsCanCreateTasks` toggle is on (default true). Fail-open on a settings read error so a store hiccup never blocks creation.
+        */
+        if (options?.callerIsEphemeral) {
+          const settings = typeof (store as { getSettings?: unknown }).getSettings === "function"
+            ? await store.getSettings().catch(() => ({} as Settings))
+            : ({} as Settings);
+          if ((settings as Settings).ephemeralAgentsCanCreateTasks === false) {
+            const message =
+              "Ephemeral task-worker agents are not allowed to create tasks (ephemeralAgentsCanCreateTasks is disabled for this project).";
+            return {
+              content: [{ type: "text" as const, text: `ERROR: ${message}` }],
+              details: { error: message, rule: "ephemeral-agents-cannot-create-tasks" },
+              isError: true,
+            };
+          }
+        }
         const workflowId = params.workflow_id?.trim() || undefined;
         const { task, wasDuplicate } = await createAgentTask(store, {
           description: params.description,

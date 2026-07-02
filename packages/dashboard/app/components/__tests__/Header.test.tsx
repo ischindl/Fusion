@@ -875,6 +875,7 @@ describe("Header", () => {
       expect(screen.getByPlaceholderText("Search tasks...")).toBeDefined();
       fireEvent.click(screen.getByLabelText("Close search"));
       expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
     });
 
     it("clears search query when close button is clicked", () => {
@@ -883,6 +884,33 @@ describe("Header", () => {
       fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
       fireEvent.click(screen.getByLabelText("Close search"));
       expect(onSearchChange).toHaveBeenCalledWith("");
+    });
+
+    it("restores the board search open button after closing a populated query and parent clear", () => {
+      const onSearchChange = vi.fn();
+      const { rerender } = renderHeader({ onSearchChange, view: "board", searchQuery: "blocked" });
+
+      expect(screen.getByDisplayValue("blocked")).toBeInTheDocument();
+      expect(screen.queryByTestId("desktop-header-search-btn")).toBeNull();
+
+      fireEvent.click(screen.getByLabelText("Close search"));
+      expect(onSearchChange).toHaveBeenCalledWith("");
+      expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+
+      mockMatchMedia("desktop");
+      rerender(
+        <Header
+          onOpenSettings={noop}
+          onOpenGitHubImport={noop}
+          onSearchChange={onSearchChange}
+          view="board"
+          searchQuery=""
+        />
+      );
+
+      expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+      expect(screen.getAllByRole("button", { name: "Open search" })).toHaveLength(1);
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
     });
 
     it("keeps search open when searchQuery is non-empty", () => {
@@ -933,18 +961,14 @@ describe("Header", () => {
       expect(wrapper!.querySelector("header.header")).not.toBeNull();
     });
 
-    it("toggling search twice reopens the search (use close button to dismiss)", () => {
+    it("hides the open toggle while search is open and restores it after close", () => {
       renderHeader({ onSearchChange: vi.fn(), view: "board" });
       fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
       expect(screen.getByPlaceholderText("Search tasks...")).toBeDefined();
-      // Second toggle click reopens search since first close was via toggle
-      // (toggle always opens, use close button to dismiss)
-      fireEvent.click(screen.getByTestId("desktop-header-search-btn"));
-      // Search stays open because toggle only opens
-      expect(screen.getByPlaceholderText("Search tasks...")).toBeDefined();
-      // Use close button to dismiss
+      expect(screen.queryByTestId("desktop-header-search-btn")).toBeNull();
       fireEvent.click(screen.getByLabelText("Close search"));
       expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+      expect(screen.getAllByTestId("desktop-header-search-btn")).toHaveLength(1);
     });
 
     it("supports search toggle flow on list view", () => {

@@ -5,6 +5,7 @@ import {
   type Task,
 } from "@fusion/core";
 import type { BoardWorkflowColumn, BoardWorkflowsPayload } from "../../api";
+import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../../utils/boardWorkflowSelection";
 import { computeWorkflowStatusCounts } from "../workflowStatusCounts";
 
 const boardWorkflows: BoardWorkflowsPayload = {
@@ -110,12 +111,13 @@ describe("computeWorkflowStatusCounts", () => {
     expect(computeWorkflowStatusCounts(undefined, undefined).size).toBe(0);
   });
 
-  it("initializes every workflow with zero counts for empty and duplicate/populated states", () => {
+  it("initializes every workflow and the aggregate sentinel with zero counts for empty and duplicate/populated states", () => {
     const counts = computeWorkflowStatusCounts([], boardWorkflows);
 
     expect(counts.get("default")).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
     expect(counts.get("design")).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
     expect(counts.get("empty")).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
+    expect(counts.get(ALL_WORKFLOWS_BOARD_VIEW_ID)).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
   });
 
   it("classifies todo, in-progress, and done buckets from workflow column flags", () => {
@@ -176,25 +178,61 @@ describe("computeWorkflowStatusCounts", () => {
     expect(counts.get("default")).toEqual({ todo: 0, inProgress: 0, done: 1, merging: 0 });
   });
 
-  it("counts tasks independently for their assigned workflow", () => {
+  it("counts tasks independently for their assigned workflow and aggregates real rows exactly once", () => {
+    const duplicateNameWorkflow = {
+      id: "design-copy",
+      name: "Design",
+      columns: [
+        { id: "copy-todo", name: "Todo", flags: { intake: true } },
+        { id: "copy-active", name: "Active", flags: { countsTowardWip: true } },
+        { id: "copy-done", name: "Done", flags: { complete: true } },
+      ],
+    };
     const counts = computeWorkflowStatusCounts(
       [
+        task("FN-default-todo", "todo"),
+        task("FN-missing-assignment", "ready"),
+        task("FN-stale-assignment", "done"),
+        task("FN-hidden", "quiet"),
+        task("FN-archived", "archived"),
+        task("FN-unknown-column", "missing"),
         task("FN-design-todo", "design-todo"),
-        task("FN-design-active", "design-active"),
+        taskWithStatus("FN-design-active", "design-active", "merging"),
         task("FN-design-done", "design-done"),
+        taskWithStatus("FN-copy-active", "copy-active", "merging-fix"),
       ],
       {
         ...boardWorkflows,
+        workflows: [
+          {
+            ...boardWorkflows.workflows[0],
+            columns: [
+              ...boardWorkflows.workflows[0].columns,
+              { id: "quiet", name: "Quiet", flags: { hiddenFromBoard: true } },
+            ],
+          },
+          boardWorkflows.workflows[1],
+          duplicateNameWorkflow,
+          boardWorkflows.workflows[2],
+        ],
         taskWorkflowIds: {
+          "FN-stale-assignment": "deleted-workflow",
+          "FN-hidden": "default",
+          "FN-archived": "default",
+          "FN-unknown-column": "design",
           "FN-design-todo": "design",
           "FN-design-active": "design",
           "FN-design-done": "design",
+          "FN-copy-active": "design-copy",
         },
       }
     );
 
-    expect(counts.get("design")).toEqual({ todo: 1, inProgress: 1, done: 1, merging: 0 });
-    expect(counts.get("default")).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
+    expect(counts.get("default")).toEqual({ todo: 2, inProgress: 0, done: 1, merging: 0 });
+    expect(counts.get("design")).toEqual({ todo: 1, inProgress: 1, done: 1, merging: 1 });
+    expect(counts.get("design-copy")).toEqual({ todo: 0, inProgress: 1, done: 0, merging: 1 });
+    expect(counts.get("empty")).toEqual({ todo: 0, inProgress: 0, done: 0, merging: 0 });
+    expect(counts.get(ALL_WORKFLOWS_BOARD_VIEW_ID)).toEqual({ todo: 3, inProgress: 2, done: 2, merging: 2 });
   });
 
   it("tracks actively merging tasks per workflow separately from bucket counts", () => {

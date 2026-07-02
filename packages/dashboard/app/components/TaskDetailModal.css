@@ -128,24 +128,16 @@ Task detail workflow badges share the board badge's slight token-based icon-to-l
   overflow-y: hidden;
 }
 
-/* Activity → Live and expanded Activity mirror the Raw Logs fill-height layout: the modal body does not scroll;
-   each segment owns internal scrolling while composers and controls stay visible. */
+/*
+FNXC:TaskDetailPadding 2026-07-01-12:00:
+Task-detail tabs share the `.detail-body` outer content inset so switching Activity, planner Chat, Plan, or standard sections does not shift the shell padding. Chat-like tabs may only change flex and internal-scroll ownership here; transcript/composer spacing stays inside their own surfaces.
+*/
 .detail-body--chat,
 .detail-body--planner-chat {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow-y: hidden;
-  /* FNXC:TaskDetailChat 2026-06-13-19:55: Chat box should sit in the chat view without excess vertical spacing around the composer (FN-6418), so only the chat body tightens vertical padding while shared detail tab padding remains unchanged. */
-  padding-block: var(--space-md);
-}
-
-/*
-FNXC:TaskDetailPlannerChat 2026-06-30-23:58:
-Planner Chat expand/collapse may reallocate height or hide mobile chrome, but it must not change the chat surface spacing. Keep body padding on the collapsed base selector and let expanded selectors own only flex/height behavior.
-*/
-.detail-body--planner-chat {
-  padding: var(--space-md);
 }
 
 .detail-title {
@@ -853,7 +845,6 @@ The same expanded-mode chrome collapse now applies to all Activity segments: Liv
 .task-detail-content--chat-expanded .detail-body--chat {
   flex: 1;
   min-height: 0;
-  padding: var(--space-md);
 }
 
 .task-detail-content--chat-expanded .detail-section--chat {
@@ -899,7 +890,6 @@ Planner Chat should not open expanded by default. When the user expands it, the 
 .task-detail-content--planner-chat-expanded .detail-body--planner-chat {
   flex: 1;
   min-height: 0;
-  padding: var(--space-md);
 }
 
 .task-detail-content--planner-chat-expanded .detail-section--planner-chat {
@@ -1191,17 +1181,12 @@ FN-6500 fixes a tablet regression from FN-5599: the task-detail overlay offset a
     flex-direction: column;
     min-height: 0;
     overflow-y: hidden;
-    padding-block: var(--space-sm);
   }
 
   .detail-section--chat {
     flex: 1;
     min-height: 0;
     margin-top: 0;
-  }
-
-  .task-detail-content--chat-expanded .detail-body--chat {
-    padding: var(--space-sm);
   }
 
   .task-detail-content--chat-expanded .detail-tabs {
@@ -1212,9 +1197,6 @@ FN-6500 fixes a tablet regression from FN-5599: the task-detail overlay offset a
     display: none;
   }
 
-  .detail-body--planner-chat {
-    padding: var(--space-sm);
-  }
 }
 
 .detail-actions-menu-item-danger {

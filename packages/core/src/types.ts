@@ -4012,6 +4012,12 @@ export interface ProjectSettings {
    *    to permanent executor agents using the reporting chain heuristic.
    *  Tasks without an eligible permanent executor remain queued. */
   ephemeralAgentsEnabled?: boolean;
+  /**
+   * FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+   * Gates whether ephemeral/runtime-managed task-worker agents may create new tasks via `fn_task_create`.
+   * Default true preserves the existing behavior where a task-worker can spin off follow-up tasks.
+   * When false, an ephemeral caller's `fn_task_create` is rejected while human/dashboard/CLI callers and permanent agents remain unaffected. */
+  ephemeralAgentsCanCreateTasks?: boolean;
   /** Approval policy for agent provisioning tools (fn_agent_create/fn_agent_delete). */
   agentProvisioning?: {
     approvalMode?: AgentProvisioningApprovalMode;

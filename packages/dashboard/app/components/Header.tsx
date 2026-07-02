@@ -230,14 +230,17 @@ export function Header({
   // Keep mobile search open if there's an active search query
   const shouldShowMobileSearch = isMobileSearchOpen || searchQuery.length > 0;
 
-  // Non-mobile search: toggled open OR has active query, but not if explicitly closed
-  const shouldShowNonMobileSearch = (isNonMobileSearchOpen || searchQuery.length > 0) && !isNonMobileSearchExplicitlyClosed;
-  // Show toggle when search is available, NOT currently shown, NOT explicitly closed, AND query is empty
-  const canShowNonMobileSearchToggle = (view === "board" || view === "list") && !isMobile && onSearchChange && !isNonMobileSearchExplicitlyClosed && searchQuery.length === 0;
   const canShowNonMobileSearch = (view === "board" || view === "list") && !isMobile && onSearchChange;
+  // Non-mobile search: toggled open OR has active query, but not if explicitly closed.
+  const shouldShowNonMobileSearch = (isNonMobileSearchOpen || searchQuery.length > 0) && !isNonMobileSearchExplicitlyClosed;
+  /*
+  FNXC:BoardSearch 2026-07-01-23:38:
+  Closing board/list search must suppress the populated floating panel until App clears searchQuery, then immediately restore the Open search affordance. Keep the explicit-close state out of the empty-query toggle gate so an open-but-empty dismissal cannot strand the header without a search trigger.
+  */
+  const canShowNonMobileSearchToggle = Boolean(canShowNonMobileSearch && !shouldShowNonMobileSearch && searchQuery.length === 0);
   const showBoardBranchFilters = view === "board";
 
-  // Reset explicit close flag when query becomes empty (so toggle reappears)
+  // Reset explicit close flag when query becomes empty (so active-query reopen behavior is ready for the next search).
   useEffect(() => {
     if (searchQuery === "") {
       setIsNonMobileSearchExplicitlyClosed(false);

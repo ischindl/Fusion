@@ -21,6 +21,7 @@ interface ModelSelectorTabProps {
   addToast: (message: string, type?: ToastType) => void;
   onTaskUpdated?: (task: Task) => void;
   settings?: Settings;
+  projectId?: string;
 }
 
 interface ModelSelection {
@@ -120,7 +121,7 @@ function getSuccessToastMessage(
   });
 }
 
-export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: ModelSelectorTabProps) {
+export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings, projectId }: ModelSelectorTabProps) {
   const { t } = useTranslation("app");
   const {
     availableModels,
@@ -220,7 +221,11 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
               planningModelId: (target === "planning" ? nextSelection : savedPlanning).modelId ?? null,
             };
 
-        const updatedTask = await updateTask(requestTaskId, updates);
+        /*
+        FNXC:TaskDetailModels 2026-07-01-00:00:
+        Task-detail model saves must carry the active project id through the shared update API. Multi-project task detail views can otherwise patch the default project route and surface a false "Task not found" toast for existing scoped tasks.
+        */
+        const updatedTask = await updateTask(requestTaskId, updates, projectId);
 
         if (activeTaskIdRef.current !== requestTaskId) {
           return;
@@ -268,7 +273,7 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
         }
       }
     },
-    [task.id, savedExecutor, savedValidator, savedPlanning, addToast, onTaskUpdated, t],
+    [task.id, savedExecutor, savedValidator, savedPlanning, addToast, onTaskUpdated, projectId, t],
   );
 
   const handleExecutorChange = useCallback(
@@ -326,7 +331,7 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
       try {
         const updatedTask = await updateTask(requestTaskId, {
           thinkingLevel: nextValue,
-        });
+        }, projectId);
 
         if (activeTaskIdRef.current !== requestTaskId) {
           return;
@@ -362,7 +367,7 @@ export function ModelSelectorTab({ task, addToast, onTaskUpdated, settings }: Mo
         }
       }
     },
-    [task.id, savedThinking, settings, addToast, onTaskUpdated, t],
+    [task.id, savedThinking, settings, addToast, onTaskUpdated, projectId, t],
   );
 
   const executorUsingDefault = !savedExecutor.provider && !savedExecutor.modelId;

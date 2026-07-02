@@ -587,6 +587,57 @@ describe("PlanningModeModal", () => {
       });
     });
 
+    // FNXC:PlanningMode 2026-07-01-00:00: regression — deliberate typing must not spawn one draft per keystroke.
+    // Original symptom: each character created a new draft while the create-draft request was in flight, because
+    // the create-suppression guard only checked draftSessionIdRef, which is populated after the round-trip resolves.
+    it("creates exactly one draft when keystrokes arrive while the create request is still in flight", async () => {
+      let resolveCreate: ((value: { sessionId: string; title: string }) => void) | undefined;
+      mockCreatePlanningDraft.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveCreate = resolve;
+          }),
+      );
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      const textarea = screen.getByPlaceholderText(/e.g., Build a user authentication/);
+
+      // First keystroke → debounce (300ms) fires the create; it stays in flight (unresolved).
+      fireEvent.change(textarea, { target: { value: "Build" } });
+      await waitFor(() => {
+        expect(mockCreatePlanningDraft).toHaveBeenCalledTimes(1);
+      });
+
+      // Subsequent keystrokes while the create is still in flight must be suppressed by the
+      // synchronous in-flight sentinel — not each spawn another draft.
+      fireEvent.change(textarea, { target: { value: "Build a" } });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      fireEvent.change(textarea, { target: { value: "Build an" } });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      fireEvent.change(textarea, { target: { value: "Build an auth" } });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      expect(mockCreatePlanningDraft).toHaveBeenCalledTimes(1);
+
+      // Once the create resolves and further edits arrive, they patch the single draft — no new create.
+      resolveCreate?.({ sessionId: "draft-123", title: "New planning session" });
+      await waitFor(() => {
+        expect(document.querySelector(".planning-sidebar-item-title")).not.toBeNull();
+      });
+      fireEvent.change(textarea, { target: { value: "Build an auth system" } });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(mockCreatePlanningDraft).toHaveBeenCalledTimes(1);
+    });
+
     it("auto-starts planning when initialPlan prop is provided", async () => {
       render(
         <PlanningModeModal

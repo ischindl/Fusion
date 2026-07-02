@@ -335,6 +335,12 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   const streamConnectionRef = useRef<{ close: () => void; isConnected: () => boolean } | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
   const draftSessionIdRef = useRef<string | null>(null);
+  /*
+  FNXC:PlanningMode 2026-07-01-00:00:
+  A single draft session must back the whole "what to build" textarea; typing must not spawn one draft per keystroke.
+  draftSessionIdRef is only populated after createPlanningDraft resolves, so it cannot gate concurrent creates while a request is in flight. This synchronous sentinel flips true before the await and gates all subsequent debounce fires, collapsing the create path to exactly one call. Cleared on failure so a later keystroke can retry.
+  */
+  const draftCreateInFlightRef = useRef(false);
   const draftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks resumeSessionId values the user has explicitly dismissed (via "New
   // Session"). Without this, the resume effect re-fires on every callback
@@ -2086,14 +2092,14 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                     onChange={(e) => {
                       const nextValue = e.target.value;
                       setInitialPlan(nextValue);
-                      if (draftSessionIdRef.current || nextValue.trim().length === 0) {
+                      if (draftSessionIdRef.current || draftCreateInFlightRef.current || nextValue.trim().length === 0) {
                         return;
                       }
                       if (draftDebounceRef.current) {
                         clearTimeout(draftDebounceRef.current);
                       }
                       draftDebounceRef.current = setTimeout(() => {
-                        if (draftSessionIdRef.current) {
+                        if (draftSessionIdRef.current || draftCreateInFlightRef.current) {
                           return;
                         }
                         const content = nextValue.trim();
@@ -2104,6 +2110,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                           planningModelProvider && planningModelId
                             ? { planningModelProvider, planningModelId }
                             : undefined;
+                        // FNXC:PlanningMode 2026-07-01-00:00: mark in-flight synchronously so debounce fires during the round-trip don't spawn duplicate drafts.
+                        draftCreateInFlightRef.current = true;
                         void createPlanningDraft(content, projectId, modelOverride)
                           .then((response) => {
                             draftSessionIdRef.current = response.sessionId;
@@ -2124,7 +2132,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
                             setSelectedSessionId(response.sessionId);
                           })
                           .catch(() => {
-                            // best-effort
+                            // best-effort; clear the in-flight sentinel so a
+                            // later keystroke can retry creating the draft.
+                            draftCreateInFlightRef.current = false;
                           });
                       }, 300);
                     }}

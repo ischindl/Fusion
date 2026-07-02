@@ -2,12 +2,86 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
-## 0.53.1
+## 0.54.0
+
+### New
+
+- Add a project setting to allow or block ephemeral agents from creating tasks (default on).
+- Allow completed task planner Chat to answer and create refinements.
 
 ### Fixed
 
+- Disabling ephemeral agents now also stops the workflow engine from running unassigned tasks.
+- Align the task Activity view dropdown under its tab instead of drifting to the left of the modal.
 - Fix the Windows CLI binary failing to build in release.
-- Fix desktop app crashing on "Local" mode startup with a missing-module error.
+- Fix the desktop app crashing on "Local" mode with missing-module errors.
+- Planning mode no longer creates a new draft for every character you type.
+- Preserve project scope when saving task-detail model overrides.
+- Fix the All workflows dropdown counter so it no longer double-counts tasks.
+- Normalize task-detail tab padding across Activity, Chat, and Plan views.
+- Prevent task-bound agents from deleting the task they are currently executing.
+- Reviews stop failing on formatting: approvals pass, trailing-JSON verdicts parse, retries clear stale gate failures.
+- Stop showing "Task Failed" on a task whose code-review remediation is still running.
+- Restore the board search button after closing the search panel.
+
+## 0.53.1
+
+### @fusion/dashboard
+
+#### Patch Changes
+
+- @fusion/core@0.53.1
+- @fusion/engine@0.53.1
+- @fusion/i18n@0.39.17
+- @fusion-plugin-examples/cli-printing-press@0.1.34
+- @fusion-plugin-examples/compound-engineering@0.1.17
+- @fusion-plugin-examples/dependency-graph@0.1.48
+- @fusion-plugin-examples/roadmap@0.1.36
+- @fusion-plugin-examples/cursor-runtime@0.1.36
+- @fusion-plugin-examples/droid-runtime@0.1.43
+- @fusion-plugin-examples/hermes-runtime@0.2.67
+- @fusion-plugin-examples/openclaw-runtime@0.2.67
+- @fusion-plugin-examples/paperclip-runtime@0.2.67
+
+### @fusion/desktop
+
+#### Patch Changes
+
+- @fusion/core@0.53.1
+- @fusion/dashboard@0.53.1
+- @fusion/engine@0.53.1
+
+### @fusion/engine
+
+#### Patch Changes
+
+- @fusion/core@0.53.1
+- @fusion/pi-claude-cli@0.53.1
+
+### @fusion/plugin-sdk
+
+#### Patch Changes
+
+- @fusion/core@0.53.1
+
+### @runfusion/fusion
+
+#### Patch Changes
+
+- bb1de8a: summary: Fix the Windows CLI binary failing to build in release.
+  category: fix
+  dev: The bun `--conditions=source` compile of the CLI could not resolve @fusion-plugin-examples/hermes-runtime and openclaw-runtime (statically imported by dashboard routes.ts) because those plugin packages lacked a `source` export condition and fell through to `import`→`dist/index.js`, which is absent on the Windows runner. Added `"source": "./src/index.ts"` to both plugins' exports (matching @fusion/core|dashboard|engine|plugin-sdk) so bun bundles their TS source directly, independent of dist. Verified locally by cross-compiling bun-windows-x64 with plugin dist removed; a negative control reproduced the exact "Could not resolve" error.
+- 3aef6dd: summary: Fix desktop app crashing on "Local" mode startup with a missing-module error.
+  category: fix
+  dev: The desktop build now compiles @fusion/core and @fusion/engine tsc dist (both gitignored) so the packaged embedded Local runtime's `import("@fusion/engine")` resolves. Previously only release.yml's root `pnpm build` produced these; desktop-windows.yml packaged an empty engine/dist and crashed with ERR_MODULE_NOT_FOUND for app.asar/node_modules/@fusion/engine. `@fusion/desktop build` is now self-contained (build.ts → ensureEmbeddedRuntimeBuild), and desktop-windows.yml gained the `pnpm build` parity step.
+
+### runfusion.ai
+
+#### Patch Changes
+
+- Updated dependencies [bb1de8a]
+- Updated dependencies [3aef6dd]
+  - @runfusion/fusion@0.53.1
 
 ## 0.53.0
 
@@ -11905,6 +11979,14 @@ for reference.
 - Updated dependencies [a2ed6d0]
   - @runfusion/fusion@0.1.0
 
+## 0.39.18
+
+### @fusion/i18n
+
+#### Patch Changes
+
+- @fusion/core@0.54.0
+
 ## 0.39.17
 
 ### @fusion/i18n
@@ -12042,6 +12124,14 @@ for reference.
 #### Patch Changes
 
 - @fusion/core@0.40.0
+
+## 0.11.44
+
+### @fusion/droid-cli
+
+#### Patch Changes
+
+- @fusion-plugin-examples/droid-runtime@0.1.44
 
 ## 0.11.43
 

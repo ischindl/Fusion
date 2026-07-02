@@ -878,32 +878,139 @@ function buildReviewRequest(
   return parts.join("\n");
 }
 
-function extractVerdict(review: string): ReviewVerdict {
-  // Strategy 1: Look for a JSON verdict block (structured output)
-  // Matches: ```json\n{"verdict": "APPROVE"}\n``` or inline {"verdict":"REVISE"}
-  const jsonMatch = review.match(
-    /\{\s*"verdict"\s*:\s*"(APPROVE|REVISE|RETHINK)"\s*\}/i,
-  );
-  if (jsonMatch) {
-    reviewerLog.log(`Verdict extracted via JSON block: ${jsonMatch[1].toUpperCase()}`);
-    return jsonMatch[1].toUpperCase() as ReviewVerdict;
-  }
+/*
+FNXC:ReviewLeniency 2026-07-01-22:15:
+Operators want a review whose text CLEARLY approves to PASS even when the output is not perfectly structured — no trailing JSON verdict block and no "Verdict:" line. This detects an explicit prose approval while refusing to flip a rejection: any REVISE/RETHINK/"request revision|changes"/reject/disapprove or negated-approval ("not/no/never/cannot/can't/don't/doesn't/won't/without approve") signal disqualifies the lenient pass, so a prose REJECTION is never silently promoted to APPROVE. The positive set is a superset of the historical approve/approved/looks good/no issues/out of scope keywords plus common approval phrasings (approving, approval, LGTM, ship it, passes review, all good, acceptable, good to go/merge, no blocking issues/concerns).
 
-  // Strategy 2: Look for verdict in a heading line (### Verdict: APPROVE, **Verdict: REVISE**)
-  // Only match lines that START with a verdict pattern to avoid matching keywords in body text
+Shared by the reviewer/plan-review parser (extractVerdict, this file) and the code-review + browser-verification gate parser (inferWorkflowStepVerdictFromProse in executor.ts). Fail-closed merge / PR-review / mission-verification gates deliberately do NOT use this — leniently reading "approved" out of malformed output there could auto-merge on garbage.
+*/
+export function proseSignalsClearApproval(rawOutput: string): boolean {
+  const text = rawOutput.trim();
+  if (text.length === 0) return false;
+  // Revise/rethink/reject/needs-changes markers AND polite change-request
+  // phrasings ("must be fixed", "please fix", "should be corrected", "want X
+  // changed", "... before merging") disqualify leniency — a review that praises
+  // one aspect but requests a change is a REVISE, not an approval. "blocking" is
+  // intentionally NOT a marker: it appears in the approval phrase "no blocking
+  // issues".
+  const blockingSignal = new RegExp(
+    [
+      /\bREVIS(?:E|ED|ES|ING|ION|IONS)\b/,
+      /\bRETHINK\b/,
+      /\bREQUEST(?:ING|ED)?\s+(?:REVISION|CHANGES?)\b/,
+      /\bNEEDS?\s+(?:REVISION|CHANGES?|WORK|FIXE?S?)\b/,
+      /\bMUST\s+(?:BE\s+)?(?:FIX|CHANG|CORRECT|ADDRESS|RESOLV|UPDAT)\w*/,
+      /\bSHOULD\s+(?:BE\s+)?(?:FIX|CHANG|CORRECT|ADDRESS|RESOLV|UPDAT|REVIS)\w*/,
+      /\bPLEASE\s+(?:FIX|CHANG|CORRECT|ADDRESS|UPDAT|REVIS)\w*/,
+      /\bWANTS?\s+(?:\w+\s+){0,3}?(?:CHANG|FIX|CORRECT|ADDRESS|REVIS)\w*/,
+      /\bBEFORE\s+MERG\w*/,
+      /\bREJECT(?:ED|ING|S)?\b/,
+      /\bDISAPPROVE\b/,
+    ].map((r) => r.source).join("|"),
+    "i",
+  );
+  const negatedApproval =
+    /\b(?:not|no|never|cannot|can['’]?t|don['’]?t|doesn['’]?t|won['’]?t|without)\s+approv/i;
+  if (blockingSignal.test(text) || negatedApproval.test(text)) return false;
+  // NOTE: "passes" is anchored to "passes review" — a bare "pass"/"passes"
+  // matches unrelated "the tests/build pass", "pass on approving", etc., which
+  // are not review approvals.
+  const approvalSignal =
+    /\b(?:approv(?:e|ed|es|ing|al)|approve[_\s]with[_\s]notes|looks?\s+good|lgtm|ship\s+it|no\s+(?:blocking\s+)?(?:issues|concerns|problems|objections)|passes?\s+(?:the\s+)?review|all\s+good|acceptable|good\s+to\s+(?:go|merge)|out\s+of\s+scope)\b/i;
+  return approvalSignal.test(text);
+}
+
+/*
+FNXC:ReviewLeniency 2026-07-01-23:30:
+Some models emit PROSE followed by a trailing JSON payload — e.g. a paragraph of reasoning, then `{"verdict":"APPROVE","notes":"..."}` at the very end. Extract balanced top-level `{...}` objects in document order, string/escape aware so a brace inside prose or a notes string does not miscount. Callers prefer the LAST candidate as the authoritative trailing verdict. Shared by extractVerdict (reviewer/plan-review) and parseWorkflowStepVerdict (code-review + browser-verification gate).
+*/
+export function extractJsonObjectCandidates(text: string): string[] {
+  const out: string[] = [];
+  const starts: number[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") starts.push(i);
+    else if (ch === "}") {
+      const start = starts.pop();
+      if (start !== undefined && starts.length === 0) out.push(text.slice(start, i + 1));
+    }
+  }
+  return out;
+}
+
+/*
+FNXC:ReviewLeniency 2026-07-01-23:30:
+"Any approved" — classify a verdict TOKEN leniently so approval-family variants all pass. Any token starting with APPROVE (APPROVE, APPROVED, APPROVE_WITH_NOTES, approve_with_verdict, …) → APPROVE; REVISE/REQUEST_REVISION/REJECT → REVISE; RETHINK → RETHINK. Unknown tokens (e.g. "PASS") → null so callers can fall through instead of misclassifying.
+*/
+export function classifyReviewVerdictToken(raw: string): ReviewVerdict | null {
+  const v = raw.trim().toUpperCase();
+  if (v.startsWith("APPROVE") || v.startsWith("APPROVAL")) return "APPROVE";
+  if (v.startsWith("REVISE") || v.startsWith("REQUEST_REVISION") || v.startsWith("REJECT")) return "REVISE";
+  if (v.startsWith("RETHINK")) return "RETHINK";
+  return null;
+}
+
+function extractVerdict(review: string): ReviewVerdict {
+  /*
+  FNXC:ReviewLeniency 2026-07-02-00:10:
+  An EXPLICIT verdict the reviewer wrote as a heading or "Verdict:" line takes precedence over any JSON object found in the body. A reviewer that writes `## Verdict: REVISE` and also pastes a format example ```json {"verdict":"APPROVE"}``` or quotes a prior reviewer's `{"verdict":"APPROVE"}` must NOT be read as APPROVE. The prose→trailing-JSON case the leniency targets has no such heading/line, so JSON is still reached and used.
+  */
+  // Strategy 1: verdict in a heading line (### Verdict: APPROVE, **Verdict: REVISE**).
+  // Only match lines that START with a verdict pattern to avoid matching keywords in body text.
+  // Capture the whole token (e.g. APPROVE_WITH_NOTES) and classify leniently ("any approved").
   const headingMatch = review.match(
-    /^[>\s]*(?:###?\s*|[*_]{1,2})Verdict[:\s]*[*_]{0,2}\s*(APPROVE|REVISE|RETHINK)\b/im,
+    /^[>\s]*(?:###?\s*|[*_]{1,2})Verdict[:\s]*[*_]{0,2}\s*([A-Za-z_]+)/im,
   );
   if (headingMatch) {
-    return headingMatch[1].toUpperCase() as ReviewVerdict;
+    const classified = classifyReviewVerdictToken(headingMatch[1]);
+    if (classified) return classified;
   }
 
-  // Strategy 3: Standalone verdict line like "Verdict: APPROVE" or "Decision: REVISE"
+  // Strategy 2: Standalone verdict line like "Verdict: APPROVE" or "Decision: REVISE"
   const lineFallback = review.match(
-    /^[>\s]*(?:verdict|decision)\s*[-:]\s*(APPROVE|REVISE|RETHINK)\b/im,
+    /^[>\s]*(?:verdict|decision)\s*[-:]\s*([A-Za-z_]+)/im,
   );
   if (lineFallback) {
-    return lineFallback[1].toUpperCase() as ReviewVerdict;
+    const classified = classifyReviewVerdictToken(lineFallback[1]);
+    if (classified) return classified;
+  }
+
+  // Strategy 3: JSON verdict payload (structured output), tolerating prose before
+  // it, extra fields (notes), and approval-family verdict variants. Prefer the
+  // LAST balanced object — models emit the authoritative verdict as a trailing
+  // JSON payload after any reasoning prose.
+  const jsonCandidates = extractJsonObjectCandidates(review);
+  for (let i = jsonCandidates.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(jsonCandidates[i]) as { verdict?: unknown };
+      if (typeof parsed?.verdict === "string") {
+        const classified = classifyReviewVerdictToken(parsed.verdict);
+        if (classified) {
+          reviewerLog.log(`Verdict extracted via JSON payload: ${classified}`);
+          return classified;
+        }
+      }
+    } catch {
+      // Not valid JSON — try the next candidate / fall through to prose strategies.
+    }
+  }
+
+  // Strategy 4 (lenient): no structured verdict, but the prose clearly approves
+  // (and carries no revise/reject/negated-approval signal). Treat as APPROVE so
+  // an imperfectly-structured approval passes instead of collapsing to a
+  // synthetic UNAVAILABLE retry/block. See proseSignalsClearApproval.
+  if (proseSignalsClearApproval(review)) {
+    reviewerLog.log(`Verdict extracted via lenient prose approval (${review.length} chars) → APPROVE`);
+    return "APPROVE";
   }
 
   reviewerLog.warn(`Could not extract verdict from review (${review.length} chars). Returning UNAVAILABLE.`);

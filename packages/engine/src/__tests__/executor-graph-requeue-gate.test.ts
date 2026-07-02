@@ -165,6 +165,92 @@ describe("executor graph execute self-requeue gate", () => {
     );
   });
 
+  it("does not flag a remediation-node graph failure as failed while a live agent session is executing", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-REMEDIATION-LIVE",
+      column: "in-progress",
+      steps: [{ name: "Implement", status: "in-progress" }],
+    });
+    store.getTask.mockResolvedValue(live);
+    store.getSettings.mockResolvedValue({
+      autoMerge: true,
+      maxAutoMergeRetries: 3,
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    /*
+     * FNXC:WorkflowRemediation 2026-07-01-23:40:
+     * `code-review-remediation` is a fire-and-forget async scheduler with no
+     * `failure` out-edge; a failed re-arm bubbles out as the terminal graph
+     * outcome. When a SEPARATE live agent session surface is still registered
+     * (the previously-scheduled fix/reviewer is mid-flight), the terminal sink
+     * must NOT stamp `status:"failed"` over live work.
+     */
+    (executor as any).activeSessions.set(live.id, { session: {} });
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed",
+      outcome: "failure",
+      visitedNodeIds: ["code-review", "code-review-remediation"],
+      context: {},
+    });
+
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({ status: "failed" }),
+      expect.anything(),
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("not flagging as failed"),
+      undefined,
+      undefined,
+    );
+    expect(store.moveTask).not.toHaveBeenCalledWith(live.id, "in-review", expect.anything());
+  });
+
+  it("still parks a remediation-node graph failure as failed when NO live session exists", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-REMEDIATION-DEAD",
+      column: "in-progress",
+      steps: [{ name: "Implement", status: "in-progress" }],
+    });
+    store.getTask.mockResolvedValue(live);
+    store.getSettings.mockResolvedValue({
+      autoMerge: true,
+      maxAutoMergeRetries: 3,
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+    });
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    // Surface enumeration: the guard is scoped to a LIVE session surface. With
+    // no session (e.g. a genuinely exhausted rework budget), the remediation
+    // failure remains terminal and parks failed exactly as before.
+    await (executor as any).handleGraphFailure(live, {
+      disposition: "failed",
+      outcome: "failure",
+      visitedNodeIds: ["code-review", "code-review-remediation"],
+      context: {},
+    });
+
+    expect(store.updateTask).toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({
+        status: "failed",
+        error: expect.stringContaining("Workflow graph terminated with failure at node 'code-review-remediation'"),
+      }),
+      undefined,
+    );
+  });
+
   it("does not hand generic graph failures to review", async () => {
     resetExecutorMocks();
     const store = createMockStore();

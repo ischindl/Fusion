@@ -97,6 +97,15 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
         <small>{t("settings.general.whenEnabledDefaultFusionSpawnsShortLived", " When enabled (default), Fusion spawns short-lived ")}<code>executor-FN-XXXX</code>{t("settings.general.agentsToRunEachTaskWhenDisabledOnly", " agents to run each task. When disabled, only permanent agents execute tasks and the scheduler auto-assigns work using the agent reporting chain. Tasks with no eligible permanent agent stay queued. ")}</small>
       </div>
       {/*
+        FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+        Default-on toggle controlling whether ephemeral task-worker agents may open new tasks via fn_task_create. Turning it off confines task creation to humans and permanent agents; ephemeral callers get a rejection.
+      */}
+      <div className="form-group">
+        <label htmlFor="ephemeralAgentsCanCreateTasks" className="checkbox-label">
+          <input id="ephemeralAgentsCanCreateTasks" type="checkbox" checked={form.ephemeralAgentsCanCreateTasks !== false} onChange={(e) => setForm((f) => ({ ...f, ephemeralAgentsCanCreateTasks: e.target.checked }))}/>{t("settings.general.allowEphemeralAgentsToCreateTasks", " Allow ephemeral agents to create tasks ")}</label>
+        <small>{t("settings.general.allowEphemeralAgentsToCreateTasksHint", "When enabled (default), ephemeral task-worker agents can open follow-up tasks via fn_task_create. When disabled, only humans and permanent agents can create tasks; ephemeral callers are rejected.")}</small>
+      </div>
+      {/*
         FNXC:Workspace 2026-06-24-16:00:
         Workspace mode toggle: when enabled, the project root is treated as a workspace parent
         containing multiple git sub-repos instead of a single git repo. The executor runs tasks

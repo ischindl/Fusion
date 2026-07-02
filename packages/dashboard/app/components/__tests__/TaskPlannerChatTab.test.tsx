@@ -50,8 +50,8 @@ vi.mock("lucide-react", () => ({
   Send: (props: any) => React.createElement("svg", { "data-testid": "send-icon", ...props }),
 }));
 
-function makeTask(id: string) {
-  return { id, description: "Test task", column: "todo", dependencies: [], steps: [], currentStep: 0, createdAt: "2026-06-30T00:00:00.000Z", updatedAt: "2026-06-30T00:00:00.000Z", planningModelProvider: "anthropic", planningModelId: "claude-plan" } as any;
+function makeTask(id: string, overrides: Record<string, unknown> = {}) {
+  return { id, description: "Test task", column: "todo", dependencies: [], steps: [], currentStep: 0, createdAt: "2026-06-30T00:00:00.000Z", updatedAt: "2026-06-30T00:00:00.000Z", planningModelProvider: "anthropic", planningModelId: "claude-plan", ...overrides } as any;
 }
 
 function makePlannerSession(overrides: Record<string, unknown> = {}) {
@@ -196,6 +196,57 @@ describe("TaskPlannerChatTab", () => {
       undefined,
       undefined,
       { taskId: "FN-7310" },
+    );
+  });
+
+  it("lets a done task with no planner history create a task-scoped session on first composer send", async () => {
+    const user = userEvent.setup();
+    const addToast = vi.fn();
+    mockFetchTaskPlannerChatSession.mockResolvedValueOnce({ session: null });
+
+    renderPlannerChat({ task: makeTask("FN-DONE", { column: "done" }), addToast });
+    await screen.findByTestId("task-planner-chat-empty");
+
+    expect(mockEnsureTaskPlannerChatSession).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Message planner chat"), "What changed in this completed task?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(mockEnsureTaskPlannerChatSession).toHaveBeenCalledWith(
+      "FN-DONE",
+      { modelProvider: "anthropic", modelId: "claude-plan" },
+      undefined,
+    );
+    expect(mockStreamChatResponse).toHaveBeenCalledWith(
+      "chat-planner",
+      "What changed in this completed task?",
+      expect.any(Object),
+      undefined,
+      undefined,
+      { taskId: "FN-DONE" },
+    );
+    expect(addToast).not.toHaveBeenCalledWith(expect.stringContaining("planner chat can only be started while a task is live"), "error");
+  });
+
+  it("lets a done task with no planner history create a task-scoped session from a starter prompt", async () => {
+    const user = userEvent.setup();
+    mockFetchTaskPlannerChatSession.mockResolvedValueOnce({ session: null });
+
+    renderPlannerChat({ task: makeTask("FN-DONE", { column: "done" }) });
+    await screen.findByTestId("task-planner-chat-empty");
+    await user.click(screen.getByRole("button", { name: /Summarize recent activity/ }));
+
+    expect(mockEnsureTaskPlannerChatSession).toHaveBeenCalledWith(
+      "FN-DONE",
+      { modelProvider: "anthropic", modelId: "claude-plan" },
+      undefined,
+    );
+    expect(mockStreamChatResponse).toHaveBeenCalledWith(
+      "chat-planner",
+      "Summarize the recent activity for this task and call out anything important I should know.",
+      expect.any(Object),
+      undefined,
+      undefined,
+      { taskId: "FN-DONE" },
     );
   });
 
@@ -930,16 +981,19 @@ describe("TaskPlannerChatTab", () => {
     expect(onTaskUpdated).toHaveBeenCalledWith(updatedTask);
   });
 
-  it("renders reattached planner questions and pending/completed/error steering tool states", async () => {
+  it("renders reattached planner questions and pending/completed/error steering and refinement tool states", async () => {
     const inFlightGeneration = {
       status: "generating",
-      streamingText: "I need clarification and may add steering.",
+      streamingText: "I need clarification and may add steering or refinement.",
       streamingThinking: "Checking planner tools",
       toolCalls: [
         { toolName: "fn_ask_question", args: { question: "Pick a path", options: ["Conservative", "Aggressive"] }, isError: false, status: "completed" },
         { toolName: "fn_task_planner_add_steering", args: { text: "Persist this later" }, isError: false, status: "running" },
         { toolName: "fn_task_planner_add_steering", args: { text: "Persisted steering" }, isError: false, result: { details: { text: "Persisted steering" } }, status: "completed" },
         { toolName: "fn_task_planner_add_steering", args: { text: "Bad steering" }, isError: true, result: { error: "Invalid steering" }, status: "completed" },
+        { toolName: "fn_task_planner_create_refinement", args: { feedback: "Create follow-up" }, isError: false, status: "running" },
+        { toolName: "fn_task_planner_create_refinement", args: { feedback: "Add export support" }, isError: false, result: { details: { sourceTaskId: "FN-7310", refinementTaskId: "FN-REFINE", description: "Add export support" } }, status: "completed" },
+        { toolName: "fn_task_planner_create_refinement", args: { feedback: "" }, isError: true, result: { details: { sourceTaskId: "FN-7310", error: "feedback required" } }, status: "completed" },
       ],
       replayFromEventId: 12,
       updatedAt: "2026-07-01T14:00:00.000Z",
@@ -954,6 +1008,10 @@ describe("TaskPlannerChatTab", () => {
     expect(screen.getByTestId("task-planner-chat-steering-pending")).toHaveTextContent("Adding steering comment…");
     expect(screen.getByTestId("task-planner-chat-steering-confirmation")).toHaveTextContent("Persisted steering");
     expect(screen.getByTestId("task-planner-chat-steering-error")).toHaveTextContent("Steering comment was not added");
+    expect(screen.getByTestId("task-planner-chat-refinement-pending")).toHaveTextContent("Creating refinement task…");
+    expect(screen.getByTestId("task-planner-chat-refinement-confirmation")).toHaveTextContent("Created refinement task FN-REFINE");
+    expect(screen.getByTestId("task-planner-chat-refinement-confirmation")).toHaveTextContent("Add export support");
+    expect(screen.getByTestId("task-planner-chat-refinement-error")).toHaveTextContent("Refinement task was not created");
     expect(screen.getAllByTestId("chat-question-response-submit")).toHaveLength(1);
   });
 

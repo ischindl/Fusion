@@ -1,5 +1,55 @@
 # @runfusion/fusion
 
+## 0.54.0
+
+### Minor Changes
+
+- 40b44e4: summary: Add a project setting to allow or block ephemeral agents from creating tasks (default on).
+  category: feature
+  dev: New project setting `ephemeralAgentsCanCreateTasks` (default true) in DEFAULT_PROJECT_SETTINGS; gated in both fn_task_create surfaces (pi extension caller-agent check and the engine executor's ephemeral task-worker tool via `AgentTaskCreationOptions.callerIsEphemeral`). Toggle lives in Settings → General.
+
+### Patch Changes
+
+- 40b44e4: summary: Disabling ephemeral agents now also stops the workflow engine from running unassigned tasks.
+  category: fix
+  dev: Added `TaskExecutor.blockOuterDispatchWhenEphemeralDisabled` gate at the top of `execute()`, ahead of all three workflow dispatch paths (maybeExecuteWorkflowGraph, workflowAuthoritativeDispatch, maybeDispatchWorkflowWorkEngine). Previously `ephemeralAgentsEnabled=false` was enforced only on the legacy scheduler/EphemeralWorkerManager path; the workflow-engine paths ran unassigned tasks anyway because the spawn refusal is a post-execution fire-and-forget callback. Unassigned tasks are now re-queued for permanent-agent assignment; tasks bound to a permanent agent still run.
+- 69f754f: summary: Align the task Activity view dropdown under its tab instead of drifting to the left of the modal.
+  category: fix
+  dev: TaskDetailModal's position:fixed Activity menu now clamps to the layout viewport (document.documentElement.clientWidth/clientHeight) and no longer mixes in window.visualViewport width/offset, which shoved the popup off-anchor under pinch-zoom or an open mobile keyboard.
+- abd596b: summary: Fix the Windows CLI binary failing to build in release.
+  category: fix
+  dev: The bun `--compile --conditions=source` build could not resolve @fusion-plugin-examples/paperclip-runtime (statically imported by dashboard runtime-provider-probes.ts) because it lacked a `source` export condition and fell through to `import`→`dist/index.js`, absent on the Windows runner. Added `"source": "./src/index.ts"` to paperclip and the remaining example plugins that export `import`→dist (agent-browser, even-cards, even-realities-glasses, whatsapp-chat), matching hermes/openclaw. Verified by cross-compiling bun-windows-x64 with all plugin dist removed.
+- abd596b: summary: Fix the desktop app crashing on "Local" mode with missing-module errors.
+  category: fix
+  dev: electron-builder's pnpm support runs `pnpm list --prod` and drops `deduped` subtrees, so the embedded runtime's `import("@fusion/engine")` closure (@modelcontextprotocol/sdk, the pi-ai provider SDKs, etc.) was never packed into app.asar. The desktop build now stages the complete flat production closure with `pnpm deploy --legacy --config.node-linker=hoisted` and points electron-builder at it via `--projectDir deploy`, so packaging no longer depends on the lossy collector. Also fixes cursor/droid/roadmap plugin exports to expose compiled `dist` on the `import` condition (with `source`→src kept for the bun CLI) so the dashboard server loads them under plain Node, and builds those plugins in the desktop build. Validated by importing @fusion/core|engine|dashboard from the staged deploy and packing a complete 705-package asar.
+- 074462e: summary: Planning mode no longer creates a new draft for every character you type.
+  category: fix
+  dev: PlanningModeModal's initial-plan textarea gated duplicate createPlanningDraft calls only on draftSessionIdRef, which is set after the create round-trip resolves; keystrokes during an in-flight create each spawned a fresh draft. A synchronous draftCreateInFlightRef sentinel now suppresses concurrent creates and is cleared on failure so a later keystroke can retry.
+- eedf526: summary: Preserve project scope when saving task-detail model overrides.
+  category: fix
+  dev: Threads task-detail Model tab updates through projectId for executor, reviewer, planning, and thinking lanes.
+- 9464f31: summary: Fix the All workflows dropdown counter so it no longer double-counts tasks.
+  category: fix
+  dev: Board now uses the shared workflow status count aggregate directly, with regression coverage for Board/List and header/graph selector count behavior.
+- 1a523e7: summary: Allow completed task planner Chat to answer and create refinements.
+  category: feature
+  dev: Adds done-task task-planner session creation and `fn_task_planner_create_refinement`.
+- b6da7fa: summary: Normalize task-detail tab padding across Activity, Chat, and Plan views.
+  category: fix
+  dev: Keeps chat-like task-detail tabs on canonical body padding while preserving internal scroll behavior.
+- 22261b6: summary: Prevent task-bound agents from deleting the task they are currently executing.
+  category: fix
+  dev: TaskStore.deleteTask now rejects audit contexts whose caller task matches the delete target.
+- 3167dbc: summary: Reviews stop failing on formatting: approvals pass, trailing-JSON verdicts parse, retries clear stale gate failures.
+  category: fix
+  dev: reviewer.ts adds shared `proseSignalsClearApproval` (approval prose with a revise/negated-approval guard), `extractJsonObjectCandidates` (string-aware balanced-brace scan, last-object preferred for prose→trailing-JSON), and `classifyReviewVerdictToken` (any APPROVE\*/APPROVAL token → APPROVE). `extractVerdict` now prefers an explicit heading/line verdict over an incidental/example JSON object. Gate parser (`parseWorkflowStepVerdict`/`inferWorkflowStepVerdictFromProse`) shares the same logic. `executeWorkflowStep` retries the fallback model on malformed (not just timeout) and malformed gate output is a non-blocking advisory (relaxes FN-6582; genuine parsed REVISE still blocks). Retry paths clear prior terminal step failures (`clearTerminalWorkflowStepFailures`) only after the task leaves the mergeable in-review column (`clearTerminalStepFailuresForRetry` in the rerun bounce / resume path) to avoid an auto-merge race. Fail-closed merge/PR/mission-verification gates are unchanged.
+- ca88a6c: summary: Stop showing "Task Failed" on a task whose code-review remediation is still running.
+  category: fix
+  dev: handleGraphFailure now skips the terminal `status:"failed"` park when the failed graph node is a `pre-merge-remediation`/`plan-replan` node (e.g. `code-review-remediation`) AND a live agent session surface is still registered for the task. These nodes are fire-and-forget async schedulers with no `failure` out-edge, so a failed re-arm (missing rehydrated failureContext after restart, remediation-not-scheduled, or exhausted rework budget) bubbled out as the terminal graph outcome and stamped a spurious failure over live work. Scoped via `isRemediationGraphNode` (IR `workflowAction` with built-in node-id fallback) + `hasLiveTaskSessionSurface`; genuine execute/merge failures and remediation failures with no live session still park failed unchanged.
+- 9870428: summary: Restore the board search button after closing the search panel.
+  category: fix
+  dev: Keeps the desktop/tablet Header search reopen affordance visible after empty-query dismissal and parent clear.
+
 ## 0.53.1
 
 ### Patch Changes

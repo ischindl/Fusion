@@ -4,7 +4,7 @@ The shared header workflow slot is the canonical desktop workflow selector for P
 */
 
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardWorkflowDefinition, BoardWorkflowsPayload } from "../../api";
 import { HeaderWorkflowSwitcherSlot, type HeaderWorkflowSelection } from "../HeaderWorkflowSwitcherSlot";
@@ -144,7 +144,11 @@ describe("HeaderWorkflowSwitcherSlot", () => {
     );
 
     fireEvent.click(await screen.findByTestId("workflow-switcher"));
-    expect(screen.getByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`)).toHaveTextContent("All workflows");
+    const aggregateOption = screen.getByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`);
+    expect(aggregateOption).toHaveTextContent("All workflows");
+    expect(within(aggregateOption).getByTitle("Todo: 0")).toBeInTheDocument();
+    expect(within(aggregateOption).getByTitle("In Progress: 0")).toBeInTheDocument();
+    expect(within(aggregateOption).getByTitle("Done: 0")).toBeInTheDocument();
     expect(screen.queryByTestId(`workflow-switcher-edit-${ALL_WORKFLOWS_BOARD_VIEW_ID}`)).toBeNull();
     fireEvent.click(screen.getByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`));
 

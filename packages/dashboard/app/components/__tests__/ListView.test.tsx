@@ -1201,6 +1201,68 @@ describe("ListView", () => {
     mobileSpy.mockRestore();
   });
 
+  it("shows the same single aggregate all-workflows dropdown count in ListView", async () => {
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [
+        {
+          id: "builtin:coding",
+          name: "Coding",
+          columns: [
+            { id: "triage", name: "Triage", flags: { intake: true } },
+            { id: "in-progress", name: "In Progress", flags: { countsTowardWip: true } },
+            { id: "done", name: "Done", flags: { complete: true } },
+            { id: "archived", name: "Archived", flags: { archived: true } },
+          ],
+        },
+        {
+          id: "wf-custom",
+          name: "Coding",
+          columns: [
+            { id: "backlog", name: "Backlog", flags: { intake: true } },
+            { id: "complete", name: "Complete", flags: { complete: true } },
+            { id: "hidden", name: "Hidden", flags: { hiddenFromBoard: true } },
+          ],
+        },
+      ],
+      taskWorkflowIds: {
+        "FN-001": "builtin:coding",
+        "FN-002": "builtin:coding",
+        "FN-003": "wf-custom",
+        "FN-004": "wf-custom",
+        "FN-005": "missing-workflow",
+        "FN-006": "wf-custom",
+        "FN-007": "builtin:coding",
+      },
+    });
+
+    renderListView({
+      tasks: [
+        createMockTask({ id: "FN-001", column: "triage", title: "Coding todo" }),
+        createMockTask({ id: "FN-002", column: "in-progress", title: "Coding active", status: "merging" }),
+        createMockTask({ id: "FN-003", column: "backlog", title: "Custom todo" }),
+        createMockTask({ id: "FN-004", column: "complete", title: "Custom done" }),
+        createMockTask({ id: "FN-005", column: "done", title: "Stale done" }),
+        createMockTask({ id: "FN-006", column: "hidden", title: "Hidden custom" }),
+        createMockTask({ id: "FN-007", column: "archived", title: "Archived coding" }),
+      ],
+    });
+
+    await openWorkflowSwitcher();
+    const aggregateOption = screen.getByTestId(`workflow-switcher-option-${ALL_WORKFLOWS_BOARD_VIEW_ID}`);
+    expect(within(aggregateOption).getByTitle("Todo: 2")).toBeInTheDocument();
+    expect(within(aggregateOption).getByTitle("In Progress: 1")).toBeInTheDocument();
+    expect(within(aggregateOption).getByTitle("Done: 2")).toBeInTheDocument();
+    expect(within(aggregateOption).getByTitle("1 merging")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("Todo: 1")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("In Progress: 1")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-builtin:coding")).getByTitle("Done: 1")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("Todo: 1")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("In Progress: 0")).toBeInTheDocument();
+    expect(within(screen.getByTestId("workflow-switcher-option-wf-custom")).getByTitle("Done: 1")).toBeInTheDocument();
+  });
+
   it("shows all workflows in ListView without submitting the aggregate sentinel", async () => {
     const mockOnQuickCreate = vi.fn().mockResolvedValue({ id: "FN-new" });
     vi.mocked(fetchBoardWorkflows).mockResolvedValue({

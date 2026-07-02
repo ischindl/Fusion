@@ -3620,7 +3620,13 @@ export function TaskDetailContent({
             </div>
           ) : activeTab === "model" ? (
             <div className="detail-section">
-              <ModelSelectorTab task={task} addToast={addToast} onTaskUpdated={onTaskUpdated} settings={settings} />
+              <ModelSelectorTab
+                task={task}
+                addToast={addToast}
+                onTaskUpdated={onTaskUpdated}
+                settings={settings}
+                projectId={projectId}
+              />
             </div>
           ) : activeTab === "summary" && task.column === "done" ? (
             <div className="detail-section detail-section--summary">

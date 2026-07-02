@@ -241,6 +241,26 @@ async function validateAssignableAgentId(
   return null;
 }
 
+/*
+FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+fn_task_create runs inside whatever agent loaded the pi extension. When the caller is an ephemeral/runtime task-worker (executor-FN-XXXX and friends), the project setting `ephemeralAgentsCanCreateTasks` decides whether it may open new tasks.
+Human/dashboard/CLI callers have no `ctx.agentId`, so they are never gated here — the setting only constrains runtime-managed agents.
+Resolution is fail-open on lookup errors: a missing/unresolvable caller is treated as non-ephemeral so a store hiccup never blocks legitimate task creation.
+*/
+async function isEphemeralCallerAgent(cwd: string, callerAgentId: string | undefined): Promise<boolean> {
+  if (!callerAgentId) return false;
+  try {
+    const { AgentStore, isEphemeralAgent } = await import("@fusion/core");
+    const agentStore = new AgentStore({ rootDir: getFusionDir(cwd) });
+    await agentStore.init();
+    const agent = await agentStore.resolveAgent(callerAgentId);
+    if (!agent) return false;
+    return isEphemeralAgent(agent);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeNullableStringInput(value: string | null | undefined): string | null | undefined {
   if (value === undefined) {
     return undefined;
@@ -741,6 +761,25 @@ export default function kbExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
 
+      /*
+      FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
+      Gate ephemeral task-worker callers behind the project `ephemeralAgentsCanCreateTasks` toggle (default true). Only runtime-managed agents are affected; humans/CLI/dashboard calls carry no ctx.agentId and pass through.
+      */
+      const fnCtx = ctx as typeof ctx & { agentId?: string };
+      const projectSettingsForGate = await store.getSettings();
+      if (
+        projectSettingsForGate.ephemeralAgentsCanCreateTasks === false &&
+        (await isEphemeralCallerAgent(ctx.cwd ?? process.cwd(), fnCtx.agentId))
+      ) {
+        const error =
+          "Ephemeral task-worker agents are not allowed to create tasks (ephemeralAgentsCanCreateTasks is disabled for this project).";
+        return {
+          content: [{ type: "text", text: `ERROR: ${error}` }],
+          isError: true,
+          details: { error, rule: "ephemeral-agents-cannot-create-tasks", callerAgentId: fnCtx.agentId },
+        };
+      }
+
       const normalizedAgentId = normalizeNullableStringInput(params.agentId);
 
       if (normalizedAgentId !== undefined && normalizedAgentId !== null) {
@@ -756,11 +795,10 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       try {
-        const projectSettings = await store.getSettings();
         const globalSettings = await store.getGlobalSettingsStore().getSettings();
         const resolvedTracking = resolveTaskGithubTracking(
           { githubTracking: undefined },
-          projectSettings,
+          projectSettingsForGate,
           globalSettings,
         );
         const workflowId = params.workflow_id?.trim() || undefined;
@@ -1523,11 +1561,13 @@ export default function kbExtension(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const store = await getStore(ctx.cwd);
+      const callerTaskId = (ctx as { taskId?: string }).taskId;
       const task = await store.deleteTask(params.id, {
         allowResurrection: params.allowResurrection === true,
         auditContext: {
           agentId: "pi-extension",
           runId: `synthetic-pi-delete-${params.id}-${Date.now()}`,
+          taskId: callerTaskId,
         },
       });
 
