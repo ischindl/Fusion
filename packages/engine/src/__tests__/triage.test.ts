@@ -29,7 +29,28 @@ vi.mock("../reviewer.js", () => ({
   reviewStep: mockReviewStep,
 }));
 
-vi.mock("../pi.js", () => ({
+vi.mock("../pi.js", () => {
+  class ModelFallbackExhaustedError extends Error {
+    readonly primaryModel: string;
+    readonly fallbackModel?: string;
+    readonly triggerPoint: "session-creation" | "prompt-time";
+    readonly attempts: number;
+    readonly underlyingReason: string;
+
+    constructor(input: { primaryModel: string; fallbackModel?: string; triggerPoint: "session-creation" | "prompt-time"; attempts: number; underlyingReason: string }) {
+      const fallbackClause = input.fallbackModel ? `, fallback ${input.fallbackModel}` : ", no fallback configured";
+      super(`Unable to select a usable model after ${input.attempts} attempts (primary ${input.primaryModel}${fallbackClause}, trigger: ${input.triggerPoint}): ${input.underlyingReason}`);
+      this.name = "ModelFallbackExhaustedError";
+      this.primaryModel = input.primaryModel;
+      this.fallbackModel = input.fallbackModel;
+      this.triggerPoint = input.triggerPoint;
+      this.attempts = input.attempts;
+      this.underlyingReason = input.underlyingReason;
+    }
+  }
+
+  return {
+  ModelFallbackExhaustedError,
   createFnAgent: mockCreateFnAgent,
   describeModel: vi.fn().mockReturnValue("mock-model"),
   formatModelMarkerDetails: vi.fn((model: string, thinking?: string | null, annotations: string[] = []) => {
@@ -37,7 +58,8 @@ vi.mock("../pi.js", () => ({
     return suffixes.length ? `${model} ${suffixes.map((suffix) => `(${suffix})`).join(" ")}` : model;
   }),
   promptWithFallback: vi.fn().mockReturnValue("mock-prompt"),
-}));
+  };
+});
 
 vi.mock("@fusion/core", async (importOriginal) => {
   const { createEngineCoreMock } = await import("../test/mockCore.js");
@@ -3440,6 +3462,13 @@ describe("taskCreate tool model inheritance", () => {
   });
 
   describe("bounded recovery retries for triage", () => {
+    beforeEach(async () => {
+      vi.clearAllMocks();
+      const { promptWithFallback } = await import("../pi.js");
+      (promptWithFallback as ReturnType<typeof vi.fn>).mockReset();
+      (promptWithFallback as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    });
+
     it("requeues triage with backoff when the agent exits without writing PROMPT.md", async () => {
       const task = {
         id: "FN-202",
@@ -3518,6 +3547,134 @@ describe("taskCreate tool model inheritance", () => {
       expect(store.updateTask).toHaveBeenCalledWith("FN-200", expect.objectContaining({
         recoveryRetryCount: 1,
         nextRecoveryAt: expect.any(String),
+      }));
+    });
+
+    it("persists terminal planning error when prompt-time primary and fallback models are exhausted", async () => {
+      const task = {
+        id: "FN-7437",
+        description: "Bug: planner triage fallback loop",
+        column: "triage",
+        dependencies: [],
+        steps: [],
+        currentStep: 0,
+        log: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as Task;
+      const onSpecifyError = vi.fn();
+      const store = createMockStore({
+        getTask: vi.fn().mockResolvedValue({ ...task, attachments: [] }),
+        getSettings: vi.fn().mockResolvedValue({
+          maxConcurrent: 2,
+          maxWorktrees: 4,
+          pollIntervalMs: 10000,
+          groupOverlappingFiles: false,
+          autoMerge: true,
+          defaultProvider: "openai",
+          defaultModelId: "gpt-4o",
+          planningFallbackProvider: "anthropic",
+          planningFallbackModelId: "claude-3-5-haiku-20241022",
+          defaultThinkingLevel: "low",
+        } as Settings),
+      });
+      const mockDispose = vi.fn();
+      mockCreateFnAgent.mockResolvedValue({
+        session: {
+          state: {},
+          sessionManager: {},
+          prompt: vi.fn(),
+          dispose: mockDispose,
+          navigateTree: vi.fn(),
+        },
+      });
+      const { ModelFallbackExhaustedError, promptWithFallback } = await import("../pi.js");
+      (promptWithFallback as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new ModelFallbackExhaustedError({
+          primaryModel: "openai/gpt-4o",
+          fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+          triggerPoint: "prompt-time",
+          attempts: 2,
+          underlyingReason: "401 invalid api key for fallback",
+        }),
+      );
+
+      const processor = new TriageProcessor(store, "/test/root", {
+        pollIntervalMs: 100_000,
+        onSpecifyError,
+      });
+
+      await processor.specifyTask(task);
+
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-7437",
+        "Triage using model: mock-model (thinking effort: low)",
+      );
+      expect(store.appendAgentLog).toHaveBeenCalledWith(
+        "FN-7437",
+        "Triage using model: mock-model (thinking effort: low)",
+        "text",
+        undefined,
+        "triage",
+      );
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-7437",
+        expect.stringContaining("Triage failed: unable to select a usable model after 2 attempts"),
+      );
+      expect(store.updateTask).toHaveBeenCalledWith("FN-7437", expect.objectContaining({
+        status: "failed",
+        error: expect.stringContaining("openai/gpt-4o"),
+        recoveryRetryCount: null,
+        nextRecoveryAt: null,
+      }));
+      expect(store.updateTask).not.toHaveBeenCalledWith("FN-7437", expect.objectContaining({
+        status: null,
+        error: null,
+      }));
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+      expect(onSpecifyError).toHaveBeenCalledTimes(1);
+    });
+
+    it("persists terminal planning error when session state reports fallback exhaustion", async () => {
+      const task = {
+        id: "FN-7437-STATE",
+        description: "Bug: planner triage fallback loop via state error",
+        column: "triage",
+        dependencies: [],
+        steps: [],
+        currentStep: 0,
+        log: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as Task;
+      const store = createMockStore({
+        getTask: vi.fn().mockResolvedValue({ ...task, attachments: [] }),
+      });
+      mockCreateFnAgent.mockResolvedValue({
+        session: {
+          state: {},
+          sessionManager: {},
+          prompt: vi.fn(),
+          dispose: vi.fn(),
+          navigateTree: vi.fn(),
+        },
+      });
+      const { ModelFallbackExhaustedError, promptWithFallback } = await import("../pi.js");
+      const exhausted = new ModelFallbackExhaustedError({
+        primaryModel: "openai/gpt-4o",
+        fallbackModel: "anthropic/claude-3-5-haiku-20241022",
+        triggerPoint: "prompt-time",
+        attempts: 2,
+        underlyingReason: "fallback session state error: 403 forbidden",
+      });
+      (promptWithFallback as ReturnType<typeof vi.fn>).mockRejectedValueOnce(exhausted);
+
+      const processor = new TriageProcessor(store, "/test/root", { pollIntervalMs: 100_000 });
+      await processor.specifyTask(task);
+
+      expect(store.updateTask).toHaveBeenCalledWith("FN-7437-STATE", expect.objectContaining({
+        status: "failed",
+        error: expect.stringContaining("fallback session state error: 403 forbidden"),
       }));
     });
 

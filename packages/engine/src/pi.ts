@@ -967,6 +967,34 @@ export interface FallbackModelUsedPayload {
   timestamp?: string;
 }
 
+export class ModelFallbackExhaustedError extends Error {
+  readonly primaryModel: string;
+  readonly fallbackModel?: string;
+  readonly triggerPoint: "session-creation" | "prompt-time";
+  readonly attempts: number;
+  readonly underlyingReason: string;
+
+  constructor(input: {
+    primaryModel: string;
+    fallbackModel?: string;
+    triggerPoint: "session-creation" | "prompt-time";
+    attempts: number;
+    underlyingReason: string;
+  }) {
+    const fallbackClause = input.fallbackModel ? `, fallback ${input.fallbackModel}` : ", no fallback configured";
+    super(
+      `Unable to select a usable model after ${input.attempts} attempt${input.attempts === 1 ? "" : "s"} `
+      + `(primary ${input.primaryModel}${fallbackClause}, trigger: ${input.triggerPoint}): ${input.underlyingReason}`,
+    );
+    this.name = "ModelFallbackExhaustedError";
+    this.primaryModel = input.primaryModel;
+    this.fallbackModel = input.fallbackModel;
+    this.triggerPoint = input.triggerPoint;
+    this.attempts = input.attempts;
+    this.underlyingReason = input.underlyingReason;
+  }
+}
+
 export type BuiltinWebToolName = "WebSearch" | "WebFetch";
 
 export interface AgentOptions {
@@ -2396,8 +2424,34 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     }
   };
 
+  const modelDescription = (model: typeof selectedModel): string => model ? `${model.provider}/${model.id}` : "unknown model";
+  const configuredFallbackDiffers = Boolean(
+    options.fallbackProvider
+    && options.fallbackModelId
+    && (options.fallbackProvider !== options.defaultProvider || options.fallbackModelId !== options.defaultModelId),
+  );
+  const hasDistinctFallback = Boolean(
+    selectedModel
+    && fallbackModel
+    && (configuredFallbackDiffers || selectedModel.provider !== fallbackModel.provider || selectedModel.id !== fallbackModel.id),
+  );
+  const makeFallbackExhaustedError = (
+    triggerPoint: "session-creation" | "prompt-time",
+    attempts: number,
+    underlying: unknown,
+  ): ModelFallbackExhaustedError => {
+    const underlyingReason = underlying instanceof Error ? underlying.message : String(underlying);
+    return new ModelFallbackExhaustedError({
+      primaryModel: modelDescription(selectedModel),
+      fallbackModel: hasDistinctFallback ? modelDescription(fallbackModel) : undefined,
+      triggerPoint,
+      attempts,
+      underlyingReason,
+    });
+  };
+
   const emitFallbackUsed = async (triggerPoint: "session-creation" | "prompt-time"): Promise<void> => {
-    if (!options.onFallbackModelUsed || !selectedModel || !fallbackModel) {
+    if (!options.onFallbackModelUsed || !selectedModel || !fallbackModel || !hasDistinctFallback) {
       return;
     }
     await options.onFallbackModelUsed({
@@ -2410,19 +2464,27 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     });
   };
 
+  /*
+   * FNXC:ModelFallback 2026-07-02-00:00:
+   * Planner and shared AI lanes may try one distinct fallback model for a logical model-selection failure, but they must then throw ModelFallbackExhaustedError instead of swapping back or relying on scheduler re-pick loops. This keeps transient fallback useful while making exhausted model configuration actionable for operators.
+   */
   let sessionResult;
   let usingFallback = false;
   try {
     sessionResult = await createSessionWithModel(selectedModel);
     piLog.log(`Session created successfully (model=${selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "default"})`);
   } catch (err: any) {
-    if (!fallbackModel || !selectedModel || !isRetryableModelSelectionError(err?.message || "")) {
+    if (!fallbackModel || !selectedModel || !hasDistinctFallback || !isRetryableModelSelectionError(err?.message || "")) {
       piLog.error(`Session creation failed: ${err.message}`);
       throw err;
     }
     piLog.warn(`Primary model failed (${err.message}), trying fallback`);
     usingFallback = true;
-    sessionResult = await createSessionWithModel(fallbackModel);
+    try {
+      sessionResult = await createSessionWithModel(fallbackModel);
+    } catch (fallbackErr: unknown) {
+      throw makeFallbackExhaustedError("session-creation", 2, fallbackErr);
+    }
     await emitFallbackUsed("session-creation");
     piLog.log("Fallback session created successfully");
   }
@@ -2565,6 +2627,9 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
       if (!fallbackModel || usingFallback || !isRetryableModelSelectionError(errorMessage)) {
         throw err;
       }
+      if (!hasDistinctFallback) {
+        throw makeFallbackExhaustedError("prompt-time", 1, err);
+      }
 
       usingFallback = true;
       const fallbackSession = await swapPromptSession(fallbackModel);
@@ -2617,7 +2682,7 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
             throw fallbackErr;
           }
         }
-        throw fallbackErr;
+        throw makeFallbackExhaustedError("prompt-time", 2, fallbackErr);
       }
     }
   };
