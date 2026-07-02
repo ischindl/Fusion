@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type CSSProperties, type Mous
 import { Globe, Folder, RefreshCw, Star, HelpCircle, Settings as SettingsIcon } from "lucide-react";
 import {
   getErrorMessage,
+  resolveGitlabConfig,
   normalizeMergeIntegrationWorktreeMode,
   normalizeMergeAdvanceAutoSyncMode,
 } from "@fusion/core";
@@ -2485,6 +2486,8 @@ export function SettingsModal({
         maxAutoMergeRetries: resolveMaxAutoMergeRetriesForSettingsForm(form),
         taskPrefix: form.taskPrefix?.trim() || undefined,
         githubTrackingDefaultRepo: form.githubTrackingDefaultRepo?.trim() || undefined,
+        gitlabInstanceUrl: form.gitlabInstanceUrl?.trim() || undefined,
+        gitlabApiBaseUrl: form.gitlabApiBaseUrl?.trim() || undefined,
         githubAuthToken: form.githubAuthToken?.trim() || undefined,
         prTitlePromptInstructions: form.prTitlePromptInstructions?.trim() || undefined,
         prDescriptionPromptInstructions: form.prDescriptionPromptInstructions?.trim() || undefined,
@@ -2494,6 +2497,23 @@ export function SettingsModal({
           : undefined,
         experimentalFeatures: normalizeExperimentalFeaturesForSave(form.experimentalFeatures),
       };
+
+      if (activeSection === "general") {
+        resolveGitlabConfig({
+          project: {
+            gitlabInstanceUrl: payload.gitlabInstanceUrl,
+            gitlabApiBaseUrl: payload.gitlabApiBaseUrl,
+          },
+        });
+      }
+      if (activeSection === "global-general") {
+        resolveGitlabConfig({
+          global: {
+            gitlabInstanceUrl: payload.gitlabInstanceUrl,
+            gitlabApiBaseUrl: payload.gitlabApiBaseUrl,
+          },
+        });
+      }
 
       // Always save both global and project settings with strict scope
       // separation. The split (global vs project routing, null-as-delete, and

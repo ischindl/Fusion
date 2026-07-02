@@ -674,7 +674,7 @@ Recovery/backfill guidance:
 
 ## GitHub Issue Import and PR Creation
 
-Forward-looking GitLab import/tracking parity is mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md); that document is an implementation plan only and does not imply runtime GitLab support yet.
+GitLab instance/API URL configuration is available in Settings for GitLab.com and self-managed GitLab (`gitlabInstanceUrl`, optional `gitlabApiBaseUrl`). Forward-looking GitLab import/tracking parity is mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md); GitLab token auth, issue/MR import, tracking, comments, auto-close, Command Center signals, research/search support, and star-prompt behavior are not implemented by this configuration-only step.
 
 Import issues:
 

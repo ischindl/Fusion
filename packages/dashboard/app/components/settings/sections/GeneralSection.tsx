@@ -281,6 +281,21 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
           <input id="githubTrackingDedupEnabled" type="checkbox" checked={form.githubTrackingDedupEnabled !== false} onChange={(e) => setForm((f) => ({ ...f, githubTrackingDedupEnabled: e.target.checked }))}/>{t("settings.general.searchTheTrackingRepoForLikelyDuplicatesBefore", " Search the tracking repo for likely duplicates before opening a new issue ")}</label>
         <small>{t("settings.general.whenEnabledFusionChecksOpenAndClosedIssues", " When enabled, Fusion checks open and closed issues in the target repo for likely duplicates (using File Scope paths and key symptoms) before creating a new tracking issue. Uncheck to always create a new issue. ")}</small>
       </div>
+      <h4 className="settings-section-heading settings-section-heading--spaced">{t("settings.general.gitLabConfiguration", "GitLab Configuration")}</h4>
+      {/*
+        FNXC:GitLabConfiguration 2026-07-02-00:00:
+        FN-7422 exposes only project GitLab web/API URL configuration for GitLab.com and self-managed instances. Token auth, imports, tracking, comments, auto-close, Command Center signals, research providers, and star prompts are intentionally deferred to later GitLab subtasks.
+      */}
+      <div className="form-group">
+        <label htmlFor="gitlabInstanceUrl">{t("settings.general.gitLabInstanceUrl", "GitLab instance URL")}</label>
+        <input id="gitlabInstanceUrl" className="input" type="url" placeholder="https://gitlab.com" value={form.gitlabInstanceUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabInstanceUrl: e.target.value || undefined }))}/>
+        <small>{t("settings.general.gitLabInstanceUrlHint", "Blank uses GitLab.com or the global default. Set an absolute http:// or https:// URL for self-managed GitLab, such as https://gitlab.example.com/gitlab.")}</small>
+      </div>
+      <div className="form-group">
+        <label htmlFor="gitlabApiBaseUrl">{t("settings.general.gitLabApiBaseUrlOptional", "GitLab API base URL (optional / advanced)")}</label>
+        <input id="gitlabApiBaseUrl" className="input" type="url" placeholder="https://gitlab.com/api/v4" value={form.gitlabApiBaseUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabApiBaseUrl: e.target.value || undefined }))}/>
+        <small>{t("settings.general.gitLabApiBaseUrlHint", "Blank derives <instance>/api/v4. Override only when a self-managed GitLab API is served from a different absolute http:// or https:// URL.")}</small>
+      </div>
     </>);
 }
 export default GeneralSection;

@@ -401,6 +401,59 @@ describe("splitSettingsSave", () => {
     expect(globalPatch).toEqual({});
   });
 
+  it("routes GitLab URL keys to the active settings scope", () => {
+    const payload: Record<string, unknown> = {
+      gitlabInstanceUrl: "https://gitlab.example.com/gitlab",
+      gitlabApiBaseUrl: "https://gitlab.example.com/gitlab/api/v4",
+    };
+
+    const onGlobal = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: { global: {}, project: {} } as never,
+      activeSection: "global-general",
+    });
+    expect(onGlobal.globalPatch).toMatchObject(payload);
+    expect("gitlabInstanceUrl" in onGlobal.projectPatch).toBe(false);
+    expect("gitlabApiBaseUrl" in onGlobal.projectPatch).toBe(false);
+
+    const onProject = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: { global: {}, project: {} } as never,
+      activeSection: "general",
+    });
+    expect("gitlabInstanceUrl" in onProject.globalPatch).toBe(false);
+    expect("gitlabApiBaseUrl" in onProject.globalPatch).toBe(false);
+    expect(onProject.projectPatch).toMatchObject(payload);
+  });
+
+  it("clears GitLab URL overrides with null in the active settings scope", () => {
+    const payload: Record<string, unknown> = { gitlabInstanceUrl: undefined, gitlabApiBaseUrl: undefined };
+
+    const onGlobal = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: {
+        global: { gitlabInstanceUrl: "https://global.example", gitlabApiBaseUrl: "https://global.example/api/v4" },
+        project: {},
+      } as never,
+      activeSection: "global-general",
+    });
+    expect(onGlobal.globalPatch).toEqual({ gitlabInstanceUrl: null, gitlabApiBaseUrl: null });
+
+    const onProject = splitSettingsSave({
+      payload,
+      initialValues: {} as never,
+      initialScopedValues: {
+        global: {},
+        project: { gitlabInstanceUrl: "https://project.example", gitlabApiBaseUrl: "https://project.example/api/v4" },
+      } as never,
+      activeSection: "general",
+    });
+    expect(onProject.projectPatch).toEqual({ gitlabInstanceUrl: null, gitlabApiBaseUrl: null });
+  });
+
   it("routes githubTrackingDefaultRepo to global only on the global-general section", () => {
     const payloadGlobal: Record<string, unknown> = { githubTrackingDefaultRepo: "org/repo" };
     const onGlobal = splitSettingsSave({

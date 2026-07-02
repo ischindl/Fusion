@@ -81,6 +81,21 @@ describe("settings key parity", () => {
     expect(isProjectSettingsKey("agentMemoryInclusionMode")).toBe(false);
   });
 
+  it("keeps GitLab URL configuration dual-scoped with blank defaults", () => {
+    expect(DEFAULT_GLOBAL_SETTINGS.gitlabInstanceUrl).toBeUndefined();
+    expect(DEFAULT_GLOBAL_SETTINGS.gitlabApiBaseUrl).toBeUndefined();
+    expect(DEFAULT_PROJECT_SETTINGS.gitlabInstanceUrl).toBeUndefined();
+    expect(DEFAULT_PROJECT_SETTINGS.gitlabApiBaseUrl).toBeUndefined();
+    expect(isGlobalSettingsKey("gitlabInstanceUrl")).toBe(true);
+    expect(isGlobalSettingsKey("gitlabApiBaseUrl")).toBe(true);
+    expect(isProjectSettingsKey("gitlabInstanceUrl")).toBe(true);
+    expect(isProjectSettingsKey("gitlabApiBaseUrl")).toBe(true);
+    expect(PROJECT_SETTINGS_KEYS).toContain("gitlabInstanceUrl");
+    expect(PROJECT_SETTINGS_KEYS).toContain("gitlabApiBaseUrl");
+    expect(GLOBAL_SETTINGS_KEYS).toContain("gitlabInstanceUrl");
+    expect(GLOBAL_SETTINGS_KEYS).toContain("gitlabApiBaseUrl");
+  });
+
   it("defaults persisted thinking logs to disabled", () => {
     expect(DEFAULT_GLOBAL_SETTINGS.persistAgentThinkingLog).toBe(false);
     expect(DEFAULT_GLOBAL_SETTINGS.persistAgentThinkingLogPermanent).toBe(false);
@@ -406,13 +421,16 @@ describe("settings key parity", () => {
     // FNXC:SettingsScopeParity 2026-06-26-17:35:
     // mcpServers is intentionally dual-scoped (FN-7077, "inject configured MCP servers across
     // agent surfaces"): a global default applies to every project while a project override
-    // tailors the MCP server set per project. Keep it on the intentional shared-keys allow-list
-    // in GLOBAL_SETTINGS_KEYS order so this parity guard does not flag the deliberate overlap.
+    // tailors the MCP server set per project. GitLab URL settings are also dual-scoped (FN-7422)
+    // so operators can set an organization-wide self-managed instance while individual projects
+    // can override hosts or API prefixes. Keep this allow-list in GLOBAL_SETTINGS_KEYS order.
     expect(overlap).toEqual([
       "testMode",
       "mergeRequestContractShadowEnabled",
       "taskTokenBudget",
       "githubTrackingDefaultRepo",
+      "gitlabInstanceUrl",
+      "gitlabApiBaseUrl",
       "mcpServers",
       "worktrunk",
       "owningNodeHandoffPolicy",

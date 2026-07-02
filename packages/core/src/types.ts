@@ -15,6 +15,12 @@ export type { CapacityRiskSignal } from "./capacity.js";
 
 // FNXC:McpConfig 2026-06-26-02:10: The dashboard Vite build aliases @fusion/core to this browser-safe module, so the pure MCP config helpers are re-exported here for Settings UI import/export, validation, and project-over-global resolution without pulling Node-only stores into the client bundle.
 export { exportMcpServersJson, importMcpServersJson, resolveEffectiveMcpServers } from "./mcp-config.js";
+export {
+  DEFAULT_GITLAB_API_BASE_URL,
+  DEFAULT_GITLAB_INSTANCE_URL,
+  resolveGitlabConfig,
+} from "./gitlab-config.js";
+export type { GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput } from "./gitlab-config.js";
 export { validateMcpServerDefinitionDetailed, validateMcpServerDefinitionsDetailed } from "./settings-validation.js";
 
 /**
@@ -3152,6 +3158,12 @@ export interface GlobalSettings {
   /** Global fallback GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Used when a project has no githubTrackingDefaultRepo. */
   githubTrackingDefaultRepo?: string;
+  /** Global fallback GitLab web instance URL. Defaults effectively to https://gitlab.com when unset.
+   *  Project gitlabInstanceUrl overrides this value. */
+  gitlabInstanceUrl?: string;
+  /** Global fallback GitLab REST API base URL. When unset, Fusion derives `<instance>/api/v4`.
+   *  Project gitlabApiBaseUrl overrides this value. */
+  gitlabApiBaseUrl?: string;
   /** Cadence for automatic update checks. The dashboard's `/update-check`
    *  route uses this to decide whether to consult npm or return a cached
    *  result.
@@ -4264,6 +4276,14 @@ export interface ProjectSettings {
   /** Project default GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Falls back to global githubTrackingDefaultRepo when unset. */
   githubTrackingDefaultRepo?: string;
+  /**
+   * FNXC:GitLabConfiguration 2026-07-02-00:00:
+   * FN-7422 adds only durable GitLab instance/API URL settings for GitLab.com and self-managed hosts. Later GitLab auth/import/tracking subtasks must consume the normalized resolver rather than adding tokens or network behavior here.
+   */
+  /** Project GitLab web instance URL. Falls back to global gitlabInstanceUrl, then https://gitlab.com. */
+  gitlabInstanceUrl?: string;
+  /** Project GitLab REST API base URL. Falls back to global gitlabApiBaseUrl, then derives `<instance>/api/v4`. */
+  gitlabApiBaseUrl?: string;
   /** When true, tracking issue creation searches open/closed repo issues for likely duplicates before opening a new issue.
    *  Default: true (set false to opt out). */
   githubTrackingDedupEnabled?: boolean;

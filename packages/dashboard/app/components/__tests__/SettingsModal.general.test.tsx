@@ -675,6 +675,31 @@ describe("SettingsModal", () => {
       }
     });
 
+    it("saves GitLab URL configuration via global settings payload only", async () => {
+      renderModal({ initialSection: "global-general" });
+      await waitForSettingsModalReady();
+
+      expect(screen.getByLabelText("Global GitLab instance URL")).toHaveAttribute("placeholder", "https://gitlab.com");
+      expect(screen.getByText(/Blank defaults to GitLab.com/i)).toBeInTheDocument();
+
+      await settingsModalUser.type(screen.getByLabelText("Global GitLab instance URL"), " https://gitlab.company.test/ ");
+      await settingsModalUser.type(screen.getByLabelText("Global GitLab API base URL (optional / advanced)"), " https://gitlab.company.test/api/v4/ ");
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateGlobalSettings).toHaveBeenCalled();
+      });
+
+      const globalPayload = mockUpdateGlobalSettings.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(globalPayload.gitlabInstanceUrl).toBe("https://gitlab.company.test/");
+      expect(globalPayload.gitlabApiBaseUrl).toBe("https://gitlab.company.test/api/v4/");
+      if (mockUpdateSettings.mock.calls.length > 0) {
+        const projectPayload = mockUpdateSettings.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(projectPayload.gitlabInstanceUrl).toBeUndefined();
+        expect(projectPayload.gitlabApiBaseUrl).toBeUndefined();
+      }
+    });
+
     it("shows global tracking repo error hint and keeps custom entry when lookups fail", async () => {
       mockFetchProjects.mockRejectedValueOnce(new Error("no projects"));
 
@@ -966,6 +991,63 @@ describe("SettingsModal", () => {
         const globalPayload = mockUpdateGlobalSettings.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(globalPayload.githubTrackingDefaultRepo).toBeUndefined();
       }
+    });
+
+    it("renders and saves GitLab URL configuration as project settings", async () => {
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      expect(screen.getByRole("heading", { name: "GitLab Configuration" })).toBeInTheDocument();
+      expect(screen.getByText(/Blank uses GitLab.com or the global default/i)).toBeInTheDocument();
+      expect(screen.getByText(/Blank derives <instance>\/api\/v4/i)).toBeInTheDocument();
+
+      await settingsModalUser.type(screen.getByLabelText("GitLab instance URL"), " https://gitlab.example.com/gitlab/ ");
+      await settingsModalUser.type(screen.getByLabelText("GitLab API base URL (optional / advanced)"), " https://api.example.com/v4/ ");
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.gitlabInstanceUrl).toBe("https://gitlab.example.com/gitlab/");
+      expect(payload.gitlabApiBaseUrl).toBe("https://api.example.com/v4/");
+      if (mockUpdateGlobalSettings.mock.calls.length > 0) {
+        const globalPayload = mockUpdateGlobalSettings.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(globalPayload.gitlabInstanceUrl).toBeUndefined();
+        expect(globalPayload.gitlabApiBaseUrl).toBeUndefined();
+      }
+    });
+
+    it("clears GitLab URL project overrides back to defaults", async () => {
+      mockFetchSettings.mockResolvedValueOnce({
+        ...defaultSettings,
+        gitlabInstanceUrl: "https://gitlab.example.com/gitlab",
+        gitlabApiBaseUrl: "https://gitlab.example.com/gitlab/api/v4",
+      });
+      mockFetchSettingsByScope.mockResolvedValueOnce({
+        global: defaultSettings,
+        project: {
+          gitlabInstanceUrl: "https://gitlab.example.com/gitlab",
+          gitlabApiBaseUrl: "https://gitlab.example.com/gitlab/api/v4",
+        },
+      });
+
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      await settingsModalUser.clear(screen.getByLabelText("GitLab instance URL"));
+      await settingsModalUser.clear(screen.getByLabelText("GitLab API base URL (optional / advanced)"));
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+
+      expect(mockUpdateSettings.mock.calls[0][0]).toMatchObject({
+        gitlabInstanceUrl: null,
+        gitlabApiBaseUrl: null,
+      });
     });
 
     it("renders and saves imported GitHub issue tracking linking as a project setting", async () => {

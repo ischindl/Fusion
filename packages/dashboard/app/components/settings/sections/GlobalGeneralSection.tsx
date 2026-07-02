@@ -20,6 +20,20 @@ export function GlobalGeneralSection({ scopeBanner, form, setForm, globalTrackin
         <TrackingRepoSelect id="globalGithubTrackingDefaultRepo" ariaLabel="Global default tracking repo" value={form.githubTrackingDefaultRepo ?? ""} options={globalTrackingRepoOptions} loading={globalTrackingRepoLoading} error={globalTrackingRepoError ?? undefined} placeholder={t("settings.globalGeneral.ownerRepo", "owner/repo")} onChange={(nextValue) => setForm((f) => ({ ...f, githubTrackingDefaultRepo: nextValue || undefined }))}/>
         <small>{t("settings.globalGeneral.projectsInheritThisValueWhenTheyDoNot", "Projects inherit this value when they do not set a project default tracking repo.")}</small>
       </div>
+      {/*
+        FNXC:GitLabConfiguration 2026-07-02-00:00:
+        Global GitLab URL settings are fallbacks for projects that do not set their own self-managed GitLab instance/API URLs. FN-7422 keeps this to configuration only; auth, import, tracking, comments, and auto-close remain deferred.
+      */}
+      <div className="form-group">
+        <label htmlFor="globalGitlabInstanceUrl">{t("settings.globalGeneral.gitLabInstanceUrl", "Global GitLab instance URL")}</label>
+        <input id="globalGitlabInstanceUrl" className="input" type="url" placeholder="https://gitlab.com" value={form.gitlabInstanceUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabInstanceUrl: e.target.value || undefined }))}/>
+        <small>{t("settings.globalGeneral.gitLabInstanceUrlHint", "Blank defaults to GitLab.com. Projects inherit this self-managed GitLab URL unless they set their own project value.")}</small>
+      </div>
+      <div className="form-group">
+        <label htmlFor="globalGitlabApiBaseUrl">{t("settings.globalGeneral.gitLabApiBaseUrlOptional", "Global GitLab API base URL (optional / advanced)")}</label>
+        <input id="globalGitlabApiBaseUrl" className="input" type="url" placeholder="https://gitlab.com/api/v4" value={form.gitlabApiBaseUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabApiBaseUrl: e.target.value || undefined }))}/>
+        <small>{t("settings.globalGeneral.gitLabApiBaseUrlHint", "Blank derives <instance>/api/v4. Override only for self-managed GitLab API gateways that use a different absolute http:// or https:// URL.")}</small>
+      </div>
       <CliBinaryPanel />
       <div className="form-group">
         <label htmlFor="dismissModalsOnOutsideClick" className="checkbox-label">
