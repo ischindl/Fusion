@@ -1,55 +1,39 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import kbExtension, { closeCachedStores } from "../extension.js";
-import { TaskStore } from "@fusion/core";
+/**
+ * FNXC:PostgresCutover 2026-07-02-00:00:
+ * Migrated from the legacy SQLite `new TaskStore(rootDir)` harness to the
+ * PostgreSQL extension harness. The insight tools resolve a PG-backed store
+ * via `getStore(cwd)` (injected by the harness); insights and runs are seeded
+ * through the AsyncInsightStore returned by `h.store().getInsightStore()`
+ * (async upsertInsight / createRun / updateRun) instead of the removed sync
+ * SQLite path.
+ */
 
-interface RegisteredTool {
-  name: string;
-  execute: (
-    toolCallId: string,
-    params: any,
-    signal: AbortSignal | undefined,
-    onUpdate: ((update: any) => void) | undefined,
-    ctx: any,
-  ) => Promise<any>;
-}
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import type { AsyncInsightStore } from "@fusion/core";
+import { pgDescribe } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import {
+  createPgExtensionHarness,
+  createMockApi,
+  registerExtension,
+  requireTool,
+} from "./pg-extension-harness.js";
 
-function createMockAPI() {
-  const tools = new Map<string, RegisteredTool>();
-  return {
-    registerTool(def: RegisteredTool) {
-      tools.set(def.name, def);
-    },
-    registerCommand() {},
-    registerShortcut() {},
-    registerFlag() {},
-    on() {},
-    tools,
-  } as any;
-}
+const pgTest = pgDescribe;
 
-function makeCtx(cwd: string) {
-  return { cwd } as any;
-}
+pgTest("fn insight extension tools", () => {
+  const h = createPgExtensionHarness("fn-ext-insights");
 
-describe("fn insight extension tools", () => {
-  let tmpDir: string;
-  let api: ReturnType<typeof createMockAPI>;
+  beforeAll(h.beforeAll);
+  beforeEach(h.beforeEach);
+  afterEach(h.afterEach);
+  afterAll(h.afterAll);
 
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "kb-ext-insights-test-"));
-    api = createMockAPI();
-    kbExtension(api);
-  });
-
-  afterEach(async () => {
-    await closeCachedStores();
-    await rm(tmpDir, { recursive: true, force: true });
-  });
+  // In backend mode getInsightStore() returns the async (AsyncDataLayer-backed) store.
+  const insights = (): AsyncInsightStore => h.store().getInsightStore() as AsyncInsightStore;
 
   it("registers all insight tools", () => {
+    const api = createMockApi();
+    registerExtension(api);
     expect(api.tools.has("fn_insight_list")).toBe(true);
     expect(api.tools.has("fn_insight_show")).toBe(true);
     expect(api.tools.has("fn_insight_run_list")).toBe(true);
@@ -57,59 +41,93 @@ describe("fn insight extension tools", () => {
   });
 
   it("lists and shows persisted insights", async () => {
-    const store = new TaskStore(tmpDir);
-    await store.init();
-    const insightStore = store.getInsightStore();
-
-    const created = insightStore.createInsight("", {
+    const created = await insights().upsertInsight("", {
       title: "Agent-visible insight",
       category: "quality",
-      status: "generated",
-      provenance: { trigger: "manual" },
       content: "Ensure this appears in extension output",
+      provenance: { trigger: "manual" },
+      status: "generated",
+      fingerprint: "ext-insights-quality-1",
     });
-    await store.close();
 
-    const listTool = api.tools.get("fn_insight_list")!;
-    const listResult = await listTool.execute("call-1", { category: "quality" }, undefined, undefined, makeCtx(tmpDir));
-    expect(listResult.content[0].text).toContain(created.id);
-    expect(listResult.details.insights).toHaveLength(1);
+    const api = createMockApi();
+    registerExtension(api);
+    const listTool = requireTool(api, "fn_insight_list");
+    const listResult = await listTool.execute(
+      "call-1",
+      { category: "quality" },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
+    expect(listResult.content[0]?.text).toContain(created.id);
+    expect(listResult.details?.insights).toHaveLength(1);
 
-    const showTool = api.tools.get("fn_insight_show")!;
-    const showResult = await showTool.execute("call-2", { id: created.id }, undefined, undefined, makeCtx(tmpDir));
-    expect(showResult.content[0].text).toContain("Agent-visible insight");
-    expect(showResult.details.insight.id).toBe(created.id);
+    const showTool = requireTool(api, "fn_insight_show");
+    const showResult = await showTool.execute(
+      "call-2",
+      { id: created.id },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
+    expect(showResult.content[0]?.text).toContain("Agent-visible insight");
+    expect(showResult.details?.insight).toMatchObject({ id: created.id });
   });
 
   it("lists and shows insight runs", async () => {
-    const store = new TaskStore(tmpDir);
-    await store.init();
-    const insightStore = store.getInsightStore();
+    const s = insights();
+    const run = await s.createRun("", { trigger: "manual" });
+    await s.updateRun(run.id, { status: "completed", insightsCreated: 2, insightsUpdated: 1 });
 
-    const run = insightStore.createRun("", { trigger: "manual" });
-    insightStore.updateRun(run.id, { status: "completed", insightsCreated: 2, insightsUpdated: 1 });
-    await store.close();
+    const api = createMockApi();
+    registerExtension(api);
+    const listTool = requireTool(api, "fn_insight_run_list");
+    const listResult = await listTool.execute(
+      "call-3",
+      { status: "completed" },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
+    expect(listResult.content[0]?.text).toContain(run.id);
+    expect(listResult.details?.runs).toHaveLength(1);
 
-    const listTool = api.tools.get("fn_insight_run_list")!;
-    const listResult = await listTool.execute("call-3", { status: "completed" }, undefined, undefined, makeCtx(tmpDir));
-    expect(listResult.content[0].text).toContain(run.id);
-    expect(listResult.details.runs).toHaveLength(1);
-
-    const showTool = api.tools.get("fn_insight_run_show")!;
-    const showResult = await showTool.execute("call-4", { id: run.id }, undefined, undefined, makeCtx(tmpDir));
-    expect(showResult.content[0].text).toContain("Status: completed");
-    expect(showResult.details.run.id).toBe(run.id);
+    const showTool = requireTool(api, "fn_insight_run_show");
+    const showResult = await showTool.execute(
+      "call-4",
+      { id: run.id },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
+    expect(showResult.content[0]?.text).toContain("Status: completed");
+    expect(showResult.details?.run).toMatchObject({ id: run.id });
   });
 
   it("returns helpful errors for invalid pagination and missing IDs", async () => {
-    const listTool = api.tools.get("fn_insight_list")!;
-    const invalidList = await listTool.execute("call-5", { limit: 0 }, undefined, undefined, makeCtx(tmpDir));
+    const api = createMockApi();
+    registerExtension(api);
+    const listTool = requireTool(api, "fn_insight_list");
+    const invalidList = await listTool.execute(
+      "call-5",
+      { limit: 0 },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
     expect(invalidList.isError).toBe(true);
-    expect(invalidList.content[0].text).toContain("Invalid limit");
+    expect(invalidList.content[0]?.text).toContain("Invalid limit");
 
-    const showTool = api.tools.get("fn_insight_show")!;
-    const missing = await showTool.execute("call-6", { id: "INS-MISSING" }, undefined, undefined, makeCtx(tmpDir));
+    const showTool = requireTool(api, "fn_insight_show");
+    const missing = await showTool.execute(
+      "call-6",
+      { id: "INS-MISSING" },
+      undefined,
+      undefined,
+      { cwd: h.rootDir() },
+    );
     expect(missing.isError).toBe(true);
-    expect(missing.content[0].text).toContain("not found");
+    expect(missing.content[0]?.text).toContain("not found");
   });
 });

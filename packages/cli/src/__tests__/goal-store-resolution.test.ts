@@ -1,71 +1,67 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+/**
+ * FNXC:PostgresCutover 2026-07-02-00:00:
+ * Migrated from the legacy SQLite `new TaskStore(rootDir)` harness to the
+ * PostgreSQL extension harness. The goal tools resolve a PG-backed store via
+ * `getStore(cwd)` (injected by the harness for the canonical project root).
+ * worktree→canonical-root resolution is exercised by laying out a
+ * `.fusion/worktrees/<id>` directory under the harness rootDir, so a tool call
+ * whose cwd lives inside the worktree maps back to the injected store's cache
+ * key. Goals are seeded through `h.store().getGoalStore()` (AsyncGoalStore in
+ * backend mode) instead of the removed sync SQLite path.
+ */
+
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { TaskStore, getProjectRootFromWorktree } from "@fusion/core";
-import kbExtension from "../extension.js";
+import { getProjectRootFromWorktree, type AsyncGoalStore } from "@fusion/core";
+import { pgDescribe } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import {
+  createPgExtensionHarness,
+  createMockApi,
+  registerExtension,
+  requireTool,
+} from "./pg-extension-harness.js";
 
-interface RegisteredTool {
-  name: string;
-  execute: (
-    toolCallId: string,
-    params: any,
-    signal: AbortSignal | undefined,
-    onUpdate: ((update: any) => void) | undefined,
-    ctx: any,
-  ) => Promise<any>;
-}
+const pgTest = pgDescribe;
 
-function createMockAPI() {
-  const tools = new Map<string, RegisteredTool>();
-  return {
-    registerTool(def: RegisteredTool) {
-      tools.set(def.name, def);
-    },
-    registerCommand() {},
-    registerShortcut() {},
-    registerFlag() {},
-    on() {},
-    tools,
-  } as any;
-}
+pgTest("extension goal tools store resolution", () => {
+  const h = createPgExtensionHarness("fn-goal-resolution");
 
-describe("extension goal tools store resolution", () => {
-  let rootDir: string;
-  let worktreeCwd: string;
+  let worktreeCwd = "";
 
+  beforeAll(h.beforeAll);
   beforeEach(async () => {
-    rootDir = await mkdtemp(join(tmpdir(), "kb-goal-resolution-"));
+    await h.beforeEach();
+    // Lay out a canonical project root + a `.fusion/worktrees/<id>` cwd so the
+    // extension's worktree→canonical-root resolution maps worktreeCwd back to
+    // the harness rootDir (the injected PG store's cache key).
+    const rootDir = h.rootDir();
     await mkdir(join(rootDir, ".fusion"), { recursive: true });
-
     const worktreeRoot = join(rootDir, ".fusion", "worktrees", "FN-5851");
     await mkdir(join(worktreeRoot, ".fusion"), { recursive: true });
     worktreeCwd = join(worktreeRoot, "packages", "cli");
     await mkdir(worktreeCwd, { recursive: true });
   });
+  afterEach(h.afterEach);
+  afterAll(h.afterAll);
 
-  afterEach(async () => {
-    await rm(rootDir, { recursive: true, force: true });
-  });
+  // In backend mode getGoalStore() returns the async (AsyncDataLayer-backed) store.
+  const goals = (): AsyncGoalStore => h.store().getGoalStore() as AsyncGoalStore;
 
   it("returns canonical project goals when invoked from a .fusion/worktrees cwd", async () => {
-    expect(getProjectRootFromWorktree(worktreeCwd)).toBe(rootDir);
+    expect(getProjectRootFromWorktree(worktreeCwd)).toBe(h.rootDir());
 
-    const store = new TaskStore(rootDir);
-    await store.init();
-    const goal = store.getGoalStore().createGoal({
+    const goal = await goals().createGoal({
       title: "Canonical goal",
       description: "Created in the project root store",
     });
 
-    const api = createMockAPI();
-    kbExtension(api);
-    const listTool = api.tools.get("fn_goal_list");
-    const showTool = api.tools.get("fn_goal_show");
-    expect(listTool).toBeDefined();
-    expect(showTool).toBeDefined();
+    const api = createMockApi();
+    registerExtension(api);
+    const listTool = requireTool(api, "fn_goal_list");
+    const showTool = requireTool(api, "fn_goal_show");
 
-    const listResult = await listTool!.execute(
+    const listResult = await listTool.execute(
       "goal-list-worktree",
       { status: "active" },
       undefined,
@@ -74,7 +70,7 @@ describe("extension goal tools store resolution", () => {
     );
 
     expect(listResult.isError).toBeUndefined();
-    expect(listResult.details.goals).toEqual([
+    expect(listResult.details?.goals).toEqual([
       expect.objectContaining({
         id: goal.id,
         title: "Canonical goal",
@@ -83,7 +79,7 @@ describe("extension goal tools store resolution", () => {
       }),
     ]);
 
-    const showResult = await showTool!.execute(
+    const showResult = await showTool.execute(
       "goal-show-worktree",
       { id: goal.id },
       undefined,
@@ -92,13 +88,11 @@ describe("extension goal tools store resolution", () => {
     );
 
     expect(showResult.isError).toBeUndefined();
-    expect(showResult.details.goal).toMatchObject({
+    expect(showResult.details?.goal).toMatchObject({
       id: goal.id,
       title: "Canonical goal",
       description: "Created in the project root store",
       status: "active",
     });
-
-    store.close();
   });
 });

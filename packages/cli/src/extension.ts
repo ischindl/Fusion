@@ -4,6 +4,11 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import * as fusionCore from "@fusion/core";
 import {
   TaskStore,
+  createTaskStoreForBackend,
+  AgentStore,
+  isEphemeralAgent,
+  AGENT_VALID_TRANSITIONS,
+  ApprovalRequestStore,
   COLUMNS,
   COLUMN_LABELS,
   buildAutoPauseClearPatch,
@@ -153,18 +158,51 @@ function resolveProjectRoot(cwd: string): string {
   }
 }
 
-/** Cache stores per project root to avoid re-init on every tool call. */
-const storeCache = new Map<string, TaskStore>();
+/*
+FNXC:PostgresCutover 2026-07-02-00:00:
+The agent-tool store path must boot the PostgreSQL backend (embedded by default, or external via DATABASE_URL) instead of constructing a legacy SQLite TaskStore, whose runtime was removed under VAL-REMOVAL-005. Mirrors the fn serve boot path, which already routes through createTaskStoreForBackend. The boot result is cached per project root so the connection pool (and any embedded PostgreSQL process) is released deterministically in closeCachedStores.
+*/
+interface CachedStoreEntry {
+  readonly store: TaskStore;
+  /** Releases the connection pool and stops an embedded PostgreSQL process when one was started. Absent for test-injected stores. */
+  readonly shutdown?: () => Promise<void>;
+  /**
+   * True when the entry was injected by tests (`__setCachedStoreForTesting`).
+   * closeCachedStores removes it from the cache but does NOT close the store —
+   * the owning test harness (shared PG fixture) controls that store's lifetime.
+   */
+  readonly external?: boolean;
+}
+
+/** Cache stores per project root to avoid re-booting the backend on every tool call. */
+const storeCache = new Map<string, CachedStoreEntry>();
 
 async function getStore(cwd: string): Promise<TaskStore> {
   const projectRoot = resolveProjectRoot(cwd);
   const existing = storeCache.get(projectRoot);
-  if (existing) return existing;
+  if (existing) return existing.store;
 
+  const boot = await createTaskStoreForBackend({ rootDir: projectRoot });
+  if (boot) {
+    storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
+    return boot.taskStore;
+  }
+  // Legacy SQLite opt-out (FUSION_NO_EMBEDDED_PG=1). createTaskStoreForBackend
+  // returns null only in that case; the store still needs an explicit init().
   const store = new TaskStore(projectRoot);
   await store.init();
-  storeCache.set(projectRoot, store);
+  storeCache.set(projectRoot, { store });
   return store;
+}
+
+/**
+ * @internal Test-only: inject a pre-built store for a project root so tests share
+ * one isolated PostgreSQL database with the agent tools without re-booting the
+ * backend per tool call. The entry carries no shutdown hook; tests own the
+ * injected store's lifecycle (the shared PG harness tears it down in afterAll).
+ */
+export function __setCachedStoreForTesting(projectRoot: string, store: TaskStore): void {
+  storeCache.set(projectRoot, { store, external: true });
 }
 
 /** @internal Exposed so tests and the extension shutdown hook can close cached stores deterministically; not a public CLI API contract. */
@@ -173,11 +211,18 @@ export async function closeCachedStores(): Promise<void> {
   FNXC:CliTests 2026-06-17-23:58: FN-6626 found the CLI extension cache cleared real TaskStore instances without closing them, leaving SQLite/WAL handles to survive module resets and making canonical-project-root task-tool tests timeout under suite load.
   FNXC:CliTests 2026-06-21-09:58: FN-6839 requires awaiting TaskStore.close() so deferred task-created filesystem work and SQLite/WAL handles drain before temp-root removal; do not appease this loaded-lane seam with timeouts, retries, or worker changes.
   */
-  const stores = [...storeCache.values()];
+  const entries = [...storeCache.values()];
   storeCache.clear();
-  for (const store of stores) {
+  for (const entry of entries) {
+    // Externally-owned (test-injected) entries are removed by the clear() above;
+    // their owning harness controls the store's lifetime, so do not close them.
+    if (entry.external) continue;
     try {
-      await store.close();
+      if (entry.shutdown) {
+        await entry.shutdown();
+      } else {
+        await entry.store.close();
+      }
     } catch (error) {
       console.warn("[fusion-extension] cached TaskStore close skipped", error);
     }
@@ -186,6 +231,14 @@ export async function closeCachedStores(): Promise<void> {
 
 function getFusionDir(cwd: string): string {
   return join(resolveProjectRoot(cwd), ".fusion");
+}
+/*
+FNXC:PostgresCutover 2026-07-02-00:00:
+Agent tools must construct AgentStore in backend mode so agent data lives in PostgreSQL, not the removed SQLite runtime (VAL-REMOVAL-005). The asyncLayer is borrowed from the project's cached TaskStore (same connection pool), mirroring the TaskStore backend injection. The returned store is NOT pre-initialized — callers keep their existing `await agentStore.init()` (idempotent mkdir in backend mode).
+*/
+async function getAgentStore(cwd: string): Promise<AgentStore> {
+  const projectStore = await getStore(cwd);
+  return new AgentStore({ rootDir: getFusionDir(cwd), asyncLayer: projectStore.getAsyncLayer() ?? undefined });
 }
 
 function emitSecretAudit(
@@ -225,8 +278,8 @@ async function validateAssignableAgentId(
   task?: Pick<Task, "id" | "column"> | null,
   override = false,
 ): Promise<string | null> {
-  const { AgentStore, isEphemeralAgent } = await import("@fusion/core");
-  const agentStore = new AgentStore({ rootDir: getFusionDir(cwd) });
+  
+  const agentStore = await getAgentStore(cwd);
   await agentStore.init();
   const agent = await agentStore.getAgent(agentId);
   if (!agent) {
@@ -250,8 +303,8 @@ Resolution is fail-open on lookup errors: a missing/unresolvable caller is treat
 async function isEphemeralCallerAgent(cwd: string, callerAgentId: string | undefined): Promise<boolean> {
   if (!callerAgentId) return false;
   try {
-    const { AgentStore, isEphemeralAgent } = await import("@fusion/core");
-    const agentStore = new AgentStore({ rootDir: getFusionDir(cwd) });
+    
+    const agentStore = await getAgentStore(cwd);
     await agentStore.init();
     const agent = await agentStore.resolveAgent(callerAgentId);
     if (!agent) return false;
@@ -2021,7 +2074,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       }
 
       if (decision.policy === "prompt") {
-        const { ApprovalRequestStore } = await import("@fusion/core");
+        
         const cliLayer = store.getAsyncLayer();
         const approvalStore = new ApprovalRequestStore(cliLayer ? null : store.getDatabase(), { asyncLayer: cliLayer });
         const dedupeKey = `secret-read:${resolvedScope}:${params.key}:${fnCtx.agentId ?? "unknown"}`;
@@ -3948,9 +4001,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, AGENT_VALID_TRANSITIONS } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.getAgent(params.id);
@@ -4011,9 +4064,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, AGENT_VALID_TRANSITIONS } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.getAgent(params.id);
@@ -4081,8 +4134,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       message_response_mode: Type.Optional(Type.Union([Type.Literal("immediate"), Type.Literal("on-heartbeat")])),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, ApprovalRequestStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const store = await getStore(ctx.cwd);
       const caller = { id: "user", role: "user", isPrivileged: true } as const;
@@ -4162,8 +4215,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const hasInstructionsText = params.instructions_text !== undefined;
@@ -4238,8 +4291,8 @@ export default function kbExtension(pi: ExtensionAPI) {
       reassign_to: Type.Optional(Type.String({ description: "Optional replacement agent for assigned tasks" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore, ApprovalRequestStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const store = await getStore(ctx.cwd);
       const caller = { id: "user", role: "user", isPrivileged: true } as const;
@@ -4302,9 +4355,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const filter: Record<string, unknown> = {};
@@ -4409,8 +4462,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       }
 
-      const { AgentStore } = await import("@fusion/core");
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
       const agent = await agentStore.getAgent(params.agent_id);
 
@@ -4472,9 +4525,9 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const agent = await agentStore.resolveAgent(params.id);
@@ -4575,10 +4628,10 @@ export default function kbExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const { AgentStore } = await import("@fusion/core");
+      
       type OrgTreeNode = { agent: { id: string; icon?: string; name: string; role: string; state: string; taskId?: string }; children: OrgTreeNode[] };
 
-      const agentStore = new AgentStore({ rootDir: getFusionDir(ctx.cwd) });
+      const agentStore = await getAgentStore(ctx.cwd);
       await agentStore.init();
 
       const includeEphemeral = params.include_ephemeral ?? false;
