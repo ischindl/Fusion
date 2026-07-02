@@ -213,7 +213,11 @@ describe("main", () => {
     }
   });
 
-  it("renders zero quarantine figures from an empty live ledger in report-only mode", async () => {
+  /*
+  FNXC:TestVelocityQuarantine 2026-07-02-12:00:
+  FN-7420 requires report-only regeneration to render quarantine surfaces from the live ledger even when the committed report and latest timing history still claim a non-zero quarantine count.
+  */
+  it("renders zero quarantine figures from an empty live ledger over stale report and history values", async () => {
     const rootDir = tempRoot();
     try {
       writeJson(rootDir, "scripts/lib/test-quarantine.json", { entries: [] });
@@ -233,7 +237,7 @@ describe("main", () => {
             gateMs: 7_000,
             bootSmokeMs: 18_000,
             testMs: 25_000,
-            quarantineCount: 0,
+            quarantineCount: 1,
             slowestTop20: [{ file: "packages/a/src/__tests__/slow.test.ts", package: "@pkg/a", ms: 9_000 }],
             measurementFailures: [],
           },
@@ -242,7 +246,7 @@ describe("main", () => {
       mkdirSync(path.join(rootDir, "docs"), { recursive: true });
       writeFileSync(
         path.join(rootDir, "docs/test-velocity-baseline.md"),
-        "| Quarantine / flake count | 3 | +3 |\n| 0-6 days | 3 |\nquarantine ledger 3 (+3)\n",
+        "| Quarantine / flake count | 1 | +1 |\n| 0-6 days | 1 |\nquarantine ledger 1 (+1)\n",
         "utf8",
       );
 
