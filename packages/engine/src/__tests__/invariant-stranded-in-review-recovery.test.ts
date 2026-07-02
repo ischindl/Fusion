@@ -70,6 +70,13 @@ describe("FN-4115 stranded in-review recovery", () => {
     const store = createStore([task], { autoMerge: true });
     const mgr = new SelfHealingManager(store as any, opts);
     vi.spyOn(mgr as any, "findAlreadyMergedTaskCommit").mockResolvedValue({ sha: "abc12345", strategy: "task-id-trailer" });
+    // FNXC:WorkflowRecovery 2026-07-01-20:20: FN-7143 added a branchTipForeignOwnership precondition —
+    // before trusting already-merged evidence for a task WITH a branch, self-healing verifies the branch
+    // tip is the task's own (non-foreign) work via git. That git probe cannot run against this in-memory
+    // fake store/rootDir (git rev-parse fails → "ownership-unverifiable" → candidate rejected), so the
+    // recovery short-circuits before findAlreadyMergedTaskCommit. Stub the ownership probe to null to
+    // faithfully model a verified-own tip, which is the precondition the recovery invariant assumes.
+    vi.spyOn(mgr as any, "branchTipForeignOwnership").mockResolvedValue(null);
     const recovered = await mgr.recoverAlreadyMergedReviewTasks();
     expect(recovered).toBe(1);
     expect((await store.getTask("FN-4115-A"))?.column).toBe("done");
@@ -103,6 +110,9 @@ describe("FN-4115 stranded in-review recovery", () => {
     const store = createStore([merged, downstream], { autoMerge: true });
     const mgr = new SelfHealingManager(store as any, opts);
     vi.spyOn(mgr as any, "findAlreadyMergedTaskCommit").mockResolvedValue({ sha: "abc12345", strategy: "task-id-trailer" });
+    // FNXC:WorkflowRecovery 2026-07-01-20:20: FN-7143 non-foreign-tip precondition (see the auto-finalize
+    // test above) — model a verified-own branch tip so the already-merged recovery proceeds in-memory.
+    vi.spyOn(mgr as any, "branchTipForeignOwnership").mockResolvedValue(null);
     await mgr.recoverAlreadyMergedReviewTasks();
     await mgr.clearStaleBlockedBy();
     expect((await store.getTask("FN-4115-MERGED"))?.column).toBe("done");

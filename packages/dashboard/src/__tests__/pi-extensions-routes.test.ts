@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { request } from "../test-request.js";
 import { createServer } from "../server.js";
@@ -31,7 +32,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 }));
 
 // Minimal store implementation for the test server
-class MinimalStore {
+// FNXC:DashboardTests 2026-07-01-19:55: createServer now subscribes via store.on("task:moved") (TaskStore extends EventEmitter) to purge task-planner chats on archive; extend EventEmitter so startup wiring works instead of throwing "store.on is not a function".
+class MinimalStore extends EventEmitter {
   getRootDir(): string {
     return "/tmp/fn-1944";
   }

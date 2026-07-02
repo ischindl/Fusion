@@ -323,10 +323,19 @@ describe("Workspace bootstrap script contract", () => {
     expect(buildIdx).toBeGreaterThan(testIdx);
   });
 
-  it("keeps default build CLI-first by excluding desktop/mobile", () => {
-    expect(rootPkg.scripts?.build).toBe(
-      "pnpm -r --filter=!@fusion/desktop --filter=!@fusion/mobile build",
+  // FNXC:Packaging 2026-07-01-19:52: The default root `build` now delegates to
+  // scripts/build-workspace.mjs (content-hash plugin-skip wrapper) instead of a
+  // literal pnpm -r filter string. The CLI-first invariant — desktop/mobile are
+  // excluded from the default build — must still hold, so assert it against the
+  // wrapper's ROOT_BUILD_EXCLUDED_PACKAGES source of truth rather than a string.
+  it("keeps default build CLI-first by excluding desktop/mobile", async () => {
+    expect(rootPkg.scripts?.build).toBe("node scripts/build-workspace.mjs");
+
+    const { ROOT_BUILD_EXCLUDED_PACKAGES } = await import(
+      join(workspaceRoot, "scripts", "build-workspace.mjs")
     );
+    expect(ROOT_BUILD_EXCLUDED_PACKAGES.has("@fusion/desktop")).toBe(true);
+    expect(ROOT_BUILD_EXCLUDED_PACKAGES.has("@fusion/mobile")).toBe(true);
   });
 
   it("keeps explicit opt-in scripts for full, desktop, and mobile builds", () => {

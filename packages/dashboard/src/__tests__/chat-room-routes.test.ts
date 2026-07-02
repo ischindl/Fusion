@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,8 +9,13 @@ import { ChatManager } from "../chat.js";
 import { request } from "../test-request.js";
 import { RoomReplyGenerationError } from "../chat.js";
 
-class MockStore {
-  constructor(private readonly rootDir: string, private readonly db: Database) {}
+// FNXC:DashboardTests 2026-07-01-19:55: createServer now subscribes via store.on("task:moved") (TaskStore extends EventEmitter) to purge task-planner chats on archive; extend EventEmitter so startup wiring works instead of throwing "store.on is not a function".
+class MockStore extends EventEmitter {
+  constructor(private readonly rootDir: string, private readonly db: Database) {
+    super();
+    // A single MockStore is intentionally reused across several createServer() calls in these tests; uncap listeners so the repeated task:moved subscriptions do not emit a spurious MaxListenersExceededWarning.
+    this.setMaxListeners(0);
+  }
 
   getRootDir(): string { return this.rootDir; }
   getFusionDir(): string { return join(this.rootDir, ".fusion"); }

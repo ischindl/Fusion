@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import * as worktreePool from "../worktree-pool.js";
 import { resolveWorktreesDir } from "../worktree-paths.js";
 import * as worktreeAcquisition from "../worktree-acquisition.js";
-import { createMockStore, mockedCreateFnAgent, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+import { createMockStore, mockedCreateFnAgent, mockedExecSync, mockedExistsSync, resetExecutorMocks } from "./executor-test-helpers.js";
 
 function task(overrides: Record<string, unknown> = {}) {
   return {
@@ -14,6 +14,8 @@ function task(overrides: Record<string, unknown> = {}) {
     column: "in-progress",
     worktree: "/repo/.worktrees/swift-falcon",
     branch: "fusion/fn-4114",
+    // FNXC:WorkflowLifecycle 2026-07-01-19:58: workflowGraphExecutor graduated to default-on, so every task now traverses the built-in coding graph including the default-on plan-review/code-review gate groups. This suite only exercises the pre-workflow worktree liveness gate; a bare mock agent session never satisfies the gates, causing a spurious rebound moveTask(FN-4114, todo, preserveProgress) that broke the accept-path assertions. Disabling the optional groups keeps the graph at planning->execute->review->merge so the liveness invariant stays isolated.
+    enabledWorkflowSteps: [],
     taskDoneRetryCount: 0,
     steps: [{ name: "Step 1", status: "in-progress" as const }],
     currentStep: 0,
@@ -22,6 +24,31 @@ function task(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date().toISOString(),
     ...overrides,
   };
+}
+
+// FNXC:WorkflowLifecycle 2026-07-01-19:58: With workflowGraphExecutor default-on the execute node hands off to in-review only when the agent calls fn_task_done; a bare prompt session that resolves undefined trips the "finished without fn_task_done" rebound to todo, which would masquerade as a liveness-gate rejection. Accept-path assertions must drive a completing agent so the ONLY todo rebound under test is the liveness gate itself.
+function mockCompletingAgent() {
+  // FN-009 carve-out: fn_task_done's verifyWorktreeInvariants skips git validation when the
+  // worktree dir does not exist. These liveness tests use fabricated worktree paths, so treating
+  // them as absent lets the completing agent hand off to in-review without tripping the
+  // wrong_toplevel invariant refusal (which would masquerade as a liveness-gate rebound to todo).
+  mockedExistsSync.mockReturnValue(false);
+  mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+    const customTools = opts.customTools || [];
+    return {
+      session: {
+        prompt: vi.fn().mockImplementation(async () => {
+          const taskDoneTool = customTools.find((t: any) => t.name === "fn_task_done");
+          if (taskDoneTool) await taskDoneTool.execute("tool-1", {});
+        }),
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        on: vi.fn(),
+        sessionManager: { getLeafId: vi.fn().mockReturnValue("leaf-1") },
+        state: {},
+      },
+    };
+  }) as any);
 }
 
 describe("FN-4114 worktree liveness assertion", () => {
@@ -35,6 +62,14 @@ describe("FN-4114 worktree liveness assertion", () => {
       if (cmd.includes("rev-list --count")) return Buffer.from("1\n");
       return Buffer.from("");
     });
+  });
+
+  // FNXC:ExecutorTests 2026-07-01-20:40: mockCompletingAgent flips the module-level existsSync mock to
+  // false (FN-009 worktree-absent completion carve-out). resetExecutorMocks does NOT reset existsSync, so
+  // without this restore the `false` leaks into later files sharing the vitest worker and silently breaks
+  // their default (worktree-present) assumptions. Restore the module default (true) after each test.
+  afterEach(() => {
+    mockedExistsSync.mockReturnValue(true);
   });
 
   it("FN-4114 aborts before createFnAgent when worktree is missing", async () => {
@@ -113,9 +148,7 @@ describe("FN-4114 worktree liveness assertion", () => {
     store.recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
     store.getTask.mockResolvedValue(task({ worktree: "/repo", sessionFile: null }));
 
-    mockedCreateFnAgent.mockImplementation(async () => ({
-      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() },
-    }) as any);
+    mockCompletingAgent();
 
     const executor = new TaskExecutor(store as any, "/repo");
     await executor.execute(task({ worktree: "/repo", sessionFile: null }) as any);
@@ -149,11 +182,10 @@ describe("FN-4114 worktree liveness assertion", () => {
     expect(store.moveTask).toHaveBeenCalledWith("FN-4114", "todo", { preserveProgress: true });
 
     mockedCreateFnAgent.mockReset();
-    mockedCreateFnAgent.mockImplementation(async () => ({
-      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() },
-    }) as any);
+    mockCompletingAgent();
 
     store.moveTask.mockReset();
+    store.moveTask.mockResolvedValue({});
     store.getTask.mockResolvedValue(task({ worktree: allowedWorktree }));
 
     const acceptExecutor = new TaskExecutor(store as any, "/repo");

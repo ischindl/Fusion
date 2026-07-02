@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TaskStore, setTaskCreatedHook } from "@fusion/core";
 import { runGhJsonAsync } from "@fusion/core/gh-cli";
+import { workflowAuthoringEngineMock } from "./helpers/engine-workflow-authoring-mock.js";
 
 const hookSpy = vi.hoisted(() => vi.fn(async () => {}));
 const registerGithubTrackingHookMock = vi.hoisted(() => vi.fn(() => {
@@ -28,6 +29,7 @@ vi.mock("@fusion/core/gh-cli", () => ({
 }));
 
 vi.mock("@fusion/engine", () => ({
+  ...workflowAuthoringEngineMock,
   createFnAgent: vi.fn(),
   fetchWebContent: vi.fn(),
   assertNoSecretPlaintext: vi.fn(),

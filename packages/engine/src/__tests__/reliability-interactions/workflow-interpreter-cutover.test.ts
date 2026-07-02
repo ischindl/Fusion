@@ -24,12 +24,21 @@ const readyParity = {
   recentDrift: [],
 };
 
+// FNXC:WorkflowInterpreterCutover 2026-07-01-21:35: BUILTIN_CODING_WORKFLOW_IR graduated to include
+// default-on optional groups (plan-review, browser-verification, code-review). Disabling them via
+// enabledWorkflowSteps:[] keeps the authoritative driver's seam-only run from routing into those group
+// nodes (which WorkflowAuthoritativeDriver's hardcoded runCustomNode rejects). NOTE: this does NOT rescue
+// the three tests that require the graph to reach merge — the IR also gained an ALWAYS-ON `completion-summary`
+// custom node that the driver's runCustomNode throws on ("unexpected custom node ... completion-summary"),
+// so a clean run cannot complete. That is a product gap in workflow-authoritative-driver.ts (owned by the
+// lead), not a test-side staleness; those three tests are left failing pending a driver fix or retirement.
 const baseTask = {
   id: "FN-5770",
   column: "in-progress",
   steps: [],
   review: null,
   mergeDetails: null,
+  enabledWorkflowSteps: [],
 } as unknown as TaskDetail;
 
 function settingsWith(flags: Record<string, boolean>, overrides: Partial<Settings> = {}): Settings {

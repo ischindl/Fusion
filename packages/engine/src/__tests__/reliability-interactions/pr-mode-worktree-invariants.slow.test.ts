@@ -18,6 +18,26 @@ function git(cwd: string, command: string): string {
   return execSync(`git ${command}`, { cwd, encoding: "utf8" }).trim();
 }
 
+/*
+FNXC:PrMergeAutoMerge 2026-07-01-21:30:
+FN-7133 made processPullRequestMergeTask resolve owner/repo from its cwd via
+getCurrentRepo() (git remote get-url origin) and THROW when it cannot — multi-project
+daemons can no longer rely on process cwd. These PR-merge unit tests previously passed a
+bogus "/tmp/repo" cwd, which now trips "could not determine repository". Give them a real
+throwaway repo with an `origin` remote so getCurrentRepo() resolves a concrete slug,
+exercising the real repo-resolution path instead of stubbing it.
+*/
+const prRepoCwds: string[] = [];
+function makeRepoWithOrigin(): string {
+  const dir = mkdtempSync(join(tmpdir(), "fn-prmode-repo-"));
+  prRepoCwds.push(dir);
+  git(dir, "init -b main");
+  git(dir, "config user.name 'Fusion'");
+  git(dir, "config user.email 'hi@runfusion.ai'");
+  git(dir, "remote add origin https://github.com/Runfusion/Fusion.git");
+  return dir;
+}
+
 function createStore(tasks: Task[], settingsOverrides: Record<string, unknown> = {}) {
   const emitter = new EventEmitter() as any;
   const audits: any[] = [];
@@ -67,6 +87,9 @@ describe("FN-5420 reliability interactions: PR mode worktree invariants", () => 
   afterEach(() => {
     activeSessionRegistry.clear();
     vi.restoreAllMocks();
+    while (prRepoCwds.length > 0) {
+      rmSync(prRepoCwds.pop()!, { recursive: true, force: true });
+    }
   });
 
   it("FN-5420/FN-5147: autoMerge=false keeps in-review stable; PR flow still finalizes on merged status", async () => {
@@ -113,7 +136,7 @@ describe("FN-5420 reliability interactions: PR mode worktree invariants", () => 
     };
 
     const { processPullRequestMergeTask } = await loadPrLifecycleModule();
-    await processPullRequestMergeTask(store as any, "/tmp/repo", task.id, github as any, () => undefined);
+    await processPullRequestMergeTask(store as any, makeRepoWithOrigin(), task.id, github as any, () => undefined);
     expect(store.moveTask).toHaveBeenCalledWith(task.id, "done");
     manager.stop();
   });
@@ -328,7 +351,7 @@ describe("FN-5420 reliability interactions: PR mode worktree invariants", () => 
     };
 
     const { processPullRequestMergeTask } = await loadPrLifecycleModule();
-    const result = await processPullRequestMergeTask(store as any, "/tmp/repo", task.id, github as any, () => undefined);
+    const result = await processPullRequestMergeTask(store as any, makeRepoWithOrigin(), task.id, github as any, () => undefined);
     expect(result).toBe("waiting");
     expect(github.getPrMergeStatus).toHaveBeenCalled();
   });

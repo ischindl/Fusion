@@ -53,6 +53,8 @@ vi.mock("@fusion/engine", () => ({
     resolvedSkillNames: [],
     skillSource: "none" as const,
   })),
+  // FNXC:DashboardSessionTests 2026-07-01-19:55: planning/subtask/mission sessions now resolve MCP servers via resolveMcpServersForStore before createFnAgent; focused engine mock must export it (returning the real empty-runtime shape) so session generation completes instead of throwing on a missing mock export and timing out.
+  resolveMcpServersForStore: vi.fn(async () => ({ servers: [], errors: [] })),
   createFnAgent: mockCreateFnAgent,
   createResolvedAgentSession: vi.fn(async () => ({
     session: { state: { messages: [] }, prompt: vi.fn(), dispose: vi.fn() },

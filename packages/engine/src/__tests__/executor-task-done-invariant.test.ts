@@ -690,8 +690,31 @@ describe("FN-5241 executor handoff auditing", () => {
     };
   }
 
-  it("emits task:handoff and enqueues merge work on successful fn_task_done", async () => {
+  /*
+  FNXC:WorkflowLifecycle 2026-07-01-22:10:
+  workflowGraphExecutor is default-on, so the FN-5241 "atomic in-review handoff seam" auditing was
+  superseded by the graph lifecycle:
+    - SUCCESSFUL builtin:coding completion reaches in-review via the MERGE-NODE boundary moveTask
+      (executor.ts:6106, "handoff-invariant-violation-allowlist: workflow merge node owns the merge
+      lifecycle boundary"), NOT the review-seam handoffTaskToReview("workflow-graph-review"). There is no
+      longer a task:handoff("workflow-graph-review") event nor a review-seam merge-queue enqueue on this
+      path; the merge boundary records task:move audits instead.
+    - EXHAUSTION/no-fn_task_done budget now FAILS IN PLACE (executor.ts:2088 "in-review is reserved for
+      clean completion handoffs"); the "max-task-done-retries-exhausted" in-review reason no longer exists.
+  These tests are migrated to assert the CURRENT mechanisms; they still protect the FN-5241 intent (a clean
+  completion reaches in-review; an exhausted no-fn_task_done run is terminal), just via the graph seams.
+  */
+
+  it("moves a cleanly completed task to in-review via the merge-node boundary", async () => {
     const { task, worktreePath } = await createExecutorTask();
+    // Graph-native implementation proof: the mock agent signals completion via fn_task_done without running
+    // the foreach step-execute nodes, so the merge-boundary FN-7260/FN-7271 proof gate needs an explicit
+    // node-source pre-merge pass to model a genuinely-implemented task reaching the merge boundary.
+    await store.updateTask(task.id, {
+      workflowStepResults: [
+        { workflowStepId: "execute", workflowStepName: "Execute", phase: "pre-merge", source: "node", status: "passed" },
+      ],
+    } as any);
     mockedExec.mockImplementation(((cmd: string, _opts: unknown, cb?: (err: Error | null, stdout: string, stderr: string) => void) => {
       if (!cb) return undefined as any;
       if (cmd.includes("rev-parse --show-toplevel")) return cb(null, `${worktreePath}\n`, "");
@@ -715,21 +738,25 @@ describe("FN-5241 executor handoff auditing", () => {
     }) as any);
 
     const executor = new TaskExecutor(store as any, rootDir);
+    // The merge-node boundary requests merge via the injected requester before it inline-merges; returning
+    // a non-merged "queued" result keeps the task terminal in-review (autoMerge deferred) instead of
+    // finalizing it to done, so we observe the review-staging state under test.
+    executor.setMergeRequester(async () => ({ merged: false, noOp: false, reason: "queued" }) as any);
     await executor.execute(task as any);
 
+    // CURRENT completion mechanism: task ends in-review via the merge-node boundary moveTask.
     expect((await store.getTask(task.id))?.column).toBe("in-review");
-    expect(store.peekMergeQueue()).toEqual([
-      expect.objectContaining({ taskId: task.id, priority: task.priority }),
-    ]);
-    const handoff = store.getRunAuditEvents({ taskId: task.id, mutationType: "task:handoff", limit: 10 })[0];
-    expect(handoff?.metadata).toMatchObject({
-      taskId: task.id,
-      reason: "workflow-graph-review",
-      alreadyEnqueued: false,
-    });
+    // Forensic intent preserved via the mechanism that actually fires now: the merge boundary records a
+    // task:move into in-review (the review-seam task:handoff("workflow-graph-review") event and the
+    // review-seam merge-queue enqueue no longer occur on this path).
+    const moveToReview = store
+      .getRunAuditEvents({ taskId: task.id, mutationType: "task:move", limit: 20 })
+      .find((event) => (event.metadata as { to?: string })?.to === "in-review");
+    expect(moveToReview).toBeDefined();
+    expect(store.getRunAuditEvents({ taskId: task.id, mutationType: "task:handoff", limit: 10 })).toHaveLength(0);
   });
 
-  it("emits failed-status handoff auditing when no-fn_task_done retry budget is exhausted", async () => {
+  it("fails a no-fn_task_done retry-budget-exhausted run in place without moving to in-review", async () => {
     const { task, worktreePath } = await createExecutorTask(3);
     mockedExec.mockImplementation(((cmd: string, _opts: unknown, cb?: (err: Error | null, stdout: string, stderr: string) => void) => {
       if (!cb) return undefined as any;
@@ -754,17 +781,12 @@ describe("FN-5241 executor handoff auditing", () => {
     await executor.execute(task as any);
 
     const latest = await store.getTask(task.id);
-    expect(latest?.column).toBe("in-review");
-    expect(latest?.status).toBe("failed");
-    expect(String(latest?.error ?? "")).toContain("without calling fn_task_done");
-    expect(store.peekMergeQueue()).toEqual([
-      expect.objectContaining({ taskId: task.id, priority: task.priority }),
-    ]);
-    const handoff = store.getRunAuditEvents({ taskId: task.id, mutationType: "task:handoff", limit: 10 })[0];
-    expect(handoff?.metadata).toMatchObject({
-      taskId: task.id,
-      reason: "max-task-done-retries-exhausted",
-      alreadyEnqueued: false,
-    });
+    // A no-fn_task_done run that cannot cleanly complete is NOT a review handoff (executor.ts:2088:
+    // "in-review is reserved for clean completion handoffs"). It must never advance to in-review, and the
+    // FN-5241 review-seam handoff auditing (task:handoff "workflow-graph-review" /
+    // "max-task-done-retries-exhausted") + merge-queue enqueue are superseded — none of them fire here.
+    expect(latest?.column).not.toBe("in-review");
+    expect(store.getRunAuditEvents({ taskId: task.id, mutationType: "task:handoff", limit: 10 })).toHaveLength(0);
+    expect(store.peekMergeQueue()).toEqual([]);
   });
 });

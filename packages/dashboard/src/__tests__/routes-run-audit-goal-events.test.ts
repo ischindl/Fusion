@@ -2,6 +2,7 @@
 FNXC:DashboardTests 2026-06-14-09:58:
 FN-6444 rescues this server route test from the curated skip-list; the fake SQLite statement returns better-sqlite-style mutation metadata so createServer boot sweeps exercise real startup paths.
 */
+import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "../test-request.js";
 
@@ -20,7 +21,8 @@ vi.mock("@fusion/core", async (importOriginal) => ({
   deterministicGuardLocks: new Map(),
 }));
 
-class MockStore {
+// FNXC:DashboardTests 2026-07-01-19:55: createServer now subscribes via store.on("task:moved") (TaskStore extends EventEmitter) to purge task-planner chats on archive; back the mock store with a real EventEmitter so startup wiring works instead of throwing "store.on is not a function".
+class MockStore extends EventEmitter {
   getRunAuditEvents = mockGetRunAuditEvents;
   getAgentLogsByTimeRange = vi.fn().mockResolvedValue([]);
   getMutationsForRun = vi.fn().mockResolvedValue([]);

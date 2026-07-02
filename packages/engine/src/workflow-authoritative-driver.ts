@@ -195,7 +195,31 @@ export class WorkflowAuthoritativeDriver {
       },
       primitives: this.deps.executor.createAuthoritativeWorkflowPrimitives?.(settings) ?? primitivesFromLegacySeams(seams),
       seams,
+      /*
+      FNXC:WorkflowInterpreterCutover 2026-07-01-21:05:
+      BUILTIN_CODING_WORKFLOW_IR graduated to carry default-on/always-on custom
+      lifecycle nodes: the plan-review/code-review/browser-verification/post-merge
+      optional groups (bypassed at their group node when a task disables them via
+      enabledWorkflowSteps) and an ALWAYS-ON `completion-summary` prompt node
+      (kind:"prompt", summaryTarget:"task") that records the pre-review summary.
+      The transitional authoritative driver validates SEAM-LEVEL parity
+      (planning/execute/review/merge/schedule) against the legacy executor; it does
+      not reproduce custom-node side effects. Previously runCustomNode threw on any
+      custom node, so the always-on completion-summary aborted every clean run
+      before it could reach review→merge. Pass built-in auxiliary custom nodes
+      (task-summary nodes and bypassable optional groups) through as success so the
+      seam pipeline completes, mirroring the main executor's completion path for
+      parity purposes. Genuinely unexpected custom nodes still fail loudly.
+      */
       runCustomNode: async (node) => {
+        const isBuiltinAuxiliaryNode =
+          node.config?.summaryTarget === "task" || node.kind === "optional-group";
+        if (isBuiltinAuxiliaryNode) {
+          executorLog.log(
+            `[workflow-authoritative] ${task.id}: passing auxiliary custom node '${node.id}' through as success (seam-parity run)`,
+          );
+          return { outcome: "success" };
+        }
         throw new Error(`unexpected custom node in builtin authoritative workflow: ${node.id}`);
       },
       onEvent: (event) => {

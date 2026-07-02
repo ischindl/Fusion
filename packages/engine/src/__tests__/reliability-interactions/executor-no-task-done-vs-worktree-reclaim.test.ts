@@ -127,7 +127,13 @@ describe("reliability interactions: executor no-fn_task_done vs worktree reclaim
     const executor = new TaskExecutor(store as any, "/tmp/test");
     await executor.execute(state);
 
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4601", "in-review");
+    // FNXC:WorkflowLifecycle 2026-07-01-21:05: A non-recoverable execute error follows the terminal
+    // FAILURE path, which under the workflow-graph model parks the task `status: "failed"` IN PLACE (the
+    // failure-in-place model that superseded FN-1284's in-review escalation). The invariant under test is
+    // that this path is DISTINCT from the FN-4806 reclaim self-heal (silent todo requeue, no failed): a
+    // non-recoverable error marks the task failed and does NOT silently requeue to todo.
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4601", expect.objectContaining({ status: "failed" }));
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4601", "todo", { preserveProgress: true });
   });
 
   it("reclaim path ignores requeue budget and always silently requeues (FN-4806)", async () => {

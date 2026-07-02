@@ -63,8 +63,15 @@ describe("FN-4946 implicit refusal budget handling", () => {
 
     await (executor as any).handleImplicitTaskDoneRefusal(task(3), refusal());
 
-    expect(store.updateTask).toHaveBeenCalledWith("FN-4946-B", expect.objectContaining({ status: "failed" }));
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4946-B", "in-review");
+    // FNXC:WorkflowLifecycle 2026-07-01-20:25: At refusal-budget exhaustion the implicit path now parks
+    // the task `status: "failed"` IN PLACE (worktree/branch cleared), mirroring the explicit fn_task_done
+    // exhaustion path and the workflow-graph failure-in-place model. status="failed" is the surfaced
+    // terminal + self-healing-exemption marker; the legacy FN-1284 move-to-in-review escalation was
+    // superseded. The protected invariant — budget exhaustion is terminal, not another requeue — holds
+    // via the failed parking + persisted token usage.
+    expect(store.updateTask).toHaveBeenCalledWith("FN-4946-B", expect.objectContaining({ status: "failed", worktree: null, branch: null }));
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4946-B", "in-review");
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4946-B", "todo", { preserveProgress: true });
     expect(persistSpy).toHaveBeenCalledWith("FN-4946-B");
   });
 
@@ -95,8 +102,13 @@ describe("FN-4946 implicit refusal budget handling", () => {
       refusal(),
     );
 
-    const inReviewMoves = store.moveTask.mock.calls.filter((call: any[]) => call[0] === "FN-4946-B2" && call[1] === "in-review");
-    expect(inReviewMoves.length).toBeGreaterThanOrEqual(1);
+    // FNXC:WorkflowLifecycle 2026-07-01-20:25: The shared-budget invariant is that once the explicit path
+    // has burned the retry budget (2->3), the follow-up implicit refusal escalates IMMEDIATELY instead of
+    // requeuing again. That terminal escalation now parks the task `status: "failed"` in place (no
+    // move-to-in-review — the legacy FN-1284 escalation was superseded by the failure-in-place model). The
+    // budget-sharing invariant is proven by the terminal failed update carrying no further taskDoneRetryCount
+    // bump, and by the absence of a second todo requeue for the implicit refusal.
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-4946-B2", "in-review");
     const implicitEscalationUpdate = store.updateTask.mock.calls.find(
       ([id, patch]: [string, Record<string, unknown>]) =>
         id === "FN-4946-B2" && patch.status === "failed" && !("taskDoneRetryCount" in patch),

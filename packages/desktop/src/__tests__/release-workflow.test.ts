@@ -76,7 +76,8 @@ describe("desktop release workflow wiring", () => {
       expect(workflow).toContain("build-android:");
       expect(workflow).toContain("runs-on: ubuntu-latest");
       expect(workflow).toContain("actions/setup-java@v4");
-      expect(workflow).toContain('java-version: "17"');
+      // FNXC:AndroidRelease 2026-07-01-19:52: Capacitor 7 @capacitor/android compiles with JavaVersion.VERSION_21, so the Android release Gradle build must provision JDK 21 (JDK 17 fails with `invalid source release: 21`). Assert the intended JDK here.
+      expect(workflow).toContain('java-version: "21"');
       expect(workflow).toContain("pnpm --filter @fusion/mobile cap add android");
       expect(workflow).toContain("pnpm --filter @fusion/mobile cap sync android");
       expect(workflow).toContain("ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}");

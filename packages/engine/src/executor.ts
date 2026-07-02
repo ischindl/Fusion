@@ -1711,6 +1711,21 @@ export class TaskExecutor {
   private pendingEphemeralDeletions = new Set<string>();
   private workspaceConfig: WorkspaceConfig | null | undefined = undefined;
 
+  /*
+  FNXC:WorkflowLifecycle 2026-07-01-16:20:
+  Breadcrumb task-log writes on the abort/pause/finalize paths are best-effort diagnostics and must NEVER break control flow. FN-7335 wired store.logEntry() straight into the SYNCHRONOUS markPausedAborted() as `void this.store.logEntry(...).catch(...)`; when store.logEntry is absent/throws synchronously (undefined method, store closed mid-abort, corrupted pager) the call throws a TypeError BEFORE the promise exists, so the trailing .catch() never runs and the exception unwinds out of markPausedAborted — aborting hard-cancel/pause and stranding the in-review handoff. Route every breadcrumb write through safeLogEntry() so both synchronous throws and async rejections are swallowed into a warn.
+  */
+  private safeLogEntry(taskId: string, message: string): void {
+    try {
+      const result = this.store.logEntry(taskId, message, undefined, this.getRunContextFor(taskId));
+      void Promise.resolve(result).catch((error) => {
+        executorLog.warn(`${taskId}: failed to write task-log breadcrumb: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      executorLog.warn(`${taskId}: failed to write task-log breadcrumb: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private markPausedAborted(
     taskId: string,
     provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel",
@@ -1725,14 +1740,10 @@ export class TaskExecutor {
       FNXC:WorkflowLifecycle 2026-07-01-22:24:
       Pause aborts are frequent enough that operators need task-log breadcrumbs at the marker source, not only at the later graph-failure sink. Log first-mark/provenance-change events so a task card shows why a workflow was interrupted and which code path owned the abort.
       */
-      void this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Pause abort marked: provenance=${provenance} source=${source}${previousProvenance && previousProvenance !== provenance ? ` previous=${previousProvenance}` : ""}`,
-        undefined,
-        this.getRunContextFor(taskId),
-      ).catch((error) => {
-        executorLog.warn(`${taskId}: failed to log pause-abort marker: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      );
     }
   }
 
@@ -2531,14 +2542,10 @@ export class TaskExecutor {
 
     if (hadActiveSurface) {
       executorLog.log(`${taskId}: awaited abort of in-flight work — ${reason}`);
-      await this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`,
-        undefined,
-        this.getRunContextFor(taskId),
-      ).catch((error) => {
-        executorLog.warn(`${taskId}: failed to log pause-abort cleanup: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      );
     }
   }
 
@@ -8130,11 +8137,9 @@ export class TaskExecutor {
       if (pausedAborted || live.paused || live.userPaused || abortProvenance) {
         const failedNodeForLog = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
         const failureValueForLog = this.graphFailureValue(result) ?? "none";
-        await this.store.logEntry(
+        this.safeLogEntry(
           task.id,
           `Pause abort classified: provenance=${abortProvenance ?? "unknown"}; node=${failedNodeForLog}; interrupted=${result.interruptedNodeId ?? "none"}; abortKind=${result.interruptedAbortKind ?? "none"}; column=${live.column}; status=${live.status ?? "none"}; paused=${live.paused === true}; userPaused=${live.userPaused === true}; value=${failureValueForLog}; genuine=${genuinePauseAbort}; mergeSeam=${mergeSeamAborted}; completionSuppressed=${suppressFinalizedCompletionAbort}`,
-          undefined,
-          this.getRunContextFor(task.id),
         );
       }
       if (genuinePauseAbort && await this.isReentrantPausedAbortedInFlightNode(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
