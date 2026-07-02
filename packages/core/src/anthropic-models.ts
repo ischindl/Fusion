@@ -28,8 +28,8 @@ export interface AnthropicProviderRegistration {
 }
 
 /*
- * FNXC:ModelCatalog 2026-06-30-12:22:
- * Claude Sonnet 5 support must not depend on the installed pi-ai catalog version or on the Claude CLI provider. Keep this supplemental Anthropic registration shared by engine sessions and dashboard model routes, and dedupe by model id so upstream catalog catch-up does not create duplicate picker rows.
+ * FNXC:ModelCatalog 2026-07-01-22:40:
+ * Re-advertise `claude-sonnet-5`: the pinned pi-ai builtin registry ships opus-4-8/sonnet-4-6/fable-5 but NOT sonnet-5, and FN-7374 removed the static row expecting the live registry to carry it — so Sonnet 5 was left visible on no surface at all. FN-7374's "404 for direct accounts" premise is disproven by a live probe: `claude-sonnet-5` returns 200 on `api.anthropic.com/v1` with a raw `ANTHROPIC_API_KEY`, and runs via the Claude CLI/`pi-claude-cli` (claude.ai backend). It DOES 403 (scope) on subscription-OAuth `/v1`, so OAuth-only users fall back to the runtime actionable-failure path; keep it advertised so API-key and CLI users can select it.
  */
 export const SUPPLEMENTAL_ANTHROPIC_PROVIDER_REGISTRATION: AnthropicProviderRegistration = {
   name: "Anthropic",

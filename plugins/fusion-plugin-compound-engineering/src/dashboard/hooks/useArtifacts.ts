@@ -57,6 +57,9 @@ export function useArtifacts({
       return;
     }
 
+    setResult(undefined);
+    setError(undefined);
+
     const controller = new AbortController();
     setLoading(true);
     listArtifacts(projectId)

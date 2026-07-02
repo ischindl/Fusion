@@ -1639,6 +1639,34 @@ describe("runTaskImportGitHubInteractive", () => {
     }));
   });
 
+  it("marks interactive imports as tracked when import linking is on and new-task defaults are off", async () => {
+    (TaskStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn(),
+      createTask: mockCreateTask,
+      listTasks: mockListTasks,
+      getSettings: vi.fn().mockResolvedValue({
+        githubTrackingEnabledByDefault: false,
+        githubLinkImportedIssuesToTracking: true,
+      }),
+      getGlobalSettingsStore: vi.fn().mockReturnValue({ getSettings: vi.fn().mockResolvedValue({}) }),
+    }));
+    vi.mocked(runGhJsonAsync).mockResolvedValueOnce([
+      mockIssue(1, "Import-linked Issue", null),
+    ] as never);
+    vi.mocked(createInterface).mockReturnValueOnce({
+      question: vi.fn().mockResolvedValueOnce("all"),
+      close: vi.fn(),
+    } as any);
+
+    await runTaskImportGitHubInteractive("owner/repo");
+
+    expect(mockCreateTask).toHaveBeenCalledWith(expect.objectContaining({
+      description: "(no description)\n\nSource: https://github.com/owner/repo/issues/1",
+      githubTracking: { enabled: true },
+      sourceIssue: expect.objectContaining({ provider: "github", repository: "owner/repo", issueNumber: 1 }),
+    }));
+  });
+
   it('imports all issues when "all" is selected', async () => {
     vi.mocked(runGhJsonAsync).mockResolvedValueOnce([
       mockIssue(1, "First Issue", "Description 1"),

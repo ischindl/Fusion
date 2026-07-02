@@ -89,7 +89,97 @@ describe("AgentPermissionPolicyEditor", () => {
     );
 
     expect(screen.getByText("fn_research_run (web/research)")).toBeInTheDocument();
-    expect(screen.getByText("fn_task_create")).toBeInTheDocument();
+    expect(screen.getAllByText("fn_task_create").length).toBeGreaterThan(0);
+  });
+
+  it("renders an empty state for exact tool overrides", () => {
+    render(
+      <AgentPermissionPolicyEditor
+        mode="project-default"
+        value={undefined}
+        onChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Exact tool overrides")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-policy-tool-empty")).toHaveTextContent("No exact tool overrides configured.");
+    expect(screen.getByTestId("agent-policy-tool-add")).toBeInTheDocument();
+  });
+
+  it("adds and replaces a fn_task_create block override", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <AgentPermissionPolicyEditor
+        mode="project-default"
+        value={{ presetId: "custom", rules: {
+          git_write: "allow",
+          file_write_delete: "allow",
+          command_execution: "allow",
+          network_api: "allow",
+          task_agent_mutation: "allow",
+        } }}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Tool override tool"), { target: { value: "fn_task_create" } });
+    fireEvent.change(screen.getByLabelText("Tool override disposition"), { target: { value: "block" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add override" }));
+    const blockedPayload = onChange.mock.calls.at(-1)?.[0] as AgentPermissionPolicy;
+    expect(blockedPayload.toolRules).toEqual({ fn_task_create: "block" });
+
+    rerender(
+      <AgentPermissionPolicyEditor
+        mode="project-default"
+        value={blockedPayload}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getAllByTestId("agent-policy-tool-row")).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText("Tool override disposition"), { target: { value: "require-approval" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update override" }));
+    const updatedPayload = onChange.mock.calls.at(-1)?.[0] as AgentPermissionPolicy;
+    expect(updatedPayload.toolRules).toEqual({ fn_task_create: "require-approval" });
+  });
+
+  it("removing the final exact tool override leaves no row shell", () => {
+    const onChange = vi.fn();
+    render(
+      <AgentPermissionPolicyEditor
+        mode="project-default"
+        value={{ presetId: "custom", rules: {
+          git_write: "allow",
+          file_write_delete: "allow",
+          command_execution: "allow",
+          network_api: "allow",
+          task_agent_mutation: "allow",
+        }, toolRules: { fn_task_create: "block" } }}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove exact override for fn_task_create" }));
+    const payload = onChange.mock.calls.at(-1)?.[0] as AgentPermissionPolicy;
+    expect(payload.toolRules).toBeUndefined();
+  });
+
+  it("shows inherited project default exact tool disposition in agent override mode", () => {
+    render(
+      <AgentPermissionPolicyEditor
+        mode="agent-override"
+        value={{ presetId: "custom", rules: {
+          git_write: "allow",
+          file_write_delete: "allow",
+          command_execution: "allow",
+          network_api: "allow",
+          task_agent_mutation: "allow",
+        }, toolRules: { fn_task_create: "allow" } }}
+        projectDefaultToolRules={{ fn_task_create: "block" }}
+        onChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("project default exact rule: Block")).toBeInTheDocument();
   });
 
   it("renders exempt tools guidance", () => {

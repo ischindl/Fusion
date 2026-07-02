@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
   CreateInteractiveAiSessionFactory,
+  CreateInteractiveAiSessionOptions,
   InteractiveAiSession,
   InteractiveAiSessionEvent,
   InteractiveAiSessionProgressEvent,
@@ -200,10 +201,15 @@ export function buildStageSystemPrompt(stage: CeStageDefinition): string {
     `You are running the Compound Engineering "${stage.stageId}" stage.`,
     `Apply the bundled skill "${stage.skillId}" (it has been loaded into this session).`,
     "",
+    /*
+     * FNXC:CompoundEngineering 2026-07-01-13:41:
+     * CE dashboard stages may load rich skills that were authored for chat/terminal flows, including instructions to ask blocking questions or write prose summaries. The interactive session seam is stricter: every visible turn must translate any loaded-skill instruction into the structured question/complete JSON protocol so a newly launched Debug stage cannot become an Error session from non-JSON output.
+     */
+    "The JSON protocol below has priority over any loaded-skill instruction about asking questions, using blocking question tools, writing prose summaries, previewing commits/PRs, or ending with chat text: translate any loaded-skill instruction into a JSON question or JSON complete event.",
     "Drive the stage as an interactive question/answer flow. On every turn respond with ONLY a JSON object:",
     '  - To ask the user something: {"type":"question","data":{"id":"<unique>","type":"single_select|multi_select|text|confirm","question":"...","options":[{"id":"..","label":".."}]}}',
     '  - When the stage is finished: {"type":"complete","data":{"artifact":"<full markdown document>", ...}}',
-    "No markdown fences, no prose outside the JSON object.",
+    "No markdown fences, no prose outside the JSON object. Do not call user-question tools from this interactive stage; emit a JSON question instead.",
     "",
     "The user's reply arrives as {\"type\":\"answer\",\"questionId\":\"...\",\"response\":...}. The response takes one of three shapes:",
     "  - a direct answer to your question (an option id, array of option ids, text, or boolean),",
@@ -291,6 +297,7 @@ export class CeOrchestrator {
   private buildSessionOptions(
     stage: CeStageDefinition,
     sessionId: string,
+    opts: Pick<CreateInteractiveAiSessionOptions, "allowAnswerQuestionIdDrift"> = {},
   ): Parameters<CreateInteractiveAiSessionFactory>[0] {
     const defaultProvider = getDefaultProvider(this.ctx.settings);
     const defaultModelId = getDefaultModelId(this.ctx.settings);
@@ -302,6 +309,11 @@ export class CeOrchestrator {
       tools: "coding",
       requestedSkillNames: [stage.skillId],
       additionalSkillPaths,
+      /*
+       * FNXC:CompoundEngineering 2026-07-01-17:31:
+       * Question-id drift tolerance is recovery-only. Fresh CE sessions keep the strict interactive seam guard so live/DB question divergence is surfaced immediately; rehydration enables the tolerance because the persisted session row is the recovery anchor after a restart.
+       */
+      ...(opts.allowAnswerQuestionIdDrift ? { allowAnswerQuestionIdDrift: true } : {}),
       onProgress: (event) => this.handleProgress(sessionId, event),
       ...(defaultProvider ? { defaultProvider } : {}),
       ...(defaultModelId ? { defaultModelId } : {}),
@@ -642,7 +654,9 @@ export class CeOrchestrator {
   }
 
   private async rehydrateReplay(session: CeSession, stage: CeStageDefinition): Promise<void> {
-    const interactive = await this.factory!(this.buildSessionOptions(stage, session.id));
+    const interactive = await this.factory!(
+      this.buildSessionOptions(stage, session.id, { allowAnswerQuestionIdDrift: true }),
+    );
     const live = interactive.session;
 
     // Walk the recorded user turns in order. The FIRST user turn is the opening

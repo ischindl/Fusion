@@ -1,16 +1,15 @@
-import type { Settings, TaskDetail, WorkflowDefinition, WorkflowIr, WorkflowStepResult } from "@fusion/core";
+import type { Settings, TaskDetail, TaskStep, WorkflowDefinition, WorkflowIr, WorkflowStepResult } from "@fusion/core";
 import {
-  compileWorkflowToSteps,
   getBuiltinWorkflow,
   isBuiltinWorkflowId,
   parseWorkflowIr,
-  WorkflowCompileError,
 } from "@fusion/core";
 
 import {
   WORKFLOW_INTERRUPTED_NODE_ABORT_KIND_CONTEXT_KEY,
   WORKFLOW_INTERRUPTED_NODE_ID_CONTEXT_KEY,
   WORKFLOW_NODE_ENGINE_PAUSE_ABORT_KIND,
+  WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY,
   WorkflowGraphExecutor,
   type WorkflowGraphExecutorDeps,
   type WorkflowNodePreparationRequirement,
@@ -44,10 +43,6 @@ import type { WorkflowPrimitiveContext, WorkflowRuntimePrimitives } from "./runt
  *                  the caller must run the legacy pipeline instead.
  */
 export type WorkflowGraphRunDisposition = "completed" | "failed" | "fell-back";
-
-function isInterpreterDeferredCompileError(error: unknown): boolean {
-  return error instanceof WorkflowCompileError && error.message.includes("require the workflow interpreter (deferred)");
-}
 
 export interface WorkflowGraphTaskRunResult {
   disposition: WorkflowGraphRunDisposition;
@@ -210,13 +205,11 @@ export class WorkflowGraphTaskRunner {
       /*
       FNXC:WorkflowExecution 2026-06-27-07:40:
       FN-7113 requires the interpreter to re-validate the resolved built-in/custom/plugin workflow IR before any seam, primitive, or custom-node side effects. Invalid persisted or plugin-authored graphs fail closed with an author-facing invalid-ir reason instead of partially running or falling back into the wrong legacy workflow.
+
+      FNXC:WorkflowExecution 2026-07-01-00:00:
+      The linear WorkflowStep compiler was removed; the graph interpreter is the sole executor. `parseWorkflowIr` (which validates branching graphs via validateV2) is now the only IR validity gate here — there is no separate linear-compile pre-check to satisfy.
       */
       validatedIr = parseWorkflowIr(definition.ir);
-      try {
-        compileWorkflowToSteps(validatedIr);
-      } catch (err) {
-        if (!isInterpreterDeferredCompileError(err)) throw err;
-      }
     } catch (err) {
       return this.failBeforeSideEffects(task.id, `invalid-ir: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -249,6 +242,26 @@ export class WorkflowGraphTaskRunner {
         : {}),
     };
     const wrappedRunCustomNode: WorkflowCustomNodeRunner = (node, t, c) => {
+      if (!this.deps.primitives && (t as { executionMode?: unknown }).executionMode === "fast") {
+        /*
+        FNXC:WorkflowFastMode 2026-07-01-00:00:
+        Raw WorkflowGraphTaskRunner tests and compatibility callers can run without the TaskExecutor custom-node service that normally owns fast-mode skips. In that fallback posture, skip executable custom prompt/script/gate nodes at the runner boundary so default-on optional review groups do not fail a fast-mode built-in workflow before legacy seams run.
+
+        FNXC:WorkflowFastMode 2026-07-01-00:00:
+        Explicitly selected optional-group bodies carry workflow:optionalGroupActive and must still execute in fast mode because selecting the optional workflow step is operator intent, not default built-in review behavior.
+
+        FNXC:WorkflowFastMode 2026-07-01-00:00:
+        Skill executor nodes use `config.skillName`, not `config.skill`; include that field in executable-node detection so raw fast-mode compatibility skips skill prompts the same way it skips prompt/script nodes.
+        */
+        const hasExecutableConfig =
+          typeof node.config?.prompt === "string" ||
+          typeof node.config?.scriptName === "string" ||
+          typeof node.config?.skillName === "string";
+        const isExplicitOptionalGroupNode = typeof c[WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY] === "string";
+        if (hasExecutableConfig && !isExplicitOptionalGroupNode) {
+          return Promise.resolve({ outcome: "success", value: "fast-mode-skipped" });
+        }
+      }
       sideEffectsRan = true;
       invoked.push(node.id);
       return this.deps.runCustomNode(node, t, c);
@@ -269,6 +282,25 @@ export class WorkflowGraphTaskRunner {
       : undefined;
 
     try {
+      const fastModeFallbackParseSteps: ParseStepsHandlerDeps | undefined =
+        !this.deps.primitives &&
+        !this.deps.parseStepsDeps &&
+        (task as { executionMode?: unknown }).executionMode === "fast"
+          ? {
+              /*
+              FNXC:WorkflowFastMode 2026-07-01-00:00:
+              Raw legacy-seam graph runs do not have TaskExecutor's parse-steps dependencies. For fast-mode compatibility, parse the task prompt from memory and project the parsed steps back onto the runner task so the stepwise built-in can reach the seam-backed lifecycle suffix without a store-backed projection.
+
+              FNXC:WorkflowFastMode 2026-07-01-00:00:
+              Parse-step projection must write through the task object supplied by the graph node context, not a closed-over outer run argument. Raw fallback callers usually pass the same object today, but the dependency contract belongs to ParseStepsNodeRunner's write target.
+              */
+              readArtifact: async (_task, key) => (key === "PROMPT.md" ? task.prompt : undefined),
+              writeSteps: async (target, steps: TaskStep[]) => {
+                target.steps = steps;
+              },
+            }
+          : undefined;
+
       const executor = new WorkflowGraphExecutor({
         seams: wrappedSeams,
         primitives: wrappedPrimitives,
@@ -279,7 +311,7 @@ export class WorkflowGraphTaskRunner {
         branchSemaphore: this.deps.branchSemaphore,
         stepInstancePersistence: this.deps.stepInstancePersistence,
         onReworkReset: this.deps.onReworkReset,
-        parseStepsDeps: this.deps.parseStepsDeps,
+        parseStepsDeps: this.deps.parseStepsDeps ?? fastModeFallbackParseSteps,
         runCode: this.deps.runCode,
         notifyDispatch: this.deps.notifyDispatch,
         prNodes: this.deps.prNodes,

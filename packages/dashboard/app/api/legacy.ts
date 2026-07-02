@@ -16,7 +16,6 @@ import type {
   ActivityLogEntry,
   ActivityEventType,
   WorkflowStep,
-  WorkflowStepInput,
   WorkflowStepResult,
   PluginInstallation,
   PluginSetupCheckResult,
@@ -672,8 +671,9 @@ export function updateTaskCustomFields(
 
 /** Fetch the multi-lane board metadata (U9). When the flag is OFF the server
  *  returns `{ flagEnabled: false }` and the board renders its legacy form. */
-export function fetchBoardWorkflows(projectId?: string): Promise<BoardWorkflowsPayload> {
-  return api<BoardWorkflowsPayload>(withProjectId("/tasks/board-workflows", projectId));
+export function fetchBoardWorkflows(projectId?: string, options?: FetchOptions): Promise<BoardWorkflowsPayload> {
+  const path = withProjectId("/tasks/board-workflows", projectId);
+  return dedupe(path, () => api<BoardWorkflowsPayload>(path), options);
 }
 
 /** Manually promote a held card out of its hold column (U9). */
@@ -5332,10 +5332,10 @@ export type {
 } from "@fusion/core";
 
 /** List all workflow definitions for the project. */
-export function fetchWorkflows(projectId?: string, options?: { includeDisabledBuiltins?: boolean }): Promise<import("@fusion/core").WorkflowDefinition[]> {
+export function fetchWorkflows(projectId?: string, options?: { includeDisabledBuiltins?: boolean } & FetchOptions): Promise<import("@fusion/core").WorkflowDefinition[]> {
   const query = options?.includeDisabledBuiltins ? "?includeDisabledBuiltins=true" : "";
   const path = withProjectId(`/workflows${query}`, projectId);
-  return dedupe(path, () => api<import("@fusion/core").WorkflowDefinition[]>(path));
+  return dedupe(path, () => api<import("@fusion/core").WorkflowDefinition[]>(path), options);
 }
 
 /** A trait catalog entry as returned by GET /api/traits (U10). Mirrors the
@@ -5486,13 +5486,6 @@ export function updateWorkflowPromptOverrides(
   );
 }
 
-/** Preview the compiled steps for a workflow. Rejects (422) for non-linear graphs. */
-export function compileWorkflow(id: string, projectId?: string): Promise<{ steps: WorkflowStepInput[] }> {
-  return api<{ steps: WorkflowStepInput[] }>(withProjectId(`/workflows/${encodeURIComponent(id)}/compile`, projectId), {
-    method: "POST",
-  });
-}
-
 /** A workflow export envelope (U5/R9/KTD-5). `schemaVersion` is the SERVER's
  *  schema version at export time — the import route version-gates against it
  *  (the app build aliases @fusion/core to types-only, so the value can only come
@@ -5560,13 +5553,12 @@ export function importWorkflow(
 // MigrateLegacyStepsResult along with the legacy workflow_steps table and its route.
 
 /** Result of POST /api/workflows/design (U10/R11). The server validates the
- *  AI-produced IR (parseWorkflowIr), triages compilability (`interpreterOnly`),
- *  and strips trust-escalating flags (`strippedApprovalFlags`). Persists nothing
- *  — the client decides what to do with the returned graph. */
+ *  AI-produced IR (parseWorkflowIr) and strips trust-escalating flags
+ *  (`strippedApprovalFlags`). Persists nothing — the client decides what to do
+ *  with the returned graph. */
 export interface DesignWorkflowResult {
   ir: import("@fusion/core").WorkflowIr;
   layout: import("@fusion/core").WorkflowDefinition["layout"];
-  interpreterOnly: boolean;
   strippedApprovalFlags: boolean;
 }
 
@@ -9939,11 +9931,7 @@ export function fetchChatSession(id: string, projectId?: string): Promise<ChatSe
   return api<ChatSessionResponse>(withProjectId(`/chat/sessions/${encodeURIComponent(id)}`, projectId));
 }
 
-export function ensureTaskPlannerChatSession(
-  taskId: string,
-  input: TaskPlannerChatSessionInput = {},
-  projectId?: string,
-): Promise<ChatSessionResponse> {
+function normalizeTaskPlannerChatInput(taskId: string, input: TaskPlannerChatSessionInput = {}) {
   const normalizedTaskId = taskId.trim();
   if (!normalizedTaskId) {
     throw new Error("taskId is required");
@@ -9953,10 +9941,39 @@ export function ensureTaskPlannerChatSession(
   if ((normalizedProvider && !normalizedModelId) || (!normalizedProvider && normalizedModelId)) {
     throw new Error("Both modelProvider and modelId must be provided together, or neither should be provided");
   }
+  return { normalizedTaskId, normalizedProvider, normalizedModelId };
+}
+
+export function fetchTaskPlannerChatSession(
+  taskId: string,
+  input: TaskPlannerChatSessionInput = {},
+  projectId?: string,
+): Promise<{ session: EnrichedChatSession | null }> {
+  const { normalizedTaskId, normalizedProvider, normalizedModelId } = normalizeTaskPlannerChatInput(taskId, input);
+
+  /*
+  FNXC:TaskDetailPlannerChat 2026-06-30-18:20:
+  Task-detail planner chats are task-local but no longer pre-created by opening the Chat tab. Use lookup-only resume here so global Chat history only receives planner sessions after an explicit user message creates one.
+  */
+  return fetchResumeChatSession({
+    agentId: `task-planner:${normalizedTaskId}`,
+    ...(normalizedProvider && normalizedModelId ? { modelProvider: normalizedProvider, modelId: normalizedModelId } : {}),
+  }, projectId);
+}
+
+export function ensureTaskPlannerChatSession(
+  taskId: string,
+  input: TaskPlannerChatSessionInput = {},
+  projectId?: string,
+): Promise<ChatSessionResponse> {
+  const { normalizedTaskId, normalizedProvider, normalizedModelId } = normalizeTaskPlannerChatInput(taskId, input);
 
   /*
   FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
   Task planner chat uses a task-scoped session seam instead of the generic agent-chat creator so it can bind the conversation to the task and planning model without requiring a real executor/reviewer agent or turning the message into steering.
+
+  FNXC:TaskDetailPlannerChat 2026-06-30-18:20:
+  This mutating helper is reserved for explicit user sends (composer, starter prompts, and planner-question answers). Tab activation must call fetchTaskPlannerChatSession instead so empty task-detail visits do not create chat history.
   */
   return api<ChatSessionResponse>(
     withProjectId(`/chat/task-planner/${encodeURIComponent(normalizedTaskId)}/session`, projectId),
@@ -10258,6 +10275,13 @@ function parseChatErrorPayload(rawData: string): string | ChatFailureInfo {
   }
 }
 
+export interface ChatStreamErrorMeta {
+  /** True once the POST stream was accepted and the server started an SSE response. */
+  requestAccepted: boolean;
+  /** True when the error came from an SSE event rather than the initial HTTP response. */
+  receivedStreamEvent: boolean;
+}
+
 export interface ChatStreamHandlers {
   onThinking?: (data: string) => void;
   onText?: (data: string) => void;
@@ -10265,7 +10289,7 @@ export interface ChatStreamHandlers {
   onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
   onFallback?: (data: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }) => void;
   onDone?: (data: { messageId: string; message?: ChatMessage }) => void;
-  onError?: (data: string | ChatFailureInfo) => void;
+  onError?: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
   onConnectionStateChange?: (state: StreamConnectionState) => void;
 }
 
@@ -10282,6 +10306,7 @@ export function streamChatResponse(
   const abortController = new AbortController();
   let closedByUser = false;
   let terminated = false;
+  let requestAccepted = false;
   let receivedStreamEvent = false;
   const firstEventTimeoutMs = Math.max(1_000, options?.firstEventTimeoutMs ?? 60_000);
   let firstEventTimer: ReturnType<typeof setTimeout> | null = null;
@@ -10358,7 +10383,7 @@ export function streamChatResponse(
         break;
       case "error":
         terminated = true;
-        handlers.onError?.(parseChatErrorPayload(rawData));
+        handlers.onError?.(parseChatErrorPayload(rawData), { requestAccepted: true, receivedStreamEvent: true });
         break;
     }
   };
@@ -10391,22 +10416,23 @@ export function streamChatResponse(
           const parsed = JSON.parse(errorBody);
           errorMsg = parsed.error || errorMsg;
         } catch { /* use default */ }
-        handlers.onError?.(errorMsg);
+        handlers.onError?.(errorMsg, { requestAccepted: false, receivedStreamEvent: false });
         return;
       }
 
       if (!res.body) {
-        handlers.onError?.("No response body");
+        handlers.onError?.("No response body", { requestAccepted: true, receivedStreamEvent: false });
         return;
       }
 
+      requestAccepted = true;
       handlers.onConnectionStateChange?.("connected");
       firstEventTimer = setTimeout(() => {
         if (terminated || closedByUser || receivedStreamEvent) {
           return;
         }
         terminated = true;
-        handlers.onError?.("Timed out waiting for first response event");
+        handlers.onError?.("Timed out waiting for first response event", { requestAccepted: true, receivedStreamEvent: false });
         abortController.abort();
       }, firstEventTimeoutMs);
 
@@ -10480,13 +10506,13 @@ export function streamChatResponse(
       // trailing event that should be dropped rather than surfaced as transport
       // failure.
       if (!terminated && !closedByUser && !hasUndispatchedTrailingFragment) {
-        handlers.onError?.("Connection closed unexpectedly");
+        handlers.onError?.("Connection closed unexpectedly", { requestAccepted, receivedStreamEvent });
       }
       clearFirstEventTimer();
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") {
         if (!closedByUser && !terminated) {
-          handlers.onError?.("Connection aborted");
+          handlers.onError?.("Connection aborted", { requestAccepted, receivedStreamEvent });
         }
         clearFirstEventTimer();
         return;
@@ -10496,7 +10522,7 @@ export function streamChatResponse(
         return;
       }
       clearFirstEventTimer();
-      handlers.onError?.(err instanceof Error ? err.message : "Connection error");
+      handlers.onError?.(err instanceof Error ? err.message : "Connection error", { requestAccepted, receivedStreamEvent });
     }
   })();
 

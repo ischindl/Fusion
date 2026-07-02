@@ -25,7 +25,7 @@ describe("applyWorkflowSettingsOverlay", () => {
         planningFallbackModelId: "workflow-planner-fallback-model",
         validatorFallbackProvider: "workflow-validator-fallback",
         validatorFallbackModelId: "workflow-validator-fallback-model",
-        workflowStepTimeoutMs: 360_000,
+        workflowStepTimeoutMs: 900_000,
         runStepsInNewSessions: false,
         maxParallelSteps: undefined,
       },

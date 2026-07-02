@@ -15,6 +15,7 @@ interface WorktreeGroupProps {
   allTasks?: Task[];
   projectId?: string;
   onOpenDetail: (task: Task | TaskDetail) => void;
+  onOpenRefine?: (task: Task | TaskDetail) => void;
   onMoveTask?: (id: string, column: ColumnId, optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   addToast: (message: string, type?: ToastType) => void;
   globalPaused?: boolean;
@@ -67,6 +68,7 @@ function WorktreeGroupComponent({
   allTasks,
   projectId,
   onOpenDetail,
+  onOpenRefine,
   onMoveTask,
   addToast,
   globalPaused,
@@ -118,6 +120,7 @@ function WorktreeGroupComponent({
           task={task}
           projectId={projectId}
           onOpenDetail={onOpenDetail}
+          onOpenRefine={onOpenRefine}
           onMoveTask={onMoveTask}
           taskColumnFlags={getTaskColumnFlags(task)}
           taskMoveColumns={getTaskContextMenuColumns(task)}
@@ -153,6 +156,7 @@ function WorktreeGroupComponent({
           projectId={projectId}
           queued
           onOpenDetail={onOpenDetail}
+          onOpenRefine={onOpenRefine}
           onMoveTask={onMoveTask}
           taskColumnFlags={getTaskColumnFlags(task)}
           taskMoveColumns={getTaskContextMenuColumns(task)}

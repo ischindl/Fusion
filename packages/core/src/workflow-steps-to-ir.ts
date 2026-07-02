@@ -6,20 +6,20 @@ import { parseWorkflowIr } from "./workflow-ir.js";
 /**
  * Steps → IR converter (workflow-editor-consolidation U1, R4/KTD-2).
  *
- * This module is the exact INVERSE of the compiler's `nodeToStepInput`
- * (`workflow-compiler.ts`). The round-trip contract is:
+ * FNXC:WorkflowStepCRUD 2026-07-01-00:00:
+ * The linear WorkflowStep compiler (`compileWorkflowToSteps` / `nodeToStepInput`)
+ * was removed — the graph interpreter is the sole executor. This module survives
+ * as a LEGACY LOWERING: it converts old persisted `WorkflowStep[]` rows (and
+ * single-step fragments) into valid WorkflowIr for migration and for the palette
+ * fragment layout. It no longer has a forward inverse, so there is no round-trip
+ * parity contract; correctness is now "the produced IR is well-formed and carries
+ * each step's config" (pinned by `__tests__/workflow-steps-to-ir.test.ts`).
  *
- *   compileWorkflowToSteps(stepsToWorkflowIr(steps, name)) ≡ steps
- *
- * over exactly the compiler-visible fields: name / mode / phase / gateMode /
- * prompt / scriptName / toolMode / skillName / modelProvider / modelId.
- * `enabled` / `defaultOn` / `templateId` / `migratedFragmentId` are NOT
- * compiler-visible and are handled by migration policy (KTD-3), not by this
- * converter. Parity is pinned by `__tests__/workflow-steps-to-ir.test.ts`.
- *
- * INVERSION CONTRACT: when a compiler-visible field is added to `nodeToStepInput`
- * (see the contract comment there), extend `stepInputToNode` below and the parity
- * test to keep the round-trip exact.
+ * Each step maps to one IR node: mode "script" → kind "script" with
+ * `config.scriptName`; mode "prompt" → kind "prompt" with
+ * `config.prompt`/`toolMode`/`skillName`/model overrides; `config.gateMode` is
+ * always written. `enabled` / `defaultOn` / `templateId` / `migratedFragmentId`
+ * are handled by migration policy (KTD-3), not this converter.
  *
  * Seam encoding mirrors `linear()` in `builtin-workflows.ts` exactly: the fixed
  * execute → review → merge pipeline is emitted as prompt-kind nodes carrying
@@ -38,19 +38,12 @@ const LAYOUT_DX = 170;
 const LAYOUT_Y = 160;
 
 /**
- * Inverse of `nodeToStepInput` (workflow-compiler.ts). Produces a single user IR
- * node whose forward compilation reproduces every compiler-visible field of the
- * given step.
+ * Lower a single `WorkflowStep` into one user IR node.
  *
- * kind ↔ mode/gateMode mapping (the heart of the contract):
- *  - mode "script" → kind "script", `config.scriptName` set. The compiler reads
- *    mode from `kind === "script"`, so this round-trips to mode "script".
- *  - mode "prompt" → kind "prompt", `config.prompt`/`toolMode`/model overrides.
+ * kind ↔ mode/gateMode mapping:
+ *  - mode "script" → kind "script", `config.scriptName` set.
+ *  - mode "prompt" → kind "prompt", `config.prompt`/`toolMode`/`skillName`/model overrides.
  *  - gateMode is ALWAYS written to `config.gateMode` (both "gate" and "advisory").
- *    The compiler's `defaultGateMode` returns an explicit `config.gateMode` for
- *    non-gate-kind nodes verbatim, so this round-trips for both modes without
- *    needing the `gate` node kind (which the compiler only emits via scriptName
- *    heuristics — using explicit `config.gateMode` keeps the inverse total).
  */
 function stepInputToNode(step: WorkflowStep, id: string): WorkflowIrNode {
   const config: Record<string, unknown> = {
@@ -93,8 +86,7 @@ function seamNode(seam: (typeof SEAM_ORDER)[number]): WorkflowIrNode {
  *
  * Steps with `phase` undefined map to pre-merge (R4). Seam nodes get an extra
  * `failure → end` edge, mirroring `linear()`. The result always passes
- * `parseWorkflowIr`. An empty step list yields the minimal seam-only pipeline
- * (which compiles back to `[]`).
+ * `parseWorkflowIr`. An empty step list yields the minimal seam-only pipeline.
  */
 export function stepsToWorkflowIr(steps: WorkflowStep[], name: string): WorkflowIr {
   const preMerge = steps.filter((s) => (s.phase ?? "pre-merge") === "pre-merge");

@@ -35,8 +35,10 @@ describe("electron-builder desktop config", () => {
     expect(extractArchValues(nsisArchMatch![1])).toEqual(["arm64", "x64"]);
     expect(extractArchValues(portableArchMatch![1])).toEqual(["arm64", "x64"]);
 
+    expect(builderConfig).toMatch(/nsis:\s*[\s\S]*?artifactName:\s*"\$\{productName\}-\$\{version\}-\$\{os\}-\$\{arch\}\.\$\{ext\}"/m);
     expect(builderConfig).toMatch(/nsis:\s*[\s\S]*?oneClick:\s*false/m);
     expect(builderConfig).toMatch(/nsis:\s*[\s\S]*?allowToChangeInstallationDirectory:\s*true/m);
+    expect(builderConfig).toMatch(/portable:\s*[\s\S]*?artifactName:\s*"\$\{productName\}-\$\{version\}-\$\{os\}-\$\{arch\}-portable\.\$\{ext\}"/m);
 
     expect(builderConfig).toMatch(/artifactName:\s*"\$\{productName\}-\$\{version\}-\$\{os\}-\$\{arch\}\.\$\{ext\}"/m);
     expect(builderConfig).toMatch(/appId:\s*com\.gsxdsm\.fusion\.desktop/m);
@@ -107,6 +109,14 @@ describe("electron-builder desktop config", () => {
     expect(linuxArchByTarget.get("tar.gz")).toEqual(["arm64", "x64"]);
   });
 
+  it("does not exclude Electron runtime pak resources from Windows unpacked output", async () => {
+    const builderConfig = await readDesktopFile("electron-builder.yml");
+
+    for (const requiredPak of ["chrome_100_percent.pak", "chrome_200_percent.pak", "resources.pak"]) {
+      expect(builderConfig).not.toMatch(new RegExp(`!.*${requiredPak.replaceAll(".", "\\.")}`));
+    }
+  });
+
   it("packages @fusion/core runtime dependencies used during desktop startup", async () => {
     const builderConfig = await readDesktopFile("electron-builder.yml");
     const requiredRuntimeDependencyGlobs = [
@@ -175,6 +185,11 @@ describe("desktop windows workflow signing guards", () => {
     expect(workflow).toContain("CSC_KEY_PASSWORD:");
     expect(workflow).toContain("WINDOWS_CERTIFICATE_BASE64 != ''");
     expect(workflow).toContain("Get-AuthenticodeSignature");
+    expect(workflow).toContain("Verify Windows runtime resources");
+    expect(workflow).toContain("chrome_100_percent.pak");
+    expect(workflow).toContain("chrome_200_percent.pak");
+    expect(workflow).toContain("resources.pak");
+    expect(workflow).toContain("Fusion-*-win-*-portable.exe");
     expect(workflow).toContain("intentionally deferred");
   });
 });

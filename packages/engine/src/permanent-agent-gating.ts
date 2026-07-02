@@ -78,10 +78,17 @@ export function classifyPermanentAgentToolCall(
 }
 
 function resolvePolicyDisposition(
+  toolName: string,
   category: PermanentAgentSensitiveActionCategory,
   gating: PermanentAgentGatingContext | undefined,
 ): AgentPermissionPolicyDisposition {
-  return gating?.permissionPolicy?.rules?.[category] ?? "require-approval";
+  /*
+  FNXC:ToolPermissions 2026-07-01-00:00:
+  Permanent-agent heartbeats use exact tool overrides before category rules so a policy can block `fn_task_create` while leaving sibling task-agent mutations allowed. Unknown tools still fail safe to approval and category `none` coordination tools remain non-configurable.
+  */
+  return gating?.permissionPolicy?.toolRules?.[toolName]
+    ?? gating?.permissionPolicy?.rules?.[category]
+    ?? "require-approval";
 }
 
 export function resolvePermanentAgentToolDecision(input: {
@@ -110,6 +117,6 @@ export function resolvePermanentAgentToolDecision(input: {
   return {
     ...classification,
     toolName: input.toolName,
-    disposition: resolvePolicyDisposition(classification.category, input.gating),
+    disposition: resolvePolicyDisposition(input.toolName, classification.category, input.gating),
   };
 }

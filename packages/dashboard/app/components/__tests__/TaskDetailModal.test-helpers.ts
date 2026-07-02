@@ -34,6 +34,7 @@ vi.mock("../../api", async (importOriginal) => {
     fetchTaskDetail: vi.fn().mockResolvedValue(makeTask()),
     fetchAgentLogs: vi.fn().mockResolvedValue([]),
     requestSpecRevision: vi.fn().mockResolvedValue({}),
+    rebuildTaskSpec: vi.fn().mockResolvedValue(makeTask({ column: "triage", status: "needs-replan" })),
     approvePlan: vi.fn().mockResolvedValue({}),
     rejectPlan: vi.fn().mockResolvedValue({}),
     duplicateTask: vi.fn().mockResolvedValue({}),

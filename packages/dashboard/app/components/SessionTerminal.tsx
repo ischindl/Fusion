@@ -81,15 +81,29 @@ function useIsMobileViewport(): boolean {
       return;
     }
     const mql = window.matchMedia(MOBILE_MEDIA_QUERY);
+    const visualViewport = window.visualViewport;
     const onChange = () => setIsMobile(isMobileViewport());
     onChange();
+    if (typeof visualViewport?.addEventListener === "function") {
+      visualViewport.addEventListener("resize", onChange);
+    }
     // Safari < 14 only has addListener/removeListener.
     if (typeof mql.addEventListener === "function") {
       mql.addEventListener("change", onChange);
-      return () => mql.removeEventListener("change", onChange);
+      return () => {
+        mql.removeEventListener("change", onChange);
+        if (typeof visualViewport?.removeEventListener === "function") {
+          visualViewport.removeEventListener("resize", onChange);
+        }
+      };
     }
     mql.addListener(onChange);
-    return () => mql.removeListener(onChange);
+    return () => {
+      mql.removeListener(onChange);
+      if (typeof visualViewport?.removeEventListener === "function") {
+        visualViewport.removeEventListener("resize", onChange);
+      }
+    };
   }, []);
 
   return isMobile;

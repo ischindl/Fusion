@@ -1,5 +1,5 @@
 import type { WorkflowDefinition, WorkflowDefinitionKind, WorkflowIr, WorkflowIrNode, WorkflowSettingDefinition, TaskStore } from "@fusion/core";
-import { ColumnTraitValidationError, OccupiedColumnsError, InvalidRehomeTargetError, WorkflowCompileError, WorkflowIrError, ColumnAgentBindingError, WorkflowSettingRejectionError, SCHEMA_VERSION, assertColumnTraitsValid, compileWorkflowToSteps, layoutForIr, listTraits, listStepParsers, parseWorkflowIr, resolvePlanningSettingsModel, stripApprovalBypassFlags, resolveWorkflowIrById, resolveEffectiveSettingValues, findOrphanedSettingValues, isBuiltinWorkflowId, getBuiltinWorkflow, BUILTIN_WORKFLOW_SETTINGS, AgentStore, validateColumnAgentBindings, resolveWorkflowOptionalSteps, enumeratePromptBearingWorkflowNodes, normalizeWorkflowIcon } from "@fusion/core";
+import { ColumnTraitValidationError, OccupiedColumnsError, InvalidRehomeTargetError, WorkflowIrError, ColumnAgentBindingError, WorkflowSettingRejectionError, SCHEMA_VERSION, assertColumnTraitsValid, layoutForIr, listTraits, listStepParsers, parseWorkflowIr, resolvePlanningSettingsModel, stripApprovalBypassFlags, resolveWorkflowIrById, resolveEffectiveSettingValues, findOrphanedSettingValues, isBuiltinWorkflowId, getBuiltinWorkflow, BUILTIN_WORKFLOW_SETTINGS, AgentStore, validateColumnAgentBindings, resolveWorkflowOptionalSteps, enumeratePromptBearingWorkflowNodes, normalizeWorkflowIcon } from "@fusion/core";
 import { buildSessionSkillContextSync, createFnAgent as engineCreateFnAgent, validateCodeNodeSources } from "@fusion/engine";
 import { ApiError, badRequest, conflict, notFound, rateLimited } from "../api-error.js";
 import { emitWorkflowSseEvent } from "../sse.js";
@@ -438,27 +438,6 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
     }
   });
 
-  // POST /api/workflows/:id/compile — preview the compiled WorkflowSteps.
-  // 200 with the step set, or 422 when the graph requires the deferred interpreter.
-  router.post("/workflows/:id/compile", async (req, res) => {
-    try {
-      const { store } = await getProjectContext(req);
-      const def = await store.getWorkflowDefinition(req.params.id);
-      if (!def) throw notFound(`Workflow '${req.params.id}' not found`);
-      try {
-        res.json({ steps: compileWorkflowToSteps(def.ir) });
-      } catch (compileErr: unknown) {
-        if (compileErr instanceof WorkflowCompileError || compileErr instanceof WorkflowIrError) {
-          throw new ApiError(422, compileErr.message);
-        }
-        throw compileErr;
-      }
-    } catch (err: unknown) {
-      if (err instanceof ApiError) throw err;
-      rethrowAsApiError(err);
-    }
-  });
-
   // GET /api/workflows/:id/setting-values — read the per-`(workflowId, project)`
   // setting values for the workflow node editor's Values tab (U6, R5). Returns
   // the raw `stored` map, the `effective` map (stored ?? declaration default,
@@ -643,7 +622,7 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         enabledWorkflowSteps = result.enabledWorkflowSteps;
         reconciliation = result.reconciliation;
       } catch (selectErr: unknown) {
-        if (selectErr instanceof WorkflowCompileError || selectErr instanceof WorkflowIrError) {
+        if (selectErr instanceof WorkflowIrError) {
           throw new ApiError(422, selectErr.message);
         }
         if (selectErr instanceof Error && /not found/i.test(selectErr.message)) {
@@ -958,8 +937,6 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
   //   rate limit exhausted              → 429
   //   unknown workflowId                → 404
   //   invalid JSON / parseWorkflowIr    → 422 (parser message)
-  //   compile deferred-suffix failure   → 200 { interpreterOnly: true }
-  //   other compile failure             → 422 (graph unsound for both engines)
   router.post("/workflows/design", async (req, res) => {
     try {
       const { store } = await getProjectContext(req);
@@ -1052,22 +1029,10 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
         );
       }
 
-      // Compile triage: parseWorkflowIr is the validity gate. A compile failure
-      // whose message carries the deferred-interpreter suffix means the graph is
-      // structurally valid but only runnable on the (deferred) interpreter →
-      // interpreterOnly:true (NOT an error). Any OTHER compile failure means the
-      // graph is unsound for BOTH engines → 422.
-      let interpreterOnly = false;
-      try {
-        compileWorkflowToSteps(ir);
-      } catch (compileErr: unknown) {
-        const message = compileErr instanceof Error ? compileErr.message : String(compileErr);
-        if (message.includes("require the workflow interpreter (deferred)")) {
-          interpreterOnly = true;
-        } else {
-          throw new ApiError(422, message);
-        }
-      }
+      // FNXC:WorkflowDesign 2026-07-01-00:00: parseWorkflowIr (above) is the sole
+      // validity gate. The linear WorkflowStep compiler was removed and the graph
+      // interpreter runs branching graphs directly, so there is no interpreter-only
+      // triage — any structurally valid IR is accepted.
 
       // Strip trust-escalating flags (shared helper; R11 trust boundary).
       const strippedApprovalFlags = stripApprovalFlags(ir);
@@ -1075,7 +1040,7 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       // Deterministic layout for the returned IR (server-side value import).
       const layout = layoutForIr(ir);
 
-      res.json({ ir, layout, interpreterOnly, strippedApprovalFlags });
+      res.json({ ir, layout, strippedApprovalFlags });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err);

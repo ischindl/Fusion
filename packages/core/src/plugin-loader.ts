@@ -902,12 +902,42 @@ export class PluginLoader extends EventEmitter<{
     const hook = plugin.hooks[hookName];
     if (!hook) return;
 
-     
     const fn = hook as (...args: unknown[]) => unknown;
-    const result = fn(...args);
+    const result = fn(...await this.withLifecycleHookContext(plugin, hookName, args));
     if (result instanceof Promise) {
       await result;
     }
+  }
+
+  private async withLifecycleHookContext(
+    plugin: FusionPlugin,
+    hookName: keyof FusionPlugin["hooks"],
+    args: unknown[],
+  ): Promise<unknown[]> {
+    if (!this.isTaskLifecycleHook(hookName) || this.hasPluginContext(args.at(-1))) {
+      return args;
+    }
+
+    /*
+    FNXC:PluginHooks 2026-07-01-13:36:
+    Runtime task lifecycle hooks are invoked from fire-and-forget TaskStore event bridges, but the public hook contract still requires a per-plugin PluginContext. Append the context in PluginLoader so all runtime callers keep the fast raw event-argument path while plugins consistently receive taskStore, settings, logger, and emitEvent.
+    */
+    return [...args, await this.createContext(plugin)];
+  }
+
+  private isTaskLifecycleHook(hookName: keyof FusionPlugin["hooks"]): boolean {
+    return hookName === "onTaskCreated" || hookName === "onTaskMoved" || hookName === "onTaskCompleted";
+  }
+
+  private hasPluginContext(value: unknown): value is PluginContext {
+    return Boolean(
+      value
+        && typeof value === "object"
+        && "taskStore" in value
+        && "settings" in value
+        && "logger" in value
+        && "emitEvent" in value,
+    );
   }
 
   async checkPluginSetup(pluginId: string): Promise<PluginSetupCheckResult> {

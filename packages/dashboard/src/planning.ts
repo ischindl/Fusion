@@ -1094,6 +1094,7 @@ async function getFirstQuestionFromAgent(
   if (!parsed) {
     const errorMessage = buildRetryableParseErrorMessage(lastError);
     setSessionError(session, errorMessage);
+    // Keep the session and persisted error state so retry can reuse the original project context.
     try {
       await session.agent.session.dispose?.();
     } catch (disposeErr) {
@@ -2477,7 +2478,13 @@ export function formatResponseForAgent(
       break;
 
     case "confirm":
-      formatted = `Question: ${question.question}\n\nAnswer: ${responseValue === true ? "Yes" : "No"}`;
+      /*
+      FNXC:PlanningInterview 2026-07-01-00:00:
+      GitHub #1832 lets Planning Mode confirm questions submit `_other` instead of a boolean. Preserve that user-authored answer for the agent; otherwise history replay would turn missing confirm ids into an unintended "No".
+      */
+      formatted = other.length > 0
+        ? `Question: ${question.question}\n\nAnswer: ${other} (user's own answer)`
+        : `Question: ${question.question}\n\nAnswer: ${responseValue === true ? "Yes" : "No"}`;
       break;
 
     default:
@@ -2543,7 +2550,7 @@ function formatInterviewAnswer(question: PlanningQuestion, responseValue: unknow
     }
 
     case "confirm":
-      return responseValue === true ? "Yes" : "No";
+      return other.length > 0 ? `${other} (user's own answer)` : responseValue === true ? "Yes" : "No";
 
     default:
       return JSON.stringify(responseValue);

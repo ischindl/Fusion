@@ -5,8 +5,8 @@ import { createPortal } from "react-dom";
 import type { ToastType } from "../hooks/useToast";
 import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, getErrorMessage } from "@fusion/core";
 import type { Task, Settings, TaskPriority, ResolvedWorkflowOptionalStep } from "@fusion/core";
-import type { ModelInfo, RefinementType, Agent, CreateTaskInput, DuplicateMatch, BoardWorkflowDefinition, NodeInfo } from "../api";
-import { checkDuplicateTasks, fetchModels, fetchSettings, refineText, getRefineErrorMessage, updateGlobalSettings, fetchAgents, uploadAttachment, fetchWorkflowOptionalSteps } from "../api";
+import type { ModelInfo, Agent, CreateTaskInput, DuplicateMatch, BoardWorkflowDefinition, NodeInfo } from "../api";
+import { checkDuplicateTasks, fetchModels, fetchSettings, updateGlobalSettings, fetchAgents, uploadAttachment, fetchWorkflowOptionalSteps } from "../api";
 import { DuplicateWarningModal } from "./DuplicateWarningModal";
 import { Link, Paperclip, Brain, Lightbulb, ListTree, Sparkles, Save, ChevronDown, ChevronUp, ChevronRight, Bot, Server, Flag } from "lucide-react";
 import { CustomModelDropdown } from "./CustomModelDropdown";
@@ -233,13 +233,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const shouldShowNodePicker = useMemo(() => hasMeaningfulNodeChoice(nodes), [nodes]);
   const selectedNode = shouldShowNodePicker && nodeId ? nodes.find((node) => node.id === nodeId) : undefined;
   const effectiveNodeId = shouldShowNodePicker && selectedNode ? selectedNode.id : undefined;
-  // AI Refinement state
-  const [isRefineMenuOpen, setIsRefineMenuOpen] = useState(false);
-  const [isRefining, setIsRefining] = useState(false);
-  const refineMenuRef = useRef<HTMLDivElement>(null);
-  const refineMenuPortalRef = useRef<HTMLDivElement>(null);
-  const [refineMenuPosition, setRefineMenuPosition] = useState<{ top: number; left: number } | null>(null);
-
   useEffect(() => {
     if (shouldShowNodePicker && (!nodeId || selectedNode)) {
       return;
@@ -508,24 +501,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     if (!showDeps) setDepSearch("");
   }, [showDeps]);
 
-  // Close refine menu when clicking outside
-  useEffect(() => {
-    if (!isRefineMenuOpen) return;
-
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      const clickedInsideTrigger = refineMenuRef.current?.contains(target);
-      const clickedInsidePortal = refineMenuPortalRef.current?.contains(target);
-
-      if (!clickedInsideTrigger && !clickedInsidePortal) {
-        setIsRefineMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isRefineMenuOpen]);
-
   // Close model menu when clicking outside
   useEffect(() => {
     if (!isModelMenuOpen) return;
@@ -642,8 +617,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     setIsModelMenuOpen(false);
     setModelMenuPosition(null);
     setActiveModelSubmenu(null);
-    setIsRefineMenuOpen(false);
-    setIsRefining(false);
     justResetRef.current = true;
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -919,10 +892,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
           setShowDeps(false);
           return;
         }
-        if (isRefineMenuOpen) {
-          setIsRefineMenuOpen(false);
-          return;
-        }
         if (showNodePicker) {
           setShowNodePicker(false);
           setNodePickerPosition(null);
@@ -970,7 +939,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       showNodePicker,
       isModelMenuOpen,
       activeModelSubmenu,
-      isRefineMenuOpen,
       showPriorityPicker,
       showWorkflowPicker,
       projectId,
@@ -1078,44 +1046,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
       left,
       width,
       maxHeight,
-    });
-  }, [getEffectiveViewport]);
-
-  const updateRefineMenuPosition = useCallback(() => {
-    const trigger = refineMenuRef.current?.querySelector(".refine-button") as HTMLElement | null;
-    if (!trigger) return;
-
-    const rect = trigger.getBoundingClientRect();
-    const { width: viewportWidth, height: viewportHeight, offsetTop, offsetLeft } = getEffectiveViewport();
-    const horizontalPadding = 8;
-    const verticalPadding = 12;
-    const gap = 4;
-    const expectedMenuHeight = Math.min(200, Math.max(viewportHeight - verticalPadding * 2, 160));
-    const menuWidth = Math.min(200, viewportWidth - horizontalPadding * 2);
-
-    const triggerTop = rect.top - offsetTop;
-    const triggerBottom = rect.bottom - offsetTop;
-    const triggerLeft = rect.left - offsetLeft;
-
-    const spaceBelow = viewportHeight - triggerBottom;
-    const spaceAbove = triggerTop;
-    const openUpward = spaceBelow < expectedMenuHeight && spaceAbove > spaceBelow;
-
-    const left = Math.min(
-      Math.max(triggerLeft, horizontalPadding),
-      viewportWidth - horizontalPadding - menuWidth,
-    ) + offsetLeft;
-
-    const top = openUpward
-      ? Math.max(verticalPadding + offsetTop, triggerTop - expectedMenuHeight - gap + offsetTop)
-      : Math.min(
-          triggerBottom + gap + offsetTop,
-          viewportHeight + offsetTop - verticalPadding - expectedMenuHeight,
-        );
-
-    setRefineMenuPosition({
-      top,
-      left,
     });
   }, [getEffectiveViewport]);
 
@@ -1421,31 +1351,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     };
   }, [isModelMenuOpen, updateModelMenuPosition]);
 
-  // Keep refine menu portal anchored during scroll/resize
-  useEffect(() => {
-    if (!isRefineMenuOpen) return;
-
-    const handleReposition = () => updateRefineMenuPosition();
-
-    window.addEventListener("resize", handleReposition);
-    window.addEventListener("scroll", handleReposition, true);
-
-    const vv = window.visualViewport;
-    if (vv) {
-      vv.addEventListener("resize", handleReposition);
-      vv.addEventListener("scroll", handleReposition);
-    }
-
-    return () => {
-      window.removeEventListener("resize", handleReposition);
-      window.removeEventListener("scroll", handleReposition, true);
-      if (vv) {
-        vv.removeEventListener("resize", handleReposition);
-        vv.removeEventListener("scroll", handleReposition);
-      }
-    };
-  }, [isRefineMenuOpen, updateRefineMenuPosition]);
-
   // Keep workflow picker portal anchored during scroll/resize
   useEffect(() => {
     if (!showWorkflowPicker) return;
@@ -1658,29 +1563,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     // Save button now creates the task (same as Enter key)
     handleSubmit();
   }, [handleSubmit]);
-
-  const handleRefine = useCallback(async (type: RefinementType) => {
-    const trimmed = description.trim();
-    if (!trimmed || isRefining) return;
-
-    setIsRefineMenuOpen(false);
-    setIsRefining(true);
-    try {
-      const refined = await refineText(trimmed, type, projectId);
-      setDescription(refined);
-      addToast(t("tasks.descriptionRefined", "Description refined with AI"), "success");
-      // Auto-resize textarea after content update
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
-      }
-    } catch (err) {
-      const errorMessage = getRefineErrorMessage(err);
-      addToast(errorMessage, "error");
-    } finally {
-      setIsRefining(false);
-    }
-  }, [description, isRefining, addToast, projectId]);
 
   const truncate = (s: string, len: number) =>
     s.length > len ? s.slice(0, len) + "…" : s;
@@ -2080,78 +1962,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
                 {t("tasks.subtask", "Subtask")}
               </button>
             )}
-            <div className="refine-trigger-wrap" ref={refineMenuRef}>
-              <button
-                type="button"
-                className={`btn btn-sm refine-button ${isRefining ? "refine-button--loading" : ""}`}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setIsRefineMenuOpen((prev) => {
-                    const next = !prev;
-                    if (next) {
-                      // Compute position synchronously so the portal renders on first paint
-                      updateRefineMenuPosition();
-                    } else {
-                      setRefineMenuPosition(null);
-                    }
-                    return next;
-                  });
-                }}
-                disabled={!description.trim() || isRefining}
-                data-testid="refine-button"
-                title={t("tasks.refineButtonTitle", "Refine description with AI")}
-              >
-                <Sparkles size={12} style={{ verticalAlign: "middle" }} />
-                {isRefining ? t("tasks.refining", "Refining...") : t("tasks.refine", "Refine")}
-              </button>
-              {isRefineMenuOpen && portalRoot && refineMenuPosition && createPortal(
-                <div
-                  ref={refineMenuPortalRef}
-                  className="refine-menu refine-menu--portal"
-                  onMouseDown={(e) => e.preventDefault()}
-                  style={{
-                    position: "fixed",
-                    top: `${refineMenuPosition.top}px`,
-                    left: `${refineMenuPosition.left}px`,
-                  }}
-                >
-                  <div
-                    className="refine-menu-item"
-                    onClick={() => handleRefine("clarify")}
-                    data-testid="refine-clarify"
-                  >
-                    <div className="refine-menu-item-title">{t("tasks.refineClarify", "Clarify")}</div>
-                    <div className="refine-menu-item-desc">{t("tasks.refineClarifyDesc", "Make the description clearer and more specific")}</div>
-                  </div>
-                  <div
-                    className="refine-menu-item"
-                    onClick={() => handleRefine("add-details")}
-                    data-testid="refine-add-details"
-                  >
-                    <div className="refine-menu-item-title">{t("tasks.refineAddDetails", "Add details")}</div>
-                    <div className="refine-menu-item-desc">{t("tasks.refineAddDetailsDesc", "Add implementation details and context")}</div>
-                  </div>
-                  <div
-                    className="refine-menu-item"
-                    onClick={() => handleRefine("expand")}
-                    data-testid="refine-expand"
-                  >
-                    <div className="refine-menu-item-title">{t("tasks.refineExpand", "Expand")}</div>
-                    <div className="refine-menu-item-desc">{t("tasks.refineExpandDesc", "Expand into a more comprehensive description")}</div>
-                  </div>
-                  <div
-                    className="refine-menu-item"
-                    onClick={() => handleRefine("simplify")}
-                    data-testid="refine-simplify"
-                  >
-                    <div className="refine-menu-item-title">{t("tasks.refineSimplify", "Simplify")}</div>
-                    <div className="refine-menu-item-desc">{t("tasks.refineSimplifyDesc", "Simplify and make more concise")}</div>
-                  </div>
-                </div>,
-                portalRoot,
-              )}
-            </div>
-
+            {/*
+              FNXC:QuickAddRefine 2026-06-30-00:00:
+              Quick Add intentionally omits AI Refine so the compact create row has no refine button, menu, loading state, or /ai/refine-text path. New Task and TaskForm keep their dedicated refine affordance for richer task drafting.
+            */}
             <div className="dep-trigger-wrap">
               <button
                 ref={depTriggerRef}

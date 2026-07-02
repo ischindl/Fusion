@@ -11,6 +11,7 @@ import "./GoalsView.css";
 export interface GoalsViewProps {
   initialGoals?: Goal[];
   anchorGoalId?: string;
+  projectId?: string;
   onNavigateToMission?: (missionId: string) => void;
 }
 
@@ -25,11 +26,17 @@ const WARNING_THRESHOLD = 3;
 
 const GOAL_DESCRIPTION_TOGGLE_LENGTH = 280;
 
+function withProjectId(path: string, projectId?: string): string {
+  if (!projectId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}projectId=${encodeURIComponent(projectId)}`;
+}
+
 function isCapError(payload: unknown): boolean {
   return Boolean(payload && typeof payload === "object" && "code" in payload && (payload as { code?: unknown }).code === "ACTIVE_GOAL_LIMIT_EXCEEDED");
 }
 
-export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: GoalsViewProps) {
+export function GoalsView({ initialGoals, anchorGoalId, projectId, onNavigateToMission }: GoalsViewProps) {
   const { t } = useTranslation("app");
   const [goals, setGoals] = useState<Goal[]>(() => initialGoals ?? []);
   const [highlightedGoalId, setHighlightedGoalId] = useState<string | null>(null);
@@ -66,7 +73,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
       try {
         setLoading(true);
         setErrorMessage(null);
-        const response = await fetch("/api/goals");
+        const response = await fetch(withProjectId("/api/goals", projectId));
         if (!response.ok) {
           throw new Error(`Failed to load goals (${response.status})`);
         }
@@ -93,13 +100,13 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     return () => {
       active = false;
     };
-  }, [initialGoals]);
+  }, [initialGoals, projectId]);
 
   useEffect(() => {
     let active = true;
     const loadMissions = async () => {
       try {
-        const response = await fetch("/api/missions");
+        const response = await fetch(withProjectId("/api/missions", projectId));
         if (!response.ok) {
           throw new Error(`Failed to load missions (${response.status})`);
         }
@@ -124,10 +131,10 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     return () => {
       active = false;
     };
-  }, [t]);
+  }, [projectId, t]);
 
   const loadLinkedMissionsForGoal = async (goalId: string): Promise<LinkedMission[]> => {
-    const response = await fetch(`/api/goals/${encodeURIComponent(goalId)}/missions`);
+    const response = await fetch(withProjectId(`/api/goals/${encodeURIComponent(goalId)}/missions`, projectId));
     if (!response.ok) {
       throw new Error(`Failed to load linked missions (${response.status})`);
     }
@@ -235,7 +242,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     try {
       setIsDraftingDescription(true);
       setAddError(null);
-      const description = await draftGoalDescription(title);
+      const description = await draftGoalDescription(title, projectId);
       setAddDescription(description);
     } catch (error) {
       setAddError(getRefineErrorMessage(error));
@@ -255,7 +262,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
       setIsCreating(true);
       setAddError(null);
       setErrorMessage(null);
-      const response = await fetch("/api/goals", {
+      const response = await fetch(withProjectId("/api/goals", projectId), {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -307,7 +314,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     try {
       setIsSavingEdit(true);
       setEditError(null);
-      const response = await fetch(`/api/goals/${editGoalId}`, {
+      const response = await fetch(withProjectId(`/api/goals/${editGoalId}`, projectId), {
         method: "PATCH",
         headers: {
           "content-type": "application/json",
@@ -368,7 +375,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     try {
       setLinkingMissionGoalId(goalId);
       setErrorMessage(null);
-      const response = await fetch(`/api/missions/${encodeURIComponent(missionId)}/goals/${encodeURIComponent(goalId)}`, { method: "POST" });
+      const response = await fetch(withProjectId(`/api/missions/${encodeURIComponent(missionId)}/goals/${encodeURIComponent(goalId)}`, projectId), { method: "POST" });
       if (!response.ok) {
         throw new Error(`Failed to link mission (${response.status})`);
       }
@@ -384,7 +391,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
     try {
       setUnlinkingMissionKey(`${goalId}:${missionId}`);
       setErrorMessage(null);
-      const response = await fetch(`/api/missions/${encodeURIComponent(missionId)}/goals/${encodeURIComponent(goalId)}`, { method: "DELETE" });
+      const response = await fetch(withProjectId(`/api/missions/${encodeURIComponent(missionId)}/goals/${encodeURIComponent(goalId)}`, projectId), { method: "DELETE" });
       if (!response.ok) {
         throw new Error(`Failed to unlink mission (${response.status})`);
       }
@@ -401,7 +408,7 @@ export function GoalsView({ initialGoals, anchorGoalId, onNavigateToMission }: G
 
     try {
       setErrorMessage(null);
-      const response = await fetch(endpoint, {
+      const response = await fetch(withProjectId(endpoint, projectId), {
         method: "POST",
       });
 

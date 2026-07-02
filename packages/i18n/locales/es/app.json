@@ -180,7 +180,20 @@
     "lockedDown": "Bloqueado",
     "preset": "Preajuste",
     "requireApproval": "Requerir aprobación",
-    "unrestricted": "Sin restricciones"
+    "unrestricted": "Sin restricciones",
+    "exactToolOverrides": "Exact tool overrides",
+    "exactToolOverridesDescription": "Override one governed tool by exact name before its category rule. Heartbeat-critical exempt tools stay non-configurable.",
+    "noExactToolOverrides": "No exact tool overrides configured.",
+    "toolName": "Tool name",
+    "toolDisposition": "Disposition",
+    "toolDispositionFor": "Disposition for {{toolName}}",
+    "projectDefaultExactTool": "project default exact rule",
+    "removeToolOverride": "Remove exact override for {{toolName}}",
+    "remove": "Remove",
+    "toolOverrideTool": "Tool override tool",
+    "toolOverrideDisposition": "Tool override disposition",
+    "updateToolOverride": "Update override",
+    "addToolOverride": "Add override"
   },
   "agentPrompts": {
     "actions": {
@@ -4140,6 +4153,7 @@
       "local": "Docker local",
       "remote": "Remoto: {{host}}"
     },
+    "dockerHostLabel": "Host",
     "dockerHostConfig": "Configuración del host",
     "dockerHostPath": "Ruta del host",
     "dockerHostUrl": "URL del host de Docker",
@@ -5211,6 +5225,7 @@
       "override": "Anulación por tarea",
       "projectDefault": "Predeterminado del proyecto"
     },
+    "sourceLabel": "Origen de enrutamiento",
     "summarySection": "Resumen de enrutamiento",
     "title": "Enrutamiento de tareas",
     "unavailablePolicy": "Política de nodo no disponible",
@@ -7297,8 +7312,12 @@
       "ariaLabel": "Modo de ejecución: {{mode}}",
       "fast": "Rápido",
       "standard": "Estándar",
-      "updated": "Modo de ejecución actualizado a {{mode}}"
+      "updated": "Modo de ejecución actualizado a {{mode}}",
+      "replanMessage": "Cambiar el modo de ejecución de esta tarea la devolverá a Planificación para que Fusion reconstruya el plan para el modo {{mode}}.",
+      "replanTitle": "¿Cambiar el modo de ejecución y replanificar?",
+      "replanning": "Modo de ejecución actualizado a {{mode}} — {{id}} volvió a Planificación para replanificación"
     },
+    "executionModeLabel": "Modo de ejecución",
     "executionModeFast": "Rápido",
     "executionModeStandard": "Estándar",
     "executionStatsAria": "Estadísticas de ejecución de la tarea",
@@ -8423,7 +8442,6 @@
     "gateBlocks": "Compuerta (bloquea)",
     "gateMode": "Modo de compuerta",
     "insertTemplate": "Insertar plantilla {{name}}",
-    "interpreterOnly": "Este flujo de trabajo tiene ramas, por lo que se ejecuta en el intérprete de grafo — no puede compilarse al motor de pasos lineal, pero igualmente se ejecutará.",
     "joinAll": "Todas las ramas",
     "joinAny": "Cualquier rama",
     "joinMode": "Modo de unión",

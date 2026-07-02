@@ -1,5 +1,5 @@
 import type { AgentLogEntry, AgentRole, SteeringComment, Task, TaskDetail } from "@fusion/core";
-import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Cpu, Loader2, Maximize2, Minimize2, Send } from "lucide-react";
@@ -14,6 +14,7 @@ import { formatRelativeTimeAgo } from "../utils/relativeTimeAgo";
 import { ProviderIcon } from "./ProviderIcon";
 import { clampChatInputHeight, resolveChatInputOverflowY } from "../utils/chatInputAutosize";
 import { markdownComponents } from "./AgentLogViewer";
+import { parseRuntimeModelMarker } from "./effective-model-resolution";
 import "./TaskChatTab.css";
 
 interface TaskChatTabProps {
@@ -74,9 +75,9 @@ function getRoleLabel(role: AgentLogRole, t: TFunction<"app">): string {
 
 function parseModelMarker(entry: AgentLogEntry): TaskChatModelInfo | null {
   if (entry.type !== "text") return null;
-  const match = entry.text.match(/^(?:Triage|Executor|Reviewer) using model: (.+?)\/(.+)$/);
-  if (!match) return null;
-  return { provider: match[1], modelId: match[2] };
+  const role = entry.agent === "triage" ? "Triage" : entry.agent === "executor" ? "Executor" : entry.agent === "reviewer" ? "Reviewer" : null;
+  if (!role) return null;
+  return parseRuntimeModelMarker(entry.text, role);
 }
 
 function makeModelInfo(provider: string | undefined, modelId: string | undefined): TaskChatModelInfo | null {
@@ -569,6 +570,7 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
   const { entries, loading, loadMore, hasMore, loadingMore } = useAgentLogs(task.id, active, projectId);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [optimisticMessages, setOptimisticMessages] = useState<UserChatMessage[]>([]);
   const [isTranscriptAtBottom, setIsTranscriptAtBottom] = useState(true);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -582,7 +584,6 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
   const previousActiveRef = useRef(false);
   const anchorFrameRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const composerHintId = useId();
 
   const userMessages = useMemo(
     () => mergeUserMessages(task.steeringComments, optimisticMessages),
@@ -594,14 +595,14 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
   const isDoneTask = task.column === "done";
   /*
    * FNXC:TaskDetailActivity 2026-06-30-21:51:
-   * Activity → Current is the operational steering surface for task execution. Show an explicit steering-comment affordance here while keeping the future top-level planner-model Chat tab out of scope; Feed and Raw Logs remain read-only Activity segments without this composer.
+   * Activity → Live (legacy `current`) is the operational steering surface for task execution. Keep the top-level planner-model Chat tab separate; Feed and Raw Logs remain read-only Activity segments without this composer.
+   *
+   * FNXC:TaskDetailActivity 2026-06-30-23:59:
+   * Task Activity must keep the operational composer and existing steering/refinement APIs while removing the visible steering-comment guidance label/hint block from task chat. Use non-visible accessible names on the form/textarea/button so the removed copy does not leave a UI shell or dangling aria-describedby reference.
    */
-  const composerLabel = isDoneTask
-    ? t("taskChat.refinementComposerLabel", "Refinement request")
-    : t("taskChat.steeringComposerLabel", "Steering comment");
-  const composerHint = isDoneTask
-    ? t("taskChat.refinementComposerHint", "Create a follow-up refinement task from this completed task.")
-    : t("taskChat.steeringComposerHint", "Send operational guidance to the active task through steering comments.");
+  const composerFormLabel = isDoneTask
+    ? t("taskChat.refinementComposerFormLabel", "Task refinement composer")
+    : t("taskChat.activityComposerFormLabel", "Task activity composer");
   const composerPlaceholder = isDoneTask
     ? t("taskChat.donePlaceholder", "Start a refinement task for this completed task")
     : t("taskChat.activePlaceholder", "Steer the currently executing agent");
@@ -783,7 +784,8 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
   const handleSubmit = useCallback(async (event?: React.FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sendingRef.current) return;
+    sendingRef.current = true;
 
     const latestTimestampMs = getLatestTranscriptTimestampMs(entries, userMessages);
     const optimisticCreatedAtMs = Math.max(Date.now(), latestTimestampMs + 1);
@@ -827,9 +829,10 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
       setOptimisticMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
       addToast(`Unable to send message: ${getErrorMessage(error)}`, "error");
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
-  }, [addToast, draft, entries, isDoneTask, onTaskUpdated, projectId, sending, task.id, userMessages]);
+  }, [addToast, draft, entries, isDoneTask, onTaskUpdated, projectId, task.id, userMessages]);
 
   /**
    * FNXC:TaskDetailChat 2026-06-13-19:05:
@@ -844,6 +847,22 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
     void handleSubmit();
   }, [handleSubmit]);
 
+  /*
+  FNXC:TaskDetailChat 2026-07-01-00:00:
+  Mobile soft keyboards can blur the focused composer textarea before the Send button receives a click, consuming the first tap. Touch/pen pointer-down submits immediately while the synchronous sendingRef guard preserves empty/disabled and duplicate-send behavior; mouse down only preserves focus so desktop click and keyboard submit semantics remain unchanged.
+  */
+  const handleSendPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "mouse") return;
+    if (!canSend) return;
+    event.preventDefault();
+    void handleSubmit();
+  }, [canSend, handleSubmit]);
+
+  const handleSendMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!canSend) return;
+    event.preventDefault();
+  }, [canSend]);
+
   return (
     <div className="task-chat-tab" data-testid="task-chat-tab">
       {onToggleExpanded ? (
@@ -851,11 +870,11 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
           type="button"
           className="btn btn-icon btn-sm task-chat-expand-toggle task-chat-expand-toggle--overlay"
           onClick={onToggleExpanded}
-          aria-label={expanded ? t("taskChat.collapseChat", "Collapse chat") : t("taskChat.expandChat", "Expand chat to full modal")}
+          aria-label={expanded ? t("taskChat.collapseActivity", "Collapse activity") : t("taskChat.expandActivity", "Expand activity to full modal")}
           aria-pressed={expanded}
           data-testid="task-chat-expand-toggle"
         >
-          {/* FNXC:TaskChat 2026-06-13-00:00: FN-6425 refines FN-6405 by keeping the task-chat expand affordance icon-only and pinned to the chat view corner so transcript scrolling never removes access to expansion controls. */}
+          {/* FNXC:TaskDetailActivity 2026-07-01-00:00: TaskDetailModal passes Activity-expanded state into Live so this existing chat overlay remains the single Live expand affordance without adding a separate toolbar row. */}
           {expanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
         </button>
       ) : null}
@@ -938,11 +957,7 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
         ) : null}
       </div>
 
-      <form className="task-chat-composer card" onSubmit={handleSubmit} aria-label={composerLabel}>
-        <div className="task-chat-composer-affordance">
-          <span className="task-chat-composer-label">{composerLabel}</span>
-          <span className="task-chat-composer-hint" id={composerHintId}>{composerHint}</span>
-        </div>
+      <form className="task-chat-composer" onSubmit={handleSubmit} aria-label={composerFormLabel}>
         <div className="task-chat-composer-row">
           <textarea
             ref={textareaRef}
@@ -953,7 +968,6 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
             onKeyDown={handleKeyDown}
             disabled={sending}
             aria-label={t("taskChat.messageActiveAgentSession", "Message active agent session")}
-            aria-describedby={composerHintId}
             rows={1}
           />
           <button
@@ -962,6 +976,8 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
             disabled={!canSend}
             aria-label={sending ? t("taskChat.sending", "Sending") : t("common:actions.send", "Send")}
             title={sending ? t("taskChat.sending", "Sending") : t("common:actions.send", "Send")}
+            onPointerDown={handleSendPointerDown}
+            onMouseDown={handleSendMouseDown}
           >
             {sending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Send aria-hidden="true" />}
           </button>

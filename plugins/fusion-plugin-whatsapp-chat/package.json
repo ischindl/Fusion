@@ -1,6 +1,6 @@
 {
   "name": "@fusion-plugin-examples/whatsapp-chat",
-  "version": "0.1.33",
+  "version": "0.1.36",
   "type": "module",
   "description": "WhatsApp Web (Baileys) chat bridge for Fusion agents",
   "keywords": [
@@ -12,6 +12,7 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "source": "./src/index.ts",
       "import": "./dist/index.js"
     }
   },

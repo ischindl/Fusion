@@ -132,6 +132,60 @@ describe("remote access API route contracts", () => {
     }));
   });
 
+  it("persists Tailscale accept-routes and lifecycle fields without erasing populated branches", async () => {
+    let remoteAccess = buildRemoteAccessSettings();
+    const store = createMockStore({
+      getSettings: vi.fn(async () => ({ remoteAccess })),
+      updateGlobalSettings: vi.fn(async (patch: { remoteAccess?: typeof remoteAccess }) => {
+        if (patch.remoteAccess) {
+          remoteAccess = patch.remoteAccess;
+        }
+        return { remoteAccess };
+      }),
+    });
+    const { app } = createApp({ store });
+
+    const putRes = await REQUEST(app, "PUT", "/api/remote/settings", {
+      remoteActiveProvider: "tailscale",
+      remoteTailscaleEnabled: true,
+      remoteTailscaleAcceptRoutes: true,
+      remoteRememberLastRunning: true,
+    });
+
+    expect(putRes.status).toBe(200);
+    expect(store.updateGlobalSettings).toHaveBeenCalledWith({
+      remoteAccess: expect.objectContaining({
+        activeProvider: "tailscale",
+        providers: expect.objectContaining({
+          tailscale: expect.objectContaining({ acceptRoutes: true }),
+          cloudflare: expect.objectContaining({
+            quickTunnel: false,
+            tunnelName: "demo-tunnel",
+            tunnelToken: "cf-secret-token",
+            ingressUrl: "https://remote.example.com",
+          }),
+        }),
+        tokenStrategy: expect.objectContaining({
+          persistent: expect.objectContaining({ token: "frt_persistent_token" }),
+          shortLived: expect.objectContaining({ enabled: true, ttlMs: 120000 }),
+        }),
+        lifecycle: expect.objectContaining({ rememberLastRunning: true }),
+      }),
+    });
+
+    const getRes = await REQUEST(app, "GET", "/api/remote/settings");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.settings).toMatchObject({
+      remoteActiveProvider: "tailscale",
+      remoteTailscaleAcceptRoutes: true,
+      remoteRememberLastRunning: true,
+      remoteCloudflareQuickTunnel: false,
+      remoteCloudflareTunnelName: "demo-tunnel",
+      remoteShortLivedEnabled: true,
+      remoteShortLivedTtlMs: 120000,
+    });
+  });
+
   it("returns default remote settings payload when remoteAccess is missing", async () => {
     const store = createMockStore({
       getSettings: vi.fn().mockResolvedValue({}),

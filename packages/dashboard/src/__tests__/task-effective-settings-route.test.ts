@@ -17,7 +17,7 @@ class MockStore extends EventEmitter {
   getSettingsFast = vi.fn(async (): Promise<Settings> => ({
     defaultProvider: "base-default-provider",
     defaultModelId: "base-default-model",
-    workflowStepTimeoutMs: 360_000,
+    workflowStepTimeoutMs: 900_000,
     runStepsInNewSessions: false,
   } as Settings));
   getTaskWorkflowSelection = vi.fn((taskId: string) => this.workflowSelections.get(taskId));

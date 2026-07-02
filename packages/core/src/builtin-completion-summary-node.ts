@@ -2,6 +2,21 @@ import type { WorkflowIrNode } from "./workflow-ir-types.js";
 
 export const COMPLETION_SUMMARY_NODE_ID = "completion-summary";
 
+/*
+ * FNXC:WorkflowCompletion 2026-07-01-16:20:
+ * Single source of truth for "is this the advisory completion-summary projection
+ * node?". The engine, graph executor, and lifecycle validation all key summary
+ * behavior off `summaryTarget: "task"` (built-in id `completion-summary`). This
+ * node is BEST-EFFORT: `ensureWorkflowCompletionSummary` deterministically
+ * backfills `task.summary` at the review/done boundary, and every built-in
+ * workflow wires it with a success-only edge (no failure edge — see
+ * `builtin-workflows.ts` `linear()` and the `*-workflow-ir.ts` graphs). So a
+ * summary-node failure must never terminate or loop the graph (issue #1863).
+ */
+export function isCompletionSummaryNode(node: { id?: string; config?: Record<string, unknown> }): boolean {
+  return node.config?.summaryTarget === "task" || node.id === COMPLETION_SUMMARY_NODE_ID;
+}
+
 const COMPLETION_SUMMARY_PROMPT = `Generate the final completion summary for this task.
 
 Use the task description, executed workflow context, changed files/diff, verification notes, and any produced artifacts.

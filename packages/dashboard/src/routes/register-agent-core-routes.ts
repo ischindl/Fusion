@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response } from "express";
-import type { Agent, AgentCapability, AgentUpdateInput, TaskStore, AgentPermissionPolicyRules, AgentPermissionPolicyDisposition } from "@fusion/core";
+import type { Agent, AgentCapability, AgentUpdateInput, TaskStore, AgentPermissionPolicyRules, AgentPermissionPolicyDisposition, AgentPermissionPolicyToolRules } from "@fusion/core";
 import {
   ApprovalRequestStore,
   AGENT_PERMISSION_POLICY_ACTION_CATEGORIES,
@@ -10,7 +10,6 @@ import {
   isAgentPermissionPolicyPresetId,
   isEphemeralAgent,
   normalizeAgentPermissionPolicy,
-  normalizeAgentPermissionPolicyFromPreset,
 } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import type { ApiRoutesContext } from "./types.js";
@@ -35,17 +34,28 @@ function parsePermissionPolicyInput(input: unknown) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw badRequest("permissionPolicy must be an object");
   }
-  const policy = input as { presetId?: unknown; rules?: unknown };
+  const policy = input as { presetId?: unknown; rules?: unknown; toolRules?: unknown };
   if (typeof policy.presetId !== "string" || !isAgentPermissionPolicyPresetId(policy.presetId)) {
     throw badRequest("permissionPolicy.presetId must be one of: unrestricted, approval-required, locked-down, custom");
   }
 
-  if (policy.presetId !== "custom") {
-    return normalizeAgentPermissionPolicyFromPreset(policy.presetId);
-  }
-
+  /*
+  FNXC:ToolPermissions 2026-07-01-00:00:
+  Agent create/update payloads accept exact `toolRules` alongside preset/category rules so API clients can block one governed tool such as `fn_task_create` without switching an entire category. Route parsing delegates disposition/blank-key normalization to the core helper to keep dashboard and runtime semantics aligned.
+  */
   if (policy.rules !== undefined && (typeof policy.rules !== "object" || policy.rules === null || Array.isArray(policy.rules))) {
     throw badRequest("permissionPolicy.rules must be an object");
+  }
+
+  if (policy.presetId !== "custom") {
+    try {
+      return normalizeAgentPermissionPolicy({
+        presetId: policy.presetId,
+        toolRules: policy.toolRules as Partial<AgentPermissionPolicyToolRules> | undefined,
+      });
+    } catch (err) {
+      throw badRequest(err instanceof Error ? err.message : String(err));
+    }
   }
 
   const customRules = (policy.rules ?? {}) as Record<string, unknown>;
@@ -59,10 +69,15 @@ function parsePermissionPolicyInput(input: unknown) {
     }
   }
 
-  return normalizeAgentPermissionPolicy({
-    presetId: "custom",
-    rules: customRules as Partial<AgentPermissionPolicyRules>,
-  });
+  try {
+    return normalizeAgentPermissionPolicy({
+      presetId: "custom",
+      rules: customRules as Partial<AgentPermissionPolicyRules>,
+      toolRules: policy.toolRules as Partial<AgentPermissionPolicyToolRules> | undefined,
+    });
+  } catch (err) {
+    throw badRequest(err instanceof Error ? err.message : String(err));
+  }
 }
 
 function isCompatibleDefaultHeartbeatPath(path: string | undefined, agent: Agent): boolean {

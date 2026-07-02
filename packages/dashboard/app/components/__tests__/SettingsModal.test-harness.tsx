@@ -124,6 +124,7 @@ export const defaultSettings = {
   webhookUrl: undefined,
   webhookFormat: undefined,
   webhookEvents: undefined,
+  githubLinkImportedIssuesToTracking: false,
 };
 
 export function renderModal(props: Partial<ComponentProps<typeof SettingsModal>> = {}) {

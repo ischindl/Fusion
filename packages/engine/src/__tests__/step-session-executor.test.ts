@@ -1316,6 +1316,151 @@ describe("StepSessionExecutor", () => {
       expect(prompts[1]).not.toContain("Please include the queued guidance.");
     });
 
+    it("publishes workflow step activity run lifecycle for dashboard analytics", async () => {
+      vi.setSystemTime(new Date("2026-07-01T12:00:00.000Z"));
+      const prompt = makeStepPrompt("FN-7402", 1);
+      const task = makeTaskDetail({
+        id: "FN-7402",
+        title: "Publish workflow activity",
+        lineageId: "lineage-FN-7402",
+        assignedAgentId: "assigned-agent",
+        prompt,
+        steps: [{ name: "Implement telemetry", status: "pending" }],
+      });
+      const saveRun = vi.fn().mockResolvedValue(undefined);
+      mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession() } as any);
+
+      const executor = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings: makeSettings({ maxParallelSteps: 1 }),
+        agentStore: { saveRun } as any,
+        effectiveAgentId: "column-agent",
+      } as any);
+
+      const results = await executor.executeAll();
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.success).toBe(true);
+      expect(saveRun).toHaveBeenCalledTimes(2);
+      const [activeRun, completedRun] = saveRun.mock.calls.map((call) => call[0]);
+      expect(activeRun).toMatchObject({
+        agentId: "column-agent",
+        taskId: "FN-7402",
+        startedAt: "2026-07-01T12:00:00.000Z",
+        endedAt: null,
+        status: "active",
+        invocationSource: "assignment",
+        triggerDetail: "workflow-step-session",
+        contextSnapshot: {
+          source: "step-session-executor",
+          sessionPurpose: "executor",
+          workflowStep: true,
+          taskId: "FN-7402",
+          taskLineageId: "lineage-FN-7402",
+          assignedAgentId: "assigned-agent",
+          effectiveAgentId: "column-agent",
+          agentId: "column-agent",
+          stepIndex: 0,
+          stepName: "Implement telemetry",
+        },
+      });
+      expect(activeRun.id).toMatch(/^workflow-step-FN-7402-.*-step-0$/);
+      expect(completedRun).toMatchObject({
+        id: activeRun.id,
+        agentId: "column-agent",
+        taskId: "FN-7402",
+        startedAt: activeRun.startedAt,
+        endedAt: "2026-07-01T12:00:00.000Z",
+        status: "completed",
+        resultJson: expect.objectContaining({ success: true, retries: 0, stepIndex: 0 }),
+      });
+    });
+
+    it("publishes failed terminal workflow step activity without leaving stale active state", async () => {
+      vi.setSystemTime(new Date("2026-07-01T13:00:00.000Z"));
+      const prompt = makeStepPrompt("FN-7402", 1);
+      const task = makeTaskDetail({
+        id: "FN-7402",
+        prompt,
+        assignedAgentId: "assigned-agent",
+        steps: [{ name: "Failing step", status: "pending" }],
+      });
+      const saveRun = vi.fn().mockResolvedValue(undefined);
+      mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession(vi.fn().mockRejectedValue(new Error("boom"))) } as any);
+
+      const executor = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings: makeSettings({ maxParallelSteps: 1 }),
+        agentStore: { saveRun } as any,
+      } as any);
+
+      const results = await executor.executeAll();
+
+      expect(results).toEqual([{ stepIndex: 0, success: false, error: "boom", retries: 3, tokenUsage: undefined }]);
+      const terminalRun = saveRun.mock.calls.at(-1)?.[0];
+      expect(saveRun).toHaveBeenCalledTimes(2);
+      expect(terminalRun).toMatchObject({
+        id: saveRun.mock.calls[0]?.[0].id,
+        agentId: "assigned-agent",
+        status: "failed",
+        endedAt: expect.stringMatching(/^2026-07-01T13:00:/),
+        resultJson: expect.objectContaining({ success: false, error: "boom", retries: 3 }),
+      });
+      expect(saveRun.mock.calls.map((call) => call[0].status)).toEqual(["active", "failed"]);
+    });
+
+    it("uses assigned-agent and fallback executor identities for workflow activity runs", async () => {
+      const prompt = makeStepPrompt("FN-7402", 1);
+      const runExecutor = async (taskOverrides: Partial<TaskDetail>) => {
+        const saveRun = vi.fn().mockResolvedValue(undefined);
+        mockedCreateFnAgent.mockResolvedValueOnce({ session: makeMockSession() } as any);
+        const executor = new StepSessionExecutor({
+          taskDetail: makeTaskDetail({ id: "FN-7402", prompt, steps: [{ name: "Step 0", status: "pending" }], ...taskOverrides }),
+          worktreePath: "/project/.worktrees/main",
+          rootDir: "/project",
+          settings: makeSettings({ maxParallelSteps: 1 }),
+          agentStore: { saveRun } as any,
+        } as any);
+        await executor.executeAll();
+        return saveRun.mock.calls[0]?.[0];
+      };
+
+      await expect(runExecutor({ assignedAgentId: "assigned-agent" })).resolves.toMatchObject({ agentId: "assigned-agent" });
+      await expect(runExecutor({ assignedAgentId: undefined })).resolves.toMatchObject({ agentId: "executor" });
+    });
+
+    it("continues workflow execution when workflow activity publication is unavailable or failing", async () => {
+      const prompt = makeStepPrompt("FN-7402", 1);
+      const task = makeTaskDetail({ id: "FN-7402", prompt, steps: [{ name: "Step 0", status: "pending" }] });
+      mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession() } as any);
+
+      const withoutStore = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings: makeSettings({ maxParallelSteps: 1 }),
+      } as any);
+      await expect(withoutStore.executeAll()).resolves.toMatchObject([{ success: true }]);
+
+      const saveRun = vi.fn().mockRejectedValue(new Error("db offline"));
+      mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession() } as any);
+      const withFailingStore = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings: makeSettings({ maxParallelSteps: 1 }),
+        agentStore: { saveRun } as any,
+      } as any);
+
+      await expect(withFailingStore.executeAll()).resolves.toMatchObject([{ success: true }]);
+      expect(saveRun).toHaveBeenCalledTimes(2);
+      expect(getStepSessionLogger().warn).toHaveBeenCalledWith(expect.stringContaining("Failed to publish workflow-step activity run"));
+    });
+
     it("happy path: 3-step task, all steps succeed", async () => {
       const prompt = makeStepPrompt("FN-001", 3);
       const task = makeTaskDetail({ prompt, steps: [

@@ -114,6 +114,26 @@ describe("LocalRuntimeManager", () => {
     });
   });
 
+  it("surfaces dashboard import failures instead of replacing them with a generic timeout", async () => {
+    const { LocalRuntimeManager } = await import("../local-runtime.ts");
+    const importError = new TypeError("ERR_IMPORT_ATTRIBUTE_MISSING: registry-manifest.json requires an import attribute");
+    const manager = new LocalRuntimeManager({
+      rootDir: "/repo",
+      createStore: async () => store,
+      createDashboardServer: async () => {
+        throw importError;
+      },
+    });
+
+    await expect(manager.startLocal()).rejects.toThrow("ERR_IMPORT_ATTRIBUTE_MISSING");
+    expect(store.close).toHaveBeenCalledTimes(1);
+    expect(manager.getStatus()).toMatchObject({
+      source: "embedded-local",
+      state: "error",
+      error: "ERR_IMPORT_ATTRIBUTE_MISSING: registry-manifest.json requires an import attribute",
+    });
+  });
+
   it("stopLocal is idempotent and no-op when inactive", async () => {
     const { LocalRuntimeManager } = await import("../local-runtime.ts");
     const server = new FakeServer(4545);

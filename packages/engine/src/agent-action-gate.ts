@@ -171,9 +171,14 @@ export function evaluateAgentActionGate(params: {
     resourceType = "research";
   }
 
+  /*
+  FNXC:ToolPermissions 2026-07-01-00:00:
+  Exact tool-name overrides must be resolved before category policy so operators can block a single governed tool such as `fn_task_create` without blocking every `task_agent_mutation` tool. Exempt coordination tools remain hard-bypassed to avoid heartbeat deadlocks.
+  */
+  const exactDisposition = category === "exempt" ? undefined : params.permissionPolicy.toolRules?.[params.toolName];
   const disposition: AgentPermissionPolicyDisposition | "allow" = category === "exempt"
     ? "allow"
-    : params.permissionPolicy.rules[category];
+    : exactDisposition ?? params.permissionPolicy.rules[category];
 
   const dedupeKey = computeApprovalDedupeKey({
     agentId: params.agentId,
@@ -194,7 +199,15 @@ export function evaluateAgentActionGate(params: {
     resourceType,
     ...(resourceId ? { resourceId } : {}),
     approvalDedupeKey: dedupeKey,
-    metadata: {},
+    metadata: exactDisposition
+      ? {
+          permissionPolicyMatch: {
+            type: "toolRule",
+            toolName: params.toolName,
+            disposition: exactDisposition,
+          },
+        }
+      : {},
   };
 }
 

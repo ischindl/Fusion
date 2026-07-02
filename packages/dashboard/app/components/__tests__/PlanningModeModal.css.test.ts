@@ -6,6 +6,7 @@ import { getMediaBlocks } from "./PlanningModeModal.test-helpers";
 const PLANNING_CSS_PATH = resolve(__dirname, "..", "PlanningModeModal.css");
 const TABLET_SUMMARY_ACTIONS_QUERY = "@media (min-width: 769px) and (max-width: 1024px)";
 const MOBILE_ACTIONS_QUERY = "@media (max-width: 768px)";
+const MOBILE_PLANNING_SHELL_QUERY = "@media (max-width: 768px), (max-height: 480px)";
 
 function loadPlanningCss(): string {
   return readFileSync(PLANNING_CSS_PATH, "utf-8");
@@ -66,5 +67,33 @@ describe("PlanningModeModal CSS responsive action contract", () => {
     expect(embeddedRule).toBeTruthy();
     expect(embeddedRule).toMatch(/height\s*:\s*100%\s*;/);
     expect(embeddedRule).toMatch(/max-height\s*:\s*100%\s*;/);
+  });
+
+  it("keeps the mobile sessions list scrolling above the bottom-pinned New session footer", () => {
+    const css = loadPlanningCss();
+    const mobileShellCss = getMediaBlocks(css, MOBILE_PLANNING_SHELL_QUERY).join("\n");
+
+    const showListRule = findRule(mobileShellCss, ".planning-modal-body--show-list");
+    expect(showListRule).toBeTruthy();
+    expect(showListRule).toMatch(/flex\s*:\s*1\s*;/);
+    expect(showListRule).toMatch(/min-height\s*:\s*0\s*;/);
+    expect(showListRule).toMatch(/overflow\s*:\s*hidden\s*;/);
+
+    const sidebarRule = findRule(mobileShellCss, ".planning-modal-body--show-list .planning-sidebar");
+    expect(sidebarRule).toBeTruthy();
+    expect(sidebarRule).toMatch(/flex\s*:\s*1 1 auto\s*;/);
+    expect(sidebarRule).toMatch(/height\s*:\s*100%\s*;/);
+    expect(sidebarRule).toMatch(/min-height\s*:\s*0\s*;/);
+    expect(sidebarRule).toMatch(/max-height\s*:\s*100%\s*;/);
+
+    const sidebarListRule = findRule(mobileShellCss, ".planning-modal-body--show-list .planning-sidebar-list");
+    expect(sidebarListRule).toBeTruthy();
+    expect(sidebarListRule).toMatch(/flex\s*:\s*1 1 auto\s*;/);
+    expect(sidebarListRule).toMatch(/min-height\s*:\s*0\s*;/);
+    expect(sidebarListRule).toMatch(/overflow-y\s*:\s*auto\s*;/);
+
+    const footerRule = findRule(mobileShellCss, ".planning-modal-body--show-list .planning-sidebar-footer");
+    expect(footerRule).toBeTruthy();
+    expect(footerRule).toMatch(/flex-shrink\s*:\s*0\s*;/);
   });
 });

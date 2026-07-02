@@ -4,7 +4,7 @@ import { TaskExecutor } from "../executor.js";
 import { activeSessionRegistry } from "../active-session-registry.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree-backend.js";
 import * as worktreePoolModule from "../worktree-pool.js";
-import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
+import { createMockStore, mockedGenerateWorktreeName, resetExecutorMocks } from "./executor-test-helpers.js";
 
 const CONFLICT_PATH = "/tmp/test/.worktrees/stale-self-owned";
 
@@ -120,6 +120,107 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
       expect.stringContaining("Refused stale-path cleanup"),
       OUTSIDE_PATH,
     );
+  });
+
+  it("falls back to a fresh sibling branch for a DB-only live owner", async () => {
+    const store = createMockStore();
+    store.getSettings.mockResolvedValue({
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15000,
+      groupOverlappingFiles: false,
+      autoMerge: false,
+      executorAllowSiblingBranchRename: true,
+    });
+    store.listTasks.mockResolvedValue([
+      { id: "FN-LIVE", worktree: CONFLICT_PATH, column: "in-progress", paused: false },
+    ]);
+    mockedGenerateWorktreeName.mockReturnValueOnce("fresh-eagle");
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const createSpy = vi.spyOn(executor as any, "tryCreateWorktree").mockResolvedValue({
+      path: "/tmp/test/.worktrees/fresh-eagle",
+      branch: "fusion/fn-4973-2",
+    });
+
+    const result = await (executor as any).handleWorktreeConflict(
+      CONFLICT_PATH,
+      "fusion/fn-4973",
+      "/tmp/test/.worktrees/stale-self-owned",
+      "FN-4973",
+      "main",
+      0,
+      true,
+      await store.getSettings(),
+    );
+
+    expect(result).toEqual({ path: "/tmp/test/.worktrees/fresh-eagle", branch: "fusion/fn-4973-2" });
+    expect(createSpy).toHaveBeenCalledWith(
+      "fusion/fn-4973-2",
+      "/tmp/test/.worktrees/fresh-eagle",
+      "FN-4973",
+      "fusion/fn-4973",
+      0,
+      0,
+      true,
+      expect.any(Object),
+    );
+  });
+
+  it("keeps non-live cleanup failures unrecoverable", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+    store.listTasks.mockResolvedValue([]);
+    vi.spyOn(executor as any, "cleanupConflictingWorktree").mockResolvedValue(false);
+
+    const result = await (executor as any).handleWorktreeConflict(
+      CONFLICT_PATH,
+      "fusion/fn-4973",
+      "/tmp/test/.worktrees/stale-self-owned",
+      "FN-4973",
+      "main",
+      0,
+      true,
+      await store.getSettings(),
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("bounds fresh sibling fallback when every generated branch is already used", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+    store.listTasks.mockResolvedValue([]);
+    activeSessionRegistry.registerPath(CONFLICT_PATH, { taskId: "FN-4973", kind: "workflow-step", ownerKey: "FN-4973/workflow-step" });
+    (executor as any).addActiveWorktree("FN-4973", CONFLICT_PATH);
+    mockedGenerateWorktreeName
+      .mockReturnValueOnce("fresh-2")
+      .mockReturnValueOnce("fresh-3")
+      .mockReturnValueOnce("fresh-4")
+      .mockReturnValueOnce("fresh-5")
+      .mockReturnValueOnce("fresh-6");
+    vi.spyOn(worktreePoolModule, "removeWorktree").mockRejectedValue(
+      new ActiveSessionWorktreeRemovalError({
+        worktreePath: CONFLICT_PATH,
+        taskId: "FN-4973",
+        kind: "workflow-step",
+        ownerKey: "FN-4973/workflow-step",
+        reason: worktreePoolModule.RemovalReason.ExecutorDispose,
+      }),
+    );
+    vi.spyOn(executor as any, "tryCreateWorktree").mockImplementation(async (branch: string) => {
+      throw new Error(`fatal: '${branch}' is already used by worktree at '/tmp/test/.worktrees/other'`);
+    });
+
+    await expect((executor as any).handleWorktreeConflict(
+      CONFLICT_PATH,
+      "fusion/fn-4973",
+      "/tmp/test/.worktrees/stale-self-owned",
+      "FN-4973",
+      "main",
+      0,
+      true,
+      await store.getSettings(),
+    )).rejects.toThrow(/live conflicting worktree .* was preserved and suffixes -2 through -6/);
   });
 
   it("reconciles once on race-window ActiveSessionWorktreeRemovalError then retries removal", async () => {

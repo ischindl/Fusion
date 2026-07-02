@@ -624,6 +624,131 @@ describe("PlanningModeModal", () => {
       });
     });
 
+    it.each(["desktop", "mobile"] as const)("lets confirm questions submit an Other answer on %s", async (viewportMode) => {
+      window.sessionStorage.setItem("fusion-tab-id", "tab-self");
+      mockViewport(viewportMode);
+      mockConnectPlanningStream.mockImplementationOnce((_sessionId: string, _projectId: string | undefined, handlers: any) => {
+        setTimeout(() => {
+          handlers.onQuestion?.({
+            id: "q-confirm-scope",
+            type: "confirm",
+            question: "Proceed with this scope?",
+            description: "Choose Yes, No, or write a different answer.",
+          });
+        }, 10);
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Build auth system" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Proceed with this scope?")).toBeDefined();
+      });
+
+      expect(screen.getByRole("button", { name: /Yes/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /No/ })).toBeInTheDocument();
+      expect(screen.getByTestId("planning-option-other")).toBeInTheDocument();
+      expect(screen.queryByTestId("planning-other-input")).toBeNull();
+
+      const continueButton = screen.getByRole("button", { name: "Continue" });
+      fireEvent.click(screen.getByTestId("planning-option-other"));
+      expect(screen.getByTestId("planning-other-input")).toBeInTheDocument();
+      expect(continueButton).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId("planning-other-input"), { target: { value: "   " } });
+      expect(continueButton).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId("planning-other-input"), {
+        target: { value: "  Ask a different scoping question  " },
+      });
+      expect(continueButton).toBeEnabled();
+      fireEvent.click(continueButton);
+
+      await waitFor(() => {
+        expect(mockRespondToPlanning).toHaveBeenCalledWith(
+          "session-123",
+          { _other: "Ask a different scoping question" },
+          undefined,
+          "tab-self",
+        );
+      });
+    });
+
+    it("clears confirm Other text when switching back to Yes or No", async () => {
+      window.sessionStorage.setItem("fusion-tab-id", "tab-self");
+      mockConnectPlanningStream.mockImplementationOnce((_sessionId: string, _projectId: string | undefined, handlers: any) => {
+        setTimeout(() => {
+          handlers.onQuestion?.({
+            id: "q-confirm-scope",
+            type: "confirm",
+            question: "Proceed with this scope?",
+          });
+        }, 10);
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />,
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Build auth system" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Proceed with this scope?")).toBeDefined();
+      });
+
+      const continueButton = screen.getByRole("button", { name: "Continue" });
+      fireEvent.click(screen.getByTestId("planning-option-other"));
+      fireEvent.change(screen.getByTestId("planning-other-input"), {
+        target: { value: "Ask a different scoping question" },
+      });
+      fireEvent.change(screen.getByLabelText("Additional comments (optional)"), {
+        target: { value: "Keep the planner moving" },
+      });
+      expect(continueButton).toBeEnabled();
+
+      fireEvent.click(screen.getByRole("button", { name: /No/ }));
+      expect(screen.queryByTestId("planning-other-input")).toBeNull();
+      fireEvent.click(continueButton);
+
+      await waitFor(() => {
+        expect(mockRespondToPlanning).toHaveBeenCalledWith(
+          "session-123",
+          { "q-confirm-scope": false, _comment: "Keep the planner moving" },
+          undefined,
+          "tab-self",
+        );
+      });
+    });
+
     it("shows stop action in loading and stops generation", async () => {
       let streamHandlers: any;
       const closeSpy = vi.fn();

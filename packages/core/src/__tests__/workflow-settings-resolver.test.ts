@@ -227,7 +227,7 @@ describe("resolveEffectiveSettings (per-task)", () => {
   it("no selection → builtin:coding declaration defaults (never throws)", async () => {
     const store = makeStore({ selection: {} });
     const eff = await resolveEffectiveSettings(store, { id: "t-none" });
-    expect(eff.workflowStepTimeoutMs).toBe(360_000);
+    expect(eff.workflowStepTimeoutMs).toBe(900_000);
   });
 
   it("missing custom definition degrades to builtin declarations (never throws)", async () => {
@@ -237,13 +237,13 @@ describe("resolveEffectiveSettings (per-task)", () => {
     });
     const eff = await resolveEffectiveSettings(store, { id: "t1" });
     // Degrades to BUILTIN_CODING_WORKFLOW_IR declarations.
-    expect(eff.workflowStepTimeoutMs).toBe(360_000);
+    expect(eff.workflowStepTimeoutMs).toBe(900_000);
   });
 
   it("selection lookup throwing degrades to builtin declarations", async () => {
     const store = makeStore({ selectionThrows: true });
     const eff = await resolveEffectiveSettings(store, { id: "t1" });
-    expect(eff.workflowStepTimeoutMs).toBe(360_000);
+    expect(eff.workflowStepTimeoutMs).toBe(900_000);
   });
 
   it("store value read throwing degrades to declaration defaults", async () => {
@@ -252,7 +252,7 @@ describe("resolveEffectiveSettings (per-task)", () => {
       valuesThrows: true,
     });
     const eff = await resolveEffectiveSettings(store, { id: "t1" });
-    expect(eff.workflowStepTimeoutMs).toBe(360_000);
+    expect(eff.workflowStepTimeoutMs).toBe(900_000);
   });
 
   it("project-id lookup throwing degrades to declaration defaults (empty stored map)", async () => {
@@ -263,7 +263,7 @@ describe("resolveEffectiveSettings (per-task)", () => {
     });
     const eff = await resolveEffectiveSettings(store, { id: "t1" });
     // The stored 5_000 is unreachable because the project key couldn't be resolved.
-    expect(eff.workflowStepTimeoutMs).toBe(360_000);
+    expect(eff.workflowStepTimeoutMs).toBe(900_000);
   });
 });
 

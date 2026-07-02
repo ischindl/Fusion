@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
-import type { TaskStore, AutomationStore } from "@fusion/core";
+import type { TaskStore, AutomationStore, ChatStore } from "@fusion/core";
 import {
   createSSE,
   disconnectSSEClient,
@@ -42,7 +42,7 @@ class MockResponse extends EventEmitter {
   }
 }
 
-function createMockStore(): TaskStore {
+function createMockStore(settings: Record<string, unknown> = {}): TaskStore {
   const researchStore = {
     on: vi.fn(),
     off: vi.fn(),
@@ -51,6 +51,7 @@ function createMockStore(): TaskStore {
     on: vi.fn(),
     off: vi.fn(),
     getResearchStore: vi.fn(() => researchStore),
+    getSettings: vi.fn(async () => settings),
   } as unknown as TaskStore;
 }
 
@@ -102,6 +103,47 @@ function openSseConnectionWithAutomation(clientId: string, projectId?: string) {
   )(req, res as unknown as Response);
 
   return { req, res, socket, store, automationStore };
+}
+
+function createMockChatStore(sessions: Record<string, { id: string; agentId: string; projectId?: string | null }>): ChatStore {
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, {
+    getSession: vi.fn((id: string) => sessions[id]),
+  }) as unknown as ChatStore;
+}
+
+function openSseConnectionWithChatStore(
+  clientId: string,
+  chatStore: ChatStore,
+  projectId?: string,
+  settings: Record<string, unknown> = {},
+) {
+  const store = createMockStore(settings);
+  const socket = new MockSocket();
+  const req = new EventEmitter() as Request & { query: Record<string, string>; socket: MockSocket };
+  req.query = projectId ? { clientId, projectId } : { clientId };
+  req.socket = socket;
+  const res = new MockResponse(socket);
+
+  createSSE(
+    store,
+    undefined,
+    undefined,
+    undefined,
+    projectId ? { projectId } : undefined,
+    undefined,
+    undefined,
+    chatStore,
+  )(req, res as unknown as Response);
+
+  return { req, res, socket, store, chatStore };
+}
+
+function parseSsePayload(writeCall: unknown[]): Record<string, unknown> {
+  const frame = String(writeCall[0]);
+  const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
+  if (!dataLine) throw new Error(`No SSE data line in frame: ${frame}`);
+  return JSON.parse(dataLine.slice("data: ".length)) as Record<string, unknown>;
 }
 
 afterEach(() => {
@@ -183,6 +225,101 @@ describe("plugin custom SSE events", () => {
 
     projectA.req.emit("close");
     projectB.req.emit("close");
+  });
+});
+
+describe("chat store SSE events", () => {
+  it("enriches direct message payloads with hidden planner session metadata", async () => {
+    const chatStore = createMockChatStore({
+      "sess-planner": { id: "sess-planner", agentId: "task-planner:FN-7392", projectId: "project-a" },
+    });
+    const connection = openSseConnectionWithChatStore("chat-planner-metadata", chatStore, "project-a");
+
+    chatStore.emit("chat:message:added", {
+      id: "msg-1",
+      sessionId: "sess-planner",
+      role: "assistant",
+      content: "Done",
+    });
+
+    await vi.waitFor(() => {
+      expect(connection.res.write).toHaveBeenCalledWith(expect.stringContaining("event: chat:message:added"));
+    });
+    const payload = parseSsePayload(vi.mocked(connection.res.write).mock.calls.at(-1) ?? []);
+    expect(payload).toMatchObject({
+      id: "msg-1",
+      sessionId: "sess-planner",
+      role: "assistant",
+      content: "Done",
+      agentId: "task-planner:FN-7392",
+      projectId: "project-a",
+      taskChatVisibleInCommonFeed: false,
+    });
+
+    connection.req.emit("close");
+  });
+
+  it("enriches planner session visibility when project opts into the common feed", async () => {
+    const chatStore = createMockChatStore({
+      "sess-planner": { id: "sess-planner", agentId: "task-planner:FN-7392", projectId: "project-a" },
+    });
+    const connection = openSseConnectionWithChatStore("chat-planner-visible", chatStore, "project-a", {
+      showTaskChatsInCommonFeed: true,
+    });
+
+    chatStore.emit("chat:message:added", {
+      id: "msg-visible",
+      sessionId: "sess-planner",
+      role: "assistant",
+      content: "Visible",
+    });
+
+    await vi.waitFor(() => {
+      expect(connection.res.write).toHaveBeenCalledWith(expect.stringContaining("event: chat:message:added"));
+    });
+    const payload = parseSsePayload(vi.mocked(connection.res.write).mock.calls.at(-1) ?? []);
+    expect(payload).toMatchObject({
+      id: "msg-visible",
+      sessionId: "sess-planner",
+      role: "assistant",
+      content: "Visible",
+      agentId: "task-planner:FN-7392",
+      projectId: "project-a",
+      taskChatVisibleInCommonFeed: true,
+    });
+
+    connection.req.emit("close");
+  });
+
+  it("keeps normal direct message payload fields compatible while adding session metadata", async () => {
+    const chatStore = createMockChatStore({
+      "sess-direct": { id: "sess-direct", agentId: "agent-123", projectId: null },
+    });
+    const connection = openSseConnectionWithChatStore("chat-direct-metadata", chatStore);
+
+    chatStore.emit("chat:message:added", {
+      id: "msg-2",
+      sessionId: "sess-direct",
+      role: "assistant",
+      content: "Hello",
+      projectId: "event-project",
+    });
+
+    await vi.waitFor(() => {
+      expect(connection.res.write).toHaveBeenCalledWith(expect.stringContaining("event: chat:message:added"));
+    });
+    const payload = parseSsePayload(vi.mocked(connection.res.write).mock.calls.at(-1) ?? []);
+    expect(payload).toMatchObject({
+      id: "msg-2",
+      sessionId: "sess-direct",
+      role: "assistant",
+      content: "Hello",
+      projectId: "event-project",
+      agentId: "agent-123",
+    });
+    expect(payload).not.toHaveProperty("taskChatVisibleInCommonFeed");
+
+    connection.req.emit("close");
   });
 });
 

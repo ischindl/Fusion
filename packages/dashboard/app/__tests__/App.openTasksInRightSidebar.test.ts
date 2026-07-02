@@ -14,26 +14,44 @@ describe("board task detail routing", () => {
     expect(shouldOpenBoardTaskInDock(true, true, "workflow")).toBe(false);
   });
 
-  it("routes mobile board card clicks to the popup only when the mobile popup setting is enabled", () => {
-    expect(getBoardTaskOpenRoute({
-      isMobile: true,
-      openMobileTasksInPopup: true,
-      openTasksInRightSidebar: false,
-      rightDockActive: false,
-    })).toBe("popup");
+  it("routes ordinary board card clicks to the popup on mobile, tablet, and desktop when enabled", () => {
+    for (const isMobile of [true, false]) {
+      expect(getBoardTaskOpenRoute({
+        isMobile,
+        openMobileTasksInPopup: true,
+        openTasksInRightSidebar: false,
+        rightDockActive: false,
+      })).toBe("popup");
+    }
+  });
 
+  it("keeps setting-off and undefined values on the existing fallback route", () => {
     expect(getBoardTaskOpenRoute({
       isMobile: true,
       openMobileTasksInPopup: false,
       openTasksInRightSidebar: false,
       rightDockActive: false,
     })).toBe("main-panel");
+
+    expect(getBoardTaskOpenRoute({
+      isMobile: false,
+      openMobileTasksInPopup: undefined as unknown as boolean,
+      openTasksInRightSidebar: false,
+      rightDockActive: false,
+    })).toBe("main-panel");
   });
 
-  it("preserves desktop and tablet right-dock routing precedence", () => {
+  it("gives the popup setting deterministic precedence over desktop and tablet right-dock routing", () => {
     expect(getBoardTaskOpenRoute({
       isMobile: false,
       openMobileTasksInPopup: true,
+      openTasksInRightSidebar: true,
+      rightDockActive: true,
+    })).toBe("popup");
+
+    expect(getBoardTaskOpenRoute({
+      isMobile: false,
+      openMobileTasksInPopup: false,
       openTasksInRightSidebar: true,
       rightDockActive: true,
     })).toBe("dock");
@@ -43,13 +61,21 @@ describe("board task detail routing", () => {
       openMobileTasksInPopup: true,
       openTasksInRightSidebar: false,
       rightDockActive: true,
-    })).toBe("main-panel");
+    })).toBe("popup");
   });
 
-  it("keeps deep-tab opens off the mobile popup path", () => {
+  it("keeps deep-tab opens off the all-viewport popup path", () => {
     for (const initialTab of ["changes", "retries", "workflow"] as const) {
       expect(getBoardTaskOpenRoute({
         isMobile: true,
+        openMobileTasksInPopup: true,
+        openTasksInRightSidebar: true,
+        rightDockActive: true,
+        initialTab,
+      })).toBe("main-panel");
+
+      expect(getBoardTaskOpenRoute({
+        isMobile: false,
         openMobileTasksInPopup: true,
         openTasksInRightSidebar: true,
         rightDockActive: true,

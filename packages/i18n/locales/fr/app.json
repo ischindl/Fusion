@@ -180,7 +180,20 @@
     "lockedDown": "Verrouillé",
     "preset": "Présélection",
     "requireApproval": "Exiger l'approbation",
-    "unrestricted": "Sans restriction"
+    "unrestricted": "Sans restriction",
+    "exactToolOverrides": "Exact tool overrides",
+    "exactToolOverridesDescription": "Override one governed tool by exact name before its category rule. Heartbeat-critical exempt tools stay non-configurable.",
+    "noExactToolOverrides": "No exact tool overrides configured.",
+    "toolName": "Tool name",
+    "toolDisposition": "Disposition",
+    "toolDispositionFor": "Disposition for {{toolName}}",
+    "projectDefaultExactTool": "project default exact rule",
+    "removeToolOverride": "Remove exact override for {{toolName}}",
+    "remove": "Remove",
+    "toolOverrideTool": "Tool override tool",
+    "toolOverrideDisposition": "Tool override disposition",
+    "updateToolOverride": "Update override",
+    "addToolOverride": "Add override"
   },
   "agentPrompts": {
     "actions": {
@@ -4140,6 +4153,7 @@
       "local": "Docker local",
       "remote": "Distant : {{host}}"
     },
+    "dockerHostLabel": "Hôte",
     "dockerHostConfig": "Config hôte",
     "dockerHostPath": "Chemin hôte",
     "dockerHostUrl": "URL de l'hôte Docker",
@@ -5211,6 +5225,7 @@
       "override": "Substitution par tâche",
       "projectDefault": "Défaut du projet"
     },
+    "sourceLabel": "Source de routage",
     "summarySection": "Résumé du routage",
     "title": "Routage des tâches",
     "unavailablePolicy": "Politique en cas de nœud indisponible",
@@ -7297,8 +7312,12 @@
       "ariaLabel": "Mode d'exécution : {{mode}}",
       "fast": "Rapide",
       "standard": "Standard",
-      "updated": "Mode d'exécution mis à jour : {{mode}}"
+      "updated": "Mode d'exécution mis à jour : {{mode}}",
+      "replanMessage": "Changer le mode d'exécution de cette tâche la renverra en planification afin que Fusion reconstruise le plan pour le mode {{mode}}.",
+      "replanTitle": "Changer le mode d'exécution et replanifier ?",
+      "replanning": "Mode d'exécution mis à jour vers {{mode}} — {{id}} est revenue en planification pour replanification"
     },
+    "executionModeLabel": "Mode d'exécution",
     "executionModeFast": "Rapide",
     "executionModeStandard": "Standard",
     "executionStatsAria": "Statistiques d'exécution de la tâche",
@@ -8423,7 +8442,6 @@
     "gateBlocks": "Barrière (bloque)",
     "gateMode": "Mode de barrière",
     "insertTemplate": "Insérer le modèle {{name}}",
-    "interpreterOnly": "Ce workflow comporte des branches, il s'exécute donc sur l'interpréteur de graphe — il ne peut pas être compilé vers le moteur d'étapes linéaire, mais il s'exécutera quand même.",
     "joinAll": "Toutes les branches",
     "joinAny": "N’importe quelle branche",
     "joinMode": "Mode de jointure",

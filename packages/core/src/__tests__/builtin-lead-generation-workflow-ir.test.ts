@@ -6,7 +6,6 @@ import {
   defaultEnabledBuiltinWorkflowIds,
   getBuiltinWorkflow,
 } from "../builtin-workflows.js";
-import { compileWorkflowToSteps } from "../workflow-compiler.js";
 import { parseWorkflowIr, serializeWorkflowIr } from "../workflow-ir.js";
 
 describe("built-in lead-generation workflow IR", () => {
@@ -46,7 +45,7 @@ describe("built-in lead-generation workflow IR", () => {
     expect(ir.columns.filter((column) => column.traits.some((trait) => trait.trait === "archived"))).toHaveLength(1);
   });
 
-  it("places every node in a defined column and compiles the linear prompt spine", () => {
+  it("places every node in a defined column and orders the prompt spine", () => {
     const workflow = getBuiltinWorkflow("builtin:lead-generation")!;
     const ir = parseWorkflowIr(workflow.ir);
     if (ir.version !== "v2") throw new Error("expected v2");
@@ -65,7 +64,13 @@ describe("built-in lead-generation workflow IR", () => {
     expect((ir.nodes.find((node) => node.id === "qualification-gate")?.config as { gateMode?: string })?.gateMode).toBe(
       "advisory",
     );
-    for (const node of ir.nodes.filter((candidate) => candidate.kind === "prompt" || candidate.kind === "gate")) {
+    // FNXC:WorkflowCompletion 2026-07-01-00:00: the generic `completion-summary`
+    // node (config.summaryTarget === "task") is a workflow-agnostic summary tail,
+    // not a lead-domain prompt — exclude it from the domain-prompt assertions.
+    for (const node of ir.nodes.filter(
+      (candidate) =>
+        (candidate.kind === "prompt" || candidate.kind === "gate") && candidate.config?.summaryTarget !== "task",
+    )) {
       const config = node.config as { prompt?: string; seam?: string } | undefined;
       expect(config?.seam, node.id).toBeUndefined();
       expect(config?.prompt, node.id).toEqual(expect.stringMatching(/lead|prospect|outreach|customer|company/i));
@@ -73,7 +78,18 @@ describe("built-in lead-generation workflow IR", () => {
     expect(ir.nodes.find((node) => node.id === "enrich-lead")?.config?.prompt).toContain("fn_task_document_write");
     expect(ir.nodes.find((node) => node.id === "draft-outreach")?.config?.prompt).toContain("fn_task_document_write");
 
-    expect(compileWorkflowToSteps(ir).map((step) => step.name)).toEqual([
+    // FNXC:WorkflowStepCRUD 2026-07-01-00:00: the linear compiler was removed;
+    // assert the prompt-spine ORDER directly from the IR node sequence (non-seam
+    // prompt/gate nodes) instead of from compiled step names.
+    const spineNames = ir.nodes
+      .filter(
+        (node) =>
+          (node.kind === "prompt" || node.kind === "gate") &&
+          !node.config?.seam &&
+          node.config?.summaryTarget !== "task",
+      )
+      .map((node) => (node.config as { name?: string } | undefined)?.name);
+    expect(spineNames).toEqual([
       "Source prospects",
       "Qualify lead",
       "Qualification go / no-go",

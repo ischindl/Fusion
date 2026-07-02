@@ -142,7 +142,8 @@ export function RoutingTab({ task, settings, addToast, onTaskUpdated }: RoutingT
             </span>
           </div>
           <div className="routing-summary-row" role="listitem">
-            <span className="routing-summary-label">{t("routing.source", "Routing source")}</span>
+            {/* FNXC:Routing 2026-07-01-00:00: `routing.source` is a nested object (noRouting/override/projectDefault); the label must read the `routing.sourceLabel` leaf or i18next returns "returned an object instead of string" and crashes this tab (issue #1863 bug class). */}
+            <span className="routing-summary-label">{t("routing.sourceLabel", "Routing source")}</span>
             <span className="routing-summary-value">{routingSource}</span>
           </div>
           <div className="routing-summary-row" role="listitem">

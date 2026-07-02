@@ -73,7 +73,7 @@ import { resolvePermanentAgentToolDecision } from "./permanent-agent-gating.js";
 import type { SystemPromptLayers } from "./prompt-layers.js";
 import { READONLY_ALLOWLIST, filterCustomToolsForReadonly, isReadonlyAllowed } from "./workflow-step-tool-policy.js";
 import { createStreamingDeltaNormalizer } from "./streaming-delta.js";
-import { isModelAuthTierIncompatibilityError, isUnsupportedMessageRoleError } from "./transient-error-detector.js";
+import { isModelAuthTierIncompatibilityError, isProviderModelNotFoundError, isUnsupportedMessageRoleError } from "./transient-error-detector.js";
 import { logMcpForwardingSkipped, runtimeSupportsMcp } from "./mcp-runtime-support.js";
 import { connectMcpSessionTools, type McpClientFactory, type McpSessionToolset } from "./mcp-session-tools.js";
 export { isModelAuthTierIncompatibilityError } from "./transient-error-detector.js";
@@ -515,6 +515,25 @@ export function describeModel(session: AgentSession): string {
   const model = session.model;
   if (!model) return "unknown model";
   return `${model.provider}/${model.id}`;
+}
+
+/**
+ * FNXC:TaskLogModelThinking 2026-07-01-00:00:
+ * Task-log model markers must keep the historical provider/model prefix stable while appending resolved thinking effort on the same row for operator diagnostics. Extra annotations stay parenthesized after the thinking-effort annotation so dashboard parsers can strip all suffix metadata deterministically.
+ */
+export function formatModelMarkerDetails(
+  modelDescription: string,
+  thinkingLevel?: string | null,
+  annotations: string[] = [],
+): string {
+  const suffixes: string[] = [];
+  const normalizedThinkingLevel = typeof thinkingLevel === "string" ? thinkingLevel.trim() : "";
+  if (normalizedThinkingLevel) {
+    suffixes.push(`thinking effort: ${normalizedThinkingLevel}`);
+  }
+  suffixes.push(...annotations.map((annotation) => annotation.trim()).filter(Boolean));
+  if (suffixes.length === 0) return modelDescription;
+  return `${modelDescription} ${suffixes.map((suffix) => `(${suffix})`).join(" ")}`;
 }
 
 /**
@@ -1106,6 +1125,13 @@ export function isRetryableModelSelectionError(message: string): boolean {
   if (isUnsupportedMessageRoleError(message)) {
     return true;
   }
+  /*
+   * FNXC:ModelFallback 2026-07-01-16:42:
+   * Prompt-time provider 404s for a selected model, including Anthropic's sparse `not_found_error` for Claude Sonnet 5 account/surface gaps, must enter the same single-swap fallback path as auth-tier and role-compatibility failures. Generic 404s remain excluded by the classifier.
+   */
+  if (isProviderModelNotFoundError(message)) {
+    return true;
+  }
   const normalized = message.toLowerCase();
   return normalized.includes("rate limit")
     || normalized.includes("too many requests")
@@ -1144,6 +1170,11 @@ function readJsonObject(path: string): Record<string, any> {
     return {};
   }
 }
+
+/*
+FNXC:ProviderAuth 2026-07-01-14:55:
+Anthropic has three independent execution surfaces with NO runtime rerouting: direct OAuth and raw API key both run on pi-ai's built-in `anthropic` provider (OAuth → `/v1` with Claude Code impersonation; raw key → x-api-key), and explicit `pi-claude-cli/<model>` runs the vendored CLI. Do NOT register or route through an `/v1`-based `anthropic-subscription` provider — that reroute reintroduced the #1857 regression (FN-7391/FN-7396).
+*/
 
 function normalizeSessionHistoryEntries(sessionManager: SessionManagerLike): void {
   const entries = sessionManager.fileEntries;

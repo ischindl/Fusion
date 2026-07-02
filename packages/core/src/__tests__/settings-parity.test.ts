@@ -112,6 +112,14 @@ describe("settings key parity", () => {
     expect(isGlobalSettingsKey("autoClaimCandidatesInPrompt")).toBe(false);
   });
 
+  it("defaults task chats out of the common feed and keeps the opt-in project-scoped", () => {
+    expect(DEFAULT_PROJECT_SETTINGS.showTaskChatsInCommonFeed).toBe(false);
+    expect(isProjectSettingsKey("showTaskChatsInCommonFeed")).toBe(true);
+    expect(isGlobalSettingsKey("showTaskChatsInCommonFeed")).toBe(false);
+    expect(PROJECT_SETTINGS_KEYS).toContain("showTaskChatsInCommonFeed");
+    expect(GLOBAL_SETTINGS_KEYS).not.toContain("showTaskChatsInCommonFeed");
+  });
+
   it("defaults chatAutoCleanupDays to off and keeps it project-scoped", () => {
     expect(DEFAULT_PROJECT_SETTINGS.chatAutoCleanupDays).toBe(0);
     expect(isProjectSettingsKey("chatAutoCleanupDays")).toBe(true);
@@ -345,6 +353,7 @@ describe("settings key parity", () => {
 
   it("keeps github tracking keys in expected scopes with documented defaults", () => {
     expect(DEFAULT_PROJECT_SETTINGS.githubTrackingEnabledByDefault).toBe(false);
+    expect(DEFAULT_PROJECT_SETTINGS.githubLinkImportedIssuesToTracking).toBe(false);
     expect(DEFAULT_PROJECT_SETTINGS.githubTrackingDefaultRepo).toBeUndefined();
     expect(DEFAULT_PROJECT_SETTINGS.githubAuthMode).toBe("gh-cli");
     expect(DEFAULT_PROJECT_SETTINGS.githubAuthToken).toBeUndefined();
@@ -352,6 +361,9 @@ describe("settings key parity", () => {
 
     expect(isProjectSettingsKey("githubTrackingEnabledByDefault")).toBe(true);
     expect(isGlobalSettingsKey("githubTrackingEnabledByDefault")).toBe(false);
+    expect(isProjectSettingsKey("githubLinkImportedIssuesToTracking")).toBe(true);
+    expect(isGlobalSettingsKey("githubLinkImportedIssuesToTracking")).toBe(false);
+    expect(isGlobalOnlySettingsKey("githubLinkImportedIssuesToTracking")).toBe(false);
     expect(isProjectSettingsKey("githubAuthMode")).toBe(true);
     expect(isGlobalSettingsKey("githubAuthMode")).toBe(false);
     expect(isProjectSettingsKey("githubAuthToken")).toBe(true);

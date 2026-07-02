@@ -1,6 +1,6 @@
 import "./TaskContextMenu.css";
-import type { KeyboardEvent, ReactNode } from "react";
-import { Fragment, useEffect, useRef } from "react";
+import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef } from "react";
 import type { TFunction } from "i18next";
 import type { ColumnId, Task, TaskDetail } from "@fusion/core";
 import { COLUMNS, VALID_TRANSITIONS, isColumn } from "@fusion/core";
@@ -77,6 +77,7 @@ export interface BuildTaskActionMenuModelOptions {
   onMerge?: () => void;
   onStartPrReview?: () => void;
   onCheckPrStatus?: () => void;
+  onEnableGithubTracking?: () => void;
 }
 
 export function getTaskPrAutomationLabel(t: TFunction<"app">, status?: string): string | undefined {
@@ -207,14 +208,8 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     hasAssignedAgent = Boolean(task.assignedAgentId),
   } = options;
   const isTaskPaused = Boolean(task.paused || task.userPaused);
-  const actions: TaskMenuActionDescriptor[] = [
-    {
-      id: "delete",
-      label: t("taskDetail.delete.btn", "Delete"),
-      tone: "danger",
-      onSelect: options.onDelete,
-    },
-  ];
+  const actions: TaskMenuActionDescriptor[] = [];
+  const destructiveActions: TaskMenuActionDescriptor[] = [];
 
   if (hasDuplicateHandler) {
     actions.push({ id: "duplicate", label: t("taskDetail.duplicate.btn", "Duplicate"), onSelect: options.onDuplicate });
@@ -230,8 +225,20 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     actions.push({ id: "retry", label: t("taskDetail.retry.btn", "Retry"), onSelect: options.onRetry });
   }
 
+  /*
+  FNXC:GitHubTracking 2026-07-01-00:00:
+  Board and List task menus mirror Task Detail's GitHub tracking enablement with one shared descriptor. Only hosts that can PATCH and refresh local task state inject the callback, so untracked tasks get a working shortcut and already-enabled/linked tasks never leave an empty disabled shell.
+  */
+  if (options.onEnableGithubTracking && task.githubTracking?.enabled !== true) {
+    actions.push({
+      id: "enable-github-tracking",
+      label: t("taskDetail.githubTracking.enableCheckboxLabel", "Enable GitHub tracking"),
+      onSelect: options.onEnableGithubTracking,
+    });
+  }
+
   if (hasResetHandler && isMutableLiveColumn(task.column, currentColumnFlags)) {
-    actions.push({ id: "reset", label: t("taskDetail.reset.btn", "Reset"), tone: "danger", onSelect: options.onReset });
+    destructiveActions.push({ id: "reset", label: t("taskDetail.reset.btn", "Reset"), tone: "danger", onSelect: options.onReset });
   }
 
   if (isMutableLiveColumn(task.column, currentColumnFlags)) {
@@ -246,6 +253,18 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     actions.push({ id: "paused-by-agent", label: t("taskDetail.pause.pausedByAgent", "Paused by agent"), tone: "note", disabled: true });
   }
 
+  destructiveActions.push({
+    id: "delete",
+    label: t("taskDetail.delete.btn", "Delete"),
+    tone: "danger",
+    onSelect: options.onDelete,
+  });
+  /*
+  FNXC:TaskContextMenu 2026-07-01-00:00:
+  Popup context menus intentionally group destructive Reset and Delete actions at the bottom, with Delete last, so Board, List, and Detail hosts share the safer operator action order without forking availability or confirmation behavior.
+  */
+  actions.push(...destructiveActions);
+
   return {
     actions,
     moveTransitions: getTaskMoveTransitions(task, t, columnLabel, workflowMoveColumns),
@@ -255,7 +274,8 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
       task.status === "awaiting-approval" ||
       canRetryTask ||
       isTaskPaused ||
-      hasAssignedAgent,
+      hasAssignedAgent ||
+      Boolean(options.onEnableGithubTracking && task.githubTracking?.enabled !== true),
     isTaskPaused,
   };
 }
@@ -288,6 +308,37 @@ export function TaskContextMenu({
   autoFocusFirstItem = true,
 }: TaskContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const touchSelectedActionRef = useRef<{ id: string; at: number } | null>(null);
+
+  const selectAction = useCallback((action: TaskMenuActionDescriptor) => {
+    if (action.disabled || action.tone === "note" || !action.onSelect) return;
+    onActionSelect?.(action);
+    action.onSelect();
+  }, [onActionSelect]);
+
+  /*
+  FNXC:TaskContextMenu 2026-07-01-00:00:
+  Mobile task menus must commit the selected action on touch/pen pointer release before host popovers can be removed by outside-click or focus retargeting. Desktop mouse keeps click activation, while the click guard prevents synthesized mobile clicks from firing the same task action twice.
+  */
+  const handleActionPointerUp = useCallback((event: ReactPointerEvent<HTMLButtonElement>, action: TaskMenuActionDescriptor) => {
+    if (event.pointerType === "mouse") return;
+    event.preventDefault();
+    event.stopPropagation();
+    touchSelectedActionRef.current = { id: action.id, at: Date.now() };
+    selectAction(action);
+  }, [selectAction]);
+
+  const handleActionClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>, action: TaskMenuActionDescriptor) => {
+    const touchSelection = touchSelectedActionRef.current;
+    if (touchSelection?.id === action.id && Date.now() - touchSelection.at < 1000) {
+      event.preventDefault();
+      event.stopPropagation();
+      touchSelectedActionRef.current = null;
+      return;
+    }
+    touchSelectedActionRef.current = null;
+    selectAction(action);
+  }, [selectAction]);
 
   useEffect(() => {
     if (!autoFocusFirstItem) return;
@@ -330,10 +381,8 @@ export function TaskContextMenu({
             className={classes.join(" ")}
             role={role === "menu" ? "menuitem" : undefined}
             disabled={action.disabled}
-            onClick={() => {
-              onActionSelect?.(action);
-              action.onSelect?.();
-            }}
+            onPointerUp={(event) => handleActionPointerUp(event, action)}
+            onClick={(event) => handleActionClick(event, action)}
           >
             {action.label}
           </button>

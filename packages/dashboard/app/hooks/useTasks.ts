@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { Task, Column, ColumnId, TaskCreateInput, MergeResult, GithubIssueAction } from "@fusion/core";
+import type { Task, Column, ColumnId, TaskCreateInput, MergeResult, GithubIssueAction, AgentLogEntry } from "@fusion/core";
 import { normalizeColumn } from "@fusion/core";
 import * as api from "../api";
 import { subscribeSse } from "../sse-bus";
@@ -28,6 +28,33 @@ function isSoftDeleted(task: Task): boolean {
 
 function filterActiveTasks(tasks: Task[]): Task[] {
   return tasks.filter((task) => !isSoftDeleted(task));
+}
+
+type AgentLogActivityEvent = Pick<AgentLogEntry, "taskId" | "timestamp" | "type" | "agent">;
+
+function clearInReviewStallForFreshAgentLog(task: Task, entry: AgentLogActivityEvent): Task {
+  if (task.id !== entry.taskId || task.column !== "in-review") return task;
+  const logTimestampMs = Date.parse(entry.timestamp);
+  const taskUpdatedAtMs = Date.parse(task.updatedAt);
+  if (
+    Number.isFinite(logTimestampMs) &&
+    Number.isFinite(taskUpdatedAtMs) &&
+    logTimestampMs <= taskUpdatedAtMs
+  ) {
+    return task;
+  }
+  if (!task.inReviewStall && !task.inReviewStalled && !task.stalledReview) return task;
+
+  /*
+  FNXC:DashboardStallBadges 2026-07-01-23:44:
+  Board cards must not show Stalled/Merge stalled while an in-review agent is actively writing logs. The task row can remain unchanged during merger/reviewer work, so fresh agent-log metadata clears only derived stall badge fields until the next authoritative task refresh.
+  */
+  return {
+    ...task,
+    inReviewStall: undefined,
+    inReviewStalled: undefined,
+    stalledReview: undefined,
+  };
 }
 
 /**
@@ -495,6 +522,27 @@ export function useTasks(options?: UseTasksOptions) {
       });
     };
 
+    const handleAgentLog = (e: MessageEvent) => {
+      if (isStale()) {
+        traceDroppedStaleEvent();
+        return;
+      }
+      if (searchQueryRef.current) {
+        return;
+      }
+      const entry = JSON.parse(e.data) as AgentLogActivityEvent;
+      if (!entry.taskId || !entry.timestamp) return;
+      setTasks((prev) => {
+        let changed = false;
+        const next = prev.map((task) => {
+          const cleared = clearInReviewStallForFreshAgentLog(task, entry);
+          if (cleared !== task) changed = true;
+          return cleared;
+        });
+        return changed ? next : prev;
+      });
+    };
+
     const unsubscribe = subscribeSse(`/api/events${query}`, {
       events: {
         "task:created": handleCreated,
@@ -502,6 +550,7 @@ export function useTasks(options?: UseTasksOptions) {
         "task:updated": handleUpdated,
         "task:deleted": handleDeleted,
         "task:merged": handleMerged,
+        "agent:log": handleAgentLog,
       },
       // Guard onReconnect against stale SSE callbacks: do not call refreshTasks
       // if the SSE was disabled or the effect unmounted while reconnect was pending.
@@ -654,7 +703,7 @@ export function useTasks(options?: UseTasksOptions) {
 
   const updateTask = useCallback(async (
     id: string,
-    updates: { title?: string; description?: string; dependencies?: string[]; dismissNearDuplicate?: boolean }
+    updates: { title?: string; description?: string; dependencies?: string[]; dismissNearDuplicate?: boolean; githubTracking?: { enabled?: boolean } }
   ): Promise<Task> => {
     const previousTask = tasksRef.current.find((t) => t.id === id);
     const optimisticTask = previousTask

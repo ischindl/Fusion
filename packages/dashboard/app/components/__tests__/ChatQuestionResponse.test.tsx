@@ -37,12 +37,27 @@ describe("ChatQuestionResponse", () => {
     );
   });
 
-  it("renders an answered read-only summary", () => {
-    render(<ChatQuestionResponse parsed={parsed} answered submittedAnswer="> Q: Pick one\nAlpha" onSubmit={vi.fn()} />);
+  it("renders an answered read-only summary without leftover live controls", () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    window.dispatchEvent(new Event("resize"));
 
-    expect(screen.getByText("Answered")).toBeInTheDocument();
-    expect(screen.getByTestId("chat-question-response-submitted-answer")).toHaveTextContent("Alpha");
-    expect(screen.queryByTestId("chat-question-response-submit")).not.toBeInTheDocument();
+    try {
+      render(<ChatQuestionResponse parsed={parsed} answered submittedAnswer="> Q: Pick one\nAlpha" onSubmit={vi.fn()} />);
+
+      expect(screen.getByText("Answered")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-question-response-submitted-answer")).toHaveTextContent("Alpha");
+      expect(screen.queryByTestId("chat-question-response-submit")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Send answer" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(document.querySelector(".chat-question-response__actions")).toBeNull();
+      expect(document.querySelectorAll(".chat-question-response__option")).toHaveLength(0);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+      window.dispatchEvent(new Event("resize"));
+    }
   });
 
   it("supports compact mode", () => {

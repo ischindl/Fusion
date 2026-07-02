@@ -14,6 +14,7 @@ import type {
   FixFeatureCreatedPayload,
   ChatStore,
   AutomationStore,
+  AgentLogEntry,
 } from "@fusion/core";
 
 // FNXC:DashboardSSE 2026-06-28-13:10:
@@ -217,6 +218,33 @@ function stripTaskEventHeavyFields<T>(payload: T): T {
   }
 
   return stripTaskListHeavyFields(payload);
+}
+
+async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chatStore?: ChatStore): Promise<T> {
+  if (!message || typeof message !== "object" || Array.isArray(message) || !chatStore) {
+    return message;
+  }
+
+  const payload = message as Record<string, unknown>;
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : undefined;
+  if (!sessionId) return message;
+
+  const session = await chatStore.getSession(sessionId);
+  if (!session) return message;
+
+  const agentId = typeof payload.agentId === "string" ? payload.agentId : session.agentId;
+  const enrichedPayload: Record<string, unknown> = {
+    ...payload,
+    agentId,
+    projectId: payload.projectId ?? session.projectId ?? null,
+  };
+
+  if (typeof agentId === "string" && agentId.startsWith("task-planner:")) {
+    const settings = await store.getSettings().catch(() => undefined);
+    enrichedPayload.taskChatVisibleInCommonFeed = settings?.showTaskChatsInCommonFeed === true;
+  }
+
+  return enrichedPayload as T;
 }
 
 /**
@@ -553,6 +581,15 @@ export function createSSE(
     const onMerged = (result: unknown) => {
       send(`event: task:merged\ndata: ${JSON.stringify(stripTaskEventHeavyFields(result))}\n\n`);
     };
+    const onAgentLog = (entry: AgentLogEntry) => {
+      const payload = {
+        taskId: entry.taskId,
+        timestamp: entry.timestamp,
+        type: entry.type,
+        agent: entry.agent,
+      };
+      send(`event: agent:log\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
 
     const onArtifactRegistered = (artifact: unknown) => {
       /* FNXC:ArtifactRegistry 2026-06-27-00:00: Forward TaskStore's authoritative artifact registration event so live artifact surfaces refresh even when the best-effort inbox notification is absent or delayed. */
@@ -767,7 +804,14 @@ export function createSSE(
     };
 
     const onChatMessageAdded = (message: unknown) => {
-      send(`event: chat:message:added\ndata: ${JSON.stringify(message)}\n\n`);
+      void (async () => {
+        /*
+         * FNXC:ChatBadge 2026-07-01-00:00:
+         * Task-detail planner Chat sessions are hidden from the global Chat feed unless `showTaskChatsInCommonFeed` is enabled, so direct-message SSE payloads must carry both the source session agent id and effective feed visibility. The App unread badge uses this metadata to suppress hidden task-local planner replies without regressing opt-in shared-feed planner chats or normal direct-message payload fields.
+         */
+        const payload = await enrichChatMessageSsePayload(message, store, chatStore);
+        send(`event: chat:message:added\ndata: ${JSON.stringify(payload)}\n\n`);
+      })();
     };
 
     const onChatMessageDeleted = (messageId: string) => {
@@ -850,6 +894,7 @@ export function createSSE(
       store.off("task:updated", onUpdated);
       store.off("task:deleted", onDeleted);
       store.off("task:merged", onMerged);
+      store.off("agent:log", onAgentLog);
       store.off("artifact:registered", onArtifactRegistered);
       if (missionStore) {
         missionStore.off("mission:created", onMissionCreated);
@@ -960,6 +1005,11 @@ export function createSSE(
     store.on("task:updated", onUpdated);
     store.on("task:deleted", onDeleted);
     store.on("task:merged", onMerged);
+    /*
+    FNXC:DashboardStallBadges 2026-07-01-23:42:
+    Agent log streaming is authoritative evidence that an in-review agent is active even when the task row has not changed. Forward compact log metadata on the board stream so clients can clear false Stalled/Merge stalled badges without rewriting the full task for every log line.
+    */
+    store.on("agent:log", onAgentLog);
     store.on("artifact:registered", onArtifactRegistered);
 
     if (missionStore) {

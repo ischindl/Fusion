@@ -127,6 +127,24 @@ describe("merge-node paused-abort retry classification (FN-6735)", () => {
     expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ status: "failed" }), undefined);
   });
 
+  it("retries FN-7335-style merge pause aborts while AI merge review status is active", async () => {
+    const { store, task, executor, mergeRequester } = makeHarness({ status: "reviewing" });
+
+    await invokeGraphFailure(executor, task, "merge");
+
+    expect(mergeRequester).toHaveBeenCalledWith(task.id);
+    const messages = logText(store);
+    expect(messages).toContain("Pause abort classified: provenance=hard-cancel; node=merge");
+    expect(messages).toContain("column=in-review; status=reviewing");
+    expect(messages).toContain("Workflow graph merge failure at node 'merge' routed to bounded auto-merge retry after benign pause/resume abort");
+    expect(messages).not.toContain("operator action required");
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      task.id,
+      expect.objectContaining({ status: "failed" }),
+      undefined,
+    );
+  });
+
   it("parks genuine merge conflicts as terminal instead of retrying forever", async () => {
     const { store, task, executor, mergeRequester } = makeHarness();
 

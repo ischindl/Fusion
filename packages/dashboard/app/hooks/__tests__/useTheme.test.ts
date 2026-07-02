@@ -772,6 +772,21 @@ describe("useTheme", () => {
     expect(document.documentElement.getAttribute("data-color-theme")).toBe("shadcn-mono-red");
   });
 
+  it("preserves explicit Glass and Glass Silver color themes from localStorage", () => {
+    localStorageMock[COLOR_THEME_STORAGE_KEY] = "glass-silver";
+
+    const { result, rerender } = renderHook(() => useTheme());
+
+    expect(result.current.colorTheme).toBe("glass-silver");
+    expect(document.documentElement.getAttribute("data-color-theme")).toBe("glass-silver");
+
+    act(() => result.current.setColorTheme("glass"));
+    rerender();
+
+    expect(result.current.colorTheme).toBe("glass");
+    expect(document.documentElement.getAttribute("data-color-theme")).toBe("glass");
+  });
+
   it("ignores invalid color theme in localStorage", () => {
     localStorageMock[COLOR_THEME_STORAGE_KEY] = "invalid-theme";
 

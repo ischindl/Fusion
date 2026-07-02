@@ -16,13 +16,18 @@ describe("TaskDetailModal CSS contract", () => {
     expect(css).toMatch(/\.detail-tab\s*\{[^}]*flex-shrink\s*:\s*0\s*;/);
   });
 
-  it("FN-7307 keeps Activity segments reachable on narrow task-detail surfaces", async () => {
+  it("FN-7351/FN-7375 keeps the Activity tab dropdown portal-safe on narrow task-detail surfaces", async () => {
     const css = await loadAllAppCssBaseOnly();
 
-    expect(css).toMatch(/\.activity-segmented-control\s*\{[^}]*max-inline-size\s*:\s*100%\s*;/);
-    expect(css).toMatch(/\.activity-segmented-control\s*\{[^}]*overflow-x\s*:\s*auto\s*;/);
-    expect(css).toMatch(/\.activity-segmented-control\s*\{[^}]*touch-action\s*:\s*pan-x\s+pan-y\s*;/);
-    expect(css).toMatch(/\.activity-segment\s*\{[^}]*flex\s*:\s*0\s+0\s+auto\s*;/);
+    expect(css).toMatch(/\.detail-tab-dropdown\s*\{[^}]*flex-shrink\s*:\s*0\s*;/);
+    expect(css).toMatch(/\.detail-tab--activity\s*\{[^}]*display\s*:\s*inline-flex\s*;/);
+    expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*position\s*:\s*fixed\s*;/);
+    expect(css).toMatch(/\.activity-view-menu\s*\{[^}]*overflow-y\s*:\s*auto\s*;/);
+    expect(css).not.toMatch(/\.activity-view-menu\s*\{[^}]*position\s*:\s*absolute\s*;/);
+    expect(css).not.toMatch(/\.activity-view-menu\s*\{[^}]*min-inline-size\s*:\s*100%\s*;/);
+    expect(css).not.toContain(".activity-view-select");
+    expect(css).not.toContain(".activity-segmented-control");
+    expect(css).not.toContain(".activity-segment");
     expect(css).not.toContain(".log-subview-toggle");
     expect(css).not.toContain(".log-subview-btn");
   });

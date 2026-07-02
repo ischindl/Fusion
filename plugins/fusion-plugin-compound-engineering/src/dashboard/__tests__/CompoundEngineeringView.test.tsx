@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { DiscoveryResult } from "../../artifacts/discovery.js";
 
 // Mock the network layer so the view renders from seeded discovery results.
-const listArtifacts = vi.fn(async (): Promise<DiscoveryResult> => {
+const listArtifacts = vi.fn(async (_projectId?: string): Promise<DiscoveryResult> => {
   throw new Error("listArtifacts mock not configured");
 });
 const listSessions = vi.fn(async (): Promise<CeSession[]> => []);
@@ -15,7 +15,7 @@ const getSession = vi.fn(async (_id: string, _projectId?: string): Promise<CeSes
   throw new Error("getSession mock not configured");
 });
 vi.mock("../hooks/api.js", () => ({
-  listArtifacts: () => listArtifacts(),
+  listArtifacts: (projectId?: string) => listArtifacts(projectId),
   getArtifactPreviewUrl: (id: string) => `/preview/${id}`,
   listSessions: () => listSessions(),
   deleteSession: (id: string, projectId?: string) => deleteSession(id, projectId),
@@ -95,6 +95,7 @@ describe("CompoundEngineeringView", () => {
     render(<CompoundEngineeringView projectId="p1" enabledOverride />);
 
     await screen.findByTestId("ce-empty-state");
+    expect(listArtifacts).toHaveBeenCalledWith("p1");
     expect(screen.getByText(/Start your compounding pipeline/i)).toBeInTheDocument();
     const start = screen.getByTestId("ce-start-action");
     expect(start).toBeInTheDocument();
@@ -144,7 +145,7 @@ describe("CompoundEngineeringView", () => {
 
     await screen.findByTestId("ce-artifact");
     fireEvent.click(screen.getByTestId("ce-artifact-open"));
-    expect(openFile).toHaveBeenCalledWith("STRATEGY.md");
+    expect(openFile).toHaveBeenCalledWith("STRATEGY.md", { workspace: "project" });
   });
 
   it("renders artifact open button without crashing when openFile is not in context", async () => {

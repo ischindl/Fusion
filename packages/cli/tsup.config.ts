@@ -1,4 +1,5 @@
 import { defineConfig } from "tsup";
+import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ const RUNTIME_PLUGINS_WITH_MCP_SCHEMA_SERVER = new Set([
 ]);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = join(__dirname, "..", "..");
 const dashboardClientSrc = join(__dirname, "..", "dashboard", "dist", "client");
 const dashboardClientDest = join(__dirname, "dist", "client");
 // FNXC:RuntimeStartupWiring 2026-06-24-11:15:
@@ -26,6 +28,8 @@ const piClaudeCliSrc = join(__dirname, "..", "pi-claude-cli");
 const piClaudeCliDest = join(__dirname, "dist", "pi-claude-cli");
 const droidCliSrc = join(__dirname, "..", "droid-cli");
 const droidCliDest = join(__dirname, "dist", "droid-cli");
+const desktopRuntimeSrc = join(__dirname, "..", "desktop", "dist");
+const desktopRuntimeDest = join(__dirname, "dist", "desktop");
 const llamaCppSrc = join(__dirname, "..", "pi-llama-cpp");
 const llamaCppDest = join(__dirname, "dist", "pi-llama-cpp");
 const dependencyGraphPluginSrc = join(__dirname, "..", "..", "plugins", "fusion-plugin-dependency-graph");
@@ -197,6 +201,50 @@ async function bundlePluginEntry({ pluginId, srcDir, destDir, withMcpAsset = fal
   console.log(`Bundled plugin ${pluginId} to dist/plugins/${pluginId}/bundled.js`);
 }
 
+function runWorkspaceCommand(command: string, args: string[], cwd: string, timeoutMs = 600_000): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: "inherit",
+      env: process.env,
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+async function ensureDesktopRuntimeAssetsBuilt() {
+  if (existsSync(desktopRuntimeSrc)) {
+    return;
+  }
+
+  /*
+   * FNXC:DesktopPackaging 2026-07-01-20:53:
+   * The published CLI package must contain the desktop runtime it launches. Build the private desktop package during CLI packaging when dist is absent, but keep this strictly in the repository build path — the installed `fusion desktop` command itself must never run pnpm from an operator's cwd.
+   */
+  console.log("Desktop runtime assets missing; building @fusion/desktop before staging CLI package assets...");
+  await runWorkspaceCommand("pnpm", ["--filter", "@fusion/desktop", "build"], workspaceRoot);
+
+  if (!existsSync(desktopRuntimeSrc)) {
+    throw new Error(`[tsup] Desktop runtime build did not create expected assets at ${desktopRuntimeSrc}`);
+  }
+}
+
 function assertAllStagedBundledPluginsLoadable() {
   const missingEntries: string[] = [];
 
@@ -277,6 +325,17 @@ const cliBuildConfig = {
         `WARNING: PostgreSQL migrations source not found at ${pgMigrationsSrc}; DATABASE_URL boot will fail to apply the schema baseline.`,
       );
     }
+    if (existsSync(desktopRuntimeDest)) {
+      rmSync(desktopRuntimeDest, { recursive: true, force: true });
+    }
+    await ensureDesktopRuntimeAssetsBuilt();
+    /*
+     * FNXC:DesktopPackaging 2026-07-01-20:31:
+     * Published `@runfusion/fusion` desktop launches must resolve Electron runtime assets from the installed package, not from the operator's current directory. Stage the private @fusion/desktop dist output under CLI dist/desktop so npm installs can launch without pnpm workspace discovery or host JSON parsing.
+     */
+    mkdirSync(desktopRuntimeDest, { recursive: true });
+    cpSync(desktopRuntimeSrc, desktopRuntimeDest, { recursive: true });
+    console.log("Copied desktop runtime assets to dist/desktop/");
 
     // Stage the vendored pi-claude-cli pi extension into dist/. It can't
     // be bundled by esbuild because pi loads extensions as separate files

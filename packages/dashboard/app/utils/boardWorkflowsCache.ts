@@ -61,3 +61,17 @@ export function writeBoardWorkflowsCache(projectId: string | undefined, payload:
     // Private-mode/quota failures should never prevent board rendering.
   }
 }
+
+export function clearBoardWorkflowsCache(projectId?: string): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    /*
+    FNXC:ChatWorkflowAuthoring 2026-07-01-10:55:
+    Chat workflow tools create/update/delete definitions outside mounted workflow UI components. Clear only the matching project's board-workflows snapshot before forced refetch so a chat-created workflow cannot be hidden by a pre-mutation session cache or leak into another project.
+    */
+    window.sessionStorage.removeItem(cacheKey(projectId));
+  } catch {
+    // Private-mode/quota failures should never prevent board rendering.
+  }
+}

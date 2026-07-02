@@ -1,9 +1,9 @@
 /*
 FNXC:TaskDetailTabs 2026-06-17-08:20:
-FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Activity landing state.
+FN-7324 keeps the stable internal `chat` tab as Activity for explicit legacy links, but the omitted non-done default is now planner Chat. Tests that assert Definition-only sections must opt into `initialTab="definition"` so they verify the intended surface instead of the Chat landing state.
 */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React, { type ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -34,6 +34,30 @@ vi.mock("../BranchGroupCard", () => ({
 }));
 
 setupTaskDetailModalHooks();
+
+type ActivitySegmentTestValue = "current" | "feed" | "raw-logs";
+
+const ACTIVITY_VIEW_LABELS: Record<ActivitySegmentTestValue, string> = {
+  current: "Live",
+  feed: "Feed",
+  "raw-logs": "Raw",
+};
+
+function openActivityViewMenu() {
+  if (!screen.queryByRole("menu", { name: "Activity views" })) {
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  }
+}
+
+async function selectActivityView(user: ReturnType<typeof userEvent.setup>, value: ActivitySegmentTestValue) {
+  openActivityViewMenu();
+  await user.click(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] }));
+}
+
+function expectActivityView(value: ActivitySegmentTestValue) {
+  openActivityViewMenu();
+  expect(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] })).toHaveAttribute("aria-current", "true");
+}
 
 function renderSummarizeTitleModal(overrides: Parameters<typeof makeTask>[0] = {}, props: Partial<ComponentProps<typeof TaskDetailModal>> = {}) {
   const addToast = props.addToast ?? vi.fn();
@@ -80,6 +104,7 @@ describe("TaskDetailModal planner Chat tab", () => {
     return render(
       <TaskDetailModal
         initialTab={initialTab}
+        taskDetailChatFirst
         task={makeTask({ column })}
         onClose={noop}
         onMoveTask={noopMove}
@@ -96,25 +121,25 @@ describe("TaskDetailModal planner Chat tab", () => {
       .map((button) => button.textContent?.trim() ?? "");
   }
 
-  it("renders Activity then Chat as the first task-detail conversation tabs for active tasks", async () => {
+  it("renders Chat then Activity as the first task-detail conversation tabs and defaults active tasks to Chat", async () => {
     const user = userEvent.setup();
     renderTask("in-progress");
 
-    expect(tabLabels().slice(0, 2)).toEqual(["Activity", "Chat"]);
+    expect(tabLabels().slice(0, 2)).toEqual(["Chat", "Activity"]);
     expect(screen.getAllByRole("button", { name: "Chat" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Activity" })).toHaveClass("detail-tab-active");
-
-    await user.click(screen.getByRole("button", { name: "Chat" }));
-
-    expect(screen.getByTestId("task-planner-chat-panel")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Chat" })).toHaveClass("detail-tab-active");
-    expect(screen.getByRole("button", { name: "Activity" })).not.toHaveClass("detail-tab-active");
+    expect(screen.getByTestId("task-planner-chat-panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveClass("detail-tab-active");
+    expect(screen.queryByTestId("task-planner-chat-panel")).not.toBeInTheDocument();
   });
 
-  it("preserves Summary as the default for done tasks while keeping Activity then Chat order", () => {
+  it("preserves Summary as the default for done tasks while keeping Chat then Activity order", () => {
     renderTask("done");
 
-    expect(tabLabels().slice(0, 3)).toEqual(["Activity", "Chat", "Summary"]);
+    expect(tabLabels().slice(0, 3)).toEqual(["Chat", "Activity", "Summary"]);
     expect(screen.getByRole("button", { name: "Summary" })).toHaveClass("detail-tab-active");
   });
 
@@ -122,7 +147,7 @@ describe("TaskDetailModal planner Chat tab", () => {
     renderTask("in-progress", "chat");
 
     expect(screen.getByRole("button", { name: "Activity" })).toHaveClass("detail-tab-active");
-    expect(screen.getByRole("tab", { name: "Current" })).toHaveAttribute("aria-selected", "true");
+    expectActivityView("current");
   });
 
   it("routes explicit planner-chat requests to the new Chat tab", () => {
@@ -130,6 +155,179 @@ describe("TaskDetailModal planner Chat tab", () => {
 
     expect(screen.getByRole("button", { name: "Chat" })).toHaveClass("detail-tab-active");
     expect(screen.getByTestId("task-planner-chat-panel")).toBeInTheDocument();
+  });
+
+  it("defaults planner Chat to collapsed mode and lets the in-view control expand it", async () => {
+    const user = userEvent.setup();
+    const { container } = renderTask("todo");
+    const detail = container.querySelector(".task-detail-content");
+
+    const toggle = screen.getByTestId("task-planner-chat-expand-toggle");
+    expect(detail).not.toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(toggle).toHaveAccessibleName("Expand planner chat");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Activity" })).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(detail).toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAccessibleName("Collapse planner chat");
+  });
+
+  it("resets planner Chat expanded mode when switching tasks", async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-7324-A", column: "todo" as any })}
+        taskDetailChatFirst
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+    const detail = container.querySelector(".task-detail-content");
+
+    await user.click(screen.getByTestId("task-planner-chat-expand-toggle"));
+    expect(detail).toHaveClass("task-detail-content--planner-chat-expanded");
+
+    rerender(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-7324-B", column: "todo" as any })}
+        taskDetailChatFirst
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(detail).not.toHaveClass("task-detail-content--planner-chat-expanded");
+  });
+
+  it("keeps Activity expansion independent from planner Chat expansion", async () => {
+    const user = userEvent.setup();
+    const { container } = renderTask("todo", "chat");
+    const detail = container.querySelector(".task-detail-content");
+
+    await user.click(screen.getByTestId("task-chat-expand-toggle"));
+    expect(detail).toHaveClass("task-detail-content--chat-expanded");
+
+    const chatTab = container.querySelectorAll<HTMLButtonElement>(".detail-tabs .detail-tab")[0];
+    expect(chatTab?.textContent?.trim()).toBe("Chat");
+    fireEvent.click(chatTab!);
+    expect(detail).not.toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(detail).not.toHaveClass("task-detail-content--chat-expanded");
+
+    await user.click(screen.getByTestId("task-planner-chat-expand-toggle"));
+    expect(detail).toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(detail).not.toHaveClass("task-detail-content--chat-expanded");
+  });
+
+  it("hides failed-task banner only while planner Chat is expanded and restores it on collapse", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TaskDetailModal
+        initialTab="planner-chat"
+        taskDetailChatFirst
+        task={makeTask({ column: "todo" as any, status: "failed", error: "Planner failed hard" })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+    const detail = container.querySelector(".task-detail-content");
+
+    expect(screen.getByText("Task Failed")).toBeInTheDocument();
+    expect(screen.getByText("Planner failed hard")).toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("task-planner-chat-expand-toggle"));
+
+    expect(detail).toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(screen.queryByText("Task Failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Planner failed hard")).not.toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeNull();
+
+    await user.click(screen.getByTestId("task-planner-chat-expand-toggle"));
+
+    expect(detail).not.toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(screen.getByText("Task Failed")).toBeInTheDocument();
+    expect(screen.getByText("Planner failed hard")).toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeInTheDocument();
+  });
+
+  it("keeps failed-task banner visible while Activity is expanded", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TaskDetailModal
+        initialTab="chat"
+        taskDetailChatFirst
+        task={makeTask({ column: "todo" as any, status: "failed", error: "Activity failure stays visible" })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+    const detail = container.querySelector(".task-detail-content");
+
+    expect(screen.getByText("Task Failed")).toBeInTheDocument();
+    expect(screen.getByText("Activity failure stays visible")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("task-chat-expand-toggle"));
+
+    expect(detail).toHaveClass("task-detail-content--chat-expanded");
+    expect(detail).not.toHaveClass("task-detail-content--planner-chat-expanded");
+    expect(screen.getByText("Task Failed")).toBeInTheDocument();
+    expect(screen.getByText("Activity failure stays visible")).toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeInTheDocument();
+  });
+
+  it("does not render empty failed-task alert shells for non-failed or errorless failed tasks", () => {
+    const { container, rerender } = render(
+      <TaskDetailModal
+        initialTab="planner-chat"
+        taskDetailChatFirst
+        task={makeTask({ column: "todo" as any, status: "failed" })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.queryByText("Task Failed")).not.toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeNull();
+
+    rerender(
+      <TaskDetailModal
+        initialTab="planner-chat"
+        taskDetailChatFirst
+        task={makeTask({ column: "todo" as any, status: "in-progress", error: "Ignored because task is not failed" })}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.queryByText("Task Failed")).not.toBeInTheDocument();
+    expect(container.querySelector(".detail-error-alert")).toBeNull();
   });
 });
 
@@ -156,7 +354,7 @@ describe("TaskDetailModal summarize title action", () => {
     renderSummarizeTitleModal({ column: "todo" as any });
 
     expect(screen.getByTestId("summarize-title-btn")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Summarize as title" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Summarize" })).toBeEnabled();
   });
 
   it("hides while the task is in edit mode", async () => {
@@ -252,7 +450,7 @@ describe("TaskDetailModal summarize title action", () => {
 
     const button = screen.getByTestId("summarize-title-btn");
     expect(button).toBeVisible();
-    expect(button).toHaveAccessibleName("Summarize as title");
+    expect(button).toHaveAccessibleName("Summarize");
   });
 });
 
@@ -388,7 +586,7 @@ describe("TaskDetailModal Activity feed loading", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Activity" }));
-    await user.click(screen.getByRole("tab", { name: "Feed" }));
+    await selectActivityView(user, "feed");
     expect(await screen.findByRole("status")).toHaveTextContent("Loading activity…");
     expect(screen.queryByText("(no activity)")).not.toBeInTheDocument();
   });
@@ -442,7 +640,7 @@ describe("TaskDetailModal Activity feed loading", () => {
 });
 
 describe("TaskDetailModal Chat task merge", () => {
-  it("exposes the steering composer only in Activity Current and posts through task updates", async () => {
+  it("exposes the steering composer only in Activity Live and posts through task updates", async () => {
     const user = userEvent.setup();
     const { addSteeringComment } = await import("../../api");
     const onTaskUpdated = vi.fn();
@@ -469,19 +667,20 @@ describe("TaskDetailModal Chat task merge", () => {
       />,
     );
 
-    expect(screen.getByRole("tab", { name: "Current" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getAllByRole("form", { name: "Steering comment" })).toHaveLength(1);
-    expect(screen.getByText("Send operational guidance to the active task through steering comments.")).toBeInTheDocument();
+    expectActivityView("current");
+    expect(screen.getAllByRole("form", { name: "Task activity composer" })).toHaveLength(1);
+    expect(screen.queryByText(/^Steering comment$/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Send operational guidance to the active task through steering comments.")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Feed" }));
-    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    await selectActivityView(user, "feed");
+    expect(screen.queryByRole("form", { name: "Task activity composer" })).not.toBeInTheDocument();
     expect(screen.getByText("Started work")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Raw Logs" }));
-    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    await selectActivityView(user, "raw-logs");
+    expect(screen.queryByRole("form", { name: "Task activity composer" })).not.toBeInTheDocument();
     expect(screen.getByTestId("agent-log-viewer")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Current" }));
+    await selectActivityView(user, "current");
     const input = screen.getByLabelText("Message active agent session");
     await user.type(input, "Please keep the current approach");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -499,6 +698,7 @@ describe("TaskDetailModal Chat task merge", () => {
         task={makeTask({ id: "FN-7310", column: "todo" as any, steeringComments: undefined, log: [] })}
         projectId="project-7309"
         embedded
+        initialTab="chat"
         onRequestClose={noop}
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
@@ -508,15 +708,15 @@ describe("TaskDetailModal Chat task merge", () => {
       />,
     );
 
-    expect(screen.getAllByRole("form", { name: "Steering comment" })).toHaveLength(1);
+    expect(screen.getAllByRole("form", { name: "Task activity composer" })).toHaveLength(1);
     expect(screen.getByText("No agent output yet. Live messages from Planner, Executor, Reviewer, and Merger agents will appear here.")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Feed" }));
-    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    await selectActivityView(user, "feed");
+    expect(screen.queryByRole("form", { name: "Task activity composer" })).not.toBeInTheDocument();
     expect(screen.getByText("(no activity)")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Raw Logs" }));
-    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    await selectActivityView(user, "raw-logs");
+    expect(screen.queryByRole("form", { name: "Task activity composer" })).not.toBeInTheDocument();
   });
 
   it("forwards full-detail agent fields to Chat when a sparse parent task has undefined live fields", async () => {
@@ -604,8 +804,8 @@ describe("TaskDetailModal Raw Logs agent loading", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Activity" }));
-    await user.click(screen.getByRole("tab", { name: "Feed" }));
-    await user.click(screen.getByRole("tab", { name: "Raw Logs" }));
+    await selectActivityView(user, "feed");
+    await selectActivityView(user, "raw-logs");
 
     expect(screen.getByText("Loading agent logs…")).toBeInTheDocument();
     expect(screen.queryByText("No agent output yet.")).not.toBeInTheDocument();
@@ -645,7 +845,7 @@ describe("TaskDetailModal Raw Logs agent loading", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Activity" }));
-    await user.click(screen.getByRole("tab", { name: "Raw Logs" }));
+    await selectActivityView(user, "raw-logs");
 
     expect(screen.getByTestId("agent-log-viewer")).toBeInTheDocument();
     expect(screen.getByTestId("agent-log-summary")).toHaveTextContent("Showing 2 of 5 entries");
@@ -819,6 +1019,55 @@ describe("TaskDetailModal delete affordance", () => {
     pendingRetry.resolve(makeTask());
   });
 
+  it("reports a delete failure after optimistic close without reopening or reclosing", async () => {
+    const user = userEvent.setup();
+    const pendingDelete = createDeferred<ReturnType<typeof makeTask>>();
+    const onDeleteTask = vi.fn(() => pendingDelete.promise);
+    const addToast = vi.fn();
+    const { onClose } = renderClosingTaskDetailModal({ onDeleteTask, addToast });
+
+    await user.click(screen.getByRole("button", { name: "Delete task" }));
+
+    await waitFor(() => expect(onDeleteTask).toHaveBeenCalledWith("FN-099", { allowResurrection: false }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    pendingDelete.reject(new Error("delete failed"));
+
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith("delete failed", "error"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not reclose or retry when the force-delete prompt is cancelled after a conflict", async () => {
+    const user = userEvent.setup();
+    const onDeleteTask = vi.fn().mockRejectedValueOnce(dependencyConflictError(["FN-200"]));
+    const onRequestClose = vi.fn();
+    mockConfirm.mockResolvedValueOnce(false);
+
+    render(
+      <TaskDetailContent
+        initialTab="definition"
+        embedded
+        task={makeTask({ column: "triage" })}
+        onRequestClose={onRequestClose}
+        onMoveTask={noopMove}
+        onDeleteTask={onDeleteTask}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete task" }));
+
+    await waitFor(() => expect(mockConfirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Force Delete Task",
+    })));
+    expect(onDeleteTask).toHaveBeenCalledTimes(1);
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the dialog open when the delete confirmation is cancelled", async () => {
     const user = userEvent.setup();
     const onDeleteTask = vi.fn(async () => makeTask());
@@ -899,7 +1148,7 @@ describe("TaskDetailModal in-review stall diagnostics", () => {
 
     await user.click(screen.getByRole("button", { name: "View activity log" }));
     expect(screen.getByRole("button", { name: "Activity" })).toHaveClass("detail-tab-active");
-    expect(screen.getByRole("tab", { name: "Feed" })).toHaveAttribute("aria-selected", "true");
+    expectActivityView("feed");
     const highlighted = document.querySelector(".detail-log-entry--stall-highlight .detail-log-action");
     expect(highlighted?.textContent).toContain("In-review stall surfaced [merge-blocker]");
   });

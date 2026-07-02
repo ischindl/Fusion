@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
 import { getBuiltinWorkflow } from "../builtin-workflows.js";
-import { compileWorkflowToSteps } from "../workflow-compiler.js";
 import {
   applyPromptOverridesToIr,
   enumeratePromptBearingWorkflowNodes,
@@ -49,10 +48,9 @@ describe("workflow prompt override overlay", () => {
     );
   });
 
-  it("bakes non-seam prompt overrides before compilation", () => {
+  it("bakes non-seam prompt overrides into the IR node", () => {
     const ce = getBuiltinWorkflow("builtin:compound-engineering")!.ir;
     const overlaid = applyPromptOverridesToIr(ce, { plan: "Plan override" });
-    const steps = compileWorkflowToSteps(overlaid);
-    expect(steps.find((step) => step.name === "Plan")?.prompt).toBe("Plan override");
+    expect(overlaid.nodes.find((node) => node.id === "plan")?.config?.prompt).toBe("Plan override");
   });
 });

@@ -4,8 +4,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import express from "express";
 import type { PluginInstallation, PluginStore } from "@fusion/core";
 
-import registryManifest from "../registry-manifest.json";
-import { buildRegistryPluginEntries, createPluginRouter } from "../plugin-routes.js";
+import { buildRegistryPluginEntries, createPluginRouter, loadRegistryManifest } from "../plugin-routes.js";
 import { get as performGet } from "../test-request.js";
 import * as projectStoreResolver from "../project-store-resolver.js";
 
@@ -68,9 +67,12 @@ describe("GET /api/plugins/registry", () => {
     const res = await performGet(buildApp(pluginStore), "/api/plugins/registry");
 
     expect(res.status).toBe(200);
+    const registryManifest = await loadRegistryManifest();
+    const manifestPlugins = Array.isArray(registryManifest.plugins) ? registryManifest.plugins : [];
+
     // Registry currently includes Agent Browser as metadata-only plus 3 discovery-only partner/plugin ideas.
-    expect(registryManifest.plugins.filter((plugin) => !plugin.path)).toHaveLength(4);
-    expect((res.body as { plugins: unknown[] }).plugins).toHaveLength(registryManifest.plugins.length);
+    expect(manifestPlugins.filter((plugin) => typeof plugin === "object" && plugin && !("path" in plugin))).toHaveLength(4);
+    expect((res.body as { plugins: unknown[] }).plugins).toHaveLength(manifestPlugins.length);
   });
 
   it("filters by q across searchable text", async () => {

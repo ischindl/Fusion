@@ -45,11 +45,20 @@ export function AppearanceSection({ scopeBanner, form, setForm, themeMode, color
         <small className="form-text text-muted">{t("settings.appearance.openTasksInRightSidebarHelp", "When enabled, board task cards open detail in the right sidebar when it is available; mobile and hidden-sidebar states keep the full task panel.")}</small>
       </div>
       <div className="form-group">
+        {/* FNXC:MobileTaskPopups 2026-07-01-12:00: Keep the stored openMobileTasksInPopup key for compatibility, but present the setting as all-viewport board-card popup routing because desktop operators also need the board visible behind task detail. */}
         <label className="checkbox-label">
           <input type="checkbox" checked={form.openMobileTasksInPopup === true} onChange={(e) => setForm((f) => ({ ...f, openMobileTasksInPopup: e.target.checked }))}/>
-          <span>{t("settings.appearance.openMobileTasksInPopup", "Open mobile tasks as popups")}</span>
+          <span>{t("settings.appearance.openMobileTasksInPopup", "Open tasks as popups")}</span>
         </label>
-        <small className="form-text text-muted">{t("settings.appearance.openMobileTasksInPopupHelp", "When enabled, mobile board task-card clicks use the existing task popup instead of the full-screen task panel. Desktop, right-sidebar, and non-board task opens keep their current behavior.")}</small>
+        <small className="form-text text-muted">{t("settings.appearance.openMobileTasksInPopupHelp", "When enabled, ordinary board task-card clicks open the existing task popup so the board remains visible. Deep-tab and non-board task opens keep their current behavior.")}</small>
+      </div>
+      <div className="form-group">
+        {/* FNXC:TaskDetailActivityFirst 2026-06-30-23:59: The project setting is opt-in because task details now default to Activity-first; explicit Activity/Chat/Logs links keep their destination regardless of this checkbox. */}
+        <label className="checkbox-label">
+          <input type="checkbox" checked={form.taskDetailChatFirst === true} onChange={(e) => setForm((f) => ({ ...f, taskDetailChatFirst: e.target.checked }))}/>
+          <span>{t("settings.appearance.taskDetailChatFirst", "Open task details with Chat first")}</span>
+        </label>
+        <small className="form-text text-muted">{t("settings.appearance.taskDetailChatFirstHelp", "Off by default: task details list Activity first and omitted non-done opens land on Activity. Turn on to restore Chat-first order/default; explicit Chat links still work either way.")}</small>
       </div>
       <div className="form-group">
         <label className="checkbox-label">

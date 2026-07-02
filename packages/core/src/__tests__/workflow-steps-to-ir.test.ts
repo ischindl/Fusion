@@ -1,9 +1,18 @@
 import { describe, it, expect } from "vitest";
 
 import { stepsToWorkflowIr, stepToFragmentIr, layoutForIr } from "../workflow-steps-to-ir.js";
-import { compileWorkflowToSteps } from "../workflow-compiler.js";
 import { parseWorkflowIr } from "../workflow-ir.js";
-import type { WorkflowStep, WorkflowStepInput } from "../types.js";
+import type { WorkflowStep } from "../types.js";
+
+/*
+FNXC:WorkflowStepCRUD 2026-07-01-00:00:
+The linear WorkflowStep compiler (compileWorkflowToSteps) was removed — the graph
+interpreter is the sole executor. `stepsToWorkflowIr` / `stepToFragmentIr` survive
+only as legacy migration + fragment-layout helpers (they lower old persisted
+WorkflowStep rows into IR). These tests now assert the produced IR STRUCTURE
+(parseable, seam encoding, node ordering, layout) rather than the former
+IR→steps→IR round-trip parity, which no longer has an inverse.
+*/
 
 /** Build a fully-specified WorkflowStep fixture. */
 function step(overrides: Partial<WorkflowStep>): WorkflowStep {
@@ -28,40 +37,8 @@ function step(overrides: Partial<WorkflowStep>): WorkflowStep {
   };
 }
 
-/** Project a compiled step input down to exactly the compiler-visible fields the
- *  round-trip contract pins (KTD-2). Normalizes optional fields for comparison. */
-function visible(input: WorkflowStepInput) {
-  return {
-    name: input.name,
-    mode: input.mode,
-    phase: input.phase,
-    gateMode: input.gateMode,
-    prompt: input.mode === "script" ? undefined : (input.prompt ?? ""),
-    scriptName: input.scriptName,
-    toolMode: input.mode === "script" ? undefined : input.toolMode,
-    skillName: input.mode === "script" ? undefined : input.skillName,
-    modelProvider: input.modelProvider,
-    modelId: input.modelId,
-  };
-}
-
-function visibleStep(s: WorkflowStep) {
-  return {
-    name: s.name,
-    mode: s.mode,
-    phase: s.phase ?? "pre-merge",
-    gateMode: s.gateMode,
-    prompt: s.mode === "script" ? undefined : (s.prompt ?? ""),
-    scriptName: s.mode === "script" ? s.scriptName : undefined,
-    toolMode: s.mode === "script" ? undefined : (s.toolMode ?? "readonly"),
-    skillName: s.mode === "script" ? undefined : s.skillName,
-    modelProvider: s.mode === "prompt" ? s.modelProvider : undefined,
-    modelId: s.mode === "prompt" ? s.modelId : undefined,
-  };
-}
-
-describe("stepsToWorkflowIr — round-trip parity (R4/KTD-2)", () => {
-  it("reproduces every compiler-visible field for a mixed step set", () => {
+describe("stepsToWorkflowIr — produces valid IR structure", () => {
+  it("lowers a mixed step set into a parseable IR carrying each step's config", () => {
     const steps: WorkflowStep[] = [
       step({
         id: "WS-1",
@@ -73,37 +50,7 @@ describe("stepsToWorkflowIr — round-trip parity (R4/KTD-2)", () => {
         toolMode: "coding",
         phase: "pre-merge",
       }),
-      step({
-        id: "WS-2",
-        name: "Lint",
-        mode: "script",
-        gateMode: "gate",
-        scriptName: "lint",
-        phase: "pre-merge",
-      }),
-      step({
-        id: "WS-3",
-        name: "Security gate",
-        mode: "prompt",
-        gateMode: "gate",
-        prompt: "Block on exploitable findings",
-        toolMode: "readonly",
-        modelProvider: "anthropic",
-        modelId: "claude-sonnet-4-5",
-        phase: "pre-merge",
-      }),
-      // U1 / INVERSION CONTRACT: a skill-executor step (pre-merge, grouped with
-      // the other pre-merge steps so declaration order matches compiled order)
-      // must round-trip its skillName through stepInputToNode → nodeToStepInput.
-      step({
-        id: "WS-6",
-        name: "CE skill step",
-        mode: "prompt",
-        gateMode: "advisory",
-        prompt: "Invoke the skill",
-        skillName: "compound-engineering:ce-work",
-        phase: "pre-merge",
-      }),
+      step({ id: "WS-2", name: "Lint", mode: "script", gateMode: "gate", scriptName: "lint", phase: "pre-merge" }),
       step({
         id: "WS-4",
         name: "Document",
@@ -112,40 +59,21 @@ describe("stepsToWorkflowIr — round-trip parity (R4/KTD-2)", () => {
         prompt: "Write docs",
         phase: "post-merge",
       }),
-      step({
-        id: "WS-5",
-        name: "Deploy script",
-        mode: "script",
-        gateMode: "advisory",
-        scriptName: "deploy",
-        phase: "post-merge",
-      }),
     ];
 
     const ir = stepsToWorkflowIr(steps, "Migrated");
-    const compiled = compileWorkflowToSteps(ir);
-
-    expect(compiled.map(visible)).toEqual(steps.map(visibleStep));
-  });
-
-  it("undefined phase maps to pre-merge and round-trips", () => {
-    const steps: WorkflowStep[] = [
-      step({ id: "WS-1", name: "A", mode: "prompt", gateMode: "advisory", prompt: "a" }),
-      step({ id: "WS-2", name: "B", mode: "prompt", gateMode: "advisory", prompt: "b" }),
-    ];
-    const ir = stepsToWorkflowIr(steps, "AllUndefined");
-    // parseable
     expect(() => parseWorkflowIr(ir)).not.toThrow();
-    const compiled = compileWorkflowToSteps(ir);
-    expect(compiled.map((c) => c.phase)).toEqual(["pre-merge", "pre-merge"]);
-    expect(compiled.map(visible)).toEqual(steps.map(visibleStep));
+    // Pre-merge steps precede the merge seam; post-merge steps follow it.
+    const ids = ir.nodes.map((n) => n.id);
+    expect(ids.indexOf("step-1")).toBeLessThan(ids.indexOf("merge"));
+    expect(ids.indexOf("merge")).toBeLessThan(ids.indexOf("step-3"));
+    // The prompt node carries the source prompt through the lowering.
+    expect(ir.nodes.find((n) => n.id === "step-1")?.config?.prompt).toBe("Implement the change");
   });
 
-  it("empty step list yields a minimal valid IR that compiles to []", () => {
+  it("empty step list yields a minimal valid IR (start + seams + end)", () => {
     const ir = stepsToWorkflowIr([], "Empty");
     expect(() => parseWorkflowIr(ir)).not.toThrow();
-    expect(compileWorkflowToSteps(ir)).toEqual([]);
-    // start + 3 seams + end.
     expect(ir.nodes.map((n) => n.id)).toEqual(["start", "execute", "review", "merge", "end"]);
   });
 
@@ -156,12 +84,9 @@ describe("stepsToWorkflowIr — round-trip parity (R4/KTD-2)", () => {
     const ir = stepsToWorkflowIr(steps, "PostOnly");
     const ids = ir.nodes.map((n) => n.id);
     expect(ids.indexOf("merge")).toBeLessThan(ids.indexOf("step-1"));
-    const compiled = compileWorkflowToSteps(ir);
-    expect(compiled).toHaveLength(1);
-    expect(compiled[0].phase).toBe("post-merge");
   });
 
-  it("produced IR passes parseWorkflowIr and encodes seams exactly per linear()", () => {
+  it("produced IR passes parseWorkflowIr and encodes seams exactly", () => {
     const steps: WorkflowStep[] = [
       step({ id: "WS-1", name: "A", mode: "prompt", gateMode: "advisory", prompt: "a" }),
     ];
@@ -181,18 +106,6 @@ describe("stepsToWorkflowIr — round-trip parity (R4/KTD-2)", () => {
     const failureEdges = ir.edges.filter((e) => e.condition === "failure");
     expect(failureEdges).toHaveLength(3);
   });
-
-  it("gate vs advisory both round-trip for prompt and script modes", () => {
-    const steps: WorkflowStep[] = [
-      step({ id: "WS-1", name: "PG", mode: "prompt", gateMode: "gate", prompt: "p" }),
-      step({ id: "WS-2", name: "PA", mode: "prompt", gateMode: "advisory", prompt: "p" }),
-      step({ id: "WS-3", name: "SG", mode: "script", gateMode: "gate", scriptName: "s" }),
-      step({ id: "WS-4", name: "SA", mode: "script", gateMode: "advisory", scriptName: "s" }),
-    ];
-    const compiled = compileWorkflowToSteps(stepsToWorkflowIr(steps, "Gates"));
-    expect(compiled.map((c) => c.gateMode)).toEqual(["gate", "advisory", "gate", "advisory"]);
-    expect(compiled.map(visible)).toEqual(steps.map(visibleStep));
-  });
 });
 
 describe("stepToFragmentIr (R6/KTD-1)", () => {
@@ -210,19 +123,14 @@ describe("stepToFragmentIr (R6/KTD-1)", () => {
     expect(() => parseWorkflowIr(ir)).not.toThrow();
     expect(ir.nodes.map((n) => n.id)).toEqual(["start", "step-1", "end"]);
     expect(ir.nodes.map((n) => n.kind)).toEqual(["start", "prompt", "end"]);
-
-    // The single node compiles back to a step mirroring the source.
-    const compiled = compileWorkflowToSteps(ir);
-    expect(compiled).toHaveLength(1);
-    expect(visible(compiled[0])).toEqual(visibleStep(s));
+    expect(ir.nodes.find((n) => n.id === "step-1")?.config?.prompt).toBe("Document the change");
   });
 
-  it("fragment IR is pure v1 (no v2-only features)", () => {
+  it("script fragment carries scriptName through the lowering", () => {
     const ir = stepToFragmentIr(step({ id: "WS-1", name: "S", mode: "script", gateMode: "gate", scriptName: "lint" }));
-    // parseWorkflowIr upgrades to v2 in-memory; the SOURCE we built is v1-shaped.
-    const compiled = compileWorkflowToSteps(ir);
-    expect(compiled[0].mode).toBe("script");
-    expect(compiled[0].scriptName).toBe("lint");
+    const node = ir.nodes.find((n) => n.id === "step-1");
+    expect(node?.kind).toBe("script");
+    expect(node?.config?.scriptName).toBe("lint");
   });
 });
 

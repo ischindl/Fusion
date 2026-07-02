@@ -1,9 +1,5 @@
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { getTaskHardMergeBlocker, type MergeResult, type Task, type TaskStore } from "@fusion/core";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./run-audit.js";
-
-const execAsync = promisify(exec);
 
 export function isInvalidDoneTransitionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -33,10 +29,6 @@ export type WorkflowDoneMergeProofVerdict =
   | { ok: true }
   | { ok: false; reason: string; metadata?: Record<string, unknown> };
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 function mergeProofLandedFiles(task: Task, result?: MergeResult): string[] {
   const files = result?.landedFiles ?? task.mergeDetails?.landedFiles ?? [];
   return Array.from(new Set(files.map((file) => file.trim()).filter(Boolean)));
@@ -46,114 +38,9 @@ function hasIncompleteWorkflowSteps(task: Task): boolean {
   return (task.steps ?? []).some((step) => step.status !== "done" && step.status !== "skipped");
 }
 
-function cleanScopeEntry(entry: string): string {
-  let cleaned = entry.trim().replace(/^[-*]\s+/, "");
-  const codeSpan = cleaned.match(/`([^`]+)`/);
-  if (codeSpan) cleaned = codeSpan[1];
-  return cleaned
-    .replace(/^<rootDir>\//, "")
-    .replace(/\s+\((new|modified|existing)\)\s*$/i, "")
-    .trim();
-}
-
-function extractMarkdownSection(prompt: string, heading: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const headingPattern = new RegExp(`^##\\s+${escaped}\\s*:?\\s*$`, "i");
-  const lines = prompt.split(/\r?\n/);
-  const start = lines.findIndex((line) => headingPattern.test(line.trim()));
-  if (start === -1) return "";
-  const sectionLines: string[] = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^##\s+/.test(lines[i].trim())) break;
-    sectionLines.push(lines[i]);
-  }
-  return sectionLines.join("\n");
-}
-
-function extractScopeEntriesFromPrompt(prompt: string | undefined): string[] {
-  if (!prompt) return [];
-  return extractMarkdownSection(prompt, "File Scope")
-    .split(/\r?\n/)
-    .map(cleanScopeEntry)
-    .filter(Boolean);
-}
-
-function getTaskFileScope(task: Task): string[] {
-  const metadataScope = Array.isArray(task.sourceMetadata?.fileScope)
-    ? task.sourceMetadata.fileScope.filter((entry): entry is string => typeof entry === "string")
-    : [];
-  return Array.from(new Set([...metadataScope, ...extractScopeEntriesFromPrompt(task.prompt)].map(cleanScopeEntry).filter(Boolean)));
-}
-
-function globToRegex(pattern: string): RegExp {
-  let source = "";
-  for (let i = 0; i < pattern.length; i++) {
-    const char = pattern[i];
-    if (char === "*") {
-      if (pattern[i + 1] === "*") {
-        source += ".*";
-        i++;
-      } else {
-        source += "[^/]*";
-      }
-      continue;
-    }
-    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${source}$`);
-}
-
-function matchesFileScope(filePath: string, scopeEntry: string): boolean {
-  const file = filePath.replace(/^\.\/+/, "");
-  const scope = scopeEntry.replace(/^\.\/+/, "");
-  if (!scope || /\b(no source|no code|task document|read-only)\b/i.test(scope)) return false;
-  if (file === scope) return true;
-  if (scope.endsWith("/")) return file.startsWith(scope);
-  if (scope.endsWith("/**")) return file.startsWith(scope.slice(0, -2));
-  if (scope.includes("*")) return globToRegex(scope).test(file);
-  return file.startsWith(`${scope}/`);
-}
-
-function branchDiffFilesMissingFromMergeProof(task: Task, branchFiles: string[], landedFiles: string[]): {
-  blockingMissing: string[];
-  ignoredOutOfScopeMissing: string[];
-} {
-  const landed = new Set(landedFiles);
-  const missing = branchFiles.filter((file) => !landed.has(file));
-  const scope = getTaskFileScope(task);
-  if (scope.length === 0) return { blockingMissing: missing, ignoredOutOfScopeMissing: [] };
-
-  /*
-   * FNXC:WorkflowMergeFinalization 2026-06-29-13:56:
-   * Scoped squash merges may intentionally land only the task's declared File Scope while a stale task branch still carries unrelated residue from a previous remediation or contaminated branch. Finalization must still block any in-scope branch diff missing from durable merge proof, but out-of-scope residue should not strand an already-landed workflow task in review forever.
-   */
-  const blockingMissing = missing.filter((file) => scope.some((entry) => matchesFileScope(file, entry)));
-  return {
-    blockingMissing,
-    ignoredOutOfScopeMissing: missing.filter((file) => !blockingMissing.includes(file)),
-  };
-}
-
-async function readBranchDiffFiles(rootDir: string, task: Task): Promise<string[] | null> {
-  const branch = task.branch;
-  if (!branch) return null;
-  const baseBranch = task.mergeDetails?.mergeTargetBranch ?? task.baseBranch ?? "main";
-  try {
-    await execAsync(`git rev-parse --verify ${shellQuote(`refs/heads/${branch}`)}`, { cwd: rootDir, maxBuffer: 1024 * 1024 });
-    await execAsync(`git rev-parse --verify ${shellQuote(baseBranch)}`, { cwd: rootDir, maxBuffer: 1024 * 1024 });
-    const { stdout } = await execAsync(`git diff --name-only ${shellQuote(`${baseBranch}...${branch}`)}`, {
-      cwd: rootDir,
-      maxBuffer: 1024 * 1024,
-    });
-    return Array.from(new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)));
-  } catch {
-    return null;
-  }
-}
-
 export async function validateWorkflowDoneMergeProof(
   task: Task,
-  options: { rootDir?: string; result?: MergeResult; checkWorkflowSteps?: boolean } = {},
+  options: { result?: MergeResult; checkWorkflowSteps?: boolean } = {},
 ): Promise<WorkflowDoneMergeProofVerdict> {
   const hasProof = hasDurableMergeProof(task, options.result);
   if (!hasProof) return { ok: false, reason: task.column === "done" ? "done-without-merge-confirmation" : "missing-merge-confirmation" };
@@ -166,29 +53,10 @@ export async function validateWorkflowDoneMergeProof(
   if (noOp && landedFiles.length > 0) {
     return { ok: false, reason: "noop-merge-with-landed-files", metadata: { landedFiles: landedFiles.length } };
   }
-
-  if (options.rootDir) {
-    const branchFiles = await readBranchDiffFiles(options.rootDir, task);
-    if (branchFiles && branchFiles.length > 0) {
-      if (noOp) {
-        return { ok: false, reason: "noop-merge-branch-still-has-diff", metadata: { branchFiles: branchFiles.length } };
-      }
-      const { blockingMissing, ignoredOutOfScopeMissing } = branchDiffFilesMissingFromMergeProof(task, branchFiles, landedFiles);
-      if (blockingMissing.length > 0) {
-        return {
-          ok: false,
-          reason: "branch-diff-missing-from-merge-proof",
-          metadata: {
-            missingFiles: blockingMissing.slice(0, 10),
-            missingCount: blockingMissing.length,
-            ignoredOutOfScopeMissingFiles: ignoredOutOfScopeMissing.slice(0, 10),
-            ignoredOutOfScopeMissingCount: ignoredOutOfScopeMissing.length,
-            branchFiles: branchFiles.length,
-          },
-        };
-      }
-    }
-  }
+  /*
+   * FNXC:AutoMergeFinalization 2026-07-01-10:22:
+   * Finalization cares whether the task patch landed on the integration branch, not whether the task branch history is clean after squash merges. Historical task branches can retain patch-equivalent foreign commits whose SHAs are not ancestors of main; once durable merge proof exists, branch residue must not strand the task in review.
+   */
 
   return { ok: true };
 }
@@ -268,7 +136,6 @@ export async function finalizeProvenAutoMergeTask({
   store,
   taskId,
   result,
-  rootDir,
   audit,
   auditAgentId,
   auditPhase,
@@ -283,10 +150,10 @@ export async function finalizeProvenAutoMergeTask({
   const validationMergeDetails = buildFinalizationMergeDetails(latest, result);
   /*
    * FNXC:WorkflowMerge 2026-06-29-10:35:
-   * Workflow-owned completion requires current merge proof, not just a stale `mergeConfirmed` flag. A task cannot reach or remain accepted as `done` when workflow steps are still pending, a no-op claims landed files, or the task branch still has files missing from the recorded landed commit.
+   * Workflow-owned completion requires current merge proof, not just a stale `mergeConfirmed` flag. A task cannot reach or remain accepted as `done` when workflow steps are still pending or a no-op claims landed files. Branch-only residue is ignored because squash landing validates the task patch, not branch-history cleanliness.
    */
   if (latest.column === "done") {
-    const proofVerdict = await validateWorkflowDoneMergeProof({ ...latest, mergeDetails: validationMergeDetails } as Task, { rootDir, result });
+    const proofVerdict = await validateWorkflowDoneMergeProof({ ...latest, mergeDetails: validationMergeDetails } as Task, { result });
     if (!proofVerdict.ok) {
       await recordFinalizationAudit({
         store,
@@ -349,7 +216,6 @@ export async function finalizeProvenAutoMergeTask({
   }
 
   const proofVerdict = await validateWorkflowDoneMergeProof({ ...latest, mergeDetails } as Task, {
-    rootDir,
     result,
     checkWorkflowSteps: false,
   });

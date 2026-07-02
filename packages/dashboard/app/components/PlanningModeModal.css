@@ -497,6 +497,29 @@ The New session button must look EXACTLY like Missions' primary sidebar create b
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
+  /*
+  FNXC:PlanningMode 2026-06-30-00:00:
+  Mobile list view must keep the New session CTA reachable like Missions' bottom sidebar action. Bound the sidebar to the Planning pane and let only the session list scroll above the fixed footer; detail view still hides the sidebar through the existing show-detail rule.
+  */
+  .planning-modal-body--show-list {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .planning-modal-body--show-list .planning-sidebar {
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+  }
+  .planning-modal-body--show-list .planning-sidebar-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .planning-modal-body--show-list .planning-sidebar-footer {
+    flex-shrink: 0;
+  }
   .planning-modal-body--show-detail .planning-sidebar {
     display: none;
   }
@@ -1005,6 +1028,12 @@ An empty footer must NOT reserve vertical space or paint its divider band. When 
 
 .planning-radio-group,
 .planning-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.planning-confirm-answer {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
@@ -1709,6 +1738,10 @@ Tablet embedded Planning keeps the desktop two-pane shell, so the summary footer
   }
 
   /* Confirm buttons: mobile-friendly sizing */
+  .planning-confirm-group {
+    flex-direction: column;
+  }
+
   .planning-confirm-btn {
     min-height: 36px;
     padding: var(--space-sm) var(--space-md);

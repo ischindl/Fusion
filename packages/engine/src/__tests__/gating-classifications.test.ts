@@ -216,6 +216,61 @@ describe("gating-classifications parity", () => {
     }
   });
 
+  it("applies exact tool overrides consistently for governed task creation", () => {
+    const permissionPolicy: AgentPermissionPolicy = {
+      ...unrestrictedPolicy,
+      presetId: "custom",
+      rules: {
+        ...unrestrictedPolicy.rules,
+        task_agent_mutation: "allow",
+      },
+      toolRules: { fn_task_create: "block" },
+    };
+
+    expect(resolvePermanentAgentToolDecision({
+      toolName: "fn_task_create",
+      args: {},
+      gating: { permissionPolicy },
+    })).toMatchObject({ category: "task_agent_mutation", disposition: "block", recognized: true });
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_task_create",
+      args: {},
+      permissionPolicy,
+    })).toMatchObject({ category: "task_agent_mutation", disposition: "block" });
+
+    expect(resolvePermanentAgentToolDecision({
+      toolName: "fn_task_update",
+      args: {},
+      gating: { permissionPolicy },
+    })).toMatchObject({ category: "task_agent_mutation", disposition: "allow", recognized: true });
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_task_update",
+      args: {},
+      permissionPolicy,
+    })).toMatchObject({ category: "task_agent_mutation", disposition: "allow" });
+  });
+
+  it("keeps coordination-exempt tools allowed even when an exact rule is present", () => {
+    const permissionPolicy: AgentPermissionPolicy = {
+      ...blockedPolicy,
+      toolRules: { fn_task_done: "block", fn_heartbeat_done: "block" },
+    };
+
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_task_done",
+      args: {},
+      permissionPolicy,
+    })).toMatchObject({ category: "exempt", disposition: "allow" });
+    expect(resolvePermanentAgentToolDecision({
+      toolName: "fn_heartbeat_done",
+      args: {},
+      gating: { permissionPolicy },
+    })).toMatchObject({ category: "none", disposition: "allow", recognized: true });
+  });
+
   it.each(permanentReadonlySiblingTaskCreationTools)("keeps sibling task creation tool %s permanent-readonly", (toolName) => {
     expect(READONLY_FN_TOOLS.has(toolName)).toBe(true);
     expect(ACTION_GATE_TASK_AGENT_MANAGEMENT_TOOLS.has(toolName)).toBe(true);

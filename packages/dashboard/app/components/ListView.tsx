@@ -9,7 +9,7 @@ import { COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { useColumnLabel } from "../i18n/labels";
 import { sortTasksForDisplayColumn } from "./taskSorting";
-import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail, rebuildTaskSpec, refreshPrStatus } from "../api";
+import { batchUpdateTaskModels, fetchNodes, fetchTaskDetail, rebuildTaskSpec, refreshPrStatus, updateTask } from "../api";
 import { TaskDetailContent } from "./TaskDetailModal";
 import { PrCreateModal } from "./PrCreateModal";
 import type { BoardWorkflowColumn, BoardWorkflowsPayload, ModelInfo, NodeInfo } from "../api";
@@ -20,6 +20,7 @@ import { isTaskStuck } from "../utils/taskStuck";
 import type { ToastType } from "../hooks/useToast";
 import { useViewportMode } from "../hooks/useViewportMode";
 import { getScopedItem, removeScopedItem, setScopedItem } from "../utils/projectStorage";
+import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
 import { getUnifiedTaskProgress } from "../utils/taskProgress";
 import { useConfirm } from "../hooks/useConfirm";
 import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from "../utils/taskDelete";
@@ -28,6 +29,7 @@ import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuActionDescriptor } from "./TaskContextMenu";
+import type { DetailTaskOpenOptions } from "../hooks/useModalManager";
 
 const COLUMN_COLOR_MAP: Record<Column, string> = {
   triage: "var(--triage)",
@@ -222,7 +224,7 @@ interface ListViewProps {
   onMergeTask: (id: string) => Promise<MergeResult>;
   onResetTask?: (id: string) => Promise<Task>;
   onDuplicateTask?: (id: string) => Promise<Task>;
-  onOpenDetail: (task: Task | TaskDetail, options?: { origin?: "list-mobile" }) => void;
+  onOpenDetail: (task: Task | TaskDetail, options?: DetailTaskOpenOptions) => void;
   /*
   FNXC:FloatingWindow 2026-06-22-20:45:
   onPopOut pops the split-pane task detail into a movable, resizable, non-blocking FloatingWindow managed at App level. Wired to the Maximize2 "Pop out" button in TaskDetailContent's header.
@@ -262,6 +264,7 @@ interface ListViewProps {
   lastFetchTimeMs?: number;
   prAuthAvailable?: boolean;
   autoMerge?: boolean;
+  taskDetailChatFirst?: boolean;
   /** Project merge strategy so list context menus match Task Detail before a PR exists. */
   mergeStrategy?: string;
   onOpenWorkflowEditor?: (workflowId?: string) => void;
@@ -334,6 +337,7 @@ export function ListView({
   lastFetchTimeMs,
   prAuthAvailable,
   autoMerge,
+  taskDetailChatFirst = false,
   mergeStrategy = "direct",
   onOpenWorkflowEditor,
   onCreateWorkflow,
@@ -368,6 +372,7 @@ export function ListView({
     workflowOptions,
     selectedWorkflow,
     selectedWorkflowId,
+    isAllWorkflowsSelected,
     setSelectedWorkflowId,
     refreshBoardWorkflows,
     setBoardWorkflowsState,
@@ -604,8 +609,28 @@ export function ListView({
 
   const listColumns = useMemo<BoardWorkflowColumn[]>(() => {
     if (!workflowMode || !selectedWorkflow) return LEGACY_LIST_COLUMNS;
-    return selectedWorkflow.columns.filter((column) => !column.flags.hiddenFromBoard);
-  }, [selectedWorkflow, workflowMode]);
+    if (!isAllWorkflowsSelected || !boardWorkflows) {
+      return selectedWorkflow.columns.filter((column) => !column.flags.hiddenFromBoard);
+    }
+
+    /*
+    FNXC:WorkflowAggregation 2026-07-01-00:00:
+    The aggregate List view is a dashboard-only cross-workflow context. Build its column metadata from real workflows with the default workflow first so shared columns keep stable names/flags, then append the first non-hidden declaration from other workflows for tasks that would otherwise have no visible group.
+    */
+    const workflowsById = new Map(boardWorkflows.workflows.map((workflow) => [workflow.id, workflow]));
+    const orderedWorkflows = [
+      workflowsById.get(boardWorkflows.defaultWorkflowId),
+      ...boardWorkflows.workflows.filter((workflow) => workflow.id !== boardWorkflows.defaultWorkflowId),
+    ].filter((workflow): workflow is BoardWorkflowsPayload["workflows"][number] => Boolean(workflow));
+    const columnsById = new Map<ColumnId, BoardWorkflowColumn>();
+    for (const workflow of orderedWorkflows) {
+      for (const column of workflow.columns) {
+        if (column.flags.hiddenFromBoard || columnsById.has(column.id)) continue;
+        columnsById.set(column.id, column);
+      }
+    }
+    return [...columnsById.values()];
+  }, [boardWorkflows, isAllWorkflowsSelected, selectedWorkflow, workflowMode]);
 
   const columnNameById = useMemo(() => {
     const map = new Map<ColumnId, string>();
@@ -641,25 +666,41 @@ export function ListView({
   }, [columnFlagsById, workflowMode]);
 
   const selectedWorkflowTaskIds = useMemo(() => {
-    if (!workflowMode || !boardWorkflows || !selectedWorkflow) return null;
+    if (!workflowMode || !boardWorkflows || !selectedWorkflow || isAllWorkflowsSelected) return null;
     const ids = new Set<string>();
+    const workflowIds = new Set(boardWorkflows.workflows.map((workflow) => workflow.id));
     for (const task of tasks) {
-      const workflowId = boardWorkflows.taskWorkflowIds[task.id] ?? boardWorkflows.defaultWorkflowId;
+      const rawWorkflowId = boardWorkflows.taskWorkflowIds[task.id];
+      const workflowId = rawWorkflowId && workflowIds.has(rawWorkflowId) ? rawWorkflowId : boardWorkflows.defaultWorkflowId;
       if (workflowId === selectedWorkflow.id) ids.add(task.id);
     }
     return ids;
-  }, [boardWorkflows, selectedWorkflow, tasks, workflowMode]);
+  }, [boardWorkflows, isAllWorkflowsSelected, selectedWorkflow, tasks, workflowMode]);
 
   const workflowStatusCounts = useMemo(
     () => computeWorkflowStatusCounts(tasks, boardWorkflows),
     [boardWorkflows, tasks],
   );
 
+  const createTargetWorkflowId = useMemo(() => {
+    if (!workflowMode || !boardWorkflows) return null;
+    if (!isAllWorkflowsSelected) return selectedWorkflow?.id ?? null;
+    return boardWorkflows.workflows.find((workflow) => workflow.id === boardWorkflows.defaultWorkflowId)?.id
+      ?? boardWorkflows.workflows[0]?.id
+      ?? null;
+  }, [boardWorkflows, isAllWorkflowsSelected, selectedWorkflow, workflowMode]);
+
   const createTargetColumn = useMemo(() => {
+    if (workflowMode && boardWorkflows && createTargetWorkflowId) {
+      const workflow = boardWorkflows.workflows.find((candidate) => candidate.id === createTargetWorkflowId);
+      const target = workflow?.columns.find((column) => column.flags.intake && !column.flags.archived && !column.flags.hiddenFromBoard)
+        ?? workflow?.columns.find((column) => !column.flags.archived && !column.flags.hiddenFromBoard);
+      if (target) return target.id;
+    }
     const target = listColumns.find((column) => column.flags.intake && !column.flags.archived)
       ?? listColumns.find((column) => !column.flags.archived);
     return target?.id;
-  }, [listColumns]);
+  }, [boardWorkflows, createTargetWorkflowId, listColumns, workflowMode]);
 
   /**
    * FNXC:WorkflowList 2026-06-21-21:37:
@@ -695,8 +736,8 @@ export function ListView({
 
   const handleListQuickCreate = useCallback(async (input: TaskCreateInput) => {
     const create = onQuickCreate ?? (async () => addToast(t("listView.taskCreationUnavailable", "Task creation not available"), "error"));
-    if (workflowMode && selectedWorkflow && createTargetColumn) {
-      const workflowId = typeof input.workflowId === "string" ? input.workflowId : selectedWorkflow.id;
+    if (workflowMode && createTargetWorkflowId && createTargetColumn) {
+      const workflowId = typeof input.workflowId === "string" && input.workflowId !== ALL_WORKFLOWS_BOARD_VIEW_ID ? input.workflowId : createTargetWorkflowId;
       const targetColumn = resolveListQuickCreateTarget(workflowId, input.column) ?? createTargetColumn;
       const created = await create({
         ...input,
@@ -711,13 +752,13 @@ export function ListView({
       return created;
     }
     return create(input);
-  }, [addToast, applyOptimisticTaskWorkflow, createTargetColumn, onQuickCreate, refreshBoardWorkflows, resolveListQuickCreateTarget, selectedWorkflow, t, workflowMode]);
+  }, [addToast, applyOptimisticTaskWorkflow, createTargetColumn, createTargetWorkflowId, onQuickCreate, refreshBoardWorkflows, resolveListQuickCreateTarget, t, workflowMode]);
 
   /*
   FNXC:ListWorkflowSelection 2026-06-29-00:00:
   List quick-add Plan/Subtask handoffs must inherit the same active workflow as direct quick-create. Passing null only while workflow mode has no selected workflow preserves stale-id fallback behavior without reverting to the project default lane.
   */
-  const listQuickEntryWorkflowId = workflowMode ? selectedWorkflow?.id ?? null : undefined;
+  const listQuickEntryWorkflowId = workflowMode ? createTargetWorkflowId : undefined;
 
   // Column display labels
   const COLUMN_LABELS_MAP: Record<ListColumn, string> = {
@@ -1538,6 +1579,21 @@ export function ListView({
     }
   }, [addToast, projectId, t]);
 
+  /*
+  FNXC:GitHubTracking 2026-07-01-00:00:
+  List row/card context menus use the same PATCH helper as Task Detail to enable GitHub tracking, then push the returned task into parent and split-detail snapshots. This keeps desktop right-click and mobile long-press menus stateful without changing row selection/open behavior.
+  */
+  const handleListContextEnableGithubTracking = useCallback(async (task: Task) => {
+    try {
+      const updatedTask = await updateTask(task.id, { githubTracking: { enabled: true } }, projectId);
+      onTasksUpdated?.([updatedTask]);
+      setSelectedTaskSnapshot((previous) => previous?.id === updatedTask.id ? ({ ...previous, ...updatedTask, githubTracking: updatedTask.githubTracking } as Task | TaskDetail) : previous);
+      addToast(t("taskDetail.githubTracking.issueCreationRequested", "Requested GitHub tracking issue creation"), "info");
+    } catch (err) {
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
+    }
+  }, [addToast, onTasksUpdated, projectId, t]);
+
   const handleListPrCreated = useCallback((task: Task, prInfo: PrInfo) => {
     const nextPrInfos = [...(task.prInfos ?? (task.prInfo ? [task.prInfo] : [])), prInfo];
     onTasksUpdated?.([{ ...task, prInfo: nextPrInfos[0] ?? prInfo, prInfos: nextPrInfos }]);
@@ -1584,7 +1640,7 @@ export function ListView({
           addToast(getErrorMessage(err), "error");
         }
       } : undefined,
-      onOpenRefine: undefined,
+      onOpenRefine: () => onOpenDetail(task, { origin: isMobile ? "list-mobile" : undefined, initialAction: "refine" }),
       onRespecify: async () => {
         const shouldRebuild = await confirm({
           title: t("taskDetail.plan.rebuildTitle", "Rebuild Plan"),
@@ -1641,6 +1697,7 @@ export function ListView({
       } : undefined,
       onStartPrReview: () => setPrCreateState({ task }),
       onCheckPrStatus: task.prInfo ? () => void handleListContextCheckPrStatus(task) : undefined,
+      onEnableGithubTracking: onTasksUpdated ? () => void handleListContextEnableGithubTracking(task) : undefined,
     });
 
     const actions = [...model.actions];
@@ -1658,7 +1715,7 @@ export function ListView({
       actions.push({ id: model.reviewAction.id, label: model.reviewAction.label, disabled: model.reviewAction.disabled, onSelect: model.reviewAction.onSelect });
     }
     return actions.filter((action) => action.tone === "note" || action.disabled === true || Boolean(action.onSelect));
-  }, [addToast, autoMerge, columnFlagsById, confirm, getListColumnLabel, handleListContextCheckPrStatus, handleListContextMove, handleListTaskArchive, handleListTaskDelete, listContextMenuColumns, mergeStrategy, onDuplicateTask, onMergeTask, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onArchiveTask, projectId, t]);
+  }, [addToast, autoMerge, columnFlagsById, confirm, getListColumnLabel, handleListContextCheckPrStatus, handleListContextEnableGithubTracking, handleListContextMove, handleListTaskArchive, handleListTaskDelete, isMobile, listContextMenuColumns, mergeStrategy, onDuplicateTask, onMergeTask, onOpenDetail, onPauseTask, onResetTask, onRetryTask, onUnpauseTask, onArchiveTask, onTasksUpdated, projectId, t]);
 
   const contextMenuActions = useMemo(
     () => (contextMenuState ? buildListContextMenuActions(contextMenuState.task) : []),
@@ -1803,6 +1860,20 @@ export function ListView({
         clearTimeout(detailFetchTimerRef.current);
       }
     };
+  }, []);
+
+  const closeEmbeddedTaskDetail = useCallback(() => {
+    /*
+    FNXC:TaskDetailDelete 2026-07-01-09:46:
+    List split-detail is an embedded TaskDetailContent host, so optimistic delete close must clear the selected task synchronously and remove the persisted selection before the delete request settles. Clear any pending detail fetch so a delayed response cannot resurrect the closed split panel.
+    */
+    detailFetchTargetRef.current = null;
+    if (detailFetchTimerRef.current) {
+      clearTimeout(detailFetchTimerRef.current);
+      detailFetchTimerRef.current = null;
+    }
+    setSelectedTaskId(null);
+    setSelectedTaskSnapshot(null);
   }, []);
 
   const handleEmbeddedOpenDetail = useCallback((nextTask: Task | TaskDetail) => {
@@ -2030,9 +2101,10 @@ export function ListView({
       <div className="list-workflow-control">
         <WorkflowSwitcher
           workflows={workflowOptions}
-          value={selectedWorkflow.id}
+          value={isAllWorkflowsSelected ? ALL_WORKFLOWS_BOARD_VIEW_ID : selectedWorkflow.id}
           onChange={setSelectedWorkflowId}
           counts={workflowStatusCounts}
+          aggregateOption={{ id: ALL_WORKFLOWS_BOARD_VIEW_ID, name: "All workflows" }}
           onOpen={refreshBoardWorkflows}
           label={t("listView.workflowLabel", "Workflow")}
           onEditWorkflow={onOpenWorkflowEditor}
@@ -2363,7 +2435,7 @@ export function ListView({
                 onSubtaskBreakdown={onSubtaskBreakdown}
                 workflowId={listQuickEntryWorkflowId}
                 workflowOptions={workflowMode ? workflowOptions : undefined}
-                defaultWorkflowId={workflowMode ? selectedWorkflow?.id ?? boardWorkflows?.defaultWorkflowId ?? null : undefined}
+                defaultWorkflowId={workflowMode ? createTargetWorkflowId ?? boardWorkflows?.defaultWorkflowId ?? null : undefined}
                 projectId={projectId}
                 autoExpand={false}
                 defaultExpanded={false}
@@ -2813,6 +2885,7 @@ export function ListView({
                       projectId={projectId}
                       tasks={tasks}
                       embedded
+                      onRequestClose={closeEmbeddedTaskDetail}
                       onOpenDetail={handleEmbeddedOpenDetail}
                       onMoveTask={onMoveTask}
                       onDeleteTask={onDeleteTask}
@@ -2830,6 +2903,7 @@ export function ListView({
                       addToast={addToast}
                       prAuthAvailable={prAuthAvailable}
                       autoMergeEnabled={autoMerge}
+                      taskDetailChatFirst={taskDetailChatFirst}
                     />
                   </div>
                 )}

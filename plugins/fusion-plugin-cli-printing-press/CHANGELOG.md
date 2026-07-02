@@ -1,5 +1,26 @@
 # @fusion-plugin-examples/cli-printing-press
 
+## 0.1.34
+
+### Patch Changes
+
+- @fusion/core@0.53.1
+- @fusion/plugin-sdk@0.53.1
+
+## 0.1.33
+
+### Patch Changes
+
+- @fusion/core@0.53.0
+- @fusion/plugin-sdk@0.53.0
+
+## 0.1.32
+
+### Patch Changes
+
+- @fusion/core@0.52.0
+- @fusion/plugin-sdk@0.52.0
+
 ## 0.1.31
 
 ### Patch Changes

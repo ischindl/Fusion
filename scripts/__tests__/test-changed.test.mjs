@@ -1586,8 +1586,8 @@ const packageHashSnippet = (pkgName) => `(mod) => {
 }`;
 
 /*
-FNXC:TestInfrastructure 2026-06-27-03:46:
-CI no longer routes through scripts/test-changed.mjs for the merge gate, so CI=true must not force mode=full. Keep paired full-trigger assertions here so this regression guard proves the --print-mode harness can still observe legitimate full-suite opt-ins.
+FNXC:TestInfrastructure 2026-07-01-00:00:
+CI no longer routes through scripts/test-changed.mjs as an implicit full-suite trigger, so CI=true must not force mode=full. Keep paired full-trigger assertions here so this --print-mode subprocess guard proves full-suite mode remains explicit opt-in only.
 */
 test("integration: CI=true does not force the full suite (only --full / FUSION_TEST_FULL do)", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "tc-print-mode-"));

@@ -208,6 +208,12 @@ const MODEL_AUTH_TIER_INCOMPATIBILITY_PATTERNS: RegExp[] = [
   /(?:['"`][^'"`]+['"`]\s+)?\bmodel\b\s+(?:is|was)\s+not\s+(?:supported|available)\b/i,
 ];
 
+const PROVIDER_MODEL_NOT_FOUND_PATTERNS: RegExp[] = [
+  /\bmodel\b[\s\S]{0,160}\bnot\s+found\b/i,
+  /\bno\s+such\s+model\b/i,
+  /\bunknown\s+model\b/i,
+];
+
 export function isUnsupportedMessageRoleError(errorMessage: string): boolean {
   if (!errorMessage || typeof errorMessage !== "string") {
     return false;
@@ -227,6 +233,28 @@ export function isModelAuthTierIncompatibilityError(errorMessage: string): boole
   }
 
   return MODEL_AUTH_TIER_INCOMPATIBILITY_PATTERNS.some((pattern) => pattern.test(errorMessage));
+}
+
+export function isProviderModelNotFoundError(errorMessage: string): boolean {
+  if (!errorMessage || typeof errorMessage !== "string") {
+    return false;
+  }
+
+  /*
+   * FNXC:ModelFallback 2026-07-01-16:42:
+   * Anthropic can reject newly cataloged models such as Claude Sonnet 5 with a structured 404 `not_found_error` when the current account or API surface cannot serve that model, often with only `message: "Not found"`. Treat provider error envelopes and explicit model-not-found text as model-selection failures so configured fallbacks run, while generic application 404s without a provider envelope remain terminal.
+   */
+  const hasStructuredProviderNotFound =
+    /["']type["']\s*:\s*["']not_found_error["']/i.test(errorMessage)
+    || /\bnot_found_error\b/i.test(errorMessage);
+  const hasNotFoundStatus = /\b(?:404|not\s+found)\b/i.test(errorMessage);
+  const hasProviderErrorEnvelope = /["']type["']\s*:\s*["']error["']/i.test(errorMessage)
+    || /\bError:\s*404\b/i.test(errorMessage);
+  if (hasStructuredProviderNotFound && hasNotFoundStatus && hasProviderErrorEnvelope) {
+    return true;
+  }
+
+  return PROVIDER_MODEL_NOT_FOUND_PATTERNS.some((pattern) => pattern.test(errorMessage));
 }
 
 export function isNonContinuableSessionError(errorMessage: string): boolean {
@@ -258,6 +286,7 @@ export function isOperatorActionableAgentError(errorMessage: string): boolean {
   return (
     isUnsupportedMessageRoleError(errorMessage) ||
     isModelAuthTierIncompatibilityError(errorMessage) ||
+    isProviderModelNotFoundError(errorMessage) ||
     OPERATOR_ACTIONABLE_AGENT_ERROR_PATTERNS.some((pattern) => pattern.test(errorMessage))
   );
 }

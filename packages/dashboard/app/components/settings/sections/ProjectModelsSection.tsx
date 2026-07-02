@@ -286,7 +286,7 @@ export function ProjectModelsSection({ scopeBanner, form, setForm, models, proje
                 </div>
                 <div className="settings-model-lane-control-row">
                   <div className="settings-model-lane-control-main">
-                    <CustomModelDropdown id={`${lane.laneId}Model`} label={laneLabel} models={availableModels} value={value} onChange={(val) => updateLaneValue(lane, val)} placeholder={lane.laneId === "default" ? "Use global default" : "Use global"} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite}/>
+                    <CustomModelDropdown id={`${lane.laneId}Model`} label={laneLabel} models={availableModels} value={value} onChange={(val) => updateLaneValue(lane, val)} placeholder={lane.laneId === "default" ? "Use global default" : "Use global"} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite} menuWidth="readable"/>
                   </div>
                   {isOverridden && (<button type="button" className="btn btn-ghost btn-sm" title={t("settings.projectModels.resetToInheritFromGlobal", "Reset to inherit from global")} onClick={() => resetLaneValue(lane)} style={{ whiteSpace: "nowrap" }}>{t("settings.projectModels.reset", " Reset ")}</button>)}
                 </div>
@@ -318,7 +318,7 @@ export function ProjectModelsSection({ scopeBanner, form, setForm, models, proje
                 </div>
                 <div className="settings-model-lane-control-row">
                   <div className="settings-model-lane-control-main">
-                    <CustomModelDropdown id={`workflow-${pair.id}-model`} label={pair.label} models={availableModels} value={value} onChange={(next) => setWorkflowPairValue(pair, next)} placeholder={t("settings.projectModels.useWorkflowDefault", "Use workflow default")} defaultOptionLabel="Use workflow default" favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite}/>
+                    <CustomModelDropdown id={`workflow-${pair.id}-model`} label={pair.label} models={availableModels} value={value} onChange={(next) => setWorkflowPairValue(pair, next)} placeholder={t("settings.projectModels.useWorkflowDefault", "Use workflow default")} defaultOptionLabel="Use workflow default" favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite} menuWidth="readable"/>
                   </div>
                   {customized && (<button type="button" className="btn btn-ghost btn-sm" title={t("settings.projectModels.resetToInheritFromWorkflow", "Reset to inherit from workflow")} onClick={() => resetWorkflowPairValue(pair)} style={{ whiteSpace: "nowrap" }}>{t("settings.projectModels.reset", " Reset ")}</button>)}
                 </div>
@@ -406,7 +406,7 @@ export function ProjectModelsSection({ scopeBanner, form, setForm, models, proje
                         executorProvider: val.slice(0, slashIdx),
                         executorModelId: val.slice(slashIdx + 1),
                     } : current);
-                }} placeholder={t("settings.projectModels.useDefault", "Use default")} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite}/>
+                }} placeholder={t("settings.projectModels.useDefault", "Use default")} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite} menuWidth="readable"/>
                 </div>
                 <div className="form-group">
                   <label htmlFor="preset-validator-model">{t("settings.projectModels.reviewerModel", "Reviewer model")}</label>
@@ -421,7 +421,7 @@ export function ProjectModelsSection({ scopeBanner, form, setForm, models, proje
                         validatorProvider: val.slice(0, slashIdx),
                         validatorModelId: val.slice(slashIdx + 1),
                     } : current);
-                }} placeholder={t("settings.projectModels.useDefault", "Use default")} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite}/>
+                }} placeholder={t("settings.projectModels.useDefault", "Use default")} favoriteProviders={favoriteProviders} onToggleFavorite={onToggleFavorite} favoriteModels={favoriteModels} onToggleModelFavorite={onToggleModelFavorite} menuWidth="readable"/>
                 </div>
               </>)}
           </div>

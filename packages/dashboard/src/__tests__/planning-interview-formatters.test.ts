@@ -22,6 +22,12 @@ const multiSelectQuestion: PlanningQuestion = {
   ],
 };
 
+const confirmQuestion: PlanningQuestion = {
+  id: "proceed",
+  type: "confirm",
+  question: "Proceed with this plan?",
+};
+
 describe("planning interview formatter Other answers", () => {
   it("formats Other-only single-select answers for the planning agent and Q&A history", () => {
     const response = { _other: "Run discovery first" };
@@ -43,5 +49,26 @@ describe("planning interview formatter Other answers", () => {
     expect(formatInterviewQA([{ question: multiSelectQuestion, response }])).toContain(
       "A: Speed, Keep humans in review (user's own answer)",
     );
+  });
+
+  it("formats confirm Yes and No answers without changing boolean semantics", () => {
+    expect(formatResponseForAgent(confirmQuestion, { proceed: true })).toContain("Answer: Yes");
+    expect(formatInterviewQA([{ question: confirmQuestion, response: { proceed: true } }])).toContain("A: Yes");
+
+    expect(formatResponseForAgent(confirmQuestion, { proceed: false })).toContain("Answer: No");
+    expect(formatInterviewQA([{ question: confirmQuestion, response: { proceed: false } }])).toContain("A: No");
+  });
+
+  it("formats confirm Other answers and comments as first-class custom answers", () => {
+    const response = { _other: "Ask a different scoping question", _comment: "Need product input" };
+
+    expect(formatResponseForAgent(confirmQuestion, response)).toContain(
+      "Answer: Ask a different scoping question (user's own answer)",
+    );
+    expect(formatResponseForAgent(confirmQuestion, response)).toContain("Additional context: Need product input");
+    expect(formatInterviewQA([{ question: confirmQuestion, response }])).toContain(
+      "A: Ask a different scoping question (user's own answer)",
+    );
+    expect(formatInterviewQA([{ question: confirmQuestion, response }])).toContain("Comment: Need product input");
   });
 });

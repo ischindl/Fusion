@@ -383,7 +383,114 @@ describe("usage", () => {
       expect(claude).toBeUndefined();
     });
 
-    it("reads Claude credentials from Fusion auth-storage anthropic oauth when no CLI files exist", async () => {
+    it("reads Claude credentials from Fusion auth-storage anthropic-subscription OAuth before CLI files", async () => {
+      mockReadFile.mockImplementation((filePath: string) => {
+        if (filePath.includes("claude")) {
+          return JSON.stringify({ accessToken: "legacy-cli-token", scopes: ["user:profile"], subscriptionType: "free" });
+        }
+        return Promise.reject(new Error("File not found"));
+      });
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+
+      const authStorage = {
+        reload: vi.fn(),
+        hasAuth: vi.fn((provider: string) => provider === "anthropic-subscription"),
+        get: vi.fn((provider: string) => {
+          if (provider !== "anthropic-subscription") return null;
+          return {
+            type: "oauth",
+            access: "subscription-access-token",
+            refresh: "subscription-refresh-token",
+            expires: Date.now() + 60 * 60 * 1000,
+            scopes: ["user:profile"],
+            subscriptionType: "pro",
+          };
+        }),
+        getApiKey: vi.fn(),
+      };
+
+      const requestUrls: string[] = [];
+      const mockReq = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+      mockRequest.mockImplementation((options: any, callback: any) => {
+        requestUrls.push(`https://${options.hostname}${options.path}`);
+        const mockRes = {
+          statusCode: 200,
+          headers: {},
+          on: vi.fn((event: string, handler: any) => {
+            if (event === "data") handler(Buffer.from(JSON.stringify({ five_hour: { utilization: 22.0 } })));
+            if (event === "end") handler();
+          }),
+        };
+        callback(mockRes);
+        return mockReq;
+      });
+
+      const providers = await fetchAllProviderUsage(authStorage);
+      const claude = providers.find((p) => p.name === "Claude")!;
+
+      expect(claude.status).toBe("ok");
+      expect(claude.plan).toBe("Pro");
+      expect(authStorage.get).toHaveBeenCalledWith("anthropic-subscription");
+      expect(authStorage.get).not.toHaveBeenCalledWith("anthropic");
+      expect(authStorage.getApiKey).not.toHaveBeenCalledWith("anthropic-subscription");
+      expect(requestUrls[0]).toContain("oauth/usage");
+    });
+
+    it("refreshes expired separated Fusion subscription OAuth through auth storage before usage API", async () => {
+      mockReadFile.mockRejectedValue(new Error("File not found"));
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+      let refreshed = false;
+      const authStorage = {
+        reload: vi.fn(),
+        hasAuth: vi.fn(() => true),
+        get: vi.fn((provider: string) => {
+          if (provider !== "anthropic-subscription") return null;
+          return {
+            type: "oauth",
+            access: refreshed ? "refreshed-subscription-token" : "expired-subscription-token",
+            refresh: "subscription-refresh-token",
+            expires: refreshed ? Date.now() + 60 * 60 * 1000 : Date.now() - 60_000,
+            scopes: ["user:profile"],
+          };
+        }),
+        getApiKey: vi.fn(async (provider: string) => {
+          if (provider === "anthropic-subscription") {
+            refreshed = true;
+            return "refreshed-subscription-token";
+          }
+          return undefined;
+        }),
+      };
+
+      let capturedAuthorization: string | undefined;
+      const mockReq = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+      mockRequest.mockImplementation((options: any, callback: any) => {
+        capturedAuthorization = options.headers.authorization;
+        const mockRes = {
+          statusCode: 200,
+          headers: {},
+          on: vi.fn((event: string, handler: any) => {
+            if (event === "data") handler(Buffer.from(JSON.stringify({ five_hour: { utilization: 12.0 } })));
+            if (event === "end") handler();
+          }),
+        };
+        callback(mockRes);
+        return mockReq;
+      });
+
+      const providers = await fetchAllProviderUsage(authStorage);
+      const claude = providers.find((p) => p.name === "Claude")!;
+
+      expect(authStorage.getApiKey).toHaveBeenCalledWith("anthropic-subscription");
+      expect(capturedAuthorization).toBe("Bearer refreshed-subscription-token");
+      expect(claude.status).toBe("ok");
+    });
+
+    it("reads Claude credentials from legacy Fusion auth-storage anthropic oauth when no separated credential exists", async () => {
       mockReadFile.mockImplementation(async () => {
         return Promise.reject(new Error("File not found"));
       });

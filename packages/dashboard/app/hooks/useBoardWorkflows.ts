@@ -6,11 +6,13 @@ import {
 } from "../api";
 import { subscribeSse as defaultSubscribeSse } from "../sse-bus";
 import {
+  clearBoardWorkflowsCache as defaultClearBoardWorkflowsCache,
   readBoardWorkflowsCache as defaultReadBoardWorkflowsCache,
   writeBoardWorkflowsCache as defaultWriteBoardWorkflowsCache,
 } from "../utils/boardWorkflowsCache";
 import {
-  readBoardWorkflowSelection,
+  ALL_WORKFLOWS_BOARD_VIEW_ID,
+  readBoardWorkflowViewSelection,
   removeBoardWorkflowSelection,
   writeBoardWorkflowSelection,
 } from "../utils/boardWorkflowSelection";
@@ -36,6 +38,7 @@ export interface UseBoardWorkflowsParams {
   subscribeSse?: typeof defaultSubscribeSse;
   readBoardWorkflowsCache?: typeof defaultReadBoardWorkflowsCache;
   writeBoardWorkflowsCache?: typeof defaultWriteBoardWorkflowsCache;
+  clearBoardWorkflowsCache?: typeof defaultClearBoardWorkflowsCache;
 }
 
 export interface UseBoardWorkflowsResult {
@@ -45,9 +48,11 @@ export interface UseBoardWorkflowsResult {
   workflowMode: boolean;
   /** Workflows sorted with the default first, then alphabetical. Empty unless in workflow mode. */
   workflowOptions: BoardWorkflowDefinition[];
-  /** Currently selected workflow (resolved from selection / default / first), or null. */
+  /** Currently selected real workflow (resolved from selection / default / first), or null. */
   selectedWorkflow: BoardWorkflowDefinition | null;
   selectedWorkflowId: string | null;
+  /** True when the dashboard-only aggregate workflow view is selected. */
+  isAllWorkflowsSelected: boolean;
   setSelectedWorkflowId: Dispatch<SetStateAction<string | null>>;
   /** Force a fresh fetch (used on switcher open, since task assignment changes emit no workflow SSE). */
   refreshBoardWorkflows: () => void;
@@ -66,6 +71,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     subscribeSse = defaultSubscribeSse,
     readBoardWorkflowsCache = defaultReadBoardWorkflowsCache,
     writeBoardWorkflowsCache = defaultWriteBoardWorkflowsCache,
+    clearBoardWorkflowsCache = defaultClearBoardWorkflowsCache,
   } = params;
 
   const [boardWorkflowsState, setBoardWorkflowsState] = useState<{ projectId?: string; payload: BoardWorkflowsPayload } | null>(() => {
@@ -73,7 +79,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     return cached ? { projectId, payload: cached } : null;
   });
   const boardWorkflows = boardWorkflowsState?.projectId === projectId && boardWorkflowsState ? boardWorkflowsState.payload : null;
-  const [selectedWorkflowId, setSelectedWorkflowIdState] = useState<string | null>(() => readBoardWorkflowSelection(projectId));
+  const [selectedWorkflowId, setSelectedWorkflowIdState] = useState<string | null>(() => readBoardWorkflowViewSelection(projectId));
   const storedSelectionRef = useRef<string | null>(selectedWorkflowId);
 
   const setSelectedWorkflowId = useCallback<Dispatch<SetStateAction<string | null>>>((nextSelection) => {
@@ -97,15 +103,21 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
   // Re-hydrate from the per-project cache on project change (and gate change).
   useEffect(() => {
     const cached = shouldHydrateCache ? readBoardWorkflowsCache(projectId) : null;
-    const storedSelection = readBoardWorkflowSelection(projectId);
+    const storedSelection = readBoardWorkflowViewSelection(projectId);
     storedSelectionRef.current = storedSelection;
     setSelectedWorkflowIdState(storedSelection);
     setBoardWorkflowsState(cached ? { projectId, payload: cached } : null);
   }, [projectId, shouldHydrateCache, readBoardWorkflowsCache]);
 
-  const refreshBoardWorkflows = useCallback(() => {
+  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean }) => {
     const seq = ++boardWorkflowsFetchSeqRef.current;
-    fetchBoardWorkflows(projectId)
+    if (options?.forceFresh) {
+      clearBoardWorkflowsCache(projectId);
+    }
+    const fetchPromise = options === undefined
+      ? fetchBoardWorkflows(projectId)
+      : fetchBoardWorkflows(projectId, options);
+    fetchPromise
       .then((payload) => {
         if (seq === boardWorkflowsFetchSeqRef.current) {
           setBoardWorkflowsState({ projectId, payload });
@@ -115,7 +127,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
       .catch(() => {
         // Fetch failures are non-authoritative: keep the current/cache-hydrated payload so the cleanup effect does not erase durable selection.
       });
-  }, [projectId, fetchBoardWorkflows, writeBoardWorkflowsCache]);
+  }, [projectId, fetchBoardWorkflows, writeBoardWorkflowsCache, clearBoardWorkflowsCache]);
 
   useEffect(() => {
     refreshBoardWorkflows();
@@ -125,11 +137,12 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
     if (typeof window !== "undefined") window.addEventListener("focus", onVisible);
     const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const forceRefreshBoardWorkflows = () => refreshBoardWorkflows({ forceFresh: true });
     const unsubscribe = subscribeSse(`/api/events${query}`, {
       events: {
-        "workflow:created": refreshBoardWorkflows,
-        "workflow:updated": refreshBoardWorkflows,
-        "workflow:deleted": refreshBoardWorkflows,
+        "workflow:created": forceRefreshBoardWorkflows,
+        "workflow:updated": forceRefreshBoardWorkflows,
+        "workflow:deleted": forceRefreshBoardWorkflows,
       },
     });
     return () => {
@@ -152,6 +165,8 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
       return a.name.localeCompare(b.name);
     });
   }, [boardWorkflows, workflowMode]);
+
+  const isAllWorkflowsSelected = selectedWorkflowId === ALL_WORKFLOWS_BOARD_VIEW_ID;
 
   const selectedWorkflow = useMemo<BoardWorkflowDefinition | null>(() => {
     if (!workflowMode) return null;
@@ -184,6 +199,10 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
       return;
     }
 
+    if (isAllWorkflowsSelected) {
+      return;
+    }
+
     if (selectedWorkflow && selectedWorkflow.id !== selectedWorkflowId) {
       const shouldRepairStoredSelection = storedSelectionRef.current !== null;
       setSelectedWorkflowIdState(selectedWorkflow.id);
@@ -192,7 +211,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
         storedSelectionRef.current = selectedWorkflow.id;
       }
     }
-  }, [boardWorkflows, projectId, selectedWorkflow, selectedWorkflowId, workflowMode, workflowOptions.length]);
+  }, [boardWorkflows, isAllWorkflowsSelected, projectId, selectedWorkflow, selectedWorkflowId, workflowMode, workflowOptions.length]);
 
   return {
     boardWorkflows,
@@ -200,6 +219,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     workflowOptions,
     selectedWorkflow,
     selectedWorkflowId,
+    isAllWorkflowsSelected,
     setSelectedWorkflowId,
     refreshBoardWorkflows,
     setBoardWorkflowsState,

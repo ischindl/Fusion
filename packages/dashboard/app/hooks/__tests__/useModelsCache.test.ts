@@ -62,6 +62,46 @@ describe("useModelsCache", () => {
     expect(cached.data.models[0]?.id).toBe("gpt-4o");
   });
 
+  it("replaces a stale empty cached catalog for all mounted consumers", async () => {
+    localStorage.setItem(
+      SWR_CACHE_KEYS.MODELS,
+      JSON.stringify({
+        savedAt: Date.now(),
+        data: {
+          models: [],
+          favoriteProviders: [],
+          favoriteModels: [],
+        },
+      }),
+    );
+    mockFetchModels.mockResolvedValueOnce({
+      models: [{ provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)" }],
+      favoriteProviders: [],
+      favoriteModels: [],
+    });
+
+    const hookA = renderHook(() => useModelsCache());
+    const hookB = renderHook(() => useModelsCache());
+
+    expect(hookA.result.current.loading).toBe(false);
+    expect(hookA.result.current.models).toEqual([]);
+
+    await waitFor(() => {
+      expect(mockFetchModels).toHaveBeenCalledTimes(1);
+      expect(hookA.result.current.models).toEqual([
+        expect.objectContaining({ provider: "pi-claude-cli", id: "claude-sonnet-5" }),
+      ]);
+      expect(hookB.result.current.models).toEqual([
+        expect.objectContaining({ provider: "pi-claude-cli", id: "claude-sonnet-5" }),
+      ]);
+    });
+
+    const cached = JSON.parse(localStorage.getItem(SWR_CACHE_KEYS.MODELS) ?? "null") as { data: { models: Array<{ provider: string; id: string }> } };
+    expect(cached.data.models).toEqual([
+      expect.objectContaining({ provider: "pi-claude-cli", id: "claude-sonnet-5" }),
+    ]);
+  });
+
   it("deduplicates concurrent mounts", async () => {
     let resolveFetch: ((value: Awaited<ReturnType<typeof fetchModels>>) => void) | undefined;
     mockFetchModels.mockImplementationOnce(() => new Promise((resolve) => {

@@ -8,8 +8,9 @@ const PROJECT = "proj-1";
 /** A base settings object with real project values for the keys under test. */
 function baseSettings(): Settings {
   return {
-    workflowStepTimeoutMs: 360_000,
+    workflowStepTimeoutMs: 900_000,
     requirePrApproval: false,
+    requirePlanApproval: false,
     runStepsInNewSessions: false,
     // A real project value for an absent-default lane — must NOT be clobbered.
     executionProvider: "project-anthropic",
@@ -36,8 +37,8 @@ describe("mergeEffectiveSettings (engine entry merge, U3/KTD-3)", () => {
     const store = makeStore({ workflowId: "builtin:coding" });
     const base = baseSettings();
     const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
-    // Declaration defaults are byte-equal to legacy defaults, so these don't change.
-    expect(merged.workflowStepTimeoutMs).toBe(360_000);
+    // Declaration defaults match the engine read-site fallback, so these don't change.
+    expect(merged.workflowStepTimeoutMs).toBe(900_000);
     expect(merged.requirePrApproval).toBe(false);
     expect(merged.runStepsInNewSessions).toBe(false);
   });
@@ -58,7 +59,7 @@ describe("mergeEffectiveSettings (engine entry merge, U3/KTD-3)", () => {
     const base = { ...baseSettings(), verificationFixRetries: 0, workflowStepTimeoutMs: 12_345 } as unknown as Settings;
     const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
     expect(merged.verificationFixRetries).toBe(0); // not the declaration default (3)
-    expect(merged.workflowStepTimeoutMs).toBe(12_345); // not the declaration default (360_000)
+    expect(merged.workflowStepTimeoutMs).toBe(12_345); // not the declaration default (900_000)
   });
 
   it("post-migration fill: a declaration default fills when the base lacks the key", async () => {
@@ -66,7 +67,7 @@ describe("mergeEffectiveSettings (engine entry merge, U3/KTD-3)", () => {
     // Base lacks workflowStepTimeoutMs (moved key removed from project settings).
     const base = { requirePrApproval: false } as unknown as Settings;
     const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
-    expect(merged.workflowStepTimeoutMs).toBe(360_000); // filled from declaration default
+    expect(merged.workflowStepTimeoutMs).toBe(900_000); // filled from declaration default
   });
 
   it("a stored value overrides the base", async () => {
@@ -83,11 +84,22 @@ describe("mergeEffectiveSettings (engine entry merge, U3/KTD-3)", () => {
     expect(merged.executionModelId).toBe("claude-project");
   });
 
+  it("preserves project planApprovalMode while applying stored workflow requirePlanApproval", async () => {
+    const store = makeStore({
+      workflowId: "builtin:coding",
+      values: { requirePlanApproval: true },
+    });
+    const base = { ...baseSettings(), planApprovalMode: "auto-approve-all", requirePlanApproval: false } as unknown as Settings;
+    const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
+    expect(merged.planApprovalMode).toBe("auto-approve-all");
+    expect(merged.requirePlanApproval).toBe(true);
+  });
+
   it("returns a NEW object; the base is not mutated", async () => {
     const store = makeStore({ workflowId: "builtin:coding", values: { workflowStepTimeoutMs: 1 } });
     const base = baseSettings();
     const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
-    expect(base.workflowStepTimeoutMs).toBe(360_000);
+    expect(base.workflowStepTimeoutMs).toBe(900_000);
     expect(merged).not.toBe(base);
   });
 
@@ -110,7 +122,7 @@ describe("mergeEffectiveSettings (engine entry merge, U3/KTD-3)", () => {
     const merged = await mergeEffectiveSettings(store as any, { id: "t1" }, base);
     // resolveEffectiveSettings degrades to builtin declaration defaults even when the
     // selection/project throw; the merge stays behavior-inert for the base values.
-    expect(merged.workflowStepTimeoutMs).toBe(360_000);
+    expect(merged.workflowStepTimeoutMs).toBe(900_000);
     expect(merged.executionProvider).toBe("project-anthropic");
   });
 });

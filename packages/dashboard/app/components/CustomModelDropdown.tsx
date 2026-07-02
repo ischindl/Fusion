@@ -28,6 +28,8 @@ export interface CustomModelDropdownProps {
   favoriteModels?: string[];
   /** Called when user toggles a model's favorite status */
   onToggleModelFavorite?: (modelId: string) => void;
+  /** Request a wider menu for dense settings surfaces while default callers keep trigger-width sizing. */
+  menuWidth?: "trigger" | "readable";
 }
 
 interface DropdownPosition {
@@ -65,6 +67,7 @@ export function CustomModelDropdown({
   noChangeValue,
   noChangeLabel: noChangeLabelProp,
   defaultOptionLabel: defaultOptionLabelProp,
+  menuWidth = "trigger",
 }: CustomModelDropdownProps) {
   const { t } = useTranslation("app");
   const placeholder = placeholderProp ?? t("model.selectPlaceholder", "Select a model…");
@@ -270,7 +273,16 @@ export function CustomModelDropdown({
       160,
     );
 
-    const dropdownWidth = Math.min(rect.width, viewportWidth - horizontalPadding * 2);
+    const maxDropdownWidth = viewportWidth - horizontalPadding * 2;
+    /*
+    FNXC:ModelDropdown 2026-07-01-00:00:
+    Project Models lanes need a readable portaled menu for long provider/model names, but shared model selectors elsewhere must retain trigger-width behavior unless they opt in.
+    Clamp the widened target to the effective viewport, including visualViewport offsets, so desktop and mobile keyboards never create offscreen click targets.
+    */
+    const preferredDropdownWidth = menuWidth === "readable"
+      ? Math.max(rect.width, Math.min(rect.width * 1.6, viewportWidth * 0.72))
+      : rect.width;
+    const dropdownWidth = Math.min(preferredDropdownWidth, maxDropdownWidth);
     const left = Math.min(
       Math.max(triggerLeft, horizontalPadding),
       viewportWidth - horizontalPadding - dropdownWidth,
@@ -285,7 +297,7 @@ export function CustomModelDropdown({
       width: dropdownWidth,
       maxHeight,
     });
-  }, [getEffectiveViewport, getPreferredDropdownHeight]);
+  }, [getEffectiveViewport, getPreferredDropdownHeight, menuWidth]);
 
   useEffect(() => {
     setPortalRoot(document.body);
@@ -483,6 +495,7 @@ export function CustomModelDropdown({
       className="model-combobox-dropdown model-combobox-dropdown--portal"
       role="listbox"
       data-testid="model-combobox-portal"
+      data-menu-width={menuWidth}
       onKeyDown={handleKeyDown}
       style={{
         top: `${dropdownPosition.top}px`,

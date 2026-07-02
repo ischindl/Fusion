@@ -6,6 +6,7 @@ import {
   WorkflowIrError,
 } from "../workflow-ir.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
+import { BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR } from "../builtin-stepwise-final-review-coding-workflow-ir.js";
 import { getBuiltinWorkflow } from "../builtin-workflows.js";
 import {
   BUILTIN_MOVED_WORKFLOW_SETTINGS,
@@ -218,11 +219,12 @@ describe("built-in workflow settings parity anchor (U1, R4)", () => {
       expect(declaredIds.has(setting.id)).toBe(true);
     }
     expect(builtin.settings).toEqual(BUILTIN_WORKFLOW_SETTINGS);
-    expect(getBuiltinWorkflow("builtin:coding")!.ir).toBe(BUILTIN_CODING_WORKFLOW_IR);
+    expect(getBuiltinWorkflow("builtin:coding")!.ir).toBe(BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR);
+    expect(getBuiltinWorkflow("builtin:legacy-coding")!.ir).toBe(BUILTIN_CODING_WORKFLOW_IR);
     expect((getBuiltinWorkflow("builtin:coding")!.ir as WorkflowIrV2).settings).toEqual(BUILTIN_WORKFLOW_SETTINGS);
   });
 
-  it("the moved-key catalog has left DEFAULT_PROJECT_SETTINGS (U4 hard-move) and pins its legacy defaults", () => {
+  it("the moved-key catalog has left DEFAULT_PROJECT_SETTINGS (U4 hard-move) and pins current built-in defaults", () => {
     const legacy = DEFAULT_PROJECT_SETTINGS as Record<string, unknown>;
     // Post-U4 hard-move: every catalog key has been REMOVED from
     // DEFAULT_PROJECT_SETTINGS (the type-vs-schema split keeps the type field but
@@ -230,11 +232,11 @@ describe("built-in workflow settings parity anchor (U1, R4)", () => {
     for (const setting of BUILTIN_MOVED_WORKFLOW_SETTINGS) {
       expect(Object.prototype.hasOwnProperty.call(legacy, setting.id)).toBe(false);
     }
-    // The declaration defaults are now the single source of truth; pin the legacy
-    // values explicitly so they can never silently drift from what they were when
-    // they lived in DEFAULT_PROJECT_SETTINGS.
+    // The declaration defaults are now the single source of truth; pin current
+    // built-in values explicitly so they can never silently drift from engine
+    // read-site fallbacks or workflow editor display.
     const expectedDefaults: Record<string, unknown> = {
-      workflowStepTimeoutMs: 360_000,
+      workflowStepTimeoutMs: 900_000,
       workflowStepScopeEnforcement: "block",
       planOnlyScopeLeakEnforcement: "warn",
       workflowRevisionForkOnScopeMismatch: true,

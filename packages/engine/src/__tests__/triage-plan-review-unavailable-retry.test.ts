@@ -54,7 +54,7 @@ function createRetryTask(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function createStore(task: Task): TaskStore {
+function createStore(task: Task, settingsOverrides: Partial<Settings> = {}): TaskStore {
   return {
     getTask: vi.fn().mockResolvedValue(task),
     listTasks: vi.fn().mockResolvedValue([task]),
@@ -65,6 +65,7 @@ function createStore(task: Task): TaskStore {
       groupOverlappingFiles: false,
       autoMerge: true,
       requirePlanApproval: false,
+      ...settingsOverrides,
     } as Settings),
     updateTask: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn().mockResolvedValue(undefined),
@@ -79,6 +80,10 @@ function createStore(task: Task): TaskStore {
     mergeTask: vi.fn(),
     updateSettings: vi.fn(),
     addSteeringComment: vi.fn(),
+    getTaskWorkflowSelection: vi.fn().mockReturnValue({ workflowId: "builtin:coding", stepIds: [] }),
+    getWorkflowDefinition: vi.fn().mockResolvedValue(undefined),
+    getWorkflowSettingValues: vi.fn().mockReturnValue({}),
+    getWorkflowSettingsProjectId: vi.fn().mockReturnValue("project-plan-review-retry"),
     on: vi.fn(),
     emit: vi.fn(),
   } as unknown as TaskStore;
@@ -136,6 +141,26 @@ describe("Plan Review unavailable retry", () => {
     );
     expect(readFileSync(promptPath, "utf-8")).toBe(prompt);
     expect(store.moveTask).toHaveBeenCalledWith(task.id, "todo");
+  });
+
+  it("moves an approved retry to todo when project auto approval overrides workflow approval", async () => {
+    const rootDir = await createFixtureRoot();
+    roots.push(rootDir);
+    const task = createRetryTask({ id: "FN-PLAN-RETRY-AUTO-APPROVE" });
+    const prompt = `# Task: ${task.id} - Existing draft\n\n## Mission\n\nKeep this exact text.\n`;
+    const promptPath = await writePrompt(rootDir, task.id, prompt);
+    const store = createStore(task, { planApprovalMode: "auto-approve-all", requirePlanApproval: false });
+    (store.getWorkflowSettingValues as ReturnType<typeof vi.fn>).mockReturnValue({ requirePlanApproval: true });
+    mockReviewStep.mockResolvedValue({ verdict: "APPROVE", review: "Approved.", summary: "Ready." });
+
+    await retryTask(rootDir, task, store);
+
+    expect(mockCreateFnAgent).not.toHaveBeenCalled();
+    expect(readFileSync(promptPath, "utf-8")).toBe(prompt);
+    expect(store.moveTask).toHaveBeenCalledWith(task.id, "todo");
+    expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ status: "awaiting-approval" }));
+    const logActions = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls.map(([, action]) => action);
+    expect(logActions).not.toContain("Specification approved by AI — awaiting manual approval");
   });
 
   it.each([

@@ -358,7 +358,10 @@ Desktop packaging is configured in `electron-builder.yml`.
 
 - Output directory: `packages/desktop/dist-electron`
 - Targets: macOS (`dmg`, `zip`), Windows (`nsis`, `portable`), Linux (`AppImage`, `deb`, `tar.gz`)
-- Windows artifacts: `Fusion-<version>-win-x64.exe` and `Fusion-<version>-win-arm64.exe` (both NSIS + portable variants) in `packages/desktop/dist-electron/`
+- Windows NSIS installer artifacts: `Fusion-<version>-win-x64.exe` and `Fusion-<version>-win-arm64.exe` in `packages/desktop/dist-electron/`
+- Windows portable artifacts: `Fusion-<version>-win-x64-portable.exe` and `Fusion-<version>-win-arm64-portable.exe` in `packages/desktop/dist-electron/`
+- Silent NSIS installs support a custom destination with `/S /D=<absolute path>`; keep `/D=...` as the final installer argument (for example, `Fusion-<version>-win-x64.exe /S /D=C:\\Users\\me\\Tools\\fusion`).
+- The Windows packaging workflow verifies `win*-unpacked` contains Electron root runtime resources (`chrome_100_percent.pak`, `chrome_200_percent.pak`, and `resources.pak`) before uploading artifacts.
 - Binary GitHub Release workflow (`.github/workflows/release.yml`) now attaches desktop artifacts for all supported platforms:
   - Electron-updater feed files are also published per platform: `latest.yml` (Windows), `latest-mac.yml` (macOS), and `latest-linux.yml` (Linux). `setupAutoUpdater` / `triggerUpdateCheck` resolve these feeds from the GitHub Release channel.
   - Windows: x64 + arm64 outputs (NSIS + portable), matching `.exe.sha256` sidecars, and `.blockmap` files.

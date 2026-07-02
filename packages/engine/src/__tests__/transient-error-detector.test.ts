@@ -7,6 +7,7 @@ import {
   isOperatorActionableAgentError,
   isStaleWorktreeModuleResolutionError,
   isModelAuthTierIncompatibilityError,
+  isProviderModelNotFoundError,
   isUnsupportedMessageRoleError,
   isNonContinuableSessionError,
   TRANSIENT_ERROR_PATTERNS,
@@ -361,6 +362,22 @@ describe("Transient Error Detector", () => {
     });
   });
 
+  describe("isProviderModelNotFoundError", () => {
+    it("matches provider-scoped model 404 payloads without matching generic 404s", () => {
+      const anthropicSonnet5Error =
+        'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}';
+
+      expect(isProviderModelNotFoundError(anthropicSonnet5Error)).toBe(true);
+      expect(isProviderModelNotFoundError("model claude-sonnet-5 not found")).toBe(true);
+      expect(isProviderModelNotFoundError("model claude-sonnet-5 is not available on this account")).toBe(false);
+      expect(isModelAuthTierIncompatibilityError("model claude-sonnet-5 is not available on this account")).toBe(true);
+      expect(isProviderModelNotFoundError("GET /api/tasks/FN-404 returned 404 Not Found")).toBe(false);
+      expect(isProviderModelNotFoundError("Task FN-404 not found")).toBe(false);
+      expect(isProviderModelNotFoundError("404 Not Found: /api/chat/sessions/missing"))
+        .toBe(false);
+    });
+  });
+
   describe("isOperatorActionableAgentError", () => {
     it("returns true for credential/model/billing errors", () => {
       expect(isOperatorActionableAgentError("invalid api key")).toBe(true);
@@ -368,6 +385,11 @@ describe("Transient Error Detector", () => {
       expect(isOperatorActionableAgentError("model gpt-x not found")).toBe(true);
       expect(isOperatorActionableAgentError("missing OPENAI_API_KEY")).toBe(true);
       expect(isOperatorActionableAgentError("billing issue: quota exceeded")).toBe(true);
+      expect(
+        isOperatorActionableAgentError(
+          'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}',
+        ),
+      ).toBe(true);
     });
 
     it("returns true for unsupported message-role errors", () => {

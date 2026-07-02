@@ -187,17 +187,25 @@ function renderListSplitTaskChat(task: Task = makeTask()) {
   );
 }
 
-function expectNoComposerGuidanceShell() {
+function expectNoComposerGuidanceShell(inputLabel = "Message active agent session") {
   /*
-   * FNXC:TaskDetailChat 2026-06-24-00:00:
-   * Task chat composers communicate the active/idle/done action through placeholders only; tests must prove the removed guidance block does not leave an empty status shell above the entry row.
+   * FNXC:TaskDetailChat 2026-06-30-23:59:
+   * Task Activity keeps the operational composer but removed the visible steering/refinement guidance affordance block; tests must prove no empty wrapper, stale label/hint copy, or dangling aria-describedby remains above the entry row.
    */
   expect(screen.queryByTestId("task-chat-idle-hint")).not.toBeInTheDocument();
   expect(document.querySelector(".task-chat-session-hint")).toBeNull();
   expect(document.querySelector(".task-chat-session-hint--idle")).toBeNull();
+  expect(document.querySelector(".task-chat-composer-affordance")).toBeNull();
+  expect(document.querySelector(".task-chat-composer-label")).toBeNull();
+  expect(document.querySelector(".task-chat-composer-hint")).toBeNull();
+  expect(screen.queryByText(/^Steering comment$/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Send operational guidance to the active task through steering comments.")).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Refinement request$/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Create a follow-up refinement task from this completed task.")).not.toBeInTheDocument();
   expect(screen.queryByText(/no agent is working on this task right now/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/message the active agent session\. guidance is delivered to the running session in real time\./i)).not.toBeInTheDocument();
   expect(screen.queryByText(/^send a message to start a refinement task for this completed task\.$/i)).not.toBeInTheDocument();
+  expect(screen.getByLabelText(inputLabel)).not.toHaveAttribute("aria-describedby");
 }
 
 function expectActivePlaceholderWithoutGuidance() {
@@ -208,6 +216,14 @@ function expectActivePlaceholderWithoutGuidance() {
 function expectDonePlaceholderWithoutGuidance() {
   expectNoComposerGuidanceShell();
   expect(screen.getByPlaceholderText("Start a refinement task for this completed task")).toBeInTheDocument();
+}
+
+function firstTapSendFromFocusedTextarea(input: HTMLElement, sendButton: HTMLElement) {
+  input.focus();
+  expect(input).toHaveFocus();
+  fireEvent.pointerDown(sendButton, { pointerType: "touch" });
+  fireEvent.blur(input);
+  fireEvent.click(sendButton);
 }
 
 function restoreMetricDescriptor(name: "scrollTop" | "scrollHeight" | "clientHeight", descriptor: PropertyDescriptor | undefined) {
@@ -394,7 +410,7 @@ describe("TaskChatTab", () => {
     expect(document.querySelector(".task-chat-toolbar")).toBeNull();
     expect(toggle).toHaveClass("btn-icon");
     expect(toggle).toHaveClass("task-chat-expand-toggle--overlay");
-    expect(toggle).toHaveAttribute("aria-label", "Expand chat to full modal");
+    expect(toggle).toHaveAttribute("aria-label", "Expand activity to full modal");
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(toggle).not.toHaveTextContent("Expand");
     expect(toggle).not.toHaveTextContent("Collapse");
@@ -407,7 +423,7 @@ describe("TaskChatTab", () => {
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} expanded onToggleExpanded={vi.fn()} />);
 
     const toggle = screen.getByTestId("task-chat-expand-toggle");
-    expect(toggle).toHaveAttribute("aria-label", "Collapse chat");
+    expect(toggle).toHaveAttribute("aria-label", "Collapse activity");
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(toggle).not.toHaveTextContent("Collapse");
     expect(toggle).not.toHaveTextContent("Expand");
@@ -492,10 +508,10 @@ describe("TaskChatTab", () => {
     expect(document.querySelectorAll(".task-chat-provider-icon [data-provider='anthropic']")).toHaveLength(2);
   });
 
-  it("renders provider icons for task chat roles from runtime model markers", () => {
+  it("renders provider icons for task chat roles from legacy and suffixed runtime model markers", () => {
     mockLogs([
-      makeEntry({ agent: "triage", text: "Triage using model: google/gemini-pro" }),
-      makeEntry({ agent: "executor", text: "Executor using model: openai/gpt-4o" }),
+      makeEntry({ agent: "triage", text: "Triage using model: google/gemini-pro (thinking effort: low)" }),
+      makeEntry({ agent: "executor", text: "Executor using model: openai/gpt-4o (thinking effort: high)" }),
       makeEntry({ agent: "reviewer", text: "Reviewer using model: anthropic/claude-sonnet-4-5" }),
     ]);
 
@@ -1383,7 +1399,7 @@ describe("TaskChatTab", () => {
     const toggle = screen.getByTestId("task-chat-expand-toggle");
     expect(toggle).toBeInTheDocument();
     expect(toggle).toBeVisible();
-    expect(toggle).toHaveAccessibleName("Expand chat to full modal");
+    expect(toggle).toHaveAccessibleName("Expand activity to full modal");
     expect(toggle).not.toHaveTextContent("Expand");
     expect(transcript).not.toContainElement(toggle);
   });
@@ -1446,6 +1462,63 @@ describe("TaskChatTab", () => {
     expect(mockedRefineTask).not.toHaveBeenCalled();
     expect(onTaskUpdated).toHaveBeenCalledWith(updatedTask);
     expect(input).toHaveValue("");
+  });
+
+  it("sends Activity steering exactly once on the first mobile tap while the textarea is focused", async () => {
+    const updatedTask = makeTask();
+    mockedAddSteeringComment.mockResolvedValue(updatedTask);
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "First mobile tap steering" } });
+    firstTapSendFromFocusedTextarea(input, screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(mockedAddSteeringComment).toHaveBeenCalledWith("FN-001", "First mobile tap steering", "project-1");
+    });
+    expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1);
+    expect(mockedRefineTask).not.toHaveBeenCalled();
+  });
+
+  it("sends done-task refinement exactly once on the first mobile tap while the textarea is focused", async () => {
+    mockedRefineTask.mockResolvedValue(makeTask({ id: "FN-222", column: "todo" }));
+    render(<TaskChatTab task={makeTask({ column: "done", status: undefined })} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    fireEvent.change(input, { target: { value: "First mobile tap refinement" } });
+    firstTapSendFromFocusedTextarea(input, screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(mockedRefineTask).toHaveBeenCalledWith("FN-001", "First mobile tap refinement", "project-1");
+    });
+    expect(mockedRefineTask).toHaveBeenCalledTimes(1);
+    expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+  });
+
+  it("keeps mobile first-tap guards for blank drafts and in-flight sends", async () => {
+    const send = deferred<Task>();
+    mockedAddSteeringComment.mockReturnValue(send.promise);
+    render(<TaskChatTab task={makeTask()} projectId="project-1" active addToast={vi.fn()} />);
+
+    const input = screen.getByLabelText("Message active agent session");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    expect(sendButton).toBeDisabled();
+    fireEvent.change(input, { target: { value: "   \n  " } });
+    expect(sendButton).toBeDisabled();
+    firstTapSendFromFocusedTextarea(input, sendButton);
+    expect(mockedAddSteeringComment).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "Do not duplicate mobile tap" } });
+    expect(sendButton).not.toBeDisabled();
+    firstTapSendFromFocusedTextarea(input, sendButton);
+    fireEvent.pointerDown(sendButton, { pointerType: "touch" });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(mockedAddSteeringComment).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      send.resolve(makeTask());
+      await send.promise;
+    });
   });
 
   it("routes done-task composer sends to refineTask without replacing the current task", async () => {
@@ -2415,14 +2488,14 @@ describe("TaskChatTab", () => {
     expect(onTaskUpdated).not.toHaveBeenCalled();
   });
 
-  it("renders the same explicit steering composer affordance on desktop and mobile breakpoints", () => {
+  it("keeps the composer usable without visible steering guidance copy on desktop and mobile breakpoints", () => {
     mockMatchMedia(false);
     const desktop = render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
     expect(screen.getByTestId("task-chat-tab")).toBeInTheDocument();
     expect(screen.getByTestId("task-chat-transcript")).toBeInTheDocument();
-    expect(screen.getByRole("form", { name: "Steering comment" })).toBeInTheDocument();
-    expect(screen.getByText("Send operational guidance to the active task through steering comments.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Message active agent session")).toHaveAccessibleDescription("Send operational guidance to the active task through steering comments.");
+    expect(screen.getByRole("form", { name: "Task activity composer" })).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    expectActivePlaceholderWithoutGuidance();
     expect(screen.getByLabelText("Message active agent session")).toHaveClass("task-chat-input");
     expect(screen.getByRole("button", { name: "Send" })).toHaveClass("task-chat-send");
     desktop.unmount();
@@ -2431,18 +2504,20 @@ describe("TaskChatTab", () => {
     render(<TaskChatTab task={makeTask()} active addToast={vi.fn()} />);
     expect(screen.getByTestId("task-chat-tab")).toBeInTheDocument();
     expect(screen.getByTestId("task-chat-transcript")).toBeInTheDocument();
-    expect(screen.getByRole("form", { name: "Steering comment" })).toBeInTheDocument();
-    expect(screen.getByText("Send operational guidance to the active task through steering comments.")).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Task activity composer" })).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    expectActivePlaceholderWithoutGuidance();
     expect(screen.getByLabelText("Message active agent session")).toHaveClass("task-chat-input");
     expect(screen.getByRole("button", { name: "Send" })).toHaveClass("task-chat-send");
   });
 
-  it("keeps completed tasks on the refinement affordance instead of steering copy", () => {
+  it("keeps completed task refinement functional without the shared visible affordance shell", () => {
     render(<TaskChatTab task={makeTask({ column: "done" })} active addToast={vi.fn()} />);
 
-    expect(screen.getByRole("form", { name: "Refinement request" })).toBeInTheDocument();
-    expect(screen.getByText("Create a follow-up refinement task from this completed task.")).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Task refinement composer" })).toBeInTheDocument();
+    expectDonePlaceholderWithoutGuidance();
     expect(screen.queryByRole("form", { name: "Steering comment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Refinement request" })).not.toBeInTheDocument();
   });
 
   it("FN-6347 pins the composer while the transcript flex-fills without fixed viewport caps", () => {
@@ -2461,6 +2536,7 @@ describe("TaskChatTab", () => {
     expect(transcriptRule).toContain("overflow-y: auto");
     expect(transcriptRule).not.toContain("max-height");
     expect(composerRule).toContain("flex: 0 0 auto");
+    expect(composerRule).toContain("padding: 0");
     expect(mobileTranscriptRule).toContain("flex: 1 1 auto");
     expect(mobileTranscriptRule).toContain("min-height: 0");
     expect(mobileTranscriptRule).not.toContain("max-height");
@@ -2566,15 +2642,15 @@ describe("TaskChatTab", () => {
     expect(mobileInputRule).toContain("min-height: calc(var(--space-2xl) + var(--space-lg))");
   });
 
-  it("keeps TaskDetailModal inline and expanded chat on the canonical TaskChatTab renderer", () => {
+  it("keeps TaskDetailModal inline and expanded Activity on the canonical TaskChatTab renderer", () => {
     const source = readFileSync(resolve(__dirname, "../TaskDetailModal.tsx"), "utf8");
     const taskChatMounts = source.match(/<TaskChatTab\b/g) ?? [];
 
     expect(source).toContain('import { TaskChatTab } from "./TaskChatTab"');
     expect(taskChatMounts).toHaveLength(1);
-    expect(source).toContain("const isChatExpanded = chatExpanded && activeTab === \"chat\" && !isEditing");
+    expect(source).toContain("const isActivityExpanded = activityExpanded && activeTab === \"chat\" && !isEditing");
     expect(source).toContain("task-detail-content--chat-expanded");
-    expect(source).toContain("expanded={chatExpanded}");
+    expect(source).toContain("setActivityExpanded((value) => !value)");
   });
 
   it("widens task chat messages in narrow host containers without changing desktop layout", () => {
@@ -2767,21 +2843,20 @@ describe("TaskChatTab", () => {
     const css = readFileSync(resolve(__dirname, "../TaskChatTab.css"), "utf8");
     const sendRule = getCssRuleBlock(css, ".task-chat-send");
     const mobileCss = getCssAfter(css, "@media (max-width: 768px)");
-    const mobileAffordanceRule = getCssRuleBlock(mobileCss, ".task-chat-composer-affordance");
     const mobileComposerRule = getCssRuleBlock(mobileCss, ".task-chat-composer-row");
     const mobileSendRule = getCssRuleBlock(mobileCss, ".task-chat-send");
 
     expect(css).toContain("@media (max-width: 768px)");
     expect(css).toContain(".task-chat-transcript");
     expect(css).toContain(".task-chat-jump-to-bottom");
-    expect(css).toContain(".task-chat-composer-affordance");
+    expect(css).not.toContain(".task-chat-composer-affordance");
+    expect(css).not.toContain(".task-chat-composer-label");
+    expect(css).not.toContain(".task-chat-composer-hint");
     expect(css).toContain(".task-chat-composer-row");
     expect(sendRule).toContain("--btn-icon-size: var(--space-2xl)");
     expect(sendRule).toContain("inline-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).toContain("block-size: calc(var(--space-2xl) + var(--space-sm))");
     expect(sendRule).not.toContain("gap");
-    expect(mobileAffordanceRule).toContain("flex-direction: column");
-    expect(mobileAffordanceRule).toContain("gap: calc(var(--space-xs) / 2)");
     expect(mobileComposerRule).toContain("align-items: flex-end");
     expect(mobileComposerRule).not.toContain("flex-direction: column");
     expect(mobileComposerRule).not.toContain("align-items: stretch");

@@ -7829,11 +7829,11 @@ export class SelfHealingManager {
                 landedFiles: liveLandedFiles ?? currentLandedFiles,
                 mergeConfirmed: true,
               },
-            } as Task, { rootDir: this.options.rootDir });
+            } as Task);
             if (!confirmedProofVerdict.ok) {
               /*
-              FNXC:WorkflowMerge 2026-06-29-10:42:
-              Done-task metadata repair is not allowed to convert stale workflow proof into truth. If the branch still carries files outside the recorded landed commit, or the workflow still has pending steps, leave the row unchanged so workflow retry/recovery can resume the merge path instead of hiding unmerged work.
+              FNXC:WorkflowMerge 2026-07-01-10:28:
+              Done-task metadata repair is not allowed to convert stale workflow proof into truth. Missing merge confirmation, pending workflow steps, or invalid no-op proof still block repair; stale branch residue does not, because finalization only needs durable evidence that the task patch landed.
               */
               log.warn(`recoverDoneTaskMergeMetadata: skipped ${task.id} — invalid done merge proof (${confirmedProofVerdict.reason})`);
               await this.store.logEntry(task.id, `Done-task merge metadata repair skipped: invalid workflow merge proof (${confirmedProofVerdict.reason})`).catch(() => undefined);
@@ -7920,7 +7920,7 @@ export class SelfHealingManager {
               landedFiles: landedFiles ?? task.mergeDetails?.landedFiles,
               mergeConfirmed: true,
             },
-          } as Task, { rootDir: this.options.rootDir });
+          } as Task);
           if (!repairedProofVerdict.ok) {
             log.warn(`recoverDoneTaskMergeMetadata: skipped ${task.id} — invalid repaired merge proof (${repairedProofVerdict.reason})`);
             await this.store.logEntry(task.id, `Done-task merge metadata repair skipped: invalid repaired workflow merge proof (${repairedProofVerdict.reason})`).catch(() => undefined);

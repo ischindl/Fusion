@@ -180,6 +180,37 @@ describe("SessionTerminal (mobile)", () => {
     expect(screen.getByTestId("cli-terminal-mobile-input")).toBeTruthy();
   });
 
+  it("uses touch visualViewport width for Android folded initial mobile mode", async () => {
+    installMatchMedia({ width: false, height: false });
+    const originalVisualViewport = window.visualViewport;
+    const originalMaxTouchPoints = navigator.maxTouchPoints;
+    Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 1 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 900 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 700 });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      writable: true,
+      value: {
+        width: 390,
+        height: 320,
+        offsetTop: 0,
+        offsetLeft: 0,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+    });
+
+    try {
+      await renderMobile();
+      expect(screen.getByTestId("cli-terminal-mobile-bar")).toBeTruthy();
+      expect(screen.getByTestId("cli-terminal-key-bar")).toBeTruthy();
+      expectMeasurementSafeFontStack(mockTerm.options.fontFamily as string);
+    } finally {
+      Object.defineProperty(window, "visualViewport", { configurable: true, writable: true, value: originalVisualViewport });
+      Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: originalMaxTouchPoints });
+    }
+  });
+
   it("does not render the mobile bar off-mobile (desktop breakpoint)", async () => {
     installMatchMedia(false);
     await renderMobile();

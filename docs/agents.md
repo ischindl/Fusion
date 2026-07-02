@@ -140,11 +140,13 @@ V1 runtime action categories:
 - `task_agent_mutation`
 - `none` (classifier-only read-only result; never stored as a policy rule key)
 
-`permissionPolicy` uses only the five sensitive categories above (everything except `none`) and the FN-3545 disposition contract:
+`permissionPolicy` uses the five sensitive categories above (everything except `none`) plus optional exact `toolRules`, with the FN-3545 disposition contract:
 
 - `allow`
 - `block`
 - `require-approval`
+
+Exact tool overrides are stored as `toolRules: { [toolName]: disposition }` on either a per-agent `permissionPolicy` or the project `defaultAgentPermissionPolicy`. They apply before category rules, so a policy can block one governed tool such as `fn_task_create` while leaving the broader `task_agent_mutation` category set to `allow` for `fn_task_update` or workflow tools.
 
 ### Runtime gate v1 mapping (per tool invocation, permanent agents only)
 
@@ -155,7 +157,7 @@ The engine classifies tool calls by behavior (not namespace alone):
 - `git_write`: mutating git shell commands run via `bash`
 - `network_api`: external/network-facing tools (for example `fn_research_run`, `fn_research_cancel`, `fn_web_fetch`, `worktrunk_install`; `fn_research_retry` is permanent-agent network-classified and remains action-gate read-only/exception behavior)
 - `task_agent_mutation`: task/agent/workflow mutation tools (for example `fn_update_agent_config`, `fn_task_pause`, `fn_spawn_agent`, `fn_task_create`, `fn_task_update`, `fn_task_promote`, `fn_task_refine`, and workflow mutators such as `fn_workflow_create`, `fn_workflow_update`, `fn_workflow_delete`, `fn_workflow_settings`, `fn_workflow_select`; action-gate-only task coordination tools like `fn_delegate_task`, `fn_task_import_github`, and `fn_task_import_github_issue` use this category in action-gate evaluation)
-- Dashboard permission editors now show per-category example tools sourced from `AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES` in `@fusion/core`, plus a read-only exempt-tools panel for coordination/messaging bypass tools.
+- Dashboard permission editors now show per-category example tools sourced from `AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES` in `@fusion/core`, exact-tool override controls, plus a read-only exempt-tools panel for coordination/messaging bypass tools.
 - `none`: positively recognized read-only tools (`read`, `grep`, `find`, `ls`, list/show/get-style `fn_*` tools, plus permanent-agent coordination helpers like `fn_delegate_task`, `fn_task_import_github`, and `fn_task_import_github_issue`). Artifact tools mirror `fn_task_document_write` in the shipped allow-lists: `fn_artifact_register`, `fn_artifact_list`, and `fn_artifact_view` are present in `READONLY_FN_TOOLS` and `COORDINATION_EXEMPT_TOOLS`, so registration is treated as coordination/registry publication instead of a broad mutation approval.
 
 `bash` git-write heuristic in v1:
@@ -167,7 +169,7 @@ Unknown/unclassified tool fallback:
 
 - In permanent-agent sessions, unknown tools default to `require-approval` (fail-safe).
 - Category `none` only yields `allow` when the tool is positively recognized as read-only.
-- Internal Fusion runtime coordination tools (heartbeat completion, logs, documents, messaging, structured user questions via `fn_ask_question`, evaluations, identity reflection, memory bookkeeping, and read-only discovery) are exempt by design and always allowed so permanent-agent heartbeats can complete. `fn_task_create` is governed as `task_agent_mutation` in both action-gate and permanent-agent evaluation because it creates task rows; delegation/import tools remain governed in action-gate evaluation while the permanent-agent classifier still treats them as positively recognized `none` coordination primitives. Task field/status mutation via `fn_task_update` is also governed as `task_agent_mutation`.
+- Internal Fusion runtime coordination tools (heartbeat completion, logs, documents, messaging, structured user questions via `fn_ask_question`, evaluations, identity reflection, memory bookkeeping, and read-only discovery) are exempt by design and always allowed so permanent-agent heartbeats can complete. Exact `toolRules` do not make these heartbeat-critical tools configurable. `fn_task_create` is governed as `task_agent_mutation` in both action-gate and permanent-agent evaluation because it creates task rows; delegation/import tools remain governed in action-gate evaluation while the permanent-agent classifier still treats them as positively recognized `none` coordination primitives. Task field/status mutation via `fn_task_update` is also governed as `task_agent_mutation`.
 - Operators can reload the in-memory exempt-tool registry at runtime via `POST /api/action-gate/reload` (optional body `{ "tools": string[] }`) to apply exemption-list updates without restarting the engine process.
 - Canonical tool classification/exemption sets live in `packages/engine/src/gating-classifications.ts` and are shared by both action-gate paths.
 
@@ -373,6 +375,8 @@ The Task Detail Activity → Raw Logs model header prefers runtime provenance ma
 - `Executor using model: <provider>/<modelId>`
 - `Reviewer using model: <provider>/<modelId>`
 - `Triage using model: <provider>/<modelId>`
+
+When the lane resolves a thinking level, the same row appends ` (thinking effort: <level>)`, for example `Executor using model: openai/gpt-4o (thinking effort: high)`. Dashboard parsers ignore parenthesized diagnostics for provider icons/effective-model headers while Raw Logs and Activity rows keep the full text visible.
 
 This makes the header reflect the model that actually ran. For active runs with no runtime marker yet, the UI can use the currently assigned agent runtime model as a temporary fallback before falling back to task/settings resolution.
 
@@ -1539,11 +1543,13 @@ Each category can be set to one disposition:
 - `block`
 
 Precedence:
-1. Per-agent permission policy override (Agent Detail → Settings → Permissions)
-2. Project default permission policy (`defaultAgentPermissionPolicy` in Project Settings → Agent Permissions)
-3. Built-in fallback preset (`unrestricted` / allow-all)
+1. Per-agent exact `toolRules` override (Agent Detail → Settings → Permissions)
+2. Per-agent category rule
+3. Project default exact `toolRules` override (`defaultAgentPermissionPolicy` in Project Settings → Agent Permissions)
+4. Project default category rule
+5. Built-in fallback preset (`unrestricted` / allow-all)
 
-Per-agent rows can inherit project defaults category-by-category.
+For example, `toolRules: { "fn_task_create": "block" }` with `rules.task_agent_mutation: "allow"` blocks new task creation while allowing other governed task-agent mutation tools. Per-agent category rows can inherit project defaults category-by-category; per-agent exact-tool rows override project exact-tool rows when present.
 
 ## Pi extension scope (`packages/cli/src/extension.ts`)
 

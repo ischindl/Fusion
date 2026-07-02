@@ -14,25 +14,29 @@ function findRuleBody(selector: RegExp): string {
 }
 
 describe("terminal mobile header row CSS contract", () => {
-  it("keeps the mobile terminal header on one row", () => {
+  it("lets the mobile terminal header wrap intentionally without clipping actions", () => {
     const ruleBody = findRuleBody(/\.terminal-header/);
 
-    expect(ruleBody).toContain("flex-wrap: nowrap");
+    expect(ruleBody).toContain("flex-wrap: wrap");
+    expect(ruleBody).toContain("row-gap: var(--space-xs)");
     expect(ruleBody).toContain("overflow: hidden");
   });
 
-  it("keeps tabs flexible instead of forcing them onto a full-width row", () => {
-    const ruleBody = findRuleBody(/\.terminal-tabs/);
+  it("hides the desktop tab strip and exposes the mobile selector surface", () => {
+    const desktopTabsRule = findRuleBody(/\.terminal-tabs/);
+    const mobileSelectorRule = findRuleBody(/\.terminal-mobile-tabs/);
 
-    expect(ruleBody).toContain("flex: 1 1 auto");
-    expect(ruleBody).toContain("min-width: 0");
-    expect(ruleBody).not.toContain("flex: 1 1 100%");
-    expect(ruleBody).not.toContain("min-width: 100%");
+    expect(desktopTabsRule).toContain("display: none");
+    expect(mobileSelectorRule).toContain("display: flex");
+    expect(mobileSelectorRule).toContain("min-width: 0");
+    expect(mobileSelectorRule).not.toContain("flex: 1 1 100%");
+    expect(mobileSelectorRule).not.toContain("min-width: 100%");
   });
 
-  it("keeps the action cluster on the same row without a second-row divider", () => {
+  it("keeps the action cluster reachable without a second-row divider", () => {
     const ruleBody = findRuleBody(/\.terminal-actions/);
 
+    expect(ruleBody).toContain("order: 3");
     expect(ruleBody).toContain("flex: 0 0 auto");
     expect(ruleBody).toContain("border-top: none");
     expect(ruleBody).not.toContain("flex: 1 1 100%");

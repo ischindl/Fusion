@@ -155,6 +155,7 @@ describe("interrupt + resume (no silent loss)", () => {
     expect(done.event?.type).toBe("complete");
     expect(done.session.status).toBe("completed");
     expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ allowAnswerQuestionIdDrift: true }));
     expect(rehydrated.prompt).toHaveBeenCalledTimes(1);
     expect(rehydrated.answer).toHaveBeenCalledTimes(1);
     const hasAnswerTurn = done.session.conversationHistory.some(
@@ -183,6 +184,7 @@ describe("interrupt + resume (no silent loss)", () => {
     const done = await orch.answer(started.session.id, "q1", "a");
     expect(done.session.status).toBe("completed");
     expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledWith(expect.not.objectContaining({ allowAnswerQuestionIdDrift: true }));
     expect(live.prompt).toHaveBeenCalledTimes(1);
     expect(live.answer).toHaveBeenCalledTimes(1);
   });
@@ -276,6 +278,7 @@ describe("interrupt + resume (no silent loss)", () => {
     await new Promise((resolve) => setImmediate(resolve));
     const after = store.get(created.id)!;
     expect(after.status).toBe("completed");
+    expect(rehydrated.answer).toHaveBeenCalledTimes(1);
     const hasAnswerTurn = after.conversationHistory.some(
       (t) => t.text === JSON.stringify({ answer: "a", questionId: "q1" }),
     );

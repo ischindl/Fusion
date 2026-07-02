@@ -5,7 +5,16 @@
  * subprocess using stream-json NDJSON protocol.
  */
 
-import { getModels } from "@earendil-works/pi-ai";
+/*
+ * FNXC:ModelCatalog 2026-07-01-17:30:
+ * pi-ai 0.80 restructured its static catalog API: the top-level `getModels`
+ * export moved to the deprecated `/compat` shim, and the canonical accessor is
+ * `getBuiltinModels` from `@earendil-works/pi-ai/providers/all`. pi-claude-cli
+ * now pins `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` to
+ * `^0.80.3` (matching cli/engine) so the whole extension resolves one pi-ai
+ * version and the ExtensionAPI stream types stay compatible.
+ */
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamViaCli } from "./src/provider.js";
 import { streamViaAcp } from "./src/acp-driver.js";
@@ -175,7 +184,7 @@ export default function (pi: ExtensionAPI) {
     // `claude` subprocess in streamViaCli still reports hard errors on send.
     void runCliValidationOnce();
 
-    const catalogModels = getModels("anthropic").map((model) => ({
+    const catalogModels = getBuiltinModels("anthropic").map((model) => ({
       id: model.id,
       name: model.name,
       reasoning: model.reasoning,
@@ -191,8 +200,11 @@ export default function (pi: ExtensionAPI) {
     // https://platform.claude.com/docs/en/about-claude/models/overview
     const extraModels: typeof catalogModels = [
       /*
-       * FNXC:ModelCatalog 2026-06-30-12:31:
-       * The vendored Claude CLI provider has its own model list because it exposes `pi-claude-cli` independently from direct `anthropic`. Add Claude Sonnet 5 here as supplemental metadata so Claude CLI users can select it before the upstream pi-ai catalog catches up, while the dedupe below prevents duplicate rows after it does.
+       * FNXC:ModelCatalog 2026-07-01-18:18:
+       * Keep Claude CLI supplemental metadata limited to models that Fusion can advertise without triggering the direct-Anthropic Sonnet 5 404 loop. `claude-sonnet-5` must come from the upstream/live registry before this provider shows it, because static metadata cannot prove the current account and CLI surface can call that model.
+       *
+       * FNXC:ModelCatalog 2026-07-01-20:37:
+       * Supersede the prior Claude CLI withholding only for `pi-claude-cli`: the local `claude` subprocess routes through the user's Claude subscription/login and its 2.1.197 `--model` help accepts latest aliases/full names, so the CLI picker should advertise Sonnet 5 and newer CLI-callable rows. Keep direct Anthropic supplemental metadata and static pricing withheld because FN-7374's per-account `404 not_found_error` applies to that API surface, not this subscription-authenticated CLI surface.
        */
       {
         id: "claude-sonnet-5",
@@ -200,6 +212,26 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         input: ["text", "image"],
         cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+      {
+        id: "claude-fable-5",
+        name: "Claude Fable 5",
+        reasoning: true,
+        input: ["text", "image"],
+        // FNXC:ModelCatalog 2026-07-01-21:04: Fable 5 must use Anthropic's current $10/$50 per MTok row so Fusion's CLI picker does not understate supplemental model cost estimates.
+        cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+      {
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        reasoning: true,
+        input: ["text", "image"],
+        // FNXC:ModelCatalog 2026-07-01-20:37: The overview confirms Opus 4.8 context/output limits; mirror the closest current Opus CLI supplemental pricing until a precise per-model price row is pinned for this subscription surface.
+        cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
         contextWindow: 1_000_000,
         maxTokens: 128_000,
       },
@@ -218,8 +250,8 @@ export default function (pi: ExtensionAPI) {
         reasoning: true,
         input: ["text", "image"],
         cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-        contextWindow: 200_000,
-        maxTokens: 16_384,
+        contextWindow: 1_000_000,
+        maxTokens: 64_000,
       },
       {
         id: "claude-sonnet-4-5",
@@ -228,7 +260,7 @@ export default function (pi: ExtensionAPI) {
         input: ["text", "image"],
         cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
         contextWindow: 200_000,
-        maxTokens: 8_192,
+        maxTokens: 64_000,
       },
       {
         id: "claude-haiku-4-5",
@@ -237,7 +269,7 @@ export default function (pi: ExtensionAPI) {
         input: ["text", "image"],
         cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
         contextWindow: 200_000,
-        maxTokens: 8_192,
+        maxTokens: 64_000,
       },
     ];
 

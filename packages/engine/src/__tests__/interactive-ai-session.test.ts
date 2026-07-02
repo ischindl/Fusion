@@ -330,6 +330,47 @@ describe("interactive-ai-session seam", () => {
     expect(ev.type === "error" && ev.data.message).toMatch(/transport exploded/);
   });
 
+  it("rejects mismatched question ids by default", async () => {
+    const question: PlanningQuestion = { id: "current", type: "text", question: "Current?" };
+    const scripted = makeScriptedAgent([q(question), complete({ ok: true })]);
+    const { session } = await createInteractiveAiSessionWith(factoryFor(scripted.session), {
+      cwd: "/tmp",
+      systemPrompt: "protocol",
+    });
+
+    await session.prompt("start");
+    expect((await session.nextEvent()).type).toBe("question");
+
+    await session.answer("persisted", "answer");
+    const ev = await session.nextEvent();
+    expect(ev.type).toBe("error");
+    expect(ev.type === "error" && ev.data.message).toContain('questionId "persisted" does not match current question "current"');
+    expect(scripted.promptCalls()).toHaveLength(1);
+  });
+
+  it("can trust the caller's persisted question id after non-deterministic rehydration", async () => {
+    const question: PlanningQuestion = { id: "rehydrated-different", type: "text", question: "Rehydrated?" };
+    const scripted = makeScriptedAgent([q(question), complete({ ok: true })]);
+    const { session } = await createInteractiveAiSessionWith(factoryFor(scripted.session), {
+      cwd: "/tmp",
+      systemPrompt: "protocol",
+      allowAnswerQuestionIdDrift: true,
+    });
+
+    await session.prompt("start");
+    expect((await session.nextEvent()).type).toBe("question");
+
+    await session.answer("persisted-original", "answer");
+    const done = await session.nextEvent();
+    expect(done.type).toBe("complete");
+    const lastPrompt = scripted.promptCalls().at(-1)!;
+    expect(JSON.parse(lastPrompt)).toMatchObject({
+      type: "answer",
+      questionId: "persisted-original",
+      response: "answer",
+    });
+  });
+
   it("ignores answer() when not awaiting input", async () => {
     const scripted = makeScriptedAgent([complete({ ok: true })]);
     const { session } = await createInteractiveAiSessionWith(factoryFor(scripted.session), {

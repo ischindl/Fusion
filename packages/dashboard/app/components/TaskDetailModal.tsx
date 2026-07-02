@@ -1,7 +1,8 @@
 import "./TaskDetailModal.css";
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2, AlertTriangle, Sparkles, Maximize2 } from "lucide-react";
+import { Pencil, Bot, X, ChevronDown, ChevronRight, GitBranch, ArrowLeft, Zap, Loader2, AlertTriangle, Sparkles, Maximize2, Minimize2 } from "lucide-react";
 import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { useMobileScrollLock } from "../hooks/useMobileScrollLock";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
@@ -68,10 +69,23 @@ import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
 import { ACTIVE_STATUSES, resolveEffectiveExecutor, resolveEffectivePlanning, resolveEffectiveValidator, type ModelSelection } from "./effective-model-resolution";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel } from "./TaskContextMenu";
 import { useFileBrowser } from "../context/FileBrowserContext";
+import type { DetailTaskInitialActionRequest } from "../hooks/useModalManager";
 
 const STALE_PAUSED_REVIEW_LOG_REGEX = /^Stale paused review surfaced \[([^\]]+)\]/;
 const EMPTY_MARKDOWN_CHILD_SEPARATOR = "";
 const STRING_OBJECT_TAG = "[object String]";
+const ACTIVITY_VIEW_MENU_VIEWPORT_PADDING = 16;
+const ACTIVITY_VIEW_MENU_TRIGGER_GAP = 4;
+const ACTIVITY_VIEW_MENU_MIN_WIDTH = 160;
+const ACTIVITY_VIEW_MENU_MIN_HEIGHT = 120;
+const ACTIVITY_VIEW_MENU_MAX_HEIGHT = 320;
+
+type ActivityViewMenuPosition = {
+  top: number;
+  left: number;
+  minWidth: number;
+  maxHeight: number;
+};
 
 function isStringValue(value: unknown): value is string {
   return Object.prototype.toString.call(value) === STRING_OBJECT_TAG;
@@ -197,18 +211,27 @@ type ActivitySegment = "current" | "feed" | "raw-logs";
 
 /*
 FNXC:TaskDetailActivityTab 2026-06-30-00:00:
-The existing task activity/steering surface keeps the stable internal `chat` tab id for deep-link/plugin compatibility, but its top-level user-facing label is Activity. Activity is the implicit default for active task columns; done tasks keep Summary as their omitted-initial-tab landing surface so completed work still opens on the completion report while Activity remains first in tab order.
+The existing task activity/steering surface keeps the stable internal `chat` tab id for deep-link/plugin compatibility, but its top-level user-facing label is Activity. Done tasks keep Summary as their omitted-initial-tab landing surface so completed work still opens on the completion report.
 
 FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
-Task detail now separates Activity from planner-model Chat. `chat` remains the legacy Activity id for old links and Activity → Current/Feed/Raw Logs/steering, while `planner-chat` is the new top-level Chat tab for task-aware planning conversation and must render immediately after Activity.
+Task detail separates Activity from planner-model Chat. `chat` remains the legacy Activity id for old links and Activity → Live (internal `current`)/Feed/Raw Logs/steering, while `planner-chat` is the top-level Chat tab for task-aware planning conversation.
+
+FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+Task details are Activity-first by default: render Activity before planner Chat and make omitted non-done opens land on Activity → Live. The project `taskDetailChatFirst` setting restores Chat-first ordering/default when true; explicit `initialTab` deep links always win.
 
 FNXC:TaskDetailActivity 2026-06-30-15:50:
-Only an omitted initial tab is the implicit default. Preserve explicit `initialTab="chat"` requests from plugins and task-detail entrypoints so existing links continue to open Activity → Current. Legacy `initialTab="logs"` now routes to Activity → Feed, and Raw Logs remains an Activity segment.
+Only an omitted initial tab is the implicit default. Preserve explicit `initialTab="chat"` requests from plugins and task-detail entrypoints so existing links continue to open Activity → Live (internal `current`). Legacy `initialTab="logs"` now routes to Activity → Feed, and Raw Logs remains an Activity segment.
 
 FNXC:TaskDetailActivity 2026-06-30-21:55:
-The first Activity segment keeps the stable Current label for legacy segment tests and links, but its embedded composer labels the operational steering-comment affordance explicitly. Do not reuse this segment as planner-model Chat conversation; that belongs to the `planner-chat` top-level tab.
+The first Activity segment keeps the stable internal `current` id for legacy segment tests and links, but its embedded composer labels the operational steering-comment affordance explicitly. Do not reuse this segment as planner-model Chat conversation; that belongs to the `planner-chat` top-level tab.
+
+FNXC:TaskDetailActivity 2026-06-30-23:55:
+The first Activity segment is user-facing Live while legacy internals remain `current` and explicit `initialTab="chat"` continues landing there for compatibility.
+
+FNXC:TaskDetailActivity 2026-06-30-23:59:
+Activity view switching lives in the top-level Activity tab dropdown for Live, Feed, and Raw while retaining the internal `current`, `feed`, and `raw-logs` segment ids. Legacy `chat` and `logs` initial-tab routing remains compatible so older links still open Activity → Live or Activity → Feed.
 */
-function resolveDefaultTab(initialTab: TabId | undefined, column: ColumnId): TabId {
+function resolveDefaultTab(initialTab: TabId | undefined, column: ColumnId, taskDetailChatFirst = false): TabId {
   if (initialTab === "retries") {
     return "definition";
   }
@@ -218,7 +241,10 @@ function resolveDefaultTab(initialTab: TabId | undefined, column: ColumnId): Tab
   if (initialTab) {
     return initialTab;
   }
-  return column === "done" ? "summary" : "chat";
+  if (column === "done") {
+    return "summary";
+  }
+  return taskDetailChatFirst ? "planner-chat" : "chat";
 }
 
 function resolveDefaultActivitySegment(initialTab: TabId | undefined): ActivitySegment {
@@ -314,8 +340,12 @@ export interface TaskDetailModalProps {
   onOpenWorkflowEditor?: () => void;
   /** Open the modal with this tab active instead of the default done-aware landing view. */
   initialTab?: TabId;
+  /** One-shot action the detail surface should perform after opening. */
+  initialAction?: DetailTaskInitialActionRequest | null;
   /** Mobile-only header affordance mode. */
   mobileHeaderMode?: "close" | "back";
+  /** Project setting: true restores Chat-first tab order/default; false or missing uses Activity-first. */
+  taskDetailChatFirst?: boolean;
   /** Pre-resolved workflow field defs for this task's workflow (U13/KTD-14).
    *  When provided (e.g. threaded from a Board that already holds the payload)
    *  the modal skips its own board-workflows fetch entirely. Falls back to the
@@ -385,6 +415,14 @@ function resolveTaskWorkflowMetadata(payload: BoardWorkflowsPayload, taskId: str
 
 function normalizeExecutionModeValue(executionMode: Task["executionMode"]): "standard" | "fast" {
   return executionMode === "fast" ? "fast" : "standard";
+}
+
+function requiresExecutionModeReplan(column: Task["column"]): boolean {
+  /*
+   FNXC:ExecutionModeReplan 2026-06-30-00:00:
+   Todo and in-progress tasks can already hold a generated plan or active execution context. Changing Standard/Fast mode invalidates that plan, so the dashboard must confirm the change and send the task back through the existing replanning path instead of silently patching executionMode in place.
+   */
+  return column === "todo" || column === "in-progress";
 }
 
 interface ProvenanceDisplay {
@@ -516,10 +554,12 @@ export function TaskDetailContent({
   autoMergeEnabled: autoMergeEnabledProp,
   onOpenWorkflowEditor,
   /**
-   * FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
-   * The Activity tab is still addressed as `chat` internally so existing callers and deep links do not break; the visible Chat tab uses `planner-chat` for planner-model conversation.
+   * FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+   * The Activity tab is still addressed as `chat` internally so existing callers and deep links do not break; the visible Chat tab uses `planner-chat` and only becomes the omitted non-done default when taskDetailChatFirst is true.
    */
   initialTab,
+  initialAction,
+  taskDetailChatFirst = false,
   mobileHeaderMode = "close",
   embedded = false,
   onRequestClose,
@@ -530,9 +570,10 @@ export function TaskDetailContent({
   const { t } = useTranslation("app");
   const columnLabel = useColumnLabel();
   const fileBrowser = useFileBrowser();
-  const [activeTab, setActiveTab] = useState<TabId>(() => resolveDefaultTab(initialTab, task.column));
+  const [activeTab, setActiveTab] = useState<TabId>(() => resolveDefaultTab(initialTab, task.column, taskDetailChatFirst));
   const [activitySegment, setActivitySegment] = useState<ActivitySegment>(() => resolveDefaultActivitySegment(initialTab));
-  const [chatExpanded, setChatExpanded] = useState(false);
+  const [activityExpanded, setActivityExpanded] = useState(false);
+  const [plannerChatExpanded, setPlannerChatExpanded] = useState(false);
 
   // ── CLI agent session (U11) ────────────────────────────────────────────────
   const [cliSession, setCliSession] = useState<CliSessionSummaryRecord | null>(null);
@@ -661,12 +702,12 @@ export function TaskDetailContent({
 
   // Sync activeTab when the caller changes initialTab (e.g. opening a different tab)
   useEffect(() => {
-    setActiveTab(resolveDefaultTab(initialTab, task.column));
+    setActiveTab(resolveDefaultTab(initialTab, task.column, taskDetailChatFirst));
     setActivitySegment(resolveDefaultActivitySegment(initialTab));
     if (initialTab === "retries") {
       setRetriesExpanded(true);
     }
-  }, [initialTab, task.column]);
+  }, [initialTab, task.column, taskDetailChatFirst]);
 
   useEffect(() => {
     if (activeTab === "pr" && task.column !== "in-review") {
@@ -680,9 +721,10 @@ export function TaskDetailContent({
     }
   }, [activeTab, task.column]);
 
-  // Reset description expanded state when task changes
+  // Reset description and planner-chat focus state when task changes
   useEffect(() => {
     setDescriptionExpanded(false);
+    setPlannerChatExpanded(false);
   }, [task.column, task.id]);
 
   const [highlightStallCode, setHighlightStallCode] = useState<string | null>(null);
@@ -844,10 +886,14 @@ export function TaskDetailContent({
   const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    if (activeTab !== "chat" || activitySegment !== "current" || isEditing) {
-      setChatExpanded(false);
+    if (activeTab !== "chat" || isEditing) {
+      setActivityExpanded(false);
     }
-  }, [activeTab, activitySegment, isEditing]);
+  }, [activeTab, isEditing]);
+
+  useEffect(() => {
+    setActivityExpanded(false);
+  }, [task.id]);
 
   const [editTitle, setEditTitle] = useState(task.title || "");
   const [editDescription, setEditDescription] = useState(task.description || "");
@@ -878,12 +924,18 @@ export function TaskDetailContent({
   const [isSavingInlineExecutionMode, setIsSavingInlineExecutionMode] = useState(false);
   const [inlineNoCommitsExpected, setInlineNoCommitsExpected] = useState<boolean>(task.noCommitsExpected === true);
   const [isSavingInlineNoCommitsExpected, setIsSavingInlineNoCommitsExpected] = useState(false);
+  const { confirm, confirmWithChoice, confirmWithCheckbox } = useConfirm();
+  const requestClose = useCallback(() => {
+    onRequestClose?.();
+  }, [onRequestClose]);
   const mountedRef = useRef(false);
   const activeTaskIdRef = useRef(task.id);
 
   // Split-menu dropdown state for footer actions
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [showActivityViewMenu, setShowActivityViewMenu] = useState(false);
+  const [activityViewMenuPosition, setActivityViewMenuPosition] = useState<ActivityViewMenuPosition | null>(null);
   const [sourceIssueExpanded, setSourceIssueExpanded] = useState(false);
   const [retriesExpanded, setRetriesExpanded] = useState(initialTab === "retries");
   const [githubTrackingExpanded, setGithubTrackingExpanded] = useState(false);
@@ -896,6 +948,9 @@ export function TaskDetailContent({
   const activityListRef = useRef<HTMLDivElement>(null);
   const moveButtonRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const activityViewDropdownRef = useRef<HTMLDivElement>(null);
+  const activityViewMenuRef = useRef<HTMLDivElement>(null);
+  const activityViewButtonRef = useRef<HTMLButtonElement>(null);
 
   // Plugin UI slots for task-detail-tab
   const { getSlotsForId: getPluginSlots } = usePluginUiSlots(projectId);
@@ -1229,15 +1284,16 @@ export function TaskDetailContent({
     setShowAgentPicker(false);
   }, [task.id]);
 
-  // Close footer dropdown menus on outside click
+  // Close task-detail dropdown menus on outside click
   useEffect(() => {
-    const hasOpenMenu = showMoveMenu || showActionsMenu;
+    const hasOpenMenu = showMoveMenu || showActionsMenu || showActivityViewMenu;
     if (!hasOpenMenu) return;
 
     const handleClick = (e: MouseEvent) => {
       const target = e.target as Node;
       const inMoveMenu = moveMenuRef.current?.contains(target);
       const inActionsMenu = actionsMenuRef.current?.contains(target);
+      const inActivityViewMenu = activityViewMenuRef.current?.contains(target) || activityViewButtonRef.current?.contains(target);
 
       if (!inMoveMenu && showMoveMenu) {
         setShowMoveMenu(false);
@@ -1245,15 +1301,18 @@ export function TaskDetailContent({
       if (!inActionsMenu && showActionsMenu) {
         setShowActionsMenu(false);
       }
+      if (!inActivityViewMenu && showActivityViewMenu) {
+        setShowActivityViewMenu(false);
+      }
     };
 
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [showMoveMenu, showActionsMenu]);
+  }, [showMoveMenu, showActionsMenu, showActivityViewMenu]);
 
-  // Close footer dropdown menus on Escape key (before modal Escape handler)
+  // Close task-detail dropdown menus on Escape key (before modal Escape handler)
   useEffect(() => {
-    const hasOpenMenu = showMoveMenu || showActionsMenu;
+    const hasOpenMenu = showMoveMenu || showActionsMenu || showActivityViewMenu;
     if (!hasOpenMenu) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1261,12 +1320,13 @@ export function TaskDetailContent({
         e.stopPropagation(); // Prevent modal from closing
         if (showMoveMenu) setShowMoveMenu(false);
         if (showActionsMenu) setShowActionsMenu(false);
+        if (showActivityViewMenu) setShowActivityViewMenu(false);
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [showMoveMenu, showActionsMenu]);
+  }, [showMoveMenu, showActionsMenu, showActivityViewMenu]);
 
   // Reset spec edit state when task changes
   useEffect(() => {
@@ -1490,6 +1550,7 @@ export function TaskDetailContent({
   const [editAutoSaveStatus, setEditAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const editAutoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editAutoSaveRevisionRef = useRef(0);
+  const editSaveTriggeredReplanRef = useRef(false);
 
   const buildEditUpdates = useCallback((includeDescription: boolean) => {
     const updates: Record<string, unknown> = {};
@@ -1583,8 +1644,23 @@ export function TaskDetailContent({
       }
       return false;
     }
+    const replanAfterExecutionModeChange = Object.prototype.hasOwnProperty.call(updates, "executionMode") && requiresExecutionModeReplan(task.column);
+    if (replanAfterExecutionModeChange && !includeDescription) {
+      delete updates.executionMode;
+    }
     if (Object.keys(updates).length === 0) {
       return true;
+    }
+    if (replanAfterExecutionModeChange && includeDescription) {
+      const nextMode = normalizeExecutionModeValue(updates.executionMode as Task["executionMode"]);
+      const shouldChangeMode = await confirm({
+        title: t("taskDetail.executionMode.replanTitle", "Change execution mode and replan?"),
+        message: t("taskDetail.executionMode.replanMessage", "Changing execution mode for this task will move it back to Planning so Fusion can rebuild the plan for {{mode}} mode.", { mode: nextMode }),
+      });
+      if (!shouldChangeMode) {
+        setEditExecutionMode(normalizeExecutionModeValue(task.executionMode));
+        return false;
+      }
     }
     const revision = ++editAutoSaveRevisionRef.current;
     setIsSaving(true);
@@ -1592,11 +1668,23 @@ export function TaskDetailContent({
     try {
       const updatedTask = await updateTask(task.id, updates as never, projectId);
       if (revision !== editAutoSaveRevisionRef.current) return;
+      if (replanAfterExecutionModeChange && includeDescription) {
+        const normalizedUpdatedMode = normalizeExecutionModeValue(updatedTask.executionMode);
+        await rebuildTaskSpec(task.id, projectId);
+        editSaveTriggeredReplanRef.current = true;
+        setEditAutoSaveStatus("saved");
+        requestClose();
+        addToast(t("taskDetail.executionMode.replanning", "Execution mode updated to {{mode}} — {{id}} returned to Planning for replanning", { mode: normalizedUpdatedMode, id: task.id }), "info");
+        return true;
+      }
       onTaskUpdated?.(updatedTask);
       setEditAutoSaveStatus("saved");
       return true;
     } catch (err) {
       if (revision === editAutoSaveRevisionRef.current) {
+        if (replanAfterExecutionModeChange) {
+          setEditExecutionMode(normalizeExecutionModeValue(task.executionMode));
+        }
         setEditAutoSaveStatus("error");
         addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
       }
@@ -1606,15 +1694,16 @@ export function TaskDetailContent({
         setIsSaving(false);
       }
     }
-  }, [addToast, buildEditUpdates, onTaskUpdated, projectId, task.id]);
+  }, [addToast, buildEditUpdates, confirm, onTaskUpdated, projectId, requestClose, task.column, task.executionMode, task.id]);
 
   const handleAutoSaveDescription = useCallback(async (_description: string) => {
     await persistEditChanges(true);
   }, [persistEditChanges]);
 
   const handleSave = useCallback(async () => {
+    editSaveTriggeredReplanRef.current = false;
     const didSave = await persistEditChanges(true);
-    if (!didSave) {
+    if (!didSave || editSaveTriggeredReplanRef.current) {
       return;
     }
     addToast(t("taskDetail.updateSuccess", "Updated {{id}}", { id: task.id }), "success");
@@ -1692,6 +1781,18 @@ export function TaskDetailContent({
     const currentMode = normalizeExecutionModeValue(task.executionMode);
     const nextMode = currentMode === "fast" ? "standard" : "fast";
     const previousMode = inlineExecutionMode;
+    const shouldReplan = requiresExecutionModeReplan(task.column);
+
+    if (shouldReplan) {
+      const shouldChangeMode = await confirm({
+        title: t("taskDetail.executionMode.replanTitle", "Change execution mode and replan?"),
+        message: t("taskDetail.executionMode.replanMessage", "Changing execution mode for this task will move it back to Planning so Fusion can rebuild the plan for {{mode}} mode.", { mode: nextMode }),
+      });
+      if (!shouldChangeMode) {
+        setInlineExecutionMode(previousMode);
+        return;
+      }
+    }
 
     setInlineExecutionMode(nextMode);
     setIsSavingInlineExecutionMode(true);
@@ -1699,6 +1800,12 @@ export function TaskDetailContent({
     try {
       const updatedTask = await updateTask(task.id, { executionMode: nextMode === "fast" ? "fast" : null }, projectId);
       const normalizedUpdatedMode = normalizeExecutionModeValue(updatedTask.executionMode);
+      if (shouldReplan) {
+        await rebuildTaskSpec(task.id, projectId);
+        requestClose();
+        addToast(t("taskDetail.executionMode.replanning", "Execution mode updated to {{mode}} — {{id}} returned to Planning for replanning", { mode: normalizedUpdatedMode, id: task.id }), "info");
+        return;
+      }
       setInlineExecutionMode(normalizedUpdatedMode);
       onTaskUpdated?.(updatedTask);
       addToast(t("taskDetail.executionMode.updated", "Execution mode updated to {{mode}}", { mode: normalizedUpdatedMode }), "success");
@@ -1710,7 +1817,7 @@ export function TaskDetailContent({
         setIsSavingInlineExecutionMode(false);
       }
     }
-  }, [task.id, task.executionMode, projectId, inlineExecutionMode, onTaskUpdated, addToast]);
+  }, [task.id, task.column, task.executionMode, projectId, inlineExecutionMode, onTaskUpdated, addToast, confirm, requestClose]);
 
   const handleInlineNoCommitsExpectedToggle = useCallback(async () => {
     const nextValue = !inlineNoCommitsExpected;
@@ -1757,7 +1864,6 @@ export function TaskDetailContent({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { nodes } = useNodes();
-  const { confirm, confirmWithChoice, confirmWithCheckbox } = useConfirm();
 
   const handleUnlinkGithubIssue = useCallback(async () => {
     if (!canEdit || !githubTrackedIssue || isSavingGithubTracking) return;
@@ -1793,10 +1899,6 @@ export function TaskDetailContent({
     activeTab === "chat" && activitySegment === "raw-logs",
     projectId,
   );
-  const requestClose = useCallback(() => {
-    onRequestClose?.();
-  }, [onRequestClose]);
-
   useEffect(() => {
     if (embedded) return;
     const handleKey = (e: KeyboardEvent) => {
@@ -1855,8 +1957,8 @@ export function TaskDetailContent({
         return;
       }
       /*
-      FNXC:TaskDetailDelete 2026-06-23-10:55:
-      Task detail hosts must close optimistically after the operator completes every required delete prompt and before the server delete request settles. Keep async success/error toasts attached to the delete promise so conflict handling and failure reporting continue after the modal, embedded panel, or floating host is gone.
+      FNXC:TaskDetailDelete 2026-07-01-09:40:
+      Task detail hosts must close optimistically after the operator completes every required delete prompt and before each server delete request starts. Keep this helper idempotent so dependency/lineage retries preserve async prompts and toasts without reopening or repeatedly closing the modal, main panel, list split, or right-dock host.
       */
       requestClose();
       deleteCloseRequested = true;
@@ -2200,6 +2302,15 @@ export function TaskDetailContent({
     setShowRefineModal(true);
     setRefineFeedback("");
   }, []);
+
+  useEffect(() => {
+    if (initialAction?.action !== "refine") return;
+    /*
+    FNXC:DoneTaskRefine 2026-07-01-00:00:
+    Done-task card/list right-click and long-press menus route Refine through Task Detail so operators get the existing feedback composer, validation, toasts, and refineTask submission instead of a dead menu item or an immediate API call.
+    */
+    handleOpenRefineModal();
+  }, [handleOpenRefineModal, initialAction?.action, initialAction?.requestId]);
 
   // Helper to close dropdown menus after action
   const closeMenus = useCallback(() => {
@@ -2610,12 +2721,18 @@ export function TaskDetailContent({
   const autoMergeEnabled = autoMergeEnabledProp ?? (settings?.autoMerge ?? false);
   const effectiveAutoMerge = resolveEffectiveAutoMerge({ autoMerge: task.autoMerge }, { autoMerge: autoMergeEnabled });
   const isManualPrFlow = mergeStrategy === "pull-request" && !effectiveAutoMerge;
-  const isChatExpanded = chatExpanded && activeTab === "chat" && !isEditing;
+  const isActivityExpanded = activityExpanded && activeTab === "chat" && !isEditing;
+  const isPlannerChatExpanded = plannerChatExpanded && activeTab === "planner-chat" && !isEditing;
   /*
-  FNXC:TaskDetailChat 2026-06-30-23:30:
-  Maximized Activity chat should reserve the detail surface for the header context and chat only. Do not mount branch-group chrome in this mode so its expand/promote controls are not hidden-but-focusable, while normal and embedded task details keep the BranchGroupCard behavior.
+  FNXC:TaskDetailActivity 2026-06-30-23:55:
+  Maximized Activity applies to Live, Feed, and Raw Logs, not only the legacy `current` chat segment. Reserve the detail surface for header context and Activity content, and do not mount branch-group chrome in this mode so expand/promote controls are not hidden-but-focusable.
   */
-  const shouldShowBranchGroupCard = Boolean(task.branchContext?.groupId && !isChatExpanded);
+  const shouldShowBranchGroupCard = Boolean(task.branchContext?.groupId && !isActivityExpanded);
+  /*
+  FNXC:TaskDetailPlannerChat 2026-07-01-00:00:
+  Maximized Planner Chat reserves vertical room for task identity and the planner conversation, so failed-task chrome is not mounted in that state. Normal detail, Activity expansion, and collapsed Planner Chat still surface task failures immediately.
+  */
+  const shouldShowTaskFailureAlert = Boolean(task.status === "failed" && task.error && !isPlannerChatExpanded);
 
   const taskActionMenuModel = useMemo(() => buildTaskActionMenuModel({
     task,
@@ -2722,6 +2839,87 @@ export function TaskDetailContent({
     closeMoveMenuAndFocusTrigger();
   }, [closeMoveMenuAndFocusTrigger]);
 
+  const closeActivityViewMenuAndFocusTrigger = useCallback(() => {
+    setShowActivityViewMenu(false);
+    setActivityViewMenuPosition(null);
+    activityViewButtonRef.current?.focus();
+  }, []);
+
+  /*
+    FNXC:TaskDetailActivity 2026-07-01-12:20:
+    The Activity view menu is `position: fixed` and portaled to <body>, so it is anchored to the LAYOUT viewport, and `getBoundingClientRect()` returns layout-viewport-relative coordinates that a fixed element consumes directly.
+    Position it purely from the layout viewport (`document.documentElement.clientWidth/clientHeight`) and never mix in `window.visualViewport` width/height/offset: under pinch-zoom or an open mobile keyboard the visual viewport diverges from the layout viewport (smaller width, nonzero offsetLeft/Top), and combining a shrunken visual-viewport width with a layout-viewport `getBoundingClientRect()` clamped `left` far off the trigger, so the popup rendered detached to the left of the modal instead of under the "Activity" tab.
+  */
+  const updateActivityViewMenuPosition = useCallback(() => {
+    const trigger = activityViewButtonRef.current;
+    if (!trigger) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const docEl = document.documentElement;
+    const viewportWidth = docEl?.clientWidth || window.innerWidth;
+    const viewportHeight = docEl?.clientHeight || window.innerHeight;
+    const horizontalPadding = ACTIVITY_VIEW_MENU_VIEWPORT_PADDING;
+    const verticalPadding = ACTIVITY_VIEW_MENU_VIEWPORT_PADDING;
+    const gap = ACTIVITY_VIEW_MENU_TRIGGER_GAP;
+    const preferredWidth = Math.max(rect.width, ACTIVITY_VIEW_MENU_MIN_WIDTH);
+    const width = Math.min(preferredWidth, Math.max(viewportWidth - horizontalPadding * 2, ACTIVITY_VIEW_MENU_MIN_WIDTH));
+    const spaceBelow = viewportHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const availableBelow = Math.max(spaceBelow - verticalPadding - gap, ACTIVITY_VIEW_MENU_MIN_HEIGHT);
+    const availableAbove = Math.max(spaceAbove - verticalPadding - gap, ACTIVITY_VIEW_MENU_MIN_HEIGHT);
+    const openUpward = spaceBelow < ACTIVITY_VIEW_MENU_MIN_HEIGHT && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      Math.min(openUpward ? availableAbove : availableBelow, ACTIVITY_VIEW_MENU_MAX_HEIGHT),
+      ACTIVITY_VIEW_MENU_MIN_HEIGHT,
+    );
+    // Anchor the menu's left edge under the trigger, shifting left only enough to stay on-screen, and never past the left padding.
+    const left = Math.max(
+      horizontalPadding,
+      Math.min(rect.left, viewportWidth - horizontalPadding - width),
+    );
+    const top = openUpward
+      ? Math.max(verticalPadding, rect.top - maxHeight - gap)
+      : Math.min(rect.bottom + gap, viewportHeight - verticalPadding - maxHeight);
+
+    setActivityViewMenuPosition({ top, left, minWidth: width, maxHeight });
+  }, []);
+
+  const activityViewOptions = useMemo<Array<{ value: ActivitySegment; label: string }>>(() => [
+    { value: "current", label: t("taskDetail.activity.current", "Live") },
+    { value: "feed", label: t("taskDetail.activity.feed", "Feed") },
+    { value: "raw-logs", label: t("taskDetail.activity.raw", "Raw") },
+  ], [t]);
+  const selectedActivityViewLabel = activityViewOptions.find((option) => option.value === activitySegment)?.label ?? activityViewOptions[0]?.label ?? "Live";
+
+  const selectActivityView = useCallback((value: ActivitySegment) => {
+    setActiveTab("chat");
+    setActivitySegment(value);
+    setShowActivityViewMenu(false);
+    setActivityViewMenuPosition(null);
+    requestAnimationFrame(() => activityViewButtonRef.current?.focus());
+  }, []);
+
+  const handleActivityTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const shouldOpenMenu = event.key === "ArrowDown" || (event.altKey && event.key === "ArrowDown");
+    if (!shouldOpenMenu) {
+      return;
+    }
+
+    event.preventDefault();
+    setActiveTab("chat");
+    setShowActivityViewMenu(true);
+  }, []);
+
+  const handleActivityViewMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    closeActivityViewMenuAndFocusTrigger();
+  }, [closeActivityViewMenuAndFocusTrigger]);
+
   useEffect(() => {
     if (!showMoveMenu) {
       return;
@@ -2731,9 +2929,125 @@ export function TaskDetailContent({
     firstMenuItem?.focus();
   }, [showMoveMenu]);
 
+  useLayoutEffect(() => {
+    if (!showActivityViewMenu) {
+      setActivityViewMenuPosition(null);
+      return;
+    }
+
+    updateActivityViewMenuPosition();
+  }, [showActivityViewMenu, updateActivityViewMenuPosition]);
+
+  useEffect(() => {
+    if (!showActivityViewMenu) {
+      return;
+    }
+
+    const handleViewportChange = () => {
+      setShowActivityViewMenu(false);
+      setActivityViewMenuPosition(null);
+    };
+
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("orientationchange", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("resize", handleViewportChange);
+    visualViewport?.addEventListener("scroll", handleViewportChange);
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("orientationchange", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+      visualViewport?.removeEventListener("resize", handleViewportChange);
+      visualViewport?.removeEventListener("scroll", handleViewportChange);
+    };
+  }, [showActivityViewMenu]);
+
+  useEffect(() => {
+    setShowActivityViewMenu(false);
+    setActivityViewMenuPosition(null);
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!showActivityViewMenu || !activityViewMenuPosition) {
+      return;
+    }
+
+    const selectedMenuItem = activityViewMenuRef.current?.querySelector<HTMLButtonElement>(".activity-view-menu-item[aria-current='true']");
+    const firstMenuItem = activityViewMenuRef.current?.querySelector<HTMLButtonElement>(".activity-view-menu-item");
+    (selectedMenuItem ?? firstMenuItem)?.focus();
+  }, [showActivityViewMenu, activityViewMenuPosition]);
+
+  const renderActivityViewMenu = () => {
+    if (!showActivityViewMenu || !activityViewMenuPosition || typeof document === "undefined") {
+      return null;
+    }
+
+    return createPortal(
+      <div
+        ref={activityViewMenuRef}
+        className="activity-view-menu"
+        role="menu"
+        aria-label={t("taskDetail.activity.menuLabel", "Activity views")}
+        onKeyDown={handleActivityViewMenuKeyDown}
+        style={{
+          top: activityViewMenuPosition.top,
+          left: activityViewMenuPosition.left,
+          minWidth: activityViewMenuPosition.minWidth,
+          maxHeight: activityViewMenuPosition.maxHeight,
+        }}
+      >
+        {activityViewOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className="activity-view-menu-item"
+            role="menuitem"
+            aria-current={activitySegment === option.value ? "true" : undefined}
+            onClick={() => selectActivityView(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>,
+      document.body,
+    );
+  };
+
+  const renderActivityTab = () => (
+    <div className="detail-tab-dropdown" ref={activityViewDropdownRef}>
+      {/*
+        FNXC:TaskDetailActivity 2026-06-30-23:59:
+        The top-level Activity tab is the only Activity view dropdown trigger. Keep the stable internal `chat` tab id and `current`/`feed`/`raw-logs` segment ids, but remove the in-panel Activity view select so desktop, embedded, and mobile tab strips have one canonical view switcher.
+
+        FNXC:TaskDetailActivity 2026-07-01-00:00:
+        Mobile task-detail tabs intentionally overflow-scroll horizontally, so the Activity view menu must be root-portaled and viewport-positioned instead of rendered inside `.detail-tabs` where overflow clipping can blank adjacent tabs and content.
+      */}
+      <button
+        ref={activityViewButtonRef}
+        type="button"
+        className={`detail-tab detail-tab--activity${activeTab === "chat" ? " detail-tab-active" : ""}`}
+        onClick={() => {
+          setActiveTab("chat");
+          setShowActivityViewMenu((value) => !value);
+        }}
+        onKeyDown={handleActivityTabKeyDown}
+        aria-haspopup="menu"
+        aria-expanded={showActivityViewMenu}
+        aria-label={t("taskDetail.tabs.activity", "Activity")}
+        title={t("taskDetail.activity.tabDropdownLabel", "Activity view: {{view}}", { view: selectedActivityViewLabel })}
+      >
+        <span>{t("taskDetail.tabs.activity", "Activity")}</span>
+        <ChevronDown className="detail-tab-chevron" aria-hidden="true" />
+      </button>
+      {renderActivityViewMenu()}
+    </div>
+  );
+
   return (
     <div
-      className={`task-detail-content${embedded ? " task-detail-content--embedded" : ""}${isChatExpanded ? " task-detail-content--chat-expanded" : ""}`}
+      className={`task-detail-content${embedded ? " task-detail-content--embedded" : ""}${isActivityExpanded ? " task-detail-content--chat-expanded" : ""}${isPlannerChatExpanded ? " task-detail-content--planner-chat-expanded" : ""}`}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
@@ -2813,7 +3127,7 @@ export function TaskDetailContent({
             )}
           </div>
         </div>
-        <div className={`detail-body${activeTab === "chat" && activitySegment === "raw-logs" && !isEditing ? " detail-body--agent-log" : ""}${activeTab === "chat" && activitySegment === "current" && !isEditing ? " detail-body--chat" : ""}`}>
+        <div className={`detail-body${activeTab === "chat" && activitySegment === "raw-logs" && !isEditing ? " detail-body--agent-log" : ""}${activeTab === "chat" && (activitySegment === "current" || isActivityExpanded) && !isEditing ? " detail-body--chat" : ""}${activeTab === "planner-chat" && !isEditing ? " detail-body--planner-chat" : ""}`}>
           {isEditing ? (
             <div className="modal-edit-form">
               <TaskForm
@@ -2928,7 +3242,7 @@ export function TaskDetailContent({
                       data-testid="summarize-title-btn"
                     >
                       {isSummarizingTitle ? <Loader2 size={14} className="spinner" /> : <Sparkles size={14} />}
-                      <span>{t("taskDetail.title.summarize", "Summarize as title")}</span>
+                      <span>{t("taskDetail.title.summarize", "Summarize")}</span>
                     </button>
                   )}
                 </div>
@@ -3137,7 +3451,7 @@ export function TaskDetailContent({
               {isWorkspaceTask(workingTask) && <WorkspaceWorktreesSummary task={workingTask} />}
             </>
           )}
-          {task.status === "failed" && task.error && (
+          {shouldShowTaskFailureAlert && (
             <div className="detail-error-alert">
               <span className="detail-error-icon">⚠</span>
               <div className="detail-error-content">
@@ -3158,21 +3472,30 @@ export function TaskDetailContent({
             <>
           <div className="detail-tabs">
             {/*
-              FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
-              The existing task activity/steering surface is labelled Activity and always renders first with the legacy `chat` tab id. The adjacent `planner-chat` tab is the separate planner-model Chat destination, so `initialTab="chat"` remains Activity while visible Chat opens task-aware planning conversation.
+              FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+              Activity is first/default for omitted non-done task opens unless the project setting taskDetailChatFirst is true. Keep both stable ids (`chat` for Activity, `planner-chat` for Chat) so explicit deep links and plugin callers retain their destinations.
             */}
-            <button
-              className={`detail-tab${activeTab === "chat" ? " detail-tab-active" : ""}`}
-              onClick={() => setActiveTab("chat")}
-            >
-              {t("taskDetail.tabs.activity", "Activity")}
-            </button>
-            <button
-              className={`detail-tab${activeTab === "planner-chat" ? " detail-tab-active" : ""}`}
-              onClick={() => setActiveTab("planner-chat")}
-            >
-              {t("taskDetail.tabs.chat", "Chat")}
-            </button>
+            {taskDetailChatFirst ? (
+              <>
+                <button
+                  className={`detail-tab${activeTab === "planner-chat" ? " detail-tab-active" : ""}`}
+                  onClick={() => setActiveTab("planner-chat")}
+                >
+                  {t("taskDetail.tabs.chat", "Chat")}
+                </button>
+                {renderActivityTab()}
+              </>
+            ) : (
+              <>
+                {renderActivityTab()}
+                <button
+                  className={`detail-tab${activeTab === "planner-chat" ? " detail-tab-active" : ""}`}
+                  onClick={() => setActiveTab("planner-chat")}
+                >
+                  {t("taskDetail.tabs.chat", "Chat")}
+                </button>
+              </>
+            )}
             {task.column === "done" && (
               <button
                 className={`detail-tab${activeTab === "summary" ? " detail-tab-active" : ""}`}
@@ -3309,49 +3632,28 @@ export function TaskDetailContent({
                 task={workingTask}
                 projectId={projectId}
                 active={activeTab === "planner-chat"}
+                expanded={isPlannerChatExpanded}
+                onExpandedChange={setPlannerChatExpanded}
                 planningModel={resolveEffectivePlanning(workingTask, agentLogEntries, settings)}
                 addToast={addToast}
                 onTaskUpdated={onTaskUpdated}
               />
             </div>
           ) : activeTab === "chat" ? (
-            <div className={`detail-section detail-section--activity${activitySegment === "current" ? " detail-section--chat" : ""}${activitySegment === "raw-logs" ? " detail-section--agent-log" : ""}`}>
+            <div className={`detail-section detail-section--activity${activitySegment === "current" || isActivityExpanded ? " detail-section--chat" : ""}${activitySegment === "raw-logs" ? " detail-section--agent-log" : ""}`}>
               {/*
                 FNXC:TaskDetailPlannerChat 2026-06-30-22:30:
-                Activity owns the existing steering/current view, Feed, and Raw Logs inside one segmented control. The stable Activity tab id remains `chat`, legacy `logs` callers land on Feed, and Raw Logs is the only segment that enables raw agent-log fetching. Planner-model conversation belongs to the separate `planner-chat` tab and must not route into steering comments.
+                Activity owns the existing steering/current view, Feed, and raw agent logs inside one compact selector. The stable Activity tab id remains `chat`, legacy `logs` callers land on Feed, and Raw is the only selector option that enables raw agent-log fetching. Planner-model conversation belongs to the separate `planner-chat` tab and must not route into steering comments.
 
-                FNXC:TaskDetailActivity 2026-06-30-21:55:
-                The first Activity segment keeps the stable Current label for legacy segment tests and links, but its embedded composer labels the operational steering-comment affordance explicitly. Do not reuse this segment as planner-model Chat conversation.
+                FNXC:TaskDetailActivity 2026-06-30-23:55:
+                The first Activity segment is user-facing Live but keeps the legacy `current` segment id. Activity expansion is segment-wide, so the same reachable toggle must remain present on Live, Feed, and Raw without fetching Raw outside the Raw segment.
+
+                FNXC:TaskDetailActivity 2026-06-30-23:59:
+                The Activity tab in the top-level tab strip is now the view dropdown for Live, Feed, and Raw. The in-panel Activity view select was removed so Activity expansion remains the only Activity-level affordance inside the panel while legacy routing and Raw-only fetching keep their stable ids (`chat`, `current`, `feed`, `raw-logs`).
+
+                FNXC:TaskDetailActivity 2026-07-01-00:00:
+                Activity expansion must not reserve a standalone toolbar row. Live uses TaskChatTab's anchored overlay button, Feed renders the same Activity toggle over its feed panel, and Raw keeps AgentLogViewer's fullscreen control so only one Raw expand affordance is reachable.
               */}
-              <div className="activity-segmented-control" role="tablist" aria-label={t("taskDetail.activity.segmentsLabel", "Activity views")}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activitySegment === "current"}
-                  className={`activity-segment${activitySegment === "current" ? " activity-segment-active" : ""}`}
-                  onClick={() => setActivitySegment("current")}
-                >
-                  {t("taskDetail.activity.current", "Current")}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activitySegment === "feed"}
-                  className={`activity-segment${activitySegment === "feed" ? " activity-segment-active" : ""}`}
-                  onClick={() => setActivitySegment("feed")}
-                >
-                  {t("taskDetail.activity.feed", "Feed")}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activitySegment === "raw-logs"}
-                  className={`activity-segment${activitySegment === "raw-logs" ? " activity-segment-active" : ""}`}
-                  onClick={() => setActivitySegment("raw-logs")}
-                >
-                  {t("taskDetail.activity.rawLogs", "Raw Logs")}
-                </button>
-              </div>
               {activitySegment === "current" ? (
                 <TaskChatTab
                   task={workingTask}
@@ -3360,8 +3662,8 @@ export function TaskDetailContent({
                   addToast={addToast}
                   sessionLive={isCliSessionLive(cliSession)}
                   onTaskUpdated={handleChatTaskUpdated}
-                  expanded={chatExpanded}
-                  onToggleExpanded={() => setChatExpanded((value) => !value)}
+                  expanded={isActivityExpanded}
+                  onToggleExpanded={() => setActivityExpanded((value) => !value)}
                   effectiveModels={{
                     triage: toTaskChatModelInfo(resolveEffectivePlanning(workingTask, agentLogEntries, settings)),
                     executor: toTaskChatModelInfo(resolveEffectiveExecutor(workingTask, agentLogEntries, assignedAgent, settings)),
@@ -3383,6 +3685,16 @@ export function TaskDetailContent({
                 />
               ) : (
                 <div className="detail-activity" role="tabpanel">
+                  <button
+                    type="button"
+                    className="btn btn-icon btn-sm activity-expand-toggle activity-expand-toggle--overlay"
+                    onClick={() => setActivityExpanded((value) => !value)}
+                    aria-label={isActivityExpanded ? t("taskDetail.activity.collapse", "Collapse activity") : t("taskDetail.activity.expand", "Expand activity to full modal")}
+                    aria-pressed={isActivityExpanded}
+                    data-testid="task-chat-expand-toggle"
+                  >
+                    {isActivityExpanded ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+                  </button>
                   <h4>{t("taskDetail.activity.feedHeading", "Feed")}</h4>
                   {(workingTask as typeof workingTask & { activityLogTruncatedCount?: number }).activityLogTruncatedCount ? (
                     <div className="detail-log-truncated">
@@ -3827,13 +4139,16 @@ export function TaskDetailContent({
               <div className="step-progress-empty">{t("taskDetail.progress.noSteps", "(no steps defined)")}</div>
             )}
           </div>
-          <div className="detail-section">
+          <div className="detail-section detail-section--plan-prompt">
             {!isEditingSpec && (
               <div className="detail-spec-edit-trigger">
-                {/*
-                FNXC:TaskDetailPlan 2026-06-30-00:00:
-                The Plan tab keeps the internal definition route for stable links, while exposing a direct PROMPT.md editor action so operators can comment on the executable task plan file without replacing the inline AI revision flow.
-                */}
+                {/**
+                 * FNXC:TaskDetailPlan 2026-06-30-00:00:
+                 * The Plan tab keeps the internal definition route for stable links, while exposing a direct PROMPT.md editor action so operators can comment on the executable task plan file without replacing the inline AI revision flow.
+                 *
+                 * FNXC:TaskDetailPlan 2026-06-30-00:00:
+                 * The Plan prompt surfaces must span the task-detail card body in modal and embedded renderings. Keep the scoped wrapper around markdown, no-prompt fallback, inline edit, and AI revision controls so width fixes do not alter unrelated detail sections.
+                 */}
                 {fileBrowser && (
                   <button
                     className="btn btn-sm"

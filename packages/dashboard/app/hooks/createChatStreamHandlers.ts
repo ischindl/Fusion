@@ -1,6 +1,6 @@
 import type { ChatMessage } from "@fusion/core";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { ChatFailureInfo } from "../api";
+import type { ChatFailureInfo, ChatStreamErrorMeta } from "../api";
 import type { ChatMessageInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
 
 /**
@@ -52,7 +52,7 @@ export interface CreateChatStreamHandlersOptions {
       fallbackInfo?: FallbackInfo;
     };
   }) => void;
-  onError: (data: string | ChatFailureInfo, tempUserMessageId: string) => void;
+  onError: (data: string | ChatFailureInfo, tempUserMessageId: string, meta?: ChatStreamErrorMeta) => void;
   /**
    * Fallback-model side effect for the parent (e.g. updating the session list
    * or the active session's model fields). The factory still emits the toast.
@@ -67,7 +67,7 @@ export interface ChatStreamHandlers {
   onToolEnd: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
   onFallback: (data: FallbackInfo) => void;
   onDone: (data: { messageId: string; message?: ChatMessage }) => void;
-  onError: (data: string | ChatFailureInfo) => void;
+  onError: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
 }
 
 export interface CreateChatStreamHandlersResult {
@@ -214,9 +214,9 @@ export function createChatStreamHandlers(
         },
       });
     },
-    onError: (data: string | ChatFailureInfo) => {
+    onError: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => {
       cancelFlushes();
-      onError(data, tempUserMessageId);
+      onError(data, tempUserMessageId, meta);
     },
   };
 

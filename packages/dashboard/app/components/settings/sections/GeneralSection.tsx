@@ -152,6 +152,15 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
         <small>{t("settings.general.quickChatCloseOnOutsideClickHint", "When enabled, clicking outside the Quick Chat window closes it. Disable to keep it open until you close it explicitly.")}</small>
       </div>
       <h4 className="settings-section-heading settings-section-heading--spaced">{t("settings.general.chatHistory", "Chat history")}</h4>
+      {/*
+        FNXC:ChatModal 2026-07-01-00:00:
+        Users asked for task-planner chats to stop cluttering the common Direct feed without forcing a new Direct/Rooms/Tasks tab split. Keep the default hidden and expose this project opt-in for operators who want the previous shared-feed behavior.
+      */}
+      <div className="form-group">
+        <label htmlFor="showTaskChatsInCommonFeed" className="checkbox-label">
+          <input id="showTaskChatsInCommonFeed" type="checkbox" checked={form.showTaskChatsInCommonFeed === true} onChange={(e) => setForm((f) => ({ ...f, showTaskChatsInCommonFeed: e.target.checked }))}/>{t("settings.general.showTaskChatsInCommonFeed", "Show task chats in common Chat feed")}</label>
+        <small>{t("settings.general.showTaskChatsInCommonFeedHint", "When enabled, populated task-detail Chat conversations appear in the common Direct feed. Empty task chats stay hidden.")}</small>
+      </div>
       <div className="form-group">
         <label htmlFor="chatAutoCleanupDays">{t("settings.general.autoCleanupOldChats", "Auto-cleanup old chats")}</label>
         <select id="chatAutoCleanupDays" className="select" value={form.chatAutoCleanupDays ?? 0} onChange={(e) => setForm((f) => ({ ...f, chatAutoCleanupDays: Number(e.target.value) || 0 }))}>
@@ -243,6 +252,15 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
             ? t("settings.general.enableSummarizationInProjectModelsToConfigureThatModel", " Enable summarization in Project Models to configure that model.")
             : ""}
         </small>
+      </div>
+      <div className="form-group">
+        {/*
+          FNXC:GithubImportTracking 2026-07-01-00:00:
+          This checkbox is project-scoped and import-specific: operators can link imported GitHub issues to GitHub tracking without turning tracking on for every new task.
+        */}
+        <label htmlFor="githubLinkImportedIssuesToTracking" className="checkbox-label">
+          <input id="githubLinkImportedIssuesToTracking" type="checkbox" checked={form.githubLinkImportedIssuesToTracking === true} onChange={(e) => setForm((f) => ({ ...f, githubLinkImportedIssuesToTracking: e.target.checked }))}/>{t("settings.general.alwaysLinkImportedGitHubIssuesToTracking", " Always link imported GitHub issues to GitHub tracking ")}</label>
+        <small>{t("settings.general.whenEnabledImportedGitHubIssuesUseTheirSource", "When enabled, GitHub issue imports become tracked tasks that adopt the source issue. This does not turn GitHub tracking on for ordinary new tasks.")}</small>
       </div>
       <div className="form-group">
         <label htmlFor="projectGithubTrackingDefaultRepoGeneral">{t("settings.general.projectDefaultTrackingRepo", "Project default tracking repo")}</label>

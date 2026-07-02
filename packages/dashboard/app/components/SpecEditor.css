@@ -39,15 +39,25 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin-top: var(--space-sm);
 }
 
-/* Edit mode container in Definition tab */
+/*
+FNXC:TaskDetailPlan 2026-06-30-00:00:
+Inline Plan editing and AI revision controls share SpecEditor primitives, so these rows must shrink within task-detail modal and embedded cards instead of imposing a narrow or overflowing editor column.
+*/
 .spec-editor-edit-mode {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Content area - flexible and scrollable */
@@ -61,7 +71,10 @@
 
 /* Textarea - fills available space in edit mode */
 .spec-editor-textarea {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 200px;
   height: 100%;
   flex: 1;
@@ -121,6 +134,10 @@
 
 /* AI Revision section - fixed at bottom */
 .spec-editor-revision {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 16px 0;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
@@ -140,7 +157,10 @@
 }
 
 .spec-editor-feedback {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -168,6 +188,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin-top: var(--space-sm);
 }
 

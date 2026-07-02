@@ -185,6 +185,13 @@ export interface CreateInteractiveAiSessionOptions {
    * stream. Must not throw — implementations should swallow callback errors.
    */
   onProgress?: (event: InteractiveAiSessionProgressEvent) => void;
+  /**
+   * Trust the caller's persisted/current question id when answering, even if a
+   * rehydrated live handle generated a different question id while replaying.
+   * Default remains strict for fresh planning/CE sessions; recovery paths may
+   * enable this when the persisted session row is the authoritative anchor.
+   */
+  allowAnswerQuestionIdDrift?: boolean;
 }
 
 /**

@@ -1293,18 +1293,7 @@ export async function runTaskImportGitHubInteractive(
 
   console.log();
 
-  const projectSettings = await store.getSettings();
-  const globalSettings = await store.getGlobalSettingsStore().getSettings();
-  const resolvedTracking = resolveTaskGithubTracking(
-    { githubTracking: undefined },
-    projectSettings,
-    globalSettings,
-  );
-  /*
-  FNXC:GithubImportTracking 2026-06-26-00:00:
-  CLI issue imports mark created tasks as tracking-enabled only when defaults resolve on. The task-created hook then links the GitHub source issue through source_issue_linked and avoids a duplicate tracking issue.
-  */
-  const importedIssueGithubTracking = resolvedTracking.enabled ? { enabled: true as const } : undefined;
+  const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(store);
 
   let created = 0;
   let skipped = 0;
@@ -1408,6 +1397,25 @@ export interface TaskImportOptions {
   labels?: string[];
 }
 
+async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ enabled: true } | undefined> {
+  const projectSettings = await store.getSettings();
+  if (projectSettings.githubLinkImportedIssuesToTracking === true) {
+    /*
+    FNXC:GithubImportTracking 2026-07-01-00:00:
+    The import-only linking setting deliberately bypasses ordinary new-task defaults for GitHub issue imports only. CLI import paths set githubTracking.enabled so the tracking hook adopts the sourceIssue instead of creating another issue.
+    */
+    return { enabled: true };
+  }
+
+  const globalSettings = await store.getGlobalSettingsStore().getSettings();
+  const resolvedTracking = resolveTaskGithubTracking(
+    { githubTracking: undefined },
+    projectSettings,
+    globalSettings,
+  );
+  return resolvedTracking.enabled ? { enabled: true } : undefined;
+}
+
 function buildGitHubIssueSource(owner: string, repo: string, issue: { number: number; html_url: string }) {
   return {
     sourceIssue: {
@@ -1465,18 +1473,7 @@ export async function runTaskImportFromGitHub(
     return;
   }
 
-  const projectSettings = await store.getSettings();
-  const globalSettings = await store.getGlobalSettingsStore().getSettings();
-  const resolvedTracking = resolveTaskGithubTracking(
-    { githubTracking: undefined },
-    projectSettings,
-    globalSettings,
-  );
-  /*
-  FNXC:GithubImportTracking 2026-06-26-00:00:
-  Non-interactive fn task import uses the same tracking default resolution as the extension tools so imported source issues are adopted instead of duplicated when tracking is on.
-  */
-  const importedIssueGithubTracking = resolvedTracking.enabled ? { enabled: true as const } : undefined;
+  const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(store);
 
   let created = 0;
   let skipped = 0;

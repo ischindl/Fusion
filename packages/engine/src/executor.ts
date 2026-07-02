@@ -11,7 +11,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode, WorkflowIrNodeKind, WorkflowStepResult as CoreWorkflowStepResult } from "@fusion/core";
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
-import { RetryStormError, TaskDeletedError, serializeRetryStormError, isExperimentalFeatureEnabled, resolveWorkflowIrForTask, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, isSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget } from "@fusion/core";
+import { RetryStormError, TaskDeletedError, serializeRetryStormError, isExperimentalFeatureEnabled, resolveWorkflowIrForTask, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, isSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID } from "@fusion/core";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult } from "@fusion/core";
@@ -24,7 +24,7 @@ import {
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult } from "./workflow-graph-task-runner.js";
 import { ensureWorkflowCompletionSummary } from "./workflow-completion-summary.js";
 import { createCodeNodeRunner } from "./code-node-runner.js";
-import { resolveReviewCheckoutCwd } from "./review-checkout.js";
+import { getTaskReviewCheckoutPath, resolveReviewCheckoutCwd } from "./review-checkout.js";
 import { getActiveNotificationService } from "./notifier.js";
 import type { ParseStepsHandlerDeps, CodeNodeRunner } from "./workflow-node-handlers.js";
 import type { WorkflowBranchPersistence, WorkflowBranchRunState } from "./workflow-graph-branches.js";
@@ -48,6 +48,10 @@ import type {
   WorkflowPrimitiveContext,
   WorkflowRuntimePrimitives,
 } from "./runtime-primitives.js";
+import { createWorkflowRuntimePrimitiveProvider } from "./workflow-runtime-primitive-provider.js";
+import { WorkflowCustomNodeExecutionService } from "./workflow-custom-node-execution.js";
+import { WorkflowReviewService } from "./workflow-review-service.js";
+import { WorkflowPlanningService } from "./workflow-planning-service.js";
 import {
   ApprovalRequestStore,
   buildExecutionMemoryInstructions,
@@ -72,7 +76,7 @@ import {
 import { canonicalFusionBranchName, canonicalStepInstanceBranchName, generateWorktreeName, resolveTaskWorkingBranch } from "./worktree-names.js";
 import { resolveTaskWorktreePath, resolveWorktreesDir } from "./worktree-paths.js";
 import { Type, type Static } from "@earendil-works/pi-ai";
-import { describeModel, promptWithFallback, compactSessionContext } from "./pi.js";
+import { describeModel, formatModelMarkerDetails, promptWithFallback, compactSessionContext } from "./pi.js";
 import { accumulateSessionTokenUsage, mergeTokenUsagePerModel } from "./session-token-usage.js";
 import {
   createResolvedAgentSession,
@@ -1707,13 +1711,53 @@ export class TaskExecutor {
   private pendingEphemeralDeletions = new Set<string>();
   private workspaceConfig: WorkspaceConfig | null | undefined = undefined;
 
-  private markPausedAborted(taskId: string, provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel"): void {
+  private markPausedAborted(
+    taskId: string,
+    provenance: "global-pause" | "merge-seam" | "hard-cancel" | "completion-finalize" = "hard-cancel",
+    source = "unspecified",
+  ): void {
+    const previousProvenance = this.pausedAbortProvenance.get(taskId);
+    const alreadyMarked = this.pausedAborted.has(taskId);
     this.pausedAborted.add(taskId);
     this.pausedAbortProvenance.set(taskId, provenance);
+    if (!alreadyMarked || previousProvenance !== provenance) {
+      /*
+      FNXC:WorkflowLifecycle 2026-07-01-22:24:
+      Pause aborts are frequent enough that operators need task-log breadcrumbs at the marker source, not only at the later graph-failure sink. Log first-mark/provenance-change events so a task card shows why a workflow was interrupted and which code path owned the abort.
+      */
+      void this.store.logEntry(
+        taskId,
+        `Pause abort marked: provenance=${provenance} source=${source}${previousProvenance && previousProvenance !== provenance ? ` previous=${previousProvenance}` : ""}`,
+        undefined,
+        this.getRunContextFor(taskId),
+      ).catch((error) => {
+        executorLog.warn(`${taskId}: failed to log pause-abort marker: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }
+
+  /**
+   * FNXC:ReviewRouting 2026-07-01-16:36:
+   * Review routing must expose whether the reviewer is using an explicit external checkout or the task worktree, but the invalid-sourceMetadata warning is only valid when sourceMetadata supplied the selected candidate. Higher-priority metadata can fail closed before sourceMetadata is considered, so centralize the logging to keep both review seams consistent and avoid false invalid-path warnings.
+   */
+  private logReviewCheckoutRouting(taskId: string, task: unknown, reviewCwd: string, worktreePath: string): void {
+    if (reviewCwd !== worktreePath) {
+      reviewerLog.log(`${taskId}: review routed to external checkout ${reviewCwd} (task worktree: ${worktreePath})`);
+      return;
+    }
+
+    const selectedCandidate = getTaskReviewCheckoutPath(task);
+    const sourceMetadata = task && typeof task === "object" ? (task as Record<string, unknown>).sourceMetadata : undefined;
+    const sourceRecord = sourceMetadata && typeof sourceMetadata === "object" ? sourceMetadata as Record<string, unknown> : undefined;
+    const sourceExternalReviewCheckout = sourceRecord?.externalReviewCheckout;
+    const sourceExternalReviewCheckoutPath = typeof sourceExternalReviewCheckout === "string" ? sourceExternalReviewCheckout.trim() : undefined;
+    if (sourceExternalReviewCheckoutPath && selectedCandidate === sourceExternalReviewCheckoutPath) {
+      reviewerLog.warn(`${taskId}: external review checkout metadata present (${sourceExternalReviewCheckoutPath}) but invalid — reviewing task worktree ${worktreePath}`);
+    }
   }
 
   private markCompletionFinalized(taskId: string): void {
-    this.markPausedAborted(taskId, "completion-finalize");
+    this.markPausedAborted(taskId, "completion-finalize", "completion-finalize");
     this.completionFinalizedTaskIds.add(taskId);
   }
 
@@ -2383,11 +2427,12 @@ export class TaskExecutor {
    */
   async awaitAbortInFlightTaskWork(taskId: string, reason: string, options: { userCanceled?: boolean } = {}): Promise<void> {
     let hadActiveSurface = false;
+    const abortedSurfaces: string[] = [];
 
     if (options.userCanceled) {
       this.userCanceledTaskIds.add(taskId);
     }
-    this.markPausedAborted(taskId, "hard-cancel");
+    this.markPausedAborted(taskId, "hard-cancel", `abort-in-flight:${reason}`);
     this.options.stuckTaskDetector?.untrackTask(taskId);
     this.clearWorkflowRerunWatchdog(taskId);
     this.clearCompletedTaskWatchdog(taskId);
@@ -2404,21 +2449,25 @@ export class TaskExecutor {
     const claimedSession = this.activeSessions.get(taskId);
     if (claimedSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("agent-session");
       this.deleteActiveSession(taskId);
     }
     const claimedStepExecutor = this.activeStepExecutors.get(taskId);
     if (claimedStepExecutor) {
       hadActiveSurface = true;
+      abortedSurfaces.push("step-session");
       this.deleteActiveStepExecutor(taskId);
     }
     const claimedWorkflowSession = this.activeWorkflowStepSessions.get(taskId);
     if (claimedWorkflowSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("workflow-step-session");
       this.deleteActiveWorkflowStepSession(taskId);
     }
     const claimedConfiguredCommands = this.activeConfiguredCommandControllers.get(taskId);
     if (claimedConfiguredCommands && claimedConfiguredCommands.size > 0) {
       hadActiveSurface = true;
+      abortedSurfaces.push(`configured-command:${claimedConfiguredCommands.size}`);
       this.activeConfiguredCommandControllers.delete(taskId);
       for (const controller of claimedConfiguredCommands) {
         controller.abort();
@@ -2427,12 +2476,14 @@ export class TaskExecutor {
     const claimedWorkflowGraphController = this.activeWorkflowGraphAbortControllers.get(taskId);
     if (claimedWorkflowGraphController) {
       hadActiveSurface = true;
+      abortedSurfaces.push("workflow-graph");
       this.activeWorkflowGraphAbortControllers.delete(taskId);
       claimedWorkflowGraphController.abort();
     }
     const claimedSubagents = this.activeSubagentSessions.has(taskId);
     if (claimedSubagents) {
       hadActiveSurface = true;
+      abortedSurfaces.push("subagent-session");
       this.disposeSubagentsForTask(taskId, reason);
     }
     // CLI Agent Executor (U7): a cli-agent session is a hard-cancel surface like
@@ -2443,6 +2494,7 @@ export class TaskExecutor {
     const claimedCliSession = this.activeCliTaskSessions.get(taskId);
     if (claimedCliSession) {
       hadActiveSurface = true;
+      abortedSurfaces.push("cli-agent-session");
       this.activeCliTaskSessions.delete(taskId);
     }
 
@@ -2500,6 +2552,14 @@ export class TaskExecutor {
 
     if (hadActiveSurface) {
       executorLog.log(`${taskId}: awaited abort of in-flight work — ${reason}`);
+      await this.store.logEntry(
+        taskId,
+        `Pause abort cleanup completed: reason=${reason}; surfaces=${abortedSurfaces.join(", ") || "none"}`,
+        undefined,
+        this.getRunContextFor(taskId),
+      ).catch((error) => {
+        executorLog.warn(`${taskId}: failed to log pause-abort cleanup: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
   }
 
@@ -3082,7 +3142,7 @@ export class TaskExecutor {
       if (settings.globalPause && !previous.globalPause) {
         for (const [taskId, controllers] of this.activeConfiguredCommandControllers) {
           executorLog.log(`Global pause — aborting configured command(s) for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:configured-command");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           for (const controller of controllers) {
             controller.abort();
@@ -3100,7 +3160,7 @@ export class TaskExecutor {
         }
         for (const [taskId, { session }] of this.activeSessions) {
           executorLog.log(`Global pause — terminating agent session for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:agent-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           // abort() interrupts any in-flight LLM stream / tool call;
           // dispose() then releases session resources.
@@ -3118,7 +3178,7 @@ export class TaskExecutor {
         }
         for (const [taskId, stepExecutor] of this.activeStepExecutors) {
           executorLog.log(`Global pause — terminating step sessions for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:step-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           stepExecutor.terminateAllSessions().catch(err =>
             executorLog.warn(`Failed to terminate step sessions for global pause ${taskId}: ${err}`)
@@ -3130,7 +3190,7 @@ export class TaskExecutor {
         }
         for (const [taskId, workflowSession] of this.activeWorkflowStepSessions) {
           executorLog.log(`Global pause — terminating workflow step session for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:workflow-step-session");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           const sessionWithAbort = workflowSession as AgentSession & { abort?: () => Promise<void> };
           if (typeof sessionWithAbort.abort === "function") {
@@ -3146,7 +3206,7 @@ export class TaskExecutor {
         }
         for (const [taskId, controller] of this.activeWorkflowGraphAbortControllers) {
           executorLog.log(`Global pause — aborting workflow graph runner for ${taskId}`);
-          this.markPausedAborted(taskId, "global-pause");
+          this.markPausedAborted(taskId, "global-pause", "global-pause:workflow-graph");
           this.options.stuckTaskDetector?.untrackTask(taskId);
           controller.abort();
           this.activeWorkflowGraphAbortControllers.delete(taskId);
@@ -4667,6 +4727,11 @@ export class TaskExecutor {
 
       graphAbortController = new AbortController();
       this.activeWorkflowGraphAbortControllers.set(task.id, graphAbortController);
+      const customNodeExecution = new WorkflowCustomNodeExecutionService({
+        execute: (node, nodeTask, nodeSettings, columnBinding, context) =>
+          this.runGraphCustomNode(node, nodeTask, nodeSettings, columnBinding, context),
+        resolveColumnBinding: resolveBindingForNode,
+      });
       const runner = new WorkflowGraphTaskRunner({
         store: {
           ...this.store,
@@ -4682,8 +4747,7 @@ export class TaskExecutor {
         seams: this.createAuthoritativeWorkflowSeams(settings),
         prepareNodeExecution: (node, nodeTask, requirement) =>
           this.prepareGraphNodeExecution(node, nodeTask, settings, requirement),
-        runCustomNode: (node, nodeTask, context) =>
-          this.runGraphCustomNode(node, nodeTask, settings, resolveBindingForNode(node.id), context),
+        runCustomNode: customNodeExecution.runner(settings),
         publishTaskProjection: async (taskId, patch) => {
           await this.store.updateTaskAtomic(taskId, (liveTask) => {
             const update: Parameters<TaskStore["updateTask"]>[1] = {};
@@ -5648,6 +5712,12 @@ export class TaskExecutor {
   /** Public authoritative-driver seam factory: exposes the same real lifecycle
    * seams the internal graph runner uses, without changing legacy behavior. */
   public createAuthoritativeWorkflowPrimitives(settings: Settings): WorkflowRuntimePrimitives {
+    return createWorkflowRuntimePrimitiveProvider((providerSettings) =>
+      this.createAuthoritativeWorkflowPrimitivesFromExecutor(providerSettings),
+    ).create(settings);
+  }
+
+  private createAuthoritativeWorkflowPrimitivesFromExecutor(settings: Settings): WorkflowRuntimePrimitives {
     const logAudit = async (taskId: string | undefined, input: AuditPrimitiveInput): Promise<void> => {
       if (!taskId) return;
       try {
@@ -5656,6 +5726,7 @@ export class TaskExecutor {
         // Audit is diagnostic-only and must not affect workflow execution.
       }
     };
+    const planningService = new WorkflowPlanningService();
 
     return {
       prepareWorktree: async (_ctx, task) => {
@@ -5692,10 +5763,7 @@ export class TaskExecutor {
         await writer.call(this.store, task.id, key, content);
         return { outcome: "success", value: "artifact-written", data: { key } };
       },
-      runPlanningSession: async () => ({ outcome: "success", value: "pre-specified", data: {
-        approved: true,
-        artifactKeys: [],
-      } }),
+      runPlanningSession: (ctx, task) => planningService.runPlanningSession(ctx, task),
       runCodingSession: async (ctx, task, prepared) => {
         const governingNodeId = ctx.node.context?.[SEAM_GOVERNING_NODE_CONTEXT_KEY];
         if (typeof governingNodeId === "string") {
@@ -5987,7 +6055,7 @@ export class TaskExecutor {
       },
       abortRun: async (_ctx, task, input) => {
         if (input.hardCancel) {
-          this.markPausedAborted(task.id, "merge-seam");
+          this.markPausedAborted(task.id, "merge-seam", "workflow-abort-run:merge-seam");
         }
         await this.store.updateTask(task.id, {
           paused: true,
@@ -6316,6 +6384,7 @@ export class TaskExecutor {
         // Worktree isolation (KTD-11): review the instance's OWN worktree when set.
         const worktreePath = active.worktreePath || detail.worktree || this.rootDir;
         const reviewCwd = resolveReviewCheckoutCwd(detail, worktreePath);
+        this.logReviewCheckoutRouting(seamTask.id, detail, reviewCwd, worktreePath);
         const stepName = detail.steps[stepIndex]?.name ?? `Step ${stepIndex}`;
         const promptContent = detail.prompt ?? "";
         const userComments = selectUserCommentsForAgentContext(detail, { limit: null });
@@ -6336,18 +6405,19 @@ export class TaskExecutor {
         // `worktreePath`; in workspace mode that is the browse-only non-git root, so we instead spawn
         // one reviewer per acquired sub-repo (cwd = repo.worktreePath) via reviewWorkspacePerRepo and
         // aggregate as a conjunction. `invokeReviewerForCwd` is the per-cwd reviewStep call both modes share.
+        const reviewService = new WorkflowReviewService();
         const invokeReviewerForCwd = (cwd: string) =>
-          reviewStep(
+          reviewService.reviewStep({
             cwd,
-            seamTask.id,
+            taskId: seamTask.id,
             stepIndex,
             stepName,
-            config.type,
+            type: config.type,
             promptContent,
             // Code reviews diff against the per-step baseline captured at
             // step-execute; plan reviews pass no baseline (advisory).
-            config.type === "code" ? active.baselineSha : undefined,
-            {
+            baselineSha: config.type === "code" ? active.baselineSha : undefined,
+            options: {
               defaultProvider: settings.defaultProvider,
               defaultModelId: settings.defaultModelId,
               fallbackProvider: settings.fallbackProvider,
@@ -6374,7 +6444,7 @@ export class TaskExecutor {
               onSessionCreated: (s) => this.registerSubagentSession(seamTask.id, s),
               onSessionEnded: (s) => this.unregisterSubagentSession(seamTask.id, s),
             },
-          );
+          });
         const runForCwd = (cwd: string) => {
           const invoke = () => invokeReviewerForCwd(cwd);
           return sem ? sem.runNested(invoke) : invoke();
@@ -7059,7 +7129,12 @@ export class TaskExecutor {
     FNXC:FastOptionalSteps 2026-06-30-09:14:
     Fast skips top-level custom prompt/script/gate review bodies by default, but an enabled optional-group template is explicit operator intent. The graph marks those template nodes so Browser Verification and custom optional groups still run under fast mode.
     */
-    if (live.executionMode === "fast" && !optionalGroupId && !cfg.seam && (node.kind === "prompt" || node.kind === "script" || node.kind === "gate")) {
+    const isCompletionSummaryNode = cfg.summaryTarget === "task" || node.id === "completion-summary";
+    /*
+    FNXC:WorkflowCompletion 2026-07-01-18:42:
+    Fast mode skips review/validation work, not the agent-authored completion summary. FN-7335 reached review with "Fast mode — custom graph node 'completion-summary' skipped"; keep summary nodes executable so fast tasks still produce the same review/done card summary as standard tasks.
+    */
+    if (live.executionMode === "fast" && !isCompletionSummaryNode && !optionalGroupId && !cfg.seam && (node.kind === "prompt" || node.kind === "script" || node.kind === "gate")) {
       executorLog.log(`${live.id}: fast mode — skipping custom graph node '${node.id}'`);
       await this.store.logEntry(
         live.id,
@@ -7588,6 +7663,14 @@ export class TaskExecutor {
       || normalized.includes("max retries");
   }
 
+  private isRetryableMergePauseAbortStatus(status: string | null | undefined): boolean {
+    /*
+    FNXC:WorkflowMerge 2026-07-01-22:05:
+    FN-7335 surfaced a merge-node pause/resume abort while the row was legitimately `in-review` with status="reviewing" from the AI merge reviewer. That status is merge activity, not a pre-existing terminal failure; keep the retry classifier strict on real errors while allowing transient merge/review statuses to re-enter bounded merge retry.
+    */
+    return status == null || status === "reviewing" || status === "merging" || status === "merging-pr";
+  }
+
   private async isRetryableBenignMergePauseAbort(
     live: TaskDetail,
     result: WorkflowGraphTaskRunResult,
@@ -7601,7 +7684,7 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (abortProvenance === "global-pause" || live.userPaused === true) return false;
     if (abortProvenance === "completion-finalize") return false;
-    if (live.column !== "in-review" || live.status != null || live.error != null) return false;
+    if (live.column !== "in-review" || !this.isRetryableMergePauseAbortStatus(live.status) || live.error != null) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
     if (this.isTerminalMergeGraphFailureValue(this.graphFailureValue(result))) return false;
     const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1];
@@ -8066,6 +8149,16 @@ export class TaskExecutor {
           || (live.paused && !mergeSeamAborted && !suppressFinalizedCompletionAbort)
           || (pausedAborted && !mergeSeamAborted && !completionFinalizeAborted && !suppressFinalizedCompletionAbort),
       );
+      if (pausedAborted || live.paused || live.userPaused || abortProvenance) {
+        const failedNodeForLog = result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
+        const failureValueForLog = this.graphFailureValue(result) ?? "none";
+        await this.store.logEntry(
+          task.id,
+          `Pause abort classified: provenance=${abortProvenance ?? "unknown"}; node=${failedNodeForLog}; interrupted=${result.interruptedNodeId ?? "none"}; abortKind=${result.interruptedAbortKind ?? "none"}; column=${live.column}; status=${live.status ?? "none"}; paused=${live.paused === true}; userPaused=${live.userPaused === true}; value=${failureValueForLog}; genuine=${genuinePauseAbort}; mergeSeam=${mergeSeamAborted}; completionSuppressed=${suppressFinalizedCompletionAbort}`,
+          undefined,
+          this.getRunContextFor(task.id),
+        );
+      }
       if (genuinePauseAbort && await this.isReentrantPausedAbortedInFlightNode(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
         if (await this.reenterPausedAbortedWorkflowNode(live, result, abortProvenance)) {
           return;
@@ -8392,6 +8485,17 @@ export class TaskExecutor {
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
     if (live.column === "done" || live.column === "archived") return false;
+    /*
+     * FNXC:WorkflowCompletion 2026-07-01-16:26:
+     * Backstop for issue #1863. The advisory completion-summary node must never
+     * drive the in-review→todo resume loop: it has no failure edge, so a failure
+     * here would bounce the task back to execution every run and never stick.
+     * The graph executor now degrades summary-node failures to success, so this
+     * should be unreachable — but if a summary failure ever reaches this router,
+     * let the caller park the task `failed` (a visible terminal state) instead of
+     * looping it forever.
+     */
+    if (failedNode === COMPLETION_SUMMARY_NODE_ID) return false;
     const incompleteSteps = hasNonTerminalWorkflowSteps(live);
     const prematureMergeWithIncompleteSteps = failedNode === "merge" && failureValue === "implementation-incomplete" && incompleteSteps;
     if (live.column !== "in-review" && !(incompleteSteps && live.column === "todo") && !(prematureMergeWithIncompleteSteps && live.column === "in-progress")) return false;
@@ -10057,7 +10161,8 @@ export class TaskExecutor {
         }
 
         const executorModelDesc = describeModel(session);
-        const executorModelMarker = `Executor using model: ${executorModelDesc}`;
+        const executorModelDetails = formatModelMarkerDetails(executorModelDesc, executorThinkingLevel);
+        const executorModelMarker = `Executor using model: ${executorModelDetails}`;
         if (isResuming) {
           executorLog.log(`${task.id}: resumed session from ${task.sessionFile}`);
           await this.store.logEntry(task.id, `Resumed agent session after unpause (model: ${executorModelDesc})`, undefined, this.getRunContextFor(task.id));
@@ -12907,6 +13012,7 @@ export class TaskExecutor {
           const userComments = selectUserCommentsForAgentContext(latestDetailForReview, { limit: null });
           const settings = await mergeEffectiveSettings(store, latestDetailForReview, await store.getSettings());
           const reviewCwd = resolveReviewCheckoutCwd(latestDetailForReview, worktreePath);
+          this.logReviewCheckoutRouting(taskId, latestDetailForReview, reviewCwd, worktreePath);
           // Run the reviewer via semaphore.runNested so its slot accounting
           // is honest: activeCount transiently bumps to reflect the second
           // agent session, but the reviewer doesn't enter the wait queue
@@ -14280,7 +14386,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       (c) => c.provider && c.modelId && (c.provider !== primaryProvider || c.modelId !== primaryModelId),
     );
 
-    const timeoutMs = Math.max(60_000, settings.workflowStepTimeoutMs ?? 360_000);
+    const timeoutMs = Math.max(60_000, settings.workflowStepTimeoutMs ?? 900_000);
 
     const runOnce = async (
       provider: string | undefined,
@@ -14445,10 +14551,18 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         ...(readonlyCustomTools.allowed.length > 0 ? { customTools: readonlyCustomTools.allowed } : {}),
       });
 
-      executorLog.log(`${task.id}: workflow step '${workflowStep.name}' using model ${describeModel(session)}${useOverride && attemptLabel === "primary" ? " (workflow step override)" : ""}${attemptLabel === "fallback" ? " (fallback after timeout)" : ""}`);
+      const workflowModelDetails = formatModelMarkerDetails(
+        describeModel(session),
+        settings.defaultThinkingLevel,
+        [
+          useOverride && attemptLabel === "primary" ? "workflow step override" : "",
+          attemptLabel === "fallback" ? "fallback after timeout" : "",
+        ],
+      );
+      executorLog.log(`${task.id}: workflow step '${workflowStep.name}' using model ${workflowModelDetails}`);
       await this.store.logEntry(
         task.id,
-        `Workflow step '${workflowStep.name}' using model: ${describeModel(session)}${useOverride && attemptLabel === "primary" ? " (workflow step override)" : ""}${attemptLabel === "fallback" ? " (fallback after timeout)" : ""}`,
+        `Workflow step '${workflowStep.name}' using model: ${workflowModelDetails}`,
       );
       this.setActiveWorkflowStepSession(task.id, session, worktreePath, this.createSeenSteeringIds(task));
 
@@ -15765,7 +15879,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
    * Handle "already used by worktree" conflict.
    * Either generates a new worktree name (if conflicting worktree is in use by active task)
    * or cleans up the conflicting worktree and retries.
-   * 
+   *
    * @returns The worktree path if recovery succeeded, null if recovery failed
    */
   private async handleWorktreeConflict(
@@ -15778,6 +15892,15 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     allowSiblingBranchRename = false,
     settings: Partial<Settings> = {},
   ): Promise<{ path: string; branch: string } | null> {
+    const tryFreshFallback = () => this.tryFreshWorktreeAfterLiveConflict({
+      conflictPath,
+      branch,
+      taskId,
+      startPoint,
+      attemptNumber,
+      allowSiblingBranchRename,
+      settings,
+    });
     const shouldGenerateNewName = await this.shouldGenerateNewWorktreeName(
       conflictPath,
       taskId,
@@ -15842,28 +15965,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         throw new Error(`Branch ${branch} conflict could not be auto-resolved`);
       }
 
-      const conflictStartPoint = branch;
-      const newPath = resolveTaskWorktreePath(this.rootDir, settings, generateWorktreeName(this.rootDir, settings));
-      for (let suffix = 2; suffix <= 6; suffix++) {
-        const suffixedBranch = `${branch}-${suffix}`;
-        try {
-          await this.store.logEntry(
-            taskId,
-            `Conflicting worktree in use by active task, trying new path with branch ${suffixedBranch}`,
-            newPath,
-          );
-          return await this.tryCreateWorktree(suffixedBranch, newPath, taskId, conflictStartPoint, attemptNumber, 0, true, settings);
-        } catch (suffixErr: unknown) {
-          const info = this.extractWorktreeConflictInfo(suffixErr);
-          if (info.type === "already-used") {
-            continue;
-          }
-          throw suffixErr;
-        }
-      }
-      throw new Error(
-        `Cannot create branch for task: "${branch}" and suffixes -2 through -6 are all in use by other worktrees`,
-      );
+      return tryFreshFallback();
     }
 
     const cleanupSuccess = await this.cleanupConflictingWorktree(conflictPath, branch, taskId);
@@ -15872,7 +15974,63 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       return this.tryCreateWorktree(branch, path, taskId, startPoint, attemptNumber, 0, allowSiblingBranchRename, settings);
     }
 
+    if (await this.isLiveCleanupRefusal(conflictPath, taskId)) {
+      return tryFreshFallback();
+    }
+
     return null;
+  }
+
+  private async tryFreshWorktreeAfterLiveConflict(input: {
+    conflictPath: string;
+    branch: string;
+    taskId: string;
+    startPoint?: string;
+    attemptNumber?: number;
+    allowSiblingBranchRename: boolean;
+    settings: Partial<Settings>;
+  }): Promise<{ path: string; branch: string }> {
+    const { conflictPath, branch, taskId, attemptNumber, allowSiblingBranchRename, settings } = input;
+    if (!allowSiblingBranchRename) {
+      throw new Error(`Branch ${branch} conflict could not be auto-resolved`);
+    }
+
+    const conflictStartPoint = branch;
+    for (let suffix = 2; suffix <= 6; suffix++) {
+      const suffixedBranch = `${branch}-${suffix}`;
+      const newPath = resolveTaskWorktreePath(this.rootDir, settings, generateWorktreeName(this.rootDir, settings));
+      try {
+        await this.store.logEntry(
+          taskId,
+          `Preserved active conflicting worktree and retrying with fresh worktree branch ${suffixedBranch}`,
+          `${conflictPath} -> ${newPath}`,
+        );
+        /*
+         * FNXC:ExecutorWorktree 2026-07-01-00:00:
+         * Active-session cleanup refusal must allocate a fresh worktree/branch instead of bubbling automatic cleanup failure. Removing the live conflicting path violates the FN-4811 invariant, so bounded sibling branches preserve the owner while letting the requesting task continue.
+         */
+        return await this.tryCreateWorktree(suffixedBranch, newPath, taskId, conflictStartPoint, attemptNumber, 0, true, settings);
+      } catch (suffixErr: unknown) {
+        const info = this.extractWorktreeConflictInfo(suffixErr);
+        if (info.type === "already-used") {
+          continue;
+        }
+        throw suffixErr;
+      }
+    }
+    throw new Error(
+      `Cannot create branch for task: "${branch}"; live conflicting worktree ${conflictPath} was preserved and suffixes -2 through -6 are all in use by other worktrees`,
+    );
+  }
+
+  private async isLiveCleanupRefusal(worktreePath: string, taskId: string): Promise<boolean> {
+    const activeOwner = await this.findActiveWorktreeOwner(worktreePath, taskId);
+    if (activeOwner !== null) return true;
+
+    const activeRecord = activeSessionRegistry.lookupByPath(worktreePath);
+    if (!activeRecord) return false;
+    if (activeRecord.taskId !== taskId) return true;
+    return executingTaskLock.has(taskId) || this.hasActiveWorktreeBinding(taskId, worktreePath);
   }
 
   /**

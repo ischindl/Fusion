@@ -2,56 +2,1314 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
-## 0.51.0
-
-### New
-
-- Add a Chat tab to the right sidebar so you can chat inline and pop it out.
-- Tasks with a manually-created open Pull Request are no longer auto-merged.
-- Fast-mode tasks now plan with a lean, speed-first prompt routed through the workflow.
-- CE HTML plans and brainstorm docs now get report-only ce-doc-review instead of being skipped.
-- CE HTML docs now support DOM-validated in-place ce-doc-review fixes with report-only fallback.
-- Close the Quick Chat window by clicking outside it.
-- Project Dashboard cards now say "Stop engine"/"Start engine" instead of "Pause"/"Resume".
-- Emit run-audit telemetry for agent performance reflections.
-- CE HTML docs can define and safely repair malformed checklists in ce-doc-review.
-- Add a project setting to show or hide worktree names and grouping on the board.
-- Refinement tasks are now titled with the source task ID followed by the entered comment.
-- Add a project setting to open task details in the right sidebar instead of the full panel.
-- The Create PR dialog is now movable and resizable like other Fusion pop-outs.
-- Add a pin toggle to the right sidebar to push content aside instead of overlaying it.
-- Task detail Review tab now hides HTML comments and shows comment avatars, human/bot badges, and author-type filtering.
-- Add project settings to customize the AI prompts for PR title and description generation.
-- Improve AI-generated PR titles and descriptions, and show a clear loading state while the description generates.
-- The PR number in a task's Pull Request tab now links to the pull request on GitHub.
-- Add an "Address PR feedback" button that starts an AI session to resolve PR review comments.
-- Re-engage an executor when users chat on in-review tasks.
+## 0.53.1
 
 ### Fixed
 
-- Artifact lists now refresh live when new artifacts are registered.
-- Agents no longer pause tasks on failure — pausing is reserved for explicit user requests.
-- Permanent agents can ask the user a question directly without an approval gate.
-- Compound Engineering now uses a distinct sidebar icon instead of duplicating Insights.
-- Compound Engineering sidebar navigation now matches its Boxes header icon.
-- Ephemeral/task-worker agents now show their token usage on the dashboard.
-- Stopping the engine or pausing a project now frees its global agent slots for other projects.
-- Missions tab now always opens the mission overview instead of a specific mission.
-- Theme the quick-entry steps drop-down with canonical dashboard menu tokens.
-- Running-agent counts include active in-review agents, and the concurrency use-marker is no longer off by one.
-- Tasks sent back by Code Review or Browser Verification verdicts now re-run and complete their steps before re-checking.
-- Footer no longer blinks and the concurrency panel stays open across status refreshes.
-- Keep Create PR preview commit SHAs readable on one line.
-- Stuck triage re-queues now resume from the drafted plan instead of restarting planning from scratch.
-- Stuck re-queue no longer loses uncommitted work while keeping steps marked complete.
-- Fix the Create PR dialog spinner, diff preview default, and stray-click dismissal behavior.
-- PR badge color now follows GitHub status: green/gray/purple/red plus a conflict color.
-- Show active project pull requests in the Pull Requests sidebar and main view.
-- Fix "Request revision" error on reviewer-agent task reviews.
-- Fix Compound Engineering, Quick fix, and Review-heavy workflow tasks getting stuck in Todo.
-- Theme quick-add optional-step checkboxes and phase badges consistently.
-- Keep Summary token table model names readable in narrow task detail panels.
-- Pressing q (or Ctrl+C) in the TUI now quits cleanly without engine logs bleeding onto your shell.
+- Fix the Windows CLI binary failing to build in release.
+- Fix desktop app crashing on "Local" mode startup with a missing-module error.
+
+## 0.53.0
+
+### @fusion/dashboard
+
+#### Patch Changes
+
+- @fusion/core@0.53.0
+- @fusion/engine@0.53.0
+- @fusion/i18n@0.39.16
+- @fusion-plugin-examples/cli-printing-press@0.1.33
+- @fusion-plugin-examples/compound-engineering@0.1.16
+- @fusion-plugin-examples/dependency-graph@0.1.47
+- @fusion-plugin-examples/roadmap@0.1.35
+- @fusion-plugin-examples/cursor-runtime@0.1.35
+- @fusion-plugin-examples/droid-runtime@0.1.42
+- @fusion-plugin-examples/hermes-runtime@0.2.66
+- @fusion-plugin-examples/openclaw-runtime@0.2.66
+- @fusion-plugin-examples/paperclip-runtime@0.2.66
+
+### @fusion/desktop
+
+#### Patch Changes
+
+- @fusion/core@0.53.0
+- @fusion/dashboard@0.53.0
+- @fusion/engine@0.53.0
+
+### @fusion/engine
+
+#### Patch Changes
+
+- @fusion/core@0.53.0
+- @fusion/pi-claude-cli@0.53.0
+
+### @fusion/plugin-sdk
+
+#### Patch Changes
+
+- @fusion/core@0.53.0
+
+### @runfusion/fusion
+
+#### Minor Changes
+
+- 12ee9a9: summary: Add exact tool overrides for permanent-agent permission policies.
+  category: feature
+  dev: Adds per-tool permission policy overrides on top of category rules.
+- a9e2baa: summary: Add a project option to link imported GitHub issues to GitHub tracking.
+  category: feature
+  dev: GitHub issue import paths honor githubLinkImportedIssuesToTracking while ordinary task creation remains unchanged.
+- 1750523: summary: Add Enable GitHub tracking to Board and List task context menus.
+  category: feature
+  dev: Reuses the existing task PATCH GitHub tracking flow from shared card/list context menu actions.
+- 1ccef81: summary: Let task-detail planner Chat answer current-task token, cost, and timing questions.
+  category: feature
+  dev: Adds read-only task-scoped planner chat tool `fn_task_planner_get_task_metrics` with derived pricing semantics.
+- a404997: summary: Add a Glass Silver dashboard theme.
+  category: feature
+  dev: Registers glass-silver across core theme metadata, dashboard/desktop startup validators, CSS tokens, swatches, and tests.
+- 03160eb: summary: Add a mobile terminal tab dropdown for switching and closing terminal sessions.
+  category: feature
+  dev: Mobile terminal headers now use a native tab selector while desktop keeps the tab strip.
+- 14bb7a3: summary: Branching workflows now run on the graph interpreter; the legacy step-compiler and its interpreter-only banner are gone.
+  category: feature
+  dev: Removed the linear WorkflowStep compiler (compileWorkflowToSteps/validateLinearity/WorkflowCompileError) from @fusion/core; parseWorkflowIr is now the sole workflow validity gate at save/select/refine and in the graph task runner. Deleted the POST /api/workflows/:id/compile preview route and its client wrapper, and dropped the interpreterOnly response field and editor banner. MERGE_REGION_NODE_KINDS moved into workflow-lifecycle-validation.
+
+#### Patch Changes
+
+- ad8db59: summary: Allow Compound Engineering recovered sessions to answer persisted questions after dashboard restarts.
+  category: fix
+  dev: Keeps strict question-id validation by default while letting CE trust its persisted session row as the recovery anchor.
+- 9432339: summary: Contain planning parse failures as retryable session errors and add `--supervise` dashboard restart mode.
+  category: fix
+  dev: Planning sessions that receive non-JSON AI output now persist as retryable error state instead of unpersisting the session. The `/api/health` endpoint remains available during session errors. A new `--supervise` flag on `fn dashboard` runs the dashboard under foreground process supervision with bounded restart attempts and exponential backoff, preventing Tailscale Serve 502s from unexpected dashboard exits.
+- a1af5de: summary: Fix Anthropic Claude subscription chats failing (404/502/429) by restoring direct OAuth execution.
+  category: fix
+  dev: Reverts the FN-7391/FN-7396 runtime rerouting that sent subscription OAuth to a `/v1`-based `anthropic-subscription` provider (reintroducing issue #1857). `getApiKey("anthropic")` again resolves subscription/legacy OAuth (raw API key still wins), so `anthropic/*` selections run on pi-ai's built-in provider with Claude Code OAuth headers; the model picker advertises `anthropic` for OAuth users; explicit `pi-claude-cli` and raw `ANTHROPIC_API_KEY` remain separate surfaces.
+- 3884169: summary: Fix tasks looping through triage at the completion-summary node, plus Stats/Routing/Node labels crashing.
+  category: fix
+  dev: Issue #1863 (v0.52.0 regression). (1) The best-effort completion-summary graph node is wired with a success-only edge, so a thrown handler exception or a failed summary projection write terminated the graph and the in-review→todo resume router bounced the task forever. The graph executor now degrades a completion-summary node failure to success (ensureWorkflowCompletionSummary still backfills task.summary), with a routeGraphFailureToExecutionResume backstop. (2) Three views called t() with keys that resolve to nested objects (taskDetail.executionMode, routing.source, nodes.dockerHost); added leaf label keys across all locales and a dashboard invariant test that scans t("literal") callers against the real en/app.json.
+- 88bcbce: summary: Prevent task branches from inheriting unrelated checked-out task commits.
+  category: fix
+  dev: Fresh worktree acquisition now pins the integration branch as the default start point, and merge finalization validates task-owned branch diffs from baseCommitSha when available.
+- c93f2d4: summary: Fix arrow-key editing for Settings in the terminal dashboard.
+  category: fix
+  dev: Settings detail-pane arrows now edit enum values instead of switching panes.
+- 72eb9af: summary: Make the task Activity tab switch Live, Feed, and Raw views directly.
+  category: fix
+  dev: Removes the duplicate in-panel Activity view select from TaskDetailModal.
+- d448603: summary: Show Refine in completed task card and list context menus.
+  category: fix
+  dev: Routes done/custom-complete Board and List context-menu Refine actions into the existing Task Detail refinement composer.
+- 98ca9ac: summary: Fix mobile task action menus so tapped actions run once and close.
+  category: fix
+  dev: Shared TaskContextMenu now commits touch/pen selections on pointer release and guards synthesized clicks.
+- 7457f04: summary: Reuse the standard Chat surface for task-detail planner chat.
+  category: fix
+  dev: Extracts StandardChatSurface for shared message, thinking, tool-call, and mobile send rendering without importing the lazy ChatView chunk from task detail.
+- d8f3cc6: summary: Make mobile task-detail chat Send buttons submit on the first tap.
+  category: fix
+  dev: Adds touch-first send handling for Activity steering, done-task refinement, and planner Chat composers.
+- b3b01bc: summary: Add All workflows to top-level dashboard workflow selectors.
+  category: feature
+  dev: Extends the dashboard aggregate workflow sentinel to List, Planning, Missions, and Graph without backend handoff.
+- 62c4aae: summary: Recover explicit Sonnet 5 chat selections with configured model fallbacks.
+  category: fix
+  dev: Routes Anthropic Sonnet 5 provider/model failures through chat/runtime fallback and preserves actionable no-fallback errors.
+- 1f3a15e: summary: Fix Windows desktop startup failures in packaged builds.
+  category: fix
+  dev: Externalizes Electron updater CJS dependencies, loads the dashboard registry manifest through Node-safe file IO, and separates NSIS/portable Windows artifacts.
+- f04f01d: summary: Fix Board task context menus so they are not clipped by columns.
+  category: fix
+  dev: Board TaskCard menus are portaled to document.body and clamped in viewport coordinates.
+- e4eb8b6: summary: Prevent mobile Board task long-press menus from selecting card text.
+  category: fix
+  dev: Suppresses WebKit/native selection for non-editing TaskCard surfaces while preserving edit textareas.
+- fed60ec: summary: Hide task planner chats from the common Chat feed unless enabled in Settings.
+  category: fix
+  dev: Adds project setting `showTaskChatsInCommonFeed` and filters task-planner sessions in chat list APIs/client refresh.
+- d93fac0: summary: Let the task popup setting open board tasks as popups on desktop too.
+  category: fix
+  dev: Keeps the existing `openMobileTasksInPopup` setting key while broadening ordinary board-card routing across viewports.
+- c194248: summary: Preserve task-detail planner Chat working state after leaving and returning.
+  category: fix
+  dev: Rehydrates task-planner chat generation snapshots and reattaches streams across tab switches and modal remounts.
+- a65633d: summary: Keep sent chat messages visible when a provider error interrupts the reply.
+  category: fix
+  dev: Reconciles accepted optimistic chat sends with persisted transcripts across global, planner, and room chats.
+- 4805182: summary: Let Planning Mode Yes/No questions accept a custom Other answer.
+  category: fix
+  dev: Extends confirm-question handling to preserve user-authored alternatives via `_other`.
+- 67f93ce: summary: Show thinking effort on task log model rows when it is configured.
+  category: fix
+  dev: Runtime using-model markers append `(thinking effort: <level>)` while dashboard parsers strip suffix annotations for provider icons and effective-model displays.
+- 919420e: summary: Enforce maxWorktrees as a hard cap on active execution worktrees.
+  category: fix
+  dev: TaskStore rejects allocated in-progress moves once active holders reach maxWorktrees, independent of maxConcurrent.
+- 427ce04: summary: Stop force-advertising Anthropic Claude Sonnet 5 when account availability is unknown.
+  category: fix
+  dev: Removes static Sonnet 5 supplemental catalog/pricing metadata while preserving fallback handling for saved selections.
+- 7e5d908: summary: Fix the mobile task Activity view dropdown so it opens above the tab strip without clipping.
+  category: fix
+  dev: Root-portals and viewport-clamps the task-detail Activity Live/Feed/Raw menu with regression coverage.
+- a4ef439: summary: Keep the Planner Chat stop-generation icon visible on mobile while thinking.
+  category: fix
+  dev: Narrows the mobile Planner Chat text-hiding selector so the shared chat stop icon span remains visible.
+- 914c7c1: summary: Hide failed-task banners while task planner chat is maximized.
+  category: fix
+  dev: TaskDetailModal no longer mounts failed-banner chrome during expanded planner Chat; Activity and collapsed detail still show failures.
+- 3702763: summary: Upgrade Fusion's bundled pi SDK dependencies to 0.80.3.
+  category: internal
+  dev: Upgrades @earendil-works/pi-ai and @earendil-works/pi-coding-agent to ^0.80.3.
+- e341c06: summary: Make Planner Chat clarification questions answerable in task details.
+  category: fix
+  dev: Extracts fn_ask_question cards from grouped tool-call details in shared chat rendering.
+- 6d1507a: summary: Close task details immediately after confirming task deletion.
+  category: fix
+  dev: Updates shared task-detail delete close behavior and split-detail host wiring so detail shells close before delete requests settle.
+- d94c359: summary: Honor project auto plan approval across task finalization paths.
+  category: fix
+  dev: Ensures planApprovalMode=auto-approve-all wins over workflow requirePlanApproval for ordinary plan approval.
+- ec0fa96: summary: Add a Triage column shortcut for plan auto-approval.
+  category: feature
+  dev: Adds a Board column switch that mirrors project planApprovalMode=auto-approve-all.
+- 869974c: summary: Make chat-created workflows appear immediately across workflow selectors.
+  category: fix
+  dev: Chat workflow tools now emit workflow lifecycle SSE and workflow lists force-refresh per project.
+- af6e671: summary: Recover live worktree conflicts by retrying with a fresh task worktree.
+  category: fix
+  dev: Executor worktree acquisition now preserves active-session conflict owners and retries bounded sibling branches instead of surfacing automatic cleanup failure.
+- 4378053: summary: Fix Activity expand controls so Live and Feed overlay content and Raw has one fullscreen button.
+  category: fix
+  dev: Updates task-detail Activity Live/Feed overlay controls and keeps Raw on AgentLogViewer fullscreen.
+- 4694b4a: summary: Move destructive task context-menu actions to the bottom.
+  category: fix
+  dev: Reorders shared TaskContextMenu descriptors so Reset precedes Delete at the end across Board, List, and Detail menus.
+- 18b07b5: summary: Fix folded Android mobile terminal spacing on initial open.
+  category: fix
+  dev: Terminal mobile detection now honors touch visualViewport width for TerminalModal and SessionTerminal.
+- bfe5ced: summary: Show eligible Claude Sonnet 5 model rows once in model pickers.
+  category: fix
+  dev: Dedupes /api/models rows by provider/model while preserving direct Anthropic Sonnet 5 guardrails.
+- 3219ced: summary: Restore Claude Sonnet 5 and latest Anthropic models in the Claude CLI model picker.
+  category: fix
+  dev: pi-claude-cli supplemental extraModels now advertises claude-sonnet-5 for the subscription-authenticated CLI surface; direct-Anthropic supplemental registration and static pricing remain withheld per FN-7374's 404 not_found_error handling. Local evidence used claude 2.1.197 with --model accepting aliases/full names; checksum remains upstream-pending-verification.
+- 775ff5f: summary: Fix Anthropic subscription chat failing with 429/502 by routing it through the Claude CLI.
+  category: fix
+  dev: Anthropic routing now keeps three surfaces distinct: raw API keys authenticate direct api.anthropic.com/v1, subscription/OAuth remains `anthropic-subscription`, and CLI execution uses `pi-claude-cli`; OAuth-only selections never authenticate direct `/v1` and are routed to the CLI provider when available.
+- 4beae71: summary: Keep hidden task-planner Chat replies from lighting the global Chat unread badge.
+  category: fix
+  dev: Enriches direct chat SSE payloads with session agent metadata plus common-feed visibility, then suppresses `task-planner:` unread badges only while hidden.
+- e85d25e: summary: Fix desktop launch from npm installs in directories with invalid JSON.
+  category: fix
+  dev: Keeps installed desktop launch independent of source workspace builds and host JSON files.
+- 19e59ec: summary: Keep Anthropic subscription OAuth, Claude CLI, and direct API-key auth separated.
+  category: fix
+  dev: Restores anthropic-subscription status/usage/banner behavior and direct subscription-backed execution while keeping raw anthropic API-key auth and explicit pi-claude-cli execution separate.
+- f998fe3: summary: Ensure task lifecycle plugins receive runtime context during completion hooks.
+  category: fix
+  dev: PluginLoader now appends PluginContext to task lifecycle hook invocations when callers provide only task event args.
+- 9c2a264: summary: Show Claude CLI models when Anthropic subscription OAuth and Claude CLI are connected.
+  category: fix
+  dev: Keeps subscription OAuth on anthropic-subscription while direct anthropic remains raw API-key-only.
+- 20e42c6: summary: Fix Compound Engineering Debug stage launches that could fail with a JSON parse error.
+  category: fix
+  dev: Strengthens CE stage prompts and debug skill guidance so dashboard sessions emit the interactive JSON protocol.
+- dbe637f: summary: Include graph-owned workflow step execution in Command Center activity analytics.
+  category: fix
+  dev: StepSessionExecutor now publishes best-effort agentRuns lifecycle rows for workflow step sessions.
+- b7c6443: summary: Restore Claude Sonnet 5 in the model picker (it had disappeared from every surface).
+  category: fix
+  dev: Re-adds `claude-sonnet-5` to SUPPLEMENTAL_ANTHROPIC_PROVIDER_REGISTRATION and its static pricing (removed by FN-7374). Live-verified: Sonnet 5 returns 200 on api.anthropic.com/v1 with a raw ANTHROPIC_API_KEY and runs via the Claude CLI; it 403s (scope) on subscription-OAuth /v1, where the runtime actionable-failure/fallback path applies.
+- b58d9b5: summary: Enforce explicit external checkout metadata for review routing.
+  category: fix
+  dev: Reviews now use sourceMetadata.externalReviewCheckout only when it points at a valid git checkout, otherwise they fail closed to the task worktree and log the selected review target.
+- 24279c9: summary: Let proven task merges finalize even when old branch history remains.
+  category: fix
+  dev: Auto-merge finalization now trusts durable task merge proof instead of blocking on stale branch-only residue.
+- 07aa1a0: summary: Widen Project Models dropdown menus so long provider and model names are easier to read.
+  category: fix
+  dev: Adds an opt-in readable menu width to the shared dashboard model dropdown and applies it only in Project Models.
+- 62c5840: summary: Give workflow review steps a longer default timeout.
+  category: fix
+  dev: Raises the built-in `workflowStepTimeoutMs` default and engine fallback from 6 minutes to 15 minutes.
+
+### runfusion.ai
+
+#### Patch Changes
+
+- Updated dependencies [ad8db59]
+- Updated dependencies [9432339]
+- Updated dependencies [a1af5de]
+- Updated dependencies [3884169]
+- Updated dependencies [88bcbce]
+- Updated dependencies [c93f2d4]
+- Updated dependencies [72eb9af]
+- Updated dependencies [d448603]
+- Updated dependencies [98ca9ac]
+- Updated dependencies [7457f04]
+- Updated dependencies [d8f3cc6]
+- Updated dependencies [b3b01bc]
+- Updated dependencies [62c4aae]
+- Updated dependencies [1f3a15e]
+- Updated dependencies [12ee9a9]
+- Updated dependencies [f04f01d]
+- Updated dependencies [e4eb8b6]
+- Updated dependencies [fed60ec]
+- Updated dependencies [d93fac0]
+- Updated dependencies [c194248]
+- Updated dependencies [a9e2baa]
+- Updated dependencies [a65633d]
+- Updated dependencies [4805182]
+- Updated dependencies [67f93ce]
+- Updated dependencies [1750523]
+- Updated dependencies [919420e]
+- Updated dependencies [427ce04]
+- Updated dependencies [7e5d908]
+- Updated dependencies [a4ef439]
+- Updated dependencies [914c7c1]
+- Updated dependencies [3702763]
+- Updated dependencies [e341c06]
+- Updated dependencies [6d1507a]
+- Updated dependencies [d94c359]
+- Updated dependencies [ec0fa96]
+- Updated dependencies [869974c]
+- Updated dependencies [af6e671]
+- Updated dependencies [4378053]
+- Updated dependencies [4694b4a]
+- Updated dependencies [18b07b5]
+- Updated dependencies [bfe5ced]
+- Updated dependencies [3219ced]
+- Updated dependencies [775ff5f]
+- Updated dependencies [4beae71]
+- Updated dependencies [1ccef81]
+- Updated dependencies [e85d25e]
+- Updated dependencies [19e59ec]
+- Updated dependencies [f998fe3]
+- Updated dependencies [9c2a264]
+- Updated dependencies [20e42c6]
+- Updated dependencies [a404997]
+- Updated dependencies [dbe637f]
+- Updated dependencies [03160eb]
+- Updated dependencies [14bb7a3]
+- Updated dependencies [b7c6443]
+- Updated dependencies [b58d9b5]
+- Updated dependencies [24279c9]
+- Updated dependencies [07aa1a0]
+- Updated dependencies [62c5840]
+  - @runfusion/fusion@0.53.0
+
+## 0.52.0
+
+### @fusion/dashboard
+
+#### Patch Changes
+
+- @fusion/core@0.52.0
+- @fusion/engine@0.52.0
+- @fusion/i18n@0.39.15
+- @fusion-plugin-examples/cli-printing-press@0.1.32
+- @fusion-plugin-examples/compound-engineering@0.1.15
+- @fusion-plugin-examples/dependency-graph@0.1.46
+- @fusion-plugin-examples/roadmap@0.1.34
+- @fusion-plugin-examples/cursor-runtime@0.1.34
+- @fusion-plugin-examples/droid-runtime@0.1.41
+- @fusion-plugin-examples/hermes-runtime@0.2.65
+- @fusion-plugin-examples/openclaw-runtime@0.2.65
+- @fusion-plugin-examples/paperclip-runtime@0.2.65
+
+### @fusion/desktop
+
+#### Patch Changes
+
+- @fusion/core@0.52.0
+- @fusion/dashboard@0.52.0
+- @fusion/engine@0.52.0
+
+### @fusion/engine
+
+#### Patch Changes
+
+- @fusion/core@0.52.0
+- @fusion/pi-claude-cli@0.52.0
+
+### @fusion/plugin-sdk
+
+#### Patch Changes
+
+- @fusion/core@0.52.0
+
+### @runfusion/fusion
+
+#### Minor Changes
+
+- 42226ed: summary: Expose workflow authoring tools through the published agent extension API.
+  category: feature
+  dev: Registers fn_workflow_create/update/delete/settings/get/select/list and fn_trait_list in the pi extension.
+- 353aaf3: summary: Allow task image artifacts to be created from agent tools and viewed in task details.
+  category: feature
+  dev: Adds `dataBase64` support to `fn_artifact_register` and task-detail image preview expansion.
+- 6cf6ad3: summary: Add a setting to control whether clicking outside the Quick Chat window closes it.
+  category: feature
+  dev: New project setting `quickChatCloseOnOutsideClick` (default true, preserving FN-7152 behavior). Wired through ProjectSettings/DEFAULT_PROJECT_SETTINGS, useAppSettings, the Settings → General toggle, and the Quick Chat FloatingWindow `closeOnOutsidePointerDown` prop. Project-scoped only.
+- 013d50f: summary: Add Anthropic API-key authentication under Authentication.
+  category: feature
+  dev: Adds Anthropic built-in API-key provider auth and surfaces Anthropic dual OAuth/API-key cards in onboarding and Settings.
+- f3d9bfb: summary: Add a Tasks tab to the right sidebar that shows the last-viewed task or a clickable task list.
+  category: feature
+  dev: New `tasks` overflow-view registry entry + `DockTaskList` empty state. The FN-7169 dock-task overlay is re-anchored to the Tasks tab; the task snapshot now persists across tab switches and clears on back/close or surface teardown. Default dock view stays `files`.
+- 5b668d2: summary: Let operators sort the board Done column by completion date or task ID.
+  category: feature
+  dev: Adds Done-column-only descending sort modes while preserving existing completion-date default ordering.
+- 797b30c: summary: Add a Board dropdown option that shows tasks across all workflows.
+  category: feature
+  dev: Uses a dashboard-only aggregate workflow sentinel that is not sent to workflow APIs or durable selection.
+- 797b30c: summary: Show workflow-name badges on Board cards in the All workflows view.
+  category: feature
+  dev: Adds aggregate Board task-card workflow metadata threading through Column and WorktreeGroup.
+- 4623211: summary: Add a terminal worktree picker for opening shells in task worktrees.
+  category: feature
+  dev: Dashboard terminal sessions now pass an authorized cwd for selected project worktrees.
+- 480d4d0: summary: Let Git Manager jump from worktrees to their read-only commit history.
+  category: feature
+  dev: Adds Git Manager worktree commit-target UI and responsive styling.
+- 480d4d0: summary: Let Git Manager inspect commit history from known git worktrees.
+  category: feature
+  dev: Adds read-only worktreePath targeting for commit list and diff endpoints.
+- 924bcb9: summary: Add task context menus on board and list cards.
+  category: feature
+  dev: Board TaskCard and ListView row/card surfaces now support right-click, keyboard, and touch long-press action menus.
+- 17fce43: summary: Add a mobile setting to open board tasks in the existing popup.
+  category: feature
+  dev: Adds project setting `openMobileTasksInPopup` and mobile-only board-card routing to task FloatingWindow.
+- ebb805d: summary: Add a global setting to control modal backdrop dismissal.
+  category: feature
+  dev: Adds dismissModalsOnOutsideClick as a global-only dashboard preference, defaulting false.
+- ea0707c: summary: Add a project setting for absolute workspace file-browser paths.
+  category: feature
+  dev: Adds allowAbsoluteFileBrowserPaths for workspace file-browser routes while keeping the default confined.
+- 6c8884e: summary: Add a quick-add workflow selector for Board and List task creation.
+  category: feature
+  dev: The selector drives save, planning, subtask handoff, and workflow-step loading without submitting the aggregate workflow sentinel.
+- 5f67c85: summary: Show workflow identity with icons instead of built-in text suffixes.
+  category: feature
+  dev: Adds optional custom workflow icon metadata and renders Fusion icons for built-in workflows.
+- f0a15db: summary: Add Command Center task-duration trend lines for average and median completed active time.
+  category: feature
+  dev: Extends productivity analytics with taskDurationTrend buckets sourced from completed task cumulativeActiveMs.
+- 2335a07: summary: Add Claude Sonnet 5 across Anthropic model selection and execution paths.
+  category: feature
+  dev: Adds supplemental direct Anthropic and pi-claude-cli model metadata plus pricing for `claude-sonnet-5`.
+- e6be1f7: summary: Add Activity segments for current task activity, Feed, and Raw Logs.
+  category: feature
+  dev: Task detail keeps legacy initialTab="logs" compatibility by routing to Activity → Feed.
+- db7b46f: summary: Add a task-detail Chat tab for planner-model conversations.
+  category: feature
+  dev: Adds task-scoped planner chat session routing and a dedicated TaskPlannerChatTab separate from Activity steering.
+- 4550970: summary: Add starter prompts to the task-detail Chat empty state.
+  category: feature
+  dev: Planner Chat now renders guided empty-state prompt buttons that send ordinary chat messages.
+- cb0d38a: summary: Convert clear task chat change requests into steering comments.
+  category: feature
+  dev: Task-detail planner Chat now asks for clarification before ambiguous or risky steering.
+- 2f5e15a: summary: Make task details open with a focused planner Chat experience.
+  category: feature
+  dev: Reorders task-detail Chat before Activity, keeps legacy Activity tab ids, and pins the planner Chat composer.
+- e2702ba: summary: Let workflow review nodes fix issues in the same reviewer session by default.
+  category: feature
+  dev: Adds reviewerInlineFixes workflow setting; off restores REVISE-to-remediation behavior.
+- 6ce0b44: summary: Make Coding use stepwise execution with default-on Plan Review and final Code Review gates.
+  category: feature
+  dev: `builtin:coding` now uses the stepwise graph with `plan-review` before execution and no per-step or mandatory final review; the old graph is `builtin:legacy-coding`.
+- da15c1c: summary: Rename the task Definition tab to Plan and add a PROMPT.md editor action.
+  category: feature
+  dev: Dashboard task details now open the current task's PROMPT.md via FileBrowserProvider.
+
+#### Patch Changes
+
+- b2e1c3e: summary: Plugin sidebar icons now refresh after a plugin rebuild instead of showing stale glyphs.
+  category: fix
+  dev: Dashboard-view metadata is re-derived from the authoritative on-disk manifest so rebuilt plugins do not serve stale dashboardViews icon, label, or placement values to navigation while the in-view bundle is current.
+- 368f18c: summary: Restore required safety guidance in fast-mode task planning prompts.
+  category: fix
+  dev: Keeps `FAST_TRIAGE_PROMPT_TEXT` lean while restoring FN-5893, workflow-routing, artifact-location, and no-commit guidance asserted by engine prompt tests.
+- 7eca99c: summary: Fast-mode tasks now clear optional steps by default while honoring manual selections.
+  category: fix
+  dev: Fast create surfaces submit explicit optional-step selections, and graph execution runs explicitly enabled optional groups even in fast mode.
+- 01e0433: summary: Review gates now include user comments and steering context consistently.
+  category: fix
+  dev: Mandatory Plan Review, reviewStep callers, and prompt/custom workflow-step agents pass canonical user comment context.
+- c54b231: summary: Make task details open Activity first by default with an opt-in Chat-first setting.
+  category: feature
+  dev: Adds project setting `taskDetailChatFirst` and exposes it in Settings → Appearance.
+- 0ff60a7: summary: Show focused auth-token recovery when daemon authorization expires.
+  category: fix
+  dev: Handles exact daemon 401 recovery, focuses the replacement-token input, and suppresses engine remediation while recovery is open.
+- 4441b72: summary: Prevent workflow task cards from showing later sequential steps active too early.
+  category: fix
+  dev: TaskStore now applies step dependency/order guards to in-progress updates as well as done updates.
+- 5ec04ec: summary: Prevent fast Coding tasks from merging before implementation runs.
+  category: fix
+  dev: Fast mode now requires implementation proof at the workflow merge boundary.
+- a3ad0c8: summary: Keep workflow completion summaries running for fast-mode tasks.
+  category: fix
+  dev: Excludes completion-summary/summaryTarget task nodes from the fast-mode custom review/gate skip path.
+- 228554d: summary: Prevent Compound Engineering artifacts from showing stale project files after project switches.
+  category: fix
+  dev: Clears cached artifact discovery on project changes and opens CE artifacts through the project workspace.
+- 7ea9aee: summary: Keep the Goals dashboard view scoped to the selected project.
+  category: fix
+  dev: Threads projectId through Goals view reads, mutations, mission links, and AI description drafting.
+- 151800f: summary: Fix mobile Planning Mode description editing so spaces can be entered.
+  category: fix
+  dev: Guards Planning Mode summary normalization so editable fields keep normal text input.
+- 3886e58: summary: Show Compound Engineering workflow stage progress on task cards and details.
+  category: fix
+  dev: Skill-backed workflow nodes now record graph-node progress separately from optional workflow toggles.
+- befb49b: summary: Chat messages now use the full width in narrow popup and sidebar chats.
+  category: fix
+  dev: ChatView.css adds a `@container chat-view (max-width: 30rem)` rule setting `.chat-message` to max-width:100%, plus the mobile viewport rule bumped from 90% to 100%.
+- 2051516: summary: Concurrency panels now prefer live engine counts so running-agent totals stay accurate.
+  category: fix
+  dev: Prefer engine-manager task stores over stale registered/default fallback stores in the dashboard live-count source; add regressions for count normalization and scoped semaphore live-limit behavior.
+- a583446: summary: Task-detail chat messages now use the full width in the right sidebar and narrow detail views.
+  category: fix
+  dev: TaskChatTab.css makes .task-chat-tab a `container-type: inline-size` query container and adds `@container task-chat-tab (max-width: 34rem)` collapsing the agent-header grid column and widening `.task-chat-entry--user` to 100%.
+- 969d03b: summary: Import Tasks view now fills the full height of the screen for Issues and Pull Requests.
+  category: fix
+  dev: Embedded GitHubImportModal `.github-import-modal__body` gets `flex: 1` outside the <=640px block so the flex/height chain fills `.project-content`.
+- fac7556: summary: Fix review tasks stuck when merge retries starve the executor's code-review revision pass.
+  category: fix
+  dev: recoverCompletedTask now refuses workflow-graph re-entry when the live task has incomplete steps or a remediation bounce (sendTaskBackForFix → scheduleWorkflowRerun) is already scheduled, so a pre-merge optional/advisory REVISE that reopens plan steps lets the executor finish them instead of re-passing the advisory step (budget exhausted) and looping on the "task has incomplete steps" merge gate. Regression: restart.integration.test.ts.
+- 8eed09c: summary: Fix planning/chat failures when image attachment bytes do not match the file extension.
+  category: fix
+  dev: Adds detectImageMimeFromBytes in core and applies it in triage and dashboard chat attachment read paths.
+- 3a83868: summary: Apply task reviewer model overrides consistently to reviewer and code-review lanes.
+  category: fix
+  dev: Reviewer sessions now resolve primary models through the validator-lane resolver, including test-mode forcing.
+- 58a0c1f: summary: Workflow graph nodes now resume cleanly after engine pause-aborts.
+  category: fix
+  dev: Distinguishes engine-internal in-flight node aborts from genuine workflow node failures, re-enters the node through a bounded graph resume path, and emits a run-audit event for the recovery.
+- d87db14: summary: Compact collapsed tool-call summaries in task-detail chat.
+  category: fix
+  dev: Updates TaskChatTab tool-call summary styling, responsive behavior, tests, and docs.
+- 0a8a86c: summary: Show Z.ai icons for GLM model rows in Command Center token analytics.
+  category: fix
+  dev: Maps standalone glm-\* model labels through the shared provider-icon inference helper.
+- d0a369e: summary: Show active tasks by default in the right sidebar and fix its task-detail back button.
+  category: fix
+  dev: Filters the right-dock Tasks list to active tasks by default, adds a Show Done toggle, keeps archived tasks hidden, and wires the header back arrow to the existing dock task close path.
+- d7f26bb: summary: Keep Compound Engineering tasks running through checkout recovery, PR review policy, and merge handoff.
+  category: fix
+  dev: Graph-native workflow nodes reacquire missing worktrees, gate manual PR review on auto-merge off, link PRs to tasks, and project successful node progress at merge.
+- e963be4: summary: Harden workflow graph recovery against stale plan replays and foreign landed tips.
+  category: fix
+  dev: Classifies stale in-review plan pause/resume replays and verifies task ownership before already-merged recovery finalization.
+- c7cbd1d: summary: Prevent rebuilt stepwise workflow tasks from failing at parse on stale step pins.
+  category: fix
+  dev: Spec rebuild and AI replan handoff now clear persisted workflow foreach instances before reparsing PROMPT.md.
+- 6451828: summary: Add consistent Plan Review, Code Review, and Browser Verification toggles to engineering workflows.
+  category: fix
+  dev: Quick Fix seeds all three optional groups off; other engineering built-ins seed plan/code review on and browser verification off.
+- 7cd5552: summary: Make dashboard retry clear stale workflow step pins before re-execution.
+  category: fix
+  dev: Clears persisted workflow step instances on manual execution retry so parse-steps can repin the current plan.
+- 03d4f95: summary: Separate Anthropic API-key auth from Claude subscription login cards.
+  category: fix
+  dev: Adds anthropic-subscription OAuth and anthropic-api-key UI ids mapped to upstream Anthropic credential storage.
+- 57d8065: summary: Let workflow graphs prepare task worktrees before coding-mode nodes run.
+  category: fix
+  dev: Adds graph-owned node preparation so executor adapters only fulfill declared worktree requirements.
+- 4184062: summary: Send ntfy notifications from workflow graph lifecycle and notify-node flows.
+  category: fix
+  dev: Workflow column transitions now use moveTask events; workflow-notify is enabled in default ntfy events.
+- 1d21241: summary: Auto-retry stale parse pause-resume workflow failures instead of requiring operator action.
+  category: fix
+  dev: Re-enters safe in-review parse pause-abort replays with the shared graph resume retry budget.
+- c93217d: summary: Prevent Plan Review approvals from looping back into triage as failures.
+  category: fix
+  dev: Parses explicit reviewer prose verdicts and applies default-on optional workflow steps when no explicit selection exists.
+- b86ddf4: summary: Route failed Plan Review workflow steps back through triage for automatic replanning.
+  category: fix
+  dev: Orders Plan Review before execution steps and sends failed Plan Review results to needs-replan instead of executor fixes.
+- 1f36516: summary: Prevent stale pause state from mislabeling workflow retries as engine pauses.
+  category: fix
+  dev: Clears executor pause-abort provenance on fresh dispatch, Plan Review replan, and manual retry.
+- 399a4a2: summary: Let workflow-owned steps finish out of order without false step-progress failures.
+  category: fix
+  dev: Graph-owned step sessions now project step status with graph semantics and prompt agents not to call lifecycle update tools.
+- 50ccd79: summary: Preserve files changed by workflow-owned parallel step sessions on task branches.
+  category: fix
+  dev: Step-session cherry-pick now uses merge-base ranges and skips empty cherry-picks instead of dropping real step commits.
+- 6239b2a: summary: Make built-in Code Review block merge when it requests revisions.
+  category: fix
+  dev: Generic built-in code-review optional groups now use gateMode: gate; Browser Verification remains advisory.
+- cb94fc8: summary: Recover workflow retries that restart after step execution has already begun.
+  category: fix
+  dev: Treat persisted foreach step pins as a parse resume signal instead of a graph failure.
+- 2b73a0a: summary: Retry unavailable Plan Review without rewriting an accepted task plan.
+  category: fix
+  dev: Adds a triage retry path for plan-review-unavailable tasks that reuses PROMPT.md.
+- c088f8a: summary: Keep Plan Review status visible while tasks execute after restart.
+  category: fix
+  dev: Preserves and repairs plan-review workflowStepResults when merge-state cleanup or old rows erased them.
+- f430f5d: summary: Keep verification steps from starting before earlier workflow steps finish.
+  category: fix
+  dev: Step-session wave planning now respects graph step dependencies; unannotated steps remain sequential by default.
+- 05c54fb: summary: Keep Plan Review status visible when execution resumes after stale merge cleanup.
+  category: fix
+  dev: Reconstructs passed Plan Review rows from task logs and makes mock test-mode sessions emit workflow-step parser events.
+- 984e362: summary: Stop routing failed workflow execution into the review column.
+  category: fix
+  dev: Graph and execution failures now stay executable or failed in-place instead of handing errored tasks to in-review.
+- 875cfad: summary: Prevent workflow tasks from reaching Done without durable merge confirmation.
+  category: fix
+  dev: Workflow graph merge finalization now requires mergeConfirmed proof before accepting done/no-op states.
+- 6ce61af: summary: Add inner padding to Task Detail chat message blocks.
+  category: fix
+  dev: Keeps text, user, tool, and thinking block padding tokenized and border-boxed with responsive regression coverage.
+- 123639c: summary: Prevent workflow tasks from completing with stale or partial merge proof.
+  category: fix
+  dev: Workflow finalization now validates incomplete steps, no-op proof, and branch file coverage before done.
+- d22b8cc: summary: Swiping back on mobile now dismisses the open task detail view.
+  category: fix
+  dev: Routes mobile task-detail opens through useNavigationHistory pushNav/removeNav so the native back gesture (popstate) reverts to the originating board/list/dock surface across all detail surfaces.
+- 6fc50d8: summary: Keep workflow merge nodes moving even when a workflow skips a review handoff.
+  category: fix
+  dev: Workflow merge primitives now establish the in-review merge boundary before requesting merge; non-gate skill output no longer requires a verdict.
+- a84afc1: summary: Show post-merge verification as a post-merge optional workflow step.
+  category: fix
+  dev: Preserves optional-group `config.phase` when resolving workflow optional steps.
+- b363270: summary: Preserve dashboard workflow selections per project across Board, List, Header, and Graph.
+  category: fix
+  dev: Board/List/Header/Graph workflow selection uses project-scoped localStorage and repairs stale ids.
+- 41c0cf3: summary: Prevent scoped workflow tasks from getting stranded by unrelated branch residue.
+  category: fix
+  dev: Built-in optional workflow gates now default to three remediation attempts and review fixes carry File Scope guardrails.
+- 7b43f73: summary: Footer concurrency markers now line up with the running-agent counts.
+  category: fix
+  dev: Align EngineControlMenu current-use marker math with CommandCenterControls by mapping utilization as current / cap instead of slider min/max coordinates.
+- 167d242: summary: Keep Workflow simple-editor tabs reachable on mobile.
+  category: fix
+  dev: Makes the simple editor tab strip horizontally pannable on narrow touch viewports.
+- a766813: summary: Prevent executor prompt setup from failing when a recovered task has no saved prompt.
+  category: fix
+  dev: Guards worktree prompt scoping against undefined task prompts while quarantining stale post-cutover engine tests.
+- e80d85b: summary: Make task-detail Chat tool-call text easier to read without expanding collapsed rows.
+  category: fix
+  dev: TaskChatTab tool-call summary, kicker, label, and detail typography now use the readable base spacing token.
+- c6c4a00: summary: Show timestamps on each task-detail chat block.
+  category: feature
+  dev: Adds per-block TaskChatTab timestamp rendering and regression coverage for text, tool, thinking, and user blocks.
+- 9fd286b: summary: Keep built-in Code Review remediation recovering until review passes.
+  category: fix
+  dev: Built-in Code Review now defaults maxRevisions to unbounded while preserving workflow-authored numeric caps.
+- 797b30c: summary: Show workflow names on aggregate board cards and task detail headers when available.
+  category: feature
+  dev: Reuses the board-workflows payload for detail custom fields and workflow-name badges.
+- 0ff60a7: summary: Hide engine remediation banners while daemon auth token recovery is open.
+  category: fix
+  dev: Threads authTokenRecoveryOpen through DashboardBanners to suppress EngineStatusBanner and EngineUnavailableBanner.
+- 6f2b8ab: summary: Retry unavailable Plan Review without rewriting existing task specs.
+  category: fix
+  dev: plan-review-unavailable triage tasks now rerun Plan Review/finalization from the existing PROMPT.md under global agent concurrency instead of launching the planner.
+- 90b62b7: summary: Preserve explicit empty workflow step dependencies for parallel roots.
+  category: fix
+  dev: Keeps omitted dependsOn as previous-step fallback while treating [] as no dependencies.
+- ffe2092: summary: Footer concurrency controls now ask before saving capacity changes.
+  category: fix
+  dev: Mirrors Command Center confirmation semantics in EngineControlMenu so global and per-project concurrency edits persist only after explicit confirmation.
+- 7427fa3: summary: Show optional workflow block children as connected in the workflow editor.
+  category: fix
+  dev: Adds non-editable visual-only optional-group boundary connectors that are filtered from workflow IR saves.
+- e4a9dc6: summary: Remove deleted tasks from the board and right sidebar immediately after deletion.
+  category: fix
+  dev: Updates the dashboard `useTasks` delete path to remove successfully deleted task ids from shared state and project task cache without waiting for SSE/refetch.
+- ed21597: summary: Stop logging non-actionable missing configured skill-pattern info messages.
+  category: fix
+  dev: Missing configured skill patterns remain resolver diagnostics but are no longer emitted as runtime info logs.
+- 224e8b4: summary: Reload the selected file when switching Files modal worktrees.
+  category: fix
+  dev: Keeps Files modal selected-path state while changing workspace/worktree.
+- 480d4d0: summary: Let Git Manager inspect commit history from known worktrees.
+  category: feature
+  dev: Adds read-only Commits history targeting for Git-listed worktrees; mutating actions remain scoped to the current repository target.
+- 45dd808: summary: Reuse fresh task data when returning to Board or List views.
+  category: fix
+  dev: Skips the useTasks false-to-true SSE catch-up fetch while the in-memory snapshot is within SWR_TASKS_MAX_AGE_MS.
+- 9fb7069: summary: Dismiss mobile task details when Android Back is pressed before falling back to app exit.
+  category: fix
+  dev: Routes Capacitor Android Back through the dashboard navigation-history stack via a cancelable native event.
+- d05ca21: summary: Preserve mobile board scroll after returning from task detail.
+  category: fix
+  dev: Restores the mobile board/card scroll snapshot after Back to board remounts the board.
+- a039c93: summary: Group Done column sort and archive actions in one accessible actions menu.
+  category: fix
+  dev: Updates dashboard Done/complete column headers to use the shared column actions dropdown.
+- 41ff08a: summary: Prevent fast workflow merges from completing before implementation steps run.
+  category: fix
+  dev: Blocks stale no-op merge proof from trapping unfinished workflow tasks and requeues premature merge-node failures.
+- 2735534: summary: Restore reliable terminal keyboard shortcuts in embedded CLI session terminals.
+  category: fix
+  dev: SessionTerminal now mirrors TerminalModal copy/paste filtering, suppresses prop/read-only-ticket replay input, and keeps mobile composer submit on one path.
+- b5da5d3: summary: Refresh custom provider model lists at startup and from Settings.
+  category: feature
+  dev: Adds persisted custom-provider model refresh routes and startup best-effort refresh for dashboard, serve, and daemon.
+- a0b35c1: summary: Open Workflow simple-editor step details when rows are clicked.
+  category: fix
+  dev: Restores the simple graph row/pencil selection path for compact and mobile workflow editing.
+- 3e0391e: summary: Make configured MCP tools available in planning and mission interviews.
+  category: fix
+  dev: Adds an explicit read-only MCP opt-in for planning and mission session factories with regression coverage.
+- 04f06e6: summary: Preserve workflow setting values and prompt overrides during workflow export/import.
+  category: fix
+  dev: Workflow export envelopes now include settingValues and promptOverrides; imports restore them onto the new workflow id with store validation.
+- d04ee5b: summary: Move the mobile task-detail workflow badge beside the updated timestamp.
+  category: fix
+  dev: Keeps the desktop task-detail header badge while showing a mobile-only timestamp-group badge.
+- c848ce1: summary: Fix the mobile Engine Controls menu placement.
+  category: fix
+  dev: Keeps the footer EngineControlMenu as a viewport-safe mobile/tablet bottom panel while preserving the desktop anchored popover.
+- 94ddfe1: summary: Document workflow-authoring tools in the packaged Fusion skill.
+  category: fix
+  dev: Syncs workflow extension registrations into generated skill references and capability tables.
+- 8f0fde8: summary: Mobile back now reliably dismisses the open task detail, including right after closing and reopening it.
+  category: fix
+  dev: Hardens useNavigationHistory against close-reopen races and history/stack desync so popstate (and the fusion:native-back event) deterministically dismisses every task-detail surface.
+- 52e4a26: summary: Move All workflows Board task-card workflow badges to the bottom-left.
+  category: fix
+  dev: Updates TaskCard workflowBadge placement and dashboard layout coverage.
+- 85e925a: summary: Move task-detail workflow badges into the Updated timestamp metadata row.
+  category: fix
+  dev: Uses one canonical task-detail workflow badge across desktop and mobile detail surfaces.
+- 082dd55: summary: Restore the Board All workflows view after refresh.
+  category: fix
+  dev: Persists the Board-only aggregate workflow sentinel while filtering it out of real-workflow selectors.
+- ac87b1e: summary: Fix mobile terminal spacing after folded viewport changes.
+  category: fix
+  dev: Re-baselines terminal keyboard viewport metrics when foldable devices settle to a narrower posture.
+- b450dd4: summary: Fix the mobile terminal workspace picker so its menu stays visible and reachable.
+  category: fix
+  dev: Portals and viewport-constrains the TerminalModal worktree listbox while preserving tab cwd semantics.
+- 6b3eec0: summary: Collapse custom shadcn color controls by default in dashboard theme surfaces.
+  category: fix
+  dev: Adds an accessible shared show/collapse affordance for the custom shadcn color picker.
+- 3cd5695: summary: Remove the board quick-add Plan button while keeping New Task planning available.
+  category: fix
+  dev: QuickEntryBox and InlineCreateCard no longer render data-testid="plan-button" or Plan click targets.
+- 8f65186: summary: Fix mobile terminal spacing when folded phones open with the keyboard already visible.
+  category: fix
+  dev: TerminalModal now uses layout-viewport height for the initial focused keyboard-open folded posture and tests cover TerminalModal plus SessionTerminal.
+- 70d7dca: summary: Skip unchanged plugin builds during workspace builds.
+  category: performance
+  dev: Root pnpm build now uses a git content-hash plugin build cache that includes local workspace dependency and root build config/tooling inputs.
+- 9460497: summary: Let Anthropic subscription login power Anthropic model requests without a raw API key.
+  category: fix
+  dev: Bridges runtime provider `anthropic` to OAuth credentials stored under `anthropic-subscription` while preserving raw API-key precedence.
+- 7e74fe3: summary: Make built-in Plan Review and Code Review revisions unbounded unless workflows set a cap.
+  category: fix
+  dev: Adds workflow values planReviewMaxRevisions and codeReviewMaxRevisions for per-workflow caps, including read-only built-ins.
+- c5dd8c5: summary: Refresh dashboard task state immediately after Retry succeeds.
+  category: fix
+  dev: useTasks now replaces matching retry rows, updates project SWR task cache, and invalidates older fetches.
+- 7beb64e: summary: Show workflow icons and wider names in the Quick Add workflow selector.
+  category: fix
+  dev: Reuses WorkflowIcon in QuickEntryBox and widens the tokenized selector/menu styles.
+- 7f3bd80: summary: Count ephemeral task-worker runs in Command Center activity stats.
+  category: fix
+  dev: Activity analytics now unions usage_events and agentRuns by agent id for active-agent range/day counts.
+- 2132a1c: summary: Fix mobile terminal character spacing after small font-size changes.
+  category: fix
+  dev: Reapplies settled xterm font metrics for TerminalModal and SessionTerminal at 10px keyboard-open states.
+- 211b18b: summary: Make Shadcn Ember the default dashboard theme.
+  category: feature
+  dev: Adds the shadcn-ember color theme and updates default theme fallbacks.
+- 3dd02dd: summary: Hide Quick Add node pickers when only local execution is available.
+  category: fix
+  dev: QuickEntryBox and InlineCreateCard now clear hidden stale node overrides before create submission.
+- ea93f68: summary: Show workflow icons in the full New Task workflow picker.
+  category: feature
+  dev: Replaces the create-time TaskForm workflow native select with an icon-capable styled dropdown while preserving workflowId payload semantics.
+- 7ca6c78: summary: Make the Quick Add workflow selector compact while keeping long menu names readable.
+  category: fix
+  dev: Narrows only the closed QuickEntryBox workflow trigger; menu width and workflow routing remain unchanged.
+- 21fc286: summary: Add icon-only Quick Add image attachments with drag-and-drop support.
+  category: feature
+  dev: QuickEntryBox now shares image selection, paste, and drop intake with accessible pending-count labels.
+- 254e97d: summary: Rename the task-detail Chat tab to Activity and make it first.
+  category: feature
+  dev: Keeps the internal `chat` tab id compatible for existing deep links and plugin callers.
+- bba415f: summary: Preserve legacy task feed and raw log access under Activity.
+  category: fix
+  dev: Keeps legacy task-detail logs callers routed to Activity → Feed while Raw Logs remains the only raw-log-fetching segment.
+- f677ab4: summary: Add a steering entry affordance to task Activity.
+  category: feature
+  dev: Labels the Activity Current composer as steering/refinement and covers Feed/Raw Logs placement.
+- ddfd841: summary: Make task-detail Chat answer status and progress questions from bounded task context.
+  category: feature
+  dev: Adds server-built task planner chat context and task-scoped send validation.
+- 0915377: summary: Reuse the shared question UI for task-detail planner Chat clarification prompts.
+  category: fix
+  dev: Task planner Chat now renders fn_ask_question prompts through ChatQuestionResponse and marks submitted answers read-only.
+- 9f72158: summary: Fix mobile Planning Mode summary description Expand and Collapse controls.
+  category: fix
+  dev: Splits the summary description label from adjacent Markdown and Expand controls and adds mobile regression coverage.
+- 2284d66: summary: Collapse task-detail branch groups by default with a more compact summary.
+  category: fix
+  dev: Keeps branch-group member and PR actions available after expanding the task-detail card.
+- 5e0c567: summary: Hide branch group chrome while the task Activity chat is maximized.
+  category: fix
+  dev: TaskDetailModal skips mounting BranchGroupCard during expanded Activity chat so branch controls are not focusable.
+- 863c5ce: summary: Rename task Activity Current to Live and allow expanding all Activity segments.
+  category: feature
+  dev: Keeps legacy Activity `current`, `chat`, and `logs` routing compatibility while sharing the expand control across Live, Feed, and Raw Logs.
+- d58ba26: summary: Move the Quick Add attachment button next to Save in the expanded action row.
+  category: fix
+  dev: Preserves FN-7304 icon-only attachment behavior while updating QuickEntryBox action order coverage.
+- b52f92c: summary: Keep Planner Chat compact while preserving expanded task controls.
+  category: fix
+  dev: Aligns Planner Chat composer height with Activity chat and keeps Priority, Execution Mode, and tabs visible in expanded mobile task details.
+- 4ae0456: summary: Rename the task-detail title summarization button to Summarize.
+  category: fix
+  dev: Updates task detail UI copy and focused dashboard tests.
+- aa4c2c1: summary: Remove the AI Refine action from Quick Add task creation.
+  category: fix
+  dev: QuickEntryBox no longer renders or calls the refine-text path; TaskForm refine remains available.
+- 7d2bd97: summary: Make task planner chats appear only after user interaction and expire on archive.
+  category: fix
+  dev: Planner-chat tabs now load history without pre-creating sessions; archive cleanup deletes task-planner sessions.
+- ae1ca5c: summary: Make Shadcn Ember color tokens match Ember exactly.
+  category: fix
+  dev: Aligns Shadcn Ember inherited Ember-owned CSS tokens and adds regression coverage.
+- d786e7b: summary: Align footer concurrency current-use dots with Command Center sliders.
+  category: fix
+  dev: Mirrors Command Center range geometry in the footer Engine Controls popup while preserving current/cap utilization math.
+- 45b1ee6: summary: Replan active tasks after confirming execution-mode changes.
+  category: fix
+  dev: Dashboard inline execution-mode changes on todo/in-progress tasks now confirm and call the spec rebuild path.
+- f840cbc: summary: Preserve board column scroll during dashboard refresh and viewport stabilization.
+  category: fix
+  dev: Narrows mobile board stabilization so task/workflow refresh and resize events pin document drift without resetting #board.scrollLeft.
+- 5ff81cb: summary: Remove the extra steering guidance copy from task Activity chat.
+  category: fix
+  dev: Keeps the Activity composer APIs intact while removing the visible TaskChatTab label/hint shell.
+- 4ab4aae: summary: Replace task Activity subtabs with a compact Live, Feed, Raw dropdown.
+  category: fix
+  dev: Keeps legacy Activity segment ids and initial-tab routing while removing the old segmented-control shell.
+- 519f158: summary: Persist Remote Access settings when saving from the dashboard on Windows.
+  category: fix
+  dev: Main Settings Save now writes the canonical remoteAccess settings payload.
+- 058a041: summary: Keep the mobile Planning Mode New session button pinned at the bottom.
+  category: fix
+  dev: Bounds the mobile Planning sessions list so only saved sessions scroll above the footer CTA.
+- 998a7f2: summary: Use workflow Plan Review as the single pre-execution plan gate.
+  category: fix
+  dev: Triage no longer injects fn_review_spec or requires a separate spec-review approval before workflow execution.
+- 36d090c: summary: Keep Plan Review in triage and prevent duplicate execution-time plan reviews.
+  category: fix
+  dev: Triage now runs enabled Plan Review before releasing tasks to execution; execution graph skips an already-passed Plan Review.
+- 998a7f2: summary: Preserve Quick Add tasks with all workflow optional steps unchecked.
+  category: fix
+  dev: Sends empty enabledWorkflowSteps from Quick Add and honors explicit empty workflow selections in task details.
+- 2135bd6: summary: Record completion summaries for workflow-driven tasks.
+  category: fix
+  dev: Workflow graph completions and resumed workflow merge work items now backfill task.summary when no agent summary exists.
+- b169072: summary: Block workflow tasks from bypassing merge proof when finalizing to done.
+  category: fix
+  dev: Adds a workflow done-bypass guard for selected workflow tasks using skipMergeBlocker.
+- 24d7881: summary: Show workflow review failures as explicit replan and remediation nodes.
+  category: fix
+  dev: Built-in review gate failures now route to graph-owned remediation nodes before executor scheduling fallback.
+- 4a1a043: summary: Stop showing stale in-review stall badges while agents are actively streaming logs.
+  category: fix
+  dev: TaskStore stall hydration now treats fresh buffered or persisted agent-log activity as active ownership.
+- 2a5a108: summary: Keep dashboard workflow selection stable after creating refinement tasks.
+  category: fix
+  dev: Done-task chat refinement now clears its temporary composer bubble after successful creation.
+- 9e23d6c: summary: Prevent workflow tasks from duplicating plan review during implementation.
+  category: fix
+  dev: Graph-owned execution sessions no longer receive or prompt for legacy per-step review tools.
+- 234248a: summary: Retry workflow merge-node pause aborts while merge review is active.
+  category: fix
+  dev: Treats transient in-review statuses such as reviewing/merging as safe for bounded merge retry.
+- 6005f89: summary: Keep Planner Chat compact on mobile with an inline composer and provider-icon model badge.
+  category: fix
+  dev: Adjusts TaskPlannerChatTab mobile CSS and replaces the text model badge with a ProviderIcon tooltip.
+- 3327953: summary: Add task activity breadcrumbs for workflow pause-abort recovery.
+  category: fix
+  dev: Logs pause-abort marker source, aborted surfaces, and graph classification details.
+- eb83c81: summary: Align per-step review coding with default coding gates and session settings.
+  category: fix
+  dev: Removes the extra generic review seam from Coding (per-step review) and makes StepSessionExecutor honor runStepsInNewSessions=false by reusing the primary sequential session while keeping graph step-review boundaries.
+- cfd9d5b: summary: Stop repeat no-op phantom-reservation audit writes and preserve the worktree across phantom binding reclaim.
+  category: fix
+  dev: reconcilePhantomCommittedReservations now emits the task:reconcile-phantom-committed-reservation audit row only when orphaned child rows were actually pruned, instead of every maintenance tick (~19k wasted writes/day); the committed reservation stays committed so the ID is never reused. clearPhantomExecutorBinding gains a preserveWorktrees option the self-healing phantom reclaim uses so moveTask(preserveWorktree:true) re-dispatch reattaches to the same worktree instead of orphaning it and acquiring a new one (FN-7249). Regression: store-phantom-reservation-reconcile.test.ts, executor-workspace.test.ts.
+- d96eb3c: summary: Make the task Plan prompt editor span the full task-detail card width.
+  category: fix
+  dev: Adds scoped TaskDetailModal Plan prompt width guards for modal, embedded, and mobile surfaces.
+- 658b351: summary: Scope external-integration plan evidence checks to Coding (per-step review).
+  category: fix
+  dev: Triage no longer blocks generated plans for missing external evidence; the per-step review Plan Review gate does.
+- e37260b: summary: Keep Planner Chat expanded context visible while removing repeated header guidance.
+  category: fix
+  dev: Planner Chat hides the header subtext, keeps that guidance in the empty state, and preserves title/workflow context when expanded on mobile.
+- 7c53c97: summary: Compact Planner Chat chrome and align Activity Live with the same plain composer row.
+  category: fix
+  dev: Planner Chat removes its redundant header, moves the provider icon to the empty state, and Activity Live drops its card-wrapped composer shell.
+- 65822a0: summary: Keep Planner Chat spacing stable when expanding task details.
+  category: fix
+  dev: Stabilizes task-detail Planner Chat CSS so expanded mode changes height allocation without padding jumps.
+- 2a5a108: summary: Keep refinement tasks on the source task workflow board.
+  category: fix
+  dev: TaskStore.refineTask now inherits explicit workflow selections atomically during creation.
+- c1d7da3: summary: Refresh branch group task-detail completion live as member tasks change.
+  category: fix
+  dev: Refetches branch group summaries on task lifecycle SSE events and reconnect.
+- a92f15e: summary: Remove the icon from the Quick Add Plan action while preserving the text button behavior.
+  category: fix
+  dev: Updates QuickEntryBox and regression coverage for the text-only Plan action.
+- 5ee1964: summary: Remove redundant workflow labels from expanded task-card step lists.
+  category: fix
+  dev: Workflow step rows still show names, status dots, and active badges; the aggregate card workflow badge is unchanged.
+- b829821: summary: Allow review steps to target a validated external checkout.
+  category: fix
+  dev: Resolves explicit review checkout metadata before spawning read-only step reviewers.
+- a48ff30: summary: Keep task-detail Activity segment tabs equal-height with smaller labels.
+  category: fix
+  dev: Normalizes Live/Feed/Raw Logs segmented-control sizing in the dashboard task detail panel.
+- 8079722: summary: Retry configured fallback models when a selected provider model returns a not-found error.
+  category: fix
+  dev: Classifies structured provider model 404 payloads, including Anthropic not_found_error, as model-selection failures.
+- 90756f9: summary: Wait for task store secret database handles to close before cleanup.
+  category: fix
+  dev: Awaits the async secrets store close path during TaskStore shutdown to avoid teardown races.
+- 1bf86d1: summary: Add clearer spacing between workflow badge icons and labels.
+  category: fix
+  dev: Applies token-based column gaps to dashboard task-card and task-detail workflow badges.
+- b363270: summary: Keep Board and List workflow choices selected across refreshes and route returns.
+  category: fix
+  dev: Uses project-scoped localStorage workflow-selection helpers shared with header and graph selectors.
+- 50f8807: summary: Prevent stale workflow recovery log entries from sending incorrect notifications.
+  category: fix
+  dev: Adds workflowTransitionNotification task markers for pause-abort recovery requeues and avoids log-text notification heuristics.
+- e09d450: summary: Harden workflow lifecycle recovery, post-merge gates, warnings, and notifications.
+  category: fix
+  dev: Adds post-merge gate blocking, lifecycle warning analysis, recovery-route audit metadata, and workflow transition notification classification.
+
+### runfusion.ai
+
+#### Patch Changes
+
+- Updated dependencies [b2e1c3e]
+- Updated dependencies [368f18c]
+- Updated dependencies [42226ed]
+- Updated dependencies [7eca99c]
+- Updated dependencies [01e0433]
+- Updated dependencies [c54b231]
+- Updated dependencies [0ff60a7]
+- Updated dependencies [4441b72]
+- Updated dependencies [5ec04ec]
+- Updated dependencies [a3ad0c8]
+- Updated dependencies [228554d]
+- Updated dependencies [7ea9aee]
+- Updated dependencies [151800f]
+- Updated dependencies [3886e58]
+- Updated dependencies [353aaf3]
+- Updated dependencies [6cf6ad3]
+- Updated dependencies [befb49b]
+- Updated dependencies [2051516]
+- Updated dependencies [013d50f]
+- Updated dependencies [a583446]
+- Updated dependencies [969d03b]
+- Updated dependencies [fac7556]
+- Updated dependencies [f3d9bfb]
+- Updated dependencies [8eed09c]
+- Updated dependencies [3a83868]
+- Updated dependencies [58a0c1f]
+- Updated dependencies [d87db14]
+- Updated dependencies [0a8a86c]
+- Updated dependencies [d0a369e]
+- Updated dependencies [d7f26bb]
+- Updated dependencies [e963be4]
+- Updated dependencies [c7cbd1d]
+- Updated dependencies [6451828]
+- Updated dependencies [7cd5552]
+- Updated dependencies [03d4f95]
+- Updated dependencies [57d8065]
+- Updated dependencies [4184062]
+- Updated dependencies [1d21241]
+- Updated dependencies [c93217d]
+- Updated dependencies [b86ddf4]
+- Updated dependencies [1f36516]
+- Updated dependencies [399a4a2]
+- Updated dependencies [50ccd79]
+- Updated dependencies [6239b2a]
+- Updated dependencies [cb94fc8]
+- Updated dependencies [2b73a0a]
+- Updated dependencies [c088f8a]
+- Updated dependencies [f430f5d]
+- Updated dependencies [05c54fb]
+- Updated dependencies [984e362]
+- Updated dependencies [875cfad]
+- Updated dependencies [6ce61af]
+- Updated dependencies [123639c]
+- Updated dependencies [d22b8cc]
+- Updated dependencies [6fc50d8]
+- Updated dependencies [a84afc1]
+- Updated dependencies [b363270]
+- Updated dependencies [41c0cf3]
+- Updated dependencies [7b43f73]
+- Updated dependencies [167d242]
+- Updated dependencies [5b668d2]
+- Updated dependencies [a766813]
+- Updated dependencies [e80d85b]
+- Updated dependencies [c6c4a00]
+- Updated dependencies [797b30c]
+- Updated dependencies [9fd286b]
+- Updated dependencies [797b30c]
+- Updated dependencies [797b30c]
+- Updated dependencies [0ff60a7]
+- Updated dependencies [6f2b8ab]
+- Updated dependencies [90b62b7]
+- Updated dependencies [ffe2092]
+- Updated dependencies [7427fa3]
+- Updated dependencies [e4a9dc6]
+- Updated dependencies [ed21597]
+- Updated dependencies [224e8b4]
+- Updated dependencies [4623211]
+- Updated dependencies [480d4d0]
+- Updated dependencies [480d4d0]
+- Updated dependencies [480d4d0]
+- Updated dependencies [924bcb9]
+- Updated dependencies [45dd808]
+- Updated dependencies [9fb7069]
+- Updated dependencies [d05ca21]
+- Updated dependencies [17fce43]
+- Updated dependencies [a039c93]
+- Updated dependencies [41ff08a]
+- Updated dependencies [ebb805d]
+- Updated dependencies [2735534]
+- Updated dependencies [b5da5d3]
+- Updated dependencies [ea0707c]
+- Updated dependencies [a0b35c1]
+- Updated dependencies [3e0391e]
+- Updated dependencies [04f06e6]
+- Updated dependencies [d04ee5b]
+- Updated dependencies [c848ce1]
+- Updated dependencies [94ddfe1]
+- Updated dependencies [8f0fde8]
+- Updated dependencies [6c8884e]
+- Updated dependencies [52e4a26]
+- Updated dependencies [85e925a]
+- Updated dependencies [082dd55]
+- Updated dependencies [ac87b1e]
+- Updated dependencies [b450dd4]
+- Updated dependencies [5f67c85]
+- Updated dependencies [f0a15db]
+- Updated dependencies [6b3eec0]
+- Updated dependencies [3cd5695]
+- Updated dependencies [8f65186]
+- Updated dependencies [70d7dca]
+- Updated dependencies [2335a07]
+- Updated dependencies [9460497]
+- Updated dependencies [7e74fe3]
+- Updated dependencies [c5dd8c5]
+- Updated dependencies [7beb64e]
+- Updated dependencies [7f3bd80]
+- Updated dependencies [2132a1c]
+- Updated dependencies [211b18b]
+- Updated dependencies [3dd02dd]
+- Updated dependencies [ea93f68]
+- Updated dependencies [7ca6c78]
+- Updated dependencies [21fc286]
+- Updated dependencies [254e97d]
+- Updated dependencies [e6be1f7]
+- Updated dependencies [bba415f]
+- Updated dependencies [f677ab4]
+- Updated dependencies [db7b46f]
+- Updated dependencies [4550970]
+- Updated dependencies [ddfd841]
+- Updated dependencies [cb0d38a]
+- Updated dependencies [0915377]
+- Updated dependencies [9f72158]
+- Updated dependencies [2284d66]
+- Updated dependencies [5e0c567]
+- Updated dependencies [2f5e15a]
+- Updated dependencies [863c5ce]
+- Updated dependencies [d58ba26]
+- Updated dependencies [b52f92c]
+- Updated dependencies [4ae0456]
+- Updated dependencies [aa4c2c1]
+- Updated dependencies [7d2bd97]
+- Updated dependencies [ae1ca5c]
+- Updated dependencies [d786e7b]
+- Updated dependencies [45b1ee6]
+- Updated dependencies [f840cbc]
+- Updated dependencies [5ff81cb]
+- Updated dependencies [4ab4aae]
+- Updated dependencies [519f158]
+- Updated dependencies [058a041]
+- Updated dependencies [998a7f2]
+- Updated dependencies [36d090c]
+- Updated dependencies [998a7f2]
+- Updated dependencies [2135bd6]
+- Updated dependencies [b169072]
+- Updated dependencies [24d7881]
+- Updated dependencies [4a1a043]
+- Updated dependencies [2a5a108]
+- Updated dependencies [9e23d6c]
+- Updated dependencies [234248a]
+- Updated dependencies [6005f89]
+- Updated dependencies [3327953]
+- Updated dependencies [eb83c81]
+- Updated dependencies [cfd9d5b]
+- Updated dependencies [d96eb3c]
+- Updated dependencies [658b351]
+- Updated dependencies [e37260b]
+- Updated dependencies [7c53c97]
+- Updated dependencies [65822a0]
+- Updated dependencies [2a5a108]
+- Updated dependencies [c1d7da3]
+- Updated dependencies [a92f15e]
+- Updated dependencies [5ee1964]
+- Updated dependencies [e2702ba]
+- Updated dependencies [b829821]
+- Updated dependencies [a48ff30]
+- Updated dependencies [8079722]
+- Updated dependencies [6ce0b44]
+- Updated dependencies [90756f9]
+- Updated dependencies [da15c1c]
+- Updated dependencies [1bf86d1]
+- Updated dependencies [b363270]
+- Updated dependencies [50f8807]
+- Updated dependencies [e09d450]
+  - @runfusion/fusion@0.52.0
+
+## 0.51.0
+
+### @fusion/dashboard
+
+#### Patch Changes
+
+- @fusion/core@0.51.0
+- @fusion/engine@0.51.0
+- @fusion/i18n@0.39.14
+- @fusion-plugin-examples/cli-printing-press@0.1.31
+- @fusion-plugin-examples/compound-engineering@0.1.14
+- @fusion-plugin-examples/dependency-graph@0.1.45
+- @fusion-plugin-examples/roadmap@0.1.33
+- @fusion-plugin-examples/cursor-runtime@0.1.33
+- @fusion-plugin-examples/droid-runtime@0.1.40
+- @fusion-plugin-examples/hermes-runtime@0.2.64
+- @fusion-plugin-examples/openclaw-runtime@0.2.64
+- @fusion-plugin-examples/paperclip-runtime@0.2.64
+
+### @fusion/desktop
+
+#### Patch Changes
+
+- @fusion/core@0.51.0
+- @fusion/dashboard@0.51.0
+- @fusion/engine@0.51.0
+
+### @fusion/engine
+
+#### Patch Changes
+
+- @fusion/core@0.51.0
+- @fusion/pi-claude-cli@0.51.0
+
+### @fusion/plugin-sdk
+
+#### Patch Changes
+
+- @fusion/core@0.51.0
+
+### @runfusion/fusion
+
+#### Minor Changes
+
+- f7e20ab: summary: Add a Chat tab to the right sidebar so you can chat inline and pop it out.
+  category: feature
+  dev: Registers ChatView as the always-visible `chat` overflow-view entry in the right dock.
+- dc54b61: summary: Tasks with a manually-created open Pull Request are no longer auto-merged.
+  category: feature
+  dev: New PrInfo.manual flag set by POST /tasks/:id/pr/create; allowsAutoMergeProcessing now returns false when a task has an open manual PR (status === "open"), excluding it from the engine merge queue and self-healing sweeps until the human merges the PR. Pipeline (PR-merge-strategy) PRs are unaffected. FN-7182.
+- d9a518c: summary: Fast-mode tasks now plan with a lean, speed-first prompt routed through the workflow.
+  category: feature
+  dev: Replaces the verbose built-in `planning-fast` seam prompt (FAST_TRIAGE_PROMPT_TEXT) with a concise variant; resolution still prefers a workflow's `planning-fast` seam and falls back to the built-in.
+- 7ebf58e: summary: CE HTML plans and brainstorm docs now get report-only ce-doc-review instead of being skipped.
+  category: feature
+  dev: Updates bundled Compound Engineering ce-doc-review handoffs so HTML runs review without autofix/write-back.
+- fecb27e: summary: CE HTML docs now support DOM-validated in-place ce-doc-review fixes with report-only fallback.
+  category: feature
+  dev: Adds a direct parse5 CE HTML mutation helper with atomic writes, rollback, and allowlisted operations.
+- 6ca5118: summary: Close the Quick Chat window by clicking outside it.
+  category: feature
+  dev: New opt-in `closeOnOutsidePointerDown` prop on FloatingWindow; enabled only for the Quick Chat (windowKey="chat-modal"). Uses a capture-phase document pointerdown listener that excludes in-flight drag/resize and nested dialog/floating surfaces. Task pop-outs are unaffected.
+- 605e4d7: summary: Emit run-audit telemetry for agent performance reflections.
+  category: feature
+  dev: Adds reflection:generated/skipped/failed DatabaseMutationType events emitted from AgentReflectionService.generateReflection; metadata carries ids/counts/outcomes only.
+- 631e8fc: summary: CE HTML docs can define and safely repair malformed checklists in ce-doc-review.
+  category: feature
+  dev: Adds parse5-backed canonical checklist repair with validation, atomic writes, and report-only fallback.
+- 2448447: summary: Add a project setting to show or hide worktree names and grouping on the board.
+  category: feature
+  dev: New project setting `showWorktreeGrouping` (default false). When true, Column groups WIP tasks by worktree in both legacy and workflow modes; when false, WIP columns render plain task cards.
+- 34efa8b: summary: Refinement tasks are now titled with the source task ID followed by the entered comment.
+  category: feature
+  dev: TaskStore.refineTask now sets title = "{sourceId}: {feedback}"; normalization is skipped to preserve the source-id prefix; FN-7165.
+- a0602d0: summary: Add a project setting to open task details in the right sidebar instead of the full panel.
+  category: feature
+  dev: New project setting `openTasksInRightSidebar` (default false). When true and the right dock is available, board card clicks render the task in the right dock; falls back to the full-panel view on mobile / when the dock is inactive.
+- 4118061: summary: The Create PR dialog is now movable and resizable like other Fusion pop-outs.
+  category: feature
+  dev: PrCreateModal now renders inside the shared FloatingWindow (windowKey "pr-create", persistGeometryKey "floating-window:pr-create") instead of a fixed .modal-overlay; geometry persists, mobile stays full-screen via CSS, and overlay click-to-dismiss was dropped (close via X / Cancel / Escape).
+- 5d9184d: summary: Add a pin toggle to the right sidebar to push content aside instead of overlaying it.
+  category: feature
+  dev: New persisted localStorage flag `fusion:right-dock-pinned` (default false). When pinned, `.right-dock` switches from absolute overlay to in-flow (`right-dock--pinned`, position: relative) so the shell flex layout reflows `.project-content`; unpinned restores overlay. Toggle lives in the right-dock toolbar.
+- fc958bc: summary: Task detail Review tab now hides HTML comments and shows comment avatars, human/bot badges, and author-type filtering.
+  category: feature
+  dev: TaskReviewTab renders bodies via the shared sanitized MailboxMessageContent and a new app/utils/githubCommentAuthor helper for bot/avatar derivation.
+- 9c207fd: summary: Add project settings to customize the AI prompts for PR title and description generation.
+  category: feature
+  dev: New project settings `prTitlePromptInstructions` / `prDescriptionPromptInstructions` (default undefined) are appended to the Create PR dialog's metadata-generation system prompt in generatePrMetadata.
+- 65abae2: summary: Improve AI-generated PR titles and descriptions, and show a clear loading state while the description generates.
+  category: feature
+  dev: Rewrote the pr-metadata-generator system/context prompt (exported as a named default constant) for grounded, conventional-commit-style output while preserving the strict {title,summary,changes,testing,linkedTask} JSON schema; PrCreateModal now renders a skeleton + aria-busy loading affordance with disabled inputs during generation that clears into content or the existing error/manual-fallback path.
+- 9050ee1: summary: Add an "Address PR feedback" button that starts an AI session to resolve PR review comments.
+  category: feature
+  dev: New POST /tasks/:id/pr/address-feedback route seeds a ce-resolve-pr-feedback steering prompt and wakes the assigned agent; button gates on linked-PR actionable feedback (commentCount or CHANGES_REQUESTED).
+- 4405dec: summary: Re-engage an executor when users chat on in-review tasks.
+  category: feature
+  dev: Shares the review-address re-engagement helper for Chat steering and Comments-tab task comments while preserving PR-await guards.
+
+#### Patch Changes
+
+- e5a0273: summary: Artifact lists now refresh live when new artifacts are registered.
+  category: fix
+  dev: TaskStore emits artifact:registered SSE; useArtifacts also accepts message:sent/message:received and coalesces scoped refreshes.
+- 524c15c: summary: Agents no longer pause tasks on failure — pausing is reserved for explicit user requests.
+  category: fix
+  dev: Adds a no-pause-on-failure standing rule to HEARTBEAT_SYSTEM_PROMPT / HEARTBEAT_NO_TASK_SYSTEM_PROMPT, clarifies the fn_task_pause tool description, and regenerates the fusion skill docs (sync:fusion-skill).
+- 7a2137c: summary: Permanent agents can ask the user a question directly without an approval gate.
+  category: fix
+  dev: Classify fn_ask_question in COORDINATION_EXEMPT_TOOLS and READONLY_FN_TOOLS (gating-classifications.ts) so both the permanent-agent gate and action gate auto-allow it, mirroring fn_send_message.
+- c48dcae: summary: Compound Engineering now uses a distinct sidebar icon instead of duplicating Insights.
+  category: fix
+  dev: Plugin dashboard view icon changed Sparkles → Boxes; registered `boxes` in dashboard PLUGIN_NAV_ICON_MAP so desktop + mobile nav resolve it.
+- 581f850: summary: Compound Engineering sidebar navigation now matches its Boxes header icon.
+  category: fix
+  dev: Pins Compound Engineering plugin nav entries to Boxes by plugin id so stale dashboard view metadata cannot render Sparkles/Grid3X3 in desktop or mobile navigation.
+- 100164d: summary: Ephemeral/task-worker agents now show their token usage on the dashboard.
+  category: fix
+  dev: Derives zero/absent per-agent dashboard totals from task token usage and allows ephemeral Agent Detail token windows.
+- d7a02c4: summary: Stopping the engine or pausing a project now frees its global agent slots for other projects.
+  category: fix
+  dev: InProcessRuntime now returns the project's held slots back to the shared cross-project AgentSemaphore after abort+drain on stop, and ProjectEngineManager.pauseProject/stopAll return residual slots per project without clobbering slots held by other projects.
+- bb89e1e: summary: Project Dashboard cards now say "Stop engine"/"Start engine" instead of "Pause"/"Resume".
+  category: feature
+  dev: Relabels ProjectCard pause/resume controls; pauseProject already stops the engine, so behavior is unchanged. i18n projectCard.\* keys updated (en) with empty-string fallback for other locales.
+- b570a83: summary: Missions tab now always opens the mission overview instead of a specific mission.
+  category: fix
+  dev: Removed MissionManager cache-restore and default-select effects; targetMissionId deep-links and interview resume still open a specific mission.
+- 8ef9750: summary: Theme the quick-entry steps drop-down with canonical dashboard menu tokens.
+  category: fix
+  dev: Aligns WorkflowOptionalStepsDropdown panel CSS with shared dropdown surface, border, radius, shadow, and hover tokens.
+- a95cfa7: summary: Running-agent counts include active in-review agents, and the concurrency use-marker is no longer off by one.
+  category: fix
+  dev: Adds shared isRunningAgentTask/countRunningAgentTasks in @fusion/core; engine concurrency.persistedTopLevelAgentSlots and the dashboard/CLI count surfaces delegate to it. CommandCenterControls use-marker ratio is now 0-based.
+- 987abc7: summary: Tasks sent back by Code Review or Browser Verification verdicts now re-run and complete their steps before re-checking.
+  category: fix
+  dev: Fixes the post-verdict remediation bounce (requestPreMergeOptionalStepFix → sendTaskBackForFix → reopenLastStepForRevision → scheduleWorkflowRerun → graph re-run) so resumed execution re-launches the executor and drives reopened implementation/verification/delivery steps and the verdict-demanded fix to done across both in-progress and in-review bounce sources, bounded by the existing maxRevisions/maxPostReviewFixes budget.
+- bee93c3: summary: Footer no longer blinks and the concurrency panel stays open across status refreshes.
+  category: fix
+  dev: Keeps executor stats loading initial-only and guards the footer loading branch after populated render.
+- 7923977: summary: Keep Create PR preview commit SHAs readable on one line.
+  category: fix
+  dev: Corrects the dashboard Create Pull Request commit-row grid and guards the DOM contract in tests.
+- e42679d: summary: Stuck triage re-queues now resume from the drafted plan instead of restarting planning from scratch.
+  category: fix
+  dev: triage.ts stuck-abort paths seed buildSpecificationPrompt with the on-disk PROMPT.md draft, or a non-empty plan task document when PROMPT.md is absent, and bound consecutive triage stuck-retries by settings.maxStuckKills before escalating to failed/paused.
+- 9f45f10: summary: Stuck re-queue no longer loses uncommitted work while keeping steps marked complete.
+  category: fix
+  dev: Reconciles lost-work steps before worktree removal across all three executor stuck-requeue paths; corrects the preserveProgressOnStuckRequeue docstring.
+- 01fe47d: summary: Fix the Create PR dialog spinner, diff preview default, and stray-click dismissal behavior.
+  category: fix
+  dev: PrCreateModal keeps the FloatingWindow no-backdrop-dismiss path, defaults the diff/commit <details> closed, and time-bounds generatePrMetadata with PR_METADATA_TIMEOUT_MS so hangs use the existing error/manual-body fallback.
+- 5b71bdb: summary: PR badge color now follows GitHub status: green/gray/purple/red plus a conflict color.
+  category: fix
+  dev: Adds getPrBadgeModifierClass and a token-backed --color-merged badge modifier.
+- 11e5dde: summary: Show active project pull requests in the Pull Requests sidebar and main view.
+  category: fix
+  dev: Adds PullRequestView list mode for no-id hosts with selectable detail and back navigation.
+- 27b0cbb: summary: The PR number in a task's Pull Request tab now links to the pull request on GitHub.
+  category: feature
+  dev: PrCard (PrPanel.tsx) wraps the pr-number in an anchor to prInfo.url (new tab, rel=noopener); plain-span fallback when no URL.
+- b60a743: summary: Fix "Request revision" error on reviewer-agent task reviews.
+  category: fix
+  dev: review/address now validates selected items against the same canonical review source the UI renders (buildDirectTaskReviewData / getPrReviewDetails) instead of the persisted reviewState.items.
+- fb509b1: summary: Fix Compound Engineering, Quick fix, and Review-heavy workflow tasks getting stuck in Todo.
+  category: fix
+  dev: linear() built-in workflows now synthesize the canonical default column traits (hold(capacity) on todo, wip on in-progress, merge on in-review) matching BUILTIN_CODING_WORKFLOW_IR, so the hold/release sweep dispatches their todo cards. Fixes FN-7190.
+- 8d3c15e: summary: Theme quick-add optional-step checkboxes and phase badges consistently.
+  category: fix
+  dev: Co-locates workflow phase badge CSS with the shared helper and applies the dashboard checkbox accent token.
+- f0b3003: summary: Keep Summary token table model names readable in narrow task detail panels.
+  category: fix
+  dev: Adds token-table CSS min-width and wrap-contract regression coverage for right-dock layouts.
+- b5ed4e0: summary: Pressing q (or Ctrl+C) in the TUI now quits cleanly without engine logs bleeding onto your shell.
+  category: fix
+  dev: Two-part fix. (1) dashboard.ts shutdown/devShutdown arm an unref'd 3s hard-exit watchdog on the first signal and force an immediate process.exit(0) on a second signal, so a hung stopAllDevServers/engine/central-core teardown can no longer leave the process alive. (2) Root cause of the "TUI keeps rendering after q" symptom: dispose() called logSink.releaseConsole() (re-pointing console._ at the terminal) before tui.stop() restored the shell, so slow engine/mesh/dev-server teardown logs painted over the recovered prompt. dispose() now calls the new logSink.silence() instead, dropping all sink + console._ output from quit to exit. Shutdown step diagnostics (timeShutdownStep + the watchdog stall line) are gated behind FUSION_DEBUG_SHUTDOWN=1 so a normal quit is pristine.
+
+### runfusion.ai
+
+#### Patch Changes
+
+- Updated dependencies [e5a0273]
+- Updated dependencies [f7e20ab]
+- Updated dependencies [dc54b61]
+- Updated dependencies [524c15c]
+- Updated dependencies [7a2137c]
+- Updated dependencies [c48dcae]
+- Updated dependencies [581f850]
+- Updated dependencies [d9a518c]
+- Updated dependencies [7ebf58e]
+- Updated dependencies [fecb27e]
+- Updated dependencies [100164d]
+- Updated dependencies [d7a02c4]
+- Updated dependencies [6ca5118]
+- Updated dependencies [bb89e1e]
+- Updated dependencies [b570a83]
+- Updated dependencies [8ef9750]
+- Updated dependencies [605e4d7]
+- Updated dependencies [631e8fc]
+- Updated dependencies [a95cfa7]
+- Updated dependencies [2448447]
+- Updated dependencies [987abc7]
+- Updated dependencies [bee93c3]
+- Updated dependencies [34efa8b]
+- Updated dependencies [a0602d0]
+- Updated dependencies [4118061]
+- Updated dependencies [7923977]
+- Updated dependencies [5d9184d]
+- Updated dependencies [e42679d]
+- Updated dependencies [9f45f10]
+- Updated dependencies [01fe47d]
+- Updated dependencies [5b71bdb]
+- Updated dependencies [fc958bc]
+- Updated dependencies [11e5dde]
+- Updated dependencies [9c207fd]
+- Updated dependencies [65abae2]
+- Updated dependencies [27b0cbb]
+- Updated dependencies [9050ee1]
+- Updated dependencies [b60a743]
+- Updated dependencies [4405dec]
+- Updated dependencies [fb509b1]
+- Updated dependencies [8d3c15e]
+- Updated dependencies [f0b3003]
+- Updated dependencies [b5ed4e0]
+  - @runfusion/fusion@0.51.0
 
 ## 0.50.0
 
@@ -10647,6 +11905,30 @@ for reference.
 - Updated dependencies [a2ed6d0]
   - @runfusion/fusion@0.1.0
 
+## 0.39.17
+
+### @fusion/i18n
+
+#### Patch Changes
+
+- @fusion/core@0.53.1
+
+## 0.39.16
+
+### @fusion/i18n
+
+#### Patch Changes
+
+- @fusion/core@0.53.0
+
+## 0.39.15
+
+### @fusion/i18n
+
+#### Patch Changes
+
+- @fusion/core@0.52.0
+
 ## 0.39.14
 
 ### @fusion/i18n
@@ -10760,6 +12042,30 @@ for reference.
 #### Patch Changes
 
 - @fusion/core@0.40.0
+
+## 0.11.43
+
+### @fusion/droid-cli
+
+#### Patch Changes
+
+- @fusion-plugin-examples/droid-runtime@0.1.43
+
+## 0.11.42
+
+### @fusion/droid-cli
+
+#### Patch Changes
+
+- @fusion-plugin-examples/droid-runtime@0.1.42
+
+## 0.11.41
+
+### @fusion/droid-cli
+
+#### Patch Changes
+
+- @fusion-plugin-examples/droid-runtime@0.1.41
 
 ## 0.11.40
 

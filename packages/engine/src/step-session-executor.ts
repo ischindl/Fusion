@@ -18,7 +18,7 @@ const execAsync = promisify(exec);
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { AgentStore, MessageStore, PermanentAgentGatingContext, ResolvedMcpServerDefinition, TaskDetail, Settings, SteeringComment, TaskStore } from "@fusion/core";
+import type { AgentHeartbeatRun, AgentStore, MessageStore, PermanentAgentGatingContext, ResolvedMcpServerDefinition, TaskDetail, Settings, SteeringComment, TaskStore } from "@fusion/core";
 import { resolvePersistAgentThinkingLog } from "@fusion/core";
 
 import {
@@ -57,6 +57,10 @@ import { pruneWorktreeAdminEntries } from "./worktree-prune.js";
 import { activeSessionRegistry } from "./active-session-registry.js";
 
 const stepExecLog = createLogger("step-session-executor");
+
+type WorkflowStepActivityRun = AgentHeartbeatRun & {
+  contextSnapshot: NonNullable<AgentHeartbeatRun["contextSnapshot"]>;
+};
 
 // ── Exported Types ─────────────────────────────────────────────────────
 
@@ -1106,6 +1110,90 @@ export class StepSessionExecutor {
     };
   }
 
+  private createWorkflowStepActivityRun(stepIndex: number, startedAt: string): WorkflowStepActivityRun {
+    const { taskDetail } = this.options;
+    const step = taskDetail.steps?.[stepIndex];
+    const agentId = this.options.effectiveAgentId ?? taskDetail.assignedAgentId ?? "executor";
+
+    /*
+     * FNXC:CommandCenterActivity 2026-07-01-00:00:
+     * Graph-owned workflow step sessions must publish agentRuns rows because Command Center active-agent, daily activity, and throughput metrics consume agentRuns for ephemeral task-worker activity that may not emit usage_events rows.
+     */
+    return {
+      id: `${generateSyntheticRunId("workflow-step", taskDetail.id)}-step-${stepIndex}`,
+      agentId,
+      taskId: taskDetail.id,
+      startedAt,
+      endedAt: null,
+      status: "active",
+      invocationSource: "assignment",
+      triggerDetail: "workflow-step-session",
+      processPid: process.pid,
+      contextSnapshot: {
+        source: "step-session-executor",
+        sessionPurpose: "executor",
+        workflowStep: true,
+        taskId: taskDetail.id,
+        taskLineageId: taskDetail.lineageId,
+        taskTitle: taskDetail.title,
+        assignedAgentId: taskDetail.assignedAgentId,
+        effectiveAgentId: this.options.effectiveAgentId,
+        agentId,
+        stepIndex,
+        stepName: step?.name ?? `Step ${stepIndex}`,
+      },
+      resultJson: {
+        source: "step-session-executor",
+        sessionPurpose: "executor",
+        workflowStep: true,
+        stepIndex,
+        stepName: step?.name ?? `Step ${stepIndex}`,
+      },
+    };
+  }
+
+  private async saveWorkflowStepActivityRun(run: WorkflowStepActivityRun): Promise<void> {
+    const saveRun = this.options.agentStore?.saveRun?.bind(this.options.agentStore);
+    if (!saveRun) return;
+
+    try {
+      await saveRun(run);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      stepExecLog.warn(
+        `Failed to publish workflow-step activity run ${run.id} for task ${this.options.taskDetail.id}: ${msg}`,
+      );
+    }
+  }
+
+  private async completeWorkflowStepActivityRun(
+    run: WorkflowStepActivityRun,
+    status: Extract<AgentHeartbeatRun["status"], "completed" | "failed" | "terminated">,
+    result: StepResult,
+  ): Promise<void> {
+    const terminalRun: WorkflowStepActivityRun = {
+      ...run,
+      endedAt: new Date().toISOString(),
+      status,
+      usageJson: result.tokenUsage
+        ? {
+            inputTokens: result.tokenUsage.inputTokens,
+            outputTokens: result.tokenUsage.outputTokens,
+            cachedTokens: result.tokenUsage.cachedTokens,
+            cacheWriteTokens: result.tokenUsage.cacheWriteTokens,
+          }
+        : run.usageJson,
+      resultJson: {
+        ...(run.resultJson ?? {}),
+        success: result.success,
+        error: result.error,
+        retries: result.retries,
+        tokenUsage: result.tokenUsage,
+      },
+    };
+    await this.saveWorkflowStepActivityRun(terminalRun);
+  }
+
   // ── Internal: Step Execution ────────────────────────────────────────
 
   /**
@@ -1143,6 +1231,9 @@ export class StepSessionExecutor {
       await semaphore.acquire();
     }
 
+    const activityRun = this.createWorkflowStepActivityRun(stepIndex, new Date().toISOString());
+    await this.saveWorkflowStepActivityRun(activityRun);
+
     const trackingKey = this.makeTrackingKey(stepIndex);
     let retries = 0;
     // Track context-limit recovery attempts separately from retry attempts.
@@ -1152,7 +1243,9 @@ export class StepSessionExecutor {
     try {
       for (let attempt = 0; attempt <= MAX_STEP_RETRIES; attempt++) {
         if (this.aborted) {
-          return { stepIndex, success: false, error: "Execution aborted", retries };
+          const result: StepResult = { stepIndex, success: false, error: "Execution aborted", retries };
+          await this.completeWorkflowStepActivityRun(activityRun, "terminated", result);
+          return result;
         }
 
         if (attempt > 0) {
@@ -1359,6 +1452,7 @@ Follow instructions precisely and avoid unrelated changes.`,
             retries,
             tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
           };
+          await this.completeWorkflowStepActivityRun(activityRun, "completed", result);
           this.options.onStepComplete?.(stepIndex, result);
           return result;
         } catch (err: unknown) {
@@ -1399,6 +1493,7 @@ Follow instructions precisely and avoid unrelated changes.`,
                 retries,
                 tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
               };
+              await this.completeWorkflowStepActivityRun(activityRun, "completed", result);
               this.options.onStepComplete?.(stepIndex, result);
               return result;
             } catch (reducedErr: unknown) {
@@ -1426,6 +1521,7 @@ Follow instructions precisely and avoid unrelated changes.`,
               retries,
               tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
             };
+            await this.completeWorkflowStepActivityRun(activityRun, "failed", result);
             this.options.onStepComplete?.(stepIndex, result);
             return result;
           }
@@ -1457,7 +1553,9 @@ Follow instructions precisely and avoid unrelated changes.`,
       }
 
       // Should not reach here, but safety fallback
-      return { stepIndex, success: false, error: "Max retries exceeded", retries };
+      const result: StepResult = { stepIndex, success: false, error: "Max retries exceeded", retries };
+      await this.completeWorkflowStepActivityRun(activityRun, "failed", result);
+      return result;
     } finally {
       // Release semaphore
       semaphore?.release();

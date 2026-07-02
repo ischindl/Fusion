@@ -405,9 +405,34 @@ export function createFusionAuthStorage(): AuthStorage {
   const isAnthropicSubscriptionLoggedOut = () => loggedOutProviders.has(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
   const isAnthropicRawProviderLoggedOut = () => loggedOutProviders.has(ANTHROPIC_PROVIDER_ID);
 
+  const selectAnthropicSubscriptionCredential = (): { credential?: StoredCredential; sourceProvider?: string } => {
+    if (isAnthropicSubscriptionLoggedOut()) {
+      return {};
+    }
+
+    const separatedCredential = selectStoredCredential(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
+    if (separatedCredential?.type === "oauth") {
+      return { credential: separatedCredential, sourceProvider: ANTHROPIC_SUBSCRIPTION_PROVIDER_ID };
+    }
+
+    if (!isAnthropicRawProviderLoggedOut()) {
+      const legacyCredential = selectStoredCredentialByType(ANTHROPIC_PROVIDER_ID, "oauth");
+      if (legacyCredential) {
+        return { credential: legacyCredential, sourceProvider: ANTHROPIC_PROVIDER_ID };
+      }
+    }
+
+    return {};
+  };
+
+  const hasVisibleAnthropicSubscriptionCredential = () => Boolean(selectAnthropicSubscriptionCredential().credential);
+
   const selectVisibleStoredCredential = (provider: string) => {
     if (loggedOutProviders.has(provider)) {
       return undefined;
+    }
+    if (provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
+      return selectAnthropicSubscriptionCredential().credential;
     }
     if (provider === ANTHROPIC_PROVIDER_ID && isAnthropicSubscriptionLoggedOut()) {
       return selectStoredCredentialByType(ANTHROPIC_PROVIDER_ID, "api_key");
@@ -430,9 +455,7 @@ export function createFusionAuthStorage(): AuthStorage {
         || modelsJsonApiKeys.has(ANTHROPIC_PROVIDER_ID));
     const hasVisibleLegacyAnthropicOAuth = !isAnthropicRawProviderLoggedOut()
       && Boolean(selectStoredCredentialByType(ANTHROPIC_PROVIDER_ID, "oauth"));
-    const hasVisibleSubscriptionCredential = !isAnthropicSubscriptionLoggedOut()
-      && (primary.has(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
-        || ANTHROPIC_SUBSCRIPTION_PROVIDER_ID in supplementalCredentials);
+    const hasVisibleSubscriptionCredential = hasVisibleAnthropicSubscriptionCredential();
     const hasVisibleAnthropicFallback = !isAnthropicRawProviderLoggedOut()
       && hasTargetFallbackAuth(ANTHROPIC_PROVIDER_ID);
 
@@ -491,6 +514,11 @@ export function createFusionAuthStorage(): AuthStorage {
 
   const resolveAnthropicRuntimeApiKey = async (): Promise<string | undefined> => {
     const rawProviderLoggedOut = isAnthropicRawProviderLoggedOut();
+
+    /*
+    FNXC:ProviderAuth 2026-07-01-14:55:
+    Anthropic runtime auth (`getApiKey("anthropic")`) resolves in precedence order: (1) raw API key, (2) legacy `anthropic` OAuth, (3) separated `anthropic-subscription` OAuth, (4) models.json / ModelRegistry fallback raw key. Raw key wins so an explicit `ANTHROPIC_API_KEY` keeps using x-api-key; subscription/OAuth tokens must resolve here so the built-in provider runs them on `/v1` with Claude Code impersonation. Do NOT gate OAuth behind the CLI or reroute it to an `/v1` `anthropic-subscription` provider — that reintroduced the #1857 regression (FN-7391/FN-7396).
+    */
     if (!rawProviderLoggedOut) {
       const anthropicApiKeyCredential = selectStoredCredentialByType(ANTHROPIC_PROVIDER_ID, "api_key");
       if (anthropicApiKeyCredential) {
@@ -512,8 +540,7 @@ export function createFusionAuthStorage(): AuthStorage {
       if (subscriptionCredential?.type === "oauth") {
         /*
         FNXC:ProviderAuth 2026-06-30-11:26:
-        Anthropic model execution still requests provider `anthropic`, but the separated subscription login now stores OAuth material under `anthropic-subscription` so the API-key card can remain raw-key-only.
-        Resolve and refresh the subscription credential with the upstream Anthropic OAuth provider id while persisting rotated tokens back to `anthropic-subscription`.
+        The separated subscription login stores OAuth material under `anthropic-subscription` so the API-key card stays raw-key-only, but Anthropic model execution still requests provider `anthropic`. Resolve and refresh the subscription credential (persisting rotated tokens back to `anthropic-subscription`) so a subscription user's `anthropic/<model>` selection runs on their OAuth token.
         */
         const subscriptionKey = await resolveRefreshableCredentialApiKey(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, subscriptionCredential);
         if (subscriptionKey) return subscriptionKey;
@@ -523,8 +550,7 @@ export function createFusionAuthStorage(): AuthStorage {
     if (!rawProviderLoggedOut) {
       /*
       FNXC:ProviderAuth 2026-06-30-13:28:
-      Logging out of the raw Anthropic provider must suppress raw-key sources consistently across status and runtime resolution.
-      Treat models.json Anthropic keys and ModelRegistry fallback resolver keys as raw-key fallback material, while subscription OAuth remains governed by the separate `anthropic-subscription` logout state above.
+      Logging out of the raw Anthropic provider must suppress raw-key sources consistently across status and runtime resolution. Treat models.json Anthropic keys and ModelRegistry fallback resolver keys as raw-key fallback material; subscription OAuth stays governed by the separate `anthropic-subscription` logout state above.
       */
       const modelsJsonApiKey = modelsJsonApiKeys.get(ANTHROPIC_PROVIDER_ID);
       if (modelsJsonApiKey) return modelsJsonApiKey;
@@ -573,6 +599,12 @@ export function createFusionAuthStorage(): AuthStorage {
         };
       }
 
+      if (prop === "setFallbackResolver") {
+        return (resolver: (provider: string) => string | undefined) => {
+          (target as unknown as { fallbackResolver?: (provider: string) => string | undefined }).fallbackResolver = resolver;
+        };
+      }
+
       if (prop === "set") {
         return (provider: string, credential: AuthCredential) => {
           target.set(provider, credential);
@@ -599,10 +631,13 @@ export function createFusionAuthStorage(): AuthStorage {
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return hasVisibleAnthropicCredential();
           }
+          if (provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
+            return hasVisibleAnthropicSubscriptionCredential();
+          }
           if (loggedOutProviders.has(provider)) {
             return false;
           }
-          return target.has(provider) || provider in supplementalCredentials || modelsJsonApiKeys.has(provider);
+          return target.has(provider) || provider in supplementalCredentials || modelsJsonApiKeys.has(provider) || hasTargetFallbackAuth(provider);
         };
       }
 
@@ -611,10 +646,13 @@ export function createFusionAuthStorage(): AuthStorage {
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return hasVisibleAnthropicCredential();
           }
+          if (provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
+            return hasVisibleAnthropicSubscriptionCredential();
+          }
           if (loggedOutProviders.has(provider)) {
             return false;
           }
-          return target.hasAuth(provider) || Boolean(supplementalCredentials[provider]) || modelsJsonApiKeys.has(provider);
+          return target.hasAuth(provider) || Boolean(supplementalCredentials[provider]) || modelsJsonApiKeys.has(provider) || hasTargetFallbackAuth(provider);
         };
       }
 
@@ -626,6 +664,9 @@ export function createFusionAuthStorage(): AuthStorage {
               ? Object.keys(supplementalCredentials).filter((p) => !loggedOutProviders.has(p))
               : Object.keys(supplementalCredentials)),
           ]);
+          if (hasVisibleAnthropicSubscriptionCredential()) {
+            providerIds.add(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
+          }
           const merged: Record<string, StoredCredential> = {};
           for (const providerId of providerIds) {
             const credential = selectVisibleStoredCredential(providerId);
@@ -650,10 +691,8 @@ export function createFusionAuthStorage(): AuthStorage {
               providers.add(p);
             }
           }
-          if (
-            !loggedOutProviders.has(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
-            && (providers.has(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) || supplementalCredentials[ANTHROPIC_SUBSCRIPTION_PROVIDER_ID])
-          ) {
+          if (hasVisibleAnthropicSubscriptionCredential()) {
+            providers.add(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
             providers.add(ANTHROPIC_PROVIDER_ID);
           }
           return Array.from(providers).filter((p) => {
@@ -679,10 +718,19 @@ export function createFusionAuthStorage(): AuthStorage {
           }
 
           if (provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
-            const subscriptionCredential = selectStoredCredential(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
-            return subscriptionCredential?.type === "oauth"
-              ? resolveRefreshableCredentialApiKey(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, subscriptionCredential)
-              : undefined;
+            const { credential: subscriptionCredential, sourceProvider } = selectAnthropicSubscriptionCredential();
+            if (subscriptionCredential?.type !== "oauth") {
+              return undefined;
+            }
+            if (sourceProvider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
+              /*
+              FNXC:ProviderAuth 2026-07-01-12:34:
+              Legacy Anthropic OAuth rows are subscription credentials, not raw API keys. Hydrate them into `anthropic-subscription` before refresh so status, usage, and banner clearing share the same provider id without overwriting a raw `anthropic` API-key credential.
+              */
+              primary.set(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, subscriptionCredential as AuthCredential);
+              loggedOutProviders.delete(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
+            }
+            return resolveRefreshableCredentialApiKey(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, subscriptionCredential);
           }
 
           // 1. Primary Fusion auth
@@ -698,7 +746,11 @@ export function createFusionAuthStorage(): AuthStorage {
           if (supplementalKey) return supplementalKey;
 
           // 3. models.json provider API keys (e.g., kimi-coding, lmstudio)
-          return modelsJsonApiKeys.get(provider);
+          const modelsJsonApiKey = modelsJsonApiKeys.get(provider);
+          if (modelsJsonApiKey) return modelsJsonApiKey;
+
+          // 4. ModelRegistry fallback resolver (env-backed provider configs)
+          return resolveTargetFallbackApiKey(provider);
         };
       }
 

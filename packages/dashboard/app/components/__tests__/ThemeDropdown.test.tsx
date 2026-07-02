@@ -41,6 +41,19 @@ describe("ThemeDropdown", () => {
     expect(defaultOptions[0]).toHaveTextContent("Shadcn Ember (Default)");
   });
 
+  it("renders Glass Silver as a non-empty compact dropdown option", () => {
+    render(<ThemeDropdown colorTheme="glass-silver" onColorThemeChange={vi.fn()} />);
+
+    const trigger = screen.getByRole("button", { name: /glass silver/i });
+    expect(trigger).toHaveTextContent("Glass Silver");
+    expect(trigger.querySelector(".theme-swatch-glass-silver")).toBeTruthy();
+
+    fireEvent.click(trigger);
+    const glassSilverOption = screen.getByRole("option", { name: /glass silver/i });
+    expect(glassSilverOption).toHaveTextContent("Glass Silver");
+    expect(glassSilverOption.querySelector(".theme-swatch-glass-silver")).toBeTruthy();
+  });
+
   it("selects themes and closes from click, escape, and outside click", () => {
     const onColorThemeChange = vi.fn();
     render(<ThemeDropdown colorTheme="default" onColorThemeChange={onColorThemeChange} />);

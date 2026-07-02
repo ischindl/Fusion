@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { createInstance } from "i18next";
+import { I18nextProvider, initReactI18next } from "react-i18next";
 import { TaskTokenStatsPanel } from "../TaskTokenStatsPanel";
 import type { Task } from "@fusion/core";
+import realEnApp from "../../../../i18n/locales/en/app.json";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -270,5 +273,48 @@ describe("TaskTokenStatsPanel", () => {
 
     const metric = screen.getByText("Total execution time").closest(".task-token-stats-panel__metric");
     expect(metric).toHaveTextContent("3m 0s");
+  });
+
+  /*
+   * FNXC:TaskStats 2026-07-01-00:00:
+   * Regression for issue #1863. The shared component-test i18n bundle only carries
+   * a handful of `app` keys, so every other key falls through to its inline default
+   * and this panel rendered fine in tests while crashing in production. Load the
+   * REAL en/app.json — where `taskDetail.executionMode` is a nested object (the
+   * inline-toggle copy) — behind an I18nextProvider that mirrors production init
+   * options, and assert the Execution Details label resolves to the leaf string
+   * without i18next's "returned an object instead of string" fallback.
+   */
+  it("renders the execution-mode label against the real locale bundle without an object-key crash", async () => {
+    const instance = createInstance();
+    await instance.use(initReactI18next).init({
+      lng: "en",
+      fallbackLng: "en",
+      ns: ["app"],
+      defaultNS: "app",
+      // Mirror production so a key that resolves to an object surfaces the same
+      // way it does at runtime instead of being silently swallowed.
+      returnNull: false,
+      returnEmptyString: false,
+      returnObjects: false,
+      react: { useSuspense: false },
+      interpolation: { escapeValue: false },
+      resources: { en: { app: realEnApp } },
+    });
+
+    // Sanity-check the fixture still encodes the collision this test guards.
+    expect(typeof (realEnApp as { taskDetail: { executionMode: unknown } }).taskDetail.executionMode).toBe("object");
+
+    render(
+      <I18nextProvider i18n={instance}>
+        <TaskTokenStatsPanel loading={false} tokenUsage={undefined} task={makeTask({ executionMode: "fast" })} />
+      </I18nextProvider>,
+    );
+
+    const label = screen.getByText("Execution mode");
+    expect(label.tagName).toBe("DT");
+    expect(label.textContent).not.toMatch(/returned an object/i);
+    // The value cell resolves the fast/standard leaf, proving the row rendered.
+    expect(label.nextElementSibling?.textContent).toBe("Fast");
   });
 });

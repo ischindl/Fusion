@@ -467,11 +467,17 @@ describe("TerminalModal", () => {
     const triggerRule = terminalModalCss.match(/\.terminal-workspace-picker-trigger\s*\{([^}]*)\}/)?.[1] ?? "";
     const menuRule = terminalModalCss.match(/\.terminal-workspace-picker-menu\s*\{([^}]*)\}/)?.[1] ?? "";
     const actionsRule = terminalModalCss.match(/\.terminal-actions\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mobileTabsRule = terminalModalCss.match(/\.terminal-mobile-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mobileSelectRule = terminalModalCss.match(/\.terminal-mobile-tab-select\s*\{([^}]*)\}/)?.[1] ?? "";
     const mobileHeaderRule = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-header\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mobileTerminalTabsRule = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
+    const mobileSelectorRule = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-mobile-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
     const mobileRule = terminalModalCss.match(/@media \(max-width: 768px\) \{[\s\S]*?\.terminal-workspace-picker-menu\s*\{([^}]*)\}/)?.[1] ?? "";
 
     expect(tabRule).toContain("max-width: min(260px, 42vw);");
     expect(tabLabelRule).toContain("text-overflow: ellipsis;");
+    expect(mobileTabsRule).toContain("display: none;");
+    expect(mobileSelectRule).toContain("text-overflow: ellipsis;");
     expect(triggerRule).toContain("width: clamp(112px, 16vw, 220px);");
     expect(menuRule).toContain("position: fixed;");
     expect(menuRule).toContain("width: min(var(--terminal-workspace-menu-width), calc(100vw - (var(--space-md) * 2)));");
@@ -479,7 +485,11 @@ describe("TerminalModal", () => {
     expect(menuRule).toContain("overflow-y: auto;");
     expect(menuRule).toContain("overscroll-behavior: contain;");
     expect(actionsRule).toContain("flex: 0 0 auto;");
+    expect(mobileHeaderRule).toContain("flex-wrap: wrap;");
     expect(mobileHeaderRule).toContain("overflow: hidden;");
+    expect(mobileTerminalTabsRule).toContain("display: none;");
+    expect(mobileSelectorRule).toContain("display: flex;");
+    expect(mobileSelectorRule).toContain("min-width: 0;");
     expect(mobileRule).not.toContain("right:");
     expect(mobileRule).toContain("width: min(var(--terminal-workspace-menu-width), calc(100vw - (var(--space-sm) * 2)));");
     expect(mobileRule).toContain("-webkit-overflow-scrolling: touch;");
@@ -892,6 +902,103 @@ describe("TerminalModal", () => {
     });
 
     expect(mockCreateTab).toHaveBeenCalled();
+  });
+
+  it("keeps desktop tab buttons and close buttons as the accessible tab surface", async () => {
+    mockUseTerminalSessions.mockReturnValue({
+      ...defaultSessionState,
+      tabs: [
+        { ...defaultTab, isActive: true },
+        { id: "tab-2", sessionId: "test-session-456", title: "zsh", isActive: false, createdAt: Date.now() },
+      ],
+    });
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    expect(await screen.findByTitle("bash")).toHaveAttribute("role", "tab");
+    expect(screen.getByTitle("zsh")).toHaveAttribute("role", "tab");
+    expect(screen.getAllByTitle("Close tab")).toHaveLength(2);
+    expect(screen.queryByTestId("terminal-mobile-tabs")).toBeNull();
+  });
+
+  it("renders a mobile tab selector with every tab and switches by tab id", async () => {
+    const previousInnerWidth = window.innerWidth;
+    const previousInnerHeight = window.innerHeight;
+    const mockSetActiveTab = vi.fn();
+    mockUseTerminalSessions.mockReturnValue({
+      ...defaultSessionState,
+      tabs: [
+        { ...defaultTab, title: "duplicate", isActive: true },
+        { id: "tab-2", sessionId: "test-session-456", title: "duplicate", isActive: false, createdAt: Date.now() },
+        { id: "tab-3", sessionId: "test-session-789", title: "very-long-active-terminal-tab-title-that-should-not-push-actions", isActive: false, createdAt: Date.now() },
+      ],
+      setActiveTab: mockSetActiveTab,
+    });
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 720, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      const select = await screen.findByLabelText("Terminal tab") as HTMLSelectElement;
+      const options = Array.from(select.options);
+      expect(options.map((option) => option.value)).toEqual(["tab-1", "tab-2", "tab-3"]);
+      expect(options.map((option) => option.textContent)).toEqual([
+        "duplicate",
+        "duplicate",
+        "very-long-active-terminal-tab-title-that-should-not-push-actions",
+      ]);
+      expect(screen.queryByRole("tab", { name: "duplicate" })).toBeNull();
+      expect(screen.queryByTestId("terminal-tabs")).toBeNull();
+
+      fireEvent.change(select, { target: { value: "tab-2" } });
+      expect(mockSetActiveTab).toHaveBeenCalledWith("tab-2");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+      Object.defineProperty(window, "innerHeight", { value: previousInnerHeight, configurable: true });
+    }
+  });
+
+  it("keeps mobile new-terminal and close-current-tab controls reachable", async () => {
+    const previousInnerWidth = window.innerWidth;
+    const mockCreateTab = vi.fn().mockResolvedValue(defaultTab);
+    const mockCloseTab = vi.fn();
+    mockUseTerminalSessions.mockReturnValue({
+      ...defaultSessionState,
+      tabs: [
+        { ...defaultTab, isActive: true },
+        { id: "tab-2", sessionId: "test-session-456", title: "zsh", isActive: false, createdAt: Date.now() },
+      ],
+      createTab: mockCreateTab,
+      closeTab: mockCloseTab,
+    });
+    Object.defineProperty(window, "innerWidth", { value: 375, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      fireEvent.click(await screen.findByTestId("terminal-mobile-new-tab"));
+      expect(mockCreateTab).toHaveBeenCalledWith();
+
+      fireEvent.click(screen.getByLabelText("Close current tab"));
+      expect(mockCloseTab).toHaveBeenCalledWith("tab-1");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
+  });
+
+  it("omits the mobile close-current-tab control when only one tab exists", async () => {
+    const previousInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 360, configurable: true });
+
+    try {
+      render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+      expect(await screen.findByLabelText("Terminal tab")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Close current tab")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: previousInnerWidth, configurable: true });
+    }
   });
 
   it("sessions are NOT killed when modal closes (session persistence)", async () => {
@@ -4890,6 +4997,79 @@ describe("TerminalModal — FN-872 real-device keyboard overlap refinement", () 
     } finally {
       helperTextarea.remove();
     }
+  });
+
+  it("treats Android folded visualViewport width as mobile before initial terminal fit", async () => {
+    (window as any).ontouchstart = null;
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, "10");
+    const listeners: Record<string, Array<() => void>> = { resize: [], scroll: [] };
+    const mockVV = {
+      width: 390,
+      height: 320,
+      offsetTop: 0,
+      offsetLeft: 0,
+      addEventListener: vi.fn((event: string, cb: () => void) => {
+        if (listeners[event]) listeners[event].push(cb);
+      }),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, "visualViewport", {
+      value: mockVV,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      value: 900,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      value: 700,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(document.documentElement, "clientHeight", {
+      value: 700,
+      configurable: true,
+    });
+    const onDataListeners: Array<(data: string) => void> = [];
+    const resizeForFoldedAndroid = vi.fn();
+    mockUseTerminal.mockReturnValue(createMockTerminalState({
+      connectionStatus: "connected",
+      resize: resizeForFoldedAndroid,
+      onData: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+      onScrollback: vi.fn((cb: (data: string) => void) => {
+        onDataListeners.push(cb);
+        return vi.fn();
+      }),
+    }));
+
+    render(<TerminalModal isOpen={true} onClose={mockOnClose} />);
+
+    await waitFor(() => expect(screen.getByTestId("terminal-font-size-value")).toHaveTextContent("10px"));
+    await waitFor(() => {
+      const modal = screen.getByTestId("terminal-modal");
+      expect(modal).not.toHaveClass("terminal-modal--docked");
+      expect(modal).not.toHaveClass("terminal-modal--floating");
+      expect(modal.style.getPropertyValue("--keyboard-overlap")).toBe("380px");
+      expect(modal.style.getPropertyValue("--vv-height")).toBe("320px");
+    });
+
+    await waitFor(() => expect(onDataListeners.length).toBeGreaterThan(0));
+    act(() => {
+      for (const cb of onDataListeners) {
+        cb("❯ pnpm build\r\n@fusion/dashboard build complete  main\r\n");
+      }
+      for (const cb of listeners.resize) cb();
+    });
+
+    await waitFor(() => expect(mockTerminalInstance.write).toHaveBeenCalledWith(expect.stringContaining("pnpm build")));
+    await waitFor(() => expect(resizeForFoldedAndroid).toHaveBeenCalledWith(80, 24));
+    expectMeasurementSafeFontStack(mockTerminalInstance.options.fontFamily as string);
+    expect(mockTerminalInstance.options.fontSize).toBe(10);
   });
 
   it("detects keyboard on iOS Safari where innerHeight shrinks with visualViewport", async () => {

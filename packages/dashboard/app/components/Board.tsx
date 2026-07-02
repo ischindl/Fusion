@@ -36,6 +36,7 @@ interface BoardProps {
   onDuplicateTask?: (id: string) => Promise<Task>;
   onMergeTask?: (id: string) => Promise<MergeResult>;
   onOpenDetail: (task: Task | TaskDetail) => void;
+  onOpenRefine?: (task: Task | TaskDetail) => void;
   onOpenGroupModal?: (groupId: string) => void;
   addToast: (message: string, type?: ToastType) => void;
   onQuickCreate?: (input: TaskCreateInput) => Promise<Task | void>;
@@ -44,6 +45,8 @@ interface BoardProps {
   /** Project merge strategy passed to Board-owned card context menus. */
   mergeStrategy?: string;
   onToggleAutoMerge: () => void;
+  planAutoApproveEnabled: boolean;
+  onTogglePlanAutoApprove: () => void;
   globalPaused?: boolean;
   onUpdateTask?: (
     id: string,
@@ -155,7 +158,7 @@ function BoardWorkflowSkeleton({ empty = false }: { empty?: boolean }) {
   );
 }
 
-export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowColumnsEnabled, settingsLoaded, workflowControlsInHeader = false }: BoardProps) {
+export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, onMoveTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onOpenRefine, onOpenGroupModal, addToast, onQuickCreate, onNewTask, autoMerge, mergeStrategy = "direct", onToggleAutoMerge, planAutoApproveEnabled, onTogglePlanAutoApprove, globalPaused, onUpdateTask, onRetryTask, onArchiveTask, onUnarchiveTask, onDeleteTask, onArchiveAllDone, onLoadArchivedTasks, searchQuery = "", availableModels, onPlanningMode, onSubtaskBreakdown, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, taskStuckTimeoutMs, onOpenMission, staleHighFanoutBlockerAgeThresholdMs, lastFetchTimeMs, prAuthAvailable, onOpenWorkflowEditor, onCreateWorkflow, workflowColumnsEnabled, settingsLoaded, workflowControlsInHeader = false }: BoardProps) {
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   /*
   FNXC:DoneColumnSorting 2026-06-29-16:57:
@@ -261,11 +264,15 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
     return stableGrouped;
   }, [tasks, doneSortMode]);
 
+  /*
+  FNXC:BoardNavigation 2026-06-30-17:42:
+  Periodic task/workflow refreshes, rerenders, window resize, and visualViewport resize must not override intentional board-column scroll while the Board is already visible. Keep FN-001/FN-4574 stabilization focused on page-level horizontal drift and layout reflow; #board is the user's horizontal scroller, so it must not be forced back to triage.
+  */
   // FN-4574 + FN-001 diagnosis: on iOS Safari, the mobile board can occasionally
   // snap against stale layout/visualViewport metrics before flex columns resolve,
   // both on initial mount and on pageshow/bfcache restore after backgrounding.
   // We keep the FN-001 baseline (`scroll-snap-type: x proximity` +
-  // `overflow-anchor: none`) and only stabilize via reflow + scroll offset
+  // `overflow-anchor: none`) and only stabilize via reflow + document scroll
   // normalization; do NOT reintroduce `scroll-snap-type: x mandatory`.
   useEffect(() => {
     const mobileQuery = window.matchMedia(MOBILE_MEDIA_QUERY);
@@ -278,7 +285,6 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
       void boardEl.offsetWidth;
       if (mobileQuery.matches) {
         resetDocumentHorizontalScroll();
-        boardEl.scrollLeft = 0;
       }
     };
 
@@ -829,6 +835,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                   onDuplicateTask={onDuplicateTask}
                   onMergeTask={onMergeTask}
                   onOpenDetail={onOpenDetail}
+                  onOpenRefine={onOpenRefine}
                   onOpenGroupModal={onOpenGroupModal}
                   addToast={addToast}
                   globalPaused={globalPaused}
@@ -854,6 +861,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                   prAuthAvailable={prAuthAvailable}
                   autoMerge={autoMerge}
                   mergeStrategy={mergeStrategy}
+                  {...(((columnDef.flags.intake || columnDef.flags.hold) && !columnDef.flags.archived && !columnDef.flags.complete && !columnDef.flags.countsTowardWip && !columnDef.flags.mergeBlocker && !columnDef.flags.humanReview) ? { planAutoApproveEnabled, onTogglePlanAutoApprove } : {})}
                   {...(isCreateColumn && aggregateQuickCreateTarget ? { workflowId: aggregateQuickCreateTarget.workflowId, workflowOptions, defaultWorkflowId: boardWorkflows?.defaultWorkflowId ?? null, onQuickCreate: handleAggregateWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
                   {...(columnDef.flags.mergeBlocker || columnDef.flags.humanReview ? { onToggleAutoMerge: handleToggleAutoMerge } : {})}
                   {...(columnDef.id === "done" ? { onArchiveAllDone } : {})}
@@ -909,6 +917,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                 onDuplicateTask={onDuplicateTask}
                 onMergeTask={onMergeTask}
                 onOpenDetail={onOpenDetail}
+                onOpenRefine={onOpenRefine}
                 onOpenGroupModal={onOpenGroupModal}
                 addToast={addToast}
                 globalPaused={globalPaused}
@@ -932,6 +941,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
                 prAuthAvailable={prAuthAvailable}
                 autoMerge={autoMerge}
                 mergeStrategy={mergeStrategy}
+                {...(((columnDef.flags.intake || columnDef.flags.hold) && !columnDef.flags.archived && !columnDef.flags.complete && !columnDef.flags.countsTowardWip && !columnDef.flags.mergeBlocker && !columnDef.flags.humanReview) ? { planAutoApproveEnabled, onTogglePlanAutoApprove } : {})}
                 {...(isCreateColumn ? { workflowOptions, defaultWorkflowId: selectedWorkflow.id, onQuickCreate: handleWorkflowQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
                 {...(columnDef.flags.mergeBlocker || columnDef.flags.humanReview ? { onToggleAutoMerge: handleToggleAutoMerge } : {})}
                 {...(columnDef.id === "done" ? { onArchiveAllDone } : {})}
@@ -963,6 +973,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
               onDuplicateTask={onDuplicateTask}
               onMergeTask={onMergeTask}
               onOpenDetail={onOpenDetail}
+              onOpenRefine={onOpenRefine}
               onOpenGroupModal={onOpenGroupModal}
               addToast={addToast}
               globalPaused={globalPaused}
@@ -1013,6 +1024,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
             onDuplicateTask={onDuplicateTask}
             onMergeTask={onMergeTask}
             onOpenDetail={onOpenDetail}
+            onOpenRefine={onOpenRefine}
             onOpenGroupModal={onOpenGroupModal}
             addToast={addToast}
             globalPaused={globalPaused}
@@ -1037,6 +1049,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
             prAuthAvailable={prAuthAvailable}
             autoMerge={autoMerge}
             mergeStrategy={mergeStrategy}
+            {...(col === "triage" ? { planAutoApproveEnabled, onTogglePlanAutoApprove } : {})}
             {...(col === "triage" ? { onQuickCreate, onNewTask, onPlanningMode, onSubtaskBreakdown } : {})}
             {...(col === "in-review" ? { onToggleAutoMerge: handleToggleAutoMerge } : {})}
             {...(col === "done" ? { onArchiveAllDone, doneSortMode, onDoneSortModeChange: setDoneSortMode } : {})}

@@ -80,7 +80,7 @@ import type {
   ToolDefinition,
   AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { describeModel, promptWithFallback } from "./pi.js";
+import { describeModel, formatModelMarkerDetails, promptWithFallback } from "./pi.js";
 import {
   createResolvedAgentSession,
   extractRuntimeHint,
@@ -548,8 +548,10 @@ export class TriageProcessor {
       return false;
     }
 
-    // Merge per-task effective workflow settings (U3, KTD-3) so requirePlanApproval
-    // resolves from the workflow. Behavior-inert when nothing is customized.
+    /*
+    FNXC:PlanApproval 2026-07-01-08:12:
+    Recovery finalizes an already-written PROMPT.md and must use the same merged project/workflow settings as fresh triage. The project planApprovalMode value stays project-scoped while workflow requirePlanApproval may overlay, so auto-approve-all still wins for ordinary plan approval.
+    */
     const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
     const approvalRequired = resolvePlanApprovalRequired(settings);
     const promptPath = join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
@@ -1123,7 +1125,7 @@ export class TriageProcessor {
           }),
         });
 
-        const modelDesc = describeModel(session);
+        const modelDesc = formatModelMarkerDetails(describeModel(session), settings.defaultThinkingLevel);
         planLog.log(`${task.id}: using model ${modelDesc}`);
         await this.store.logEntry(task.id, `Triage using model: ${modelDesc}`);
         await this.store.appendAgentLog(
@@ -2456,7 +2458,7 @@ export class TriageProcessor {
         await this.store.updateTask(task.id, approvalUpdates);
         await this.store.logEntry(
           task.id,
-          "Release authorization required — leaving task in triage awaiting manual approval",
+          "Release authorization required — leaving task in triage awaiting release authorization",
           details,
         );
         try {
@@ -2475,7 +2477,7 @@ export class TriageProcessor {
           const message = activityError instanceof Error ? activityError.message : String(activityError);
           planLog.warn(`${task.id}: failed to record release-authorization-required activity (${message})`);
         }
-        planLog.log(`${task.id} release authorization required — leaving in triage awaiting manual approval (${signals})`);
+        planLog.log(`${task.id} release authorization required — leaving in triage awaiting release authorization (${signals})`);
         return;
       }
     } catch (error: unknown) {
@@ -2504,6 +2506,9 @@ export class TriageProcessor {
     /*
     FNXC:PlanApproval 2026-06-26-00:00:
     Project planApprovalMode has precedence over the workflow-resolved requirePlanApproval value so operators can force auto-approval or manual approval for every task in this project.
+
+    FNXC:PlanApproval 2026-07-01-08:12:
+    This is the ordinary manual plan-approval gate only, after release authorization and Workflow Plan Review have already made their independent decisions. Always call resolvePlanApprovalRequired with the merged settings object so project auto-approve-all can override workflow requirePlanApproval without weakening non-plan safety gates.
     */
     if (resolvePlanApprovalRequired(settings)) {
       const approvalUpdates: Record<string, unknown> = { status: "awaiting-approval" };

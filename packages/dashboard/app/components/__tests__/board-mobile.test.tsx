@@ -245,6 +245,30 @@ describe("Board and Column mobile CSS", () => {
 });
 
 describe("TaskCard mobile", () => {
+  it("suppresses native selection and iOS callouts for non-editing Board card text", () => {
+    const css = loadAllAppCss();
+
+    // The shared `.card` selector covers both Column-rendered cards and WorktreeGroup-rendered cards.
+    expectRuleToContain(css, ".card:not(.card-editing)", "touch-action: pan-x pan-y;");
+    expectRuleToContain(css, ".card:not(.card-editing)", "user-select: none;");
+    expectRuleToContain(css, ".card:not(.card-editing)", "-webkit-user-select: none;");
+    expectRuleToContain(css, ".card:not(.card-editing)", "-webkit-touch-callout: none;");
+    expectRuleToContain(css, ".card:not(.card-editing) *", "touch-action: pan-x pan-y;");
+    expectRuleToContain(css, ".card:not(.card-editing) *", "user-select: none;");
+    expectRuleToContain(css, ".card:not(.card-editing) *", "-webkit-user-select: none;");
+    expectRuleToContain(css, ".card:not(.card-editing) *", "-webkit-touch-callout: none;");
+  });
+
+  it("keeps TaskCard edit textarea selectable while non-editing cards suppress selection", () => {
+    const css = loadAllAppCss();
+
+    expectRuleToContain(css, ".card-edit-desc-textarea", "user-select: text;");
+    expectRuleToContain(css, ".card-edit-desc-textarea", "-webkit-user-select: text;");
+    expectRuleToContain(css, ".card-edit-desc-textarea", "-webkit-touch-callout: default;");
+    expectRuleToContain(css, ".card.card-editing", "user-select: text;");
+    expectRuleToContain(css, ".card :is(input, textarea, select, [contenteditable=\"true\"])", "user-select: text;");
+  });
+
   it("sets .card-archive-btn opacity: 1 in the mobile media block", () => {
     const css = loadAllAppCss();
     const mobileSection = getMainMobileSection(css);

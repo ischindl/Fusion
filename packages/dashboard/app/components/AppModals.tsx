@@ -73,6 +73,7 @@ interface AppModalsProps {
   settings: {
     prAuthAvailable: boolean;
     autoMerge: boolean;
+    taskDetailChatFirst: boolean;
     themeMode: ThemeMode;
     colorTheme: ColorTheme;
     dashboardFontScalePct: number;
@@ -246,13 +247,15 @@ export function AppModals({
     (
       task: Parameters<typeof modalManager.openDetailTask>[0],
       tab?: Parameters<typeof modalManager.openDetailTask>[1],
+      options?: Parameters<typeof modalManager.openDetailTask>[2],
     ) => {
       const previousDetailTask = modalManager.detailTask;
       const previousDetailTab = modalManager.detailTaskInitialTab;
       const previousDetailOrigin = modalManager.detailTaskOrigin;
+      const previousDetailAction = modalManager.detailTaskInitialAction;
       const previousNavClose = detailNavCloseRef.current;
 
-      modalManager.openDetailTask(task, tab);
+      modalManager.openDetailTask(task, tab, options);
       const closeFromHistory = () => {
         if (detailNavCloseRef.current === closeFromHistory) {
           detailNavCloseRef.current = previousNavClose;
@@ -261,7 +264,9 @@ export function AppModals({
           modalManager.openDetailTask(
             previousDetailTask,
             previousDetailTab,
-            previousDetailOrigin ? { origin: previousDetailOrigin } : undefined,
+            previousDetailOrigin || previousDetailAction
+              ? { origin: previousDetailOrigin ?? undefined, initialAction: previousDetailAction?.action }
+              : undefined,
           );
           return;
         }
@@ -328,8 +333,10 @@ export function AppModals({
             addToast={addToast}
             prAuthAvailable={settings.prAuthAvailable}
             autoMergeEnabled={settings.autoMerge}
+            taskDetailChatFirst={settings.taskDetailChatFirst}
             onOpenWorkflowEditor={() => modalManager.openWorkflowEditor()}
             initialTab={modalManager.detailTaskInitialTab}
+            initialAction={modalManager.detailTaskInitialAction}
           />
         </ModalErrorBoundary>
       )}

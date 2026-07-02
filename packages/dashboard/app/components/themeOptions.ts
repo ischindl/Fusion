@@ -52,6 +52,7 @@ export const COLOR_THEMES: { value: ColorTheme; label: string; className: string
   { value: "parchment", label: "Parchment", className: "theme-swatch-parchment" },
   { value: "terminal", label: "Terminal", className: "theme-swatch-terminal" },
   { value: "glass", label: "Glass", className: "theme-swatch-glass" },
+  { value: "glass-silver", label: "Glass Silver", className: "theme-swatch-glass-silver" },
   { value: "horizon", label: "Horizon", className: "theme-swatch-horizon" },
   { value: "vitesse", label: "Vitesse", className: "theme-swatch-vitesse" },
   { value: "outrun", label: "Outrun", className: "theme-swatch-outrun" },

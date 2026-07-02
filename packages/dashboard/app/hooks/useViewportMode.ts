@@ -13,6 +13,23 @@ export const MOBILE_MEDIA_QUERY = "(max-width: 768px), (max-height: 480px)";
 const MOBILE_WIDTH_MEDIA_QUERY = "(max-width: 768px)";
 const MOBILE_HEIGHT_MEDIA_QUERY = "(max-height: 480px)";
 
+function hasTouchScreen(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  return "ontouchstart" in window || navigator.maxTouchPoints > 0;
+}
+
+function getTouchVisualViewportWidth(): number | null {
+  if (!hasTouchScreen()) return null;
+  const width = window.visualViewport?.width;
+  return typeof width === "number" && width > 0 ? width : null;
+}
+
+function getTouchVisualViewportHeight(): number | null {
+  if (!hasTouchScreen()) return null;
+  const height = window.visualViewport?.height;
+  return typeof height === "number" && height > 0 ? height : null;
+}
+
 // The virtual keyboard shrinks the CSS/visual viewport height (matching
 // `(max-height: 480px)`) but never the device's physical screen. Only treat a
 // short viewport as a landscape phone when the smaller physical screen edge is
@@ -26,8 +43,15 @@ function isPhoneClassScreen(): boolean {
 
 export function isMobileViewport(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  const visualWidth = getTouchVisualViewportWidth();
+  const visualHeight = getTouchVisualViewportHeight();
+  /*
+  FNXC:ViewportMode 2026-07-01-11:56:
+  Android foldables can expose a wide layout viewport while visualViewport is the folded phone pane. Treat touch-primary visualViewport width as the mobile breakpoint so terminal surfaces render mobile controls and fit xterm from the initial folded geometry, not a stale desktop/tablet shell.
+  */
   return window.matchMedia(MOBILE_WIDTH_MEDIA_QUERY).matches ||
-    (window.matchMedia(MOBILE_HEIGHT_MEDIA_QUERY).matches && isPhoneClassScreen());
+    (visualWidth !== null && visualWidth <= 768) ||
+    ((window.matchMedia(MOBILE_HEIGHT_MEDIA_QUERY).matches || (visualHeight !== null && visualHeight <= 480)) && isPhoneClassScreen());
 }
 
 export function getViewportMode(): ViewportMode {

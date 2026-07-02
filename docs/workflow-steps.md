@@ -200,15 +200,17 @@ Out of scope for v1:
 
 ### Workflow Runtime
 
-The workflow runtime is the authoritative execution path for task lifecycle work. `WorkflowGraphExecutor` owns graph traversal and routing; node handlers call runtime primitives supplied by `TaskExecutor` for side-effecting operations such as planning, coding sessions, review, step execution/reset, merge requests, transitions, and audit.
+The workflow runtime is the authoritative execution path for task lifecycle work. `WorkflowGraphExecutor` owns graph traversal and routing; workflow node runners own node-kind behavior; runtime primitives and runtime services perform side-effecting operations such as planning, coding sessions, custom-node execution, review, step execution/reset, merge requests, transitions, and audit.
 
-The engine remains the substrate for scheduler dispatch, routing claims, persistence, concurrency limits, process supervision, storage, and audit plumbing. Lifecycle policy belongs in built-in or custom workflows.
+The engine remains the substrate for scheduler dispatch, routing claims, persistence, concurrency limits, process supervision, storage, and audit plumbing. Lifecycle policy belongs in built-in or custom workflows, not in hidden executor/reviewer/triage branches.
 
 The default built-in catalog entry `builtin:coding` is backed by a Stepwise-derived graph with two default-on, toggleable review gates: `plan-review` before execution and `code-review` at the end of implementation. It is the resolver/runtime fallback for tasks with no workflow selection or an explicit default selection. Missing explicit custom selections fail closed as workflow-resolution failures, and corrupt or invalid resolved IR fails with `invalid-ir` instead of silently running the default or a legacy workflow. The built-in IR parses planned steps, executes them sequentially without per-step review, then routes optional quality gates into the merge region:
 
 - `triage` → `plan` → `plan-review` (default-on optional plan review) → `parse-steps` → `foreach(step-execute)` → `browser-verification` (optional) → `code-review` (default-on optional final review) → `merge-gate` / branch-group integration / `merge-attempt` / retry or manual hold → `end`
 
 If the Plan Review reviewer is unavailable before producing a verdict, the task stays in triage as `status: "plan-review-unavailable"` with a short backoff. That retry state is not a replan: Fusion rereads the existing non-empty `PROMPT.md`, preserves it unchanged, and reruns only Plan Review/finalization while holding a global agent concurrency slot for the reviewer lane. A reviewer revision verdict moves the task to `needs-replan`; missing/empty/invalid prompt content fails clearly instead of restarting the planner.
+
+Workflow Plan Review is separate from manual plan approval. Project `planApprovalMode: "auto-approve-all"` bypasses only the final manual `awaiting-approval` plan gate after the plan is specified and any enabled Plan Review passes; it does not disable Plan Review, release authorization, or other explicit safety gates.
 
 `builtin:legacy-coding` is backed by the original monolithic `BUILTIN_CODING_WORKFLOW_IR`: `planning` → `execute` → optional quality gates → `review` → merge region.
 

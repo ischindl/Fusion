@@ -604,6 +604,23 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
     return true;
   }
 
+  async deleteSessionsForAgentId(agentId: string, options?: { projectId?: string | null }): Promise<number> {
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedAgentId) return 0;
+    const projectId = options?.projectId ?? undefined;
+    const sessions = await this.listSessions({
+      agentId: normalizedAgentId,
+      ...(projectId ? { projectId } : {}),
+    });
+    let deletedCount = 0;
+    for (const session of sessions) {
+      if (await this.deleteSession(session.id)) {
+        deletedCount += 1;
+      }
+    }
+    return deletedCount;
+  }
+
   // ── Message CRUD Operations ───────────────────────────────────────
 
   /**
@@ -789,6 +806,15 @@ export class ChatStore extends EventEmitter<ChatStoreEvents> {
       result.set(message.sessionId, message);
     }
     return result;
+  }
+
+  hasMessages(sessionId: string): boolean {
+    if (this.backendMode) {
+      // Async path not available for sync query; callers in backend mode should use getMessages
+      return false;
+    }
+    const row = this.syncDb().prepare("SELECT 1 FROM chat_messages WHERE sessionId = ? LIMIT 1").get(sessionId) as { 1: number } | undefined;
+    return Boolean(row);
   }
 
   /**

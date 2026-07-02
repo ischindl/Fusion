@@ -97,7 +97,6 @@ describe("fast mode workflow/runtime invariants", () => {
     });
 
     const result = await runner.run(task({ id: "FN-6226", executionMode: "fast" }), { experimentalFeatures: { workflowGraphExecutor: true } });
-
     expect(result.disposition).toBe("completed");
     expect(result.visitedNodeIds).toEqual(["start", "custom-review", "custom-gate"]);
     expect(executeStep).not.toHaveBeenCalled();
@@ -195,8 +194,104 @@ describe("fast mode workflow/runtime invariants", () => {
     expect(calls).toContain("parse");
     expect(calls).toContain("step-execute:0");
     expect(calls).not.toContain("legacy-execute");
+    /*
+    FNXC:WorkflowFastMode 2026-07-01-00:00:
+    The default built-in now resolves to the stepwise final-review workflow. In raw fast-mode compatibility runs, default-on review groups are skipped as custom nodes and the legacy review seam is not invoked; the merge seam remains the lifecycle suffix assertion.
+    */
     expect(seams.review).not.toHaveBeenCalled();
     expect(seams.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it("raw fast mode skips skill executor nodes when primitives are unavailable", async () => {
+    const runCustomNode = vi.fn(async () => ({ outcome: "success", value: "ran-skill" }));
+    const runner = new WorkflowGraphTaskRunner({
+      store: {
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-fast-skill", stepIds: [] }),
+        getWorkflowDefinition: vi.fn(async () => ({
+          id: "WF-fast-skill",
+          name: "Fast skill",
+          description: "custom skill workflow",
+          kind: "workflow",
+          layout: {},
+          createdAt: now,
+          updatedAt: now,
+          ir: {
+            version: "v1",
+            name: "Fast skill",
+            nodes: [
+              { id: "start", kind: "start" },
+              { id: "skill-review", kind: "prompt", config: { executor: "skill", skillName: "compound-engineering:ce-code-review" } },
+              { id: "end", kind: "end" },
+            ],
+            edges: [
+              { from: "start", to: "skill-review" },
+              { from: "skill-review", to: "end", condition: "success" },
+            ],
+          },
+        })),
+      },
+      seams: {
+        planning: vi.fn(async () => ({ outcome: "success", value: "planned" })),
+        execute: vi.fn(async () => ({ outcome: "success", value: "implemented" })),
+        review: vi.fn(async () => ({ outcome: "success", value: "approved" })),
+        merge: vi.fn(async () => ({ outcome: "success", value: "merged" })),
+        schedule: vi.fn(async () => ({ outcome: "success", value: "scheduled" })),
+      },
+      runCustomNode,
+    });
+
+    const result = await runner.run(task({ executionMode: "fast" }), { experimentalFeatures: { workflowGraphExecutor: true } });
+
+    expect(result.disposition).toBe("completed");
+    expect(result.visitedNodeIds).toEqual(["start", "skill-review"]);
+    expect(runCustomNode).not.toHaveBeenCalled();
+  });
+
+  it("raw fast mode still invokes non-executable review seam nodes", async () => {
+    const review = vi.fn(async () => ({ outcome: "success" as const, value: "approved" }));
+    const runCustomNode = vi.fn(async () => ({ outcome: "failure" as const, value: "unexpected-custom-node" }));
+    const runner = new WorkflowGraphTaskRunner({
+      store: {
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-fast-review-seam", stepIds: [] }),
+        getWorkflowDefinition: vi.fn(async () => ({
+          id: "WF-fast-review-seam",
+          name: "Fast review seam",
+          description: "custom review seam workflow",
+          kind: "workflow",
+          layout: {},
+          createdAt: now,
+          updatedAt: now,
+          ir: {
+            version: "v1",
+            name: "Fast review seam",
+            nodes: [
+              { id: "start", kind: "start" },
+              { id: "review", kind: "prompt", config: { seam: "review" } },
+              { id: "end", kind: "end" },
+            ],
+            edges: [
+              { from: "start", to: "review" },
+              { from: "review", to: "end", condition: "success" },
+            ],
+          },
+        })),
+      },
+      seams: {
+        planning: vi.fn(async () => ({ outcome: "success", value: "planned" })),
+        execute: vi.fn(async () => ({ outcome: "success", value: "implemented" })),
+        review,
+        merge: vi.fn(async () => ({ outcome: "success", value: "merged" })),
+        schedule: vi.fn(async () => ({ outcome: "success", value: "scheduled" })),
+      },
+      runCustomNode,
+    });
+
+    const result = await runner.run(task({ executionMode: "fast" }), { experimentalFeatures: { workflowGraphExecutor: true } });
+
+    expect(result.disposition).toBe("completed");
+    expect(result.visitedNodeIds).toEqual(["start", "review"]);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(runCustomNode).not.toHaveBeenCalled();
   });
 
   it("fast builtin:coding executes explicitly selected optional-group template nodes", async () => {
@@ -375,6 +470,24 @@ describe("fast mode workflow/runtime invariants", () => {
     expect(result).toMatchObject({ outcome: "success", value: "workflow-step-skipped" });
     expect(executeStep).not.toHaveBeenCalled();
     expect(executeScript).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["completion-summary id", { id: "completion-summary", kind: "prompt", config: { prompt: "summarize" } }],
+    ["summaryTarget task", { id: "custom-summary", kind: "prompt", config: { prompt: "summarize", summaryTarget: "task" } }],
+  ])("does not skip completion summary nodes in fast mode by %s", async (_label, node) => {
+    const { executor } = makeExecutorForTask(task({ executionMode: "fast", worktree: "/tmp/wt" }));
+    const executeStep = vi.spyOn(executor as any, "executeWorkflowStep").mockResolvedValue({ success: true, output: "Done." });
+
+    const result = await (executor as any).runGraphCustomNode(
+      node,
+      task({ executionMode: "fast" }),
+      {},
+      undefined,
+    );
+
+    expect(result).toMatchObject({ outcome: "success", value: "passed" });
+    expect(executeStep).toHaveBeenCalledTimes(1);
   });
 
   it.each(["prompt", "script", "gate"])("executes optional-group template %s nodes in fast mode", async (kind) => {

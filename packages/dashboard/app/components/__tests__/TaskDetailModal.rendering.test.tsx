@@ -2056,7 +2056,7 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      await userEvent.click(screen.getByRole("button", { name: "Expand chat to full modal" }));
+      await userEvent.click(screen.getByRole("button", { name: "Expand activity to full modal" }));
 
       expect(container.querySelector(".task-detail-content--chat-expanded")).toBeInTheDocument();
       expect(container.querySelector("h2.detail-title")).toHaveClass("detail-title--collapsed");
@@ -2429,7 +2429,7 @@ describe("TaskDetailModal", () => {
       }, { timeout: 3000 });
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Feed" }));
 
       const activityList = container.querySelector(".detail-activity-list");
       expect(activityList).toBeTruthy();

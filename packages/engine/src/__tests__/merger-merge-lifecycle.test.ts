@@ -315,6 +315,73 @@ describe("auto-merge proven finalization helper", () => {
     );
   });
 
+  it("uses the task base commit for branch proof so inherited foreign commits do not block finalization", async () => {
+    const strandedTask = {
+      id: "FN-7360",
+      title: "Contaminated branch but landed task files",
+      description: "Test",
+      column: "in-review",
+      status: "landing",
+      error: null,
+      blockedBy: null,
+      overlapBlockedBy: null,
+      dependencies: [],
+      steps: [{ status: "done" }],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      branch: "fusion/fn-7360",
+      baseCommitSha: "foreign-base",
+      mergeDetails: {
+        mergeConfirmed: true,
+        commitSha: "landed",
+        mergedAt: "2026-07-01T15:06:13.748Z",
+        landedFiles: ["packages/desktop/scripts/build.ts"],
+      },
+    } as Task;
+    const doneTask = { ...strandedTask, column: "done", status: null } as Task;
+    const store = createMockStore(strandedTask) as unknown as TaskStore & {
+      getTask: ReturnType<typeof vi.fn>;
+      updateTask: ReturnType<typeof vi.fn>;
+      moveTask: ReturnType<typeof vi.fn>;
+      recordRunAuditEvent: ReturnType<typeof vi.fn>;
+    };
+    store.getTask.mockResolvedValue(strandedTask);
+    store.moveTask.mockResolvedValue(doneTask);
+    mockedExecSync.mockImplementation((cmd: any) => {
+      const command = String(cmd);
+      if (command.includes("rev-parse --verify")) return "ok\n" as any;
+      if (command.includes("git diff --name-only 'foreign-base..fusion/fn-7360'")) {
+        return "packages/desktop/scripts/build.ts\n" as any;
+      }
+      if (command.includes("git diff --name-only 'main...fusion/fn-7360'")) {
+        throw new Error("should not read ambient main branch diff for task proof");
+      }
+      return "" as any;
+    });
+
+    const result = await finalizeProvenAutoMergeTask({
+      store,
+      taskId: "FN-7360",
+      result: { task: strandedTask, ok: true, merged: true, commitSha: "landed", mergeConfirmed: true } as MergeResult,
+      rootDir: "/tmp/repo",
+      source: "workflow-graph-merge-finalize",
+      auditAgentId: "executor",
+      auditPhase: "workflow-graph-merge-finalize",
+    });
+
+    expect(result.outcome).toBe("done");
+    expect(store.moveTask).toHaveBeenCalledWith(
+      "FN-7360",
+      "done",
+      expect.objectContaining({ moveSource: "engine", preserveProgress: true }),
+    );
+    expect(store.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:auto-merge-finalize-column-mismatch-no-action",
+    }));
+  });
+
   it("blocks loose merged results that lack durable merge confirmation", async () => {
     const strandedTask = {
       id: "FN-MERGED-PROOF",
@@ -395,7 +462,7 @@ describe("auto-merge proven finalization helper", () => {
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
-  it("blocks workflow finalization when the task branch has files missing from merge proof", async () => {
+  it("finalizes proven workflow merges even when the task branch still has residue outside the landed patch", async () => {
     const strandedTask = {
       id: "FN-BRANCH-PROOF",
       title: "Stale proof",
@@ -418,14 +485,7 @@ describe("auto-merge proven finalization helper", () => {
       recordRunAuditEvent: ReturnType<typeof vi.fn>;
     };
     store.getTask.mockResolvedValue(strandedTask);
-    mockedExecSync.mockImplementation((cmd: any) => {
-      const command = String(cmd);
-      if (command.includes("rev-parse --verify")) return "ok\n" as any;
-      if (command.includes("git diff --name-only") && command.includes("main...fusion/fn-branch-proof")) {
-        return "packages/dashboard/app/TaskChatTab.css\n" as any;
-      }
-      return "" as any;
-    });
+    mockedExecSync.mockImplementation(() => "" as any);
 
     const result = await finalizeProvenAutoMergeTask({
       store,
@@ -435,81 +495,13 @@ describe("auto-merge proven finalization helper", () => {
       rootDir: "/repo",
     });
 
-    expect(result).toEqual(expect.objectContaining({ outcome: "blocked", reason: "branch-diff-missing-from-merge-proof" }));
-    expect(store.updateTask).not.toHaveBeenCalled();
-    expect(store.moveTask).not.toHaveBeenCalled();
-  });
-
-  it("allows workflow finalization when missing branch proof is outside the declared File Scope", async () => {
-    const strandedTask = {
-      id: "FN-SCOPED-PROOF",
-      title: "Scoped proof",
-      description: "Test",
-      column: "in-progress",
-      branch: "fusion/fn-scoped-proof",
-      baseBranch: "main",
-      dependencies: [],
-      steps: [{ status: "done" }],
-      currentStep: 0,
-      log: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sourceMetadata: {
-        fileScope: [
-          "packages/dashboard/app/components/EngineControlMenu.tsx",
-          "packages/dashboard/app/components/__tests__/EngineControlMenu.test.tsx",
-          "docs/dashboard-guide.md",
-          ".changeset/*.md",
-        ],
-      },
-      mergeDetails: {
-        mergeConfirmed: true,
-        commitSha: "abc123",
-        landedFiles: [
-          "packages/dashboard/app/components/EngineControlMenu.tsx",
-          "packages/dashboard/app/components/__tests__/EngineControlMenu.test.tsx",
-          "docs/dashboard-guide.md",
-          ".changeset/fn-7235-footer-concurrency-marker.md",
-        ],
-      },
-    } as Task;
-    const store = createMockStore(strandedTask) as unknown as TaskStore & {
-      getTask: ReturnType<typeof vi.fn>;
-      updateTask: ReturnType<typeof vi.fn>;
-      moveTask: ReturnType<typeof vi.fn>;
-      recordRunAuditEvent: ReturnType<typeof vi.fn>;
-    };
-    store.getTask.mockResolvedValue(strandedTask);
-    mockedExecSync.mockImplementation((cmd: any) => {
-      const command = String(cmd);
-      if (command.includes("rev-parse --verify")) return "ok\n" as any;
-      if (command.includes("git diff --name-only") && command.includes("main...fusion/fn-scoped-proof")) {
-        return [
-          "packages/dashboard/app/components/EngineControlMenu.tsx",
-          "packages/dashboard/app/components/__tests__/EngineControlMenu.test.tsx",
-          "docs/dashboard-guide.md",
-          ".changeset/fn-7235-footer-concurrency-marker.md",
-          "packages/engine/src/triage.ts",
-        ].join("\n") as any;
-      }
-      return "" as any;
-    });
-
-    const result = await finalizeProvenAutoMergeTask({
-      store,
-      taskId: "FN-SCOPED-PROOF",
-      result: { task: strandedTask, ok: true, merged: true, commitSha: "abc123", mergeConfirmed: true } as MergeResult,
-      source: "workflow-graph-merge-finalize",
-      rootDir: "/repo",
-    });
-
     expect(result).toEqual(expect.objectContaining({ outcome: "done" }));
-    expect(store.moveTask).toHaveBeenCalledWith("FN-SCOPED-PROOF", "done", expect.objectContaining({
+    expect(store.moveTask).toHaveBeenCalledWith("FN-BRANCH-PROOF", "done", expect.objectContaining({
       moveSource: "engine",
       preserveProgress: true,
       recoveryRehome: true,
     }));
-    expect(store.updateTask).not.toHaveBeenCalledWith("FN-SCOPED-PROOF", expect.objectContaining({ status: "failed" }));
+    expect(mockedExecSync.mock.calls.some(([cmd]) => String(cmd).includes("git diff --name-only"))).toBe(false);
   });
 
   it("treats already-done landed rows as idempotent success", async () => {

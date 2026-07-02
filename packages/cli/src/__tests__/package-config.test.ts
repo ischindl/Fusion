@@ -48,7 +48,7 @@ function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
   for (const dependencyName of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
     expect(dependencies, `${label}: ${dependencyName} must remain a required runtime dependency`).toHaveProperty(
       dependencyName,
-      "^0.79.9",
+      "^0.80.3",
     );
     expect(peerDependencies, `${label}: ${dependencyName} must not be a peer dependency`).not.toHaveProperty(
       dependencyName,
@@ -89,6 +89,7 @@ describe("CLI package.json publishing config", () => {
     expect(pkg.files).toContain("dist/**/*.d.ts.map");
     expect(pkg.files).toContain("dist/**/*.js.map");
     expect(pkg.files).toContain("dist/client/**");
+    expect(pkg.files).toContain("dist/desktop/**");
     expect(pkg.files).toContain("README.md");
   });
 
@@ -111,6 +112,16 @@ describe("CLI package.json publishing config", () => {
       // No wildcard like "dist/fn*" that would match binaries
       expect(entry).not.toMatch(/^dist\/fn/);
     }
+  });
+
+  it("stages packaged desktop runtime assets without publishing raw workspace manifests", () => {
+    const tsupRaw = readFileSync(join(workspaceRoot, "packages", "cli", "tsup.config.ts"), "utf-8");
+
+    expect(pkg.files).toContain("dist/desktop/**");
+    expect(tsupRaw).toContain("desktopRuntimeSrc");
+    expect(tsupRaw).toContain("ensureDesktopRuntimeAssetsBuilt");
+    expect(tsupRaw).toContain("Copied desktop runtime assets to dist/desktop/");
+    expect(tsupRaw).not.toContain("join(desktopRuntimeSrc, \"package.json\")");
   });
 
   it("excludes runtime directory from npm package (GitHub Releases only)", () => {
@@ -323,10 +334,8 @@ describe("Workspace bootstrap script contract", () => {
     expect(buildIdx).toBeGreaterThan(testIdx);
   });
 
-  it("keeps default build CLI-first by excluding desktop/mobile", () => {
-    expect(rootPkg.scripts?.build).toBe(
-      "pnpm -r --filter=!@fusion/desktop --filter=!@fusion/mobile build",
-    );
+  it("keeps default build routed through workspace builder", () => {
+    expect(rootPkg.scripts?.build).toBe("node scripts/build-workspace.mjs");
   });
 
   it("keeps explicit opt-in scripts for full, desktop, and mobile builds", () => {

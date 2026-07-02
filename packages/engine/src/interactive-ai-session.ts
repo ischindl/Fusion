@@ -444,7 +444,7 @@ export async function createInteractiveAiSessionWith(
         });
         return;
       }
-      if (currentQuestion && questionId !== currentQuestion.id) {
+      if (currentQuestion && questionId !== currentQuestion.id && !options.allowAnswerQuestionIdDrift) {
         pendingEvent = Promise.resolve<InteractiveAiSessionEvent>({
           type: "error",
           data: { message: `answer() questionId "${questionId}" does not match current question "${currentQuestion.id}".` },

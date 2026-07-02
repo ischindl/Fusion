@@ -504,6 +504,25 @@ function buildGitHubIssueSource(owner: string, repo: string, issue: { number: nu
   };
 }
 
+async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ enabled: true } | undefined> {
+  const projectSettings = await store.getSettings();
+  if (projectSettings.githubLinkImportedIssuesToTracking === true) {
+    /*
+    FNXC:GithubImportTracking 2026-07-01-00:00:
+    Pi extension GitHub issue imports honor the import-only linking setting without enabling tracking for ordinary task tools. The created task keeps sourceIssue so the post-create hook links the imported issue instead of opening a duplicate tracking issue.
+    */
+    return { enabled: true };
+  }
+
+  const globalSettings = await store.getGlobalSettingsStore().getSettings();
+  const resolvedTracking = resolveTaskGithubTracking(
+    { githubTracking: undefined },
+    projectSettings,
+    globalSettings,
+  );
+  return resolvedTracking.enabled ? { enabled: true } : undefined;
+}
+
 function isIssueAlreadyImported(
   task: Pick<Task, "description" | "sourceIssue">,
   owner: string,
@@ -1570,18 +1589,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       const store = await getStore(ctx.cwd);
       const existingTasks = await store.listTasks({ slim: false });
-      const projectSettings = await store.getSettings();
-      const globalSettings = await store.getGlobalSettingsStore().getSettings();
-      const resolvedTracking = resolveTaskGithubTracking(
-        { githubTracking: undefined },
-        projectSettings,
-        globalSettings,
-      );
-      /*
-      FNXC:GithubImportTracking 2026-06-26-00:00:
-      Imported GitHub issues must become tracked tasks when tracking/linking defaults resolve on. Setting only enabled lets the post-create hook adopt the imported source issue via source_issue_linked instead of opening a duplicate Fusion tracking issue.
-      */
-      const importedIssueGithubTracking = resolvedTracking.enabled ? { enabled: true as const } : undefined;
+      const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(store);
       const createdTasks: Array<{ id: string; title: string }> = [];
 
       for (const issue of issues) {
@@ -1688,18 +1696,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       const body = issue.body?.trim() || "(no description)";
       const description = `${body}\n\nSource: ${sourceUrl}`;
 
-      const projectSettings = await store.getSettings();
-      const globalSettings = await store.getGlobalSettingsStore().getSettings();
-      const resolvedTracking = resolveTaskGithubTracking(
-        { githubTracking: undefined },
-        projectSettings,
-        globalSettings,
-      );
-      /*
-      FNXC:GithubImportTracking 2026-06-26-00:00:
-      Single-issue imports follow the same source-issue adoption contract as bulk imports: mark tracking enabled only when defaults resolve on, then let the post-create hook link the source issue without creating a duplicate.
-      */
-      const importedIssueGithubTracking = resolvedTracking.enabled ? { enabled: true as const } : undefined;
+      const importedIssueGithubTracking = await resolveImportedIssueGithubTracking(store);
 
       const source = buildGitHubIssueSource(owner, repo, issue);
       const task = await store.createTask({

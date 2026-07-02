@@ -85,7 +85,7 @@ describe("workflow-settings fallback alignment (KTD-3, item 4)", () => {
     // VALUES here are the audited read-site literals; the assertion ties each to
     // the declaration default so the table cannot silently drift.
     const audited: Record<string, unknown> = {
-      workflowStepTimeoutMs: 360_000, // executor.ts: ?? 360_000
+      workflowStepTimeoutMs: 900_000, // executor.ts: ?? 900_000
       workflowStepScopeEnforcement: "block", // executor.ts: ?? "block"
       planOnlyScopeLeakEnforcement: "warn", // executor.ts: ?? "warn"
       workflowRevisionForkOnScopeMismatch: true, // executor.ts: !== false (default-true)

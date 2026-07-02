@@ -168,8 +168,8 @@ describe("acquireTaskWorktree", () => {
     expect(first.branch).toBe("fusion/fn-100");
     expect(second.branch).toBe("fusion/fn-101");
     expect(first.branch).not.toBe(second.branch);
-    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-100", expect.any(String), "FN-100", undefined, false);
-    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-101", expect.any(String), "FN-101", undefined, false);
+    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-100", expect.any(String), "FN-100", "main", false);
+    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-101", expect.any(String), "FN-101", "main", false);
   });
 
   it("keeps per-task-derived and ungrouped branch derivation unchanged", async () => {
@@ -195,6 +195,33 @@ describe("acquireTaskWorktree", () => {
     expect(ungrouped.branch).toBe("fusion/fn-103");
   });
 
+  it("creates fresh worktrees from the integration branch instead of ambient root HEAD", async () => {
+    const rootDir = makeRepo();
+    writeFileSync(join(rootDir, "foreign.txt"), "foreign\n", "utf-8");
+    git(rootDir, "git checkout -b fusion/fn-foreign");
+    git(rootDir, "git add foreign.txt");
+    git(rootDir, 'git commit -m "FN-9999: foreign work"');
+    const foreignHead = git(rootDir, "git rev-parse HEAD");
+    const mainHead = git(rootDir, "git rev-parse main");
+    expect(foreignHead).not.toBe(mainHead);
+
+    const createWorktree = vi.fn(async (branchName: string, worktreePath: string, _taskId: string, startPoint?: string) => {
+      git(rootDir, `git worktree add -b ${branchName} ${JSON.stringify(worktreePath)} ${startPoint ?? ""}`);
+      return { path: worktreePath, branch: branchName };
+    });
+
+    const result = await acquireTaskWorktree({
+      task: { ...task, id: "FN-200", worktree: null, branch: null },
+      rootDir,
+      store,
+      settings: {},
+      createWorktree,
+    });
+
+    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-200", expect.any(String), "FN-200", "main", false);
+    expect(git(result.worktreePath, "git rev-parse HEAD")).toBe(mainHead);
+  });
+
   it("acquires from pool when enabled", async () => {
     const prepareForTask = vi.fn().mockResolvedValue({ branch: "fusion/fn-1", worktreePath: "/tmp/pooled", reclaimed: false });
     const release = vi.fn();
@@ -215,7 +242,7 @@ describe("acquireTaskWorktree", () => {
     expect(prepareForTask).toHaveBeenCalledWith(
       "/tmp/pooled",
       "fusion/fn-1",
-      undefined,
+      "main",
       expect.objectContaining({ requestingTaskId: "FN-1" }),
     );
     expect(store.updateTask).toHaveBeenCalledWith("FN-1", { worktree: "/tmp/pooled", branch: "fusion/fn-1" });
@@ -370,7 +397,7 @@ describe("acquireTaskWorktree", () => {
     });
 
     expect(result).toMatchObject({ worktreePath: freshPath, source: "fresh", isResume: false });
-    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-1", expect.stringContaining(`${join(rootDir, ".worktrees")}/`), "FN-1", undefined, false);
+    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-1", expect.stringContaining(`${join(rootDir, ".worktrees")}/`), "FN-1", "main", false);
     expect(auditGit).toHaveBeenCalledWith(expect.objectContaining({
       type: "worktree:incomplete-detected",
       target: rootDir,

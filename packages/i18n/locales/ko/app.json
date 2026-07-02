@@ -180,7 +180,20 @@
     "lockedDown": "잠금",
     "preset": "프리셋",
     "requireApproval": "승인 필요",
-    "unrestricted": "무제한"
+    "unrestricted": "무제한",
+    "exactToolOverrides": "Exact tool overrides",
+    "exactToolOverridesDescription": "Override one governed tool by exact name before its category rule. Heartbeat-critical exempt tools stay non-configurable.",
+    "noExactToolOverrides": "No exact tool overrides configured.",
+    "toolName": "Tool name",
+    "toolDisposition": "Disposition",
+    "toolDispositionFor": "Disposition for {{toolName}}",
+    "projectDefaultExactTool": "project default exact rule",
+    "removeToolOverride": "Remove exact override for {{toolName}}",
+    "remove": "Remove",
+    "toolOverrideTool": "Tool override tool",
+    "toolOverrideDisposition": "Tool override disposition",
+    "updateToolOverride": "Update override",
+    "addToolOverride": "Add override"
   },
   "agentPrompts": {
     "actions": {
@@ -4140,6 +4153,7 @@
       "local": "로컬 Docker",
       "remote": "원격: {{host}}"
     },
+    "dockerHostLabel": "호스트",
     "dockerHostConfig": "호스트 구성",
     "dockerHostPath": "호스트 경로",
     "dockerHostUrl": "Docker 호스트 URL",
@@ -5211,6 +5225,7 @@
       "override": "작업별 재정의",
       "projectDefault": "프로젝트 기본값"
     },
+    "sourceLabel": "라우팅 소스",
     "summarySection": "라우팅 요약",
     "title": "작업 라우팅",
     "unavailablePolicy": "사용 불가 노드 정책",
@@ -7297,8 +7312,12 @@
       "ariaLabel": "실행 모드: {{mode}}",
       "fast": "빠름",
       "standard": "표준",
-      "updated": "실행 모드가 {{mode}}로 업데이트되었습니다"
+      "updated": "실행 모드가 {{mode}}로 업데이트되었습니다",
+      "replanMessage": "이 작업의 실행 모드를 변경하면 Fusion이 {{mode}} 모드용 계획을 다시 만들 수 있도록 작업이 계획으로 돌아갑니다.",
+      "replanTitle": "실행 모드를 변경하고 다시 계획할까요?",
+      "replanning": "실행 모드가 {{mode}}로 업데이트되었습니다 — {{id}}가 재계획을 위해 계획으로 돌아갔습니다"
     },
+    "executionModeLabel": "실행 모드",
     "executionModeFast": "빠름",
     "executionModeStandard": "표준",
     "executionStatsAria": "작업 실행 통계",
@@ -8423,7 +8442,6 @@
     "gateBlocks": "게이트(차단)",
     "gateMode": "게이트 모드",
     "insertTemplate": "{{name}} 템플릿 삽입",
-    "interpreterOnly": "이 워크플로는 분기되므로 그래프 인터프리터에서 실행됩니다 — 선형 단계 엔진으로 컴파일할 수는 없지만 그래도 실행됩니다.",
     "joinAll": "모든 분기",
     "joinAny": "임의 분기",
     "joinMode": "조인 모드",

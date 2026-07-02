@@ -310,6 +310,9 @@ export function useChatRooms(
    * Error contract:
    * - Throws the original error when delivery did not happen (before `postChatRoomMessage` resolves); callers may restore composer text.
    * - Throws `RoomMessageDeliveredButReplyFailedError` when delivery succeeded but a post-send step failed; callers must keep composer cleared.
+   *
+   * FNXC:RoomChatReliability 2026-07-01-00:00:
+   * Responder/provider failures can occur after the room user message is persisted. Keep the optimistic or recovered user row visible for delivered sends even when the reply-generation or refresh step fails, because that turn is already part of the room transcript context.
    */
   const sendRoomMessage = useCallback(async (content: string, opts?: { attachments?: ChatAttachment[]; files?: File[] }) => {
     const activeRoomSnapshot = activeRoomRef.current;
@@ -394,7 +397,7 @@ export function useChatRooms(
           timer.mark("hydrate");
         }
       } catch {
-        if (activeRoomRef.current?.id === roomId) {
+        if (!userMessageDelivered && activeRoomRef.current?.id === roomId) {
           setMessages((previous) => {
             const next = previous.filter((message) => message.id !== optimisticMessage.id);
             // Snapshot mirrors server `order: desc` shape.

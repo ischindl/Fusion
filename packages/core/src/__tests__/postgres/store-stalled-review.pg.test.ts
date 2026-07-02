@@ -68,6 +68,23 @@ pgTest("TaskStore stalledReview hydration (PostgreSQL)", () => {
     expect(detail.stalledReview?.matchCount).toBe(3);
   });
 
+  it("omits stalledReview while fresh agent-log activity is streaming", async () => {
+    const task = await seedStalledInReviewTask();
+    const oldUpdatedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+    const db = (store as unknown as { db: { prepare: (sql: string) => { run: (...params: unknown[]) => unknown } } }).db;
+    db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(oldUpdatedAt, task.id);
+    await store.appendAgentLog(task.id, "reviewer is comparing the squash against the branch", "thinking", undefined, "merger");
+
+    const slimTasks = await store.listTasks({ slim: true, column: "in-review" });
+    expect(slimTasks.find((entry) => entry.id === task.id)?.stalledReview).toBeUndefined();
+
+    const fullTasks = await store.listTasks({ slim: false, column: "in-review" });
+    expect(fullTasks.find((entry) => entry.id === task.id)?.stalledReview).toBeUndefined();
+
+    const detail = await store.getTask(task.id);
+    expect(detail.stalledReview).toBeUndefined();
+  });
+
   it("omits stalledReview for tasks already queued for merge", async () => {
     const task = await seedStalledInReviewTask();
     const store = h.store();

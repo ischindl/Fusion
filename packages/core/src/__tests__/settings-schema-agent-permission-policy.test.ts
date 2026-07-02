@@ -10,13 +10,17 @@ describe("defaultAgentPermissionPolicy settings schema contract", () => {
     expect(DEFAULT_PROJECT_SETTINGS.defaultAgentPermissionPolicy).toBeUndefined();
   });
 
-  it("supports partial category rules", () => {
+  it("supports partial category rules and exact tool overrides", () => {
     const setting = {
       rules: {
         command_execution: "require-approval",
       },
+      toolRules: {
+        fn_task_create: "block",
+      },
     };
 
     expect(setting.rules.command_execution).toBe("require-approval");
+    expect(setting.toolRules.fn_task_create).toBe("block");
   });
 });

@@ -1,6 +1,23 @@
 import type { WorkflowDefinitionKind } from "./workflow-definition-types.js";
 import type { WorkflowIr, WorkflowIrEdge, WorkflowIrNode } from "./workflow-ir-types.js";
-import { MERGE_REGION_NODE_KINDS } from "./workflow-compiler.js";
+import { isCompletionSummaryNode } from "./builtin-completion-summary-node.js";
+
+/**
+ * FNXC:WorkflowLifecycle 2026-07-01-00:00:
+ * Workflow-owned merge/retry/recovery policy primitives — a terminal,
+ * engine-owned region that may branch internally. Formerly exported from the
+ * (now-deleted) linear WorkflowStep compiler; the graph interpreter is the sole
+ * executor, so this set now lives with its only remaining consumer.
+ */
+const MERGE_REGION_NODE_KINDS: ReadonlySet<WorkflowIrNode["kind"]> = new Set([
+  "merge-gate",
+  "merge-attempt",
+  "manual-merge-hold",
+  "retry-backoff",
+  "recovery-router",
+  "branch-group-member-integration",
+  "branch-group-promotion",
+]);
 
 export type WorkflowLifecycleWarningCode =
   | "missing-completion-summary"
@@ -20,7 +37,7 @@ export interface AnalyzeWorkflowLifecycleOptions {
 }
 
 function isSummaryNode(node: WorkflowIrNode): boolean {
-  return node.config?.summaryTarget === "task" || node.id === "completion-summary";
+  return isCompletionSummaryNode(node);
 }
 
 function isMergeNode(node: WorkflowIrNode): boolean {

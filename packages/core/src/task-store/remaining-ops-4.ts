@@ -20,7 +20,6 @@ import type {WorkflowFieldDefinition} from "../workflow-ir-types.js";
 import {validateCustomFieldPatch, applyFieldDefaults, reconcileFieldsOnWorkflowChange, type CustomFieldRejection} from "../task-fields.js";
 import "../builtin-traits.js";
 import type {WorkflowDefinition} from "../workflow-definition-types.js";
-import {compileWorkflowToSteps, isInterpreterDeferredWorkflowCompileError} from "../workflow-compiler.js";
 import {resolveDefaultOnOptionalGroupIds} from "../workflow-optional-steps.js";
 import {isBuiltinWorkflowId} from "../builtin-workflows.js";
 import {toJson} from "../db.js";
@@ -591,43 +590,13 @@ export async function materializeDefaultWorkflowStepsImpl(store: TaskStore): Pro
     // KTD-1/R6: a fragment must never act as a project default (it is not a
     // selectable workflow); fall back to no default rather than materializing it.
     if (def.kind === "fragment") return undefined;
-    // Compile (and validate) before creating any rows so a non-compilable
-    // default falls back cleanly with nothing written. Interpreter-deferred
-    // built-ins are valid selectable workflows but not lowerable to legacy
-    // WorkflowStep rows, so default materialization falls back to legacy defaults.
-    // Built-ins that compile to zero steps still record a stepless selection,
-    // mirroring explicit workflow materialization.
-    let inputs: import("../types.js").WorkflowStepInput[];
-    try {
-      inputs = compileWorkflowToSteps(def.ir);
-    } catch (err) {
-      // FNXC:CodeReviewStep 2026-06-25-15:00:
-      // Interpreter-deferred built-ins (e.g. builtin:coding/stepwise, which carry
-      // optional-group nodes) cannot lower to legacy WorkflowStep rows, but they may
-      // still carry DEFAULT-ON optional groups (e.g. `code-review`) that must be seeded
-      // into the new task's `enabledWorkflowSteps` for default-on to actually take
-      // effect — the executor enables a group strictly via
-      // `enabledWorkflowSteps.includes(node.id)` with no defaultOn fallback. Mirror the
-      // explicit-workflow path (`materializeExplicitWorkflowSteps`) by recording a
-      // selection seeded with the default-on group ids instead of bailing to `undefined`
-      // (which dropped the seeding and silently disabled default-on groups under a
-      // project-default workflow).
-      if (isBuiltinWorkflowId(workflowId) && isInterpreterDeferredWorkflowCompileError(err)) {
-        return { workflowId, stepIds: resolveDefaultOnOptionalGroupIds(def.ir) };
-      }
-      throw err;
-    }
-    // FNXC:WorkflowOptionalGroup 2026-06-21-14:20: seed `enabledWorkflowSteps`
-    // with the ids of `optional-group` nodes whose `defaultOn` is true, mirroring
-    // the prior `optionalStep.defaultOn ?? false` precedence (U3, R3). These group
-    // ids are NOT WorkflowStep rows — they are toggle keys the executor reads at
-    // the optional-group seam — so they ride alongside the compiled step ids.
-    const defaultGroupIds = resolveDefaultOnOptionalGroupIds(def.ir);
-    if (isBuiltinWorkflowId(workflowId) && inputs.length === 0) {
-      return { workflowId, stepIds: defaultGroupIds };
-    }
-    const stepIds = await store.materializeWorkflowSteps(workflowId, inputs);
-    return { workflowId, stepIds: [...stepIds, ...defaultGroupIds] };
+    // FNXC:LegacyWorkflowEngineRemoval 2026-07-02-00:00:
+    // FN-7360 removed the legacy linear workflow step compiler; the graph
+    // interpreter is the sole executor. Validation is now parseWorkflowIr
+    // (accepts branching graphs). Interpreter-deferred tolerance is no longer
+    // needed since branching is a valid shape.
+    parseWorkflowIr(def.ir);
+    return { workflowId, stepIds: resolveDefaultOnOptionalGroupIds(def.ir) };
   }
 
 export async function reconcileTaskCustomFieldsForSchemaImpl(store: TaskStore, taskId: string, oldFieldDefs: WorkflowFieldDefinition[], newFieldDefs: WorkflowFieldDefinition[], dropOrphans = false,): Promise<void> {

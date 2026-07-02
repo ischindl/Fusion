@@ -150,6 +150,42 @@ function expectTimerInFooterRight(container: HTMLElement) {
   expect(timer?.closest(".card-meta-badges")).toBeNull();
 }
 
+function mockBoardContextMenuGeometry() {
+  const originalInnerWidth = window.innerWidth;
+  const originalInnerHeight = window.innerHeight;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+  const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function getMockRect(this: HTMLElement) {
+    if (this.classList.contains("card")) {
+      return { x: 520, y: 340, left: 520, top: 340, right: 760, bottom: 520, width: 240, height: 180, toJSON: () => ({}) } as DOMRect;
+    }
+    if (this.classList.contains("task-card-context-menu-popover")) {
+      const left = Number.parseFloat(this.style.left || "0");
+      const top = Number.parseFloat(this.style.top || "0");
+      return { x: left, y: top, left, top, right: left + 180, bottom: top + 220, width: 180, height: 220, toJSON: () => ({}) } as DOMRect;
+    }
+    return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect;
+  });
+  return () => {
+    rectSpy.mockRestore();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+  };
+}
+
+function expectBoardContextMenuPortaled() {
+  const menu = screen.getByRole("menu");
+  const popover = menu.closest(".task-card-context-menu-popover") as HTMLElement | null;
+  expect(popover).not.toBeNull();
+  expect(popover?.parentElement).toBe(document.body);
+  expect(popover?.closest(".card")).toBeNull();
+  expect(popover?.closest(".column")).toBeNull();
+  expect(popover?.closest(".column-body")).toBeNull();
+  expect(popover?.style.left).not.toBe("");
+  expect(popover?.style.top).not.toBe("");
+  return popover!;
+}
+
 const highFanout = {
   totalCount: 7,
   activeTodoCount: 3,
@@ -192,45 +228,157 @@ describe("TaskCard", () => {
     expect(onOpenDetailWithTab.mock.calls[0][1]).toBe("workflow");
   });
 
-  it("opens the board card context menu on right-click without opening detail", async () => {
+  it("opens the board card context menu as a viewport portal on right-click without opening detail", async () => {
+    const cleanupGeometry = mockBoardContextMenuGeometry();
     const onOpenDetail = vi.fn();
     const onPauseTask = vi.fn(async () => makeTask({ paused: true }));
-    render(
+    try {
+      render(
+        <div className="column" style={{ overflow: "hidden" }}>
+          <div className="column-body" style={{ overflowX: "hidden", overflowY: "auto" }}>
+            <TaskCard
+              task={makeTask({ column: "in-progress", status: "executing" as any })}
+              onOpenDetail={onOpenDetail}
+              addToast={noop}
+              onPauseTask={onPauseTask}
+            />
+          </div>
+        </div>,
+      );
+
+      fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 790, clientY: 590 });
+      const popover = await waitFor(() => expectBoardContextMenuPortaled());
+      expect(popover.style.left).toBe("612px");
+      expect(popover.style.top).toBe("372px");
+      expect(onOpenDetail).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
+      await waitFor(() => expect(onPauseTask).toHaveBeenCalledWith("FN-001"));
+      expect(onPauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(document.querySelector(".task-card-context-menu-popover")).toBeNull();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+    } finally {
+      cleanupGeometry();
+    }
+  });
+
+  it("enables GitHub tracking from the board card context menu and hides the action after refresh", async () => {
+    const cleanupGeometry = mockBoardContextMenuGeometry();
+    const onOpenDetail = vi.fn();
+    const addToast = vi.fn();
+    const onUpdateTask = vi.fn(async () => makeTask({ githubTracking: { enabled: true } as any }));
+    const { rerender } = render(
       <TaskCard
-        task={makeTask({ column: "in-progress", status: "executing" as any })}
+        task={makeTask({ githubTracking: undefined })}
+        projectId="project-1"
         onOpenDetail={onOpenDetail}
-        addToast={noop}
-        onPauseTask={onPauseTask}
+        addToast={addToast}
+        onUpdateTask={onUpdateTask}
       />,
     );
 
-    fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
-    expect(screen.getByRole("menu")).toBeInTheDocument();
-    expect(onOpenDetail).not.toHaveBeenCalled();
+    try {
+      fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
+      fireEvent.click(screen.getByRole("menuitem", { name: "Enable GitHub tracking" }));
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
-    await waitFor(() => expect(onPauseTask).toHaveBeenCalledWith("FN-001"));
-    expect(onOpenDetail).not.toHaveBeenCalled();
+      await waitFor(() => expect(onUpdateTask).toHaveBeenCalledWith("FN-001", { githubTracking: { enabled: true } }));
+      expect(addToast).toHaveBeenCalledWith("Requested GitHub tracking issue creation", "info");
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+
+      rerender(
+        <TaskCard
+          task={makeTask({ githubTracking: { enabled: true } as any })}
+          projectId="project-1"
+          onOpenDetail={onOpenDetail}
+          addToast={addToast}
+          onUpdateTask={onUpdateTask}
+        />,
+      );
+      await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+      fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
+      expect(screen.queryByRole("menuitem", { name: "Enable GitHub tracking" })).not.toBeInTheDocument();
+    } finally {
+      cleanupGeometry();
+    }
   });
 
-  it("opens the board card context menu from keyboard without opening detail", () => {
+  it("opens the board card context menu from keyboard as a viewport portal, selects an action, and closes", async () => {
+    const cleanupGeometry = mockBoardContextMenuGeometry();
     const onOpenDetail = vi.fn();
+    const onArchiveTask = vi.fn(async () => makeTask({ column: "archived" }));
+    try {
+      render(
+        <div className="column" style={{ overflow: "hidden" }}>
+          <div className="column-body" style={{ overflowX: "hidden", overflowY: "auto" }}>
+            <TaskCard
+              task={makeTask({ column: "done", status: "done" as any })}
+              onOpenDetail={onOpenDetail}
+              addToast={noop}
+              onArchiveTask={onArchiveTask}
+            />
+          </div>
+        </div>,
+      );
+
+      const card = document.querySelector(".card") as HTMLElement;
+      card.focus();
+      fireEvent.keyDown(card, { key: "F10", shiftKey: true });
+
+      expectBoardContextMenuPortaled();
+      fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+      await waitFor(() => expect(onArchiveTask).toHaveBeenCalledWith("FN-001"));
+      expect(onArchiveTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+    } finally {
+      cleanupGeometry();
+    }
+  });
+
+  it("shows refine for a done card context menu and routes to the refinement opener", () => {
+    const onOpenDetail = vi.fn();
+    const onOpenRefine = vi.fn();
     render(
       <TaskCard
         task={makeTask({ column: "done", status: "done" as any })}
         onOpenDetail={onOpenDetail}
+        onOpenRefine={onOpenRefine}
         addToast={noop}
-        onArchiveTask={vi.fn()}
+        onDeleteTask={vi.fn()}
+      />,
+    );
+
+    fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
+
+    expect(onOpenRefine).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-001" }));
+    expect(onOpenDetail).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("shows refine for custom complete cards on touch long-press", () => {
+    vi.useFakeTimers();
+    const onOpenRefine = vi.fn();
+    render(
+      <TaskCard
+        task={makeTask({ column: "complete" as any, status: "done" as any })}
+        taskColumnFlags={{ complete: true }}
+        onOpenDetail={noop}
+        onOpenRefine={onOpenRefine}
+        addToast={noop}
+        onDeleteTask={vi.fn()}
       />,
     );
 
     const card = document.querySelector(".card") as HTMLElement;
-    card.focus();
-    fireEvent.keyDown(card, { key: "F10", shiftKey: true });
+    fireEvent.pointerDown(card, { pointerType: "touch", pointerId: 1, clientX: 16, clientY: 16 });
+    act(() => vi.advanceTimersByTime(550));
 
-    expect(screen.getByRole("menu")).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
-    expect(onOpenDetail).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
+    expect(onOpenRefine).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-001" }));
   });
 
   it("confirms preserving progress before moving from the board context menu", async () => {
@@ -314,26 +462,83 @@ describe("TaskCard", () => {
     expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).not.toBeInTheDocument();
   });
 
-  it("opens the board card context menu on touch long-press and suppresses detail click", () => {
+  it("opens the board card context menu on touch long-press as a viewport portal, selects the tapped action, and suppresses detail click", async () => {
     vi.useFakeTimers();
+    const cleanupGeometry = mockBoardContextMenuGeometry();
     const onOpenDetail = vi.fn();
-    render(
-      <TaskCard
-        task={makeTask({ paused: true, userPaused: true })}
-        onOpenDetail={onOpenDetail}
-        addToast={noop}
-        onUnpauseTask={vi.fn(async () => makeTask())}
-      />,
-    );
+    const onUnpauseTask = vi.fn(async () => makeTask());
+    try {
+      render(
+        <div className="column" style={{ overflow: "hidden" }}>
+          <div className="column-body" style={{ overflowX: "hidden", overflowY: "auto" }}>
+            <TaskCard
+              task={makeTask({ paused: true, userPaused: true })}
+              onOpenDetail={onOpenDetail}
+              addToast={noop}
+              onUnpauseTask={onUnpauseTask}
+            />
+          </div>
+        </div>,
+      );
 
-    const card = document.querySelector(".card") as HTMLElement;
-    fireEvent.pointerDown(card, { pointerType: "touch", pointerId: 1, clientX: 16, clientY: 16 });
-    act(() => vi.advanceTimersByTime(550));
+      const card = document.querySelector(".card") as HTMLElement;
+      fireEvent.pointerDown(card, { pointerType: "touch", pointerId: 1, clientX: 790, clientY: 590 });
+      act(() => vi.advanceTimersByTime(550));
 
-    expect(screen.getByRole("menu")).toBeInTheDocument();
-    fireEvent.pointerUp(card, { pointerType: "touch", pointerId: 1, clientX: 16, clientY: 16 });
-    fireEvent.click(card);
-    expect(onOpenDetail).not.toHaveBeenCalled();
+      expectBoardContextMenuPortaled();
+      fireEvent.pointerUp(card, { pointerType: "touch", pointerId: 1, clientX: 790, clientY: 590 });
+      fireEvent.click(card);
+      expect(onOpenDetail).not.toHaveBeenCalled();
+
+      fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Unpause" }), { pointerType: "touch", pointerId: 2 });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(onUnpauseTask).toHaveBeenCalledWith("FN-001");
+      expect(onUnpauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    } finally {
+      cleanupGeometry();
+    }
+  });
+
+  it("suppresses native text selection when touch long-press opens the board card context menu", async () => {
+    vi.useFakeTimers();
+    const cleanupGeometry = mockBoardContextMenuGeometry();
+    const onOpenDetail = vi.fn();
+    const onPauseTask = vi.fn(async () => makeTask({ paused: true }));
+    try {
+      render(
+        <div className="column" style={{ overflow: "hidden" }}>
+          <div className="column-body" style={{ overflowX: "hidden", overflowY: "auto" }}>
+            <TaskCard
+              task={makeTask({ title: "Long selectable title", column: "in-progress", status: "executing" as any })}
+              onOpenDetail={onOpenDetail}
+              addToast={noop}
+              onPauseTask={onPauseTask}
+            />
+          </div>
+        </div>,
+      );
+
+      const title = screen.getByText("Long selectable title");
+      const pointerDownWasNotCanceled = fireEvent.pointerDown(title, {
+        pointerType: "touch",
+        pointerId: 9,
+        clientX: 180,
+        clientY: 160,
+        cancelable: true,
+      });
+      expect(pointerDownWasNotCanceled).toBe(false);
+
+      act(() => vi.advanceTimersByTime(550));
+
+      expectBoardContextMenuPortaled();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+      fireEvent.pointerUp(title, { pointerType: "touch", pointerId: 9, clientX: 180, clientY: 160 });
+    } finally {
+      cleanupGeometry();
+    }
   });
 
   it("cancels board card long-press when touch moves before the delay", () => {
@@ -353,6 +558,64 @@ describe("TaskCard", () => {
     act(() => vi.advanceTimersByTime(550));
 
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("dispatches portaled board menu actions for the interacted duplicate card", async () => {
+    mockConfirm.mockResolvedValueOnce(true);
+    const onDuplicateTask = vi.fn(async () => makeTask({ id: "FN-002-copy" }));
+    render(
+      <div className="column" style={{ overflow: "hidden" }}>
+        <div className="column-body" style={{ overflowX: "hidden", overflowY: "auto" }}>
+          <TaskCard
+            task={makeTask({ id: "FN-001", title: "Duplicate title", column: "todo" })}
+            onOpenDetail={noop}
+            addToast={noop}
+            onDuplicateTask={onDuplicateTask}
+          />
+          <TaskCard
+            task={makeTask({ id: "FN-002", title: "Duplicate title", column: "todo" })}
+            onOpenDetail={noop}
+            addToast={noop}
+            onDuplicateTask={onDuplicateTask}
+          />
+        </div>
+      </div>,
+    );
+
+    const secondCard = document.querySelectorAll(".card")[1] as HTMLElement;
+    fireEvent.contextMenu(secondCard, { clientX: 64, clientY: 72 });
+    expectBoardContextMenuPortaled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
+
+    await waitFor(() => expect(onDuplicateTask).toHaveBeenCalledWith("FN-002"));
+    expect(onDuplicateTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("cleans up the portaled board menu when the task column changes", () => {
+    const { rerender } = render(
+      <TaskCard
+        task={makeTask({ id: "FN-001", column: "in-progress", status: "executing" as any })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onPauseTask={vi.fn()}
+      />,
+    );
+
+    fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
+    expectBoardContextMenuPortaled();
+
+    rerender(
+      <TaskCard
+        task={makeTask({ id: "FN-001", column: "todo", status: "pending" as any })}
+        onOpenDetail={noop}
+        addToast={noop}
+        onPauseTask={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(document.querySelector(".task-card-context-menu-popover")).toBeNull();
   });
 
   it("does not show the Answer-questions button when not awaiting input", () => {
@@ -2270,7 +2533,8 @@ describe("TaskCard", () => {
   // FNXC:WorkflowSteps 2026-06-25-00:00 — graph-written results drive the card progress; names come from
   // result.workflowStepName (with raw-id fallback), and advisory_failure (amber) is visually distinct
   // from failed (red). No board-level name lookup is involved.
-  it("renders workflow checks after normal steps with graph-written statuses and phase badges", () => {
+  // FNXC:WorkflowSteps 2026-06-30-12:00 — expanded task-card rows deliberately omit the redundant workflow text badge; tests preserve mixed implementation/workflow visibility through names, status dots, and the active badge instead.
+  it("renders workflow checks after normal steps with graph-written statuses and no workflow text badges", () => {
     const { container } = render(
       <TaskCard
         task={makeTask({
@@ -2278,7 +2542,7 @@ describe("TaskCard", () => {
             { name: "Step 0", status: "done" },
             { name: "Step 1", status: "failed" as any },
           ],
-          enabledWorkflowSteps: ["WS-001", "WS-002", "WS-003", "WS-004"],
+          enabledWorkflowSteps: ["WS-001", "WS-002", "WS-003", "WS-004", "WS-005"],
           workflowStepResults: [
             {
               workflowStepId: "WS-001",
@@ -2296,6 +2560,12 @@ describe("TaskCard", () => {
               workflowStepName: "Code Review Gate",
               status: "failed",
             },
+            {
+              workflowStepId: "WS-005",
+              workflowStepName: "Merge Validation",
+              status: "pending",
+              startedAt: "2026-06-25T00:00:00.000Z",
+            },
           ],
         })}
         onOpenDetail={noop}
@@ -2312,6 +2582,7 @@ describe("TaskCard", () => {
       "Frontend UX Design",
       "WS 003",
       "Code Review Gate",
+      "Merge Validation",
     ]);
 
     const dots = container.querySelectorAll(".card-step-dot");
@@ -2333,18 +2604,15 @@ describe("TaskCard", () => {
     expect(dots[5]?.className).toContain("card-step-dot--failed");
     expect(dots[5]?.className).not.toContain("card-step-dot--advisory_failure");
 
+    // Started-but-not-finished workflow step → running with the same active badge as implementation steps.
+    expect(dots[6]?.className).toContain("card-step-dot--running");
+    expect(dots[6]?.className).not.toContain("card-step-dot--pending");
+    expect(container.querySelector(".card-step-active-badge")?.textContent).toBe("active");
+
     const workflowBadgeElements = container.querySelectorAll(".card-step-workflow-badge");
-    const workflowBadges = Array.from(workflowBadgeElements).map((el) => el.textContent);
-    expect(workflowBadges).toEqual(["workflow", "workflow", "workflow", "workflow"]);
-
-    expect(workflowBadgeElements[0]?.className).toContain("card-step-workflow-badge--pre-merge");
-    expect(workflowBadgeElements[1]?.className).toContain("card-step-workflow-badge--post-merge");
-    expect(workflowBadgeElements[2]?.className).toContain("card-step-workflow-badge--pre-merge");
-    expect(workflowBadgeElements[3]?.className).toContain("card-step-workflow-badge--pre-merge");
-
-    workflowBadgeElements.forEach((badge) => {
-      expect(badge.getAttribute("title")).toBe("Workflow check");
-    });
+    expect(workflowBadgeElements).toHaveLength(0);
+    expect(container.querySelector('[title="Workflow check"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll(".card-step-item")).some((item) => item.textContent === "workflow")).toBe(false);
   });
 
   it("renders the running state for a started-but-not-completed workflow step", () => {

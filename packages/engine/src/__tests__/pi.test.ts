@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { describeModel, compactSessionContext, COMPACTION_FALLBACK_INSTRUCTIONS, createFnAgent, getProjectRootFromWorktree, isModelAuthTierIncompatibilityError, isRetryableModelSelectionError, promptWithFallback, type AgentOptions } from "../pi.js";
-import { createAgentSession, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { describeModel, formatModelMarkerDetails, compactSessionContext, COMPACTION_FALLBACK_INSTRUCTIONS, createFnAgent, getProjectRootFromWorktree, isModelAuthTierIncompatibilityError, isRetryableModelSelectionError, promptWithFallback, type AgentOptions } from "../pi.js";
+import { createAgentSession, ModelRegistry, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { piLog } from "../logger.js";
 
 // Mock skill resolver functions - define inside factory to avoid hoisting issues
@@ -144,6 +144,16 @@ describe("describeModel", () => {
     } as unknown as AgentSession;
 
     expect(describeModel(fakeSession)).toBe("openai/gpt-4o");
+  });
+});
+
+describe("formatModelMarkerDetails", () => {
+  it("adds thinking effort before workflow annotations and omits empty values", () => {
+    expect(formatModelMarkerDetails("openai/gpt-4o", "high", ["workflow step override", "fallback after timeout"])).toBe(
+      "openai/gpt-4o (thinking effort: high) (workflow step override) (fallback after timeout)",
+    );
+    expect(formatModelMarkerDetails("openai/gpt-4o", undefined, [""])).toBe("openai/gpt-4o");
+    expect(formatModelMarkerDetails("openai/gpt-4o", "off")).toBe("openai/gpt-4o (thinking effort: off)");
   });
 });
 
@@ -739,7 +749,7 @@ describe("session failure diagnostics", () => {
     });
     await (created.session as any).promptWithFallback("Use docs");
 
-    expect(createAgentSessionMock).toHaveBeenCalledWith(expect.objectContaining({ mcpServers }));
+    expect(createAgentSessionMock.mock.calls[0]?.[0]).not.toHaveProperty("mcpServers");
     expect(session.prompt).toHaveBeenCalledWith("Use docs", expect.objectContaining({ mcpServers }));
   });
 
@@ -1040,6 +1050,73 @@ describe("piLog structured diagnostics", () => {
     );
   });
 
+  it("swaps once to fallback for Anthropic Sonnet 5 not_found_error without retaining the primary failure", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    vi.mocked(ModelRegistry.create).mockReturnValueOnce({
+      find: vi.fn((provider: string, id: string) => ({ provider, id, name: id })),
+      getAll: vi.fn().mockReturnValue([]),
+      registerProvider: vi.fn(),
+      refresh: vi.fn(),
+    } as any);
+    const onFallbackModelUsed = vi.fn();
+    const sonnet5NotFoundError =
+      'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}';
+
+    createAgentSessionMock.mockReset();
+    createAgentSessionMock.mockImplementation(async (options: any) => {
+      if (options.model?.id === "claude-sonnet-5") {
+        return {
+          session: {
+            model: { provider: "anthropic", id: "claude-sonnet-5" },
+            prompt: vi.fn(async () => {
+              throw new Error(sonnet5NotFoundError);
+            }),
+            state: { errorMessage: "", messages: [] },
+            subscribe: vi.fn(),
+            dispose: vi.fn(),
+            setThinkingLevel: vi.fn(),
+            sessionFile: undefined,
+          },
+        } as any;
+      }
+      return {
+        session: {
+          model: { provider: "zai", id: "glm-5.1" },
+          prompt: vi.fn(async (_prompt: string, _options?: unknown) => undefined),
+          state: { errorMessage: "", messages: [{ role: "assistant", content: "Fallback reply" }] },
+          subscribe: vi.fn(),
+          dispose: vi.fn(),
+          setThinkingLevel: vi.fn(),
+          sessionFile: undefined,
+        },
+      } as any;
+    });
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test Sonnet 5 fallback",
+      defaultProvider: "anthropic",
+      defaultModelId: "claude-sonnet-5",
+      fallbackProvider: "zai",
+      fallbackModelId: "glm-5.1",
+      taskId: "FN-7358",
+      onFallbackModelUsed,
+    });
+
+    await expect((session as any).promptWithFallback("prompt text", { temperature: 0 })).resolves.toBeUndefined();
+
+    const fallbackPrompt = vi.mocked((session as any).prompt).mock;
+    expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(fallbackPrompt.calls).toEqual([["prompt text", { temperature: 0 }]]);
+    expect((session as any).state.errorMessage ?? "").toBe("");
+    expect(onFallbackModelUsed).toHaveBeenCalledWith(expect.objectContaining({
+      triggerPoint: "prompt-time",
+      primaryModel: "anthropic/claude-sonnet-5",
+      fallbackModel: "zai/glm-5.1",
+      taskId: "FN-7358",
+    }));
+  });
+
   it("logs warning on primary model failure and fallback attempt", async () => {
     const createAgentSessionMock = vi.mocked(createAgentSession);
     createAgentSessionMock.mockReset();
@@ -1136,6 +1213,16 @@ describe("isRetryableModelSelectionError", () => {
     ).toBe(true);
     expect(isRetryableModelSelectionError("The gpt-5.3-codex model is not supported for this account")).toBe(true);
     expect(isRetryableModelSelectionError("400 invalid_request_error: missing required field messages")).toBe(false);
+  });
+
+  it("treats provider model-not-found payloads as model-selection retryable", () => {
+    expect(
+      isRetryableModelSelectionError(
+        'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}',
+      ),
+    ).toBe(true);
+    expect(isRetryableModelSelectionError("model claude-sonnet-5 not found")).toBe(true);
+    expect(isRetryableModelSelectionError("GET /api/tasks/FN-404 returned 404 Not Found")).toBe(false);
   });
 
   it("treats an unsupported message-role rejection as model-selection retryable so the fallback model is tried (issue #1261)", () => {

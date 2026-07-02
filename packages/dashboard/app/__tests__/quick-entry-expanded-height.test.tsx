@@ -40,9 +40,8 @@ vi.mock("../api", () => ({
     groupOverlappingFiles: true,
     autoMerge: true,
   }),
-  refineText: vi.fn(),
-  getRefineErrorMessage: vi.fn((err: unknown) => (err as Error)?.message || "Failed"),
   fetchAgents: vi.fn().mockResolvedValue([]),
+  fetchWorkflowOptionalSteps: vi.fn().mockResolvedValue([]),
   uploadAttachment: vi.fn().mockResolvedValue({}),
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
 }));

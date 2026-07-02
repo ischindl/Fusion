@@ -249,8 +249,61 @@ describe("Scheduler workflow cutover", () => {
 
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-002", "in-progress", expect.anything());
     expect(store.updateTask).not.toHaveBeenCalledWith("FN-002", expect.objectContaining({ status: null }));
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-002",
+      expect.stringContaining("gate=maxWorktrees; maxConcurrent used=1/4"),
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-002",
+      expect.stringContaining("maxWorktrees used=1/1"),
+    );
     expect(onSchedule).not.toHaveBeenCalledWith(expect.objectContaining({ id: "FN-002" }));
     expect(ready.column).toBe("todo");
+  });
+
+  it("does not release work when already over maxWorktrees even if maxConcurrent has slack", async () => {
+    const active = Array.from({ length: 5 }, (_, index) => task({ id: `FN-10${index}`, column: "in-progress" }));
+    const ready = task({ id: "FN-200", status: "queued" });
+    const store = storeWith([...active, ready], { maxConcurrent: 10, maxWorktrees: 4 });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-200", "in-progress", expect.anything());
+    expect(store.updateTask).toHaveBeenCalledWith("FN-200", { status: "queued" });
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-200",
+      expect.stringContaining("gate=maxWorktrees; maxConcurrent used=5/10"),
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-200",
+      expect.stringContaining("maxWorktrees used=5/4"),
+    );
+    expect(onSchedule).not.toHaveBeenCalled();
+    expect(ready.column).toBe("todo");
+  });
+
+  it("releases one ready task when maxWorktrees has exactly one remaining slot and maxConcurrent is higher", async () => {
+    const active = Array.from({ length: 3 }, (_, index) => task({ id: `FN-30${index}`, column: "in-progress" }));
+    const first = task({ id: "FN-401", status: "queued" });
+    const second = task({ id: "FN-402", status: "queued" });
+    const store = storeWith([...active, first, second], { maxConcurrent: 10, maxWorktrees: 4 });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTask).toHaveBeenCalledTimes(1);
+    expect(store.moveTask).toHaveBeenCalledWith("FN-401", "in-progress", expect.anything());
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-402", "in-progress", expect.anything());
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-402",
+      expect.stringContaining("gate=maxWorktrees; maxConcurrent used=4/10"),
+    );
+    expect(onSchedule).toHaveBeenCalledTimes(1);
   });
 
   it("reserves same-sweep capacity so only one ready task is released into one slot", async () => {

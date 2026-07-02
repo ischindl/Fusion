@@ -2085,6 +2085,13 @@ function isIssueAlreadyImported(
 
 async function resolveImportedIssueGithubTracking(store: TaskStore): Promise<{ enabled: true } | undefined> {
   const projectSettings = await store.getSettings();
+  if (projectSettings.githubLinkImportedIssuesToTracking === true) {
+    /*
+    FNXC:GithubImportTracking 2026-07-01-00:00:
+    The imported-issue linking option is narrower than the general new-task default. Dashboard imports force githubTracking.enabled only for GitHub source issues so the post-create hook adopts sourceIssue instead of opening a separate Fusion tracking issue.
+    */
+    return { enabled: true };
+  }
   const globalSettings = await store.getGlobalSettingsStore().getSettings();
   const resolvedTracking = resolveTaskGithubTracking(
     { githubTracking: undefined },

@@ -27,9 +27,43 @@ vi.mock("../BranchGroupCard", () => ({
 
 /*
 FNXC:TaskDetailTabs 2026-06-17-08:20:
-FN-7306 labels the stable internal `chat` tab as Activity and keeps it as the default TaskDetailModal tab. Definition-tab regression coverage must prove both the no-`initialTab` Activity landing state and the explicit `initialTab="definition"` Definition surface for prompt, GitHub tracking, and dependency sections.
+FN-7306 labels the stable internal `chat` tab as Activity, while later Chat-first detail work keeps that legacy `chat` id only for explicit Activity requests. Definition-tab regression coverage must prove omitted non-done task details now land on planner Chat, Activity remains selectable, and explicit `initialTab="definition"` still opens the Definition surface for prompt, GitHub tracking, and dependency sections.
+
+FNXC:TaskDetailPlannerChat 2026-06-30-23:58:
+Omitted non-done TaskDetailModal renders open the top-level planner Chat first/default. Activity controls (`Live`, `Feed`, `Raw`, Live/Feed Activity expand, and Raw fullscreen) are intentionally mounted only after selecting Activity or using an explicit legacy Activity tab request.
 */
 setupTaskDetailModalHooks();
+
+type ActivitySegmentTestValue = "current" | "feed" | "raw-logs";
+
+const ACTIVITY_VIEW_LABELS: Record<ActivitySegmentTestValue, string> = {
+  current: "Live",
+  feed: "Feed",
+  "raw-logs": "Raw",
+};
+
+function openActivityViewMenu() {
+  const existingMenu = screen.queryByRole("menu", { name: "Activity views" });
+  if (!existingMenu) {
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  }
+  return screen.getByRole("menu", { name: "Activity views" });
+}
+
+function activityViewLabels(): string[] {
+  openActivityViewMenu();
+  return screen.getAllByRole("menuitem").map((option) => option.textContent?.trim() ?? "");
+}
+
+function expectActivityView(value: ActivitySegmentTestValue) {
+  openActivityViewMenu();
+  expect(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] })).toHaveAttribute("aria-current", "true");
+}
+
+function selectActivityView(value: ActivitySegmentTestValue) {
+  openActivityViewMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] }));
+}
 
 describe("TaskDetailModal", () => {
   describe("paste image upload", () => {
@@ -53,7 +87,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={addToast}
         />,
       );
@@ -92,7 +126,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -132,7 +166,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -189,7 +223,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={addToast}
         />,
       );
@@ -221,7 +255,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -244,7 +278,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -280,7 +314,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -310,7 +344,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -371,14 +405,14 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
 
-    // Click Activity tab — Activity is the default subview
+    // Select Activity before asserting its segmented controls
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
     const activityList = container.querySelector(".detail-activity-list");
     expect(activityList).toBeTruthy();
@@ -404,7 +438,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -434,7 +468,7 @@ describe("TaskDetailModal", () => {
         onMoveTask={noopMove}
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
         addToast={noop}
       />,
     );
@@ -448,34 +482,44 @@ describe("TaskDetailModal", () => {
   });
 
   describe("tab toggle", () => {
-    it("defaults to the Activity tab", () => {
+    it("restores planner Chat as the omitted non-done default when Chat-first is enabled", () => {
       const { container } = render(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent" })}
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       expect(screen.getByText("Plan")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Logs" })).toBeNull();
-      expect(container.querySelector(".activity-segmented-control")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Chat" })).toHaveClass("detail-tab-active");
+      expect(screen.getByTestId("task-planner-chat-panel")).toBeTruthy();
+      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand planner chat");
+      expect(container.querySelector(".task-detail-content")).not.toHaveClass("task-detail-content--planner-chat-expanded");
+      expect(container.querySelector(".activity-segmented-control")).toBeNull();
+      expect(container.querySelector(".activity-segment")).toBeNull();
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
       expect(screen.queryByText("Agent Log")).toBeNull();
-      const segments = screen.getAllByRole("tab");
-      expect(segments.map((segment) => segment.textContent)).toEqual(["Current", "Feed", "Raw Logs"]);
-      expect(screen.getByRole("tab", { name: "Current" })).toHaveAttribute("aria-selected", "true");
-      expect(container.querySelector(".detail-section--chat")).toBeTruthy();
-      expect(container.querySelector("[data-testid='task-chat-tab']")).toBeTruthy();
+      expect(screen.queryByRole("combobox", { name: "Activity view" })).toBeNull();
+      expect(container.querySelector(".detail-section--chat")).toBeNull();
+      expect(container.querySelector("[data-testid='task-chat-tab']")).toBeNull();
       expect(container.querySelector(".detail-activity")).toBeNull();
       expect(container.querySelector("[data-testid='agent-log-viewer']")).toBeNull();
 
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      expect(container.querySelector(".activity-segmented-control")).toBeNull();
+      expect(container.querySelector(".activity-segment")).toBeNull();
+      expect(activityViewLabels()).toEqual(["Live", "Feed", "Raw"]);
+      expectActivityView("current");
+      selectActivityView("feed");
       expect(container.querySelector(".detail-activity")).toBeTruthy();
-      expect(screen.getByRole("tab", { name: "Feed" })).toHaveAttribute("aria-selected", "true");
+      expectActivityView("feed");
     });
 
     it("switches to Feed segment via Activity tab and shows activity feed", () => {
@@ -491,14 +535,14 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
-      // Click Activity tab — Activity is the default subview
+      // Select Activity before asserting its segmented controls
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
       // Activity section should be visible
       expect(container.querySelector(".detail-activity")).toBeTruthy();
@@ -522,14 +566,14 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
-      // Click Activity tab — Activity is the default subview
+      // Select Activity before asserting its segmented controls
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
       const activityList = container.querySelector(".detail-activity-list");
       expect(activityList).toBeTruthy();
@@ -560,13 +604,13 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
       const actions = Array.from(container.querySelectorAll(".detail-log-action")).map((entry) => entry.textContent);
       const outcomes = Array.from(container.querySelectorAll(".detail-log-outcome")).map((entry) => entry.textContent);
@@ -587,13 +631,13 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
       const actions = container.querySelectorAll(".detail-log-action");
       const outcomes = container.querySelectorAll(".detail-log-outcome");
@@ -626,14 +670,14 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
-      // Click Activity tab — Activity is the default subview
+      // Select Activity before asserting its segmented controls
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
 
       // Activity section should be visible
       expect(container.querySelector(".detail-activity")).toBeTruthy();
@@ -656,7 +700,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -665,19 +709,19 @@ describe("TaskDetailModal", () => {
       expect(container.querySelector(".markdown-body")).toBeTruthy();
       expect(container.querySelector(".detail-activity")).toBeNull();
 
-      // Switch to Activity tab (Feed segment is default)
+      // Select Activity, then Feed segment
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
       expect(container.querySelector(".detail-activity")).toBeTruthy();
       expect(container.querySelector(".markdown-body")).toBeNull();
 
       // Switch to Raw Activity segment within Activity tab
-      fireEvent.click(screen.getByText("Raw Logs"));
+      selectActivityView("raw-logs");
       expect(container.querySelector("[data-testid='agent-log-viewer']")).toBeTruthy();
       expect(container.querySelector(".detail-activity")).toBeNull();
 
       // Switch back to Feed segment within Activity tab.
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
       expect(container.querySelector(".detail-activity")).toBeTruthy();
       expect(container.querySelector("[data-testid='agent-log-viewer']")).toBeNull();
 
@@ -704,18 +748,22 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       // Click Activity tab, then Raw Activity segment
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
-      fireEvent.click(screen.getByText("Raw Logs"));
+    selectActivityView("feed");
+      selectActivityView("raw-logs");
 
-      // Agent log viewer should appear
+      // Agent log viewer should appear with one Raw fullscreen affordance and no duplicate Activity expand toggle.
       expect(container.querySelector("[data-testid='agent-log-viewer']")).toBeTruthy();
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
+      expect(screen.getAllByTestId("agent-log-fullscreen-toggle")).toHaveLength(1);
+      expect(screen.getByTestId("agent-log-fullscreen-toggle")).toHaveAttribute("aria-label", "Expand agent log to full screen");
+      expect(container.querySelector(".activity-toolbar")).toBeNull();
       // Definition content should be hidden
       expect(container.querySelector(".markdown-body")).toBeNull();
 
@@ -739,23 +787,23 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
-      // Default: Activity tab active → enabled should be false
+      // Default: planner Chat active → Raw Logs fetching stays disabled
       const initialCall = mockUseAgentLogs.mock.calls[mockUseAgentLogs.mock.calls.length - 1];
       expect(initialCall[1]).toBe(false);
 
-      // Switch to Activity tab (Feed segment is default) — enabled should still be false
+      // Select Activity and Feed — Raw Logs fetching stays disabled
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
       const afterLogsClick = mockUseAgentLogs.mock.calls[mockUseAgentLogs.mock.calls.length - 1];
       expect(afterLogsClick[1]).toBe(false);
 
       // Switch to Raw Activity segment — enabled should become true
-      fireEvent.click(screen.getByText("Raw Logs"));
+      selectActivityView("raw-logs");
       const afterAgentLog = mockUseAgentLogs.mock.calls[mockUseAgentLogs.mock.calls.length - 1];
       expect(afterAgentLog[1]).toBe(true);
     });
@@ -768,7 +816,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -792,7 +840,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -828,22 +876,25 @@ describe("TaskDetailModal", () => {
       const mobileBodyRule = getCssRuleBlock(mobileCss, ".detail-body--chat");
       const mobileSectionRule = getCssRuleBlock(mobileCss, ".detail-section--chat");
 
-      expect(bodyRule).toContain("display: flex");
-      expect(bodyRule).toContain("flex-direction: column");
-      expect(bodyRule).toContain("min-height: 0");
-      expect(bodyRule).toContain("overflow-y: hidden");
+      expectBaseRule(css, ".detail-body--planner-chat", "display: flex");
+      expectBaseRule(css, ".detail-body--planner-chat", "flex-direction: column");
+      expectBaseRule(css, ".detail-body--planner-chat", "min-height: 0");
+      expectBaseRule(css, ".detail-body--planner-chat", "overflow-y: hidden");
       expect(sectionRule).toContain("display: flex");
       expect(sectionRule).toContain("flex-direction: column");
       expect(sectionRule).toContain("flex: 1");
       expect(sectionRule).toContain("min-height: 0");
-      expect(mobileBodyRule).toContain("overflow-y: hidden");
-      expect(mobileBodyRule).toContain("min-height: 0");
+      expectBaseRule(mobileCss, ".detail-body--chat", "overflow-y: hidden");
+      expectBaseRule(mobileCss, ".detail-body--chat", "min-height: 0");
       expect(mobileSectionRule).toContain("flex: 1");
       expect(mobileSectionRule).toContain("min-height: 0");
     });
 
-    it("FN-6370/FN-6517 defines expanded chat chrome CSS for desktop and mobile", () => {
+    it("FN-6370/FN-7351/FN-7386 defines expanded Activity chrome and overlay CSS for desktop and mobile", () => {
       const css = readDashboardStylesSource();
+      const activityOverlayRule = getCssRuleBlock(css, ".activity-expand-toggle--overlay");
+      const mobileCss = css.slice(css.indexOf("@media (max-width: 768px)"));
+
       const expandedTitleRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-title-row");
       const expandedMetaRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-meta");
       const expandedTabsRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-tabs");
@@ -851,25 +902,33 @@ describe("TaskDetailModal", () => {
       const expandedHeaderRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .modal-header");
       const expandedBodyRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-body--chat");
       const expandedSectionRule = getCssRuleBlock(css, ".task-detail-content--chat-expanded .detail-section--chat");
-      const mobileCss = css.slice(css.indexOf("@media (max-width: 768px)"));
       const mobileTitleRule = getCssRuleBlock(mobileCss, ".task-detail-content--chat-expanded .detail-title-row");
       const mobileTabsRule = getCssRuleBlock(mobileCss, ".task-detail-content--chat-expanded .detail-tabs");
       const mobileActionsRule = getCssRuleBlock(mobileCss, ".task-detail-content--chat-expanded .modal-actions");
 
+      expect(css).not.toContain(".activity-toolbar");
+      expect(css).not.toContain("activity-toolbar--expand-only");
+      expect(css).toContain(".detail-activity {\n  position: relative;\n  padding-inline-end: calc(var(--space-2xl) + var(--space-md));\n}");
+      expect(activityOverlayRule).toContain("position: absolute");
+      expect(activityOverlayRule).toContain("top: var(--space-md)");
+      expect(activityOverlayRule).toContain("right: var(--space-md)");
+      expect(activityOverlayRule).toContain("z-index: 3");
+      expect(mobileCss).toContain("  .detail-activity {\n    padding-inline-end: calc(var(--space-2xl) + var(--space-lg));\n  }");
+      expect(mobileCss).toContain("  .activity-expand-toggle--overlay {\n    top: var(--space-sm);\n    right: var(--space-sm);\n  }");
       expect(expandedTitleRule).not.toContain("display: none");
       expect(expandedMetaRule).toContain("display: none");
-      expect(expandedTabsRule).toContain("display: none");
+      expect(expandedTabsRule).toContain("display: flex");
       expect(expandedActionsRule).toContain("display: none");
       expect(expandedHeaderRule).toContain("justify-content: space-between");
       expect(expandedBodyRule).toContain("flex: 1");
       expect(expandedBodyRule).toContain("min-height: 0");
       expect(expandedSectionRule).toContain("margin-top: 0");
       expect(mobileTitleRule).not.toContain("display: none");
-      expect(mobileTabsRule).toContain("display: none");
+      expect(mobileTabsRule).toContain("display: flex");
       expect(mobileActionsRule).toContain("display: none");
     });
 
-    it("FN-6370/FN-6517 expands and collapses chat without leaving chrome hidden", () => {
+    it("FN-6370/FN-6517 expands and collapses Activity Live without leaving chrome hidden", () => {
       const { container } = render(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent" })}
@@ -877,7 +936,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -885,6 +944,10 @@ describe("TaskDetailModal", () => {
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       const content = container.querySelector(".task-detail-content");
       const titleRow = container.querySelector(".detail-title-row");
+      const liveToggle = screen.getByTestId("task-chat-expand-toggle");
+      expect(liveToggle).toHaveClass("task-chat-expand-toggle--overlay");
+      expect(liveToggle.closest(".activity-toolbar")).toBeNull();
+      expect(container.querySelector(".activity-toolbar")).toBeNull();
       expect(content).not.toHaveClass("task-detail-content--chat-expanded");
       expect(titleRow).toHaveTextContent("FN-099");
       expect(container.querySelector(".detail-tabs")).toBeTruthy();
@@ -896,7 +959,7 @@ describe("TaskDetailModal", () => {
       expect(titleRow).toHaveTextContent("In Progress");
       expect(container.querySelector(".detail-tabs")).toBeTruthy();
       expect(container.querySelector(".modal-actions")).toBeTruthy();
-      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Collapse chat");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Collapse activity");
       expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-pressed", "true");
 
       fireEvent.click(screen.getByTestId("task-chat-expand-toggle"));
@@ -904,20 +967,102 @@ describe("TaskDetailModal", () => {
       expect(titleRow).toHaveTextContent("FN-099");
       expect(container.querySelector(".detail-tabs")).toBeTruthy();
       expect(container.querySelector(".modal-actions")).toBeTruthy();
-      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand chat to full modal");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand activity to full modal");
       expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-pressed", "false");
     });
 
-    it("FN-7320 removes branch group chrome only while Activity chat is expanded", () => {
-      const branchContext = { groupId: "BG-7320", source: "planning", assignmentMode: "shared" } as const;
+    it("FN-7325 keeps Activity expansion available and sticky across Live, Feed, and Raw Logs", () => {
       const { container } = render(
         <TaskDetailModal
-          task={makeTask({ prompt: "# Hello\n\nContent", branchContext })}
+          task={makeTask({
+            prompt: "# Hello\n\nContent",
+            log: [{ timestamp: "2026-01-01T00:00:00Z", action: "Expanded feed entry", outcome: "visible" }],
+          })}
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const content = container.querySelector(".task-detail-content");
+      expect(screen.getByTestId("task-planner-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand planner chat");
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      expectActivityView("current");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand activity to full modal");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveClass("task-chat-expand-toggle--overlay");
+      expect(screen.getByTestId("task-chat-expand-toggle").closest(".activity-toolbar")).toBeNull();
+      expect(container.querySelector(".activity-toolbar")).toBeNull();
+
+      fireEvent.click(screen.getByTestId("task-chat-expand-toggle"));
+      expect(content).toHaveClass("task-detail-content--chat-expanded");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Collapse activity");
+
+      selectActivityView("feed");
+      expect(content).toHaveClass("task-detail-content--chat-expanded");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveClass("activity-expand-toggle--overlay");
+      expect(screen.getByTestId("task-chat-expand-toggle").closest(".activity-toolbar")).toBeNull();
+      expect(screen.getByText("Expanded feed entry")).toBeInTheDocument();
+      expect(container.querySelector(".detail-activity-list")).toBeTruthy();
+
+      selectActivityView("raw-logs");
+      expect(content).toHaveClass("task-detail-content--chat-expanded");
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
+      expect(screen.getByTestId("agent-log-fullscreen-toggle")).toHaveAttribute("aria-label", "Expand agent log to full screen");
+      expect(screen.getAllByTestId("agent-log-fullscreen-toggle")).toHaveLength(1);
+      expect(container.querySelector("[data-testid='agent-log-viewer']")).toBeTruthy();
+    });
+
+    it("FN-7325 resets Activity expansion on task changes but preserves legacy logs routing", () => {
+      const { container, rerender } = render(
+        <TaskDetailContent
+          task={makeTask({ id: "FN-099", prompt: "# Hello\n\nContent" })}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+          addToast={noop}
+          initialTab="chat"
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("task-chat-expand-toggle"));
+      expect(container.querySelector(".task-detail-content")).toHaveClass("task-detail-content--chat-expanded");
+
+      rerender(
+        <TaskDetailContent
+          task={makeTask({ id: "FN-100", prompt: "# Next\n\nContent" })}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+          addToast={noop}
+          initialTab="logs"
+        />,
+      );
+
+      expect(container.querySelector(".task-detail-content")).not.toHaveClass("task-detail-content--chat-expanded");
+      expectActivityView("feed");
+      expect(screen.getByTestId("task-chat-expand-toggle")).toHaveAttribute("aria-label", "Expand activity to full modal");
+    });
+
+    it("FN-7320 removes branch group chrome only while Activity is expanded", () => {
+      const branchContext = { groupId: "BG-7320", source: "planning", assignmentMode: "shared" } as const;
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({ prompt: "# Hello\n\nContent", branchContext })}
+          taskDetailChatFirst
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -926,7 +1071,9 @@ describe("TaskDetailModal", () => {
       expect(content).not.toHaveClass("task-detail-content--chat-expanded");
       expect(screen.getByTestId("mock-branch-group-card")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Mock branch group toggle BG-7320" })).toBeInTheDocument();
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
 
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       fireEvent.click(screen.getByTestId("task-chat-expand-toggle"));
       expect(content).toHaveClass("task-detail-content--chat-expanded");
       expect(screen.queryByTestId("mock-branch-group-card")).toBeNull();
@@ -938,20 +1085,23 @@ describe("TaskDetailModal", () => {
       expect(screen.getByRole("button", { name: "Mock branch group toggle BG-7320" })).toBeInTheDocument();
     });
 
-    it("FN-7320 expands Activity chat for tasks without branch groups without rendering branch shells", () => {
+    it("FN-7320 expands Activity for tasks without branch groups without rendering branch shells", () => {
       const { container } = render(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent", branchContext: undefined })}
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       expect(screen.queryByTestId("mock-branch-group-card")).toBeNull();
+      expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       fireEvent.click(screen.getByTestId("task-chat-expand-toggle"));
       expect(container.querySelector(".task-detail-content")).toHaveClass("task-detail-content--chat-expanded");
       expect(screen.queryByTestId("mock-branch-group-card")).toBeNull();
@@ -965,7 +1115,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
           embedded
           initialTab="chat"
@@ -987,14 +1137,14 @@ describe("TaskDetailModal", () => {
       expect(container.querySelector(".modal-actions")).toBeTruthy();
     });
 
-    it("FN-6370 resets expanded chat when the active tab changes", () => {
+    it("FN-6370 resets expanded Activity when the active tab changes", () => {
       const { container, rerender } = render(
         <TaskDetailContent
           task={makeTask({ prompt: "# Hello\n\nContent" })}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
           initialTab="chat"
         />,
@@ -1010,9 +1160,9 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
-          initialTab="logs"
+          initialTab="definition"
         />,
       );
 
@@ -1020,7 +1170,7 @@ describe("TaskDetailModal", () => {
       expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
     });
 
-    it("FN-6370 resets expanded chat when entering edit mode", () => {
+    it("FN-6370 resets expanded Activity when entering edit mode", () => {
       const { container } = render(
         <TaskDetailModal
           task={makeTask({ column: "triage", prompt: "# Hello\n\nContent" })}
@@ -1028,7 +1178,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -1042,45 +1192,52 @@ describe("TaskDetailModal", () => {
       expect(screen.queryByTestId("task-chat-expand-toggle")).toBeNull();
     });
 
-    it("FN-6532 defaults to Activity first while preserving explicit tab requests", () => {
+    it("FN-6532 restores planner Chat first when Chat-first is enabled while preserving explicit Activity requests", () => {
       const { container, rerender } = render(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent" })}
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>(".detail-tab"));
-      expect(tabs.map((tab) => tab.textContent)).toEqual(expect.arrayContaining(["Activity", "Plan"]));
-      expect(tabs[0]).toHaveTextContent("Activity");
-      const chatTab = screen.getByRole("button", { name: "Activity" });
+      expect(tabs.map((tab) => tab.textContent)).toEqual(expect.arrayContaining(["Chat", "Activity", "Plan"]));
+      expect(tabs[0]).toHaveTextContent("Chat");
+      expect(tabs[1]).toHaveTextContent("Activity");
+      const plannerChatTab = screen.getByRole("button", { name: "Chat" });
+      const activityTab = screen.getByRole("button", { name: "Activity" });
       const definitionTab = screen.getByRole("button", { name: "Plan" });
-      expect(chatTab.compareDocumentPosition(definitionTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(chatTab).toHaveClass("detail-tab-active");
+      expect(plannerChatTab.compareDocumentPosition(activityTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(activityTab.compareDocumentPosition(definitionTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(plannerChatTab).toHaveClass("detail-tab-active");
+      expect(activityTab).not.toHaveClass("detail-tab-active");
       expect(definitionTab).not.toHaveClass("detail-tab-active");
-      expect(container.querySelector(".detail-section--chat [data-testid='task-chat-tab']")).toBeTruthy();
+      expect(container.querySelector(".detail-section--planner-chat [data-testid='task-planner-chat-panel']")).toBeTruthy();
+      expect(container.querySelector(".detail-section--chat [data-testid='task-chat-tab']")).toBeNull();
 
       rerender(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent" })}
           initialTab="logs"
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       expect(screen.getByRole("button", { name: "Activity" })).toHaveClass("detail-tab-active");
-      expect(screen.getByRole("tab", { name: "Feed" })).toHaveAttribute("aria-selected", "true");
-      expect(container.querySelector(".detail-tabs .detail-tab:first-child")).toHaveTextContent("Activity");
+      expectActivityView("feed");
+      expect(container.querySelector(".detail-tabs .detail-tab:first-child")).toHaveTextContent("Chat");
       expect(container.querySelector(".detail-section--chat")).toBeNull();
       expect(container.querySelector(".detail-activity")).toBeTruthy();
     });
@@ -1098,7 +1255,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -1118,25 +1275,30 @@ describe("TaskDetailModal", () => {
       const { container } = render(
         <TaskDetailModal
           task={makeTask({ prompt: "# Hello\n\nContent" })}
+          taskDetailChatFirst
           onClose={noop}
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
+      expect(container.querySelector(".detail-body--planner-chat")).toBeTruthy();
+      expect(container.querySelector(".detail-section--planner-chat")).toBeTruthy();
+      expect(container.querySelector(".detail-body--chat")).toBeNull();
+      expect(container.querySelector(".detail-section--chat")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       const chatBody = container.querySelector(".detail-body--chat");
       const chatSection = container.querySelector(".detail-section--chat");
       expect(chatBody).toBeTruthy();
       expect(chatBody).not.toHaveClass("detail-body--agent-log");
       expect(chatSection).toBeTruthy();
       expect(chatSection!.querySelector("[data-testid='task-chat-tab']")).toBeTruthy();
-
-      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
-      fireEvent.click(screen.getByText("Raw Logs"));
+    selectActivityView("feed");
+      selectActivityView("raw-logs");
       expect(container.querySelector(".detail-body--chat")).toBeNull();
       expect(container.querySelector(".detail-section--chat")).toBeNull();
       expect(container.querySelector(".detail-body--agent-log")).toBeTruthy();
@@ -1150,7 +1312,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -1173,7 +1335,7 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
@@ -1183,10 +1345,10 @@ describe("TaskDetailModal", () => {
 
       // Switch to Activity tab, then Raw Activity segment
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    selectActivityView("feed");
       expect(container.querySelector(".detail-body--agent-log")).toBeNull(); // Feed segment default
 
-      fireEvent.click(screen.getByText("Raw Logs"));
+      selectActivityView("raw-logs");
 
       // detail-body should now have the agent-log modifier class
       expect(container.querySelector(".detail-body--agent-log")).toBeTruthy();
@@ -1206,15 +1368,15 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       // Switch to Activity tab, then Raw Activity segment
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
-      fireEvent.click(screen.getByText("Raw Logs"));
+    selectActivityView("feed");
+      selectActivityView("raw-logs");
 
       // The section wrapping AgentLogViewer should have the full-height class
       const section = container.querySelector(".detail-section--agent-log");
@@ -1230,15 +1392,15 @@ describe("TaskDetailModal", () => {
           onMoveTask={noopMove}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
-          onOpenDetail={noopOpenDetail}
+        onOpenDetail={noopOpenDetail}
           addToast={noop}
         />,
       );
 
       // Switch to Activity tab, then Raw Activity segment first
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
-      fireEvent.click(screen.getByText("Raw Logs"));
+    selectActivityView("feed");
+      selectActivityView("raw-logs");
       expect(container.querySelector(".detail-body--agent-log")).toBeTruthy();
 
       // Now enter edit mode via the pencil button in the header

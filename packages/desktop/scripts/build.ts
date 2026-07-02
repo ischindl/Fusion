@@ -1,8 +1,11 @@
 import { build } from "esbuild";
 import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { buildDashboardClient, packageRoot, workspaceRoot } from "./workspace-tools";
-const dashboardClientDir = join(workspaceRoot, "packages", "dashboard", "dist", "client");
+import { buildCore, buildDashboard, buildDashboardClient, buildEngine, packageRoot, stageDesktopDeploy, workspaceRoot } from "./workspace-tools";
+const dashboardRoot = join(workspaceRoot, "packages", "dashboard");
+const dashboardClientDir = join(dashboardRoot, "dist", "client");
+const dashboardRegistryManifestSource = join(dashboardRoot, "src", "registry-manifest.json");
+const dashboardRegistryManifestDist = join(dashboardRoot, "dist", "registry-manifest.json");
 const desktopDistDir = join(packageRoot, "dist");
 const desktopClientDistDir = join(desktopDistDir, "client");
 // FNXC:DesktopBuild 2026-06-25-09:45:
@@ -28,13 +31,27 @@ const mainExternals = sharedExternals;
 const preloadExternals = sharedExternals;
 
 async function ensureDashboardBuild(): Promise<void> {
-  console.log("[desktop:build] Building dashboard client...");
+  // FNXC:DesktopBuild 2026-07-01-11:35:
+  // Windows release packaging invokes only `@fusion/desktop build` before electron-builder.
+  // Build the dashboard server dist and copy registry-manifest.json here so the packaged
+  // embedded runtime never depends on a separate `@fusion/dashboard build` workflow step.
+  console.log("[desktop:build] Building dashboard server runtime...");
+  await buildDashboard();
+  await cp(dashboardRegistryManifestSource, dashboardRegistryManifestDist);
+
+  console.log("[desktop:build] Building dashboard client for file:// desktop loading...");
   await buildDashboardClient();
 
   try {
     await stat(dashboardClientDir);
   } catch {
     throw new Error(`Dashboard client assets not found: ${dashboardClientDir}`);
+  }
+
+  try {
+    await stat(dashboardRegistryManifestDist);
+  } catch {
+    throw new Error(`Dashboard registry manifest not found: ${dashboardRegistryManifestDist}`);
   }
 }
 
@@ -50,6 +67,12 @@ async function buildElectronEntrypoints(): Promise<void> {
       platform: "node",
       target: "node22",
       sourcemap: true,
+      // FNXC:DesktopBuild 2026-07-01-07:31:
+      // Windows Electron main output is ESM, but electron-updater loads CJS deps
+      // such as fs-extra/graceful-fs that dynamically require built-ins. Keep all
+      // npm packages external so Node/Electron evaluates those CJS modules natively
+      // instead of esbuild emitting a __require("fs") trap in dist/main.js.
+      packages: "external",
       external: mainExternals,
       logLevel: "info",
     }),
@@ -79,13 +102,36 @@ async function copyDashboardClient(): Promise<void> {
   await cp(dashboardClientDir, desktopClientDistDir, { recursive: true });
 }
 
+// FNXC:DesktopBuild 2026-07-01-19:45:
+// Compile the workspace @fusion/* packages the embedded "Local" runtime imports
+// at runtime (@fusion/core, @fusion/engine) so `@fusion/desktop build` alone
+// produces a complete, packageable tree — no separate root `pnpm build` required.
+// engine/dist and core/dist are tsc-emitted + gitignored; without this the
+// desktop-windows.yml workflow_dispatch build shipped an empty engine/dist and
+// the packaged app crashed on Local mode with ERR_MODULE_NOT_FOUND for
+// ...app.asar/node_modules/@fusion/engine. Core must build before engine
+// (engine depends on @fusion/core). Dashboard + its runtime plugins + plugin-sdk
+// are already built by ensureDashboardBuild().
+async function ensureEmbeddedRuntimeBuild(): Promise<void> {
+  console.log("[desktop:build] Building @fusion/core and @fusion/engine runtime dist...");
+  await buildCore();
+  await buildEngine();
+}
+
 async function main(): Promise<void> {
   await rm(desktopDistDir, { recursive: true, force: true });
   await mkdir(desktopDistDir, { recursive: true });
 
+  await ensureEmbeddedRuntimeBuild();
   await ensureDashboardBuild();
   await buildElectronEntrypoints();
   await copyDashboardClient();
+
+  // FNXC:DesktopPackaging 2026-07-01-21:15:
+  // Stage the complete flat production closure last (after all dist exists) so
+  // electron-builder can package it via --projectDir instead of its pnpm collector,
+  // which drops `deduped` subtrees and left the embedded runtime missing deps.
+  await stageDesktopDeploy();
 
   console.log("[desktop:build] Desktop build complete");
 }

@@ -8132,7 +8132,7 @@ describe("recoverDoneTaskMergeMetadata", () => {
     manager.stop();
   });
 
-  it("skips done-task metadata repair when branch diff is missing from merge proof", async () => {
+  it("accepts done-task metadata repair when stale branch residue is outside the landed proof", async () => {
     const store = createMockStore();
     const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
 
@@ -8162,8 +8162,6 @@ describe("recoverDoneTaskMergeMetadata", () => {
       if (cmd.includes("log -1 --format=%H%x1f%s%x1f%b") && cmd.includes("merge1")) return "merge1\u001ffix(FN-7231): stale proof\u001fFusion-Task-Id: FN-7231" as any;
       if (cmd.includes("show --shortstat --format=") && cmd.includes("merge1")) return "1 file changed, 1 insertion(+)" as any;
       if (cmd.includes("show --name-only --format=") && cmd.includes("merge1")) return "packages/engine/src/executor.ts\n" as any;
-      if (cmd.includes("rev-parse --verify")) return "ok\n" as any;
-      if (cmd.includes("git diff --name-only") && cmd.includes("main...fusion/fn-7231")) return "packages/dashboard/app/TaskChatTab.css\n" as any;
       if (cmd.includes("Fusion-Task-Id: FN-7231")) return "merge1\u001ffix(FN-7231): stale proof\n" as any;
       return "" as any;
     });
@@ -8172,10 +8170,11 @@ describe("recoverDoneTaskMergeMetadata", () => {
 
     expect(repaired).toBe(0);
     expect(store.updateTask).not.toHaveBeenCalled();
-    expect(store.logEntry).toHaveBeenCalledWith(
+    expect(store.logEntry).not.toHaveBeenCalledWith(
       "FN-7231",
-      expect.stringContaining("invalid workflow merge proof (branch-diff-missing-from-merge-proof)"),
+      expect.stringContaining("invalid workflow merge proof"),
     );
+    expect(mockedExecSync.mock.calls.some(([cmd]) => String(cmd).includes("git diff --name-only"))).toBe(false);
 
     mockedExecSync.mockReset();
     manager.stop();

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { AGENT_PERMISSION_POLICY_ACTION_CATEGORIES } from "@fusion/core";
-import type { AgentPermissionPolicyRules } from "@fusion/core";
+import type { AgentPermissionPolicy, AgentPermissionPolicyRules } from "@fusion/core";
 import { AgentPermissionPolicyEditor } from "../../AgentPermissionPolicyEditor";
 import { AgentProvisioningPolicyEditor } from "../../AgentProvisioningPolicyEditor";
 import type { SectionBaseProps } from "./context";
@@ -22,9 +22,9 @@ export function AgentPermissionsSection({ scopeBanner, form, setForm }: AgentPer
       <div className="form-group">
         <small className="settings-muted">{t("settings.agentPermissions.perAgentSettingsOverrideProjectDefaultsEachCategory", "Per-agent settings override project defaults. Each category controls a separate approval gate.")}</small>
       </div>
-      <AgentPermissionPolicyEditor mode="project-default" value={form.defaultAgentPermissionPolicy ? { presetId: "custom", rules: toCompleteAgentPermissionRules(form.defaultAgentPermissionPolicy.rules) } : { presetId: "custom", rules: toCompleteAgentPermissionRules() }} onChange={(next) => setForm((f) => ({
+      <AgentPermissionPolicyEditor mode="project-default" value={form.defaultAgentPermissionPolicy ? { presetId: "custom", rules: toCompleteAgentPermissionRules(form.defaultAgentPermissionPolicy.rules), ...(form.defaultAgentPermissionPolicy.toolRules ? { toolRules: form.defaultAgentPermissionPolicy.toolRules } : {}) } as AgentPermissionPolicy : { presetId: "custom", rules: toCompleteAgentPermissionRules() }} onChange={(next) => setForm((f) => ({
             ...f,
-            defaultAgentPermissionPolicy: { rules: toCompleteAgentPermissionRules(next?.rules) },
+            defaultAgentPermissionPolicy: { rules: toCompleteAgentPermissionRules(next?.rules), ...(next?.toolRules ? { toolRules: next.toolRules } : {}) },
         }))}/>
 
       <h4 className="settings-section-heading">{t("settings.agentPermissions.agentProvisioningApprovals", "Agent Provisioning Approvals")}</h4>

@@ -4164,6 +4164,7 @@ export default interface Resources {
         "local": "Local Docker",
         "remote": "Remote: {{host}}"
       },
+      "dockerHostLabel": "Host",
       "dockerHostConfig": "Host Config",
       "dockerHostPath": "Host path",
       "dockerHostUrl": "Docker host URL",
@@ -5217,6 +5218,7 @@ export default interface Resources {
         "override": "Per-task override",
         "projectDefault": "Project default"
       },
+      "sourceLabel": "Routing source",
       "summarySection": "Routing Summary",
       "title": "Task Routing",
       "unavailablePolicy": "Unavailable-node policy",
@@ -7345,9 +7347,13 @@ export default interface Resources {
       "executionMode": {
         "ariaLabel": "Execution mode: {{mode}}",
         "fast": "Fast",
+        "replanMessage": "Changing execution mode for this task will move it back to Planning so Fusion can rebuild the plan for {{mode}} mode.",
+        "replanTitle": "Change execution mode and replan?",
+        "replanning": "Execution mode updated to {{mode}} — {{id}} returned to Planning for replanning",
         "standard": "Standard",
         "updated": "Execution mode updated to {{mode}}"
       },
+      "executionModeLabel": "Execution mode",
       "executionModeFast": "Fast",
       "executionModeStandard": "Standard",
       "executionStatsAria": "Task execution statistics",
@@ -7653,7 +7659,7 @@ export default interface Resources {
       },
       "timingEvents": "Timing events",
       "title": {
-        "summarize": "Summarize as title",
+        "summarize": "Summarize",
         "summarizeFailed": "Failed to summarize title: {{error}}",
         "summarizeSuccess": "Title updated from description"
       },
@@ -8464,7 +8470,6 @@ export default interface Resources {
       "gateBlocks": "Gate (blocks)",
       "gateMode": "Gate mode",
       "insertTemplate": "Insert template {{name}}",
-      "interpreterOnly": "This workflow branches, so it runs on the graph interpreter — it can't compile to the linear step engine, but it will still run.",
       "joinAll": "All branches",
       "joinAny": "Any branch",
       "joinMode": "Join mode",

@@ -26,6 +26,8 @@ describe("scope anchors", () => {
     expect(isProjectSettingsKey("maxConcurrent")).toBe(true);
     expect(isProjectSettingsKey("integrationBranch")).toBe(true);
     expect(isProjectSettingsKey("enabledBuiltinWorkflowIds")).toBe(true);
+    expect(isProjectSettingsKey("githubLinkImportedIssuesToTracking")).toBe(true);
+    expect(isGlobalSettingsKey("githubLinkImportedIssuesToTracking")).toBe(false);
   });
 
   it("every MODEL_LANE_KEYS entry is a project settings key", () => {
@@ -214,6 +216,23 @@ describe("splitSettingsSave", () => {
     expect(projectPatch).toEqual({ maxConcurrent: 7 });
   });
 
+  it("routes imported GitHub issue linking only to project settings", () => {
+    const initialScopedValues = {
+      global: {},
+      project: { githubLinkImportedIssuesToTracking: false },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { githubLinkImportedIssuesToTracking: true },
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "general",
+    });
+
+    expect(globalPatch).toEqual({});
+    expect(projectPatch).toEqual({ githubLinkImportedIssuesToTracking: true });
+  });
+
   it("routes shared mcpServers only to the active MCP scope", () => {
     expect(isGlobalSettingsKey("mcpServers")).toBe(true);
     expect(isProjectSettingsKey("mcpServers")).toBe(true);
@@ -237,6 +256,62 @@ describe("splitSettingsSave", () => {
     });
     expect(projectResult.globalPatch).toEqual({});
     expect(projectResult.projectPatch).toEqual({ mcpServers: projectMcp });
+  });
+
+  it("maps flattened remote access fields to the canonical global remoteAccess patch", () => {
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: {
+        remoteActiveProvider: "tailscale",
+        remoteTailscaleEnabled: false,
+        remoteTailscaleHostname: "tail.example.ts.net",
+        remoteTailscaleTargetPort: 4040,
+        remoteTailscaleAcceptRoutes: true,
+        remoteCloudflareEnabled: true,
+        remoteCloudflareQuickTunnel: false,
+        remoteCloudflareTunnelName: "demo-tunnel",
+        remoteCloudflareTunnelToken: "cf-secret-token",
+        remoteCloudflareIngressUrl: "https://remote.example.com",
+        remoteShortLivedEnabled: true,
+        remoteShortLivedTtlMs: 120000,
+        remoteShortLivedMaxTtlMs: 86400000,
+        remoteRememberLastRunning: true,
+        remoteWasRunningOnShutdown: true,
+        remoteLastStartedProvider: "cloudflare",
+      },
+      initialValues: null,
+      initialScopedValues: { global: {}, project: {} } as never,
+      activeSection: "remote",
+    });
+
+    expect(projectPatch).toEqual({});
+    expect(globalPatch).toEqual({
+      remoteAccess: expect.objectContaining({
+        activeProvider: "tailscale",
+        providers: expect.objectContaining({
+          tailscale: expect.objectContaining({
+            enabled: true,
+            hostname: "tail.example.ts.net",
+            targetPort: 4040,
+            acceptRoutes: true,
+          }),
+          cloudflare: expect.objectContaining({
+            enabled: true,
+            quickTunnel: false,
+            tunnelName: "demo-tunnel",
+            tunnelToken: "cf-secret-token",
+            ingressUrl: "https://remote.example.com",
+          }),
+        }),
+        tokenStrategy: expect.objectContaining({
+          shortLived: expect.objectContaining({ enabled: true, ttlMs: 120000, maxTtlMs: 86400000 }),
+        }),
+        lifecycle: expect.objectContaining({
+          rememberLastRunning: true,
+          wasRunningOnShutdown: true,
+          lastRunningProvider: "cloudflare",
+        }),
+      }),
+    });
   });
 
   it("routes enabled built-in workflow ids as a changed project setting", () => {

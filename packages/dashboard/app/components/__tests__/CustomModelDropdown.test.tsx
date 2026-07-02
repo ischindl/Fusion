@@ -132,6 +132,39 @@ describe("CustomModelDropdown", () => {
     expect(onChange).toHaveBeenCalledWith("");
   });
 
+  it("renders eligible Claude CLI Sonnet 5 without stale direct-Anthropic favorite shells", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(
+      <CustomModelDropdown
+        label="Executor Model"
+        value="anthropic/claude-sonnet-5"
+        onChange={onChange}
+        models={[
+          ...MOCK_MODELS,
+          { provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)", reasoning: true, contextWindow: 1_000_000 },
+        ]}
+        favoriteModels={["anthropic/claude-sonnet-5", "pi-claude-cli/claude-sonnet-5"]}
+        onToggleModelFavorite={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Executor Model" })).toHaveTextContent("anthropic/claude-sonnet-5");
+
+    await user.click(screen.getByRole("button", { name: "Executor Model" }));
+    const portal = await screen.findByTestId("model-combobox-portal");
+    const options = within(portal).getAllByRole("option");
+    const cliSonnetOptions = options.filter((option) => option.textContent?.includes("Claude Sonnet 5 (CLI)"));
+
+    expect(cliSonnetOptions).toHaveLength(1);
+    expect(within(portal).queryByLabelText("Remove Claude Sonnet 5 from favorites")).toBeNull();
+    expect(within(portal).getByLabelText("Remove Claude Sonnet 5 (CLI) from favorites")).toBeTruthy();
+
+    await user.click(cliSonnetOptions[0]!);
+    expect(onChange).toHaveBeenCalledWith("pi-claude-cli/claude-sonnet-5");
+  });
+
   it("closes the portaled dropdown when clicking outside the trigger and menu", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
@@ -204,6 +237,216 @@ describe("CustomModelDropdown", () => {
     expect(portal.style.width).toBe("120px");
     expect(portal.style.top).toBe("196px");
     expect(portal.style.maxHeight).toBe("360px");
+  });
+
+  describe("Readable menu sizing", () => {
+    const setupBoundingRectMock = (rectValues: DOMRect) => {
+      const originalGetBCR = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = vi.fn(() => rectValues as DOMRect);
+      return () => {
+        Element.prototype.getBoundingClientRect = originalGetBCR;
+      };
+    };
+
+    const setupVisualViewportMock = (vv: { width: number; height: number; offsetTop: number; offsetLeft: number }) => {
+      const originalVV = window.visualViewport;
+      const mockVV = {
+        width: vv.width,
+        height: vv.height,
+        offsetTop: vv.offsetTop,
+        offsetLeft: vv.offsetLeft,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      };
+      Object.defineProperty(window, "visualViewport", {
+        writable: true,
+        configurable: true,
+        value: mockVV,
+      });
+      return () => {
+        Object.defineProperty(window, "visualViewport", {
+          writable: true,
+          configurable: true,
+          value: originalVV,
+        });
+      };
+    };
+
+    it("keeps trigger-width sizing unless readable width is requested", async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(1000);
+      const restore = setupBoundingRectMock({
+        top: 100,
+        left: 50,
+        bottom: 136,
+        width: 300,
+        height: 36,
+        right: 350,
+        x: 50,
+        y: 100,
+      } as DOMRect);
+
+      try {
+        const { unmount } = render(
+          <CustomModelDropdown
+            label="Executor Model"
+            value=""
+            onChange={onChange}
+            models={MOCK_MODELS}
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Executor Model" }));
+        expect((await screen.findByTestId("model-combobox-portal")).style.width).toBe("300px");
+        unmount();
+        document.body.innerHTML = "";
+
+        render(
+          <CustomModelDropdown
+            label="Executor Model"
+            value=""
+            onChange={onChange}
+            models={MOCK_MODELS}
+            menuWidth="readable"
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Executor Model" }));
+        const portal = await screen.findByTestId("model-combobox-portal");
+        expect(portal.style.width).toBe("480px");
+        expect(portal).toHaveAttribute("data-menu-width", "readable");
+      } finally {
+        restore();
+      }
+    });
+
+    it("clamps readable sizing inside the desktop viewport", async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(320);
+      const restore = setupBoundingRectMock({
+        top: 100,
+        left: 40,
+        bottom: 136,
+        width: 300,
+        height: 36,
+        right: 340,
+        x: 40,
+        y: 100,
+      } as DOMRect);
+
+      try {
+        render(
+          <CustomModelDropdown
+            label="Executor Model"
+            value=""
+            onChange={onChange}
+            models={MOCK_MODELS}
+            menuWidth="readable"
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Executor Model" }));
+        const portal = await screen.findByTestId("model-combobox-portal");
+        const left = parseFloat(portal.style.left);
+        const width = parseFloat(portal.style.width);
+
+        expect(width).toBe(288);
+        expect(left).toBe(16);
+        expect(left + width).toBeLessThanOrEqual(320 - 16);
+      } finally {
+        restore();
+      }
+    });
+
+    it("clamps readable sizing with visualViewport horizontal offsets", async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(800);
+      const vvCleanup = setupVisualViewportMock({
+        width: 500,
+        height: 600,
+        offsetTop: 0,
+        offsetLeft: 100,
+      });
+      const restore = setupBoundingRectMock({
+        top: 100,
+        left: 550,
+        bottom: 136,
+        width: 200,
+        height: 36,
+        right: 750,
+        x: 550,
+        y: 100,
+      } as DOMRect);
+
+      try {
+        render(
+          <CustomModelDropdown
+            label="Executor Model"
+            value=""
+            onChange={onChange}
+            models={MOCK_MODELS}
+            menuWidth="readable"
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Executor Model" }));
+        const portal = await screen.findByTestId("model-combobox-portal");
+        const left = parseFloat(portal.style.left);
+        const width = parseFloat(portal.style.width);
+
+        expect(width).toBe(320);
+        expect(left).toBe(264);
+        expect(left - 100).toBeGreaterThanOrEqual(16);
+        expect(left - 100 + width).toBeLessThanOrEqual(500 - 16);
+      } finally {
+        restore();
+        vvCleanup();
+      }
+    });
+
+    it("keeps long readable rows searchable, selectable, and favorite-aware", async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      const longModels = [
+        ...MOCK_MODELS,
+        {
+          provider: "anthropic-enterprise-cloud",
+          id: "claude-sonnet-4-5-20260701-extremely-long-production-model-id",
+          name: "Claude Sonnet 4.5 Enterprise Production with a Very Long Readable Name",
+          reasoning: true,
+          contextWindow: 200000,
+        },
+      ];
+
+      render(
+        <CustomModelDropdown
+          label="Executor Model"
+          value=""
+          onChange={onChange}
+          models={longModels}
+          favoriteModels={["anthropic-enterprise-cloud/claude-sonnet-4-5-20260701-extremely-long-production-model-id"]}
+          onToggleModelFavorite={vi.fn()}
+          menuWidth="readable"
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Executor Model" }));
+      const portal = await screen.findByTestId("model-combobox-portal");
+      await user.type(within(portal).getByPlaceholderText("Filter models…"), "enterprise production");
+
+      expect(within(portal).getByText("Claude Sonnet 4.5 Enterprise Production with a Very Long Readable Name")).toBeTruthy();
+      expect(within(portal).queryByText("No models found")).toBeNull();
+      expect(within(portal).getByLabelText("Remove Claude Sonnet 4.5 Enterprise Production with a Very Long Readable Name from favorites")).toBeTruthy();
+
+      await user.click(within(portal).getByText("Claude Sonnet 4.5 Enterprise Production with a Very Long Readable Name"));
+      expect(onChange).toHaveBeenCalledWith("anthropic-enterprise-cloud/claude-sonnet-4-5-20260701-extremely-long-production-model-id");
+    });
   });
 
 

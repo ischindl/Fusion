@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { ListView } from "../ListView";
 import type { Task, TaskDetail } from "@fusion/core";
 import { scopedKey } from "../../utils/projectStorage";
-import { BOARD_WORKFLOW_SELECTION_STORAGE_KEY } from "../../utils/boardWorkflowSelection";
+import { ALL_WORKFLOWS_BOARD_VIEW_ID, BOARD_WORKFLOW_SELECTION_STORAGE_KEY } from "../../utils/boardWorkflowSelection";
 import { loadAllAppCss } from "../../test/cssFixture";
 
 // Mock the API
@@ -29,6 +29,7 @@ vi.mock("../../api", () => ({
   fetchBoardWorkflows: vi.fn(() => new Promise(() => {})),
   rebuildTaskSpec: vi.fn().mockResolvedValue({}),
   refreshPrStatus: vi.fn().mockResolvedValue({}),
+  updateTask: vi.fn(),
   api: vi.fn().mockResolvedValue({ sessions: [] }),
 }));
 
@@ -161,12 +162,15 @@ vi.mock("../TaskDetailModal", () => ({
   TaskDetailContent: ({
     task,
     onOpenDetail,
+    onRequestClose,
   }: {
     task: Task | TaskDetail;
     onOpenDetail?: (task: Task | TaskDetail) => void;
+    onRequestClose?: () => void;
   }) => (
     <div data-testid="task-detail-content">
       <span>{task.id}</span>
+      <button type="button" onClick={() => onRequestClose?.()}>Close detail</button>
       {(task.dependencies ?? []).map((dependencyId) => (
         <button
           key={dependencyId}
@@ -197,7 +201,7 @@ vi.mock("../TaskDetailModal", () => ({
   ),
 }));
 
-import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, refreshPrStatus } from "../../api";
+import { fetchTaskDetail, batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, refreshPrStatus, updateTask } from "../../api";
 
 const mockConfirm = vi.fn();
 const mockConfirmWithChoice = vi.fn();
@@ -673,15 +677,18 @@ describe("ListView", () => {
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-003"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Refine" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Back to In Progress" })).toBeInTheDocument();
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-006"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-004"]') as HTMLElement, { clientX: 40, clientY: 50 });
-    expect(screen.queryByRole("menuitem", { name: "Refine" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
+    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-004" }), { origin: undefined, initialAction: "refine" });
 
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-004"]') as HTMLElement, { clientX: 40, clientY: 50 });
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
@@ -696,6 +703,7 @@ describe("ListView", () => {
     reviewRow.focus();
     fireEvent.keyDown(reviewRow, { key: "ContextMenu" });
     expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
 
     mockConfirm.mockResolvedValueOnce(true);
     fireEvent.contextMenu(document.querySelector('.list-row[data-id="FN-007"]') as HTMLElement, { clientX: 40, clientY: 50 });
@@ -707,6 +715,87 @@ describe("ListView", () => {
     expect(onPauseTask).not.toHaveBeenCalled();
     expect(onRetryTask).not.toHaveBeenCalled();
     expect(onArchiveTask).not.toHaveBeenCalled();
+    viewportSpy.mockRestore();
+  });
+
+  it("enables GitHub tracking from desktop and mobile list context menus without selecting rows", async () => {
+    const desktopViewportSpy = mockDesktopViewport();
+    const onOpenDetail = vi.fn();
+    const onTasksUpdated = vi.fn();
+    vi.mocked(updateTask).mockResolvedValueOnce(createMockTask({ id: "FN-020", title: "Desktop tracking", column: "todo", githubTracking: { enabled: true } as any }));
+    const desktopTasks = [createMockTask({ id: "FN-020", title: "Desktop tracking", column: "todo", githubTracking: undefined })];
+    const desktopRender = renderListView({ tasks: desktopTasks, onOpenDetail, onTasksUpdated });
+
+    const desktopRow = document.querySelector('.list-row[data-id="FN-020"]') as HTMLElement;
+    fireEvent.contextMenu(desktopRow, { clientX: 40, clientY: 50 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Enable GitHub tracking" }));
+
+    await waitFor(() => expect(updateTask).toHaveBeenCalledWith("FN-020", { githubTracking: { enabled: true } }, TEST_PROJECT_ID));
+    expect(onTasksUpdated).toHaveBeenCalledWith([expect.objectContaining({ id: "FN-020", githubTracking: { enabled: true } })]);
+    expect(mockAddToast).toHaveBeenCalledWith("Requested GitHub tracking issue creation", "info");
+    expect(onOpenDetail).not.toHaveBeenCalled();
+    expect(desktopRow).not.toHaveClass("list-row--selected");
+    desktopRender.unmount();
+    desktopViewportSpy.mockRestore();
+
+    vi.mocked(updateTask).mockResolvedValueOnce(createMockTask({ id: "FN-021", title: "Mobile tracking", column: "todo", githubTracking: { enabled: true } as any }));
+    vi.useFakeTimers();
+    const mobileViewportSpy = mockMobileViewport();
+    const mobileOnOpenDetail = vi.fn();
+    const mobileOnTasksUpdated = vi.fn();
+    renderListView({ tasks: [createMockTask({ id: "FN-021", title: "Mobile tracking", column: "todo", githubTracking: { enabled: false } as any })], onOpenDetail: mobileOnOpenDetail, onTasksUpdated: mobileOnTasksUpdated });
+
+    const mobileCard = document.querySelector('.list-card[data-id="FN-021"]') as HTMLElement;
+    fireEvent.pointerDown(mobileCard, { pointerType: "touch", pointerId: 1, clientX: 24, clientY: 32 });
+    act(() => {
+      vi.advanceTimersByTime(550);
+    });
+    fireEvent.pointerUp(mobileCard, { pointerType: "touch", pointerId: 1, clientX: 24, clientY: 32 });
+    fireEvent.click(mobileCard);
+    expect(mobileOnOpenDetail).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Enable GitHub tracking" }), { pointerType: "touch", pointerId: 2 });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(updateTask).toHaveBeenLastCalledWith("FN-021", { githubTracking: { enabled: true } }, TEST_PROJECT_ID);
+    expect(mobileOnTasksUpdated).toHaveBeenCalledWith([expect.objectContaining({ id: "FN-021", githubTracking: { enabled: true } })]);
+    expect(mobileOnOpenDetail).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    mobileViewportSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("shows refine for custom workflow complete-column rows", async () => {
+    const viewportSpy = mockDesktopViewport();
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "wf-custom",
+      workflows: [
+        {
+          id: "wf-custom",
+          name: "Custom",
+          columns: [
+            { id: "backlog", name: "Backlog", flags: { intake: true } },
+            { id: "complete", name: "Complete", flags: { complete: true } },
+            { id: "cold-storage", name: "Cold Storage", flags: { archived: true } },
+          ],
+        },
+      ],
+      taskWorkflowIds: { "FN-012": "wf-custom" },
+    });
+    const onOpenDetail = vi.fn();
+    const tasks = [createMockTask({ id: "FN-012", title: "Custom complete", column: "complete" as any, status: "done" })];
+
+    renderListView({ tasks, onOpenDetail, workflowColumnsEnabled: true, settingsLoaded: true });
+
+    await screen.findByText("Custom complete");
+    const row = document.querySelector('.list-row[data-id="FN-012"]') as HTMLElement;
+    expect(row).toBeInTheDocument();
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 50 });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Refine" }));
+
+    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-012" }), { origin: undefined, initialAction: "refine" });
     viewportSpy.mockRestore();
   });
 
@@ -764,7 +853,7 @@ describe("ListView", () => {
     viewportSpy.mockRestore();
   });
 
-  it("opens the task context menu from mobile card long-press without ordinary tap-to-open", () => {
+  it("opens the task context menu from mobile card long-press, selects the tapped action, and suppresses ordinary tap-to-open", async () => {
     vi.useFakeTimers();
     const viewportSpy = mockMobileViewport();
     const onOpenDetail = vi.fn();
@@ -785,8 +874,35 @@ describe("ListView", () => {
     expect(screen.getByRole("menuitem", { name: "Pause" })).toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Pause" }));
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Pause" }), { pointerType: "touch", pointerId: 2 });
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(onPauseTask).toHaveBeenCalledWith("FN-001");
+    expect(onPauseTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    viewportSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("opens refine from a mobile done-card long-press", () => {
+    vi.useFakeTimers();
+    const viewportSpy = mockMobileViewport();
+    const onOpenDetail = vi.fn();
+    const tasks = [createMockTask({ id: "FN-011", title: "Mobile done", column: "done", status: "done" })];
+
+    renderListView({ tasks, onOpenDetail, onDeleteTask: vi.fn(async () => createMockTask()) });
+
+    const card = document.querySelector('.list-card[data-id="FN-011"]') as HTMLElement;
+    fireEvent.pointerDown(card, { pointerType: "touch", pointerId: 1, clientX: 24, clientY: 32 });
+    act(() => {
+      vi.advanceTimersByTime(550);
+    });
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Refine" }), { pointerType: "touch", pointerId: 2 });
+
+    expect(onOpenDetail).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-011" }), { origin: "list-mobile", initialAction: "refine" });
+    expect(onOpenDetail).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     viewportSpy.mockRestore();
     vi.useRealTimers();
   });
@@ -1085,6 +1201,45 @@ describe("ListView", () => {
     mobileSpy.mockRestore();
   });
 
+  it("shows all workflows in ListView without submitting the aggregate sentinel", async () => {
+    const mockOnQuickCreate = vi.fn().mockResolvedValue({ id: "FN-new" });
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [
+        { id: "builtin:coding", name: "Coding", columns: [{ id: "triage", name: "Triage", flags: { intake: true } }, { id: "done", name: "Done", flags: { complete: true } }] },
+        { id: "wf-custom", name: "Custom", columns: [{ id: "backlog", name: "Backlog", flags: { intake: true } }, { id: "review", name: "Review", flags: { countsTowardWip: true } }] },
+      ],
+      taskWorkflowIds: { "FN-002": "wf-custom", "FN-003": "wf-deleted" },
+    });
+
+    renderListView({
+      tasks: [
+        createMockTask({ id: "FN-001", column: "triage", title: "Coding task" }),
+        createMockTask({ id: "FN-002", column: "backlog", title: "Custom task" }),
+        createMockTask({ id: "FN-003", column: "triage", title: "Stale workflow task" }),
+      ],
+      onQuickCreate: mockOnQuickCreate,
+    });
+
+    await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
+
+    expect(screen.getByText("Coding task")).toBeInTheDocument();
+    expect(screen.getByText("Custom task")).toBeInTheDocument();
+    expect(screen.getByText("Stale workflow task")).toBeInTheDocument();
+    expect(screen.getByTestId("workflow-switcher")).toHaveTextContent("All workflows");
+    expect(screen.queryByTestId(`workflow-switcher-edit-${ALL_WORKFLOWS_BOARD_VIEW_ID}`)).toBeNull();
+
+    fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Aggregate quick add" } });
+    fireEvent.keyDown(screen.getByTestId("quick-entry-input"), { key: "Enter" });
+
+    await waitFor(() => expect(mockOnQuickCreate).toHaveBeenCalledWith(expect.objectContaining({
+      description: "Aggregate quick add",
+      workflowId: "builtin:coding",
+    })));
+    expect(mockOnQuickCreate).not.toHaveBeenCalledWith(expect.objectContaining({ workflowId: ALL_WORKFLOWS_BOARD_VIEW_ID }));
+  });
+
   it("shows workflow edit and New actions inside the dropdown", async () => {
     const onCreateWorkflow = vi.fn();
     const onOpenWorkflowEditor = vi.fn();
@@ -1348,6 +1503,25 @@ describe("ListView", () => {
     expect(screen.getByTestId("list-split-resize-handle")).toBeInTheDocument();
     expect(screen.getByTestId("list-split-detail")).toBeInTheDocument();
     expect(screen.getByText("Select a task to view details")).toBeInTheDocument();
+    viewportSpy.mockRestore();
+  });
+
+  it("clears the desktop split-detail shell when embedded detail requests close", async () => {
+    const viewportSpy = mockDesktopViewport();
+    const tasks = [createMockTask({ id: "FN-001", title: "Task" })];
+
+    renderListView({ tasks });
+
+    fireEvent.click(screen.getByText("FN-001").closest("tr")!);
+    expect(await screen.findByTestId("task-detail-content")).toHaveTextContent("FN-001");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close detail" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("task-detail-content")).toBeNull();
+      expect(screen.getByText("Select a task to view details")).toBeInTheDocument();
+      expect(localStorage.getItem(scopedStorageKey("kb-dashboard-list-selected-task"))).toBeNull();
+    });
     viewportSpy.mockRestore();
   });
 

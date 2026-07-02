@@ -131,24 +131,37 @@ describe("useBoardWorkflows", () => {
     expect(result.current.workflowOptions.map((w) => w.id)).toEqual(["wf-new"]);
   });
 
-  it("an SSE workflow event re-fetches", async () => {
-    const deps = makeDeps(() => Promise.resolve(makePayload()));
-    renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
+  it("an SSE workflow event force-refreshes so chat-created workflows replace stale payloads", async () => {
+    let payload = makePayload();
+    const deps = makeDeps(() => Promise.resolve(payload));
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
 
     await waitFor(() => expect(deps.fetchBoardWorkflows).toHaveBeenCalledTimes(1));
+    expect(typeof subscribeHandlers["workflow:created"]).toBe("function");
     expect(typeof subscribeHandlers["workflow:updated"]).toBe("function");
+    expect(typeof subscribeHandlers["workflow:deleted"]).toBe("function");
 
-    await act(async () => { subscribeHandlers["workflow:updated"](); });
-    expect(deps.fetchBoardWorkflows).toHaveBeenCalledTimes(2);
+    payload = makePayload({
+      workflows: [
+        { id: "wf-a", name: "Alpha", columns: [] },
+        { id: "wf-chat", name: "Chat Created", columns: [] },
+      ],
+    });
+    await act(async () => { subscribeHandlers["workflow:created"](); });
+
+    await waitFor(() => expect(result.current.workflowOptions.map((workflow) => workflow.id)).toContain("wf-chat"));
+    expect(deps.fetchBoardWorkflows).toHaveBeenLastCalledWith("p1", { forceFresh: true });
+    expect(deps.writeBoardWorkflowsCache).toHaveBeenLastCalledWith("p1", payload);
   });
 
-  it("does not expose the Board-only aggregate sentinel as a selected workflow id", async () => {
+  it("preserves the Board-only aggregate sentinel while resolving a concrete fallback workflow", async () => {
     localStorage.setItem("kb:p1:kb-dashboard-board-workflow-selection", ALL_WORKFLOWS_BOARD_VIEW_ID);
     const deps = makeDeps(() => Promise.resolve(makePayload()));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));
 
     await waitFor(() => expect(result.current.selectedWorkflow?.id).toBe("wf-a"));
-    expect(result.current.selectedWorkflowId).toBe("wf-a");
+    expect(result.current.selectedWorkflowId).toBe(ALL_WORKFLOWS_BOARD_VIEW_ID);
+    expect(result.current.isAllWorkflowsSelected).toBe(true);
     expect(localStorage.getItem("kb:p1:kb-dashboard-board-workflow-selection")).toBe(ALL_WORKFLOWS_BOARD_VIEW_ID);
   });
 

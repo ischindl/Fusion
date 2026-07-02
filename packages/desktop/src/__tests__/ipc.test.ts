@@ -169,6 +169,21 @@ describe("ipc handlers", () => {
     expect(window.webContents.send).toHaveBeenCalledWith("shell:state", expect.any(Object));
   });
 
+  it("shell:setDesktopMode propagates local runtime startup errors", async () => {
+    const onDesktopModeChange = vi.fn(async () => {
+      throw new Error("dashboard import failed: ERR_IMPORT_ATTRIBUTE_MISSING");
+    });
+    const { window } = await registerHandlers({ onDesktopModeChange, getRuntimeStatus: () => ({ source: "embedded-local", state: "error", error: "dashboard import failed: ERR_IMPORT_ATTRIBUTE_MISSING" }) });
+    const handler = mocks.ipcHandlers.get("shell:setDesktopMode");
+
+    await expect(handler?.({}, "local")).rejects.toThrow("ERR_IMPORT_ATTRIBUTE_MISSING");
+
+    expect(mocks.writeShellSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ desktopMode: "local", hasCompletedModeSelection: true }),
+    );
+    expect(window.webContents.send).not.toHaveBeenCalledWith("shell:state", expect.any(Object));
+  });
+
   it("desktop launch mode handlers return mode/context and validate payload", async () => {
     const getDesktopLaunchContext = vi.fn(() => ({ mode: "remote", profileId: "profile_1", serverBaseUrl: "https://remote.example.com" }));
     const onDesktopLaunchModeChange = vi.fn(async () => undefined);

@@ -740,6 +740,7 @@ export function SettingsModal({
     showWorktreeGrouping: false,
     openTasksInRightSidebar: false,
     openMobileTasksInPopup: false,
+    taskDetailChatFirst: false,
     executorAllowSiblingBranchRename: false,
     worktreeNaming: "random",
     worktreeCopyFiles: [],
@@ -760,6 +761,7 @@ export function SettingsModal({
     webhookUrl: undefined,
     webhookFormat: "generic",
     webhookEvents: undefined,
+    githubLinkImportedIssuesToTracking: false,
     prTitlePromptInstructions: "",
     prDescriptionPromptInstructions: "",
   });
@@ -1001,6 +1003,16 @@ export function SettingsModal({
           ...s,
           ignoreHiddenOverlapPaths: s.ignoreHiddenOverlapPaths ?? true,
           allowAbsoluteFileBrowserPaths: s.allowAbsoluteFileBrowserPaths === true,
+          /*
+          FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+          The Settings form normalizes missing taskDetailChatFirst to false so new and upgraded projects show the Activity-first default until an operator explicitly opts into Chat-first.
+          */
+          taskDetailChatFirst: s.taskDetailChatFirst === true,
+          /*
+          FNXC:GithubImportTracking 2026-07-01-00:00:
+          Missing githubLinkImportedIssuesToTracking must render as unchecked and save as project-scoped false only after operator interaction; this keeps upgraded projects on legacy import behavior by default.
+          */
+          githubLinkImportedIssuesToTracking: s.githubLinkImportedIssuesToTracking === true,
           mergeIntegrationWorktree: normalizeMergeIntegrationWorktreeMode(s.mergeIntegrationWorktree),
           mergeAdvanceAutoSync: normalizeMergeAdvanceAutoSyncMode(s.mergeAdvanceAutoSync),
           maxAutoMergeRetries: resolveMaxAutoMergeRetriesForSettingsForm(s),

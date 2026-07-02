@@ -476,6 +476,31 @@ describe("useChatRooms", () => {
     );
   });
 
+  it("keeps delivered optimistic room message visible when reply and recovery refresh fail", async () => {
+    const active = room("room-1", "one", "2026-05-09T01:00:00.000Z");
+    mockFetchChatRooms.mockResolvedValueOnce({ rooms: [active] });
+    const { result } = renderHook(() => useChatRooms("proj-1"));
+    await waitFor(() => expect(result.current.rooms.length).toBe(1));
+
+    mockFetchChatRoomMembers.mockResolvedValueOnce({ members: [] });
+    mockFetchChatRoomMessages.mockResolvedValueOnce({ messages: [] });
+    act(() => result.current.selectRoom("room-1"));
+    await waitFor(() => expect(result.current.activeRoom?.id).toBe("room-1"));
+
+    mockPostChatRoomMessage.mockResolvedValueOnce({ message: roomMessage("msg-user", "room-1", "hello after 429") });
+    mockFetchChatRoomMessages
+      .mockRejectedValueOnce(new Error("provider reply failed"))
+      .mockRejectedValueOnce(new Error("recovery failed"));
+
+    await act(async () => {
+      await expect(result.current.sendRoomMessage("hello after 429")).rejects.toBeInstanceOf(RoomMessageDeliveredButReplyFailedError);
+    });
+
+    const matchingMessages = result.current.messages.filter((message) => message.role === "user" && message.content === "hello after 429");
+    expect(matchingMessages).toHaveLength(1);
+    expect(matchingMessages[0]?.id).toBe("msg-user");
+  });
+
   it("classifies post rejection as delivered when recovery transcript includes persisted user message", async () => {    const active = room("room-1", "one", "2026-05-09T01:00:00.000Z");
     mockFetchChatRooms.mockResolvedValueOnce({ rooms: [active] });
     const { result } = renderHook(() => useChatRooms("proj-1"));

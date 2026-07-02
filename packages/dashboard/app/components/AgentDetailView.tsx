@@ -3759,7 +3759,7 @@ function ConfigTab({
   const [modelValue, setModelValue] = useState(initialModelValue);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(initialRuntimeHint);
   const [permissionPolicyValue, setPermissionPolicyValue] = useState<AgentPermissionPolicy | undefined>(agent.permissionPolicy);
-  const [projectDefaultPermissionPolicy, setProjectDefaultPermissionPolicy] = useState<Partial<AgentPermissionPolicyRules> | undefined>(undefined);
+  const [projectDefaultPermissionPolicy, setProjectDefaultPermissionPolicy] = useState<{ rules?: Partial<AgentPermissionPolicyRules>; toolRules?: AgentPermissionPolicy["toolRules"] } | undefined>(undefined);
 
   const managerSelection = reportsToValue.trim();
   const availableManagers = useMemo(
@@ -3858,7 +3858,7 @@ function ConfigTab({
 
   useEffect(() => {
     fetchSettingsByScope(projectId)
-      .then((scoped) => setProjectDefaultPermissionPolicy(scoped.project?.defaultAgentPermissionPolicy?.rules))
+      .then((scoped) => setProjectDefaultPermissionPolicy(scoped.project?.defaultAgentPermissionPolicy))
       .catch(() => setProjectDefaultPermissionPolicy(undefined));
   }, [projectId]);
 
@@ -4724,11 +4724,11 @@ function ConfigTab({
               onClick={() => void handlePermissionPolicyChange({
                 presetId: "custom",
                 rules: {
-                  git_write: projectDefaultPermissionPolicy?.git_write ?? "allow",
-                  file_write_delete: projectDefaultPermissionPolicy?.file_write_delete ?? "allow",
-                  command_execution: projectDefaultPermissionPolicy?.command_execution ?? "allow",
-                  network_api: projectDefaultPermissionPolicy?.network_api ?? "allow",
-                  task_agent_mutation: projectDefaultPermissionPolicy?.task_agent_mutation ?? "allow",
+                  git_write: projectDefaultPermissionPolicy?.rules?.git_write ?? "allow",
+                  file_write_delete: projectDefaultPermissionPolicy?.rules?.file_write_delete ?? "allow",
+                  command_execution: projectDefaultPermissionPolicy?.rules?.command_execution ?? "allow",
+                  network_api: projectDefaultPermissionPolicy?.rules?.network_api ?? "allow",
+                  task_agent_mutation: projectDefaultPermissionPolicy?.rules?.task_agent_mutation ?? "allow",
                 },
               })}
             >
@@ -4740,7 +4740,8 @@ function ConfigTab({
         <AgentPermissionPolicyEditor
           mode="agent-override"
           value={permissionPolicyValue}
-          projectDefault={projectDefaultPermissionPolicy}
+          projectDefault={projectDefaultPermissionPolicy?.rules}
+          projectDefaultToolRules={projectDefaultPermissionPolicy?.toolRules}
           onChange={(next) => { void handlePermissionPolicyChange(next); }}
         />
       </div>

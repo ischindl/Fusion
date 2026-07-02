@@ -180,7 +180,20 @@
     "lockedDown": "锁定",
     "preset": "预设",
     "requireApproval": "需要批准",
-    "unrestricted": "无限制"
+    "unrestricted": "无限制",
+    "exactToolOverrides": "Exact tool overrides",
+    "exactToolOverridesDescription": "Override one governed tool by exact name before its category rule. Heartbeat-critical exempt tools stay non-configurable.",
+    "noExactToolOverrides": "No exact tool overrides configured.",
+    "toolName": "Tool name",
+    "toolDisposition": "Disposition",
+    "toolDispositionFor": "Disposition for {{toolName}}",
+    "projectDefaultExactTool": "project default exact rule",
+    "removeToolOverride": "Remove exact override for {{toolName}}",
+    "remove": "Remove",
+    "toolOverrideTool": "Tool override tool",
+    "toolOverrideDisposition": "Tool override disposition",
+    "updateToolOverride": "Update override",
+    "addToolOverride": "Add override"
   },
   "agentPrompts": {
     "actions": {
@@ -4140,6 +4153,7 @@
       "local": "本地 Docker",
       "remote": "远程: {{host}}"
     },
+    "dockerHostLabel": "主机",
     "dockerHostConfig": "主机配置",
     "dockerHostPath": "主机路径",
     "dockerHostUrl": "Docker 主机地址",
@@ -5211,6 +5225,7 @@
       "override": "每个任务的覆盖",
       "projectDefault": "项目默认值"
     },
+    "sourceLabel": "路由来源",
     "summarySection": "路由摘要",
     "title": "任务路由",
     "unavailablePolicy": "不可用节点策略",
@@ -7297,8 +7312,12 @@
       "ariaLabel": "执行模式：{{mode}}",
       "fast": "快速",
       "standard": "标准",
-      "updated": "执行模式已更新为 {{mode}}"
+      "updated": "执行模式已更新为 {{mode}}",
+      "replanMessage": "更改此任务的执行模式会将其移回规划，以便 Fusion 可以为 {{mode}} 模式重新生成计划。",
+      "replanTitle": "更改执行模式并重新规划？",
+      "replanning": "执行模式已更新为 {{mode}} — {{id}} 已返回规划以重新规划"
     },
+    "executionModeLabel": "执行模式",
     "executionModeFast": "快速",
     "executionModeStandard": "标准",
     "executionStatsAria": "任务执行统计",
@@ -8423,7 +8442,6 @@
     "gateBlocks": "关卡（阻断）",
     "gateMode": "关卡模式",
     "insertTemplate": "插入模板 {{name}}",
-    "interpreterOnly": "此工作流包含分支，将在图解释器上运行——无法编译为线性步骤引擎，但仍会正常执行。",
     "joinAll": "所有分支",
     "joinAny": "任意分支",
     "joinMode": "合并模式",

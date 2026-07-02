@@ -2465,7 +2465,14 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
     if (question.type === "text") {
       nextResponse = { [question.id]: textValue };
     } else if (question.type === "confirm") {
-      nextResponse = { [question.id]: response[question.id] === true };
+      const trimmedOther = otherValue.trim();
+      /*
+      FNXC:PlanningInterview 2026-07-01-00:00:
+      GitHub #1832 requires Yes/No Planning Mode questions to offer an Other path so users can replace a forced boolean with their own answer. Reuse the reserved `_other` payload shape used by structured selection questions instead of inventing a confirm-only custom-answer contract.
+      */
+      nextResponse = isOtherSelected && trimmedOther.length > 0
+        ? { [PLANNING_OTHER_RESPONSE_KEY]: trimmedOther }
+        : { [question.id]: response[question.id] === true };
     } else if (question.type === "single_select") {
       const trimmedOther = otherValue.trim();
       /*
@@ -2522,7 +2529,7 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
         */
         return (Array.isArray(response[question.id] as unknown) && (response[question.id] as unknown[]).length > 0) || (isOtherSelected && otherValue.trim().length > 0);
       case "confirm":
-        return response[question.id] !== undefined;
+        return response[question.id] !== undefined || (isOtherSelected && otherValue.trim().length > 0);
       default:
         return true;
     }
@@ -2687,21 +2694,54 @@ function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmi
               )}
 
               {question.type === "confirm" && (
-                <div className="planning-confirm-group">
-                  <button
-                    className={`planning-confirm-btn ${response[question.id] === true ? "selected" : ""}`}
-                    onClick={() => setResponse({ [question.id]: true })}
-                  >
-                    <CheckCircle size={18} />
-                    {t("common.yes", "Yes")}
-                  </button>
-                  <button
-                    className={`planning-confirm-btn ${response[question.id] === false ? "selected" : ""}`}
-                    onClick={() => setResponse({ [question.id]: false })}
-                  >
-                    <X size={18} />
-                    {t("common.no", "No")}
-                  </button>
+                <div className="planning-confirm-answer">
+                  <div className="planning-confirm-group">
+                    <button
+                      className={`planning-confirm-btn ${response[question.id] === true && !isOtherSelected ? "selected" : ""}`}
+                      onClick={() => {
+                        setIsOtherSelected(false);
+                        setOtherValue("");
+                        setResponse({ [question.id]: true });
+                      }}
+                    >
+                      <CheckCircle size={18} />
+                      {t("common.yes", "Yes")}
+                    </button>
+                    <button
+                      className={`planning-confirm-btn ${response[question.id] === false && !isOtherSelected ? "selected" : ""}`}
+                      onClick={() => {
+                        setIsOtherSelected(false);
+                        setOtherValue("");
+                        setResponse({ [question.id]: false });
+                      }}
+                    >
+                      <X size={18} />
+                      {t("common.no", "No")}
+                    </button>
+                    <button
+                      className={`planning-confirm-btn ${isOtherSelected ? "selected" : ""}`}
+                      data-testid="planning-option-other"
+                      onClick={() => {
+                        setIsOtherSelected(true);
+                        setResponse({});
+                      }}
+                    >
+                      <HelpCircle size={18} />
+                      {t("planning.otherOptionLabel", "Other (write your own)")}
+                    </button>
+                  </div>
+                  {isOtherSelected && (
+                    <div className="planning-other-answer">
+                      <textarea
+                        ref={otherAutosizeRef}
+                        className="planning-textarea"
+                        data-testid="planning-other-input"
+                        placeholder={t("planning.otherOptionPlaceholder", "Write your own answer...")}
+                        value={otherValue}
+                        onChange={(e) => setOtherValue(e.target.value)}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>

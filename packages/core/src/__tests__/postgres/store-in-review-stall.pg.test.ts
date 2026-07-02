@@ -76,6 +76,19 @@ pgTest("TaskStore inReviewStall hydration (PostgreSQL)", () => {
     expect(task?.inReviewStall?.reason).toContain("no active merger");
   });
 
+  it("omits merge-stalled hydration while fresh agent-log activity is streaming", async () => {
+    await seedTask("FN-7344", {});
+    await store.appendAgentLog("FN-7344", "rerunning merge verification", "thinking", undefined, "merger");
+
+    const listed = (await store.listTasks({ slim: true })).find((entry) => entry.id === "FN-7344");
+    expect(listed?.inReviewStall).toBeUndefined();
+    expect(listed?.inReviewStalled).toBeUndefined();
+
+    const detailed = await store.getTask("FN-7344");
+    expect(detailed.inReviewStall).toBeUndefined();
+    expect(detailed.inReviewStalled).toBeUndefined();
+  });
+
   it("omits merge-stalled hydration while the task is already queued for merge", async () => {
     await seedTask("FN-6088", {});
     const store = h.store();

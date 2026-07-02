@@ -140,10 +140,19 @@ win:
     publisherName: Fusion
 
 nsis:
+  # FNXC:WindowsDesktopPackaging 2026-07-01-08:02:
+  # NSIS is the installable Windows artifact and must keep the 0.50-style
+  # Fusion-<version>-win-<arch>.exe name so updater/install docs remain stable.
+  # The portable target writes a separate -portable EXE below to avoid colliding
+  # with or overwriting the NSIS installer during x64/arm64 packaging.
+  artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
   oneClick: false
   perMachine: false
   allowElevation: false
   allowToChangeInstallationDirectory: true
+
+portable:
+  artifactName: "${productName}-${version}-${os}-${arch}-portable.${ext}"
 
 linux:
   category: Development

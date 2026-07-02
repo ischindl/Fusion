@@ -2,6 +2,7 @@ import "./TaskCard.css";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { memo, useCallback, useState, useRef, useEffect, useLayoutEffect, useMemo, type CSSProperties, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { Link, Clock, Layers, Pencil, ChevronDown, Folder, Target, Bot, Trash2, RotateCw, Zap, GitBranch, GitPullRequest, AlertTriangle, ArrowUpRight } from "lucide-react";
 import type { Task, TaskDetail, Column, ColumnId, PrInfo, IssueInfo, TaskPriority, GithubIssueAction, MergeResult } from "@fusion/core";
 import {
@@ -377,12 +378,13 @@ interface TaskCardProps {
   projectId?: string;
   queued?: boolean;
   onOpenDetail: (task: Task | TaskDetail) => void;
+  onOpenRefine?: (task: Task | TaskDetail) => void;
   onOpenGroupModal?: (groupId: string) => void;
   addToast: (message: string, type?: ToastType) => void;
   globalPaused?: boolean;
   onUpdateTask?: (
     id: string,
-    updates: { title?: string; description?: string; dependencies?: string[]; dismissNearDuplicate?: boolean }
+    updates: { title?: string; description?: string; dependencies?: string[]; dismissNearDuplicate?: boolean; githubTracking?: { enabled?: boolean } }
   ) => Promise<Task>;
   onArchiveTask?: (id: string, options?: { removeLineageReferences?: boolean }) => Promise<Task>;
   onUnarchiveTask?: (id: string) => Promise<Task>;
@@ -615,6 +617,7 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previous.onDuplicateTask === next.onDuplicateTask &&
     previous.onMergeTask === next.onMergeTask &&
     previous.onOpenDetailWithTab === next.onOpenDetailWithTab &&
+    previous.onOpenRefine === next.onOpenRefine &&
     previous.onOpenMission === next.onOpenMission &&
     previous.onMoveTask === next.onMoveTask &&
     previous.onPromote === next.onPromote &&
@@ -708,7 +711,9 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
       */
       return areTaskBadgeInfosEqual(pr, nextPr);
     }) &&
-    areTaskBadgeInfosEqual(previousTask.issueInfo, nextTask.issueInfo)
+    areTaskBadgeInfosEqual(previousTask.issueInfo, nextTask.issueInfo) &&
+    // FNXC:GitHubTracking 2026-07-01-00:00: Context-menu tracking actions depend on githubTracking.enabled, so memoized cards must repaint when a PATCH enables tracking and remove the now-ineligible menu item.
+    JSON.stringify(previousTask.githubTracking ?? null) === JSON.stringify(nextTask.githubTracking ?? null)
   );
 }
 
@@ -717,6 +722,7 @@ function TaskCardComponent({
   projectId,
   queued,
   onOpenDetail,
+  onOpenRefine,
   onOpenGroupModal,
   addToast,
   globalPaused,
@@ -1865,7 +1871,7 @@ function TaskCardComponent({
   Board cards expose the same lifecycle actions as Task Detail from right-click, keyboard context menu, and touch long-press so operators can act without opening detail. Dock/plugin TaskCard users stay unchanged because the menu only mounts when Board/List owners pass action handlers.
 
   FNXC:BoardCardActions 2026-06-30-00:30:
-  Context-menu moves reuse the Task Detail preserve/reset progress confirmation path before moving back to Todo or Triage, because those transitions can reset completed steps. Refine stays hidden outside Task Detail until card surfaces can open the actual refine modal, while manual PR entries open the existing PR flows instead of silently dropping unavailable actions.
+  Context-menu moves reuse the Task Detail preserve/reset progress confirmation path before moving back to Todo or Triage, because those transitions can reset completed steps. Refine opens the existing Task Detail feedback modal from card right-click/long-press when the board host supplies that route, while manual PR entries open the existing PR flows instead of silently dropping unavailable actions.
 
   FNXC:BoardCardActions 2026-06-30-00:42:
   Board context menus must receive the project merge strategy, not infer pull-request mode from existing PR data, so manual PR projects show Start PR Review before the PR entity is created.
@@ -1875,7 +1881,19 @@ function TaskCardComponent({
 
   FNXC:BoardCardActions 2026-06-30-13:02:
   Manual pull-request projects need a distinct Start PR Review callback from direct Merge & Close so context menus open PrCreateModal instead of calling the merge endpoint.
+
+  FNXC:GitHubTracking 2026-07-01-00:00:
+  Board card context menus may enable GitHub tracking only when the board host supplies onUpdateTask, because that callback owns the existing PATCH flow plus optimistic/local task refresh. This keeps right-click, keyboard context menu, and touch long-press actions from becoming dead menu items in dock/plugin card embeddings.
   */
+  const handleTaskActionEnableGithubTracking = useCallback(async () => {
+    if (!onUpdateTask) return;
+    try {
+      await onUpdateTask(task.id, { githubTracking: { enabled: true } });
+      addToast(t("taskDetail.githubTracking.issueCreationRequested", "Requested GitHub tracking issue creation"), "info");
+    } catch (err) {
+      addToast(t("taskDetail.updateFailed", "Failed to update {{id}}: {{error}}", { id: task.id, error: getErrorMessage(err) }), "error");
+    }
+  }, [addToast, onUpdateTask, task.id, t]);
   const taskActionColumnLabel = useCallback((column: ColumnId) => {
     return taskMoveColumns?.find((candidate) => candidate.id === column)?.label ?? columnLabel(column);
   }, [columnLabel, taskMoveColumns]);
@@ -1896,7 +1914,7 @@ function TaskCardComponent({
     prAutomationLabel: getTaskPrAutomationLabel(t, task.status),
     onDelete: onDeleteTask ? handleTaskActionDelete : undefined,
     onDuplicate: onDuplicateTask ? handleTaskActionDuplicate : undefined,
-    onOpenRefine: undefined,
+    onOpenRefine: onOpenRefine ? () => onOpenRefine(task) : undefined,
     onRespecify: handleTaskActionRespecify,
     onRetry: onRetryTask ? handleTaskActionRetry : undefined,
     onReset: onResetTask ? handleTaskActionReset : undefined,
@@ -1904,6 +1922,7 @@ function TaskCardComponent({
     onMerge: onMergeTask ? handleTaskActionMerge : undefined,
     onStartPrReview: () => setIsPrCreateOpen(true),
     onCheckPrStatus: task.prInfo ? handleTaskActionCheckPrStatus : undefined,
+    onEnableGithubTracking: onUpdateTask ? handleTaskActionEnableGithubTracking : undefined,
   }), [
     task,
     t,
@@ -1919,6 +1938,7 @@ function TaskCardComponent({
     handleTaskActionArchive,
     handleTaskActionCheckPrStatus,
     handleTaskActionDelete,
+    handleTaskActionEnableGithubTracking,
     handleTaskActionDuplicate,
     handleTaskActionMerge,
     handleTaskActionReset,
@@ -1929,7 +1949,9 @@ function TaskCardComponent({
     isPaused,
     onDeleteTask,
     onMergeTask,
+    onUpdateTask,
     onOpenDetail,
+    onOpenRefine,
     onPauseTask,
     onUnpauseTask,
     task,
@@ -1938,7 +1960,7 @@ function TaskCardComponent({
     task.prInfo,
   ]);
   const contextMenuActions = useMemo<TaskMenuActionDescriptor[]>(() => {
-    if (!onDeleteTask && !onArchiveTask && !onUnarchiveTask && !onDuplicateTask && !onRetryTask && !onResetTask && !onPauseTask && !onUnpauseTask && !onMergeTask && !onMoveTask) {
+    if (!onDeleteTask && !onArchiveTask && !onUnarchiveTask && !onDuplicateTask && !onRetryTask && !onResetTask && !onPauseTask && !onUnpauseTask && !onMergeTask && !onMoveTask && !onOpenRefine && !onUpdateTask) {
       return [];
     }
     const actions = [...taskActionMenuModel.actions];
@@ -1961,12 +1983,16 @@ function TaskCardComponent({
       }
     }
     return actions.filter((action) => action.tone === "note" || action.disabled === true || Boolean(action.onSelect));
-  }, [handleTaskActionArchive, handleTaskActionMove, handleTaskActionUnarchive, onArchiveTask, onDeleteTask, onDuplicateTask, onMergeTask, onMoveTask, onPauseTask, onResetTask, onRetryTask, onUnarchiveTask, onUnpauseTask, t, task.column, taskActionMenuModel.actions, taskActionMenuModel.moveTransitions, taskActionMenuModel.reviewAction]);
+  }, [handleTaskActionArchive, handleTaskActionMove, handleTaskActionUnarchive, onArchiveTask, onDeleteTask, onDuplicateTask, onMergeTask, onMoveTask, onOpenRefine, onPauseTask, onResetTask, onRetryTask, onUnarchiveTask, onUnpauseTask, onUpdateTask, t, task.column, taskActionMenuModel.actions, taskActionMenuModel.moveTransitions, taskActionMenuModel.reviewAction]);
   const hasContextMenuActions = contextMenuActions.length > 0;
 
   const closeContextMenu = useCallback(() => {
     setContextMenuPosition(null);
   }, []);
+
+  useEffect(() => {
+    closeContextMenu();
+  }, [closeContextMenu, task.column, task.githubTracking?.enabled, task.id]);
 
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -1978,12 +2004,10 @@ function TaskCardComponent({
 
   const openContextMenuAt = useCallback((clientX: number, clientY: number) => {
     if (!hasContextMenuActions || isEditing) return;
-    const rect = cardRef.current?.getBoundingClientRect();
-    if (!rect) return;
     setShowSendBackMenu(false);
     setContextMenuPosition({
-      x: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(clientX - rect.left, rect.width - CONTEXT_MENU_VIEWPORT_MARGIN)),
-      y: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(clientY - rect.top, rect.height - CONTEXT_MENU_VIEWPORT_MARGIN)),
+      x: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(clientX, window.innerWidth - CONTEXT_MENU_VIEWPORT_MARGIN)),
+      y: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(clientY, window.innerHeight - CONTEXT_MENU_VIEWPORT_MARGIN)),
     });
   }, [hasContextMenuActions, isEditing]);
 
@@ -2012,6 +2036,11 @@ function TaskCardComponent({
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!hasContextMenuActions || e.pointerType === "mouse" || isInteractiveTarget(e.target)) return;
+    /*
+    FNXC:TaskCardMobileSelection 2026-07-01-00:00:
+    Touch/pen long-press is reserved for the Board task context menu. Prevent the native selection/copy callout before the timer starts while leaving mouse right-click, keyboard menu access, and editable descendants on their normal paths.
+    */
+    e.preventDefault();
     clearLongPressTimer();
     longPressStartRef.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
     longPressTimerRef.current = setTimeout(() => {
@@ -2035,27 +2064,17 @@ function TaskCardComponent({
   }, [clearLongPressTimer]);
 
   /*
-  FNXC:TaskContextMenu 2026-06-30-00:15:
-  Board card context menus open from pointer and keyboard coordinates, so clamp after render using the measured menu size. This keeps long action lists inside the viewport without changing normal card click or drag behavior.
+  FNXC:TaskContextMenu 2026-07-01-00:00:
+  Board columns intentionally clip and scroll their bodies, so card context menus must be portaled to document.body and positioned in viewport coordinates. Clamp after render using the measured menu size so right-click, keyboard, and long-press menus escape column borders without weakening board overflow containment.
   */
   useLayoutEffect(() => {
     if (!contextMenuPosition) return;
     const menu = contextMenuRef.current;
-    const card = cardRef.current;
-    if (!menu || !card) return;
+    if (!menu) return;
     const menuRect = menu.getBoundingClientRect();
-    const cardRect = card.getBoundingClientRect();
-    const maxX = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      Math.min(cardRect.width - CONTEXT_MENU_VIEWPORT_MARGIN, window.innerWidth - cardRect.left - menuRect.width - CONTEXT_MENU_VIEWPORT_MARGIN),
-    );
-    const maxY = Math.max(
-      CONTEXT_MENU_VIEWPORT_MARGIN,
-      Math.min(cardRect.height - CONTEXT_MENU_VIEWPORT_MARGIN, window.innerHeight - cardRect.top - menuRect.height - CONTEXT_MENU_VIEWPORT_MARGIN),
-    );
     const nextPosition = {
-      x: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(contextMenuPosition.x, maxX)),
-      y: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(contextMenuPosition.y, maxY)),
+      x: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(contextMenuPosition.x, window.innerWidth - menuRect.width - CONTEXT_MENU_VIEWPORT_MARGIN)),
+      y: Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, Math.min(contextMenuPosition.y, window.innerHeight - menuRect.height - CONTEXT_MENU_VIEWPORT_MARGIN)),
     };
     if (nextPosition.x !== contextMenuPosition.x || nextPosition.y !== contextMenuPosition.y) {
       setContextMenuPosition(nextPosition);
@@ -2348,11 +2367,11 @@ function TaskCardComponent({
       tabIndex={hasContextMenuActions ? 0 : undefined}
       aria-haspopup={hasContextMenuActions ? "menu" : undefined}
     >
-      {contextMenuPosition && hasContextMenuActions && (
+      {contextMenuPosition && hasContextMenuActions && createPortal(
         <div
           ref={contextMenuRef}
           className="task-card-context-menu-popover"
-          style={{ "--task-card-context-menu-x": `${contextMenuPosition.x}px`, "--task-card-context-menu-y": `${contextMenuPosition.y}px` } as CSSProperties}
+          style={{ left: contextMenuPosition.x, top: contextMenuPosition.y } as CSSProperties}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
@@ -2360,7 +2379,8 @@ function TaskCardComponent({
             actions={contextMenuActions}
             onActionSelect={closeContextMenu}
           />
-        </div>
+        </div>,
+        document.body,
       )}
       <div className="card-header">
         <span className="card-id">{task.id}</span>
@@ -2788,6 +2808,9 @@ function TaskCardComponent({
                   `failed` (blocking gate failure → red/error). `running` shows the in-progress color.
                   No `card-step-dot--workflow-failed` override is needed — the status class carries the
                   distinction directly.
+
+                  FNXC:WorkflowSteps 2026-06-30-12:00:
+                  Workflow-sourced rows remain visible through their step names and status dots, but task cards intentionally omit the redundant `workflow` text badge so expanded step lists stay focused on progress.
                   */
                   return (
                     <div key={step.id} className="card-step-item">
@@ -2801,14 +2824,6 @@ function TaskCardComponent({
                       {(step.status === "in-progress" || step.status === "running") && (
                         <span className="card-step-active-badge">
                           {t("tasks.active", "active")}
-                        </span>
-                      )}
-                      {step.source === "workflow" && (
-                        <span
-                          className={`card-step-workflow-badge card-step-workflow-badge--${step.phase}`}
-                          title={t("tasks.workflowCheck", "Workflow check")}
-                        >
-                          {t("tasks.workflow", "workflow")}
                         </span>
                       )}
                     </div>

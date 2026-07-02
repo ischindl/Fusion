@@ -182,6 +182,30 @@ describe("GoalsView", () => {
     expect(await screen.findByText("Loaded Goal")).toBeInTheDocument();
   });
 
+  it("threads projectId through goals and mission reads", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/goals?projectId=proj-fusion") {
+        return { ok: true, json: async () => ({ goals: [makeGoal({ id: "g1", title: "Fusion Goal" })] }) };
+      }
+      if (path === "/api/missions?projectId=proj-fusion") {
+        return { ok: true, json: async () => ({ missions: [] }) };
+      }
+      if (path === "/api/goals/g1/missions?projectId=proj-fusion") {
+        return { ok: true, json: async () => ({ missions: [] }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<GoalsView projectId="proj-fusion" />);
+
+    expect(await screen.findByText("Fusion Goal")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/goals?projectId=proj-fusion"));
+    expect(fetchMock).toHaveBeenCalledWith("/api/missions?projectId=proj-fusion");
+    expect(fetchMock).toHaveBeenCalledWith("/api/goals/g1/missions?projectId=proj-fusion");
+  });
+
   it("renders inline load error when API request fails", async () => {
     vi.stubGlobal(
       "fetch",
@@ -388,7 +412,7 @@ describe("GoalsView", () => {
     fireEvent.change(screen.getByTestId("goals-form-title"), { target: { value: "Grow ecosystem" } });
     fireEvent.click(screen.getByTestId("goals-form-draft-ai"));
 
-    await waitFor(() => expect(mockDraftGoalDescription).toHaveBeenCalledWith("Grow ecosystem"));
+    await waitFor(() => expect(mockDraftGoalDescription).toHaveBeenCalledWith("Grow ecosystem", undefined));
     expect(screen.getByTestId("goals-form-description")).toHaveValue(
       "Expand the extension ecosystem with better support and adoption goals."
     );

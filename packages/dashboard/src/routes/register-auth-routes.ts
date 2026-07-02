@@ -48,9 +48,25 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
     return key.slice(0, 3) + "•••••" + key.slice(-4);
   }
 
-  function isExpiredOauthCredential(providerId: string, storage: AuthStorageLike): boolean {
+  function getOauthStatusCredential(providerId: string, storage: AuthStorageLike) {
     const credential = storage.get?.(providerId);
-    if (!credential || credential.type !== "oauth" || typeof credential.expires !== "number") {
+    if (credential?.type === "oauth") {
+      return credential;
+    }
+    if (providerId === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
+      /*
+      FNXC:ProviderAuth 2026-07-01-12:46:
+      The OAuth re-login banner is keyed by the dashboard status id `anthropic-subscription`, but pre-split installs may still hold Claude subscription OAuth in the legacy `anthropic` row. Read that legacy OAuth only for subscription status; raw API-key status remains on the separate `anthropic-api-key` card.
+      */
+      const legacyCredential = storage.get?.(ANTHROPIC_OAUTH_PROVIDER_ID);
+      return legacyCredential?.type === "oauth" ? legacyCredential : undefined;
+    }
+    return undefined;
+  }
+
+  function isExpiredOauthCredential(providerId: string, storage: AuthStorageLike): boolean {
+    const credential = getOauthStatusCredential(providerId, storage);
+    if (!credential || typeof credential.expires !== "number") {
       return false;
     }
 

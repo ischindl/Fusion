@@ -7,47 +7,68 @@ import path from "path";
 const themeDataPath = path.resolve(__dirname, "../public/theme-data.css");
 const dashboardIndexPath = path.resolve(__dirname, "../index.html");
 const desktopIndexPath = path.resolve(__dirname, "../../../desktop/src/renderer/index.html");
+const EMBER_OWNED_COLOR_TOKENS = [
+  "--todo",
+  "--in-progress",
+  "--in-progress-rgb",
+  "--in-review",
+  "--triage",
+  "--done",
+  "--color-success",
+  "--color-error",
+  "--cta-bg",
+  "--cta-border",
+  "--cta-text",
+  "--cta-bg-hover",
+  "--cta-border-hover",
+  "--cta-glow",
+  "--logo-accent",
+  "--color-info",
+  "--accent",
+  "--accent-text",
+];
 
 /*
 FNXC:DashboardTheming 2026-06-30-00:00:
 Shadcn Ember is the default color-theme contract. Tests assert source-of-truth CSS and every bootstrap validator so unset/invalid installs converge on Shadcn Ember while explicit legacy ids remain valid.
+
+FNXC:DashboardTheming 2026-06-30-21:41:
+Symptom coverage compares Ember-owned token maps instead of selected literals because Shadcn Ember keeps shadcn structure while inheriting Ember's palette exactly in both modes.
 */
 describe("Shadcn Ember color theme", () => {
   const themeData = fs.readFileSync(themeDataPath, "utf-8");
   const dashboardIndex = fs.readFileSync(dashboardIndexPath, "utf-8");
   const desktopIndex = fs.readFileSync(desktopIndexPath, "utf-8");
 
-  it("defines dark and light shadcn structure with Ember color tokens", () => {
+  it("keeps dark and light shadcn structure while matching Ember-owned color tokens exactly", () => {
+    const darkEmberBlock = extractSelectorBlock(themeData, '[data-color-theme="ember"]');
+    const lightEmberBlock = extractSelectorBlock(themeData, '[data-color-theme="ember"][data-theme="light"]');
     const darkBlock = extractSelectorBlock(themeData, '[data-color-theme="shadcn-ember"]');
     const lightBlock = extractSelectorBlock(themeData, '[data-color-theme="shadcn-ember"][data-theme="light"]');
+    const darkEmberTokens = extractCustomProperties(darkEmberBlock);
+    const lightEmberTokens = extractCustomProperties(lightEmberBlock);
+    const darkShadcnEmberTokens = extractCustomProperties(darkBlock);
+    const lightShadcnEmberTokens = extractCustomProperties(lightBlock);
 
-    expect(darkBlock).toContain("--surface-hover:");
-    expect(lightBlock).toContain("--surface-hover:");
     expect(darkBlock).toContain("--bg: #09090b;");
     expect(darkBlock).toContain("--card: #18181b;");
     expect(lightBlock).toContain("--bg: #ffffff;");
     expect(lightBlock).toContain("--card-hover: #f4f4f5;");
     expect(darkBlock).toContain("--btn-border-width: 1px;");
     expect(darkBlock).toContain("--font-primary: \"Geist\",");
+    expect(darkShadcnEmberTokens["--color-warning"]).toBe("#f59e0b");
+    expect(lightShadcnEmberTokens["--color-muted"]).toBe("#71717a");
 
-    expect(darkBlock).toContain("--todo: #a0a0a0;");
-    expect(darkBlock).toContain("--in-progress: #b8b8b8;");
-    expect(darkBlock).toContain("--color-error: #ff6b6b;");
-    expect(darkBlock).toContain("--cta-bg: #d4622a;");
-    expect(darkBlock).toContain("--cta-border: #e8773a;");
-    expect(darkBlock).toContain("--color-info: #e8773a;");
-    expect(darkBlock).toContain("--accent: #e8773a;");
+    expect(Object.keys(darkEmberTokens)).toEqual(expect.arrayContaining(EMBER_OWNED_COLOR_TOKENS));
+    expect(Object.keys(lightEmberTokens)).toEqual(expect.arrayContaining(EMBER_OWNED_COLOR_TOKENS));
 
-    expect(lightBlock).toContain("--todo: #404040;");
-    expect(lightBlock).toContain("--in-progress: #606060;");
-    expect(lightBlock).toContain("--color-error: #dc2626;");
-    expect(lightBlock).toContain("--cta-bg: #c05820;");
-    expect(lightBlock).toContain("--cta-border: #d4622a;");
-    expect(lightBlock).toContain("--color-info: #c05820;");
-    expect(lightBlock).toContain("--accent: #d4622a;");
+    for (const token of Object.keys(darkEmberTokens)) {
+      expect(darkShadcnEmberTokens[token], `dark ${token}`).toBe(darkEmberTokens[token]);
+    }
 
-    expect(darkBlock).toContain("--color-warning: #f59e0b;");
-    expect(lightBlock).toContain("--color-muted: #71717a;");
+    for (const token of Object.keys(lightEmberTokens)) {
+      expect(lightShadcnEmberTokens[token], `light ${token}`).toBe(lightEmberTokens[token]);
+    }
   });
 
   it("registers the default theme in core, dashboard options, and bootstrap validators", () => {
@@ -83,6 +104,12 @@ function extractValidThemes(html: string): string[] {
   }
 
   return Array.from(match[1].matchAll(/["']([^"']+)["']/g), ([, theme]) => theme);
+}
+
+function extractCustomProperties(block: string): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(block.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g), ([, token, value]) => [token, value.trim()]),
+  );
 }
 
 function extractSelectorBlock(css: string, selector: string): string {

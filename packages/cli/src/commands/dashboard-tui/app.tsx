@@ -2562,23 +2562,6 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
   }
 
   useInput((input, key) => {
-    // Tab cycles list ↔ detail. Left/right also switch — list = left,
-    // detail = right, matching the visual layout (consistent with AgentsView).
-    if (key.tab) {
-      setDetailFocused((f) => !f);
-      return;
-    }
-    if (key.leftArrow) {
-      setDetailFocused(false);
-      return;
-    }
-    if (key.rightArrow) {
-      setDetailFocused(true);
-      return;
-    }
-
-    const inputUpper = input.toUpperCase();
-
     if (ttlInputMode) {
       if (key.escape) {
         setTtlInputMode(false);
@@ -2587,69 +2570,22 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       return;
     }
 
-    if (inputUpper === "R") {
+    /*
+    FNXC:TuiSettingsKeyboard 2026-06-30-22:52:
+    Tab is the only Settings pane-switch key. Arrow keys must remain available to the focused pane so Windows terminals can use ←/→ to edit enum settings such as Remote Provider instead of getting trapped switching focus.
+    */
+    if (key.tab) {
+      setDetailFocused((f) => !f);
+      return;
+    }
+
+    if (input === "R") {
       void refreshRemoteStatus();
       setStatusMsg(t("tui.settingsRemoteStatusRefreshed", "Remote status refreshed"));
       return;
     }
 
     if (!localSettings) return;
-
-    if (data?.remote && inputUpper === "C") {
-      const provider = localSettings.remoteActiveProvider;
-      if (!provider) {
-        setStatusMsg(t("tui.settingsSelectProviderFirst", "Select a remote provider first"));
-      } else {
-        void data.remote.activateProvider(provider)
-          .then(() => refreshRemoteStatus())
-          .then(() => setStatusMsg(t("tui.settingsActivatedProvider", "Activated provider: {{provider}}", { provider })))
-          .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      }
-      return;
-    }
-
-    if (data?.remote && inputUpper === "V") {
-      void data.remote.startTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStarting", "Remote tunnel starting")))
-        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
-
-    if (data?.remote && inputUpper === "X") {
-      void data.remote.stopTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStopped", "Remote tunnel stopped")))
-        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
-
-    if (data?.remote && inputUpper === "P") {
-      void data.remote.regeneratePersistentToken()
-        .then((result) => {
-          setPersistentMaskedToken(result.maskedToken ?? null);
-          setStatusMsg(t("tui.settingsPersistentTokenRegenerated", "Persistent token regenerated"));
-        })
-        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
-
-    if (data?.remote && inputUpper === "L") {
-      setTtlInputValue(String(localSettings.remoteShortLivedTtlMs));
-      setTtlInputMode(true);
-      setStatusMsg(t("tui.settingsEnterTtl", "Enter TTL milliseconds and press Enter"));
-      return;
-    }
-
-    if (data?.remote && inputUpper === "U") {
-      void handleFetchRemoteUrl("persistent")
-        .then(() => setStatusMsg(t("tui.settingsRemoteUrlFetched", "Remote URL fetched")))
-        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
-
-    if (data?.remote && inputUpper === "K") {
-      void handleFetchRemoteQr("persistent")
-        .then(() => setStatusMsg(t("tui.settingsQrFetched", "QR payload fetched")))
-        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
 
     if (!detailFocused) {
       if (key.upArrow || input === "k") {
@@ -2664,6 +2600,87 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
     }
 
     if (!selectedDef) return;
+
+    if (selectedDef.type === "enum" && selectedDef.options) {
+      const current = localSettings[selectedDef.key];
+      const idx = typeof current === "string" ? selectedDef.options.indexOf(current) : -1;
+      if (key.rightArrow || input === "l") {
+        const next = selectedDef.options[(idx + 1) % selectedDef.options.length];
+        const updated = { ...localSettings, [selectedDef.key]: next };
+        setLocalSettings(updated);
+        void saveField({ [selectedDef.key]: next });
+        if (selectedDef.key === "remoteActiveProvider" && data?.remote) {
+          void data.remote.activateProvider(next as "tailscale" | "cloudflare").catch(() => {});
+        }
+        return;
+      }
+      if (key.leftArrow || input === "h") {
+        const prev = selectedDef.options[(idx - 1 + selectedDef.options.length) % selectedDef.options.length];
+        const updated = { ...localSettings, [selectedDef.key]: prev };
+        setLocalSettings(updated);
+        void saveField({ [selectedDef.key]: prev });
+        if (selectedDef.key === "remoteActiveProvider" && data?.remote) {
+          void data.remote.activateProvider(prev as "tailscale" | "cloudflare").catch(() => {});
+        }
+        return;
+      }
+    }
+
+    if (data?.remote && input === "C") {
+      const provider = localSettings.remoteActiveProvider;
+      if (!provider) {
+        setStatusMsg(t("tui.settingsSelectProviderFirst", "Select a remote provider first"));
+      } else {
+        void data.remote.activateProvider(provider)
+          .then(() => refreshRemoteStatus())
+          .then(() => setStatusMsg(t("tui.settingsActivatedProvider", "Activated provider: {{provider}}", { provider })))
+          .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      }
+      return;
+    }
+
+    if (data?.remote && input === "V") {
+      void data.remote.startTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStarting", "Remote tunnel starting")))
+        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+
+    if (data?.remote && input === "X") {
+      void data.remote.stopTunnel().then(() => refreshRemoteStatus()).then(() => setStatusMsg(t("tui.settingsTunnelStopped", "Remote tunnel stopped")))
+        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+
+    if (data?.remote && input === "P") {
+      void data.remote.regeneratePersistentToken()
+        .then((result) => {
+          setPersistentMaskedToken(result.maskedToken ?? null);
+          setStatusMsg(t("tui.settingsPersistentTokenRegenerated", "Persistent token regenerated"));
+        })
+        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+
+    if (data?.remote && input === "L") {
+      setTtlInputValue(String(localSettings.remoteShortLivedTtlMs));
+      setTtlInputMode(true);
+      setStatusMsg(t("tui.settingsEnterTtl", "Enter TTL milliseconds and press Enter"));
+      return;
+    }
+
+    if (data?.remote && input === "U") {
+      void handleFetchRemoteUrl("persistent")
+        .then(() => setStatusMsg(t("tui.settingsRemoteUrlFetched", "Remote URL fetched")))
+        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
+
+    if (data?.remote && input === "K") {
+      void handleFetchRemoteQr("persistent")
+        .then(() => setStatusMsg(t("tui.settingsQrFetched", "QR payload fetched")))
+        .catch((err) => setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      return;
+    }
 
     if (selectedDef.type === "boolean" && input === " ") {
       const current = localSettings[selectedDef.key] as boolean;
@@ -2692,30 +2709,6 @@ function SettingsInteractiveView({ state, controller }: { state: DashboardState;
       }
     }
 
-    if (selectedDef.type === "enum" && selectedDef.options) {
-      const current = localSettings[selectedDef.key] as string;
-      const idx = selectedDef.options.indexOf(current);
-      if (key.rightArrow || input === "l") {
-        const next = selectedDef.options[(idx + 1) % selectedDef.options.length];
-        const updated = { ...localSettings, [selectedDef.key]: next };
-        setLocalSettings(updated);
-        void saveField({ [selectedDef.key]: next });
-        if (selectedDef.key === "remoteActiveProvider" && data?.remote) {
-          void data.remote.activateProvider(next as "tailscale" | "cloudflare").catch(() => {});
-        }
-        return;
-      }
-      if (key.leftArrow || input === "h") {
-        const prev = selectedDef.options[(idx - 1 + selectedDef.options.length) % selectedDef.options.length];
-        const updated = { ...localSettings, [selectedDef.key]: prev };
-        setLocalSettings(updated);
-        void saveField({ [selectedDef.key]: prev });
-        if (selectedDef.key === "remoteActiveProvider" && data?.remote) {
-          void data.remote.activateProvider(prev as "tailscale" | "cloudflare").catch(() => {});
-        }
-        return;
-      }
-    }
   });
 
   function renderValue(def: SettingDef, settings: SettingsValues): React.ReactNode {

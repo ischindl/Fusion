@@ -1,19 +1,23 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { CentralCore, TaskStore } from "@fusion/core";
 import { createServer } from "@fusion/dashboard";
 import { ProjectEngineManager } from "@fusion/engine";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
 
 const require = createRequire(import.meta.url);
+const cliModuleDir = dirname(fileURLToPath(import.meta.url));
 
 export interface RunDesktopOptions {
   dev?: boolean;
   paused?: boolean;
   interactive?: boolean;
+  noAuth?: boolean;
 }
 
 interface DashboardRuntime {
@@ -24,31 +28,7 @@ interface DashboardRuntime {
   centralCore?: CentralCore;
 }
 
-function runCommand(command: string, args: string[], cwd: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: "inherit",
-      env: process.env,
-    });
-
-    child.on("error", (error) => reject(error));
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`));
-    });
-  });
-}
-
-async function buildDesktopArtifacts(rootDir: string): Promise<void> {
-  await runCommand("pnpm", ["--filter", "@fusion/desktop", "build"], rootDir);
-}
-
-async function startDashboardRuntime(rootDir: string, paused: boolean): Promise<DashboardRuntime> {
+async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: boolean): Promise<DashboardRuntime> {
   const store = new TaskStore(rootDir);
   let server: import("node:http").Server | null = null;
   let engineManager: ProjectEngineManager | undefined;
@@ -87,6 +67,11 @@ async function startDashboardRuntime(rootDir: string, paused: boolean): Promise<
       engine: cwdEngine,
       engineManager,
       centralCore,
+      /*
+       * FNXC:DesktopLauncher 2026-07-01-20:19:
+       * `fusion desktop --no-auth` is a compatibility flag for users who learned the dashboard launcher semantics. Propagate it to the embedded dashboard server explicitly so desktop routing never treats it as an unknown flag or falls back to source-workspace discovery.
+       */
+      noAuth,
       onProjectFirstAccessed: (projectId: string) => engineManager?.onProjectAccessed(projectId),
     });
     server = app.listen(0);
@@ -145,17 +130,53 @@ function terminateProcess(child: ChildProcess | null, signal: NodeJS.Signals = "
   child.kill(signal);
 }
 
-export async function runDesktop(options: RunDesktopOptions = {}): Promise<void> {
-  const rootDir = process.cwd();
-
-  if (!options.dev) {
-    await buildDesktopArtifacts(rootDir);
+function resolveDevDesktopEntry(rootDir: string): string {
+  const desktopEntry = join(rootDir, "packages", "desktop", "dist", "main.js");
+  if (existsSync(desktopEntry)) {
+    return desktopEntry;
   }
 
-  const runtime = await startDashboardRuntime(rootDir, Boolean(options.paused));
+  throw new Error(
+    `Fusion desktop dev entry is missing at ${desktopEntry}. Run \`pnpm --filter @fusion/desktop build\` from a Fusion source checkout before using \`fusion desktop --dev\`.`,
+  );
+}
+
+function resolvePackagedDesktopEntry(): string {
+  const override = process.env.FUSION_DESKTOP_ENTRY;
+  if (override) {
+    const resolvedOverride = isAbsolute(override) ? override : resolve(process.cwd(), override);
+    if (existsSync(resolvedOverride)) {
+      return resolvedOverride;
+    }
+    throw new Error(`Fusion desktop runtime override is missing: ${resolvedOverride}`);
+  }
+
+  const packagedEntry = resolve(cliModuleDir, "desktop", "main.js");
+  if (existsSync(packagedEntry)) {
+    return packagedEntry;
+  }
+
+  const sourceCheckoutEntry = resolve(cliModuleDir, "..", "..", "dist", "desktop", "main.js");
+  if (existsSync(sourceCheckoutEntry)) {
+    return sourceCheckoutEntry;
+  }
+
+  /*
+   * FNXC:DesktopLauncher 2026-07-01-20:04:
+   * Installed `fusion desktop` must never infer a source workspace from the caller's cwd or run pnpm there. When package assets are absent, fail with a Fusion-owned runtime diagnostic instead of letting unrelated package.json/template JSON parse errors gate startup. The bundled CLI entry lives in dist, so the packaged runtime is dist/desktop/main.js; the source-checkout fallback only supports tests and direct TS execution without inspecting the caller's workspace.
+   */
+  throw new Error(
+    `Fusion desktop runtime asset is missing: ${packagedEntry}. Reinstall @runfusion/fusion or set FUSION_DESKTOP_ENTRY to a built Fusion desktop main.js.`,
+  );
+}
+
+export async function runDesktop(options: RunDesktopOptions = {}): Promise<void> {
+  const rootDir = process.cwd();
+  const desktopEntry = options.dev ? resolveDevDesktopEntry(rootDir) : resolvePackagedDesktopEntry();
+
+  const runtime = await startDashboardRuntime(rootDir, Boolean(options.paused), Boolean(options.noAuth));
 
   const electronBinary = resolveElectronBinary();
-  const desktopEntry = join(rootDir, "packages", "desktop", "dist", "main.js");
   const electronArgs = ["--enable-source-maps", desktopEntry, ...(options.dev ? ["--dev"] : [])];
 
   // Build environment for Electron process

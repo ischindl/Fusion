@@ -328,10 +328,15 @@ export const DEFAULT_PROJECT_SETTINGS = {
   showWorktreeGrouping: false,
   openTasksInRightSidebar: false,
   /*
-  FNXC:MobileTaskPopups 2026-06-29-00:00:
-  Default off preserves current mobile board-card task detail behavior. The dashboard only consults this project setting for mobile board-card clicks without a deep tab, and reuses the existing task pop-out surface without changing desktop/right-dock routing.
+  FNXC:MobileTaskPopups 2026-07-01-12:00:
+  Default off preserves current board-card task detail behavior. The dashboard only consults this project setting for ordinary board-card clicks without a deep tab across mobile, tablet, and desktop viewports, and reuses the existing task pop-out surface before falling back to right-dock or main-panel routing.
   */
   openMobileTasksInPopup: false,
+  /*
+  FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+  Project task-detail defaults are Activity-first unless this opt-in is true. Keeping the default false preserves explicit deep-link ids while making omitted non-done task opens land on Activity → Live.
+  */
+  taskDetailChatFirst: false,
   executorAllowSiblingBranchRename: false,
   worktreeNaming: "random",
   worktrunk: {
@@ -479,6 +484,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   githubCommentTemplate: undefined,
   githubCloseSourceIssueOnDone: false,
   githubTrackingEnabledByDefault: false,
+  githubLinkImportedIssuesToTracking: false,
   githubTrackingDefaultRepo: undefined,
   githubTrackingDedupEnabled: true,
   githubAuthMode: "gh-cli",
@@ -541,6 +547,11 @@ export const DEFAULT_PROJECT_SETTINGS = {
   */
   quickChatCloseOnOutsideClick: true,
   showQuickChatFAB: false,
+  /*
+  FNXC:ChatModal 2026-07-01-00:00:
+  Task-scoped planner chats stay available from each task's Chat tab, but the common Chat feed hides them by default. This project-level opt-in preserves the previous populated-task-chat feed behavior only for operators who request it.
+  */
+  showTaskChatsInCommonFeed: false,
   chatAutoCleanupDays: 0,
   mailAutoCleanupDays: 0,
   operationalLogRetentionDays: 30,

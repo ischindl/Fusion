@@ -63,6 +63,12 @@ function getExactCssRuleBlock(css: string, selector: string): string {
   return ruleMatch?.[1] ?? "";
 }
 
+function getStandaloneCssRuleBlock(css: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ruleMatch = css.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  return ruleMatch?.[1] ?? "";
+}
+
 function getCssAtRuleBlockContainingExactRule(css: string, atRule: string, selector: string): string {
   let startAt = 0;
   while (startAt < css.length) {
@@ -88,35 +94,112 @@ function expectTabTouchAction(ruleBlock: string, surface: string): void {
   expect(ruleBlock, `${surface} touch-action`).toContain("touch-action: pan-x pan-y;");
 }
 
+function expectNoSpacingOverrides(ruleBlock: string, surface: string): void {
+  expect(ruleBlock, `${surface} padding`).not.toMatch(/\bpadding(?:-[\w-]+)?:/);
+  expect(ruleBlock, `${surface} margin`).not.toMatch(/\bmargin(?:-[\w-]+)?:/);
+  expect(ruleBlock, `${surface} gap`).not.toMatch(/(?:^|\s)gap:/);
+}
+
 describe("TaskDetailModal", () => {
   describe("mobile responsive structure", () => {
     it("keeps planner chat composer usable on narrow task-detail layouts", () => {
       const css = readDashboardStylesSource();
+      const modelBlock = getExactCssRuleBlock(css, ".task-planner-chat-empty-model");
+      const expandOverlayBlock = getExactCssRuleBlock(css, ".task-planner-chat-expand-toggle--overlay");
       const composerBlock = getExactCssRuleBlock(css, ".task-planner-chat-composer");
       const inputBlock = getExactCssRuleBlock(css, ".task-planner-chat-input");
       const mobileBlock = getCssAtRuleBlockContaining(css, "@media (max-width: 768px)", ".task-planner-chat-composer");
       const mobileComposerBlock = getCssRuleBlock(mobileBlock, ".task-planner-chat-composer");
+      const mobileInputBlock = getCssRuleBlock(mobileBlock, ".task-planner-chat-input");
       const mobileSendBlock = getCssRuleBlock(mobileBlock, ".task-planner-chat-send");
 
       expectBaseRule(css, ".task-planner-chat", "display: flex;");
+      expectBaseRule(css, ".task-planner-chat", "position: relative;");
+      expectBaseRule(css, ".task-planner-chat", "min-height: 0;");
       expectBaseRule(css, ".task-planner-chat-transcript", "overflow: auto;");
+      expectBaseRule(css, ".task-planner-chat-transcript", "min-height: 0;");
+      expect(expandOverlayBlock).toContain("position: absolute;");
+      expect(expandOverlayBlock).toContain("top: var(--space-sm);");
+      expect(expandOverlayBlock).toContain("right: var(--space-sm);");
+      expect(css).not.toContain(".task-planner-chat-header");
+      expect(modelBlock).toContain("display: inline-flex;");
+      expect(modelBlock).toContain("position: absolute;");
+      expect(modelBlock).toContain("top: 0;");
+      expect(modelBlock).toContain("left: 0;");
+      expect(modelBlock).toContain("inline-size: calc(var(--space-2xl) - var(--space-xs));");
+      expect(modelBlock).not.toContain("text-overflow: ellipsis;");
+      expect(css).toMatch(/\.task-planner-chat-empty\s*\{[^}]*margin:\s*0 auto auto;/);
       expect(composerBlock).toContain("display: flex;");
       expect(composerBlock).toContain("flex-wrap: wrap;");
       expect(composerBlock).toContain("align-items: stretch;");
+      expect(composerBlock).toContain("flex: 0 0 auto;");
       expect(composerBlock).not.toContain("flex-direction: column;");
-      expect(inputBlock).toContain("height: calc(var(--space-lg) + (var(--space-sm) * 2) + (var(--btn-border-width) * 2));");
-      expect(inputBlock).toContain("min-height: calc(var(--space-lg) + (var(--space-sm) * 2) + (var(--btn-border-width) * 2));");
+      expect(inputBlock).toContain("height: calc(var(--space-2xl) + var(--space-sm));");
+      expect(inputBlock).toContain("min-height: calc(var(--space-2xl) + var(--space-sm));");
       expect(inputBlock).not.toContain("min-height: 5rem;");
-      expect(mobileComposerBlock).toContain("flex-direction: column;");
-      expect(mobileComposerBlock).toContain("align-items: stretch;");
+      expect(mobileComposerBlock).toContain("flex-direction: row;");
+      expect(mobileComposerBlock).toContain("flex-wrap: nowrap;");
+      expect(mobileComposerBlock).toContain("align-items: flex-end;");
+      expect(mobileInputBlock).toContain("height: calc(var(--space-2xl) + var(--space-lg));");
+      expect(mobileInputBlock).toContain("min-height: calc(var(--space-2xl) + var(--space-lg));");
+      expect(mobileInputBlock).toContain("max-height: calc(var(--space-2xl) + var(--space-lg));");
+      expect(mobileInputBlock).toContain("resize: none;");
       expect(mobileSendBlock).toContain("justify-content: center;");
-      expect(mobileSendBlock).toContain("width: 100%;");
+      expect(mobileSendBlock).toContain("inline-size: calc(var(--space-2xl) + var(--space-lg));");
+      expect(mobileSendBlock).toContain("min-block-size: calc(var(--space-2xl) + var(--space-lg));");
       expectBaseRule(css, ".task-planner-chat-starters", "grid-template-columns: repeat(2, minmax(0, 1fr));");
-      expectBaseRule(css, ".task-planner-chat-message .chat-question-response", "overflow-wrap: anywhere;");
+      expectBaseRule(css, ".task-planner-chat .chat-question-response", "overflow-wrap: anywhere;");
       expect(mobileBlock).toContain(".task-planner-chat-starters");
       expect(mobileBlock).toContain("grid-template-columns: 1fr;");
-      expect(mobileBlock).toContain(".task-planner-chat-message .chat-question-response");
+      expect(mobileBlock).toContain(".task-planner-chat .chat-question-response");
       expect(mobileBlock).toContain("margin-inline: 0;");
+
+      const detailCss = readDashboardStylesSource();
+      const plannerExpandedMetaBlock = getExactCssRuleBlock(detailCss, ".task-detail-content--planner-chat-expanded .detail-meta");
+      expectBaseRule(detailCss, ".detail-body--planner-chat", "overflow-y: hidden;");
+      expectBaseRule(detailCss, ".detail-section--planner-chat", "min-height: 0;");
+      expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-provenance");
+      expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .modal-actions");
+      expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-tabs");
+      expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-meta-inline-controls");
+      expect(detailCss).not.toContain(".task-detail-content--planner-chat-expanded .detail-heading-row");
+      expect(detailCss).not.toMatch(/\.task-detail-content--planner-chat-expanded \.detail-timestamps\s*\{/);
+      expect(detailCss).toContain(".task-detail-content--planner-chat-expanded .detail-timestamps .detail-timestamp-item");
+      expect(detailCss).not.toMatch(/\.task-detail-content--planner-chat-expanded \.detail-meta,\s*\.task-detail-content--planner-chat-expanded \.detail-near-duplicate-banner/);
+      expect(detailCss).not.toMatch(/\.task-detail-content--planner-chat-expanded \.detail-tabs,\s*\.task-detail-content--planner-chat-expanded \.branch-group-card/);
+      expect(plannerExpandedMetaBlock).toContain("flex: 0 0 auto;");
+    });
+
+    it("keeps Planner Chat expand spacing identical across desktop and mobile", () => {
+      const css = readDashboardStylesSource();
+      const plannerBodySpacingStart = css.indexOf("Planner Chat expand/collapse may reallocate height");
+      expect(plannerBodySpacingStart).toBeGreaterThanOrEqual(0);
+      const plannerBodySpacingCss = css.slice(plannerBodySpacingStart, css.indexOf(".detail-title", plannerBodySpacingStart));
+      const plannerBodyBlock = getExactCssRuleBlock(plannerBodySpacingCss, ".detail-body--planner-chat");
+      const plannerPanelBlock = getExactCssRuleBlock(css, ".task-planner-chat");
+      const plannerTranscriptBlock = getExactCssRuleBlock(css, ".task-planner-chat-transcript");
+      const plannerComposerBlock = getExactCssRuleBlock(css, ".task-planner-chat-composer");
+      const expandedPlannerBodyBlock = getExactCssRuleBlock(css, ".task-detail-content--planner-chat-expanded .detail-body--planner-chat");
+      const expandedPlannerSectionBlock = getExactCssRuleBlock(css, ".task-detail-content--planner-chat-expanded .detail-section--planner-chat");
+      const mobilePlannerBlock = getCssAtRuleBlockContaining(css, "@media (max-width: 768px)", ".detail-body--planner-chat");
+      const mobilePlannerBodyBlock = getStandaloneCssRuleBlock(mobilePlannerBlock, ".detail-body--planner-chat");
+      const mobileExpandedPlannerBodyBlock = getExactCssRuleBlock(mobilePlannerBlock, ".task-detail-content--planner-chat-expanded .detail-body--planner-chat");
+
+      expect(plannerBodyBlock).toContain("padding: var(--space-md);");
+      expect(expandedPlannerBodyBlock).toContain("flex: 1;");
+      expect(expandedPlannerBodyBlock).toContain("min-height: 0;");
+      expect(expandedPlannerBodyBlock).toContain("padding: var(--space-md);");
+      expect(expandedPlannerSectionBlock).toContain("flex: 1;");
+      expect(expandedPlannerSectionBlock).toContain("min-height: 0;");
+      expectNoSpacingOverrides(expandedPlannerSectionBlock, "desktop expanded planner section");
+      expect(mobilePlannerBodyBlock).toContain("padding: var(--space-sm);");
+      expect(mobileExpandedPlannerBodyBlock).toBe("");
+      expect(plannerPanelBlock).toContain("gap: var(--space-md);");
+      expect(plannerTranscriptBlock).toContain("padding: var(--space-md);");
+      expect(plannerTranscriptBlock).toContain("gap: var(--space-md);");
+      expect(plannerComposerBlock).toContain("gap: var(--space-sm);");
+      expect(css).not.toMatch(/task-detail-content--planner-chat-expanded[^{]+\.(?:task-planner-chat|task-planner-chat-transcript|task-planner-chat-composer)\s*\{[^}]*(?:padding|margin|gap)\s*:/);
+      expect(css).not.toMatch(/task-detail-content--planner-chat-expanded[^{]+\.detail-body--planner-chat\s*\{[^}]*(?:margin|gap)\s*:/);
     });
 
     it("keeps detail metadata as a single wrapping flex row without mobile column fallbacks", () => {
@@ -147,7 +230,7 @@ describe("TaskDetailModal", () => {
 
       expect(css).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.detail-timestamps\s*\{[^}]*align-items:\s*center;[^}]*flex-wrap:\s*nowrap;/);
       expect(css).not.toMatch(/@media[^{]*\(max-width: 768px\)[^{]*\{[\s\S]*?\.detail-timestamps\s*\{[^}]*flex-direction:\s*column;/);
-      expect(css).not.toMatch(/@media[^{]*\(max-width: 768px\)[^{]*\{[\s\S]*?\.detail-timestamp-separator\s*\{[^}]*display:\s*none;/);
+      expect(css).toContain(".task-detail-content--planner-chat-expanded .detail-timestamps .detail-timestamp-separator");
     });
 
     it("keeps the canonical workflow badge owned by the timestamp group across breakpoints", () => {
@@ -200,6 +283,50 @@ describe("TaskDetailModal", () => {
       expect(tabletModalBlock).not.toContain("16px");
     });
 
+    it("keeps Plan prompt surfaces full-width across modal, embedded, and mobile task-detail layouts", () => {
+      const css = readDashboardStylesSource();
+      const planBlock = getExactCssRuleBlock(css, ".detail-section--plan-prompt");
+      const planSurfaceBlock = getExactCssRuleBlock(css, ".detail-section--plan-prompt .markdown-body,\n.detail-section--plan-prompt .detail-prompt,\n.detail-section--plan-prompt .spec-loading,\n.detail-section--plan-prompt .spec-editor-edit-mode,\n.detail-section--plan-prompt .spec-editor-revision,\n.detail-section--plan-prompt .spec-editor-textarea,\n.detail-section--plan-prompt .spec-editor-feedback");
+      const embeddedPlanBlock = getExactCssRuleBlock(css, ".task-detail-content--embedded .detail-section--plan-prompt");
+      const editModeBlock = getExactCssRuleBlock(css, ".spec-editor-edit-mode");
+      const textareaBlock = getExactCssRuleBlock(css, ".spec-editor-textarea");
+      const feedbackBlock = getExactCssRuleBlock(css, ".spec-editor-feedback");
+      const actionsBlock = getExactCssRuleBlock(css, ".spec-editor-actions-row");
+      const revisionActionsBlock = getExactCssRuleBlock(css, ".spec-editor-revision-actions");
+      const mobileBlock = getCssAtRuleBlockContaining(css, "@media (max-width: 768px)", ".detail-section--plan-prompt .spec-editor-actions-row");
+
+      for (const [surface, block] of [
+        ["Plan wrapper", planBlock],
+        ["Plan prompt descendants", planSurfaceBlock],
+        ["embedded Plan wrapper", embeddedPlanBlock],
+        ["edit mode", editModeBlock],
+        ["textarea", textareaBlock],
+        ["feedback", feedbackBlock],
+        ["save/cancel actions", actionsBlock],
+        ["AI revision actions", revisionActionsBlock],
+      ] as const) {
+        expect(block, `${surface} width`).toContain("width: 100%;");
+        expect(block, `${surface} min-width`).toContain("min-width: 0;");
+        expect(block, `${surface} max-width`).toContain("max-width: 100%;");
+      }
+
+      expect(planBlock).toContain("display: flex;");
+      expect(planBlock).toContain("flex-direction: column;");
+      expect(planSurfaceBlock).toContain("box-sizing: border-box;");
+      expect(textareaBlock).toContain("box-sizing: border-box;");
+      expect(feedbackBlock).toContain("box-sizing: border-box;");
+      expect(actionsBlock).toContain("flex-wrap: wrap;");
+      expect(revisionActionsBlock).toContain("flex-wrap: wrap;");
+      expect(mobileBlock).toContain(".detail-section--plan-prompt .spec-editor-actions-row,");
+      expect(mobileBlock).toContain(".detail-section--plan-prompt .spec-editor-revision-actions");
+      expect(mobileBlock).toContain("align-items: stretch;");
+      expect(mobileBlock).toContain("flex-wrap: wrap;");
+      expect(mobileBlock).toContain(".detail-section--plan-prompt .spec-editor-actions-row .btn,");
+      expect(mobileBlock).toContain(".detail-section--plan-prompt .spec-editor-revision-actions .btn");
+      expect(mobileBlock).toContain("flex: 1 1 auto;");
+      expect(css).not.toMatch(/\.detail-section\s*\{[^}]*width:\s*100%;/);
+    });
+
     it("keeps task-detail tabs as horizontal scrollers across modal, embedded, mobile, and tablet surfaces", () => {
       const css = readDashboardStylesSource();
       const baseTabsBlock = getExactCssRuleBlock(css, ".detail-tabs");
@@ -232,6 +359,49 @@ describe("TaskDetailModal", () => {
       expect(detailBodyBlock).toContain("min-width: 0;");
       expect(detailBodyBlock).not.toContain("overflow-x: auto;");
       expect(detailBodyBlock).not.toContain("overflow: hidden;");
+    });
+
+    it("keeps the Activity tab dropdown portal-safe and reachable on mobile", () => {
+      const css = readDashboardStylesSource();
+      const tabDropdownBlock = getExactCssRuleBlock(css, ".detail-tab-dropdown");
+      const activityTabBlock = getExactCssRuleBlock(css, ".detail-tab--activity");
+      const menuBlock = getExactCssRuleBlock(css, ".activity-view-menu");
+      const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".activity-view-menu");
+      const mobileMenuBlock = getExactCssRuleBlock(mobileBlock, ".activity-view-menu");
+
+      expect(tabDropdownBlock).toContain("position: relative;");
+      expect(tabDropdownBlock).toContain("flex-shrink: 0;");
+      expect(activityTabBlock).toContain("display: inline-flex;");
+      expect(activityTabBlock).toContain("gap: var(--space-xs);");
+      expect(menuBlock).toContain("position: fixed;");
+      expect(menuBlock).toContain("z-index: 1000;");
+      expect(menuBlock).toContain("padding: var(--space-xs);");
+      expect(menuBlock).toContain("overflow-y: auto;");
+      expect(menuBlock).not.toContain("position: absolute;");
+      expect(menuBlock).not.toContain("inset-block-start");
+      expect(menuBlock).not.toContain("inset-inline-start");
+      expect(menuBlock).not.toContain("min-inline-size: 100%;");
+      expect(mobileMenuBlock).toContain("max-inline-size: calc(100vw - (var(--space-md) * 2));");
+      expect(css).not.toContain(".activity-view-select");
+      expect(css).not.toContain(".activity-segmented-control");
+      expect(css).not.toContain(".activity-segment");
+    });
+
+    it("keeps Activity Live/Feed expand controls overlaid without a mobile toolbar row", () => {
+      const css = readDashboardStylesSource();
+      const overlayBlock = getExactCssRuleBlock(css, ".activity-expand-toggle--overlay");
+      const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".activity-expand-toggle--overlay");
+      const mobileOverlayBlock = getExactCssRuleBlock(mobileBlock, ".activity-expand-toggle--overlay");
+
+      expect(css).not.toContain(".activity-toolbar");
+      expect(css).not.toContain("activity-toolbar--expand-only");
+      expect(css).toContain(".detail-activity {\n  position: relative;\n  padding-inline-end: calc(var(--space-2xl) + var(--space-md));\n}");
+      expect(overlayBlock).toContain("position: absolute;");
+      expect(overlayBlock).toContain("top: var(--space-md);");
+      expect(overlayBlock).toContain("right: var(--space-md);");
+      expect(mobileBlock).toContain("  .detail-activity {\n    padding-inline-end: calc(var(--space-2xl) + var(--space-lg));\n  }");
+      expect(mobileOverlayBlock).toContain("top: var(--space-sm);");
+      expect(mobileOverlayBlock).toContain("right: var(--space-sm);");
     });
 
     it("renders responsive structural classes (modal-lg, overlay, spacer, tabs, detail-body)", () => {

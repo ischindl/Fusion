@@ -6,7 +6,8 @@ import type { WorkflowSettingDefinition } from "./workflow-ir-types.js";
  *
  * `BUILTIN_MOVED_WORKFLOW_SETTINGS` is the U4 moved-key catalog: keys that
  * formerly lived in `DEFAULT_PROJECT_SETTINGS` and are tombstoned by
- * `MOVED_SETTINGS_KEYS`. Keep those defaults byte-equal to the legacy literals.
+ * `MOVED_SETTINGS_KEYS`. Defaults should stay aligned with engine fallback
+ * literals; intentional product-default changes must update both together.
  *
  * `BUILTIN_TRIAGE_POLICY_SETTINGS` is workflow-native triage/spec policy. These
  * keys never lived in `DEFAULT_PROJECT_SETTINGS`, are NOT part of the U4
@@ -29,12 +30,11 @@ import type { WorkflowSettingDefinition } from "./workflow-ir-types.js";
  * (`builtin-coding-workflow-ir.ts`, `builtin-stepwise-coding-workflow-ir.ts`) so
  * the catalog has exactly one definition.
  *
- * Each `default` here MUST be byte-equal to the corresponding literal in
- * `DEFAULT_PROJECT_SETTINGS` (`settings-schema.ts`) — this is the parity anchor
- * for the U4 hard-move migration. The U1 test
- * (`workflow-ir-settings.test.ts`) asserts strict equality against the legacy
- * literals. Keys with `undefined` legacy defaults (the per-phase model lanes)
- * omit `default` entirely, which round-trips to the same effective value.
+ * Each `default` here must stay aligned with the corresponding engine read-site
+ * fallback literal so projects without stored workflow values execute with the
+ * same policy the Workflow Editor displays. Keys with `undefined` legacy
+ * defaults (the per-phase model lanes) omit `default` entirely, which
+ * round-trips to the same effective value.
  *
  * NOTE: these declarations are inert in U1 — nothing reads them until the
  * effective-settings resolver and engine integration land (U3). Adding them does
@@ -51,7 +51,11 @@ export const BUILTIN_MOVED_WORKFLOW_SETTINGS: WorkflowSettingDefinition[] = [
     id: "workflowStepTimeoutMs",
     name: "Step timeout (ms)",
     type: "number",
-    default: 360_000,
+    /*
+     * FNXC:WorkflowReview 2026-07-01-08:09:
+     * Code Review steps can exceed the old six-minute default on ordinary dashboard changes. Use a fifteen-minute workflow-step default so every project without an override gets enough reviewer time while keeping runaway sessions bounded.
+     */
+    default: 900_000,
     description: "Maximum time a single workflow step may run before it is timed out.",
   },
   {

@@ -339,6 +339,150 @@ describe("SettingsModal", () => {
         });
         expect(mockStartRemoteTunnel).toHaveBeenCalled();
       });
+
+      it("main Settings Save persists Tailscale and lifecycle remote fields without starting a tunnel", async () => {
+        await settingsModalUser.click(screen.getByLabelText("Tailscale"));
+        await settingsModalUser.click(screen.getByLabelText("Accept routes"));
+        await openAdvancedSettings();
+        await settingsModalUser.click(screen.getByLabelText("Remember last running state"));
+        await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => {
+          expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(
+            expect.objectContaining({
+              remoteAccess: expect.objectContaining({
+                activeProvider: "tailscale",
+                providers: expect.objectContaining({
+                  tailscale: expect.objectContaining({
+                    enabled: true,
+                    acceptRoutes: true,
+                  }),
+                }),
+                lifecycle: expect.objectContaining({
+                  rememberLastRunning: true,
+                }),
+              }),
+            }),
+          );
+        });
+        expect(mockUpdateRemoteSettings).not.toHaveBeenCalled();
+        expect(mockStartRemoteTunnel).not.toHaveBeenCalled();
+      });
+    });
+
+    it("reopens with Remote Access checkboxes checked after main Settings Save", async () => {
+      const firstRender = await renderModalSection("remote", "Remote Access");
+      await settingsModalUser.click(screen.getByLabelText("Tailscale"));
+      await settingsModalUser.click(screen.getByLabelText("Accept routes"));
+      await openAdvancedSettings();
+      await settingsModalUser.click(screen.getByLabelText("Remember last running state"));
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(
+          expect.objectContaining({
+            remoteAccess: expect.objectContaining({
+              providers: expect.objectContaining({
+                tailscale: expect.objectContaining({ acceptRoutes: true }),
+              }),
+              lifecycle: expect.objectContaining({ rememberLastRunning: true }),
+            }),
+          }),
+        );
+      });
+      expect(mockUpdateRemoteSettings).not.toHaveBeenCalled();
+      expect(mockStartRemoteTunnel).not.toHaveBeenCalled();
+
+      firstRender.unmount();
+      mockFetchRemoteSettings.mockResolvedValueOnce({
+        settings: {
+          remoteActiveProvider: "tailscale",
+          remoteTailscaleEnabled: true,
+          remoteTailscaleHostname: "",
+          remoteTailscaleTargetPort: 4040,
+          remoteTailscaleAcceptRoutes: true,
+          remoteCloudflareEnabled: false,
+          remoteCloudflareQuickTunnel: true,
+          remoteCloudflareTunnelName: "",
+          remoteCloudflareTunnelToken: null,
+          remoteCloudflareIngressUrl: "",
+          remotePersistentToken: null,
+          remoteShortLivedEnabled: false,
+          remoteShortLivedTtlMs: 900000,
+          remoteShortLivedMaxTtlMs: 86400000,
+          remoteRememberLastRunning: true,
+          remoteWasRunningOnShutdown: false,
+          remoteLastStartedProvider: null,
+        },
+      });
+
+      await renderModalSection("remote", "Remote Access");
+      expect(await screen.findByLabelText("Accept routes")).toBeChecked();
+      await openAdvancedSettings();
+      expect(screen.getByLabelText("Remember last running state")).toBeChecked();
+    });
+
+    it("preserves populated remote provider and token branches on main Settings Save", async () => {
+      mockFetchRemoteSettings.mockResolvedValueOnce({
+        settings: {
+          remoteActiveProvider: "cloudflare",
+          remoteTailscaleEnabled: true,
+          remoteTailscaleHostname: "tail.example.ts.net",
+          remoteTailscaleTargetPort: 4040,
+          remoteTailscaleAcceptRoutes: false,
+          remoteCloudflareEnabled: true,
+          remoteCloudflareQuickTunnel: false,
+          remoteCloudflareTunnelName: "demo-tunnel",
+          remoteCloudflareTunnelToken: "cf-secret-token",
+          remoteCloudflareIngressUrl: "https://remote.example.com",
+          remotePersistentToken: "frt_••••",
+          remoteShortLivedEnabled: true,
+          remoteShortLivedTtlMs: 120000,
+          remoteShortLivedMaxTtlMs: 86400000,
+          remoteRememberLastRunning: false,
+          remoteWasRunningOnShutdown: true,
+          remoteLastStartedProvider: "cloudflare",
+        },
+      });
+
+      await renderModalSection("remote", "Remote Access");
+      await settingsModalUser.click(screen.getByLabelText("Tailscale"));
+      await settingsModalUser.click(screen.getByLabelText("Accept routes"));
+      await openAdvancedSettings();
+      await settingsModalUser.click(screen.getByLabelText("Remember last running state"));
+      await settingsModalUser.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        expect(mockUpdateGlobalSettings).toHaveBeenCalledWith(
+          expect.objectContaining({
+            remoteAccess: expect.objectContaining({
+              activeProvider: "tailscale",
+              providers: expect.objectContaining({
+                tailscale: expect.objectContaining({
+                  enabled: true,
+                  hostname: "tail.example.ts.net",
+                  acceptRoutes: true,
+                }),
+                cloudflare: expect.objectContaining({
+                  enabled: true,
+                  quickTunnel: false,
+                  tunnelName: "demo-tunnel",
+                  tunnelToken: "cf-secret-token",
+                  ingressUrl: "https://remote.example.com",
+                }),
+              }),
+              tokenStrategy: expect.objectContaining({
+                shortLived: expect.objectContaining({ enabled: true, ttlMs: 120000 }),
+              }),
+              lifecycle: expect.objectContaining({
+                rememberLastRunning: true,
+                wasRunningOnShutdown: true,
+                lastRunningProvider: "cloudflare",
+              }),
+            }),
+          }),
+        );
+      });
     });
 
     it("renders remote-status-bar with stopped state and omits share block when not running", async () => {

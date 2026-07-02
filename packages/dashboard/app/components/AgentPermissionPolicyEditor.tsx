@@ -1,4 +1,5 @@
 import "./AgentPermissionPolicyEditor.css";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -8,6 +9,7 @@ import {
   type AgentPermissionPolicy,
   type AgentPermissionPolicyDisposition,
   type AgentPermissionPolicyRules,
+  type AgentPermissionPolicyToolRules,
 } from "@fusion/core";
 
 type Mode = "project-default" | "agent-override";
@@ -15,12 +17,27 @@ type Mode = "project-default" | "agent-override";
 interface Props {
   value: AgentPermissionPolicy | undefined;
   projectDefault?: Partial<AgentPermissionPolicyRules>;
+  projectDefaultToolRules?: AgentPermissionPolicyToolRules;
   mode: Mode;
   onChange(next: AgentPermissionPolicy | undefined): void;
   disabled?: boolean;
 }
 
 const DISPOSITIONS: AgentPermissionPolicyDisposition[] = ["allow", "require-approval", "block"];
+const EXACT_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function getKnownToolRuleOptions(): string[] {
+  const exempt = new Set(AGENT_PERMISSION_POLICY_EXEMPT_TOOL_EXAMPLES);
+  const names = new Set<string>();
+  for (const examples of Object.values(AGENT_PERMISSION_POLICY_CATEGORY_TOOL_EXAMPLES)) {
+    for (const example of examples) {
+      if (EXACT_TOOL_NAME_PATTERN.test(example) && !exempt.has(example)) {
+        names.add(example);
+      }
+    }
+  }
+  return [...names].sort();
+}
 
 function getCategoryLabels(t: TFunction<"app">): Record<string, { label: string; description: string }> {
   return {
@@ -90,12 +107,22 @@ function derivePresetFromRules(rules: AgentPermissionPolicyRules): AgentPermissi
   return "custom";
 }
 
-export function AgentPermissionPolicyEditor({ value, projectDefault, mode, onChange, disabled = false }: Props) {
+export function AgentPermissionPolicyEditor({ value, projectDefault, projectDefaultToolRules, mode, onChange, disabled = false }: Props) {
   const { t } = useTranslation("app");
   const categoryLabels = getCategoryLabels(t as TFunction<"app">);
+  const knownToolOptions = useMemo(() => getKnownToolRuleOptions(), []);
+  const [pendingToolName, setPendingToolName] = useState("fn_task_create");
+  const [pendingDisposition, setPendingDisposition] = useState<AgentPermissionPolicyDisposition>("block");
   const derivedPreset = value ? derivePresetFromRules(value.rules) : "unrestricted";
   const currentPreset = mode === "agent-override" && !value ? "inherit" : (value?.presetId === "custom" ? derivedPreset : (value?.presetId ?? "unrestricted"));
   const rules = value?.rules ?? buildAllowRules();
+  const toolRules = value?.toolRules ?? {};
+  const toolRuleEntries = Object.entries(toolRules).sort(([a], [b]) => a.localeCompare(b));
+
+  const withToolRules = (policy: Omit<AgentPermissionPolicy, "toolRules">): AgentPermissionPolicy => ({
+    ...policy,
+    ...(Object.keys(toolRules).length > 0 ? { toolRules: { ...toolRules } } : {}),
+  });
 
   const setPreset = (preset: string) => {
     if (mode === "agent-override" && preset === "inherit") {
@@ -103,10 +130,10 @@ export function AgentPermissionPolicyEditor({ value, projectDefault, mode, onCha
       return;
     }
     if (preset === "custom") {
-      onChange({ presetId: "custom", rules: { ...rules } });
+      onChange(withToolRules({ presetId: "custom", rules: { ...rules } }));
       return;
     }
-    onChange({ presetId: preset as AgentPermissionPolicy["presetId"], rules: getPresetRules(preset as "unrestricted" | "approval-required" | "locked-down") });
+    onChange(withToolRules({ presetId: preset as AgentPermissionPolicy["presetId"], rules: getPresetRules(preset as "unrestricted" | "approval-required" | "locked-down") }));
   };
 
   const setRule = (category: keyof AgentPermissionPolicyRules, next: string) => {
@@ -114,11 +141,32 @@ export function AgentPermissionPolicyEditor({ value, projectDefault, mode, onCha
       if (!value) return;
       const nextRules = { ...value.rules };
       nextRules[category] = projectDefault?.[category] ?? "allow";
-      onChange({ presetId: "custom", rules: nextRules });
+      onChange(withToolRules({ presetId: "custom", rules: nextRules }));
       return;
     }
     const nextRules = { ...rules, [category]: next as AgentPermissionPolicyDisposition };
-    onChange({ presetId: "custom", rules: nextRules });
+    onChange(withToolRules({ presetId: "custom", rules: nextRules }));
+  };
+
+  const setToolRule = (rawToolName: string, disposition: AgentPermissionPolicyDisposition) => {
+    const toolName = rawToolName.trim();
+    if (!toolName || !EXACT_TOOL_NAME_PATTERN.test(toolName)) return;
+    const nextToolRules = { ...toolRules, [toolName]: disposition };
+    onChange({ presetId: "custom", rules: { ...rules }, toolRules: nextToolRules });
+  };
+
+  const removeToolRule = (toolName: string) => {
+    const nextToolRules = { ...toolRules };
+    delete nextToolRules[toolName];
+    onChange({
+      presetId: "custom",
+      rules: { ...rules },
+      ...(Object.keys(nextToolRules).length > 0 ? { toolRules: nextToolRules } : {}),
+    });
+  };
+
+  const addPendingToolRule = () => {
+    setToolRule(pendingToolName, pendingDisposition);
   };
 
   return (
@@ -181,6 +229,104 @@ export function AgentPermissionPolicyEditor({ value, projectDefault, mode, onCha
           );
         })}
       </div>
+
+      <section className="agent-policy-tool-rules" aria-labelledby="agent-policy-tool-rules-heading">
+        <div className="agent-policy-tool-rules-header">
+          <div>
+            <h4 id="agent-policy-tool-rules-heading">{t("agentPolicy.exactToolOverrides", "Exact tool overrides")}</h4>
+            <p>{t("agentPolicy.exactToolOverridesDescription", "Override one governed tool by exact name before its category rule. Heartbeat-critical exempt tools stay non-configurable.")}</p>
+          </div>
+        </div>
+
+        {toolRuleEntries.length === 0 ? (
+          <div className="agent-policy-tool-empty" data-testid="agent-policy-tool-empty">
+            {t("agentPolicy.noExactToolOverrides", "No exact tool overrides configured.")}
+          </div>
+        ) : (
+          <div className="agent-policy-tool-list" data-testid="agent-policy-tool-list">
+            {toolRuleEntries.map(([toolName, disposition]) => {
+              const inheritedToolDisposition = projectDefaultToolRules?.[toolName];
+              return (
+                <div className="agent-policy-tool-row" key={toolName} data-testid="agent-policy-tool-row">
+                  <label>
+                    <span>{t("agentPolicy.toolName", "Tool name")}</span>
+                    <input className="input" value={toolName} disabled readOnly />
+                  </label>
+                  <label>
+                    <span>{t("agentPolicy.toolDisposition", "Disposition")}</span>
+                    <select
+                      className="select"
+                      aria-label={t("agentPolicy.toolDispositionFor", "Disposition for {{toolName}}", { toolName })}
+                      value={disposition}
+                      onChange={(event) => setToolRule(toolName, event.target.value as AgentPermissionPolicyDisposition)}
+                      disabled={disabled}
+                    >
+                      {DISPOSITIONS.map((option) => (
+                        <option key={option} value={option}>{getDispositionLabel(t as TFunction<"app">, option)}</option>
+                      ))}
+                    </select>
+                    {mode === "agent-override" && inheritedToolDisposition ? (
+                      <small className="agent-policy-inherit-note">
+                        {t("agentPolicy.projectDefaultExactTool", "project default exact rule")}: {getDispositionLabel(t as TFunction<"app">, inheritedToolDisposition)}
+                      </small>
+                    ) : null}
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    aria-label={t("agentPolicy.removeToolOverride", "Remove exact override for {{toolName}}", { toolName })}
+                    onClick={() => removeToolRule(toolName)}
+                    disabled={disabled}
+                  >
+                    {t("agentPolicy.remove", "Remove")}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="agent-policy-tool-add" data-testid="agent-policy-tool-add">
+          <label>
+            <span>{t("agentPolicy.toolName", "Tool name")}</span>
+            <input
+              className="input"
+              list="agent-policy-known-tools"
+              value={pendingToolName}
+              onChange={(event) => setPendingToolName(event.target.value)}
+              disabled={disabled}
+              aria-label={t("agentPolicy.toolOverrideTool", "Tool override tool")}
+            />
+            <datalist id="agent-policy-known-tools">
+              {knownToolOptions.map((toolName) => (
+                <option key={toolName} value={toolName} />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            <span>{t("agentPolicy.toolDisposition", "Disposition")}</span>
+            <select
+              className="select"
+              value={pendingDisposition}
+              onChange={(event) => setPendingDisposition(event.target.value as AgentPermissionPolicyDisposition)}
+              disabled={disabled}
+              aria-label={t("agentPolicy.toolOverrideDisposition", "Tool override disposition")}
+            >
+              {DISPOSITIONS.map((option) => (
+                <option key={option} value={option}>{getDispositionLabel(t as TFunction<"app">, option)}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={addPendingToolRule}
+            disabled={disabled || !EXACT_TOOL_NAME_PATTERN.test(pendingToolName.trim())}
+          >
+            {toolRules[pendingToolName.trim()] ? t("agentPolicy.updateToolOverride", "Update override") : t("agentPolicy.addToolOverride", "Add override")}
+          </button>
+        </div>
+      </section>
 
       <details className="agent-policy-exempt" open={false}>
         <summary>{t("agentPolicy.exemptTools", "Tools exempt from approval policy")}</summary>

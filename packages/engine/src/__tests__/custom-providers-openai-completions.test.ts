@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { completeSimple } from "@earendil-works/pi-ai";
-import { convertMessages } from "@earendil-works/pi-ai/openai-completions";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
+/*
+FNXC:Dependencies 2026-07-01-08:16:
+The pi 0.80 SDK keeps compatibility helpers under ./compat and exposes provider internals through the documented ./api/* export map instead of the previous root-level openai-completions subpath.
+*/
+import { convertMessages } from "@earendil-works/pi-ai/api/openai-completions";
 import { customProviderRegistryKey, type CustomProvider } from "@fusion/core";
 
 function createSseResponse(): Response {

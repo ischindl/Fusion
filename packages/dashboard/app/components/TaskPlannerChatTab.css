@@ -1,35 +1,52 @@
 .task-planner-chat {
+  position: relative;
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: var(--space-md);
-  min-height: min(60vh, 42rem);
+  min-height: 0;
 }
 
-.task-planner-chat-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-md);
-}
-
-.task-planner-chat-header h4 {
-  margin: 0;
-  color: var(--text);
-}
-
-.task-planner-chat-header p {
-  margin: var(--space-xs) 0 0;
-  color: var(--text-muted);
-}
-
-.task-planner-chat-model {
+/*
+FNXC:TaskDetailPlannerChat 2026-07-02-00:28:
+Planner Chat should not render a redundant in-panel title/header. The transcript starts at the top of the chat area, the expand button floats over the view, and the planning model/provider icon appears only as a small empty-state affordance.
+*/
+.task-planner-chat-expand-toggle {
   flex: 0 0 auto;
+  min-inline-size: calc(var(--space-2xl) - var(--space-xs));
+  min-block-size: calc(var(--space-2xl) - var(--space-xs));
+  padding: 0;
+}
+
+/*
+FNXC:TaskDetailPlannerChat 2026-07-02-00:16:
+Planner Chat expansion should use the same in-view floating affordance as Activity Live/Feed, not a header action that shifts layout. Anchor it to the chat panel so it remains visible while the transcript scrolls.
+*/
+.task-planner-chat-expand-toggle--overlay {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  z-index: 3;
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.task-planner-chat-empty-model {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  inline-size: calc(var(--space-2xl) - var(--space-xs));
+  block-size: calc(var(--space-2xl) - var(--space-xs));
   border: var(--btn-border-width) solid var(--border);
-  border-radius: var(--radius-pill);
-  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius);
+  padding: 0;
   color: var(--text-muted);
   background: var(--surface-subtle);
-  font-size: var(--font-size-xs);
 }
 
 .task-planner-chat-error {
@@ -42,7 +59,7 @@
 
 .task-planner-chat-transcript {
   flex: 1 1 auto;
-  min-height: 16rem;
+  min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -55,7 +72,6 @@
 
 .task-planner-chat-state,
 .task-planner-chat-empty {
-  margin: auto;
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -63,12 +79,24 @@
   text-align: center;
 }
 
+.task-planner-chat-state {
+  margin: auto;
+}
+
 .task-planner-chat-empty {
+  position: relative;
   flex-direction: column;
   width: 100%;
   max-width: 42rem;
+  margin: 0 auto auto;
   gap: var(--space-lg);
+  padding-top: var(--space-md);
 }
+
+/*
+FNXC:TaskDetailPlannerChat 2026-07-02-00:41:
+An empty Planner Chat transcript should enter at the top of the chat surface instead of auto-centering or inheriting the message auto-scroll-to-bottom behavior. Once real messages exist, message streaming still scrolls to the latest entry.
+*/
 
 .task-planner-chat-empty-copy {
   display: flex;
@@ -119,39 +147,6 @@
   line-height: var(--line-height-tight);
 }
 
-.task-planner-chat-message {
-  max-width: min(42rem, 92%);
-  border: var(--btn-border-width) solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--surface-subtle);
-}
-
-.task-planner-chat-message--user {
-  align-self: flex-end;
-  background: var(--surface-hover);
-}
-
-.task-planner-chat-message--assistant,
-.task-planner-chat-message--system {
-  align-self: flex-start;
-}
-
-.task-planner-chat-message-role {
-  margin-bottom: var(--space-xs);
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-}
-
-.task-planner-chat-message-content > :first-child {
-  margin-top: 0;
-}
-
-.task-planner-chat-message-content > :last-child {
-  margin-bottom: 0;
-}
-
 .task-planner-chat-steering-confirmation {
   margin-top: var(--space-sm);
   border: var(--btn-border-width) solid var(--color-success);
@@ -180,17 +175,27 @@
   color: var(--text-muted);
 }
 
-.task-planner-chat-message .chat-question-response {
+.task-planner-chat .chat-question-response {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
 
 /*
 FNXC:TaskDetailPlannerChat 2026-06-30-00:00:
-The Planner Chat composer should behave like a compact input/button row on desktop: match the textarea's default height to the Send button and let flex wrapping, not a forced column, decide when the controls no longer fit inline.
+The Planner Chat composer should behave like a compact input/button row on desktop: match the textarea's default height to the Activity chat input and let flex wrapping, not a forced column, decide when the controls no longer fit inline.
+
+FNXC:TaskDetailPlannerChat 2026-06-30-23:58:
+Keep the composer outside the transcript scroller and make the panel fill the modal body. Loading, errors, starters, history, and streaming content scroll inside `.task-planner-chat-transcript`, while the input row remains pinned and reachable in normal and mobile-expanded detail layouts.
+
+FNXC:TaskDetailPlannerChat 2026-06-30-20:06:
+Planner Chat must keep visual height parity with Activity chat: desktop textareas use the Activity compact min-height token, and the stacked mobile composer switches to the Activity mobile touch-height token without hardcoded dimensions.
+
+FNXC:TaskDetailPlannerChat 2026-07-01-23:54:
+Mobile Planner Chat should match regular task chat: keep the composer as a single input row with a one-line textarea and a square send affordance on the right instead of stacking the labeled button below the input.
 */
 .task-planner-chat-composer {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: stretch;
   gap: var(--space-sm);
@@ -200,25 +205,47 @@ The Planner Chat composer should behave like a compact input/button row on deskt
   box-sizing: border-box;
   flex: 1 1 calc(var(--space-2xl) * 8);
   min-width: min(100%, calc(var(--space-2xl) * 8));
-  height: calc(var(--space-lg) + (var(--space-sm) * 2) + (var(--btn-border-width) * 2));
-  min-height: calc(var(--space-lg) + (var(--space-sm) * 2) + (var(--btn-border-width) * 2));
+  height: calc(var(--space-2xl) + var(--space-sm));
+  min-height: calc(var(--space-2xl) + var(--space-sm));
+  max-height: var(--task-chat-composer-max-height, 40vh);
   padding: var(--btn-padding);
   resize: vertical;
 }
 
 .task-planner-chat-send {
   flex: 0 0 auto;
+  min-block-size: calc(var(--space-2xl) + var(--space-sm));
 }
 
 @media (max-width: 768px) {
   .task-planner-chat {
-    min-height: 70vh;
+    min-height: 0;
   }
 
-  .task-planner-chat-header,
+  .task-planner-chat-expand-toggle {
+    min-inline-size: var(--space-2xl);
+    min-block-size: var(--space-2xl);
+  }
+
+  .task-planner-chat-expand-toggle--overlay {
+    top: var(--space-sm);
+    right: var(--space-sm);
+  }
+
   .task-planner-chat-composer {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: flex-end;
+    gap: var(--space-xs);
+  }
+
+  .task-planner-chat-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: calc(var(--space-2xl) + var(--space-lg));
+    min-height: calc(var(--space-2xl) + var(--space-lg));
+    max-height: calc(var(--space-2xl) + var(--space-lg));
+    resize: none;
   }
 
   .task-planner-chat-starters {
@@ -226,15 +253,37 @@ The Planner Chat composer should behave like a compact input/button row on deskt
   }
 
   .task-planner-chat-send {
+    --btn-icon-size: calc(var(--space-2xl) + var(--space-sm));
+    flex: 0 0 auto;
     justify-content: center;
-    width: 100%;
+    inline-size: calc(var(--space-2xl) + var(--space-lg));
+    min-inline-size: calc(var(--space-2xl) + var(--space-lg));
+    block-size: calc(var(--space-2xl) + var(--space-lg));
+    min-block-size: calc(var(--space-2xl) + var(--space-lg));
+    padding: 0;
   }
 
-  .task-planner-chat-message {
+  /*
+  FNXC:TaskDetailPlannerChat 2026-07-01-08:09:
+  Mobile Planner Chat hides compact action text labels, but the shared thinking/streaming stop affordance draws its icon with `.chat-input-stop-icon` on a span. Exclude that icon span so the stop button never becomes an empty-looking shell while preserving the first-tap send/stop button contract.
+  */
+  .task-planner-chat-send span:not(.chat-input-stop-icon) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .task-planner-chat .chat-message {
     max-width: 100%;
   }
 
-  .task-planner-chat-message .chat-question-response {
+  .task-planner-chat .chat-question-response {
     margin-inline: 0;
   }
 }

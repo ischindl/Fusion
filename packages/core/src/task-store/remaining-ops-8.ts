@@ -31,7 +31,6 @@ import { ActivityLogRow } from "./row-types.js";
 import { ActivityEventType, ActivityLogEntry, AgentLogEntry, ArchivedTaskEntry, DEFAULT_SETTINGS, Settings, Task } from "../types.js";
 import { eq } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
-import { compileWorkflowToSteps, isInterpreterDeferredWorkflowCompileError } from "../workflow-compiler.js";
 import { WorkflowDefinition, WorkflowDefinitionInput, WorkflowNodeLayout } from "../workflow-definition-types.js";
 import { WorkflowIr } from "../workflow-ir-types.js";
 import { downgradeIrToV1IfPure, parseWorkflowIr, serializeWorkflowIr } from "../workflow-ir.js";
@@ -611,19 +610,10 @@ export async function materializeExplicitWorkflowStepsImpl(store: TaskStore,
     if (def.kind === "fragment") {
       throw new Error(`Workflow '${workflowId}' is a fragment and cannot be selected for a task`);
     }
-    let inputs: import("../types.js").WorkflowStepInput[];
-    try {
-      inputs = compileWorkflowToSteps(def.ir);
-    } catch (err) {
-      if (isBuiltinWorkflowId(workflowId) && isInterpreterDeferredWorkflowCompileError(err))
-        return { workflowId, stepIds: resolveDefaultOnOptionalGroupIds(def.ir) };
-      throw err;
-    }
-    // FNXC:WorkflowOptionalGroup 2026-06-21-14:20: same defaultOn-group seeding as
-    // the default-workflow path, for an explicitly requested create-time workflow.
-    const defaultGroupIds = resolveDefaultOnOptionalGroupIds(def.ir);
-    const stepIds = await store.materializeWorkflowSteps(workflowId, inputs);
-    return { workflowId, stepIds: [...stepIds, ...defaultGroupIds] };
+    // FNXC:LegacyWorkflowEngineRemoval 2026-07-02-00:00:
+    // FN-7360 removed the legacy linear compiler; validation is now parseWorkflowIr.
+    parseWorkflowIr(def.ir);
+    return { workflowId, stepIds: resolveDefaultOnOptionalGroupIds(def.ir) };
 }
 
 export async function selectTaskWorkflowAndReconcileImpl(store: TaskStore,

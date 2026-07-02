@@ -1478,8 +1478,20 @@ describe("PluginRunner", () => {
       );
     });
 
-    it("should invoke onTaskCompleted when task moves to done", async () => {
-      mockPluginLoader.invokeHook = vi.fn();
+    it("should invoke onTaskCompleted through the loader seam when task moves to done", async () => {
+      const completedHook = vi.fn();
+      const runtimeCtx = {
+        pluginId: "test-plugin",
+        taskStore: mockTaskStore,
+        settings: {},
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        emitEvent: vi.fn(),
+      };
+      mockPluginLoader.invokeHook = vi.fn(async (hookName: keyof FusionPlugin["hooks"], ...args: unknown[]) => {
+        if (hookName === "onTaskCompleted") {
+          completedHook(args[0], runtimeCtx);
+        }
+      });
       await pluginRunner.init();
       
       // Find the task:moved handler
@@ -1499,6 +1511,15 @@ describe("PluginRunner", () => {
       expect(mockPluginLoader.invokeHook).toHaveBeenCalledWith(
         "onTaskCompleted",
         mockTask
+      );
+      expect(completedHook).toHaveBeenCalledWith(
+        mockTask,
+        expect.objectContaining({
+          taskStore: mockTaskStore,
+          settings: {},
+          logger: expect.any(Object),
+          emitEvent: expect.any(Function),
+        })
       );
     });
 

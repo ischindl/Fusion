@@ -26,8 +26,9 @@ import {
 // ── Mock Setup ──────────────────────────────────────────────────────────────
 
 // Mock summarizeTitle using vi.hoisted so it's available at module hoisting time
-const { mockSummarizeTitle } = vi.hoisted(() => ({
+const { mockSummarizeTitle, mockEmitWorkflowSseEvent } = vi.hoisted(() => ({
   mockSummarizeTitle: vi.fn(),
+  mockEmitWorkflowSseEvent: vi.fn(),
 }));
 
 vi.mock("@fusion/core", async (importOriginal) => ({
@@ -41,6 +42,10 @@ vi.mock("@fusion/core", async (importOriginal) => ({
     }
     return { id: normalized, type };
   },
+}));
+
+vi.mock("../sse.js", () => ({
+  emitWorkflowSseEvent: mockEmitWorkflowSseEvent,
 }));
 
 // SessionManager is constructed per-chat for CLI session continuity. We don't
@@ -393,7 +398,7 @@ describe("ChatManager.sendMessage", () => {
   // mutation, settings, selection, and trait vocabulary to the agent when a
   // scoped task store is available.
   it("exposes the full workflow authoring surface to the chat agent when a task store is present", async () => {
-    let capturedTools: Array<{ name: string }> = [];
+    let capturedTools: Array<{ name: string; execute?: (...args: any[]) => Promise<any> }> = [];
     __setCreateFnAgent(async (options: any) => {
       capturedTools = options.customTools ?? [];
       return {
@@ -405,7 +410,19 @@ describe("ChatManager.sendMessage", () => {
       };
     });
 
-    const chatManager = createChatManagerWithTaskStore();
+    const createWorkflowDefinition = vi.fn().mockResolvedValue({ id: "WF-chat", name: "Chat Created" });
+    const chatManager = new ChatManager(
+      mockChatStore as any,
+      "/tmp/test",
+      mockAgentStore as any,
+      undefined,
+      undefined,
+      undefined,
+      {
+        createWorkflowDefinition,
+        getFusionDir: () => "/tmp/test/.fusion",
+      } as any,
+    );
     await chatManager.sendMessage("chat-001", "Author me a workflow");
 
     const names = capturedTools.map((t) => t.name);
@@ -421,6 +438,27 @@ describe("ChatManager.sendMessage", () => {
     ]) {
       expect(names).toContain(required);
     }
+
+    const createTool = capturedTools.find((tool) => tool.name === "fn_workflow_create");
+    await createTool?.execute?.("call-workflow-create", {
+      name: "Chat Created",
+      ir: {
+        nodes: [{ id: "n1", kind: "execute", config: { cliSkipApproval: true, autoApprove: true } }],
+        edges: [],
+        columns: [],
+      },
+    });
+
+    expect(createWorkflowDefinition).toHaveBeenCalledWith(expect.objectContaining({
+      ir: expect.objectContaining({
+        nodes: [expect.objectContaining({ config: {} })],
+      }),
+    }));
+    expect(mockEmitWorkflowSseEvent).toHaveBeenCalledWith(
+      "workflow:created",
+      expect.objectContaining({ id: "WF-chat", name: "Chat Created" }),
+      undefined,
+    );
   });
 
   it("exposes fn_task_document_* tools to the chat agent when a task store is present", async () => {
@@ -1321,10 +1359,15 @@ describe("ChatManager.sendMessage", () => {
     expect(createOptions.systemPrompt).toContain("Activity transcript loaded");
     expect(createOptions.systemPrompt).toContain("fn_ask_question");
     expect(createOptions.systemPrompt).toContain("Do not create steering for ordinary questions");
+    expect(createOptions.systemPrompt).toContain("fn_task_planner_get_task_metrics");
+    expect(createOptions.systemPrompt).toContain("token counts, input/output/cache usage, model cost");
+    expect(createOptions.systemPrompt).toContain("state that uncertainty instead of inventing a number");
+    expect(createOptions.systemPrompt).toContain("ordinary status/progress/metrics questions");
     expect(createOptions.systemPrompt).toContain("Ask a clarifying question");
     expect(createOptions.systemPrompt).toContain("credential/secrets");
     expect(createOptions.systemPrompt).toContain("destructive removals");
     expect(createOptions.customTools.map((tool: { name: string }) => tool.name)).toContain("fn_task_planner_add_steering");
+    expect(createOptions.customTools.map((tool: { name: string }) => tool.name)).toContain("fn_task_planner_get_task_metrics");
     expect(mockChatStore.addMessage).toHaveBeenCalledWith("chat-001", expect.objectContaining({
       role: "user",
       content: "How should I plan this?",
@@ -1335,6 +1378,122 @@ describe("ChatManager.sendMessage", () => {
     }));
     expect(taskStore.getTask).toHaveBeenNthCalledWith(1, "FN-7310", { activityLogLimit: 20 });
     expect(taskStore.getTask).toHaveBeenCalledWith("FN-7309");
+  });
+
+  it("exposes read-only metrics through the task-scoped planner tool", async () => {
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "task-planner:FN-7310",
+      status: "active",
+    });
+
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+
+    const taskStore = {
+      getTask: vi.fn().mockResolvedValue({
+        id: "FN-7310",
+        title: "Metric task",
+        column: "done",
+        status: "complete",
+        tokenUsage: {
+          inputTokens: 1000,
+          outputTokens: 200,
+          cachedTokens: 50,
+          cacheWriteTokens: 10,
+          totalTokens: 1260,
+          firstUsedAt: "2026-07-01T10:00:00.000Z",
+          lastUsedAt: "2026-07-01T10:10:00.000Z",
+          modelProvider: "test-provider",
+          modelId: "model-a",
+        },
+        executionStartedAt: "2026-07-01T10:00:00.000Z",
+        executionCompletedAt: "2026-07-01T10:02:00.000Z",
+        log: [{ timestamp: "2026-07-01T10:01:00.000Z", action: "[timing] setup completed in 500ms" }],
+        workflowStepResults: [],
+      }),
+      addSteeringComment: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+    const getSettings = vi.fn(async () => ({
+      modelPricingOverrides: {
+        "test-provider:model-a": { inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: 0.5, cacheWritePer1M: 1.5, source: "test" },
+      },
+    }));
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, getSettings as any, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "How much did this task cost?");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const metricsTool = createOptions.customTools.find((tool: { name: string }) => tool.name === "fn_task_planner_get_task_metrics");
+    expect(metricsTool.parameters).toEqual({ type: "object", properties: {}, additionalProperties: false });
+
+    taskStore.getTask.mockClear();
+    const result = await metricsTool.execute("call-1", { task_id: "FN-OTHER" });
+
+    expect(taskStore.getTask).toHaveBeenCalledTimes(1);
+    expect(taskStore.getTask).toHaveBeenCalledWith("FN-7310", { activityLogLimit: 100 });
+    expect(taskStore.addSteeringComment).not.toHaveBeenCalled();
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Task FN-7310 metrics");
+    expect(result.details).toMatchObject({
+      taskId: "FN-7310",
+      tokens: {
+        totalTokens: 1260,
+        cost: { costUnavailable: false, pricingStale: false },
+        perModel: [expect.objectContaining({ key: "test-provider:model-a", totalTokens: 1260 })],
+      },
+      timing: {
+        endToEndExecutionMs: 120_000,
+        logTimingDurationMs: 500,
+        timingEventCount: 1,
+      },
+    });
+    expect(result.details.tokens.cost.usd).toBeCloseTo(0.00144);
+    expect(result.details.tokens.perModel[0].cost.usd).toBeCloseTo(0.00144);
+  });
+
+  it("returns a safe scoped error when planner metrics cannot load the current task", async () => {
+    mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "task-planner:FN-MISSING", status: "active" });
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+    const taskStore = {
+      getTask: vi.fn().mockRejectedValue(new Error("not found")),
+      addSteeringComment: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+    };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "How many tokens?");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const metricsTool = createOptions.customTools.find((tool: { name: string }) => tool.name === "fn_task_planner_get_task_metrics");
+    const result = await metricsTool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.details).toEqual({ taskId: "FN-MISSING", error: "not found" });
+    expect(result.content[0].text).toContain("Could not load metrics for the current task FN-MISSING");
+    expect(taskStore.addSteeringComment).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the current-task metrics tool outside synthetic task planner chat", async () => {
+    mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "agent-001", status: "active" });
+    const createResolvedSession = vi.fn(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+    __setCreateResolvedAgentSession(createResolvedSession as any);
+    const taskStore = { getTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+
+    await chatManager.sendMessage("chat-001", "How many tokens did FN-7310 use?");
+
+    const createOptions = createResolvedSession.mock.calls[0]?.[0];
+    const toolNames = (createOptions.customTools ?? []).map((tool: { name: string }) => tool.name);
+    expect(toolNames).not.toContain("fn_task_planner_get_task_metrics");
   });
 
   it("adds steering through the task-scoped planner tool without accepting a caller task id", async () => {
@@ -1568,15 +1727,15 @@ describe("ChatManager.sendMessage", () => {
     }));
   });
 
-  it("does not allow fallback when the chat session has a specific non-default model selected", async () => {
+  it("allows fallback when the chat session explicitly selects Sonnet 5", async () => {
     let createOptions: any;
     mockChatStore.getSession.mockReturnValue({
       id: "chat-001",
       agentId: "agent-001",
       status: "active",
-      title: "Explicit Model Chat",
-      modelProvider: "openai-codex",
-      modelId: "gpt-5.3-codex",
+      title: "Explicit Sonnet 5 Chat",
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-5",
     });
 
     __setCreateFnAgent(async (options: any) => {
@@ -1584,7 +1743,12 @@ describe("ChatManager.sendMessage", () => {
       return {
         session: {
           prompt: vi.fn().mockImplementation(async function (this: any) {
-            this.state.messages = [{ role: "assistant", content: "Primary reply" }];
+            await options.onFallbackModelUsed?.({
+              primaryModel: "anthropic/claude-sonnet-5",
+              fallbackModel: "zai/glm-5.1",
+              triggerPoint: "prompt-time",
+            });
+            this.state.messages = [{ role: "assistant", content: "Fallback reply" }];
           }),
           dispose: vi.fn(),
           state: { messages: [] as Array<{ role: string; content: string }> },
@@ -1601,8 +1765,60 @@ describe("ChatManager.sendMessage", () => {
 
     await chatManager.sendMessage("chat-001", "Hello");
 
-    expect(createOptions.fallbackProvider).toBeUndefined();
-    expect(createOptions.fallbackModelId).toBeUndefined();
+    expect(createOptions.defaultProvider).toBe("anthropic");
+    expect(createOptions.defaultModelId).toBe("claude-sonnet-5");
+    expect(createOptions.fallbackProvider).toBe("zai");
+    expect(createOptions.fallbackModelId).toBe("glm-5.1");
+    expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", {
+      modelProvider: "zai",
+      modelId: "glm-5.1",
+    });
+    const assistantCall = mockChatStore.addMessage.mock.calls.find((call) => call[1].role === "assistant");
+    expect(assistantCall?.[1]).toEqual(expect.objectContaining({
+      content: "Fallback reply",
+      metadata: {
+        fallback: {
+          primaryModel: "anthropic/claude-sonnet-5",
+          fallbackModel: "zai/glm-5.1",
+          triggerPoint: "prompt-time",
+        },
+      },
+    }));
+  });
+
+  it("persists actionable Sonnet 5 provider detail when no fallback is configured", async () => {
+    const sonnet5NotFoundError =
+      'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Not found"},"request_id":"req_011CcawcZ3Ra9CennJXM8oWC"}';
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      title: "Explicit Sonnet 5 Chat",
+      modelProvider: "anthropic",
+      modelId: "claude-sonnet-5",
+    });
+
+    __setCreateFnAgent(async () => ({
+      session: {
+        prompt: vi.fn().mockRejectedValue(new Error(sonnet5NotFoundError)),
+        dispose: vi.fn(),
+        state: { messages: [] },
+      },
+    }));
+
+    const chatManager = createChatManagerWithSettings({
+      defaultProvider: "anthropic",
+      defaultModelId: "claude-sonnet-4-5",
+    });
+
+    await chatManager.sendMessage("chat-001", "Hello");
+
+    const failureCall = mockChatStore.addMessage.mock.calls.find(
+      (call) => call[1].role === "assistant" && call[1].metadata?.failureInfo,
+    );
+    expect(failureCall?.[1].content).toContain("claude-sonnet-5");
+    expect(failureCall?.[1].metadata.failureInfo.summary).toContain("not_found_error");
+    expect(failureCall?.[1].metadata.failureInfo.summary).not.toBe("Response failed");
   });
 
   it("persists thinking output even when no text was generated", async () => {
@@ -2750,6 +2966,38 @@ describe("ChatManager generation isolation", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  it("sendRoomMessage does not expose the task-planner metrics tool to room responders", async () => {
+    (mockChatStore as any).getRoom = vi.fn().mockReturnValue({ id: "room-1", name: "team", projectId: "project-1" });
+    (mockChatStore as any).listRoomMembers = vi.fn().mockReturnValue([
+      { roomId: "room-1", agentId: "agent-001", role: "member", addedAt: "2026-01-01" },
+    ]);
+    (mockChatStore as any).addRoomMessage = vi.fn().mockImplementation((_roomId: string, input: any) => ({
+      id: input.role === "user" ? "user-room-msg" : "assistant-room-msg",
+      roomId: "room-1",
+      ...input,
+    }));
+    mockAgentStore.listAgents.mockResolvedValue([{ id: "agent-001", name: "Avery", role: "executor", state: "idle" }]);
+    mockAgentStore.getAgent.mockResolvedValue({ id: "agent-001", name: "Avery", role: "executor", state: "idle" });
+
+    let capturedTools: Array<{ name: string }> = [];
+    __setCreateResolvedAgentSession(async (options: any) => {
+      capturedTools = options.customTools ?? [];
+      return {
+        session: {
+          prompt: vi.fn().mockResolvedValue(undefined),
+          dispose: vi.fn(),
+          state: { messages: [{ role: "assistant", content: "Room answer" }] },
+        },
+      };
+    });
+
+    const taskStore = { getTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
+    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    await chatManager.sendRoomMessage("room-1", "How many tokens did FN-7310 use?");
+
+    expect(capturedTools.map((tool) => tool.name)).not.toContain("fn_task_planner_get_task_metrics");
   });
 
   it("sendRoomMessage persists assistant room replies", async () => {

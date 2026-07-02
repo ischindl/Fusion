@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getViewportMode, MOBILE_MEDIA_QUERY, useViewportMode } from "../useViewportMode";
+import { getViewportMode, isMobileViewport, MOBILE_MEDIA_QUERY, useViewportMode } from "../useViewportMode";
 
 const TABLET_MEDIA_QUERY = "(min-width: 769px) and (max-width: 1024px)";
 const MOBILE_WIDTH_MEDIA_QUERY = "(max-width: 768px)";
@@ -153,6 +153,33 @@ describe("useViewportMode", () => {
 
     expect(getViewportMode()).toBe("mobile");
     expect(renderHook(() => useViewportMode()).result.current).toBe("mobile");
+  });
+
+  it("treats touch visualViewport width as mobile on folded Android panes", () => {
+    stubScreen(390, 844);
+    installViewportMedia({ width: false, height: false, tablet: true });
+    const originalVisualViewport = window.visualViewport;
+    const originalMaxTouchPoints = navigator.maxTouchPoints;
+    Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 1 });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: {
+        width: 390,
+        height: 700,
+        offsetTop: 0,
+        offsetLeft: 0,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+    });
+
+    try {
+      expect(isMobileViewport()).toBe(true);
+      expect(getViewportMode()).toBe("mobile");
+    } finally {
+      Object.defineProperty(window, "visualViewport", { configurable: true, value: originalVisualViewport });
+      Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: originalMaxTouchPoints });
+    }
   });
 
   it("falls back to width-only mobile detection when screen data is unavailable", () => {

@@ -41,7 +41,6 @@ vi.mock("../../api", () => ({
   createWorkflow: vi.fn(),
   updateWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
-  compileWorkflow: vi.fn(),
   exportWorkflow: vi.fn(),
   importWorkflow: vi.fn(),
   designWorkflow: vi.fn(),
@@ -81,7 +80,6 @@ import {
   fetchTraits,
   fetchStepParsers,
   updateWorkflow,
-  compileWorkflow,
   createWorkflow,
   deleteWorkflow,
   fetchModels,
@@ -996,7 +994,6 @@ describe("WorkflowNodeEditor", () => {
       ...v2Def(),
       ...(updates as object),
     }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
 
@@ -1711,7 +1708,6 @@ describe("WorkflowNodeEditor — U10 columns/traits/holds", () => {
       ...v2Def(),
       ...(updates as object),
     }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -1744,7 +1740,6 @@ describe("WorkflowNodeEditor — U10 columns/traits/holds", () => {
       ...v2Def(),
       ...(updates as object),
     }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     // Wait for the column panel to hydrate before saving — saving earlier
@@ -1990,7 +1985,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("auto-populates a step-execute child when a foreach is added from the palette", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...v2Def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2029,7 +2023,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("adds an optional-group from the palette and round-trips its template on save", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...v2Def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2079,7 +2072,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("edits optional-group maxRevisions and unbounded revision mode", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([optionalGroupDef()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...optionalGroupDef(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2102,7 +2094,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("persists optional-group unbounded maxRevisions mode", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([optionalGroupDef()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...optionalGroupDef(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2127,7 +2118,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
     opt.config = { ...opt.config, maxRevisions: 2 };
     vi.mocked(fetchWorkflows).mockResolvedValue([def]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...def, ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2174,7 +2164,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("toggles optional-group defaultOn, marks the editor dirty, and persists on save", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([optionalGroupDef()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...optionalGroupDef(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
 
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
@@ -2369,7 +2358,6 @@ describe("WorkflowNodeEditor — U8 step-inversion authoring", () => {
   it("edits notify event, title, and message fields", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...v2Def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
     expect(await screen.findByTestId("wf-column-panel")).toBeInTheDocument();
@@ -2638,58 +2626,10 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
   });
 });
 
-// ── U2: edge-condition authoring (compile-banner split) ─────────────────────
-describe("WorkflowNodeEditor — U2 interpreter-only banner", () => {
-  beforeEach(() => {
-    vi.mocked(fetchTraits).mockResolvedValue(TRAIT_CATALOG);
-    vi.mocked(fetchStepParsers).mockResolvedValue(["step-headings", "json-steps"]);
-    vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({
-      ...v2Def(),
-      ...(updates as object),
-    }));
-  });
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-  });
-
-  async function saveActive() {
-    await screen.findByText("Save");
-    await waitFor(() => expect(screen.getAllByLabelText(/Column name/i).length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByText("Save").closest("button")!);
-    await waitFor(() => expect(updateWorkflow).toHaveBeenCalled());
-  }
-
-  it("shows an info-tone status banner (not an error) when compile rejects with the interpreter-deferred suffix", async () => {
-    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
-    vi.mocked(compileWorkflow).mockRejectedValue(
-      new Error(
-        "node 'step' branches into 2 edges — graphs with branches require the workflow interpreter (deferred)",
-      ),
-    );
-
-    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
-    await saveActive();
-
-    const banner = await screen.findByTestId("wf-interpreter-only-banner");
-    expect(banner).toHaveAttribute("role", "status");
-    expect(banner.className).toMatch(/wf-editor-banner--info/);
-    // No alert-toned error banner.
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("keeps the warning error banner for other (non-interpreter) compile errors", async () => {
-    vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
-    vi.mocked(compileWorkflow).mockRejectedValue(new Error("node 'step' has no outgoing edge"));
-
-    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
-    await saveActive();
-
-    const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent(/no outgoing edge/i);
-    expect(screen.queryByTestId("wf-interpreter-only-banner")).not.toBeInTheDocument();
-  });
-});
+// FNXC:WorkflowEditor 2026-07-01-00:00: the U2 interpreter-only banner describe
+// block was removed with the linear WorkflowStep compiler. Branching graphs now
+// run on the graph interpreter directly; there is no post-save compile check and
+// no interpreter-only banner, so there is nothing left to assert here.
 
 // ── U4: dialogs, inline rename/description, dirty guard ─────────────────────
 
@@ -2999,7 +2939,6 @@ describe("WorkflowNodeEditor — U4 create dialog / delete / inline rename / dir
   it("persists a renamed name through the save PATCH", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...v2Def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
     await screen.findByText("Save");
     await waitFor(() => expect(screen.getAllByLabelText(/Column name/i).length).toBeGreaterThan(0));
@@ -3584,7 +3523,6 @@ describe("WorkflowNodeEditor — U9 palette Templates section", () => {
   it("inserts an add-on as a single node carrying its template config", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
     vi.mocked(fetchWorkflowStepTemplates).mockResolvedValue({
       templates: STEP_TEMPLATE_FIXTURES,
     });
@@ -3613,7 +3551,6 @@ describe("WorkflowNodeEditor — U9 palette Templates section", () => {
   it("inserts an add-on as an optional-group whose template holds the projected node and defaultOn matches", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
     vi.mocked(fetchWorkflowStepTemplates).mockResolvedValue({
       templates: STEP_TEMPLATE_FIXTURES,
     });
@@ -3645,7 +3582,6 @@ describe("WorkflowNodeEditor — U9 palette Templates section", () => {
   it("remaps ids when the same add-on subgraph is inserted twice (no collision)", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
     vi.mocked(updateWorkflow).mockImplementation(async (_id, updates) => ({ ...def(), ...(updates as object) }));
-    vi.mocked(compileWorkflow).mockResolvedValue({ steps: [] });
     vi.mocked(fetchWorkflowStepTemplates).mockResolvedValue({
       templates: STEP_TEMPLATE_FIXTURES,
     });
@@ -3696,7 +3632,6 @@ describe("WorkflowNodeEditor — U10 design-with-AI", () => {
         ],
       },
       layout: { start: { x: 0, y: 0 }, "ai-lint": { x: 120, y: 0 }, end: { x: 240, y: 0 } },
-      interpreterOnly: false,
       strippedApprovalFlags: false,
       ...over,
     };
@@ -3794,20 +3729,9 @@ describe("WorkflowNodeEditor — U10 design-with-AI", () => {
     expect(rejectFn).toBeDefined();
   });
 
-  it("interpreterOnly result seeds the info banner after the workflow loads", async () => {
-    vi.mocked(fetchWorkflows).mockResolvedValue([]);
-    vi.mocked(designWorkflow).mockResolvedValue(designedResult({ interpreterOnly: true }));
-    vi.mocked(createWorkflow).mockResolvedValue({ ...v2Def(), id: "WF-AI", name: "AI branchy" });
-
-    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
-    fireEvent.click(await screen.findByTestId("wf-new-workflow"));
-    await screen.findByTestId("wf-create-dialog");
-    fireEvent.click(screen.getByTestId("wf-ai-toggle"));
-    fireEvent.change(await screen.findByTestId("wf-ai-prompt"), { target: { value: "branchy" } });
-    fireEvent.click(screen.getByTestId("wf-ai-submit"));
-
-    expect(await screen.findByTestId("wf-interpreter-only-banner")).toBeInTheDocument();
-  });
+  // FNXC:WorkflowEditor 2026-07-01-00:00: the "interpreterOnly seeds the info
+  // banner" test was removed with the linear compiler — branching AI-designed
+  // workflows are accepted and run on the graph interpreter with no banner.
 
   // ── Toolbar flow ───────────────────────────────────────────────────────────
 

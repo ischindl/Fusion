@@ -135,6 +135,49 @@ describe("agent-action-gate", () => {
     expect(blockedDecision.disposition).toBe("block");
   });
 
+  it("uses exact tool overrides before task-agent category rules", () => {
+    const policy: AgentPermissionPolicy = {
+      ...unrestrictedPolicy,
+      presetId: "custom",
+      rules: {
+        ...unrestrictedPolicy.rules,
+        task_agent_mutation: "allow",
+      },
+      toolRules: {
+        fn_task_create: "block",
+        fn_task_refine: "require-approval",
+      },
+    };
+
+    expect(evaluateAgentActionGate({ agentId: "a1", toolName: "fn_task_create", args: {}, permissionPolicy: policy })).toMatchObject({
+      category: "task_agent_mutation",
+      disposition: "block",
+      metadata: {
+        permissionPolicyMatch: {
+          type: "toolRule",
+          toolName: "fn_task_create",
+          disposition: "block",
+        },
+      },
+    });
+    expect(evaluateAgentActionGate({ agentId: "a1", toolName: "fn_task_update", args: {}, permissionPolicy: policy })).toMatchObject({
+      category: "task_agent_mutation",
+      disposition: "allow",
+      metadata: {},
+    });
+    expect(evaluateAgentActionGate({ agentId: "a1", toolName: "fn_task_refine", args: {}, permissionPolicy: policy })).toMatchObject({
+      category: "task_agent_mutation",
+      disposition: "require-approval",
+      metadata: {
+        permissionPolicyMatch: {
+          type: "toolRule",
+          toolName: "fn_task_refine",
+          disposition: "require-approval",
+        },
+      },
+    });
+  });
+
   it.each(["fn_workflow_list", "fn_workflow_get", "fn_trait_list"] as const)("allows workflow discovery tool %s as a known coordination exemption", (toolName) => {
     expect(evaluateAgentActionGate({ agentId: "a1", toolName, args: {}, permissionPolicy: lockedDownPolicy })).toMatchObject({
       category: "exempt",

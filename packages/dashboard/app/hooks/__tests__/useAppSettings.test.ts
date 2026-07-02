@@ -7,6 +7,7 @@ vi.mock("../../api", () => ({
   fetchConfig: vi.fn(),
   fetchSettings: vi.fn(),
   updateSettings: vi.fn(),
+  updateGlobalSettings: vi.fn(),
 }));
 
 const mockFetchConfig = vi.mocked(api.fetchConfig);
@@ -31,6 +32,7 @@ describe("useAppSettings", () => {
       staleHighFanoutBlockerAgeThresholdMs: 7200000,
       showQuickChatFAB: false,
       capacityRiskBannerEnabled: false,
+      planApprovalMode: "workflow",
     } as never);
 
     mockUpdateSettings.mockResolvedValue({} as never);
@@ -55,10 +57,122 @@ describe("useAppSettings", () => {
       expect(result.current.quickChatCloseOnOutsideClick).toBe(true);
       expect(result.current.capacityRiskBannerEnabled).toBe(false);
       expect(result.current.capacityRiskTodoThreshold).toBe(20);
+      expect(result.current.planApprovalMode).toBe("workflow");
+      expect(result.current.planAutoApproveEnabled).toBe(false);
     });
 
     expect(mockFetchConfig).toHaveBeenCalledWith("proj_123");
     expect(mockFetchSettings).toHaveBeenCalledWith("proj_123");
+  });
+
+  it.each([
+    [undefined, "workflow", false],
+    ["workflow", "workflow", false],
+    ["auto-approve-all", "auto-approve-all", true],
+    ["require-all", "require-all", false],
+  ] as const)("hydrates planApprovalMode %s as %s", async (apiMode, expectedMode, expectedEnabled) => {
+    mockFetchSettings.mockResolvedValueOnce({
+      autoMerge: false,
+      globalPause: true,
+      enginePaused: false,
+      prAuthAvailable: true,
+      taskStuckTimeoutMs: 600000,
+      showQuickChatFAB: false,
+      ...(apiMode === undefined ? {} : { planApprovalMode: apiMode }),
+    } as never);
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.planApprovalMode).toBe(expectedMode);
+      expect(result.current.planAutoApproveEnabled).toBe(expectedEnabled);
+    });
+  });
+
+  it("optimistically enables plan auto-approval and persists to API", async () => {
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.planApprovalMode).toBe("workflow");
+    });
+
+    await act(async () => {
+      await result.current.togglePlanAutoApprove();
+    });
+
+    expect(result.current.planApprovalMode).toBe("auto-approve-all");
+    expect(result.current.planAutoApproveEnabled).toBe(true);
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ planApprovalMode: "auto-approve-all" }, "proj_123");
+  });
+
+  it("turns off plan auto-approval by returning to workflow mode", async () => {
+    mockFetchSettings.mockResolvedValueOnce({
+      autoMerge: false,
+      globalPause: true,
+      enginePaused: false,
+      prAuthAvailable: true,
+      taskStuckTimeoutMs: 600000,
+      showQuickChatFAB: false,
+      planApprovalMode: "auto-approve-all",
+    } as never);
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.planAutoApproveEnabled).toBe(true);
+    });
+
+    await act(async () => {
+      await result.current.togglePlanAutoApprove();
+    });
+
+    expect(result.current.planApprovalMode).toBe("workflow");
+    expect(result.current.planAutoApproveEnabled).toBe(false);
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ planApprovalMode: "workflow" }, "proj_123");
+  });
+
+  it("replaces require-all only when plan auto-approval is explicitly enabled", async () => {
+    mockFetchSettings.mockResolvedValueOnce({
+      autoMerge: false,
+      globalPause: true,
+      enginePaused: false,
+      prAuthAvailable: true,
+      taskStuckTimeoutMs: 600000,
+      showQuickChatFAB: false,
+      planApprovalMode: "require-all",
+    } as never);
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.planApprovalMode).toBe("require-all");
+      expect(result.current.planAutoApproveEnabled).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.togglePlanAutoApprove();
+    });
+
+    expect(result.current.planApprovalMode).toBe("auto-approve-all");
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ planApprovalMode: "auto-approve-all" }, "proj_123");
+  });
+
+  it("rolls back optimistic plan auto-approval state when toggle update fails", async () => {
+    mockUpdateSettings.mockRejectedValueOnce(new Error("network"));
+
+    const { result } = renderHook(() => useAppSettings("proj_123"));
+
+    await waitFor(() => {
+      expect(result.current.planApprovalMode).toBe("workflow");
+    });
+
+    await act(async () => {
+      await result.current.togglePlanAutoApprove();
+    });
+
+    expect(result.current.planApprovalMode).toBe("workflow");
+    expect(result.current.planAutoApproveEnabled).toBe(false);
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ planApprovalMode: "auto-approve-all" }, "proj_123");
   });
 
   it("optimistically toggles autoMerge and persists to API", async () => {

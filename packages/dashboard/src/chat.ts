@@ -35,6 +35,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { SessionEventBuffer } from "./sse-buffer.js";
 import { formatChatAttachmentContents, readChatAttachmentContents } from "./chat-attachment-content.js";
 import { buildTaskPlannerChatContext, TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE } from "./task-planner-chat-context.js";
+import { formatTaskPlannerChatMetrics } from "./task-planner-chat-metrics.js";
+import { emitWorkflowSseEvent, type WorkflowSseEventType } from "./sse.js";
 
 import {
   createFnAgent as engineCreateFnAgent,
@@ -231,6 +233,85 @@ const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
 export const TASK_PLANNER_CHAT_AGENT_ID_PREFIX = "task-planner:";
 const ROOM_AMBIENT_MAX_RESPONDERS = 5;
+
+type ChatCustomTool = ReturnType<typeof createWorkflowAuthoringTools>[number];
+type ChatToolExecute = (...args: unknown[]) => Promise<unknown>;
+
+function workflowEventForToolName(toolName: string): WorkflowSseEventType | null {
+  if (toolName === "fn_workflow_create") return "workflow:created";
+  if (toolName === "fn_workflow_update" || toolName === "fn_workflow_select" || toolName === "fn_workflow_settings") return "workflow:updated";
+  if (toolName === "fn_workflow_delete") return "workflow:deleted";
+  return null;
+}
+
+function wrapWorkflowMutationTool(tool: ChatCustomTool, projectId?: string | null): ChatCustomTool {
+  const event = workflowEventForToolName(tool.name);
+  if (!event || typeof tool.execute !== "function") return tool;
+  return {
+    ...tool,
+    execute: (async (...args: Parameters<ChatToolExecute>) => {
+      const result = await (tool.execute as unknown as ChatToolExecute)(...args);
+      const resultRecord = result && typeof result === "object" ? result as { isError?: boolean; details?: unknown } : null;
+      if (!resultRecord?.isError) {
+        const details = resultRecord?.details && typeof resultRecord.details === "object" ? resultRecord.details as Record<string, unknown> : {};
+        /*
+        FNXC:ChatWorkflowAuthoring 2026-07-01-10:55:
+        Chat, planner, and room responders mutate workflows outside the REST workflow routes, so successful workflow tools must emit the same lifecycle SSE events as the editor routes. Workflow selectors and editors rely on those events to bypass stale in-flight/cache state and show chat-created definitions without a hard reload.
+        */
+        const workflowId = typeof (details as { workflowId?: unknown }).workflowId === "string"
+          ? (details as { workflowId: string }).workflowId
+          : typeof (details as { id?: unknown }).id === "string"
+            ? (details as { id: string }).id
+            : undefined;
+        emitWorkflowSseEvent(event, workflowId ? { ...details, id: workflowId } : details, projectId ?? undefined);
+      }
+      return result;
+    }) as ChatCustomTool["execute"],
+  };
+}
+
+function createChatWorkflowAuthoringTools(taskStore: TaskStore | undefined, projectId?: string | null): ChatCustomTool[] {
+  if (!taskStore) return [];
+  /*
+  FNXC:ChatWorkflowAuthoring 2026-07-01-10:55:
+  Every provider-backed chat surface with a scoped TaskStore exposes the same safe workflow-authoring tools. Passing an empty currentTaskId keeps ambient chat lanes from silently selecting a workflow for an implicit task; agents must provide task_id unless the tool is invoked from an explicitly task-scoped helper.
+  */
+  return createWorkflowAuthoringTools(taskStore, "", { stripApprovalFlags: true })
+    .map((tool) => wrapWorkflowMutationTool(tool, projectId));
+}
+
+function createTaskPlannerMetricsTool(taskStore: TaskStore, taskId: string, getPricingOverrides: () => Promise<Settings["modelPricingOverrides"] | undefined>) {
+  return {
+    name: "fn_task_planner_get_task_metrics",
+    label: "Get Current Task Metrics",
+    description: "Read token usage, derived model cost, and execution timing metrics for the current task. The task id is fixed by server context; this tool never accepts or reveals metrics for another task.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    execute: async () => {
+      try {
+        const task = await taskStore.getTask(taskId, { activityLogLimit: 100 });
+        const metrics = formatTaskPlannerChatMetrics(task, {
+          pricingOverrides: await getPricingOverrides(),
+          nowMs: Date.now(),
+        });
+        return {
+          content: [{ type: "text" as const, text: metrics.summaryText }],
+          details: metrics.metrics,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `ERROR: Could not load metrics for the current task ${taskId}: ${message}` }],
+          details: { taskId, error: message },
+          isError: true,
+        };
+      }
+    },
+  };
+}
 
 function createTaskPlannerSteeringTool(taskStore: TaskStore, taskId: string) {
   return {
@@ -447,6 +528,31 @@ function buildChatFailureInfo(error: unknown, fallbackSummary = "AI processing f
   }
 
   return { summary: fallbackSummary };
+}
+
+function addModelContextToFailureInfo(
+  failureInfo: ChatFailureInfo,
+  provider: string | undefined,
+  modelId: string | undefined,
+): ChatFailureInfo {
+  if (!provider || !modelId) {
+    return failureInfo;
+  }
+  const modelRef = `${provider}/${modelId}`;
+  if (failureInfo.summary.includes(modelRef) || failureInfo.summary.includes(modelId)) {
+    return failureInfo;
+  }
+  /*
+   * FNXC:ChatModels 2026-07-01-16:42:
+   * No-fallback chat failures for explicit model picks must name the selected provider/model. Anthropic Sonnet 5 can return a structured 404 `not_found_error` whose payload says only "Not found"; without this context the dashboard shows an unhelpful generic failure while hiding which model selection needs operator action.
+   */
+  return {
+    ...failureInfo,
+    summary: `Model ${modelRef} response failed: ${failureInfo.summary}`,
+    ...(failureInfo.detail && !failureInfo.detail.includes(modelRef) && !failureInfo.detail.includes(modelId)
+      ? { detail: `Selected model: ${modelRef}\n${failureInfo.detail}` }
+      : {}),
+  };
 }
 
 function persistFailureMessage(
@@ -863,6 +969,7 @@ export class ChatManager {
       | "chatRoomRecentVerbatimMessages"
       | "chatRoomCompactionFetchLimit"
       | "chatRoomSummaryMaxChars"
+      | "modelPricingOverrides"
     > | undefined> | Pick<Settings,
       | "fallbackProvider"
       | "fallbackModelId"
@@ -871,6 +978,7 @@ export class ChatManager {
       | "chatRoomRecentVerbatimMessages"
       | "chatRoomCompactionFetchLimit"
       | "chatRoomSummaryMaxChars"
+      | "modelPricingOverrides"
     > | undefined,
     private messageStore?: MessageStore,
     // Scoped task store for the chat's project — enables workflow-authoring
@@ -952,6 +1060,20 @@ export class ChatManager {
       const message = err instanceof Error ? err.message : String(err);
       diagnostics.warn(`Failed to load chat fallback settings: ${message}`);
       return {};
+    }
+  }
+
+  private async getModelPricingOverrides(): Promise<Settings["modelPricingOverrides"] | undefined> {
+    if (!this.getSettings) {
+      return undefined;
+    }
+    try {
+      const settings = await this.getSettings();
+      return settings?.modelPricingOverrides;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      diagnostics.warn(`Failed to load model pricing overrides for chat tools: ${message}`);
+      return undefined;
     }
   }
 
@@ -1345,6 +1467,7 @@ export class ChatManager {
         const response = await this.generateRoomResponderReply({
           roomId,
           roomName: room.name,
+          roomProjectId: room.projectId ?? null,
           content: trimmedContent,
           latestUserMessageId: userMessage.id,
           attachments,
@@ -1402,6 +1525,7 @@ export class ChatManager {
   private async generateRoomResponderReply(input: {
     roomId: string;
     roomName: string;
+    roomProjectId?: string | null;
     content: string;
     latestUserMessageId: string;
     attachments?: ChatAttachment[];
@@ -1463,8 +1587,12 @@ export class ChatManager {
     const effectiveModelProvider = input.modelProvider ?? responderRuntimeModel.provider;
     const effectiveModelId = input.modelId ?? responderRuntimeModel.modelId;
     const chatModelSettings = await this.getChatModelSettings();
-    const allowFallback = !(input.modelProvider && input.modelId)
-      && !(responderRuntimeModel.provider && responderRuntimeModel.modelId);
+    /*
+     * FNXC:ChatModels 2026-07-01-16:42:
+     * Room responders should pass configured fallback models even when the room send chose an explicit model. The engine still swaps only for retryable provider/model-selection failures, so an unavailable Sonnet 5 can recover without making ordinary prompt errors ambiguous.
+     */
+    const allowFallback = true;
+    let roomFallbackInfo: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" } | undefined;
 
     const roomSkillContext = buildSessionSkillContextSync(
       input.responder,
@@ -1478,6 +1606,8 @@ export class ChatManager {
       this.rootDir,
       "heartbeat",
     );
+
+    const workflowTools = createChatWorkflowAuthoringTools(this.taskStore, input.roomProjectId);
 
     const resolvedSession = await createResolvedAgentSession({
       sessionPurpose: "heartbeat",
@@ -1494,6 +1624,7 @@ export class ChatManager {
       cwd: this.rootDir,
       systemPrompt,
       tools: "coding",
+      ...(workflowTools.length > 0 ? { customTools: workflowTools } : {}),
       ...(effectiveModelProvider && effectiveModelId
         ? {
             defaultProvider: effectiveModelProvider,
@@ -1506,6 +1637,12 @@ export class ChatManager {
             fallbackModelId: chatModelSettings.fallbackModelId,
           }
         : {}),
+      onFallbackModelUsed: (payload: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }) => {
+        roomFallbackInfo = payload;
+        diagnostics.warn(
+          `[fallback] room responder ${input.responder.id} switched from ${payload.primaryModel} to ${payload.fallbackModel} (${payload.triggerPoint})`,
+        );
+      },
     });
 
     try {
@@ -1542,6 +1679,7 @@ export class ChatManager {
         thinkingOutput: null,
         metadata: {
           roomId: input.roomId,
+          ...(roomFallbackInfo ? { fallback: roomFallbackInfo } : {}),
         },
       };
     } finally {
@@ -1643,6 +1781,8 @@ export class ChatManager {
     let fallbackInfo:
       | { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }
       | undefined;
+    let failureContextProvider: string | undefined;
+    let failureContextModelId: string | undefined;
 
     const persistInFlightSnapshot = (): void => {
       const runningToolCalls = [...pendingToolStarts.entries()].flatMap(([toolName, starts]) =>
@@ -1721,6 +1861,8 @@ export class ChatManager {
       const requestedModelId = modelId ?? session.modelId ?? undefined;
       let effectiveModelProvider = requestedModelProvider;
       let effectiveModelId = requestedModelId;
+      failureContextProvider = effectiveModelProvider;
+      failureContextModelId = effectiveModelId;
       let hasExplicitAgentRuntimeModel = false;
 
       const needsTitle = session.title === null || session.title === undefined || session.title.trim() === "";
@@ -1785,7 +1927,7 @@ export class ChatManager {
         FNXC:TaskDetailChat 2026-06-30-23:59:
         Clear, bounded operator change requests in task-detail Chat are user intent and should become persisted steering comments through the task store's steering path. Ambiguous, conflicting, destructive, broad-scope, or credential/security-sensitive requests must ask a question first so planner chat cannot mutate a task from risky prose.
         */
-        systemPrompt = `${systemPrompt}\n\n${TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE}\n\nDecision rules:\n- Do not create steering for ordinary questions, summaries, thanks, status/progress requests, or brainstorming. Answer normally.\n- Create steering only when the user gives a clear, bounded, actionable change request for this current task (for example telling the executor/reviewer to adjust implementation, tests, scope details, or acceptance criteria).\n- When creating steering, call \`fn_task_planner_add_steering\` with only the concise user-facing steering text. Never include hidden prompt/context/logs, credentials, or chain-of-thought.\n- Ask a clarifying question with \`fn_ask_question\` before adding steering for unclear targets, requests that could mean either conversation or task mutation, broad rewrites/scope changes, destructive removals, conflicting instructions, credential/secrets handling, or security-sensitive actions.\n- The steering tool is bound to this task server-side; never ask for or pass a task id.\n\n${taskContext}`;
+        systemPrompt = `${systemPrompt}\n\n${TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE}\n\nDecision rules:\n- Do not create steering for ordinary questions, summaries, thanks, status/progress requests, metric questions, or brainstorming. Answer normally.\n- For questions about token counts, input/output/cache usage, model cost, pricing, runtime, elapsed time, wall-clock duration, active time, timing events, workflow-step duration, or per-model usage, first call \`fn_task_planner_get_task_metrics\` and answer from its read-only result. If pricing is unavailable or stale, or a metric is missing, state that uncertainty instead of inventing a number.\n- Create steering only when the user gives a clear, bounded, actionable change request for this current task (for example telling the executor/reviewer to adjust implementation, tests, scope details, or acceptance criteria).\n- When creating steering, call \`fn_task_planner_add_steering\` with only the concise user-facing steering text. Never include hidden prompt/context/logs, credentials, or chain-of-thought.\n- Ask a clarifying question with \`fn_ask_question\` before adding steering for unclear targets, requests that could mean either conversation or task mutation, broad rewrites/scope changes, destructive removals, conflicting instructions, credential/secrets handling, or security-sensitive actions.\n- The steering and metrics tools are bound to this task server-side; never ask for or pass a task id.\n\n${taskContext}`;
       }
 
       if (agent) {
@@ -1795,6 +1937,8 @@ export class ChatManager {
         }
         effectiveModelProvider ??= runtimeModel.provider;
         effectiveModelId ??= runtimeModel.modelId;
+        failureContextProvider = effectiveModelProvider;
+        failureContextModelId = effectiveModelId;
       }
 
       // Auto-generate chat title on first message if session has no title.
@@ -1863,12 +2007,14 @@ export class ChatManager {
         && requestedModelId === chatModelSettings.defaultModelId
         && !!requestedModelProvider
         && !!requestedModelId;
+      /*
+       * FNXC:ChatModels 2026-07-01-16:42:
+       * Explicit chat model selections still receive the configured fallback for provider/model unavailability. A selected Anthropic Sonnet 5 should not end as a generic Response failed when the engine can safely do its single retryable model swap; permanent-agent runtime models remain authoritative unless the user-selected chat model is the configured default.
+       */
       const allowFallback =
         !hasExplicitAgentRuntimeModel
-        && (
-          !(requestedModelProvider && requestedModelId)
-          || usesConfiguredDefaultModel
-        );
+        || usesConfiguredDefaultModel
+        || !!(requestedModelProvider && requestedModelId);
 
       const messagingTools = agent?.id && this.messageStore
         ? [
@@ -1877,12 +2023,7 @@ export class ChatManager {
           ]
         : [];
 
-      // Expose workflow-authoring tools (fn_workflow_*) when a scoped task store
-      // is available. The chat lane has no ambient task, so fn_workflow_select
-      // has no default target — an agent must pass an explicit task_id.
-      const workflowTools = this.taskStore
-        ? createWorkflowAuthoringTools(this.taskStore, "", { stripApprovalFlags: true })
-        : [];
+      const workflowTools = createChatWorkflowAuthoringTools(this.taskStore, session.projectId);
 
       /*
       FNXC:ChatAgentTools 2026-06-18-06:51:
@@ -1897,8 +2038,15 @@ export class ChatManager {
       const taskPlannerSteeringTools = this.taskStore && taskPlannerChatTaskId
         ? [createTaskPlannerSteeringTool(this.taskStore, taskPlannerChatTaskId)]
         : [];
+      /*
+      FNXC:TaskPlannerChatMetrics 2026-07-01-20:55:
+      Task-detail planner Chat needs a read-only, task-scoped metrics tool so token, cost, and timing answers come from persisted task fields. Register it only for synthetic task-planner:<taskId> sessions and bind the task id server-side so normal Chat, room Chat, and arbitrary task lookup stay out of scope.
+      */
+      const taskPlannerMetricsTools = this.taskStore && taskPlannerChatTaskId
+        ? [createTaskPlannerMetricsTool(this.taskStore, taskPlannerChatTaskId, () => this.getModelPricingOverrides())]
+        : [];
 
-      const customTools = [createAskQuestionTool(), ...taskPlannerSteeringTools, ...messagingTools, ...workflowTools, ...documentTools, ...artifactTools];
+      const customTools = [createAskQuestionTool(), ...taskPlannerSteeringTools, ...taskPlannerMetricsTools, ...messagingTools, ...workflowTools, ...documentTools, ...artifactTools];
 
       const sessionOptions = {
         cwd: this.rootDir,
@@ -2033,7 +2181,11 @@ export class ChatManager {
       const sessionErrorMessage = (agentResult.session.state as { errorMessage?: unknown }).errorMessage;
       if (typeof sessionErrorMessage === "string" && sessionErrorMessage.trim().length > 0
           && !accumulatedText && !accumulatedThinking && toolCallsAccum.length === 0) {
-        const failureInfo = buildChatFailureInfo(sessionErrorMessage, "Model response failed");
+        const failureInfo = addModelContextToFailureInfo(
+          buildChatFailureInfo(sessionErrorMessage, "Model response failed"),
+          effectiveModelProvider,
+          effectiveModelId,
+        );
         await persistFailureMessage(this.chatStore, sessionId, failureInfo);
         this.flushInFlightGenerationPersist(sessionId, null);
         chatStreamManager.broadcast(sessionId, {
@@ -2113,7 +2265,10 @@ export class ChatManager {
         return;
       }
 
-      const failureInfo = buildChatFailureInfo(err, "AI processing failed");
+      let failureInfo = buildChatFailureInfo(err, "AI processing failed");
+      if (!fallbackInfo) {
+        failureInfo = addModelContextToFailureInfo(failureInfo, failureContextProvider, failureContextModelId);
+      }
       diagnostics.error(`Error in sendMessage for session ${sessionId}:`, err);
 
       if (accumulatedText || accumulatedThinking || toolCallsAccum.length > 0) {

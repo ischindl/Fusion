@@ -2493,6 +2493,41 @@ describe.skipIf(!SHOULD_RUN_LEGACY_EXTENSION_INTEGRATION)("fn pi extension (lega
       await verifyStore.close();
     });
 
+    it("fn_task_import_github marks imported issues as tracked when import linking is on and new-task defaults are off", async () => {
+      const store = new TaskStore(tmpDir);
+      await store.init();
+      await store.updateSettings({
+        githubTrackingEnabledByDefault: false,
+        githubLinkImportedIssuesToTracking: true,
+      });
+      await store.close();
+
+      const tool = api.tools.get("fn_task_import_github")!;
+      vi.mocked(runGhJsonAsync).mockResolvedValueOnce([
+        {
+          number: 9,
+          title: "Import-linked issue",
+          body: null,
+          html_url: "https://github.com/acme/demo/issues/9",
+        },
+      ] as never);
+
+      await tool.execute("gh-import-linked-bulk", { ownerRepo: "acme/demo" }, undefined, undefined, makeCtx(tmpDir));
+
+      const verifyStore = new TaskStore(tmpDir);
+      await verifyStore.init();
+      const tasks = await verifyStore.listTasks({ includeArchived: true });
+      const imported = tasks.find((task) => task.sourceIssue?.issueNumber === 9);
+      expect(imported?.description).toContain("(no description)");
+      expect(imported?.githubTracking?.enabled).toBe(true);
+      expect(imported?.sourceIssue).toEqual(expect.objectContaining({
+        provider: "github",
+        repository: "acme/demo",
+        issueNumber: 9,
+      }));
+      await verifyStore.close();
+    });
+
     it("fn_task_import_github_issue leaves imported issues unforced when tracking defaults are off", async () => {
       const tool = api.tools.get("fn_task_import_github_issue")!;
       vi.mocked(runGhJsonAsync).mockResolvedValueOnce({
@@ -2552,6 +2587,44 @@ describe.skipIf(!SHOULD_RUN_LEGACY_EXTENSION_INTEGRATION)("fn pi extension (lega
         provider: "github",
         repository: "acme/demo",
         issueNumber: 8,
+      }));
+      await verifyStore.close();
+    });
+
+    it("fn_task_import_github_issue marks imported issues as tracked when import linking is on and new-task defaults are off", async () => {
+      const store = new TaskStore(tmpDir);
+      await store.init();
+      await store.updateSettings({
+        githubTrackingEnabledByDefault: false,
+        githubLinkImportedIssuesToTracking: true,
+      });
+      await store.close();
+
+      const tool = api.tools.get("fn_task_import_github_issue")!;
+      vi.mocked(runGhJsonAsync).mockResolvedValueOnce({
+        number: 10,
+        title: "Single import-linked issue",
+        body: null,
+        html_url: "https://github.com/acme/demo/issues/10",
+      } as never);
+
+      const result = await tool.execute(
+        "gh-import-linked-single",
+        { owner: "acme", repo: "demo", issueNumber: 10 },
+        undefined,
+        undefined,
+        makeCtx(tmpDir),
+      );
+
+      const verifyStore = new TaskStore(tmpDir);
+      await verifyStore.init();
+      const imported = await verifyStore.getTask(result.details.taskId);
+      expect(imported?.description).toContain("(no description)");
+      expect(imported?.githubTracking?.enabled).toBe(true);
+      expect(imported?.sourceIssue).toEqual(expect.objectContaining({
+        provider: "github",
+        repository: "acme/demo",
+        issueNumber: 10,
       }));
       await verifyStore.close();
     });

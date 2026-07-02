@@ -186,7 +186,6 @@ vi.mock("../../api", () => ({
   }),
   fetchAuthStatus: vi.fn().mockResolvedValue({ providers: [] }),
   refineText: vi.fn(),
-  getRefineErrorMessage: vi.fn((err) => err?.message || "Failed to refine text. Please try again."),
   fetchAgents: vi.fn().mockResolvedValue([]),
   checkDuplicateTasks: vi.fn().mockResolvedValue([]),
   uploadAttachment: vi.fn().mockResolvedValue({}),
@@ -391,7 +390,6 @@ const QUICK_ENTRY_ACTION_BUTTONS = [
   ["GitHub", "quick-entry-github-toggle"],
   ["Priority", "quick-entry-priority-button"],
   ["Subtask", "subtask-button"],
-  ["Refine", "refine-button"],
   ["Deps", "quick-entry-deps"],
   ["Models", "quick-entry-models"],
   ["Node", "quick-entry-node-button"],
@@ -538,7 +536,7 @@ describe("QuickEntryBox", () => {
 
       fireEvent.change(textarea, {
         target: {
-          value: "This is a long multiline task description that should use the available quick entry width before wrapping.\nIt should not reserve the description refine-button gutter.",
+          value: "This is a long multiline task description that should use the available quick entry width before wrapping.\nIt should not reserve the former description-refine gutter.",
         },
       });
 
@@ -1178,9 +1176,6 @@ describe("QuickEntryBox", () => {
           break;
         case "quick-entry-attach":
           expect(attachClickSpy).toHaveBeenCalled();
-          break;
-        case "refine-button":
-          expect(await screen.findByTestId("refine-clarify")).toBeTruthy();
           break;
         case "subtask-button":
           expect(helpers.onSubtaskBreakdown).toHaveBeenCalledWith("Adjust options without keyboard");
@@ -3621,240 +3616,73 @@ describe("QuickEntryBox", () => {
     });
   });
 
-  describe("AI Refine feature", () => {
-    it("shows refine button when expanded and text is entered", () => {
-      renderQuickEntryBox({});
+  describe("Quick Add refine removal", () => {
+    function expectQuickAddRefineAbsent() {
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-clarify")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-add-details")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-expand")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-simplify")).not.toBeInTheDocument();
+      expect(document.querySelector(".quick-entry-box .refine-trigger-wrap")).toBeNull();
+      expect(document.querySelector(".quick-entry-box .refine-menu")).toBeNull();
+      expect(screen.queryByTitle("Refine description with AI")).not.toBeInTheDocument();
+    }
 
-      // Controls region starts expanded/visible
-      expect(document.getElementById("quick-entry-controls")?.hasAttribute("hidden")).toBe(false);
-
-      // Type something
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-      fireEvent.change(textarea, { target: { value: "Task to refine" } });
-
-      // Now the refine button should be visible
-      expect(screen.getByTestId("refine-button")).toBeTruthy();
-    });
-
-    it("refine button is hidden when textarea is empty", () => {
+    it("omits refine controls for empty and populated desktop quick-add states", () => {
       renderQuickEntryBox({});
       expandQuickEntry();
       const textarea = screen.getByTestId("quick-entry-input");
 
-      // Type something
-      fireEvent.change(textarea, { target: { value: "Some text" } });
-      expect(screen.getByTestId("refine-button")).toBeTruthy();
+      expectQuickAddRefineAbsent();
 
-      // Clear the input
-      fireEvent.change(textarea, { target: { value: "" } });
+      fireEvent.change(textarea, { target: { value: "Task text that used to enable refine" } });
 
-      // Button should be hidden/disabled (might be hidden when controls collapse)
-      const refineButton = screen.queryByTestId("refine-button");
-      if (refineButton) {
-        expect((refineButton as HTMLButtonElement).disabled).toBe(true);
-      }
+      expectQuickAddRefineAbsent();
+      expect(screen.queryByText("Refining...")).not.toBeInTheDocument();
     });
 
-    it("opens refine menu on button click", () => {
+    it("omits refine controls in mobile while preserving adjacent actions", () => {
+      mockMobileViewport();
       renderQuickEntryBox({});
       expandQuickEntry();
       const textarea = screen.getByTestId("quick-entry-input");
+      fireEvent.change(textarea, { target: { value: "Mobile quick-add task" } });
 
-      fireEvent.change(textarea, { target: { value: "Task to refine" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-
-      // Menu should be visible with all options
-      expect(screen.getByTestId("refine-clarify")).toBeTruthy();
-      expect(screen.getByTestId("refine-add-details")).toBeTruthy();
-      expect(screen.getByTestId("refine-expand")).toBeTruthy();
-      expect(screen.getByTestId("refine-simplify")).toBeTruthy();
+      expectQuickAddRefineAbsent();
+      expect(screen.queryByRole("button", { name: /^Refine$/i })).not.toBeInTheDocument();
+      expect(screen.getByTestId("quick-entry-save")).toBeInTheDocument();
+      expect(screen.getByTestId("quick-entry-attach")).toBeInTheDocument();
+      expect(screen.getByTestId("subtask-button")).toBeInTheDocument();
+      expect(screen.getByTestId("quick-entry-deps")).toBeInTheDocument();
+      expect(screen.getByTestId("quick-entry-models")).toBeInTheDocument();
     });
 
-    it("closes refine menu on Escape key", () => {
-      renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Task to refine" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-
-      // Menu should be open
-      expect(screen.getByTestId("refine-clarify")).toBeTruthy();
-
-      // Press Escape
-      fireEvent.keyDown(textarea, { key: "Escape" });
-
-      // Menu should be closed but input preserved
-      expect(screen.queryByTestId("refine-clarify")).toBeNull();
-      expect((textarea as HTMLTextAreaElement).value).toBe("Task to refine");
-    });
-
-    it("closes refine menu when option is selected", async () => {
-      const { refineText } = await import("../../api");
-      vi.mocked(refineText).mockResolvedValueOnce("Refined description");
-
-      renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Original text" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-
-      // Menu should be open
-      expect(screen.getByTestId("refine-clarify")).toBeTruthy();
-
-      // Click on an option
-      fireEvent.click(screen.getByTestId("refine-clarify"));
-
-      // Menu should close
-      await waitFor(() => {
-        expect(screen.queryByTestId("refine-clarify")).toBeNull();
-      });
-    });
-
-    it("closes refine menu immediately when option is clicked (before API response)", async () => {
-      const { refineText } = await import("../../api");
-      // Use a slow promise to ensure we can check the menu is closed before it resolves
-      vi.mocked(refineText).mockImplementation(
-        () => new Promise((resolve) => setTimeout(() => resolve("Refined"), 500)),
-      );
-
-      renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Original text" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-
-      // Menu should be open
-      expect(screen.getByTestId("refine-clarify")).toBeTruthy();
-
-      // Click on an option
-      fireEvent.click(screen.getByTestId("refine-clarify"));
-
-      // Menu should close IMMEDIATELY (before the slow promise resolves)
-      expect(screen.queryByTestId("refine-clarify")).toBeNull();
-
-      // The loading state should still be shown
-      const refineButton = screen.getByTestId("refine-button");
-      expect(refineButton.textContent).toContain("Refining...");
-    });
-
-    it("successful refinement updates textarea content", async () => {
-      const { refineText } = await import("../../api");
-      vi.mocked(refineText).mockResolvedValueOnce("Refined description");
+    it("does not call the AI refine API path from Quick Add", async () => {
+      const api = await import("../../api");
+      const refineSpy = vi.mocked(api.refineText);
 
       const { props } = renderQuickEntryBox({});
       expandQuickEntry();
       const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Original text" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-      fireEvent.click(screen.getByTestId("refine-clarify"));
-
-      await waitFor(() => {
-        expect(refineText).toHaveBeenCalledWith("Original text", "clarify", TEST_PROJECT_ID);
-      });
-
-      // Textarea should be updated
-      await waitFor(() => {
-        expect((textarea as HTMLTextAreaElement).value).toBe("Refined description");
-      });
-
-      // Success toast should be shown
-      await waitFor(() => {
-        expect(props.addToast).toHaveBeenCalledWith("Description refined with AI", "success");
-      });
-    });
-
-    it("failed refinement shows toast and preserves original text", async () => {
-      const { refineText } = await import("../../api");
-      vi.mocked(refineText).mockRejectedValueOnce(new Error("Rate limit exceeded"));
-
-      const { getRefineErrorMessage } = await import("../../api");
-
-      const { props } = renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Original text" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-      fireEvent.click(screen.getByTestId("refine-clarify"));
-
-      await waitFor(() => {
-        expect(props.addToast).toHaveBeenCalled();
-      });
-
-      // Original text should be preserved
-      expect((textarea as HTMLTextAreaElement).value).toBe("Original text");
-    });
-
-    it("loading state disables button during refinement", async () => {
-      const { refineText } = await import("../../api");
-      // Slow down the promise to see loading state
-      vi.mocked(refineText).mockImplementation(
-        () => new Promise((resolve) => setTimeout(() => resolve("Refined text"), 100)),
-      );
-
-      renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Original text" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-      fireEvent.click(screen.getByTestId("refine-clarify"));
-
-      // Button should show loading text
-      await waitFor(() => {
-        expect(screen.getByText("Refining...")).toBeTruthy();
-      });
-
-      // Button should be disabled
-      const refineButton = screen.getByTestId("refine-button");
-      expect((refineButton as HTMLButtonElement).disabled).toBe(true);
-    });
-
-    it("auto-resizes textarea after refinement", async () => {
-      const { refineText } = await import("../../api");
-      vi.mocked(refineText).mockResolvedValueOnce("Refined description with much more content here");
-
-      renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      fireEvent.change(textarea, { target: { value: "Short" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-      fireEvent.click(screen.getByTestId("refine-expand"));
-
-      await waitFor(() => {
-        expect(refineText).toHaveBeenCalled();
-      });
-    });
-
-    it("resets refine state when form is reset after creation", async () => {
-      const { refineText } = await import("../../api");
-      vi.mocked(refineText).mockResolvedValueOnce("Refined text");
-
-      const { props } = renderQuickEntryBox({});
-      expandQuickEntry();
-      const textarea = screen.getByTestId("quick-entry-input");
-
-      // Open refine menu but don't select anything
-      fireEvent.change(textarea, { target: { value: "Task" } });
-      fireEvent.click(screen.getByTestId("refine-button"));
-
-      expect(screen.getByTestId("refine-clarify")).toBeTruthy();
-
-      // Submit the form
-      fireEvent.keyDown(textarea, { key: "Enter" });
+      fireEvent.change(textarea, { target: { value: "Create this without refinement" } });
+      fireEvent.click(screen.getByTestId("quick-entry-save"));
 
       await waitFor(() => {
         expect(props.onCreate).toHaveBeenCalled();
       });
+      expect(refineSpy).not.toHaveBeenCalled();
+    });
 
-      // After reset, refine menu should be closed
-      expect(screen.queryByTestId("refine-clarify")).toBeNull();
+    it("keeps the action row free of orphaned refine shells when Subtask is omitted", () => {
+      renderQuickEntryBox({ onSubtaskBreakdown: undefined });
+      expandQuickEntry();
+      const actionsContainer = screen.getByTestId("quick-entry-actions");
+
+      expectQuickAddRefineAbsent();
+      expect(screen.queryByTestId("subtask-button")).not.toBeInTheDocument();
+      expect(actionsContainer.querySelector(".refine-trigger-wrap")).toBeNull();
+      expect(actionsContainer.contains(screen.getByTestId("quick-entry-deps"))).toBe(true);
+      expect(actionsContainer.contains(screen.getByTestId("quick-entry-models"))).toBe(true);
     });
   });
 
@@ -3961,7 +3789,7 @@ describe("QuickEntryBox", () => {
       expect(document.getElementById("quick-entry-controls")?.hasAttribute("hidden")).toBe(false);
       expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
       expect(screen.getByTestId("subtask-button")).toBeTruthy();
-      expect(screen.getByTestId("refine-button")).toBeTruthy();
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
       expect(screen.getByTestId("quick-entry-deps")).toBeTruthy();
       expect(screen.getByTestId("quick-entry-models")).toBeTruthy();
       expect(screen.getByTestId("quick-entry-save")).toBeTruthy();
@@ -3980,7 +3808,7 @@ describe("QuickEntryBox", () => {
   });
 
   describe("Consolidated actions layout (FN-781, FN-1088)", () => {
-    it("renders Subtask and Refine in actions area without a Plan shell", () => {
+    it("renders Subtask in actions area without Plan or Refine shells", () => {
       renderQuickEntryBox({});
       expandQuickEntry();
 
@@ -3988,8 +3816,9 @@ describe("QuickEntryBox", () => {
 
       const actionsContainer = screen.getByTestId("quick-entry-actions");
       expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
+      expect(actionsContainer.querySelector(".refine-trigger-wrap")).toBeNull();
       expect(actionsContainer.contains(screen.getByTestId("subtask-button"))).toBe(true);
-      expect(actionsContainer.contains(screen.getByTestId("refine-button"))).toBe(true);
     });
 
     it("hides the Subtask quick-add action without leaving an action-row shell when the callback is omitted", () => {
@@ -4000,7 +3829,8 @@ describe("QuickEntryBox", () => {
       expect(screen.queryByTestId("subtask-button")).not.toBeInTheDocument();
       expect(screen.queryByTitle("Break down into AI-generated subtasks")).not.toBeInTheDocument();
       expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
-      expect(actionsContainer.contains(screen.getByTestId("refine-button"))).toBe(true);
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
+      expect(actionsContainer.querySelector(".refine-trigger-wrap")).toBeNull();
     });
 
     it("does not render actions when not expanded", () => {
@@ -4031,14 +3861,15 @@ describe("QuickEntryBox", () => {
 
       expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
       expect(screen.getByTestId("subtask-button")).toBeTruthy();
-      expect(screen.getByTestId("refine-button")).toBeTruthy();
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
       expect(screen.getByTestId("quick-entry-deps")).toBeTruthy();
       expect(screen.getByTestId("quick-entry-models")).toBeTruthy();
       expect(screen.getByTestId("quick-entry-save")).toBeTruthy();
 
       expect(screen.queryByTestId("plan-button")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-button")).not.toBeInTheDocument();
+      expect(controlsPanel?.querySelector(".refine-trigger-wrap")).toBeNull();
       expect(controlsPanel?.contains(screen.getByTestId("subtask-button"))).toBe(true);
-      expect(controlsPanel?.contains(screen.getByTestId("refine-button"))).toBe(true);
       expect(controlsPanel?.contains(screen.getByTestId("quick-entry-deps"))).toBe(true);
       expect(controlsPanel?.contains(screen.getByTestId("quick-entry-models"))).toBe(true);
       expect(controlsPanel?.contains(screen.getByTestId("quick-entry-save"))).toBe(true);
@@ -4386,15 +4217,15 @@ describe("QuickEntryBox", () => {
       expect(modelsButton.className).toContain("btn");
     });
 
-    it("keeps Subtask and Refine buttons in touch-target classes without Plan", () => {
+    it("keeps Subtask touch-target classes without Plan or Refine", () => {
       vi.spyOn(window, "innerWidth", "get").mockReturnValue(375);
 
       renderQuickEntryBox({});
       expandQuickEntry();
 
       expect(screen.queryByRole("button", { name: /^Plan$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Refine$/i })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Subtask/i }).className).toContain("btn");
-      expect(screen.getByRole("button", { name: /Refine/i }).className).toContain("btn");
     });
 
     it("keeps model menu portal within mobile viewport", () => {
@@ -4429,7 +4260,7 @@ describe("QuickEntryBox", () => {
       expect(rect.right).toBeLessThanOrEqual(viewportWidth);
     });
 
-    it("responds to clicks for toggle, subtask, refine, and deps without Plan", async () => {
+    it("responds to clicks for toggle, subtask, and deps without Plan or Refine", async () => {
       const onPlanningMode = vi.fn();
       const onSubtaskBreakdown = vi.fn();
 
@@ -4456,12 +4287,9 @@ describe("QuickEntryBox", () => {
       expect(onSubtaskBreakdown).toHaveBeenCalledWith("Break this down");
 
       ensureExpanded();
-      fireEvent.change(input, { target: { value: "Refine this" } });
-      fireEvent.click(screen.getByRole("button", { name: /Refine/i }));
-
-      await waitFor(() => {
-        expect(screen.getByTestId("refine-clarify")).toBeInTheDocument();
-      });
+      fireEvent.change(input, { target: { value: "Refine should be absent" } });
+      expect(screen.queryByRole("button", { name: /^Refine$/i })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("refine-clarify")).not.toBeInTheDocument();
 
       ensureExpanded();
       fireEvent.click(screen.getByTestId("quick-entry-deps"));

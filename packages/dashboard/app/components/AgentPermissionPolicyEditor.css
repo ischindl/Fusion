@@ -15,7 +15,7 @@
 
 .agent-policy-row {
   display: grid;
-  grid-template-columns: 1fr 220px;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 14rem);
   gap: var(--space-md);
   padding: var(--space-sm);
   border: 1px solid var(--border);
@@ -53,6 +53,54 @@
   font-size: 0.75rem;
 }
 
+.agent-policy-tool-rules {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.agent-policy-tool-rules h4,
+.agent-policy-tool-rules p {
+  margin: 0;
+}
+
+.agent-policy-tool-rules p,
+.agent-policy-tool-empty {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.agent-policy-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.agent-policy-tool-row,
+.agent-policy-tool-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(9rem, 12rem) auto;
+  gap: var(--space-sm);
+  align-items: end;
+}
+
+.agent-policy-tool-row label,
+.agent-policy-tool-add label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.agent-policy-tool-row .input,
+.agent-policy-tool-add .input {
+  width: 100%;
+}
+
 .agent-policy-exempt {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -72,8 +120,15 @@
 }
 
 @media (max-width: 768px) {
-  .agent-policy-row {
+  .agent-policy-row,
+  .agent-policy-tool-row,
+  .agent-policy-tool-add {
     grid-template-columns: 1fr;
+  }
+
+  .agent-policy-tool-row .btn,
+  .agent-policy-tool-add .btn {
+    width: 100%;
   }
 
   .agent-policy-examples,

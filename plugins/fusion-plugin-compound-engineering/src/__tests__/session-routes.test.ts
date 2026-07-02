@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PlanningQuestion, PluginContext, PluginRouteResponse } from "@fusion/core";
+import type { CreateInteractiveAiSessionFactory, InteractiveAiSessionEvent, PlanningQuestion, PluginContext, PluginRouteResponse } from "@fusion/core";
 import { createSessionRoutes } from "../routes/session-routes.js";
 import { makeHarness, makeScriptedSession, scriptedFactory, type TestHarness } from "./_harness.js";
 
@@ -10,6 +10,9 @@ import { makeHarness, makeScriptedSession, scriptedFactory, type TestHarness } f
  * activeAiSession is absent (non-engine context), so `start` returns a 400 —
  * which is the correct, non-hanging behavior.
  */
+
+const DEBUG_OPENING_MESSAGE = "Start the Debug stage.";
+const DEBUG_PROTOCOL_SENTINEL = "translate any loaded-skill instruction";
 
 const QUESTION: PlanningQuestion = {
   id: "q1",
@@ -29,6 +32,19 @@ afterEach(() => {
   h.close();
   vi.restoreAllMocks();
 });
+
+function debugProtocolSensitiveFactory(question: PlanningQuestion): CreateInteractiveAiSessionFactory {
+  return vi.fn(async (options) => {
+    const hasConflictOverride = options.systemPrompt.includes(DEBUG_PROTOCOL_SENTINEL);
+    const event: InteractiveAiSessionEvent = hasConflictOverride
+      ? { type: "question", data: question }
+      : {
+          type: "error",
+          data: { message: "Failed to parse agent response: AI returned no valid JSON." },
+        };
+    return { session: makeScriptedSession([event]) };
+  });
+}
 
 function route(method: string, path: string) {
   const r = createSessionRoutes().find((x) => x.method === method && x.path === path);
@@ -117,6 +133,44 @@ describe("session routes (polling transport)", () => {
     expect(sessions.map((s) => s.stage).sort()).toEqual(["brainstorm", "plan"]);
   });
 
+  it("GET /sessions keeps error, interrupted, awaiting_input, active, and completed rows independently manageable", async () => {
+    const { getCeSessionStore } = await import("../session/session-store.js");
+    const store = getCeSessionStore(h.ctx);
+    const error = store.update(store.create({ stage: "debug" }).id, {
+      status: "error",
+      error: "Failed to parse agent response: AI returned no valid JSON.",
+    })!;
+    const interrupted = store.update(store.create({ stage: "plan" }).id, {
+      status: "interrupted",
+      error: "Cancelled by user",
+    })!;
+    const awaiting = store.update(store.create({ stage: "brainstorm" }).id, {
+      status: "awaiting_input",
+      currentQuestion: QUESTION,
+    })!;
+    const active = store.update(store.create({ stage: "strategy", turnIntervalMs: 60_000 }).id, { status: "active" })!;
+    const completed = store.update(store.create({ stage: "work" }).id, { status: "completed" })!;
+
+    const res = await call("GET", "/sessions", { params: {}, query: {} }, h.ctx);
+
+    expect(res.status).toBe(200);
+    const sessions = (res.body as { sessions: Array<{ id: string; status: string; error: string | null }> }).sessions;
+    expect(sessions.map((s) => [s.id, s.status, s.error])).toEqual(
+      expect.arrayContaining([
+        [error.id, "error", "Failed to parse agent response: AI returned no valid JSON."],
+        [interrupted.id, "interrupted", "Cancelled by user"],
+        [awaiting.id, "awaiting_input", null],
+        [active.id, "active", null],
+        [completed.id, "completed", null],
+      ]),
+    );
+
+    const deleted = await call("DELETE", "/sessions/:id", { params: { id: error.id } }, h.ctx);
+    expect(deleted.status).toBe(200);
+    expect(store.get(error.id)).toBeUndefined();
+    expect(store.get(completed.id)).toBeDefined();
+  });
+
   it("GET /sessions recovers stale active rows that have no live route handle", async () => {
     const { getCeSessionStore } = await import("../session/session-store.js");
     const store = getCeSessionStore(h.ctx);
@@ -167,6 +221,39 @@ describe("session routes (polling transport)", () => {
   it("POST /sessions requires a stage", async () => {
     const res = await call("POST", "/sessions", { body: {} }, h.ctx);
     expect(res.status).toBe(400);
+  });
+
+  it("POST /sessions starts debug detached and polling observes a protocol question instead of parse error", async () => {
+    const question: PlanningQuestion = {
+      id: "debug-scope",
+      type: "text",
+      question: "What bug or failing behavior should I investigate?",
+    };
+    h.ctx.createInteractiveAiSession = debugProtocolSensitiveFactory(question);
+
+    const started = await call(
+      "POST",
+      "/sessions",
+      { body: { stage: "debug", message: DEBUG_OPENING_MESSAGE } },
+      h.ctx,
+    );
+
+    expect(started.status).toBe(201);
+    const sessionId = (started.body as { session: { id: string; status: string; error: string | null } }).session.id;
+    expect((started.body as { session: { status: string } }).session.status).toBe("launching");
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const polled = await call("GET", "/sessions/:id", { params: { id: sessionId } }, h.ctx);
+    expect(polled.status).toBe(200);
+    expect((polled.body as { session: { status: string; error: string | null; currentQuestion: PlanningQuestion } }).session).toMatchObject({
+      status: "awaiting_input",
+      error: null,
+      currentQuestion: question,
+    });
+    expect(
+      (polled.body as { session: { error: string | null } }).session.error ?? "",
+    ).not.toContain("AI returned no valid JSON");
   });
 
   it("POST /sessions without engine interactive factory returns a clean 400 (no hang)", async () => {

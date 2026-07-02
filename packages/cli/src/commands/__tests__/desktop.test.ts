@@ -1,4 +1,8 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type Listener = (...args: any[]) => void;
 
@@ -119,16 +123,10 @@ const mocks = vi.hoisted(() => {
     }),
   };
 
-  const spawn = vi.fn((command: string) => {
-    if (command === "pnpm") {
-      queueMicrotask(() => {
-        state.buildChild.emit("exit", 0);
-      });
-      return state.buildChild;
-    }
+  const existingPaths = new Set<string>();
+  const existsSync = vi.fn((path: string) => existingPaths.has(path));
 
-    return state.electronChild;
-  });
+  const spawn = vi.fn(() => state.electronChild);
 
   return {
     state,
@@ -137,6 +135,8 @@ const mocks = vi.hoisted(() => {
     server,
     app,
     spawn,
+    existingPaths,
+    existsSync,
     taskStoreCtor: vi.fn(function () {
       return store;
     }),
@@ -157,6 +157,10 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("node:child_process", () => ({
   spawn: mocks.spawn,
+}));
+
+vi.mock("node:fs", () => ({
+  existsSync: mocks.existsSync,
 }));
 
 vi.mock("@fusion/core", () => ({
@@ -184,13 +188,18 @@ describe("runDesktop", () => {
   const originalExit = process.exit;
   const originalElectronBinary = process.env.FUSION_ELECTRON_BINARY;
   const originalDashboardUrl = process.env.FUSION_DASHBOARD_URL;
+  const originalDesktopEntry = process.env.FUSION_DESKTOP_ENTRY;
+  const packagedDesktopEntry = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "dist", "desktop", "main.js");
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     process.env.FUSION_ELECTRON_BINARY = "electron-bin";
+    delete process.env.FUSION_DESKTOP_ENTRY;
     delete process.env.FUSION_DASHBOARD_URL;
 
+    mocks.existingPaths.clear();
+    mocks.existingPaths.add(packagedDesktopEntry);
     mocks.state.buildChild = mocks.createMockChild();
     mocks.state.electronChild = mocks.createMockChild();
 
@@ -223,15 +232,20 @@ describe("runDesktop", () => {
     } else {
       process.env.FUSION_DASHBOARD_URL = originalDashboardUrl;
     }
+    if (originalDesktopEntry === undefined) {
+      delete process.env.FUSION_DESKTOP_ENTRY;
+    } else {
+      process.env.FUSION_DESKTOP_ENTRY = originalDesktopEntry;
+    }
   });
 
-  it("builds desktop app, starts dashboard on random port, and launches Electron", async () => {
+  it("starts dashboard on a random port and launches packaged Electron runtime without building cwd", async () => {
     await runDesktop({ paused: true });
 
-    expect(mocks.spawn).toHaveBeenCalledWith(
+    expect(mocks.spawn).not.toHaveBeenCalledWith(
       "pnpm",
-      ["--filter", "@fusion/desktop", "build"],
-      expect.objectContaining({ cwd: "/repo" }),
+      expect.arrayContaining(["--filter", "@fusion/desktop", "build"]),
+      expect.anything(),
     );
     expect(mocks.taskStoreCtor).toHaveBeenCalledWith("/repo");
     expect(mocks.store.updateSettings).toHaveBeenCalledWith({ enginePaused: true });
@@ -254,7 +268,7 @@ describe("runDesktop", () => {
     // In production mode (not dev), renderer uses embedded assets, so no FUSION_DASHBOARD_URL
     expect(mocks.spawn).toHaveBeenCalledWith(
       "electron-bin",
-      ["--enable-source-maps", "/repo/packages/desktop/dist/main.js"],
+      ["--enable-source-maps", packagedDesktopEntry],
       expect.objectContaining({
         cwd: "/repo",
         env: expect.objectContaining({
@@ -270,6 +284,7 @@ describe("runDesktop", () => {
 
   it("supports --dev mode by skipping build and pointing at Vite URL", async () => {
     process.env.FUSION_DASHBOARD_URL = "http://localhost:5173";
+    mocks.existingPaths.add("/repo/packages/desktop/dist/main.js");
 
     await runDesktop({ dev: true });
 
@@ -289,6 +304,95 @@ describe("runDesktop", () => {
 
     mocks.state.electronChild.emit("exit", 0);
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it.each([
+    { name: "empty directory", files: [] },
+    { name: "invalid package.json", files: [["package.json", "INVALID\r"]] },
+    { name: "valid non-Fusion package", files: [["package.json", JSON.stringify({ name: "not-fusion" })]] },
+    { name: "templated fixture JSON", files: [[join("fixtures", "cookiecutter.json"), "{{ cookiecutter.app_name }}"]] },
+  ] as const)("launches from a non-Fusion $name without reading workspace JSON", async ({ files }) => {
+    const workspace = await mkdtemp(join(tmpdir(), "fn-7395-C-Users-alice-"));
+    const cwd = join(workspace, "C", "Users", "alice", "project");
+    await mkdir(cwd, { recursive: true });
+    for (const [relativePath, contents] of files) {
+      const filePath = join(cwd, relativePath);
+      await mkdir(join(filePath, ".."), { recursive: true });
+      await writeFile(filePath, contents, "utf-8");
+    }
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+
+    await runDesktop({ noAuth: true });
+
+    const spawnedCommands = mocks.spawn.mock.calls.map(([command, args]) => `${command} ${(args as string[]).join(" ")}`);
+    expect(spawnedCommands).not.toContain("pnpm --filter @fusion/desktop build");
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      "electron-bin",
+      ["--enable-source-maps", packagedDesktopEntry],
+      expect.objectContaining({ cwd }),
+    );
+    expect(mocks.createServer).toHaveBeenCalledWith(
+      mocks.store,
+      expect.objectContaining({ noAuth: true }),
+    );
+
+    mocks.state.electronChild.emit("exit", 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("reports missing packaged assets from invalid-JSON directories without pnpm parse symptoms", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "fn-7395-C-Users-bob-"));
+    const cwd = join(workspace, "C", "Users", "bob", "broken-json");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(cwd, "package.json"), "INVALID\r", "utf-8");
+    await mkdir(join(cwd, "template"), { recursive: true });
+    await writeFile(join(cwd, "template", "cookiecutter.json"), "{{ cookiecutter.app_name }}", "utf-8");
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    delete process.env.FUSION_DESKTOP_ENTRY;
+    mocks.existingPaths.clear();
+
+    await expect(runDesktop({ noAuth: true })).rejects.toThrow(/Fusion desktop runtime asset is missing/);
+    await expect(runDesktop({ noAuth: true })).rejects.not.toThrow(
+      /ERR_PNPM_JSON_PARSE|Unexpected token|cookiecutter|broken-json|pnpm --filter @fusion\/desktop build/,
+    );
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("uses packaged assets even when cwd is an actual Fusion source checkout unless --dev is explicit", async () => {
+    mocks.existingPaths.add("/repo/packages/desktop/dist/main.js");
+
+    await runDesktop();
+
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      "electron-bin",
+      ["--enable-source-maps", packagedDesktopEntry],
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+
+    mocks.state.electronChild.emit("exit", 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("passes --no-auth through to the embedded dashboard server", async () => {
+    await runDesktop({ noAuth: true });
+
+    expect(mocks.createServer).toHaveBeenCalledWith(
+      mocks.store,
+      expect.objectContaining({ noAuth: true }),
+    );
+
+    mocks.state.electronChild.emit("exit", 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("reports a Fusion-owned missing runtime error without falling back to cwd source builds", async () => {
+    delete process.env.FUSION_DESKTOP_ENTRY;
+    mocks.existingPaths.clear();
+
+    await expect(runDesktop()).rejects.toThrow(/Fusion desktop runtime asset is missing/);
+
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.taskStoreCtor).not.toHaveBeenCalled();
   });
 
   it("cleans up dashboard runtime when Electron exits", async () => {

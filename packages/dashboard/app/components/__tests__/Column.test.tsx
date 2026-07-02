@@ -651,6 +651,81 @@ describe("Column in-progress/in-review bulk actions", () => {
   });
 });
 
+describe("Column plan auto-approval action", () => {
+  it.each([
+    ["workflow", false],
+    ["auto-approve-all", true],
+    ["require-all", false],
+  ] as const)("renders the Triage switch checked only for %s mode", async (_mode, enabled) => {
+    const user = userEvent.setup();
+    const onTogglePlanAutoApprove = vi.fn();
+
+    render(
+      <Column
+        {...defaultProps}
+        column="triage"
+        tasks={[]}
+        planAutoApproveEnabled={enabled}
+        onTogglePlanAutoApprove={onTogglePlanAutoApprove}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Planning column actions" }));
+    const switchItem = screen.getByRole("menuitemcheckbox", { name: /Auto-approve plan/i });
+    expect(switchItem).toHaveAttribute("aria-checked", enabled ? "true" : "false");
+    expect(screen.getByText(enabled ? /On bypasses manual plan approval/i : /Off uses the workflow\/default/i)).toBeInTheDocument();
+  });
+
+  it("calls the plan auto-approval toggle exactly once and closes the menu", async () => {
+    const user = userEvent.setup();
+    const onTogglePlanAutoApprove = vi.fn();
+
+    render(
+      <Column
+        {...defaultProps}
+        column="triage"
+        tasks={[makeTask("FN-001")]}
+        planAutoApproveEnabled={false}
+        onTogglePlanAutoApprove={onTogglePlanAutoApprove}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Planning column actions" }));
+    await user.click(screen.getByRole("checkbox", { name: "Auto-approve plan" }));
+
+    expect(onTogglePlanAutoApprove).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("coexists with workflow intake replan actions", async () => {
+    const user = userEvent.setup();
+    render(
+      <Column
+        {...defaultProps}
+        column={"intake" as ColumnType}
+        workflowMode
+        columnDisplayName="Intake"
+        columnFlags={{ intake: true }}
+        tasks={[{ ...makeTask("FN-002"), column: "intake" as ColumnType }]}
+        planAutoApproveEnabled={true}
+        onTogglePlanAutoApprove={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Intake column actions" }));
+
+    expect(screen.getByRole("menuitemcheckbox", { name: /Auto-approve plan/i })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Replan All/i })).toBeInTheDocument();
+  });
+
+  it("does not leave an actions shell on non-Triage columns without actions", () => {
+    render(<Column {...defaultProps} column="done" tasks={[]} />);
+
+    expect(screen.queryByRole("button", { name: "Done column actions" })).toBeNull();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Auto-approve plan/i })).toBeNull();
+  });
+});
+
 describe("Column Done action menu", () => {
   it("renders one accessible Done actions dropdown with sort choices and archive", async () => {
     const user = userEvent.setup();

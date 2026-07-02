@@ -11,6 +11,7 @@ import {
   cancelChatResponse,
   type ChatFailureInfo,
   type ChatSessionListResponse,
+  type ChatStreamErrorMeta,
 } from "../api";
 import { subscribeSse } from "../sse-bus";
 import { getScopedItem, setScopedItem, removeScopedItem } from "../utils/projectStorage";
@@ -18,6 +19,15 @@ import { recordResumeEvent } from "../utils/resumeInstrumentation";
 import type { Agent, ChatInFlightGenerationState, ChatMessage } from "@fusion/core";
 
 const ACTIVE_SESSION_STORAGE_KEY = "kb-chat-active-session";
+const TASK_PLANNER_CHAT_AGENT_ID_PREFIX = "task-planner:";
+
+function isTaskPlannerSession(session: ChatSessionInfo): boolean {
+  return session.agentId.startsWith(TASK_PLANNER_CHAT_AGENT_ID_PREFIX);
+}
+
+function isEmptyTaskPlannerSession(session: ChatSessionInfo): boolean {
+  return isTaskPlannerSession(session) && !session.lastMessageAt && !session.lastMessagePreview;
+}
 
 export interface ChatSessionInfo {
   id: string;
@@ -254,6 +264,20 @@ function mapChatMessageToInfo(message: ChatMessage): ChatMessageInfo {
   };
 }
 
+function reconcileOptimisticSentMessage(previous: ChatMessageInfo[], persisted: ChatMessageInfo): ChatMessageInfo[] {
+  if (previous.some((message) => message.id === persisted.id)) return previous;
+  const optimisticIndex = previous.findIndex((candidate) =>
+    candidate.role === "user"
+    && candidate.id.startsWith("temp-")
+    && candidate.sessionId === persisted.sessionId
+    && candidate.content.trim() === persisted.content.trim(),
+  );
+  if (optimisticIndex < 0) return [...previous, persisted];
+  const next = [...previous];
+  next[optimisticIndex] = persisted;
+  return next;
+}
+
 export function useChat(
   projectId?: string,
   addToast?: (msg: string, type?: "success" | "error" | "warning") => void,
@@ -277,7 +301,12 @@ export function useChat(
         return [] as ChatSessionInfo[];
       }
 
-      return readCache<ChatSessionInfo[]>(cacheKey, { maxAgeMs: SWR_TASKS_MAX_AGE_MS }) ?? [];
+      const cachedSessions = readCache<ChatSessionInfo[]>(cacheKey, { maxAgeMs: SWR_TASKS_MAX_AGE_MS }) ?? [];
+      /*
+      FNXC:ChatModal 2026-07-01-00:00:
+      Server settings decide whether task-planner sessions belong in the common feed. Do not hydrate cached task chats before that filtered list returns, otherwise a stale cache can briefly expose hidden task-detail conversations and their controls.
+      */
+      return cachedSessions.filter((session) => !isTaskPlannerSession(session));
     },
     [getChatSessionsCacheKey],
   );
@@ -1116,13 +1145,20 @@ export function useChat(
 
           flushPendingMessage();
         },
-        onError: (data, tempUserMessageId) => {
+        onError: (data, tempUserMessageId, meta?: ChatStreamErrorMeta) => {
           const failureInfo = normalizeFailureInfo(data);
           const suspensionMessage = typeof data === "string" ? data : failureInfo.summary;
           const shouldSuppressSuspensionError = isLikelyTabSuspensionError(suspensionMessage);
+          const acceptedByServer = meta?.requestAccepted === true;
 
+          /*
+          FNXC:ChatReliability 2026-07-01-00:00:
+          Provider errors can arrive after ChatManager has already persisted and sent the user's turn to the model context. Keep the visible user bubble for accepted streams and reconcile it with the persisted transcript instead of rolling it back like a pre-delivery HTTP validation failure.
+          */
           setMessages((prev) => {
-            const nextMessages = prev.filter((message) => message.id !== tempUserMessageId);
+            const nextMessages = acceptedByServer
+              ? prev
+              : prev.filter((message) => message.id !== tempUserMessageId);
             if (shouldSuppressSuspensionError) {
               return nextMessages;
             }
@@ -1159,6 +1195,17 @@ export function useChat(
             }
           } else {
             addToast?.(failureInfo.summary, "error");
+            if (acceptedByServer) {
+              void fetchChatMessages(activeSession.id, { limit: 50, order: "desc" }, projectId)
+                .then((data) => {
+                  if (activeSessionRef.current?.id !== activeSession.id) return;
+                  const refreshed = data.messages.slice().reverse().map(mapChatMessageToInfo);
+                  setMessages((current) => refreshed.reduce(reconcileOptimisticSentMessage, current));
+                })
+                .catch(() => {
+                  // The optimistic accepted user bubble is already visible; the next SSE/refresh will reconcile the server id.
+                });
+            }
             void refreshSessions();
           }
 
@@ -1290,6 +1337,14 @@ export function useChat(
     const handleChatSessionCreated = (e: MessageEvent) => {
       if (isStale()) return;
       const session: ChatSessionInfo = JSON.parse(e.data);
+      /*
+      FNXC:TaskDetailPlannerChat 2026-07-01-00:00:
+      Task-planner visibility is project-settings controlled on the server. Treat any planner SSE create as a refresh hint instead of inserting it directly, so the common feed only shows populated planner sessions when the project explicitly opts in and never shows empty planner rows.
+      */
+      if (isTaskPlannerSession(session)) {
+        if (!isEmptyTaskPlannerSession(session)) void refreshSessions();
+        return;
+      }
       // Avoid duplicates
       setSessions((prev) => {
         if (prev.some((s) => s.id === session.id)) return prev;
@@ -1333,6 +1388,9 @@ export function useChat(
       if (isStale()) return;
       const rawMessage = JSON.parse(e.data) as ChatMessage;
       const message = mapChatMessageToInfo(rawMessage);
+      if (!sessionsRef.current.some((session) => session.id === message.sessionId)) {
+        void refreshSessions();
+      }
 
       // Skip if this message was already added via streaming completion
       // (SSE event may arrive before streaming state clears)
@@ -1373,16 +1431,7 @@ export function useChat(
           // Reconcile optimistic local user messages against persisted SSE echoes.
           // The optimistic message uses a temp id and should be replaced instead of appended.
           if (message.role === "user") {
-            const optimisticIndex = prev.findIndex((candidate) =>
-              candidate.role === "user"
-              && candidate.id.startsWith("temp-")
-              && candidate.content.trim() === message.content.trim(),
-            );
-            if (optimisticIndex >= 0) {
-              const next = [...prev];
-              next[optimisticIndex] = message;
-              return next;
-            }
+            return reconcileOptimisticSentMessage(prev, message);
           }
 
           return [...prev, message];
@@ -1407,7 +1456,7 @@ export function useChat(
     });
 
     return unsubscribe;
-  }, [attachIfGenerating, getChatMessagesCacheKey, projectId, flushPendingMessage]);
+  }, [attachIfGenerating, getChatMessagesCacheKey, projectId, flushPendingMessage, refreshSessions]);
 
   // Cleanup on unmount
   useEffect(() => {

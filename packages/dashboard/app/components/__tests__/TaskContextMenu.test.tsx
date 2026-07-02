@@ -29,27 +29,67 @@ function actionIds(task: Task, overrides: Partial<Parameters<typeof buildTaskAct
 
 describe("TaskContextMenu shared task action model", () => {
   it("mirrors detail Actions menu availability across lifecycle states", () => {
-    expect(actionIds(makeTask({ column: "triage" }))).toEqual(["delete", "respecify", "pause"]);
+    expect(actionIds(makeTask({ column: "triage" }))).toEqual(["respecify", "pause", "delete"]);
     expect(buildTaskActionMenuModel({ task: makeTask({ column: "triage" }), t, columnLabel: columnLabel as any }).shouldShowActionsMenu).toBe(false);
 
-    expect(actionIds(makeTask({ column: "triage", status: "failed" as any }), { canRetryTask: true, hasRetryHandler: true })).toContain("retry");
+    expect(actionIds(makeTask({ column: "triage", status: "failed" as any }), { canRetryTask: true, hasRetryHandler: true })).toEqual(["respecify", "retry", "pause", "delete"]);
     expect(buildTaskActionMenuModel({ task: makeTask({ column: "triage", status: "failed" as any }), t, columnLabel: columnLabel as any, canRetryTask: true, hasRetryHandler: true }).shouldShowActionsMenu).toBe(true);
 
     expect(actionIds(makeTask({ column: "in-review" }), { hasDuplicateHandler: true, hasResetHandler: true, onOpenRefine: vi.fn() })).toEqual([
-      "delete",
       "duplicate",
       "refine",
       "respecify",
-      "reset",
       "pause",
+      "reset",
+      "delete",
     ]);
-    expect(actionIds(makeTask({ column: "done" }), { hasResetHandler: true, onOpenRefine: vi.fn() })).toEqual(["delete", "refine", "respecify"]);
-    expect(actionIds(makeTask({ column: "done" }), { hasResetHandler: true })).toEqual(["delete", "respecify"]);
-    expect(actionIds(makeTask({ column: "archived" }), { hasResetHandler: true })).toEqual(["delete", "respecify"]);
+    expect(actionIds(makeTask({ column: "done" }), { hasResetHandler: true, onOpenRefine: vi.fn() })).toEqual(["refine", "respecify", "delete"]);
+    expect(actionIds(makeTask({ column: "done" }), { hasResetHandler: true })).toEqual(["respecify", "delete"]);
+    expect(actionIds(makeTask({ column: "archived" }), { hasResetHandler: true })).toEqual(["respecify", "delete"]);
+  });
+
+  it("exposes GitHub tracking enablement only for untracked tasks with a host callback", () => {
+    const onEnableGithubTracking = vi.fn();
+    const untracked = buildTaskActionMenuModel({
+      task: makeTask({ githubTracking: undefined }),
+      t,
+      columnLabel: columnLabel as any,
+      onEnableGithubTracking,
+    });
+    const disabled = buildTaskActionMenuModel({
+      task: makeTask({ githubTracking: { enabled: false } as any }),
+      t,
+      columnLabel: columnLabel as any,
+      onEnableGithubTracking,
+    });
+    const enabled = buildTaskActionMenuModel({
+      task: makeTask({ githubTracking: { enabled: true } as any }),
+      t,
+      columnLabel: columnLabel as any,
+      onEnableGithubTracking,
+    });
+    const linked = buildTaskActionMenuModel({
+      task: makeTask({ githubTracking: { enabled: true, issue: { owner: "o", repo: "r", number: 1 } } as any }),
+      t,
+      columnLabel: columnLabel as any,
+      onEnableGithubTracking,
+    });
+    const noCallback = buildTaskActionMenuModel({ task: makeTask(), t, columnLabel: columnLabel as any });
+
+    expect(untracked.actions.find((action) => action.id === "enable-github-tracking")?.label).toBe("Enable GitHub tracking");
+    expect(untracked.actions.map((action) => action.id)).toEqual(["respecify", "enable-github-tracking", "pause", "delete"]);
+    expect(disabled.actions.map((action) => action.id)).toContain("enable-github-tracking");
+    expect(enabled.actions.map((action) => action.id)).not.toContain("enable-github-tracking");
+    expect(linked.actions.map((action) => action.id)).not.toContain("enable-github-tracking");
+    expect(noCallback.actions.map((action) => action.id)).not.toContain("enable-github-tracking");
+
+    untracked.actions.find((action) => action.id === "enable-github-tracking")?.onSelect?.();
+    expect(onEnableGithubTracking).toHaveBeenCalledTimes(1);
   });
 
   it("exposes pause, unpause, and paused-by-agent note with detail labels", () => {
     const active = buildTaskActionMenuModel({ task: makeTask(), t, columnLabel: columnLabel as any });
+    expect(active.actions.map((action) => action.id)).toEqual(["respecify", "pause", "delete"]);
     expect(active.actions.find((action) => action.id === "pause")?.label).toBe("Pause");
 
     const paused = buildTaskActionMenuModel({
@@ -102,8 +142,9 @@ describe("TaskContextMenu shared task action model", () => {
       ["intake", "Move to Intake"],
       ["qa", "Move to QA"],
     ]);
-    expect(buildModel.actions.map((action) => action.id)).toContain("reset");
-    expect(buildModel.actions.map((action) => action.id)).toContain("pause");
+    expect(buildModel.actions.map((action) => action.id)).toEqual(["respecify", "pause", "reset", "delete"]);
+    expect(buildModel.actions.at(-2)?.id).toBe("reset");
+    expect(buildModel.actions.at(-1)?.id).toBe("delete");
 
     const completeModel = buildTaskActionMenuModel({
       task: makeTask({ column: "complete" }),
@@ -114,7 +155,8 @@ describe("TaskContextMenu shared task action model", () => {
       hasResetHandler: true,
       onOpenRefine: vi.fn(),
     });
-    expect(completeModel.actions.map((action) => action.id)).toEqual(["delete", "refine", "respecify"]);
+    expect(completeModel.actions.map((action) => action.id)).toEqual(["refine", "respecify", "delete"]);
+    expect(completeModel.actions.map((action) => action.id)).not.toContain("reset");
     expect(completeModel.moveTransitions.map((action) => action.column)).toEqual(["qa", "cold-storage"]);
 
     const archivedModel = buildTaskActionMenuModel({
@@ -125,7 +167,8 @@ describe("TaskContextMenu shared task action model", () => {
       workflowMoveColumns,
       hasResetHandler: true,
     });
-    expect(archivedModel.actions.map((action) => action.id)).toEqual(["delete", "respecify"]);
+    expect(archivedModel.actions.map((action) => action.id)).toEqual(["respecify", "delete"]);
+    expect(archivedModel.actions.map((action) => action.id)).not.toContain("reset");
   });
 
   it("mirrors in-review merge and manual PR status actions", () => {
@@ -180,6 +223,29 @@ describe("TaskContextMenu shared task action model", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(onActionSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "delete" }));
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects enabled touch menu items on pointer release exactly once", () => {
+    const onPause = vi.fn();
+    const onActionSelect = vi.fn();
+    render(
+      <TaskContextMenu
+        actions={[
+          { id: "pause", label: "Pause", onSelect: onPause },
+          { id: "disabled", label: "Disabled", disabled: true, onSelect: vi.fn() },
+          { id: "note", label: "Paused by agent", tone: "note", disabled: true, onSelect: vi.fn() },
+        ]}
+        onActionSelect={onActionSelect}
+      />,
+    );
+
+    fireEvent.pointerUp(screen.getByRole("menuitem", { name: "Pause" }), { pointerType: "touch", pointerId: 1 });
+
+    expect(onActionSelect).toHaveBeenCalledTimes(1);
+    expect(onActionSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "pause" }));
+    expect(onPause).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("menuitem", { name: "Disabled" })).toBeDisabled();
+    expect(screen.getByText("Paused by agent")).toHaveAttribute("role", "note");
   });
 
   it("focuses the first enabled action and supports arrow-key roving", () => {

@@ -59,6 +59,8 @@ vi.mock("../Column", () => ({
     onQuickCreate,
     onNewTask,
     onToggleAutoMerge,
+    planAutoApproveEnabled,
+    onTogglePlanAutoApprove,
     onArchiveAllDone,
     favoriteProviders,
     favoriteModels,
@@ -83,6 +85,8 @@ vi.mock("../Column", () => ({
     onQuickCreate?: unknown;
     onNewTask?: unknown;
     onToggleAutoMerge?: () => void;
+    planAutoApproveEnabled?: boolean;
+    onTogglePlanAutoApprove?: () => void;
     onArchiveAllDone?: unknown;
     favoriteProviders?: string[];
     favoriteModels?: string[];
@@ -101,7 +105,7 @@ vi.mock("../Column", () => ({
   }) => {
     columnRenderCounts[column] = (columnRenderCounts[column] ?? 0) + 1;
     return (
-      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((workflow) => workflow.id))} data-default-workflow-id={defaultWorkflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"} data-has-subtask={onSubtaskBreakdown ? "yes" : "no"}>
+      <div data-testid={`column-${column}`} data-tasks={JSON.stringify(tasks)} data-workflow-badges={JSON.stringify(Object.fromEntries(taskWorkflowBadges ?? new Map()))} data-collapsed={collapsed ? "true" : "false"} data-has-quick-create={onQuickCreate ? "yes" : "no"} data-has-new-task={onNewTask ? "yes" : "no"} data-has-auto-merge-toggle={onToggleAutoMerge ? "yes" : "no"} data-has-plan-auto-approve-toggle={onTogglePlanAutoApprove ? "yes" : "no"} data-plan-auto-approve-enabled={planAutoApproveEnabled ? "true" : "false"} data-has-archive-all={onArchiveAllDone ? "yes" : "no"} data-favorite-providers={JSON.stringify(favoriteProviders ?? [])} data-favorite-models={JSON.stringify(favoriteModels ?? [])} data-has-toggle-favorite={onToggleFavorite ? "yes" : "no"} data-has-toggle-model-favorite={onToggleModelFavorite ? "yes" : "no"} data-is-search-active={isSearchActive ? "true" : "false"} data-done-sort-mode={doneSortMode ?? ""} data-has-done-sort-handler={onDoneSortModeChange ? "yes" : "no"} data-workflow-id={workflowId ?? ""} data-workflow-options={JSON.stringify((workflowOptions ?? []).map((workflow) => workflow.id))} data-default-workflow-id={defaultWorkflowId ?? ""} data-column-display-name={columnDisplayName ?? ""} data-has-can-drop={canDropTask ? "yes" : "no"} data-has-planning={onPlanningMode ? "yes" : "no"} data-has-subtask={onSubtaskBreakdown ? "yes" : "no"}>
         {onQuickCreate ? (
           <button type="button" data-testid={`mock-quick-create-${column}`} onClick={() => void (onQuickCreate as (input: { description: string; column?: string; workflowId?: string }) => Promise<unknown>)({ description: `Create from ${column}`, column, workflowId: "wf-custom" })}>
             quick-create-{column}
@@ -187,6 +191,8 @@ function createBoardProps(overrides = {}) {
     onNewTask: noop,
     autoMerge: true,
     onToggleAutoMerge: noop,
+    planAutoApproveEnabled: false,
+    onTogglePlanAutoApprove: noop,
     globalPaused: false,
     onUpdateTask: undefined,
     onArchiveTask: undefined,
@@ -197,6 +203,49 @@ function createBoardProps(overrides = {}) {
 
 function renderBoard(props = {}) {
   return render(<Board {...createBoardProps(props)} />);
+}
+
+function installMobileBoardStabilizationHarness() {
+  const originalMatchMedia = window.matchMedia;
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const visualViewportDescriptor = Object.getOwnPropertyDescriptor(window, "visualViewport");
+  const visualViewportTarget = new EventTarget() as EventTarget & { scale: number };
+  visualViewportTarget.scale = 1;
+
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query.includes("768px"),
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+  window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+    callback(performance.now());
+    return 1;
+  });
+  window.cancelAnimationFrame = vi.fn();
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: visualViewportTarget,
+  });
+
+  return {
+    visualViewport: visualViewportTarget,
+    restore() {
+      window.matchMedia = originalMatchMedia;
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      if (visualViewportDescriptor) {
+        Object.defineProperty(window, "visualViewport", visualViewportDescriptor);
+      } else {
+        delete (window as typeof window & { visualViewport?: VisualViewport }).visualViewport;
+      }
+    },
+  };
 }
 
 async function openWorkflowSwitcher() {
@@ -222,6 +271,46 @@ describe("Board", () => {
     renderBoard();
     const main = screen.getByRole("main");
     expect(main.id).toBe("board");
+  });
+
+  it("preserves intentional board column scroll during mobile resize stabilization", () => {
+    const harness = installMobileBoardStabilizationHarness();
+    try {
+      const { rerender } = renderBoard({
+        tasks: [
+          { id: "FN-SCROLL-1", description: "Later lane", column: "in-review", dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "2024-01-01T00:00:00.000Z", updatedAt: "2024-01-01T00:00:00.000Z" } as Task,
+        ],
+      });
+      const board = screen.getByRole("main") as HTMLElement;
+      board.scrollLeft = 360;
+
+      rerender(<Board {...createBoardProps({ tasks: [] })} />);
+      act(() => {
+        window.dispatchEvent(new Event("resize"));
+      });
+
+      expect(board.scrollLeft).toBe(360);
+      expect(document.documentElement.scrollLeft).toBe(0);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it("preserves intentional board column scroll during mobile visualViewport stabilization", () => {
+    const harness = installMobileBoardStabilizationHarness();
+    try {
+      renderBoard();
+      const board = screen.getByRole("main") as HTMLElement;
+      board.scrollLeft = 480;
+
+      act(() => {
+        harness.visualViewport.dispatchEvent(new Event("resize"));
+      });
+
+      expect(board.scrollLeft).toBe(480);
+    } finally {
+      harness.restore();
+    }
   });
 
   it("FN-4380: does not eagerly fetch GitHub badge status on board mount", () => {
@@ -1160,6 +1249,53 @@ describe("Board", () => {
       expect(screen.getByTestId("column-idea").getAttribute("data-has-quick-create")).toBe("yes");
     });
 
+    it("passes plan auto-approval toggle only to the legacy Triage column", () => {
+      renderBoard({ planAutoApproveEnabled: true });
+
+      expect(screen.getByTestId("column-triage").getAttribute("data-has-plan-auto-approve-toggle")).toBe("yes");
+      expect(screen.getByTestId("column-triage").getAttribute("data-plan-auto-approve-enabled")).toBe("true");
+      for (const col of COLUMNS.filter((column) => column !== "triage")) {
+        expect(screen.getByTestId(`column-${col}`).getAttribute("data-has-plan-auto-approve-toggle")).toBe("no");
+      }
+    });
+
+    it("passes plan auto-approval toggle to selected workflow intake and hold columns only", async () => {
+      const workflow = {
+        id: "wf-plan-columns",
+        name: "Plan columns",
+        columns: [
+          { id: "idea", name: "Idea", flags: { intake: true } },
+          { id: "hold", name: "Hold", flags: { hold: true } },
+          { id: "work", name: "Work", flags: { countsTowardWip: true } },
+          { id: "review", name: "Review", flags: { humanReview: true } },
+          { id: "done", name: "Done", flags: { complete: true } },
+        ],
+      };
+      enableFlag({ "FN-1": workflow.id }, [workflow]);
+      renderBoard({ tasks: [mkTask({ id: "FN-1", column: "idea" })], planAutoApproveEnabled: true });
+
+      await waitFor(() => expect(screen.getByTestId("column-idea")).toBeDefined());
+      expect(screen.getByTestId("column-idea").getAttribute("data-has-plan-auto-approve-toggle")).toBe("yes");
+      expect(screen.getByTestId("column-hold").getAttribute("data-has-plan-auto-approve-toggle")).toBe("yes");
+      expect(screen.getByTestId("column-work").getAttribute("data-has-plan-auto-approve-toggle")).toBe("no");
+      expect(screen.getByTestId("column-review").getAttribute("data-has-plan-auto-approve-toggle")).toBe("no");
+      expect(screen.getByTestId("column-done").getAttribute("data-has-plan-auto-approve-toggle")).toBe("no");
+    });
+
+    it("passes plan auto-approval toggle to all-workflows aggregate intake columns", async () => {
+      const projectId = "project-all-plan-columns";
+      enableFlag({ "FN-1": "builtin:coding" }, [DEFAULT_WORKFLOW]);
+      window.localStorage.setItem(scopedKey(BOARD_WORKFLOW_SELECTION_STORAGE_KEY, projectId), ALL_WORKFLOWS_BOARD_VIEW_ID);
+      renderBoard({
+        projectId,
+        tasks: [mkTask({ id: "FN-1", column: "triage" })],
+      });
+
+      await waitFor(() => expect(screen.getByTestId("column-triage")).toBeDefined());
+      expect(screen.getByTestId("column-triage").getAttribute("data-has-plan-auto-approve-toggle")).toBe("yes");
+      expect(screen.getByTestId("column-in-progress").getAttribute("data-has-plan-auto-approve-toggle")).toBe("no");
+    });
+
     it("passes auto-merge toggle to selected workflow human-review columns", async () => {
       const workflow = {
         ...DEFAULT_WORKFLOW,
@@ -1664,6 +1800,32 @@ describe("Board", () => {
         "column-done",
         "column-archived",
       ]);
+    });
+
+    it("preserves all-workflows board scroll during mobile visualViewport refresh stabilization", async () => {
+      const harness = installMobileBoardStabilizationHarness();
+      try {
+        enableFlag(
+          { "FN-1": "builtin:coding", "FN-2": "wf-custom" },
+          [DEFAULT_WORKFLOW, CUSTOM_WORKFLOW],
+        );
+        renderBoard({ tasks: [mkTask({ id: "FN-1", column: "todo" }), mkTask({ id: "FN-2", column: "intake" })] });
+
+        await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
+        const board = screen.getByRole("main") as HTMLElement;
+        expect(board.className).toContain("board-workflow-columns");
+        board.scrollLeft = 520;
+
+        act(() => {
+          harness.visualViewport.dispatchEvent(new Event("resize"));
+          window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(board.scrollLeft).toBe(520);
+        expect(screen.getByTestId("column-intake")).toHaveAttribute("data-tasks", expect.stringContaining("FN-2"));
+      } finally {
+        harness.restore();
+      }
     });
 
     it("archived column is collapsible in workflow mode", async () => {

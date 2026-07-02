@@ -132,6 +132,22 @@ describe("ThemeSelector", () => {
     expect(THEME_OPTIONS.map((theme) => theme.value)).toEqual([...COLOR_THEMES]);
   });
 
+  it("renders the Glass Silver affordance with a non-empty label and swatch", () => {
+    render(
+      <ThemeSelector
+        themeMode="dark"
+        colorTheme="glass-silver"
+        onThemeModeChange={vi.fn()}
+        onColorThemeChange={vi.fn()}
+      />
+    );
+
+    const option = screen.getByLabelText("Glass Silver theme");
+    expect(option).toHaveTextContent("Glass Silver");
+    expect(option.querySelector(".theme-swatch-glass-silver")).toBeTruthy();
+    expect(option.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("marks current color theme as active", () => {
     render(
       <ThemeSelector

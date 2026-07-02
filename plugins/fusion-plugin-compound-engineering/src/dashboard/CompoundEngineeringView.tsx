@@ -223,7 +223,7 @@ function ArtifactRow({
         type="button"
         className="ce-artifact-open"
         data-testid="ce-artifact-open"
-        onClick={() => openFile?.(entry.path)}
+        onClick={() => openFile?.(entry.path, { workspace: "project" })}
       >
         Open
       </button>

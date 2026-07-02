@@ -14,7 +14,7 @@ import {BUILTIN_CODING_WORKFLOW_IR} from "../builtin-coding-workflow-ir.js";
 import type {WorkflowFieldDefinition} from "../workflow-ir-types.js";
 import "../builtin-traits.js";
 import type {WorkflowDefinition, WorkflowDefinitionUpdate} from "../workflow-definition-types.js";
-import {compileWorkflowToSteps, isInterpreterDeferredWorkflowCompileError} from "../workflow-compiler.js";
+import {resolveDefaultOnOptionalGroupIds} from "../workflow-optional-steps.js";
 import {isBuiltinWorkflowId} from "../builtin-workflows.js";
 import {fromJson} from "../db.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
@@ -634,16 +634,12 @@ export async function selectTaskWorkflowImpl(store: TaskStore, taskId: string, w
       if (def.kind === "fragment") {
         throw new Error(`Workflow '${workflowId}' is a fragment and cannot be selected for a task`);
       }
-      // Compile once up front: invalid graphs abort before any mutation, while
-      // interpreter-deferred graphs keep the selection but materialize no legacy
-      // WorkflowStep rows.
-      let inputs: import("../types.js").WorkflowStepInput[];
-      try {
-        inputs = compileWorkflowToSteps(def.ir);
-      } catch (err) {
-        if (isBuiltinWorkflowId(workflowId) && isInterpreterDeferredWorkflowCompileError(err)) inputs = [];
-        else throw err;
-      }
+      // FNXC:LegacyWorkflowEngineRemoval 2026-07-02-00:00:
+      // FN-7360 removed the legacy linear compiler; the graph interpreter is
+      // the sole executor. Validation is now parseWorkflowIr (accepts branching
+      // graphs). No step materialization is needed.
+      parseWorkflowIr(def.ir);
+      const ids: string[] = resolveDefaultOnOptionalGroupIds(def.ir);
 
       // Materialize the new steps and point the task at them BEFORE deleting the
       // prior selection's rows, so a mid-flight failure never leaves the task
@@ -655,7 +651,6 @@ export async function selectTaskWorkflowImpl(store: TaskStore, taskId: string, w
       const oldFieldDefs = store.resolveTaskCustomFieldDefsSync(taskId);
       const newFieldDefs: WorkflowFieldDefinition[] =
         def.ir.version === "v2" ? (def.ir.fields ?? []) : [];
-      const ids = await store.materializeWorkflowSteps(workflowId, inputs);
       try {
         await store.updateTaskUnlocked(taskId, { enabledWorkflowSteps: ids });
         store.writeTaskWorkflowSelection(taskId, workflowId, ids);

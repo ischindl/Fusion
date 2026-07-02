@@ -89,6 +89,9 @@ export interface AuthCredentialEntry {
   [key: string]: unknown;
 }
 
+const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
+const ANTHROPIC_LEGACY_OAUTH_PROVIDER_ID = "anthropic";
+
 // Cache for usage data with TTL
 interface CacheEntry {
   data: ProviderUsage[];
@@ -886,8 +889,21 @@ async function fetchClaudeUsage(authStorage?: AuthStorageLike): Promise<Provider
     // Reload may fail if no storage - ignore
   }
   try {
-    const fusionCreds = authStorage?.get?.("anthropic");
-    if (fusionCreds?.type === "oauth" && fusionCreds.access) {
+    for (const providerId of [ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, ANTHROPIC_LEGACY_OAUTH_PROVIDER_ID]) {
+      let fusionCreds = authStorage?.get?.(providerId);
+      if (fusionCreds?.type !== "oauth" || !fusionCreds.access) {
+        continue;
+      }
+
+      if (isTokenExpired(typeof fusionCreds.expires === "number" ? fusionCreds.expires : undefined) && authStorage?.getApiKey) {
+        /*
+        FNXC:ProviderAuth 2026-07-01-12:55:
+        Claude usage/subscription checks must use Anthropic subscription OAuth before the Claude CLI fallback. Refresh through `anthropic-subscription` even when the credential was found in the legacy `anthropic` OAuth row so rotated tokens land on the subscription surface and never become raw `/v1` API-key material.
+        */
+        await Promise.resolve(authStorage.getApiKey(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)).catch(() => undefined);
+        fusionCreds = authStorage.get?.(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) ?? fusionCreds;
+      }
+
       creds = {
         accessToken: fusionCreds.access,
         refreshToken: fusionCreds.refresh || undefined,
@@ -896,6 +912,7 @@ async function fetchClaudeUsage(authStorage?: AuthStorageLike): Promise<Provider
         ...(fusionCreds.subscriptionType ? { subscriptionType: fusionCreds.subscriptionType } : {}),
         ...(fusionCreds.rateLimitTier ? { rateLimitTier: fusionCreds.rateLimitTier } : {}),
       };
+      break;
     }
   } catch {
     // get() may not be implemented or throw - ignore

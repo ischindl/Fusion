@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchConfig, fetchSettings, updateSettings, updateGlobalSettings } from "../api";
+import type { ProjectSettings } from "@fusion/core";
 import { setAutoReloadEnabled } from "../versionCheck";
 
 export type QuickChatButtonMode = "floating" | "footer" | "off";
+export type PlanApprovalMode = NonNullable<ProjectSettings["planApprovalMode"]>;
 
 /**
  * Settings state and actions consumed by the dashboard App shell.
@@ -12,6 +14,8 @@ export interface UseAppSettingsResult {
   rootDir: string;
   autoMerge: boolean;
   mergeStrategy: string;
+  planApprovalMode: PlanApprovalMode;
+  planAutoApproveEnabled: boolean;
   showWorktreeGrouping: boolean;
   testMode: boolean;
   isTestMode: boolean;
@@ -23,6 +27,7 @@ export interface UseAppSettingsResult {
   capacityRiskTodoThreshold: number;
   openTasksInRightSidebar: boolean;
   openMobileTasksInPopup: boolean;
+  taskDetailChatFirst: boolean;
   quickChatButtonMode: QuickChatButtonMode;
   quickChatCloseOnOutsideClick: boolean;
   dismissModalsOnOutsideClick: boolean;
@@ -38,6 +43,7 @@ export interface UseAppSettingsResult {
   goalsEnabled: boolean;
   autoReloadOnVersionChange: boolean;
   toggleAutoMerge: () => Promise<void>;
+  togglePlanAutoApprove: () => Promise<void>;
   toggleGlobalPause: () => Promise<void>;
   toggleEnginePause: () => Promise<void>;
   toggleShowQuickChatFAB: () => Promise<void>;
@@ -55,6 +61,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [rootDir, setRootDir] = useState<string>(".");
   const [autoMerge, setAutoMerge] = useState(true);
   const [mergeStrategy, setMergeStrategy] = useState("direct");
+  const [planApprovalMode, setPlanApprovalMode] = useState<PlanApprovalMode>("workflow");
   const [showWorktreeGrouping, setShowWorktreeGrouping] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const [isTestMode, setIsTestMode] = useState(false);
@@ -66,6 +73,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [capacityRiskTodoThreshold, setCapacityRiskTodoThreshold] = useState(20);
   const [openTasksInRightSidebar, setOpenTasksInRightSidebar] = useState(false);
   const [openMobileTasksInPopup, setOpenMobileTasksInPopup] = useState(false);
+  const [taskDetailChatFirst, setTaskDetailChatFirst] = useState(false);
   const [quickChatButtonMode, setQuickChatButtonMode] = useState<QuickChatButtonMode>("off");
   const [quickChatCloseOnOutsideClick, setQuickChatCloseOnOutsideClick] = useState(true);
   const [dismissModalsOnOutsideClick, setDismissModalsOnOutsideClick] = useState(false);
@@ -81,6 +89,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [goalsEnabled, setGoalsEnabled] = useState(true);
   const [autoReloadOnVersionChange, setAutoReloadOnVersionChangeState] = useState(true);
   const autoMergeRef = useRef(autoMerge);
+  const planApprovalModeRef = useRef<PlanApprovalMode>(planApprovalMode);
 
   /**
    * Fetches config and settings from the backend and updates local state.
@@ -105,6 +114,12 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
       Board and List context menus need the project merge strategy before PR creation so manual PR projects can show Start PR Review with the same availability as Task Detail.
       */
       setMergeStrategy(typeof settings.mergeStrategy === "string" ? settings.mergeStrategy : "direct");
+      const nextPlanApprovalMode: PlanApprovalMode =
+        settings.planApprovalMode === "auto-approve-all" || settings.planApprovalMode === "require-all"
+          ? settings.planApprovalMode
+          : "workflow";
+      planApprovalModeRef.current = nextPlanApprovalMode;
+      setPlanApprovalMode(nextPlanApprovalMode);
       setShowWorktreeGrouping(settings.showWorktreeGrouping === true);
       const nextTestMode = settings.testMode === true;
       const nextIsTestMode = nextTestMode || settings.defaultProvider?.trim().toLowerCase() === "mock";
@@ -132,6 +147,11 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
       setCapacityRiskTodoThreshold(settings.capacityRiskTodoThreshold ?? 20);
       setOpenTasksInRightSidebar(settings.openTasksInRightSidebar === true);
       setOpenMobileTasksInPopup(settings.openMobileTasksInPopup === true);
+      /*
+      FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+      App-level task-detail hosts need the project setting so Activity-first is the missing/false default and Chat-first is restored only by explicit opt-in.
+      */
+      setTaskDetailChatFirst(settings.taskDetailChatFirst === true);
       setExperimentalFeatures(settings.experimentalFeatures ?? {});
       const features = settings.experimentalFeatures ?? {};
       /*
@@ -160,8 +180,10 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     setDevServerEnabled(false);
     setOpenTasksInRightSidebar(false);
     setOpenMobileTasksInPopup(false);
+    setTaskDetailChatFirst(false);
     setQuickChatCloseOnOutsideClick(true);
     setDismissModalsOnOutsideClick(false);
+    setPlanApprovalMode("workflow");
     setTodosEnabled(true);
     setGoalsEnabled(true);
     void refresh();
@@ -170,6 +192,10 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   useEffect(() => {
     autoMergeRef.current = autoMerge;
   }, [autoMerge]);
+
+  useEffect(() => {
+    planApprovalModeRef.current = planApprovalMode;
+  }, [planApprovalMode]);
 
   const toggleAutoMerge = useCallback(async () => {
     const previousAutoMerge = autoMergeRef.current;
@@ -182,6 +208,24 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     } catch {
       autoMergeRef.current = previousAutoMerge;
       setAutoMerge(previousAutoMerge);
+    }
+  }, [projectId]);
+
+  /*
+  FNXC:PlanApproval 2026-07-01-08:37:
+  The Board Triage shortcut is a binary mirror of project planApprovalMode === "auto-approve-all". Settings modal remains the full three-state editor, so turning the Board switch off returns to "workflow" and "require-all" stays unchecked until an operator explicitly enables auto-approval.
+  */
+  const togglePlanAutoApprove = useCallback(async () => {
+    const previousMode = planApprovalModeRef.current;
+    const nextMode: PlanApprovalMode = previousMode === "auto-approve-all" ? "workflow" : "auto-approve-all";
+    planApprovalModeRef.current = nextMode;
+    setPlanApprovalMode(nextMode);
+
+    try {
+      await updateSettings({ planApprovalMode: nextMode }, projectId);
+    } catch {
+      planApprovalModeRef.current = previousMode;
+      setPlanApprovalMode(previousMode);
     }
   }, [projectId]);
 
@@ -253,6 +297,8 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     rootDir,
     autoMerge,
     mergeStrategy,
+    planApprovalMode,
+    planAutoApproveEnabled: planApprovalMode === "auto-approve-all",
     showWorktreeGrouping,
     testMode,
     isTestMode,
@@ -264,6 +310,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     capacityRiskTodoThreshold,
     openTasksInRightSidebar,
     openMobileTasksInPopup,
+    taskDetailChatFirst,
     quickChatButtonMode,
     quickChatCloseOnOutsideClick,
     dismissModalsOnOutsideClick,
@@ -279,6 +326,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     goalsEnabled,
     autoReloadOnVersionChange,
     toggleAutoMerge,
+    togglePlanAutoApprove,
     toggleGlobalPause,
     toggleEnginePause,
     toggleShowQuickChatFAB,

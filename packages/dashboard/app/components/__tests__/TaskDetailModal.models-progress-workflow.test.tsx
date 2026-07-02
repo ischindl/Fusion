@@ -23,6 +23,21 @@ import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 
 setupTaskDetailModalHooks();
 
+type ActivitySegmentTestValue = "current" | "feed" | "raw-logs";
+
+const ACTIVITY_VIEW_LABELS: Record<ActivitySegmentTestValue, string> = {
+  current: "Live",
+  feed: "Feed",
+  "raw-logs": "Raw",
+};
+
+function selectActivityView(value: ActivitySegmentTestValue) {
+  if (!screen.queryByRole("menu", { name: "Activity views" })) {
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  }
+  fireEvent.click(screen.getByRole("menuitem", { name: ACTIVITY_VIEW_LABELS[value] }));
+}
+
 describe("TaskDetailModal", () => {
   describe("Raw Logs model resolution", () => {
     // AgentLogViewer only renders the model header when entries.length > 0,
@@ -101,7 +116,7 @@ describe("TaskDetailModal", () => {
 
     async function openAgentLogAndExpandModelDetails(container: HTMLElement) {
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Raw Logs" }));
+      selectActivityView("raw-logs");
 
       await waitFor(() => {
         const header = container.querySelector("[data-testid='agent-log-model-header']");
@@ -330,7 +345,7 @@ describe("TaskDetailModal", () => {
         vi.mocked(useAgentLogs).mockReturnValue({
           entries: [
             { timestamp: "2026-01-01T00:00:00Z", taskId: "FN-099", text: "hello", type: "text" as const },
-            { timestamp: "2026-01-01T00:00:01Z", taskId: "FN-099", text: "Triage using model: google/gemini-pro", type: "text" as const, agent: "triage" },
+            { timestamp: "2026-01-01T00:00:01Z", taskId: "FN-099", text: "Triage using model: google/gemini-pro (thinking effort: high)", type: "text" as const, agent: "triage" },
           ],
           loading: false,
           clear: vi.fn(),
@@ -550,8 +565,8 @@ describe("TaskDetailModal", () => {
 
       vi.mocked(useAgentLogs).mockReturnValue({
         entries: [
-          { timestamp: "2026-01-01T00:00:01Z", taskId: "FN-099", text: "Executor using model: openai/gpt-4o", type: "text" as const, agent: "executor" },
-          { timestamp: "2026-01-01T00:00:02Z", taskId: "FN-099", text: "Reviewer using model: google/gemini-2.5-pro", type: "text" as const, agent: "reviewer" },
+          { timestamp: "2026-01-01T00:00:01Z", taskId: "FN-099", text: "Executor using model: openai/gpt-4o (thinking effort: high)", type: "text" as const, agent: "executor" },
+          { timestamp: "2026-01-01T00:00:02Z", taskId: "FN-099", text: "Reviewer using model: google/gemini-2.5-pro (thinking effort: medium)", type: "text" as const, agent: "reviewer" },
         ],
         loading: false,
         clear: vi.fn(),
@@ -575,7 +590,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Raw Logs" }));
+      selectActivityView("raw-logs");
       await waitFor(() => {
         const header = container.querySelector("[data-testid='agent-log-model-header']");
         expect(header).toBeTruthy();
@@ -632,7 +647,7 @@ describe("TaskDetailModal", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Raw Logs" }));
+      selectActivityView("raw-logs");
       await waitFor(() => {
         const header = container.querySelector("[data-testid='agent-log-model-header']");
         expect(header).toBeTruthy();
@@ -896,7 +911,7 @@ describe("TaskDetailModal", () => {
 
       // Switch to Activity tab, then Raw Logs segment
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      fireEvent.click(screen.getByRole("tab", { name: "Raw Logs" }));
+      selectActivityView("raw-logs");
 
       // Should not be visible in Raw Logs segment
       expect(container.querySelector(".detail-step-progress")).toBeNull();

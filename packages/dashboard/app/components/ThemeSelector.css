@@ -665,6 +665,13 @@
   --swatch-sample-4: #ff7aa8;
 }
 
+.theme-swatch-glass-silver {
+  --swatch-sample-1: #101216;
+  --swatch-sample-2: color-mix(in srgb, #252a32 78%, transparent);
+  --swatch-sample-3: #d7dde6;
+  --swatch-sample-4: #9ca6b4;
+}
+
 .theme-swatch-horizon {
   --swatch-sample-1: #1c1e26;
   --swatch-sample-2: #16161c;
@@ -1022,6 +1029,13 @@
   --swatch-sample-2: color-mix(in srgb, #ffffff 75%, transparent);
   --swatch-sample-3: #9d40cf;
   --swatch-sample-4: #c74b7a;
+}
+
+[data-theme="light"] .theme-swatch-glass-silver {
+  --swatch-sample-1: #eef0f3;
+  --swatch-sample-2: color-mix(in srgb, #ffffff 75%, transparent);
+  --swatch-sample-3: #5f6875;
+  --swatch-sample-4: #747f8c;
 }
 
 [data-theme="light"] .theme-swatch-slate {

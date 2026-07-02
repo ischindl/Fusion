@@ -83,16 +83,76 @@ describe("TaskDetailModal", () => {
         />,
       );
 
+      const planSection = container.querySelector(".detail-section--plan-prompt");
+      expect(planSection).toBeTruthy();
       // Initially showing markdown view
-      expect(container.querySelector(".markdown-body")).toBeTruthy();
+      const markdown = container.querySelector(".markdown-body");
+      expect(markdown).toBeTruthy();
+      expect(planSection?.contains(markdown)).toBe(true);
 
       // Click Edit button
       fireEvent.click(screen.getByText("Edit"));
 
       // Should show spec edit textarea (query by class for specificity)
+      const editMode = container.querySelector(".spec-editor-edit-mode");
       const textarea = container.querySelector(".spec-editor-textarea") as HTMLTextAreaElement;
+      const feedback = container.querySelector(".spec-editor-feedback");
+      expect(editMode).toBeTruthy();
       expect(textarea).toBeTruthy();
+      expect(feedback).toBeTruthy();
+      expect(planSection?.contains(editMode)).toBe(true);
+      expect(planSection?.contains(textarea)).toBe(true);
+      expect(planSection?.contains(feedback)).toBe(true);
       expect(textarea.value).toBe("# Test\n\nSpec content.");
+    });
+
+    it("keeps the no-prompt fallback inside the scoped full-width Plan wrapper", () => {
+      const { container } = render(
+        <TaskDetailModal
+          task={makeTask({ prompt: "" })}
+          initialTab="definition"
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      const planSection = container.querySelector(".detail-section--plan-prompt");
+      const fallback = container.querySelector(".detail-prompt");
+      expect(planSection).toBeTruthy();
+      expect(fallback).toBeTruthy();
+      expect(planSection?.contains(fallback)).toBe(true);
+    });
+
+    it("keeps embedded Plan edit controls inside the full-width wrapper", () => {
+      const { container } = render(
+        <TaskDetailContent
+          task={makeTask({ prompt: "# Embedded\n\nSpec content." })}
+          initialTab="definition"
+          embedded
+          onRequestClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(container.querySelector(".task-detail-content--embedded")).toBeTruthy();
+      const planSection = container.querySelector(".detail-section--plan-prompt");
+      fireEvent.click(screen.getByText("Edit"));
+
+      const editMode = container.querySelector(".spec-editor-edit-mode");
+      const textarea = container.querySelector(".spec-editor-textarea");
+      const feedback = container.querySelector(".spec-editor-feedback");
+      expect(planSection).toBeTruthy();
+      expect(planSection?.contains(editMode)).toBe(true);
+      expect(planSection?.contains(textarea)).toBe(true);
+      expect(planSection?.contains(feedback)).toBe(true);
     });
 
     it("clicking Cancel returns to view mode without saving", () => {
@@ -222,20 +282,11 @@ describe("TaskDetailModal", () => {
       );
 
       // In-progress tasks show exactly 11 tabs:
-      // Activity, Plan, Logs, Changes, Review, Comments, Artifacts, Model, Workflow, Stats, Routing
+      // Activity, Chat, Plan, Changes, Review, Comments, Artifacts, Model, Workflow, Stats, Routing
       const tabs = container.querySelectorAll(".detail-tab");
-      expect(tabs.length).toBe(11);
-      expect(tabs[0].textContent).toBe("Activity");
-      expect(tabs[1].textContent).toBe("Plan");
-      expect(tabs[2].textContent).toBe("Logs");
-      expect(tabs[3].textContent).toBe("Changes");
-      expect(tabs[4].textContent).toBe("Review");
-      expect(tabs[5].textContent).toBe("Comments");
-      expect(tabs[6].textContent).toBe("Artifacts");
-      expect(tabs[7].textContent).toBe("Model");
-      expect(tabs[8].textContent).toBe("Workflow");
-      expect(tabs[9].textContent).toBe("Stats");
-      expect(tabs[10].textContent).toBe("Routing");
+      expect(Array.from(tabs).map(t => t.textContent)).toEqual([
+        "Activity", "Chat", "Plan", "Changes", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+      ]);
       // Commits tab should NOT be present for non-done tasks
       expect(screen.queryByText("Commits")).toBeNull();
     });
@@ -256,18 +307,9 @@ describe("TaskDetailModal", () => {
 
       // In-progress task with workflow steps: 11 tabs (Review after Changes, Workflow after Model)
       const tabs = container.querySelectorAll(".detail-tab");
-      expect(tabs.length).toBe(11);
-      expect(tabs[0].textContent).toBe("Activity");
-      expect(tabs[1].textContent).toBe("Plan");
-      expect(tabs[2].textContent).toBe("Logs");
-      expect(tabs[3].textContent).toBe("Changes");
-      expect(tabs[4].textContent).toBe("Review");
-      expect(tabs[5].textContent).toBe("Comments");
-      expect(tabs[6].textContent).toBe("Artifacts");
-      expect(tabs[7].textContent).toBe("Model");
-      expect(tabs[8].textContent).toBe("Workflow");
-      expect(tabs[9].textContent).toBe("Stats");
-      expect(tabs[10].textContent).toBe("Routing");
+      expect(Array.from(tabs).map(t => t.textContent)).toEqual([
+        "Activity", "Chat", "Plan", "Changes", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+      ]);
     });
 
     it("does NOT show Commits tab for done task with mergeDetails.commitSha (changes merged into Changes tab)", () => {
@@ -287,21 +329,11 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      // Done task with commit SHA: Activity, Summary, Plan, Logs, Changes, Review, Comments, Artifacts, Model, Workflow, Stats, Routing (12 tabs, no Commits)
+      // Done task with commit SHA: Activity, Chat, Summary, Plan, Changes, Review, Comments, Artifacts, Model, Workflow, Stats, Routing (12 tabs, no Commits)
       const tabs = container.querySelectorAll(".detail-tab");
-      expect(tabs.length).toBe(12);
-      expect(tabs[0].textContent).toBe("Activity");
-      expect(tabs[1].textContent).toBe("Summary");
-      expect(tabs[2].textContent).toBe("Plan");
-      expect(tabs[3].textContent).toBe("Logs");
-      expect(tabs[4].textContent).toBe("Changes");
-      expect(tabs[5].textContent).toBe("Review");
-      expect(tabs[6].textContent).toBe("Comments");
-      expect(tabs[7].textContent).toBe("Artifacts");
-      expect(tabs[8].textContent).toBe("Model");
-      expect(tabs[9].textContent).toBe("Workflow");
-      expect(tabs[10].textContent).toBe("Stats");
-      expect(tabs[11].textContent).toBe("Routing");
+      expect(Array.from(tabs).map(t => t.textContent)).toEqual([
+        "Activity", "Chat", "Summary", "Plan", "Changes", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+      ]);
       // Commits tab should NOT be present
       expect(screen.queryByText("Commits")).toBeNull();
     });
@@ -326,19 +358,9 @@ describe("TaskDetailModal", () => {
 
       // Done task with workflow steps and commit SHA: 12 tabs including Summary and Review (no Commits)
       const tabs = container.querySelectorAll(".detail-tab");
-      expect(tabs.length).toBe(12);
-      expect(tabs[0].textContent).toBe("Activity");
-      expect(tabs[1].textContent).toBe("Summary");
-      expect(tabs[2].textContent).toBe("Plan");
-      expect(tabs[3].textContent).toBe("Logs");
-      expect(tabs[4].textContent).toBe("Changes");
-      expect(tabs[5].textContent).toBe("Review");
-      expect(tabs[6].textContent).toBe("Comments");
-      expect(tabs[7].textContent).toBe("Artifacts");
-      expect(tabs[8].textContent).toBe("Model");
-      expect(tabs[9].textContent).toBe("Workflow");
-      expect(tabs[10].textContent).toBe("Stats");
-      expect(tabs[11].textContent).toBe("Routing");
+      expect(Array.from(tabs).map(t => t.textContent)).toEqual([
+        "Activity", "Chat", "Summary", "Plan", "Changes", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+      ]);
       // Commits tab should NOT be present
       expect(screen.queryByText("Commits")).toBeNull();
     });
@@ -358,9 +380,8 @@ describe("TaskDetailModal", () => {
       );
 
       const triageTabs = triageContainer.querySelectorAll(".detail-tab");
-      expect(triageTabs.length).toBe(10); // Activity, Plan, Logs, Review, Comments, Artifacts, Model, Workflow, Stats, Routing
       expect(Array.from(triageTabs).map(t => t.textContent)).toEqual([
-        "Activity", "Plan", "Logs", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+        "Activity", "Chat", "Plan", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
       ]);
 
       const { container: todoContainer } = render(
@@ -377,9 +398,8 @@ describe("TaskDetailModal", () => {
       );
 
       const todoTabs = todoContainer.querySelectorAll(".detail-tab");
-      expect(todoTabs.length).toBe(10); // Activity, Plan, Logs, Review, Comments, Artifacts, Model, Workflow, Stats, Routing
       expect(Array.from(todoTabs).map(t => t.textContent)).toEqual([
-        "Activity", "Plan", "Logs", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
+        "Activity", "Chat", "Plan", "Review", "Comments", "Artifacts", "Model", "Workflow", "Stats", "Routing",
       ]);
     });
 
@@ -778,6 +798,37 @@ describe("TaskDetailModal", () => {
         expect(onClose).toHaveBeenCalled();
       });
 
+    });
+
+    it("mobile task popup Actions menu selects a tapped item once and dismisses", async () => {
+      const { pauseTask } = await import("../../api");
+      const mockPauseTask = vi.mocked(pauseTask);
+      mockPauseTask.mockResolvedValueOnce(makeTask({ id: "FN-001", paused: true }) as Task);
+      const addToast = vi.fn();
+
+      render(
+        <TaskDetailContent
+          task={makeTask({ id: "FN-001", column: "todo", paused: false, userPaused: false })}
+          initialTab="definition"
+          embedded
+          onRequestClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={addToast}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /actions/i }));
+      const pauseItem = screen.getByRole("menuitem", { name: "Pause" });
+
+      fireEvent.pointerUp(pauseItem, { pointerType: "touch", pointerId: 1 });
+
+      await waitFor(() => expect(mockPauseTask).toHaveBeenCalledWith("FN-001", undefined));
+      expect(mockPauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(addToast).toHaveBeenCalledWith("Paused FN-001", "success");
     });
 
     it("successful duplicate shows success toast with new task ID", async () => {
@@ -1319,6 +1370,24 @@ describe("TaskDetailModal", () => {
 
       // Should not call API, instead show error toast
       expect(refineTask).not.toHaveBeenCalled();
+    });
+
+    it("opens the refine composer from an initial action request", () => {
+      render(
+        <TaskDetailModal
+          task={makeTask({ id: "FN-001", column: "done" })}
+          initialAction={{ action: "refine", requestId: 1 }}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(screen.getByText("Refine", { selector: "h3" })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("Enter your feedback here...")).toBeInTheDocument();
     });
 
     it("calls refineTask and closes modal on successful submission", async () => {

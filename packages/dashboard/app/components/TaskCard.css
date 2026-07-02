@@ -38,10 +38,8 @@
 }
 
 .task-card-context-menu-popover {
-  position: absolute;
-  left: var(--task-card-context-menu-x);
-  top: var(--task-card-context-menu-y);
-  z-index: 30;
+  position: fixed;
+  z-index: 1000;
 }
 
 .task-card-context-menu-popover .task-context-menu {
@@ -52,10 +50,24 @@
 FNXC:TaskCardMobilePan 2026-06-13-19:51:
 Mobile board cards must allow horizontal kanban panning from every visible card surface, not only from gaps or progress-count text.
 The global mobile touch-action reset applies to descendants, and browsers intersect touch-action along the touched element's ancestor chain, so the whole non-editing card subtree must opt back into pan-x.
+
+FNXC:TaskCardMobileSelection 2026-07-01-00:00:
+Mobile long-press opens the Board task context menu, so non-editing card text must not trigger native text selection or iOS copy callouts. Keep this scoped to the shared `.card` subtree so normal and worktree-grouped Board cards are covered while edit controls opt back into selectable text.
 */
 .card:not(.card-editing),
 .card:not(.card-editing) * {
   touch-action: pan-x pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.card.card-editing,
+.card.card-editing *,
+.card :is(input, textarea, select, [contenteditable="true"]) {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* Agent-active glow: animated border glow when an agent is actively working on a task.
@@ -1153,30 +1165,6 @@ executing. These map 1:1 to the unified progress status so the dot color encodes
   text-transform: uppercase;
 }
 
-.card-step-workflow-badge {
-  margin-left: auto;
-  padding: 0 var(--space-xs);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  font-size: 0.5625rem;
-  color: var(--text-muted);
-  background: var(--surface);
-  white-space: nowrap;
-}
-
-.card-step-workflow-badge--pre-merge {
-  color: var(--in-review);
-  background: var(--status-in-review-bg);
-  border-color: color-mix(in srgb, var(--in-review) 35%, var(--border));
-}
-
-.card-step-workflow-badge--post-merge {
-  color: var(--done);
-  background: var(--status-done-bg);
-  border-color: color-mix(in srgb, var(--done) 35%, var(--border));
-}
-
-
 /* Animation for initializing spinner */
 @keyframes task-card-initializing-spinner-spin {
   from {
@@ -1231,6 +1219,9 @@ executing. These map 1:1 to the unified progress status so the dot color encodes
   padding: 6px 8px;
   background: transparent;
   border: 1px solid transparent;
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
   color: var(--text);
   font-size: 0.8125rem;
   font-family: inherit;

@@ -45,6 +45,9 @@ export const MODEL_LANE_KEYS = [
 
 const MODEL_LANE_KEY_SET = new Set<string>(MODEL_LANE_KEYS);
 
+type RemoteAccessProvider = "tailscale" | "cloudflare";
+type RemoteAccessPatch = NonNullable<GlobalSettings["remoteAccess"]>;
+
 const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
   appearance: new Set([
     "themeMode",
@@ -201,6 +204,94 @@ function settingsValueEquals(left: unknown, right: unknown): boolean {
   return false;
 }
 
+function readString(payload: Record<string, unknown>, key: string): string | undefined {
+  if (!hasOwn(payload, key) || payload[key] === undefined) return undefined;
+  return String(payload[key] ?? "");
+}
+
+function readNullableString(payload: Record<string, unknown>, key: string): string | null | undefined {
+  if (!hasOwn(payload, key) || payload[key] === undefined) return undefined;
+  return payload[key] ? String(payload[key]) : null;
+}
+
+function readBoolean(payload: Record<string, unknown>, key: string): boolean | undefined {
+  if (!hasOwn(payload, key) || payload[key] === undefined) return undefined;
+  return Boolean(payload[key]);
+}
+
+function readNumber(payload: Record<string, unknown>, key: string, fallback: number): number | undefined {
+  if (!hasOwn(payload, key) || payload[key] === undefined) return undefined;
+  return Number(payload[key] ?? fallback);
+}
+
+function assignIfPresent<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
+function buildRemoteAccessPatch(payload: Record<string, unknown>): Partial<RemoteAccessPatch> | null {
+  const patch: Partial<RemoteAccessPatch> = {};
+  const activeProvider = hasOwn(payload, "remoteActiveProvider")
+    ? (payload.remoteActiveProvider as RemoteAccessProvider | null)
+    : undefined;
+
+  if (activeProvider !== undefined) {
+    patch.activeProvider = activeProvider;
+  }
+
+  const tailscalePatch: Partial<RemoteAccessPatch["providers"]["tailscale"]> = {};
+  assignIfPresent(tailscalePatch, "enabled", readBoolean(payload, "remoteTailscaleEnabled"));
+  assignIfPresent(tailscalePatch, "hostname", readString(payload, "remoteTailscaleHostname"));
+  assignIfPresent(tailscalePatch, "targetPort", readNumber(payload, "remoteTailscaleTargetPort", 4040));
+  assignIfPresent(tailscalePatch, "acceptRoutes", readBoolean(payload, "remoteTailscaleAcceptRoutes"));
+  if (activeProvider === "tailscale") {
+    tailscalePatch.enabled = true;
+  }
+
+  const cloudflarePatch: Partial<RemoteAccessPatch["providers"]["cloudflare"]> = {};
+  assignIfPresent(cloudflarePatch, "enabled", readBoolean(payload, "remoteCloudflareEnabled"));
+  assignIfPresent(cloudflarePatch, "quickTunnel", readBoolean(payload, "remoteCloudflareQuickTunnel"));
+  assignIfPresent(cloudflarePatch, "tunnelName", readString(payload, "remoteCloudflareTunnelName"));
+  assignIfPresent(cloudflarePatch, "tunnelToken", readNullableString(payload, "remoteCloudflareTunnelToken"));
+  assignIfPresent(cloudflarePatch, "ingressUrl", readString(payload, "remoteCloudflareIngressUrl"));
+  if (activeProvider === "cloudflare") {
+    cloudflarePatch.enabled = true;
+  }
+
+  if (Object.keys(tailscalePatch).length > 0 || Object.keys(cloudflarePatch).length > 0) {
+    patch.providers = {} as RemoteAccessPatch["providers"];
+    if (Object.keys(tailscalePatch).length > 0) {
+      patch.providers.tailscale = tailscalePatch as RemoteAccessPatch["providers"]["tailscale"];
+    }
+    if (Object.keys(cloudflarePatch).length > 0) {
+      patch.providers.cloudflare = cloudflarePatch as RemoteAccessPatch["providers"]["cloudflare"];
+    }
+  }
+
+  const shortLivedPatch: Partial<RemoteAccessPatch["tokenStrategy"]["shortLived"]> = {};
+  assignIfPresent(shortLivedPatch, "enabled", readBoolean(payload, "remoteShortLivedEnabled"));
+  assignIfPresent(shortLivedPatch, "ttlMs", readNumber(payload, "remoteShortLivedTtlMs", 900_000));
+  assignIfPresent(shortLivedPatch, "maxTtlMs", readNumber(payload, "remoteShortLivedMaxTtlMs", 86_400_000));
+  if (Object.keys(shortLivedPatch).length > 0) {
+    patch.tokenStrategy = {
+      shortLived: shortLivedPatch as RemoteAccessPatch["tokenStrategy"]["shortLived"],
+    } as RemoteAccessPatch["tokenStrategy"];
+  }
+
+  const lifecyclePatch: Partial<RemoteAccessPatch["lifecycle"]> = {};
+  assignIfPresent(lifecyclePatch, "rememberLastRunning", readBoolean(payload, "remoteRememberLastRunning"));
+  assignIfPresent(lifecyclePatch, "wasRunningOnShutdown", readBoolean(payload, "remoteWasRunningOnShutdown"));
+  if (hasOwn(payload, "remoteLastStartedProvider") && payload.remoteLastStartedProvider !== undefined) {
+    lifecyclePatch.lastRunningProvider = payload.remoteLastStartedProvider as RemoteAccessProvider | null;
+  }
+  if (Object.keys(lifecyclePatch).length > 0) {
+    patch.lifecycle = lifecyclePatch as RemoteAccessPatch["lifecycle"];
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
 /**
  * Split a normalized settings form payload into global and project patches,
  * preserving null-as-delete and changed-only-project-write semantics.
@@ -212,6 +303,18 @@ export function splitSettingsSave({
   activeSection,
 }: SaveSplitInput): SaveSplitResult {
   const globalPatch: Partial<GlobalSettings> = {};
+
+  if (activeSection === "remote") {
+    /*
+    FNXC:RemoteAccessSettings 2026-06-30-00:00:
+    Main Settings Save must persist the Remote Access section's flattened form fields into the canonical nested remoteAccess object. Windows users commonly configure Tailscale options and click Save without starting the tunnel, so this path cannot rely on the Start Tunnel auto-save.
+    */
+    const remoteAccessPatch = buildRemoteAccessPatch(payload);
+    if (remoteAccessPatch) {
+      globalPatch.remoteAccess = remoteAccessPatch as RemoteAccessPatch;
+    }
+  }
+
   for (const [key, value] of Object.entries(payload)) {
     if (key === "githubTrackingDefaultRepo" && activeSection !== "global-general") {
       continue;

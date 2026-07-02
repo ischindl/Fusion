@@ -5,6 +5,7 @@ import {
   DEFAULT_AGENT_PERMISSION_POLICY_PRESET_ID,
   getBuiltInAgentPermissionPolicyPresets,
   isAgentPermissionPolicyPresetId,
+  normalizeAgentPermissionPolicy,
   normalizeAgentPermissionPolicyFromPreset,
   resolveEffectiveAgentPermissionPolicy,
 } from "../agent-permission-policy.js";
@@ -52,6 +53,22 @@ describe("agent-permission-policy", () => {
     for (const category of AGENT_PERMISSION_POLICY_ACTION_CATEGORIES) {
       expect(effective.rules[category]).toBe("allow");
     }
+    expect(effective.toolRules).toBeUndefined();
+  });
+
+  it("normalizes exact tool overrides without changing category preset semantics", () => {
+    const policy = normalizeAgentPermissionPolicy({
+      presetId: "unrestricted",
+      toolRules: { fn_task_create: "block" },
+    });
+
+    expect(policy.rules.task_agent_mutation).toBe("allow");
+    expect(policy.toolRules).toEqual({ fn_task_create: "block" });
+  });
+
+  it("omits empty exact tool override maps", () => {
+    const policy = normalizeAgentPermissionPolicy({ presetId: "custom", toolRules: {} });
+    expect(policy.toolRules).toBeUndefined();
   });
 
   it("resolves malformed policy payload to unrestricted default", () => {

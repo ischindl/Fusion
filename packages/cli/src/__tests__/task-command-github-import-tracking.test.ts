@@ -107,6 +107,22 @@ describe("fn task import GitHub tracking defaults", () => {
     }));
   });
 
+  it("sets githubTracking.enabled for fn task import when import linking is on and new-task defaults are off", async () => {
+    const { createTask } = mockStore({
+      projectSettings: {
+        githubTrackingEnabledByDefault: false,
+        githubLinkImportedIssuesToTracking: true,
+      },
+    });
+
+    await runTaskImportFromGitHub("owner/repo", { limit: 1 });
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      githubTracking: { enabled: true },
+      sourceIssue: expect.objectContaining({ provider: "github", repository: "owner/repo", issueNumber: 1 }),
+    }));
+  });
+
   it("does not force githubTracking for fn task import when tracking defaults are off", async () => {
     const { createTask } = mockStore();
 

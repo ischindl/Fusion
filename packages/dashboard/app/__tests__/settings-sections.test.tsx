@@ -23,6 +23,7 @@ import { PromptsSection } from "../components/settings/sections/PromptsSection";
 import { SecretsSection } from "../components/settings/sections/SecretsSection";
 import { WorktreesSection } from "../components/settings/sections/WorktreesSection";
 import type { SettingsFormState } from "../components/settings/sections/context";
+import { fetchWorkflow, fetchWorkflowSettingValues } from "../api";
 
 vi.mock("../components/AgentPromptsManager", () => ({
   AgentPromptsManager: () => <div data-testid="agent-prompts-manager" />,
@@ -35,12 +36,20 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     fetchWorkflows: vi.fn(async () => []),
-    fetchWorkflow: vi.fn(async () => ({ id: "builtin:coding", name: "Coding" })),
+    fetchWorkflow: vi.fn(async () => ({ id: "builtin:coding", name: "Coding", ir: {} })),
+    fetchWorkflowSettingValues: vi.fn(async () => ({ stored: {}, effective: {}, orphaned: [] })),
     fetchProjectDefaultWorkflow: vi.fn(async () => ({ workflowId: null })),
     setProjectDefaultWorkflow: vi.fn(async () => ({ workflowId: null })),
     fetchGlobalSettings: vi.fn(async () => ({})),
   };
 });
+vi.mock("../components/CustomModelDropdown", () => ({
+  CustomModelDropdown: ({ id, label, menuWidth = "trigger" }: { id?: string; label: string; menuWidth?: "trigger" | "readable" }) => (
+    <button type="button" data-testid={`mock-model-dropdown-${id ?? label}`} data-menu-width={menuWidth}>
+      {label}
+    </button>
+  ),
+}));
 
 expect.extend(jestDomMatchers);
 afterEach(() => cleanup());
@@ -280,6 +289,61 @@ describe("ProjectModelsSection", () => {
     onSavePresetDraft: vi.fn(),
     confirmDelete: vi.fn(),
   };
+
+  it("opts Project Models lane and preset dropdowns into readable menu width", () => {
+    render(
+      <ProjectModelsSection
+        scopeBanner={null}
+        form={{} as SettingsFormState}
+        setForm={vi.fn()}
+        models={{
+          ...models,
+          modelLanes: [
+            { laneId: "default", label: "Default", helperText: "Default", fallbackOrder: "global" },
+            { laneId: "summarization", label: "Summarization", helperText: "Summarization", fallbackOrder: "global" },
+          ] as never,
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          presetDraft: { id: "preset", name: "Preset", executorProvider: undefined, executorModelId: undefined, validatorProvider: undefined, validatorModelId: undefined },
+        }}
+        addToast={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("mock-model-dropdown-defaultModel")).toHaveAttribute("data-menu-width", "readable");
+    expect(screen.getByTestId("mock-model-dropdown-summarizationModel")).toHaveAttribute("data-menu-width", "readable");
+    expect(screen.getByTestId("mock-model-dropdown-preset-executor-model")).toHaveAttribute("data-menu-width", "readable");
+    expect(screen.getByTestId("mock-model-dropdown-preset-validator-model")).toHaveAttribute("data-menu-width", "readable");
+  });
+
+  it("opts default workflow model lane dropdowns into readable menu width", async () => {
+    vi.mocked(fetchWorkflow).mockResolvedValueOnce({
+      id: "builtin:coding",
+      name: "Coding",
+      ir: {
+        settings: [
+          { id: "planningProvider", name: "Planning Provider", type: "string" },
+          { id: "planningModelId", name: "Planning Model", type: "string" },
+        ],
+      },
+    } as never);
+    vi.mocked(fetchWorkflowSettingValues).mockResolvedValueOnce({ stored: {}, effective: {}, orphaned: [] });
+
+    render(
+      <ProjectModelsSection
+        scopeBanner={null}
+        form={{ defaultWorkflowId: "builtin:coding" } as SettingsFormState}
+        setForm={vi.fn()}
+        models={{
+          ...models,
+          availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+        }}
+        projectId="project-1"
+        addToast={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("mock-model-dropdown-workflow-planning-model")).toHaveAttribute("data-menu-width", "readable");
+  });
 
   it("renders PR prompt guidance textareas and emits edits through setForm", () => {
     function ProjectModelsHost() {

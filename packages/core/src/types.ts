@@ -313,6 +313,8 @@ export const COLOR_THEMES = [
   "parchment",
   "terminal",
   "glass",
+  // FNXC:DashboardTheming 2026-07-01-00:00: Glass Silver is the silver/gray frosted sibling of Glass; keep this id in lockstep with dashboard/desktop validators and selector metadata so persisted explicit choices survive startup.
+  "glass-silver",
   "horizon",
   "vitesse",
   "outrun",
@@ -3730,12 +3732,17 @@ export interface ProjectSettings {
    */
   openTasksInRightSidebar?: boolean;
   /**
-   * When true, mobile board task-card clicks open task detail in the existing popped-out FloatingWindow task surface instead of the full main-panel task detail. Default: false.
+   * When true, ordinary board task-card clicks open task detail in the existing popped-out FloatingWindow task surface instead of the full main-panel task detail. Default: false.
    *
-   * FNXC:MobileTaskPopups 2026-06-29-00:00:
-   * This project-scoped setting is default-off so mobile board navigation is unchanged until operators opt in. When enabled, it applies only to mobile viewport board-card clicks with no deep initial tab and reuses the existing task pop-out/FloatingWindow path; desktop/tablet right-dock routing and all non-board task-open paths remain governed by their existing settings and handlers.
+   * FNXC:MobileTaskPopups 2026-07-01-12:00:
+   * This project-scoped setting is default-off so board navigation is unchanged until operators opt in. When enabled, it applies to board-card clicks on every viewport with no deep initial tab and reuses the existing task pop-out/FloatingWindow path; the popup route takes precedence over right-dock routing for those ordinary clicks while all non-board task-open paths remain governed by their existing settings and handlers.
    */
   openMobileTasksInPopup?: boolean;
+  /**
+   * FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
+   * Default-off keeps task details Activity-first so omitted non-done opens land on the legacy `chat` Activity → Live surface. Operators can set true to restore Chat-first ordering/default while explicit Activity/Chat/Logs deep links remain stable.
+   */
+  taskDetailChatFirst?: boolean;
   /** When true, restores the legacy behavior of silently creating sibling
    *  branches like `fusion/FN-123-2` when the canonical task branch is already
    *  checked out elsewhere. Default: false. */
@@ -3940,7 +3947,7 @@ export interface ProjectSettings {
   /** Wall-clock timeout (ms) for a single pre-merge workflow step's AI call.
    *  When a step exceeds this, the session is aborted and the executor is
    *  given one shot to retry with the configured fallback model before the
-   *  step is reported as failed. Default: 360_000 (6 minutes). */
+   *  step is reported as failed. Default: 900_000 (15 minutes). */
   workflowStepTimeoutMs?: number;
   /** How pre-merge prompt workflow steps enforce declared File Scope at step end.
    *  - "block" (default): mark the step failed/revision-requested on off-scope writes
@@ -4022,9 +4029,11 @@ export interface ProjectSettings {
   };
   /** Project default runtime permission-policy overrides for permanent agents.
    *  Rules are a partial map of category -> disposition (`allow` | `block` | `require-approval`).
-   *  Missing categories inherit the built-in `unrestricted` seed (`allow`). */
+   *  Tool rules are exact tool-name overrides that take precedence over category rules.
+   *  Missing categories and tools inherit the built-in `unrestricted` seed (`allow`). */
   defaultAgentPermissionPolicy?: {
-    rules: Partial<AgentPermissionPolicyRules>;
+    rules?: Partial<AgentPermissionPolicyRules>;
+    toolRules?: AgentPermissionPolicyToolRules;
   };
   /** When true, enforces that task specifications (PROMPT.md) are refreshed if they
    *  become stale. Stale specs are detected based on specStalenessMaxAgeMs.
@@ -4232,6 +4241,12 @@ export interface ProjectSettings {
   /** When true, new tasks default GitHub tracking to enabled for this project (FN-3868).
    *  Default: false. */
   githubTrackingEnabledByDefault?: boolean;
+  /**
+   * FNXC:GithubImportTracking 2026-07-01-00:00:
+   * This project-scoped switch is intentionally narrower than githubTrackingEnabledByDefault: it only forces imported GitHub issues to become GitHub-tracked tasks so the source issue is adopted, while ordinary new tasks keep their existing default behavior.
+   * Default: false.
+   */
+  githubLinkImportedIssuesToTracking?: boolean;
   /** Project default GitHub tracking repo in `owner/repo` format (FN-3868).
    *  Falls back to global githubTrackingDefaultRepo when unset. */
   githubTrackingDefaultRepo?: string;
@@ -4426,6 +4441,11 @@ export interface ProjectSettings {
   quickChatCloseOnOutsideClick?: boolean;
   /** Legacy Quick Chat FAB toggle. Prefer quickChatButtonMode for new callers. */
   showQuickChatFAB?: boolean;
+  /**
+   * FNXC:ChatModal 2026-07-01-00:00:
+   * Task planner sessions (`task-planner:<taskId>`) are hidden from the common Chat feed by default to keep task-detail planning conversations out of Direct chat clutter. Operators can opt back into the previous shared-feed behavior with this project setting.
+   */
+  showTaskChatsInCommonFeed?: boolean;
   /** Number of days of chat inactivity before old chat sessions/rooms are auto-cleaned.
    *  Allowed values: 0 (off, default), 7, 14, 30, 60, 90. Uses updatedAt inactivity age. */
   chatAutoCleanupDays?: number;
@@ -6359,11 +6379,15 @@ export type ApprovalRequestActionCategory =
 /** How a runtime action category is handled by permission policy. */
 export type AgentPermissionPolicyDisposition = "allow" | "block" | "require-approval";
 
+/** Exact tool-name permission overrides layered above category rules. */
+export type AgentPermissionPolicyToolRules = Record<string, AgentPermissionPolicyDisposition>;
+
 /** Minimum portable permanent-agent gating context consumed by engine runtime wrappers. */
 export interface PermanentAgentGatingContext {
   permissionPolicy?: {
     presetId: string;
     rules: Partial<Record<PermanentAgentSensitiveActionCategory, AgentPermissionPolicyDisposition>>;
+    toolRules?: AgentPermissionPolicyToolRules;
   };
   requester?: ApprovalRequestActorSnapshot;
   taskId?: string;
@@ -6389,10 +6413,16 @@ export type AgentPermissionPolicyRules = Record<
   AgentPermissionPolicyDisposition
 >;
 
-/** First-class persisted permission policy contract for permanent agents. */
+/**
+ * First-class persisted permission policy contract for permanent agents.
+ *
+ * FNXC:ToolPermissions 2026-07-01-00:00:
+ * Operators must be able to block a single governed tool such as `fn_task_create` without blocking every task-agent mutation. `toolRules` stores exact tool-name overrides and the engine resolves them before category rules while leaving heartbeat-critical exempt tools non-configurable.
+ */
 export interface AgentPermissionPolicy {
   presetId: AgentPermissionPolicyPresetId;
   rules: AgentPermissionPolicyRules;
+  toolRules?: AgentPermissionPolicyToolRules;
 }
 
 /** Approval request lifecycle statuses. */
@@ -7039,6 +7069,7 @@ export function agentToConfigSnapshot(agent: Agent): AgentConfigSnapshot {
       ? {
           presetId: agent.permissionPolicy.presetId,
           rules: { ...agent.permissionPolicy.rules },
+          ...(agent.permissionPolicy.toolRules ? { toolRules: { ...agent.permissionPolicy.toolRules } } : {}),
         }
       : undefined,
     instructionsPath: agent.instructionsPath,

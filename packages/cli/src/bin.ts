@@ -304,9 +304,10 @@ Usage:
                                       Auto-registers cwd project on first run (use --no-auto-register to disable)
   fn daemon [--port <port>] [--host <host>] [--token <token>] [--paused] [--token-only] [--project <id|name>] [--no-auto-register]
                                       Start Fusion daemon (API + engine, auth required)
-  fn desktop                          Launch the Fusion desktop app (Electron)
-  fn desktop --dev                    Launch with hot-reload (connects to Vite dev server)
+  fn desktop                          Launch the installed Fusion desktop app (Electron)
+  fn desktop --dev                    Launch source-checkout desktop with hot-reload (connects to Vite dev server)
   fn desktop --paused                 Launch with automation paused
+  fn desktop --no-auth                Disable bearer-token auth for the embedded local dashboard
   fn update [--check] [--global] [--json]   Update Fusion to the latest version
   fn upgrade                           Alias for fn update
   fn task create [desc] [opts]         Create a new task (goes to triage; supports --node <name>, --no-dedup)
@@ -473,11 +474,12 @@ Options:
   --port, -p <port>          Dashboard/serve port (default: 4040)
   --host <host>              Serve host (default: 127.0.0.1 — localhost only; pass 0.0.0.0 to expose)
   --token <token>            Dashboard/daemon bearer token. Default: $FUSION_DASHBOARD_TOKEN, $FUSION_DAEMON_TOKEN, or auto-generated.
-  --no-auth                  Disable dashboard bearer-token auth (local-only; not recommended on 0.0.0.0)
+  --no-auth                  Disable dashboard bearer-token auth for dashboard/desktop (local-only; not recommended on 0.0.0.0)
   --interactive              Interactive mode (port selection for dashboard, issue selection for import)
   --paused                   Start with engine paused (automation disabled)
   --dev                      Start dashboard in development mode
   --no-engine                Start dashboard only (no AI engine)
+  --supervise                Run with auto-restart on crash (bounded retries)
   --lang <locale>            Terminal-UI locale for this run (en, zh-CN, zh-TW, fr, es, ko); the browser dashboard resolves its own language
   --attach <file>            Attach file(s) on task create (repeatable)
   --depends <id>             Declare dependency on task create (repeatable)
@@ -833,6 +835,7 @@ async function main() {
         const noAuth = args.includes("--no-auth");
         const dashTokenIdx = args.indexOf("--token");
         const token = dashTokenIdx !== -1 && dashTokenIdx + 1 < args.length ? args[dashTokenIdx + 1] : undefined;
+        const supervise = args.includes("--supervise");
         const dashLangIdx = args.indexOf("--lang");
         const lang = dashLangIdx !== -1 && dashLangIdx + 1 < args.length ? args[dashLangIdx + 1] : undefined;
         if (lang !== undefined) {
@@ -844,7 +847,12 @@ async function main() {
             process.exit(1);
           }
         }
-        await runDashboard(port, { paused, dev, noEngine, interactive, host, noAuth, token, lang });
+        if (supervise) {
+          const { runDashboardSupervised } = await import("./commands/dashboard.js");
+          await runDashboardSupervised(port);
+        } else {
+          await runDashboard(port, { paused, dev, noEngine, interactive, host, noAuth, token, lang });
+        }
         break;
       }
 
@@ -886,7 +894,8 @@ async function main() {
         const paused = args.includes("--paused");
         const dev = args.includes("--dev");
         const interactive = args.includes("--interactive");
-        await runDesktop({ paused, dev, interactive });
+        const noAuth = args.includes("--no-auth");
+        await runDesktop({ paused, dev, interactive, noAuth });
         break;
       }
 

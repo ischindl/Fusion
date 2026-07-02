@@ -219,6 +219,11 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
   const naming = settings.worktreeNaming || "random";
   const allowSiblingBranchRename = settings.executorAllowSiblingBranchRename === true;
   const baseBranch = task.executionStartBranch || null;
+  /*
+   * FNXC:WorktreeIsolation 2026-07-01-08:35:
+   * Fresh task worktrees must never inherit the project root checkout's ambient HEAD. The root checkout can temporarily point at a sibling task branch/commit during merge or recovery work, so an omitted `git worktree add -b ... <startPoint>` contaminates new task branches with unrelated task commits. Use the task's explicit executionStartBranch when present; otherwise pin creation to the resolved integration branch.
+   */
+  const freshStartPoint = baseBranch ?? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console });
 
   let worktreePath = task.worktree;
   if (!worktreePath) {
@@ -371,8 +376,8 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     if (created.branch !== branchName) {
       logger?.log(`Branch conflict resolved: using ${created.branch} instead of ${branchName}`);
       await store.logEntry(task.id, `Worktree created at ${worktreePath} (branch conflict: using ${created.branch})`, undefined, runContext);
-    } else if (baseBranch) {
-      await store.logEntry(task.id, `Worktree created at ${worktreePath} (based on ${baseBranch})`, undefined, runContext);
+    } else if (freshStartPoint) {
+      await store.logEntry(task.id, `Worktree created at ${worktreePath} (based on ${freshStartPoint})`, undefined, runContext);
     } else {
       await store.logEntry(task.id, `Worktree created at ${worktreePath}`, undefined, runContext);
     }
@@ -439,7 +444,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     await store.updateTask(task.id, { worktree: null, branch: null, sessionFile: null });
     const fallbackName = generateWorktreeName(rootDir, settings);
     const fallbackPath = await resolveTaskWorktreePathForBackend(rootDir, fallbackName, settings, backend, branchName);
-    const created = await createWorktreeImpl(branchName, fallbackPath, task.id, baseBranch ?? undefined, allowSiblingBranchRename);
+    const created = await createWorktreeImpl(branchName, fallbackPath, task.id, freshStartPoint, allowSiblingBranchRename);
     return finalizeCreatedWorktree(created, "fresh", "return-guard");
   };
 
@@ -485,7 +490,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
     if (pooled) {
       try {
-        const preparedRaw = await pool.prepareForTask(pooled, branchName, baseBranch ?? undefined, {
+        const preparedRaw = await pool.prepareForTask(pooled, branchName, freshStartPoint, {
           allowSiblingBranchRename,
           repoDir: rootDir,
           requestingTaskId: task.id,
@@ -601,7 +606,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
   // Worktree removal in merger.ts, worktree-pool.ts, and self-healing.ts is now
   // backend-mediated via WorktreeBackend.remove(). executor.ts and
   // step-session-executor.ts remain native-only paths (tracked separately).
-  const created = await createWorktreeImpl(branchName, worktreePath, task.id, baseBranch ?? undefined, allowSiblingBranchRename);
+  const created = await createWorktreeImpl(branchName, worktreePath, task.id, freshStartPoint, allowSiblingBranchRename);
   return finalizeCreatedWorktree(created, acquiredFromPool ? "pool" : "fresh", "normal");
 }
 

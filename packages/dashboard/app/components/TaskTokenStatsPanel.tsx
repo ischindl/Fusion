@@ -214,7 +214,11 @@ export function TaskTokenStatsPanel({ tokenUsage, loading, task }: TaskTokenStat
         <h5>{t("taskDetail.executionDetails", "Execution Details")}</h5>
         <dl className="task-token-stats-panel__details">
           <div className="task-token-stats-panel__detail-row">
-            <dt>{t("taskDetail.executionMode", "Execution mode")}</dt>
+            {/*
+            FNXC:TaskStats 2026-07-01-00:00:
+            Use the leaf `taskDetail.executionModeLabel`, not `taskDetail.executionMode`, which is a nested object (ariaLabel/fast/standard/replan* copy for the inline mode toggle). Calling `t()` on the object key makes i18next return "key 'taskDetail.executionMode (en)' returned an object instead of string" and crashes the Stats tab render (issue #1863).
+            */}
+            <dt>{t("taskDetail.executionModeLabel", "Execution mode")}</dt>
             <dd>{task?.executionMode === "fast" ? t("taskDetail.executionModeFast", "Fast") : t("taskDetail.executionModeStandard", "Standard")}</dd>
           </div>
           <div className="task-token-stats-panel__detail-row">

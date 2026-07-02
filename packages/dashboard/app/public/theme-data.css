@@ -1431,6 +1431,9 @@ FN-6758 makes the default shadcn highlight/accent orange for focus rings, active
 /*
 FNXC:DashboardTheming 2026-06-30-00:00:
 Shadcn Ember combines shadcn/ui zinc structure with Ember's warm orange/graphite CTA, status, accent, and info colors. It is the default for unset installs while explicit legacy theme ids stay valid.
+
+FNXC:DashboardTheming 2026-06-30-21:41:
+Shadcn Ember must keep shadcn structure but match every Ember-owned color token byte-for-byte against Ember in dark and light mode so the default theme cannot drift from Ember's palette.
 */
 [data-color-theme="shadcn-ember"] {
   --bg: #09090b;
@@ -1505,7 +1508,7 @@ Shadcn Ember combines shadcn/ui zinc structure with Ember's warm orange/graphite
   --logo-accent: #e8773a;
   --color-info: #e8773a;
   --accent: #e8773a;
-  --accent-text: #ffffff;
+  --accent-text: #fff;
 }
 
 [data-color-theme="shadcn-ember"][data-theme="light"] {
@@ -1552,7 +1555,7 @@ Shadcn Ember combines shadcn/ui zinc structure with Ember's warm orange/graphite
   --logo-accent: #d4622a;
   --color-info: #c05820;
   --accent: #d4622a;
-  --accent-text: #ffffff;
+  --accent-text: #fff;
 }
 
 
@@ -5787,6 +5790,162 @@ body[data-color-theme="terminal"][data-theme="light"]::before {
   FNXC:ModalChrome 2026-06-23-21:36:
   Even glass-style themes should keep modal overlays non-dimming/non-blurring; modal panels provide depth with shadows and their own translucent surfaces.
   */
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+
+/* GLASS SILVER - Frosted translucent silver/gray surfaces */
+[data-color-theme="glass-silver"] {
+  /*
+  FNXC:DashboardTheming 2026-07-01-00:00:
+  Glass Silver must preserve the same frosted, translucent surface contract as Glass while replacing the purple/pink accents with silver and graphite tones across dark and light modes.
+  */
+  --bg: #101216;
+  --surface: color-mix(in srgb, #252a32 78%, transparent);
+  --card: color-mix(in srgb, #3a414c 55%, transparent);
+  --card-hover: color-mix(in srgb, #49515d 65%, transparent);
+  --surface-hover: color-mix(in srgb, var(--surface) 90%, var(--text) 10%);
+  --border: color-mix(in srgb, #f5f7fa 22%, transparent);
+  --text: #f3f4f6;
+  --text-muted: #c5cad3;
+  --text-dim: #8f97a3;
+
+  --todo: #d7dde6;
+  --in-progress: #b9c2cf;
+  --in-progress-rgb: 185, 194, 207;
+  --in-review: #a7b4c2;
+  --triage: #c7b88f;
+  --done: #8f97a3;
+  --color-success: #a7b4c2;
+  --color-error: #ef8f8f;
+
+  --font-primary: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+
+  --space-xs: 5px;
+  --space-sm: 10px;
+  --space-md: 14px;
+  --space-lg: 20px;
+  --space-xl: 28px;
+  --space-2xl: 38px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+  --radius-pill: 999px;
+  --radius: var(--radius-md);
+
+  --btn-padding: 9px 16px;
+  --btn-border-width: 1px;
+  --card-padding: 12px 14px;
+  --modal-padding: var(--space-lg) var(--space-xl);
+
+  --shadow-sm: 0 8px 16px color-mix(in srgb, #020305 24%, transparent);
+  --shadow-md: 0 14px 30px color-mix(in srgb, #030407 30%, transparent);
+  --shadow-lg: 0 22px 42px color-mix(in srgb, #04060a 35%, transparent);
+  --shadow-glow: 0 0 12px color-mix(in srgb, var(--todo) 22%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  --shadow: var(--shadow-lg);
+
+  --transition-instant: 0.08s ease;
+  --transition-fast: 0.14s ease;
+  --transition-normal: 0.22s ease;
+  --transition-slow: 0.34s ease;
+
+  --cta-bg: color-mix(in srgb, var(--accent) 32%, transparent);
+  --cta-border: color-mix(in srgb, #f5f7fa 38%, transparent);
+  --cta-text: #f7f8fa;
+  --cta-bg-hover: color-mix(in srgb, var(--accent) 46%, transparent);
+  --cta-border-hover: color-mix(in srgb, #f5f7fa 50%, transparent);
+  --cta-glow: 0 0 12px color-mix(in srgb, var(--accent) 24%, transparent);
+  --logo-accent: var(--todo);
+  --color-info: #b9c2cf;
+  --accent: #d7dde6;
+  --accent-text: #111318;
+}
+
+[data-color-theme="glass-silver"][data-theme="light"] {
+  --bg: #eef0f3;
+  --surface: color-mix(in srgb, #ffffff 75%, transparent);
+  --card: color-mix(in srgb, #ffffff 60%, transparent);
+  --card-hover: color-mix(in srgb, #ffffff 75%, transparent);
+  --surface-hover: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+  --border: color-mix(in srgb, #5d6673 22%, transparent);
+  --text: #252a31;
+  --text-muted: #58616d;
+  --text-dim: #8a929d;
+
+  --todo: #5f6875;
+  --in-progress: #747f8c;
+  --in-progress-rgb: 116, 127, 140;
+  --in-review: #667383;
+  --triage: #907d53;
+  --done: #8a929d;
+  --color-success: #667383;
+  --color-error: #b24f4f;
+
+  --shadow-sm: 0 8px 16px color-mix(in srgb, #1f2933 8%, transparent);
+  --shadow-md: 0 14px 30px color-mix(in srgb, #1f2933 10%, transparent);
+  --shadow-lg: 0 22px 42px color-mix(in srgb, #1f2933 14%, transparent);
+  --shadow-glow: 0 0 10px color-mix(in srgb, var(--todo) 20%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+
+  --cta-bg: color-mix(in srgb, var(--accent) 24%, transparent);
+  --cta-border: color-mix(in srgb, var(--accent) 38%, transparent);
+  --cta-text: #252a31;
+  --cta-bg-hover: color-mix(in srgb, var(--accent) 34%, transparent);
+  --cta-border-hover: color-mix(in srgb, var(--accent) 48%, transparent);
+  --cta-glow: 0 0 10px color-mix(in srgb, var(--accent) 22%, transparent);
+  --logo-accent: var(--todo);
+  --color-info: #747f8c;
+  --accent: #5f6875;
+  --accent-text: #ffffff;
+}
+
+[data-color-theme="glass-silver"] .card,
+[data-color-theme="glass-silver"] .column {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background: color-mix(in srgb, #f5f7fa 8%, transparent);
+  border-color: color-mix(in srgb, #f5f7fa 24%, transparent);
+}
+
+[data-color-theme="glass-silver"][data-theme="light"] .card,
+[data-color-theme="glass-silver"][data-theme="light"] .column {
+  background: color-mix(in srgb, #ffffff 60%, transparent);
+  border-color: color-mix(in srgb, #5d6673 24%, transparent);
+}
+
+[data-color-theme="glass-silver"] .btn {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-color: color-mix(in srgb, #f5f7fa 34%, transparent);
+  background: color-mix(in srgb, #f5f7fa 10%, transparent);
+}
+
+[data-color-theme="glass-silver"] .btn-primary,
+[data-color-theme="glass-silver"] .btn-task-create {
+  background: linear-gradient(135deg, color-mix(in srgb, #d7dde6 35%, transparent), color-mix(in srgb, #9ca6b4 30%, transparent));
+  border-color: color-mix(in srgb, #f5f7fa 42%, transparent);
+}
+
+[data-color-theme="glass-silver"] .btn-primary:hover,
+[data-color-theme="glass-silver"] .btn-task-create:hover {
+  background: linear-gradient(135deg, color-mix(in srgb, #d7dde6 50%, transparent), color-mix(in srgb, #9ca6b4 42%, transparent));
+  box-shadow: 0 12px 24px color-mix(in srgb, #030407 28%, transparent);
+}
+
+[data-color-theme="glass-silver"][data-theme="light"] .btn {
+  background: color-mix(in srgb, #ffffff 52%, transparent);
+  border-color: color-mix(in srgb, #5d6673 28%, transparent);
+}
+
+[data-color-theme="glass-silver"] .modal-overlay {
   background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;

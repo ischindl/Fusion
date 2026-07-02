@@ -351,6 +351,57 @@ The floating-mode header is the move grip. `touch-action: none` is required so a
   color: var(--text-muted);
 }
 
+.terminal-mobile-tabs {
+  display: none;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--space-xs);
+  padding: 0 var(--space-xs);
+}
+
+.terminal-mobile-tabs-label {
+  display: none;
+}
+
+.terminal-mobile-tab-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-mobile-tab-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: calc(var(--space-xl) + var(--space-lg));
+  min-width: calc(var(--space-xl) + var(--space-lg));
+  min-height: calc(var(--space-xl) + var(--space-lg));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.terminal-mobile-tab-action:hover:not(:disabled) {
+  background: var(--card-hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.terminal-mobile-tab-action:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled, 0.5);
+}
+
 /*
 FNXC:TerminalWorkspaces 2026-06-29-00:00:
 Terminal worktree selection mirrors the file-browser workspace model while staying header-sized for docked, floating, and mobile terminals. Render the picker only when task workspace entries exist so failures or empty worktree lists never leave an inert button shell next to the always-fast + terminal affordance.
@@ -1291,6 +1342,43 @@ Footer reads left-to-right: text-size control, then the relocated Clear/Shortcut
   border-color: var(--text-muted);
 }
 
+/*
+FNXC:Terminal 2026-07-01-11:49:
+Android folded Chrome can keep a wide layout viewport while visualViewport is the narrow folded pane. The React mobile classifier adds terminal-modal--mobile from the visual viewport, so duplicate the critical fullscreen shell outside CSS media queries and let xterm measure the folded box on the initial fit.
+*/
+.modal.terminal-modal.terminal-modal--mobile {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  min-height: 100dvh !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  border-radius: 0;
+  border: none;
+  resize: none;
+}
+
+.modal.terminal-modal.terminal-modal--mobile .terminal-header {
+  flex-wrap: wrap;
+  row-gap: var(--space-xs);
+  padding-top: env(safe-area-inset-top, 0);
+  overflow: hidden;
+}
+
+.modal.terminal-modal.terminal-modal--mobile .terminal-tabs,
+.modal.terminal-modal.terminal-modal--mobile .terminal-title {
+  display: none;
+}
+
+.modal.terminal-modal.terminal-modal--mobile .terminal-mobile-tabs {
+  display: flex;
+  order: 1;
+  flex: 1 1 40%;
+  min-width: 0;
+}
+
 /* === Terminal Modal Mobile Responsive === */
 @media (max-width: 768px) {
   .modal.terminal-modal {
@@ -1314,20 +1402,27 @@ Footer reads left-to-right: text-size control, then the relocated Clear/Shortcut
     resize: none;
   }
 
-  /* Keep tabs and header actions on a single row */
+  /* Mobile swaps the desktop tab strip for a selector; wrapping is intentional on very narrow phones so worktree and session actions remain reachable. */
   .terminal-header {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+    row-gap: var(--space-xs);
     padding-top: env(safe-area-inset-top, 0);
     overflow: hidden;
   }
 
-  /* Tabs stay scrollable and yield space to the fixed action cluster */
   .terminal-tabs {
-    flex: 1 1 auto;
+    display: none;
+  }
+
+  .terminal-mobile-tabs {
+    display: flex;
+    order: 1;
+    flex: 1 1 40%;
     min-width: 0;
   }
 
   .terminal-workspace-picker {
+    order: 2;
     margin-left: 0;
     padding-left: 0;
     border-left: none;
@@ -1360,8 +1455,9 @@ Footer reads left-to-right: text-size control, then the relocated Clear/Shortcut
     display: none;
   }
 
-  /* Actions stay pinned to the right edge of the header row */
+  /* Actions stay reachable at the end of the header row and wrap as a unit after the selector/picker when space is exhausted. */
   .terminal-actions {
+    order: 3;
     flex: 0 0 auto;
     justify-content: flex-end;
     border-top: none;

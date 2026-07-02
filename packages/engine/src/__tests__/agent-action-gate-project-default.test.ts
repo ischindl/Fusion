@@ -79,4 +79,38 @@ describe("agent action gate project-default resolution", () => {
 
     expect(decision.disposition).toBe("allow");
   });
+
+  it("applies project default exact tool override before its category rule", () => {
+    const permissionPolicy = resolveEffectiveAgentPermissionPolicy(undefined, {
+      rules: { task_agent_mutation: "allow" },
+      toolRules: { fn_task_create: "block" },
+    });
+
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_task_create",
+      args: {},
+      permissionPolicy,
+    })).toMatchObject({
+      category: "task_agent_mutation",
+      disposition: "block",
+      metadata: {
+        permissionPolicyMatch: {
+          type: "toolRule",
+          toolName: "fn_task_create",
+          disposition: "block",
+        },
+      },
+    });
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_task_update",
+      args: {},
+      permissionPolicy,
+    })).toMatchObject({
+      category: "task_agent_mutation",
+      disposition: "allow",
+      metadata: {},
+    });
+  });
 });

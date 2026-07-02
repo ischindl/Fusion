@@ -46,6 +46,7 @@ function makeInteractiveData(opts: {
   models?: ModelItem[];
   taskDetail?: TaskDetailData | null;
   updateAgentState?: (id: string, state: string) => Promise<void>;
+  updateSettings?: (partial: Partial<SettingsValues>) => Promise<void>;
   remote?: Partial<{
     getSettings: () => Promise<{ activeProvider: "tailscale" | "cloudflare" | null; tailscaleEnabled: boolean; cloudflareEnabled: boolean; shortLivedEnabled: boolean; shortLivedTtlMs: number }>;
     getStatus: () => Promise<{ provider: "tailscale" | "cloudflare" | null; state: "stopped" | "starting" | "running" | "error"; url: string | null; lastError: string | null }>;
@@ -63,7 +64,7 @@ function makeInteractiveData(opts: {
   const agents = opts.agents ?? [];
   const detail = opts.detail ?? null;
   const taskDetail = opts.taskDetail ?? null;
-  const settings: SettingsValues = opts.settings ?? {
+  let settings: SettingsValues = opts.settings ?? {
     maxConcurrent: 1,
     maxWorktrees: 2,
     autoMerge: false,
@@ -109,7 +110,9 @@ function makeInteractiveData(opts: {
     updateAgentState: opts.updateAgentState ?? (async (_id: string, _state: string) => {}),
     deleteAgent: async (_id: string) => {},
     getSettings: async () => settings,
-    updateSettings: async (_partial: Partial<SettingsValues>) => {},
+    updateSettings: opts.updateSettings ?? (async (partial: Partial<SettingsValues>) => {
+      settings = { ...settings, ...partial };
+    }),
     listModels: () => models,
     remote,
     git: {
@@ -188,9 +191,18 @@ async function waitForFrameUpdateAfterInput() {
 }
 
 async function focusSettingsDetailPane(stdin: { write: (chunk: string) => void }, lastFrame: () => string | undefined) {
-  stdin.write("\u001b[C");
+  stdin.write("\t");
   await waitForFrameUpdateAfterInput();
   await waitForFrameContains(lastFrame, "[C/V/X/P/L/U/K/R] remote actions");
+}
+
+async function selectSettingsRow(stdin: { write: (chunk: string) => void }, label: string, rowOffsetFromTop: number, lastFrame: () => string | undefined) {
+  await waitForFrameContains(lastFrame, label);
+  for (let i = 0; i < rowOffsetFromTop; i += 1) {
+    stdin.write("\u001b[B");
+    await waitForFrameUpdateAfterInput();
+  }
+  await waitForFrameContains(lastFrame, label);
 }
 
 function findTokenPosition(frame: string, token: string): { row: number; col: number } {
@@ -553,6 +565,109 @@ describe("Settings view", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Available Models");
     expect(frame).toContain("Claude 3.5 Sonnet");
+    unmount();
+  });
+
+  it("keeps list-pane up/down arrows scoped to settings selection", async () => {
+    const controller = newController();
+    controller.setSystemInfo(makeSystemInfo());
+    controller.setInteractiveData(makeInteractiveData());
+    controller.setMode("interactive");
+    controller.setInteractiveView("settings");
+
+    const { lastFrame, stdin, unmount } = render(renderDashboardAppNode(controller));
+    await waitForFrameContains(lastFrame, "Max Concurrent");
+
+    stdin.write("\u001b[B");
+    await waitForFrameUpdateAfterInput();
+    expect(lastFrame() ?? "").toContain("▶ Max Worktrees");
+
+    stdin.write("\u001b[A");
+    await waitForFrameUpdateAfterInput();
+    expect(lastFrame() ?? "").toContain("▶ Max Concurrent");
+
+    unmount();
+  });
+
+  it("cycles Remote Provider with right arrow in the focused detail pane", async () => {
+    const controller = newController();
+    controller.setSystemInfo(makeSystemInfo());
+    const settings: SettingsValues = {
+      maxConcurrent: 1,
+      maxWorktrees: 2,
+      autoMerge: false,
+      mergeStrategy: "direct",
+      pollIntervalMs: 60000,
+      enginePaused: false,
+      globalPause: false,
+      remoteActiveProvider: "tailscale",
+      remoteShortLivedEnabled: true,
+      remoteShortLivedTtlMs: 600000,
+      remoteStatus: { provider: "tailscale", state: "running", url: "https://remote.example.com", lastError: null },
+    };
+    const updateSettings = vi.fn(async (partial: Partial<SettingsValues>) => {
+      Object.assign(settings, partial);
+    });
+    const activateProvider = vi.fn(async (_provider: "tailscale" | "cloudflare") => {});
+    controller.setInteractiveData(makeInteractiveData({
+      settings,
+      updateSettings,
+      remote: { activateProvider },
+    }));
+    controller.setMode("interactive");
+    controller.setInteractiveView("settings");
+
+    const { lastFrame, stdin, unmount } = render(renderDashboardAppNode(controller));
+    await selectSettingsRow(stdin, "Remote Provid", 7, lastFrame);
+    await focusSettingsDetailPane(stdin, lastFrame);
+
+    stdin.write("\u001b[C");
+
+    await vi.waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ remoteActiveProvider: "cloudflare" }));
+    await vi.waitFor(() => expect(activateProvider).toHaveBeenCalledWith("cloudflare"));
+    await waitForFrameContains(lastFrame, "Provider: cloudflare");
+    expect(lastFrame() ?? "").toContain("[←/→] cycle options:");
+
+    unmount();
+  });
+
+  it("cycles merge strategy with vim-style detail-pane enum keys", async () => {
+    const controller = newController();
+    controller.setSystemInfo(makeSystemInfo());
+    const settings: SettingsValues = {
+      maxConcurrent: 1,
+      maxWorktrees: 2,
+      autoMerge: false,
+      mergeStrategy: "direct",
+      pollIntervalMs: 60000,
+      enginePaused: false,
+      globalPause: false,
+      remoteActiveProvider: null,
+      remoteShortLivedEnabled: false,
+      remoteShortLivedTtlMs: 900000,
+    };
+    const updateSettings = vi.fn(async (partial: Partial<SettingsValues>) => {
+      Object.assign(settings, partial);
+    });
+    controller.setInteractiveData(makeInteractiveData({
+      updateSettings,
+      settings,
+    }));
+    controller.setMode("interactive");
+    controller.setInteractiveView("settings");
+
+    const { lastFrame, stdin, unmount } = render(renderDashboardAppNode(controller));
+    await selectSettingsRow(stdin, "Merge Strategy", 3, lastFrame);
+    await focusSettingsDetailPane(stdin, lastFrame);
+
+    stdin.write("l");
+    await vi.waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ mergeStrategy: "squash" }));
+    await waitForFrameContains(lastFrame, "squash");
+
+    stdin.write("h");
+    await vi.waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ mergeStrategy: "direct" }));
+    await waitForFrameContains(lastFrame, "direct");
+
     unmount();
   });
 

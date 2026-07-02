@@ -1,7 +1,7 @@
 {
   "name": "@fusion/desktop",
   "productName": "Fusion",
-  "version": "0.51.0",
+  "version": "0.53.1",
   "license": "MIT",
   "author": {
     "name": "Runfusion",
@@ -29,11 +29,11 @@
     "test": "tsx scripts/test.ts",
     "typecheck": "tsc --noEmit",
     "generate:icons": "tsx scripts/generate-icons.ts",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "pack": "electron-builder --projectDir deploy --dir",
+    "dist": "electron-builder --projectDir deploy",
+    "dist:win": "electron-builder --projectDir deploy --win",
+    "dist:mac": "electron-builder --projectDir deploy --mac",
+    "dist:linux": "electron-builder --projectDir deploy --linux"
   },
   "dependencies": {
     "@fusion/core": "workspace:*",

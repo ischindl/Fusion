@@ -760,7 +760,8 @@ export function NodeDetailModal({
               <div className="node-detail-modal__grid docker-management__info-grid">
                 <div className="node-detail-modal__field"><span>{t("nodes.dockerFieldImage", "Image")}</span><strong><code>{managedDockerNode.imageName}:{managedDockerNode.imageTag}</code></strong></div>
                 <div className="node-detail-modal__field"><span>{t("nodes.dockerContainerId", "Container ID")}</span><strong><code>{managedDockerNode.containerId ? managedDockerNode.containerId.slice(0, 12) : "—"}</code></strong></div>
-                <div className="node-detail-modal__field"><span>{t("nodes.dockerHost", "Host")}</span><strong>{dockerHost}</strong></div>
+                {/* FNXC:Nodes 2026-07-01-00:00: `nodes.dockerHost` is a nested object (local/remote); read the `nodes.dockerHostLabel` leaf so i18next returns a string instead of crashing (issue #1863 bug class). */}
+                <div className="node-detail-modal__field"><span>{t("nodes.dockerHostLabel", "Host")}</span><strong>{dockerHost}</strong></div>
                 <div className="node-detail-modal__field"><span>{t("nodes.dockerPersistentStorage", "Persistent Storage")}</span><strong>{managedDockerNode.persistentStorage ? t("nodes.yes", "Yes") : t("nodes.no", "No")}</strong></div>
                 <div className="node-detail-modal__field"><span>{t("nodes.dockerPort", "Port")}</span><strong>{parsePortFromReachableUrl(managedDockerNode.reachableUrl)}</strong></div>
                 <div className="node-detail-modal__field"><span>{t("nodes.dockerResourceSizing", "Resource Sizing")}</span><strong>{dockerResourceSizing}</strong></div>

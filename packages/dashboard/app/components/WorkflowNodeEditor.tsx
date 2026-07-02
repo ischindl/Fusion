@@ -26,7 +26,6 @@ import {
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
-  compileWorkflow,
   exportWorkflow,
   importWorkflow,
   designWorkflow,
@@ -46,6 +45,7 @@ import type { DiscoveredSkill } from "../api";
 import type { ToastType } from "../hooks/useToast";
 import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useConfirm } from "../hooks/useConfirm";
+import { subscribeSse } from "../sse-bus";
 
 /*
 FNXC:i18n-Localize 2026-06-20-00:00:
@@ -776,10 +776,6 @@ function InnerEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
-  // Info-tone state (KTD-4): set when a save compiles-rejects solely because the
-  // graph branches (interpreter-only), distinct from the warning-toned
-  // validationError used for genuine problems.
-  const [interpreterOnly, setInterpreterOnly] = useState<boolean>(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode<WorkflowFlowNodeData>>([]);
   const [edges, setEdges] = useEdgesState<FlowEdge>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -954,10 +950,6 @@ function InnerEditor({
   const [aiEditBusy, setAiEditBusy] = useState(false);
   const [aiEditError, setAiEditError] = useState<string | null>(null);
   const aiEditAbortRef = useRef<AbortController | null>(null);
-  // U10/R11: when a create-from-AI result is interpreter-only, the new workflow
-  // becomes active and its load effect resets the banner — so we stash the flag
-  // here and the load effect re-raises it once for the workflow it activates.
-  const pendingInterpreterOnlyRef = useRef(false);
 
   const activeWorkflow = useMemo(() => workflows.find((w) => w.id === activeId), [workflows, activeId]);
   const isBuiltin = !!activeWorkflow && isBuiltinWorkflowId(activeWorkflow.id);
@@ -1112,10 +1104,10 @@ function InnerEditor({
     );
   }, [isBuiltin, activeWorkflow, name, description, icon, nodes, edges, columns, fields, settings]);
 
-  const loadWorkflows = useCallback(async () => {
+  const loadWorkflows = useCallback(async (options?: { forceFresh?: boolean }) => {
     setLoading(true);
     try {
-      const data = await fetchWorkflows(projectId);
+      const data = await fetchWorkflows(projectId, options);
       setWorkflows(data);
       setActiveId((prev) => {
         if (prev && data.some((workflow) => workflow.id === prev)) return prev;
@@ -1134,6 +1126,24 @@ function InnerEditor({
   useEffect(() => {
     void loadWorkflows();
   }, [loadWorkflows]);
+
+  useEffect(() => {
+    /*
+    FNXC:ChatWorkflowAuthoring 2026-07-01-10:55:
+    WorkflowNodeEditor can be open while chat/tool execution creates a workflow through ChatManager rather than this component's create/import buttons. Subscribe to workflow lifecycle SSE and force-refresh definitions so the editor list shows chat-created workflows without a hard reload or stale deduped request.
+    */
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const refreshFromWorkflowMutation = () => {
+      void loadWorkflows({ forceFresh: true });
+    };
+    return subscribeSse(`/api/events${query}`, {
+      events: {
+        "workflow:created": refreshFromWorkflowMutation,
+        "workflow:updated": refreshFromWorkflowMutation,
+        "workflow:deleted": refreshFromWorkflowMutation,
+      },
+    });
+  }, [loadWorkflows, projectId]);
 
   useEffect(() => {
     if (!initialWorkflowId || !isMobileMode || !workflowListStageOpen) return;
@@ -1262,14 +1272,6 @@ function InnerEditor({
     setValidationError(null);
     // Position viewport at top-left so the laid-out nodes are visible.
     setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 0 });
-    // Honor a pending AI interpreter-only flag exactly once for the workflow it
-    // just activated; otherwise the banner clears on load (U10/R11).
-    if (pendingInterpreterOnlyRef.current) {
-      pendingInterpreterOnlyRef.current = false;
-      setInterpreterOnly(true);
-    } else {
-      setInterpreterOnly(false);
-    }
   }, [activeWorkflow, setNodes, setEdges, setViewport]);
 
   useEffect(() => {
@@ -1664,7 +1666,6 @@ function InnerEditor({
       setValidationError(null);
       // Leave the loaded snapshot pointing at the (still-persisted) base so the
       // replaced graph reads dirty — the user must explicitly Save.
-      setInterpreterOnly(result.interpreterOnly);
       if (result.strippedApprovalFlags) {
         addToast(
           t("workflows.importStripped", "Auto-approval flags were removed from imported nodes"),
@@ -1917,9 +1918,9 @@ function InnerEditor({
   // Calls the server design route (no IR posted), then creates the workflow
   // seeded from the returned {ir, layout} via the existing create path. The name
   // comes from the dialog's name field if filled, else "AI: <first 30 chars>".
-  // After activation: interpreterOnly surfaces the existing info banner; a strip
-  // shows the shared importStripped toast (reused per spec). Throws on failure so
-  // the dialog renders the server message inline and stays open (nothing created).
+  // A stripped-approval-flags result shows the shared importStripped toast
+  // (reused per spec). Throws on failure so the dialog renders the server message
+  // inline and stays open (nothing created).
   const handleDesignNewWorkflow = useCallback(
     async (prompt: string, dialogName: string, signal: AbortSignal) => {
       const result = await designWorkflow({ prompt }, projectId, signal);
@@ -1934,9 +1935,6 @@ function InnerEditor({
         },
         projectId,
       );
-      // Stash the interpreter-only flag BEFORE activating so the new workflow's
-      // load effect re-raises the banner instead of clearing it (U10/R11).
-      pendingInterpreterOnlyRef.current = result.interpreterOnly;
       setWorkflows((ws) => [...ws, created]);
       setActiveId(created.id);
       setWorkflowListStageOpen(false);
@@ -2026,7 +2024,6 @@ function InnerEditor({
 
     setSaving(true);
     setValidationError(null);
-    setInterpreterOnly(false);
     setServerNodeError(null);
     try {
       const trimmedName = name.trim() || activeWorkflow.name;
@@ -2061,25 +2058,11 @@ function InnerEditor({
         setName(updated.name);
         setDescription(updated.description ?? "");
         setIcon(updated.icon);
-        // Validate by compiling — surfaces non-linear graphs as a banner.
-        try {
-          await compileWorkflow(updated.id, projectId);
-          addToast(t("workflows.saved", "Workflow saved"), "success");
-        } catch (compileErr) {
-          const compileMsg = getErrorMessage(compileErr) || "";
-          // KTD-4: branching graphs reject with this shared suffix from
-          // workflow-compiler.ts (both the fan-out and off-main-path messages).
-          // Such a graph still runs on the interpreter — present it as info, not a
-          // warning. NOTE: this string is coupled to the compiler's message; if
-          // that wording changes, update both sites (see compiler message site).
-          if (compileMsg.includes("require the workflow interpreter (deferred)")) {
-            setInterpreterOnly(true);
-          } else {
-            setValidationError(
-              compileMsg || t("workflows.savedNotCompilable", "Workflow saved but cannot be compiled"),
-            );
-          }
-        }
+        // FNXC:WorkflowEditor 2026-07-01-00:00: The linear WorkflowStep compiler
+        // was removed and the graph interpreter runs branching graphs directly, so
+        // there is no post-save compile check. The server already validated the IR
+        // (parseWorkflowIr) on the update PATCH; reaching here means it is valid.
+        addToast(t("workflows.saved", "Workflow saved"), "success");
       };
       const savePayload = {
         ir,
@@ -3527,18 +3510,6 @@ function InnerEditor({
                 {validationError && (
                   <div className="wf-editor-banner" role="alert">
                     {validationError}
-                  </div>
-                )}
-                {interpreterOnly && (
-                  <div
-                    className="wf-editor-banner wf-editor-banner--info"
-                    role="status"
-                    data-testid="wf-interpreter-only-banner"
-                  >
-                    {t(
-                      "workflowNodes.interpreterOnly",
-                      "This workflow branches, so it runs on the graph interpreter — it can't compile to the linear step engine, but it will still run.",
-                    )}
                   </div>
                 )}
                 {unplaced.length > 0 && (

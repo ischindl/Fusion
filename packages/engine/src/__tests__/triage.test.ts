@@ -32,6 +32,10 @@ vi.mock("../reviewer.js", () => ({
 vi.mock("../pi.js", () => ({
   createFnAgent: mockCreateFnAgent,
   describeModel: vi.fn().mockReturnValue("mock-model"),
+  formatModelMarkerDetails: vi.fn((model: string, thinking?: string | null, annotations: string[] = []) => {
+    const suffixes = [thinking ? `thinking effort: ${thinking}` : "", ...annotations].filter(Boolean);
+    return suffixes.length ? `${model} ${suffixes.map((suffix) => `(${suffix})`).join(" ")}` : model;
+  }),
   promptWithFallback: vi.fn().mockReturnValue("mock-prompt"),
 }));
 
@@ -2839,6 +2843,48 @@ Forbidden paths / non-goals:
     expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo");
   });
 
+  it("moves recovered task to todo when project auto approval overrides stored workflow approval", async () => {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({
+        maxConcurrent: 2,
+        maxWorktrees: 4,
+        pollIntervalMs: 10000,
+        groupOverlappingFiles: false,
+        autoMerge: true,
+        planApprovalMode: "auto-approve-all",
+        requirePlanApproval: false,
+      } as Settings),
+      getTaskWorkflowSelection: vi.fn().mockReturnValue({ workflowId: "builtin:coding", stepIds: [] }),
+      getWorkflowDefinition: vi.fn().mockResolvedValue(undefined),
+      getWorkflowSettingValues: vi.fn().mockReturnValue({ requirePlanApproval: true }),
+      getWorkflowSettingsProjectId: vi.fn().mockReturnValue("project-auto-approval"),
+    } as Partial<TaskStore>);
+
+    const processor = new TriageProcessor(store, rootDir);
+    const recovered = await processor.recoverApprovedTask({
+      id: "FN-001",
+      description: "Recovered triage task",
+      column: "triage",
+      status: "planning",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [
+        { timestamp: "2026-01-01T00:00:00.000Z", action: "Spec review: APPROVE" },
+      ],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:02:00.000Z",
+    });
+
+    expect(recovered).toBe(true);
+    expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo");
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-001", expect.objectContaining({ status: "awaiting-approval" }));
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-001",
+      "Auto-recovered specified task stuck in planning — moved to todo",
+    );
+  });
+
   it("moves approved planning task to awaiting-approval when manual approval is required", async () => {
     const store = createMockStore({
       getSettings: vi.fn().mockResolvedValue({
@@ -3638,6 +3684,14 @@ describe("taskCreate tool model inheritance", () => {
 
       const store = createMockStore({
         getTask: vi.fn().mockResolvedValue({ ...task, attachments: [] }),
+        getSettings: vi.fn().mockResolvedValue({
+          maxConcurrent: 2,
+          maxWorktrees: 4,
+          pollIntervalMs: 10000,
+          groupOverlappingFiles: false,
+          autoMerge: true,
+          defaultThinkingLevel: "high",
+        } as Settings),
       });
 
       // Set up createFnAgent to return a session that immediately throws
@@ -3667,10 +3721,14 @@ describe("taskCreate tool model inheritance", () => {
 
       await processor.specifyTask(task);
 
-      // Verify appendAgentLog was called with model info and triage role
+      // Verify appendAgentLog was called with model and thinking effort info on the same triage row.
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "FN-300",
+        "Triage using model: mock-model (thinking effort: high)",
+      );
       expect(store.appendAgentLog).toHaveBeenCalledWith(
         "FN-300",
-        "Triage using model: mock-model",
+        "Triage using model: mock-model (thinking effort: high)",
         "text",
         undefined,
         "triage",

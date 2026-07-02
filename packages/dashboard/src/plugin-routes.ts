@@ -19,7 +19,6 @@ import { Router, type Request, type Response } from "express";
 import { access, stat, readFile } from "node:fs/promises";
 import { join, isAbsolute, dirname, basename } from "node:path";
 import { emitPluginCustomSseEvent } from "./sse.js";
-import registryManifest from "./registry-manifest.json";
 import type {
   PluginInstallation,
   PluginLoader,
@@ -78,6 +77,31 @@ export interface RegistryPluginEntry extends RegistryManifestEntry {
 
 interface RegistryManifestShape {
   plugins?: unknown;
+}
+
+const registryManifestUrl = new URL("./registry-manifest.json", import.meta.url);
+let cachedRegistryManifest: RegistryManifestShape | null = null;
+
+export async function loadRegistryManifest(): Promise<RegistryManifestShape> {
+  if (cachedRegistryManifest) {
+    return cachedRegistryManifest;
+  }
+
+  try {
+    const raw = await readFile(registryManifestUrl, "utf-8");
+    cachedRegistryManifest = JSON.parse(raw) as RegistryManifestShape;
+    return cachedRegistryManifest;
+  } catch (error) {
+    // FNXC:PluginRegistry 2026-07-01-07:45:
+    // Desktop local mode imports the dashboard server under Node 22+, where static
+    // JSON imports require attributes that TypeScript did not emit. Read the
+    // registry manifest as data at request time and degrade to an empty registry
+    // when the packaged manifest is missing or malformed so startup never fails at
+    // module load with ERR_IMPORT_ATTRIBUTE_MISSING.
+    console.warn("[dashboard/plugins] Registry manifest unavailable; serving an empty plugin registry", error);
+    cachedRegistryManifest = {};
+    return cachedRegistryManifest;
+  }
 }
 
 function normalizeRegistryManifestEntries(manifest: RegistryManifestShape): RegistryManifestEntry[] {
@@ -330,6 +354,7 @@ export function createPluginRouter(
       : undefined;
     const scopedStore = projectId ? await getOrCreateProjectStore(projectId) : null;
     const store = scopedStore?.getPluginStore?.() ?? pluginStore;
+    const registryManifest = await loadRegistryManifest();
     const plugins = await buildRegistryPluginEntries(registryManifest, store, { q, category });
     res.json({ plugins });
   }));

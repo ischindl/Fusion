@@ -949,6 +949,25 @@ describe("bin command routing and fallbacks", () => {
       paused: true,
       dev: true,
       interactive: true,
+      noAuth: false,
     });
+  });
+
+  it.each([
+    {
+      args: ["desktop", "--no-auth"],
+      expected: { paused: false, dev: false, interactive: false, noAuth: true },
+    },
+    {
+      args: ["desktop", "--no-auth", "--paused"],
+      expected: { paused: true, dev: false, interactive: false, noAuth: true },
+    },
+    {
+      args: ["desktop", "--dev", "--no-auth"],
+      expected: { paused: false, dev: true, interactive: false, noAuth: true },
+    },
+  ])("routes desktop --no-auth variants %#", async ({ args, expected }) => {
+    await runBin(args);
+    expect(commandMocks.runDesktop).toHaveBeenCalledWith(expected);
   });
 });

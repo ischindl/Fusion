@@ -6,6 +6,11 @@ argument-hint: "[issue reference, error message, test path, or description of br
 
 # Debug and Fix
 
+<!--
+FNXC:CompoundEngineering 2026-07-01-13:43:
+When this skill runs inside the Compound Engineering dashboard, the host interactive-session protocol is authoritative. Ask clarifying or handoff questions by returning the host's JSON question object, and finish by returning the host's JSON complete object; do not emit prose-only turns or blocking question tool calls at the dashboard seam.
+-->
+
 Find root causes, then fix them. This skill investigates bugs systematically — tracing the full causal chain before proposing a fix — and optionally implements the fix with test-first discipline.
 
 <bug_description> #$ARGUMENTS </bug_description>
