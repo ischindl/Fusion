@@ -283,19 +283,31 @@ export function GeneralSection({ scopeBanner, form, setForm, projectId, addToast
       </div>
       <h4 className="settings-section-heading settings-section-heading--spaced">{t("settings.general.gitLabConfiguration", "GitLab Configuration")}</h4>
       {/*
-        FNXC:GitLabConfiguration 2026-07-02-00:00:
-        FN-7422 exposes only project GitLab web/API URL configuration for GitLab.com and self-managed instances. Token auth, imports, tracking, comments, auto-close, Command Center signals, research providers, and star prompts are intentionally deferred to later GitLab subtasks.
+        FNXC:GitLabEnablement 2026-07-02-00:00:
+        FN-7453 keeps saved GitLab URL settings separate from the active integration switch. The disclosure is collapsed by default to reduce Settings noise; the summary toggle remains reachable without expanding advanced self-managed URL fields.
       */}
-      <div className="form-group">
-        <label htmlFor="gitlabInstanceUrl">{t("settings.general.gitLabInstanceUrl", "GitLab instance URL")}</label>
-        <input id="gitlabInstanceUrl" className="input" type="url" placeholder="https://gitlab.com" value={form.gitlabInstanceUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabInstanceUrl: e.target.value || undefined }))}/>
-        <small>{t("settings.general.gitLabInstanceUrlHint", "Blank uses GitLab.com or the global default. Set an absolute http:// or https:// URL for self-managed GitLab, such as https://gitlab.example.com/gitlab.")}</small>
-      </div>
-      <div className="form-group">
-        <label htmlFor="gitlabApiBaseUrl">{t("settings.general.gitLabApiBaseUrlOptional", "GitLab API base URL (optional / advanced)")}</label>
-        <input id="gitlabApiBaseUrl" className="input" type="url" placeholder="https://gitlab.com/api/v4" value={form.gitlabApiBaseUrl ?? ""} onChange={(e) => setForm((f) => ({ ...f, gitlabApiBaseUrl: e.target.value || undefined }))}/>
-        <small>{t("settings.general.gitLabApiBaseUrlHint", "Blank derives <instance>/api/v4. Override only when a self-managed GitLab API is served from a different absolute http:// or https:// URL.")}</small>
-      </div>
+      <details className="settings-gitlab-disclosure" data-testid="project-gitlab-configuration-disclosure">
+        <summary>
+          <span className="settings-gitlab-disclosure__title">{t("settings.general.gitLabConfiguration", "GitLab Configuration")}</span>
+          <label className="checkbox-label settings-gitlab-disclosure__toggle" htmlFor="gitlabEnabled" onClick={(event) => event.stopPropagation()}>
+            <input id="gitlabEnabled" type="checkbox" checked={form.gitlabEnabled !== false} onChange={(e) => setForm((f) => ({ ...f, gitlabEnabled: e.target.checked }))}/>
+            {t("settings.general.enableGitLabIntegration", "Enable GitLab integration")}
+          </label>
+        </summary>
+        <small className="settings-description">{form.gitlabEnabled === false ? t("settings.general.gitLabDisabledHint", "GitLab API imports, comments, close/reopen, and refresh operations are disabled. Saved URLs and tokens remain stored for re-enable.") : t("settings.general.gitLabEnabledHint", "Configure GitLab.com or self-managed GitLab URLs. Blank values inherit global fallbacks and then GitLab.com.")}</small>
+        <div className="settings-gitlab-disclosure__body" aria-disabled={form.gitlabEnabled === false}>
+          <div className="form-group">
+            <label htmlFor="gitlabInstanceUrl">{t("settings.general.gitLabInstanceUrl", "GitLab instance URL")}</label>
+            <input id="gitlabInstanceUrl" className="input" type="url" placeholder="https://gitlab.com" value={form.gitlabInstanceUrl ?? ""} disabled={form.gitlabEnabled === false} onChange={(e) => setForm((f) => ({ ...f, gitlabInstanceUrl: e.target.value || undefined }))}/>
+            <small>{t("settings.general.gitLabInstanceUrlHint", "Blank uses GitLab.com or the global default. Set an absolute http:// or https:// URL for self-managed GitLab, such as https://gitlab.example.com/gitlab.")}</small>
+          </div>
+          <div className="form-group">
+            <label htmlFor="gitlabApiBaseUrl">{t("settings.general.gitLabApiBaseUrlOptional", "GitLab API base URL (optional / advanced)")}</label>
+            <input id="gitlabApiBaseUrl" className="input" type="url" placeholder="https://gitlab.com/api/v4" value={form.gitlabApiBaseUrl ?? ""} disabled={form.gitlabEnabled === false} onChange={(e) => setForm((f) => ({ ...f, gitlabApiBaseUrl: e.target.value || undefined }))}/>
+            <small>{t("settings.general.gitLabApiBaseUrlHint", "Blank derives <instance>/api/v4. Override only when a self-managed GitLab API is served from a different absolute http:// or https:// URL.")}</small>
+          </div>
+        </div>
+      </details>
     </>);
 }
 export default GeneralSection;
