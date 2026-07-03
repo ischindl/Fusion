@@ -87,7 +87,10 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@fusion/core", () => ({ TaskStore: mocks.TaskStore, CentralCore: mocks.CentralCore }));
 vi.mock("@fusion/dashboard", () => ({ createServer: mocks.createServer }));
-vi.mock("@fusion/engine", () => ({ ProjectEngineManager: mocks.ProjectEngineManager }));
+vi.mock("@fusion/engine", () => ({
+  ProjectEngineManager: mocks.ProjectEngineManager,
+  createFusionAuthStorage: () => ({ reload: () => undefined, getOAuthProviders: () => [], hasAuth: () => false }),
+}));
 
 describe("DesktopLocalServerManager", () => {
   beforeEach(() => {
