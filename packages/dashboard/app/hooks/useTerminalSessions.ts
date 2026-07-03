@@ -241,7 +241,14 @@ export function useTerminalSessions(projectId?: string): UseTerminalSessionsRetu
   }, [projectId]); // Re-run when project scope changes
 
   // Auto-create first tab if no tabs exist after validation
+  // On Windows, do NOT auto-create because the embedded shell may invoke Windows Terminal
+  // (wt.exe) and produce native "Help" version dialogs. Users can still create a terminal
+  // explicitly from the UI.
   useEffect(() => {
+    if (typeof window !== "undefined" && window.navigator.userAgent.includes("Windows")) {
+      setIsReady(true);
+      return;
+    }
     if (tabs.length === 0 && isReady && serverAvailable && !bootstrapError) {
       // Capture current generation so only this attempt's result is accepted
       const gen = generationRef.current;

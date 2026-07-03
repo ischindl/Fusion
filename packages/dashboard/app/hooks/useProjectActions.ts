@@ -3,13 +3,14 @@ import { useTranslation } from "react-i18next";
 import { pauseProject, resumeProject, unregisterProject } from "../api";
 import type { ProjectInfo } from "../api";
 import { replaceProjectIdInUrl } from "../utils/projectUrlState";
-import type { ViewMode } from "./useViewState";
+import type { ViewMode, TaskView } from "./useViewState";
 import type { ToastType } from "./useToast";
 
 interface UseProjectActionsOptions {
   setCurrentProject: (project: ProjectInfo) => void;
   clearCurrentProject: () => void;
   setViewMode: (mode: ViewMode) => void;
+  setTaskView: (view: TaskView) => void;
   currentProject: ProjectInfo | null;
   refreshProjects: () => Promise<void>;
   toggleFavoriteProvider: (provider: string) => Promise<void>;
@@ -41,6 +42,7 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
     setCurrentProject,
     clearCurrentProject,
     setViewMode,
+    setTaskView,
     currentProject,
     refreshProjects,
     toggleFavoriteProvider,
@@ -62,7 +64,8 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
     replaceProjectIdInUrl(null);
     clearCurrentProject();
     setViewMode("overview");
-  }, [clearCurrentProject, setViewMode]);
+    setTaskView("command-center");
+  }, [clearCurrentProject, setViewMode, setTaskView]);
 
   const handleOpenSettings = useCallback(() => {
     openSettings();
