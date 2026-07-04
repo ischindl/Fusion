@@ -588,7 +588,7 @@ describe("SettingsModal", () => {
 
       // Global modal outside-dismiss and persistAgentToolOutput default to unchecked; Star-on-GitHub control absent.
       expect(screen.getByRole("checkbox", { name: "Dismiss modals by clicking outside" })).not.toBeChecked();
-      expect(screen.getByText(/Off by default to prevent accidental dismissal/i).closest("small")).toBeTruthy();
+      expect(screen.getByText(/Default: disabled, to prevent accidental dismissal/i).closest("small")).toBeTruthy();
       expect(screen.getByRole("checkbox", { name: "Save tool output in agent logs" })).not.toBeChecked();
       expect(screen.queryByRole("checkbox", { name: /Show "Star on GitHub" button in Settings header/i })).toBeNull();
 

@@ -13,6 +13,9 @@ Fusion uses a two-tier settings system:
 
 At runtime, settings are merged. **Project settings override global settings** when keys overlap.
 
+<!-- FNXC:SettingsDefaults 2026-07-04-00:00: FN-7505 mirrors this table's Default column into the dashboard Settings UI's own help text so operators do not need this doc open to see a field's default. -->
+The `Default` column below is the same source of truth (`DEFAULT_GLOBAL_SETTINGS` / `DEFAULT_PROJECT_SETTINGS` in `packages/core/src/settings-schema.ts`) that the dashboard Settings UI now surfaces inline in each field's own description/help text (see `docs/dashboard-guide.md` → Settings discovery).
+
 ## Settings API Endpoints
 
 | Endpoint | Purpose |

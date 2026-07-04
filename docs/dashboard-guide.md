@@ -13,6 +13,9 @@ When Fusion detects a newer `@runfusion/fusion` release, the Settings modal foot
 <!-- FNXC:SettingsSearchDocs 2026-07-04-00:00: Settings search is section-discovery, not a global command palette. Document that it filters visible Settings sections by section names and setting keywords while preserving feature-gated hidden sections. -->
 Use **Search settings** at the top of Settings to find the section that contains a setting by name or keyword. The same search works in the Settings modal and embedded Settings page, filters both the desktop section list and mobile section picker, and only searches sections currently visible for enabled feature flags.
 
+<!-- FNXC:SettingsDefaults 2026-07-04-00:00: FN-7505 requires every user-editable setting's help text to state its own default value, so operators reading a field's description know what it defaults to without checking the reference doc. -->
+Every user-editable setting's help text (the `.settings-description`/`<small>` hint under a field) states its own default value — for example “Default: 3.”, “Default: enabled.”, or “No default — unset (inherits the global setting).” for values that fall back to another scope. Canonical default values come from `DEFAULT_GLOBAL_SETTINGS` / `DEFAULT_PROJECT_SETTINGS` in `packages/core/src/settings-schema.ts`; the dashboard copy never invents a number. A guard test (`settings-default-descriptions.test.tsx`) enforces that every surfaced setting states its default and that every `DEFAULT_SETTINGS` key is either documented or explicitly allowlisted as not surfaced in the Settings UI.
+
 ## Keyboard shortcuts
 
 <!-- FNXC:DashboardShortcuts 2026-07-04-00:00: Dashboard keyboard shortcuts are configurable global operator preferences. The docs must state the defaults, editable-field safety guard, duplicate/invalid save behavior, and one-popup Escape semantics so operators know why Space/Terminal/Escape act differently in text fields than on the board. -->
